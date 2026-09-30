@@ -184,6 +184,50 @@ fn dynamic_node_prefixes_input_referencing_a_single_operator_producer() {
 }
 
 #[test]
+fn dynamic_node_with_invalid_timing_is_rejected() {
+    // `dora node add` / `dora node replace` never run whole-dataflow
+    // validation, so a negative or non-finite timing value used to reach the
+    // daemon, where `Duration::from_secs_f64` panics and takes down every
+    // dataflow on it. `resolve_single_node` must reject it up front.
+    let running = running_descriptor_with_operator_producer(serde_json::json!(null));
+
+    for (field, node) in [
+        (
+            "health_check_timeout",
+            serde_json::json!({
+                "id": "consumer",
+                "path": "consumer",
+                "health_check_timeout": -1.0,
+            }),
+        ),
+        (
+            "restart_delay",
+            serde_json::json!({
+                "id": "consumer",
+                "path": "consumer",
+                "restart_delay": 1e30,
+            }),
+        ),
+        (
+            "input_timeout",
+            serde_json::json!({
+                "id": "consumer",
+                "path": "consumer",
+                "inputs": {
+                    "reading": { "source": "producer/result", "input_timeout": -1.0 },
+                },
+            }),
+        ),
+    ] {
+        let added: Node = serde_json::from_value(node).expect("valid node");
+        let err = resolve_single_node(added, &running)
+            .expect_err("invalid timing must be rejected")
+            .to_string();
+        assert!(err.contains(field), "error should name `{field}`: {err}");
+    }
+}
+
+#[test]
 fn dynamic_node_inherits_the_running_dataflow_env() {
     // Regression guard for #2919, which shares this resolution path: the
     // node inherits the dataflow-level `env:` (including anything from
@@ -280,15 +324,25 @@ fn test_running_dataflow(
 /// A store whose `get_dataflow` always fails (simulating a transient
 /// read error), delegating every other method to a backing
 /// [`InMemoryStore`]. Used to prove the ready-barrier release is still
-/// persisted when the status read fails (#3115).
+/// persisted when the status read fails (#3115). With `fail_param_list`
+/// set, `list_node_params` fails as well.
 struct FailingReadStore {
     inner: InMemoryStore,
+    fail_param_list: bool,
 }
 
 impl FailingReadStore {
     fn new() -> Self {
         Self {
             inner: InMemoryStore::new(),
+            fail_param_list: false,
+        }
+    }
+
+    fn with_failing_param_list() -> Self {
+        Self {
+            fail_param_list: true,
+            ..Self::new()
         }
     }
 }
@@ -356,6 +410,9 @@ impl CoordinatorStore for FailingReadStore {
         dataflow_id: &Uuid,
         node_id: &NodeId,
     ) -> Result<Vec<(String, Vec<u8>)>> {
+        if self.fail_param_list {
+            return Err(eyre!("simulated transient store read error"));
+        }
         self.inner.list_node_params(dataflow_id, node_id)
     }
     fn delete_node_param(&self, dataflow_id: &Uuid, node_id: &NodeId, key: &str) -> Result<()> {
@@ -1601,6 +1658,36 @@ async fn replay_skips_when_no_persisted_params() {
     assert!(
         matches!(recv, Err(_) | Ok(None)),
         "no replay command should be sent for empty persisted params"
+    );
+}
+
+#[tokio::test]
+async fn replay_reports_failure_when_params_cannot_be_loaded() {
+    // A store read error must count as a failed replay. Skipping the node
+    // silently yields `failed == 0`, and the pruned-log fallback then marks
+    // the daemon caught up although it never received the node's params —
+    // and never retries, since its ack now equals the log head.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(FailingReadStore::with_failing_param_list());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection = crate::state::DaemonConnection::new(tx, pending_replies, BTreeMap::new());
+
+    let summary = replay_persisted_params_for_daemon(
+        dataflow_id,
+        daemon_id,
+        vec![node_id],
+        store,
+        connection,
+        Arc::new(HLC::default()),
+    )
+    .await;
+    assert_eq!(
+        summary.failed, 1,
+        "the unreadable node must count as failed"
     );
 }
 
