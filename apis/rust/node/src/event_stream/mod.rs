@@ -101,8 +101,8 @@ fn send_or_count_ingress_drop(
                     input = %input_id,
                     drops = count,
                     "event channel full; dropping zenoh input. Raise this input's \
-                     queue_size — the ingress channel is sized from the sum of the \
-                     node's input queue_sizes."
+                     queue_size — the ingress channel is sized from the node's \
+                     backpressure inputs' queue_sizes."
                 );
             }
         }
@@ -397,8 +397,12 @@ fn connect_daemon_channel(
     Ok(channel)
 }
 
-/// Capacity of a node's ingress event channel: the sum of its inputs'
-/// `queue_size`s, at least 64.
+/// Capacity of a node's ingress event channel: the sum of its `backpressure`
+/// inputs' `queue_size`s, at least 64.
+///
+/// Every other input is queued on arrival (see `Ingress`), so only
+/// `backpressure` inputs, control events and errors use this channel. The
+/// floor leaves room for the control events.
 ///
 /// `queue_size` is unvalidated, so the sum saturates and is clamped to the
 /// `usize::MAX >> 3` limit above which tokio's `mpsc::channel` panics. The
@@ -406,6 +410,9 @@ fn connect_daemon_channel(
 fn ingress_channel_capacity<'a>(inputs: impl Iterator<Item = &'a Input>) -> usize {
     const MAX_CHANNEL_CAPACITY: usize = usize::MAX >> 3;
     inputs
+        .filter(|c| {
+            c.queue_policy.unwrap_or_default() == dora_message::config::QueuePolicy::Backpressure
+        })
         .map(|c| {
             c.queue_size
                 .unwrap_or(dora_message::config::DEFAULT_QUEUE_SIZE)
@@ -2514,13 +2521,20 @@ mod tests {
             .expect("parse input")
     }
 
+    fn backpressure_input(queue_size: usize) -> Input {
+        serde_yaml::from_str(&format!(
+            "source: a/out\nqueue_size: {queue_size}\nqueue_policy: backpressure\n"
+        ))
+        .expect("parse input")
+    }
+
     #[test]
     fn ingress_channel_capacity_saturates_for_huge_queue_sizes() {
         for sizes in [
             vec![usize::MAX],
             vec![usize::MAX / 2 + 1, usize::MAX / 2 + 1],
         ] {
-            let inputs: Vec<Input> = sizes.into_iter().map(input_with_queue_size).collect();
+            let inputs: Vec<Input> = sizes.into_iter().map(backpressure_input).collect();
             let capacity = ingress_channel_capacity(inputs.iter());
             assert_eq!(capacity, usize::MAX >> 3);
             // The capacity must be one tokio accepts.
@@ -2528,11 +2542,16 @@ mod tests {
         }
     }
 
+    /// Only `backpressure` inputs use the channel, so only they size it.
     #[test]
-    fn ingress_channel_capacity_sums_queue_sizes_with_a_floor() {
-        let inputs = [input_with_queue_size(50), input_with_queue_size(70)];
+    fn ingress_channel_capacity_sums_backpressure_queue_sizes_with_a_floor() {
+        let inputs = [
+            backpressure_input(50),
+            backpressure_input(70),
+            input_with_queue_size(500),
+        ];
         assert_eq!(ingress_channel_capacity(inputs.iter()), 120);
-        let small = [input_with_queue_size(1)];
+        let small = [backpressure_input(1), input_with_queue_size(500)];
         assert_eq!(ingress_channel_capacity(small.iter()), 64);
         assert_eq!(ingress_channel_capacity(std::iter::empty()), 64);
     }
