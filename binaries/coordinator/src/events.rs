@@ -12,7 +12,7 @@ use dora_message::{
 use eyre::WrapErr;
 use futures::Stream;
 use std::collections::BTreeMap;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
@@ -65,10 +65,19 @@ pub enum Event {
         metrics: BTreeMap<NodeId, NodeMetrics>,
         network: Option<NetworkMetrics>,
     },
+    /// A topic debug frame for `dora topic` subscribers (dora-rs/dora#3535).
+    ///
+    /// Reaches the main loop on its own channel rather than the shared event
+    /// one, so it can neither delay a control event nor pile up ahead of one:
+    /// see `ws_daemon::topic_debug_channel` and `control_before_topic_debug`.
     TopicDebugData {
         dataflow_id: Uuid,
         subscription_ids: Vec<Uuid>,
         payload: Vec<u8>,
+        /// This frame's share of `ws_daemon::TOPIC_DEBUG_INGRESS_BYTES`,
+        /// released once the event has been handled. Set when the frame is
+        /// admitted to the topic debug channel; `None` only before that.
+        budget: Option<OwnedSemaphorePermit>,
     },
     DaemonStatusReport {
         daemon_id: DaemonId,
