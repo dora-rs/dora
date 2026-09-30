@@ -894,9 +894,13 @@ fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf
 }
 
 fn read_log_file(path: &Path) -> Result<Vec<LogMessage>> {
-    let content = std::fs::read_to_string(path)
-        .wrap_err_with(|| format!("failed to read {}", path.display()))?;
-    Ok(parse_log_content(path, &content))
+    // Decode lossily, like `read_log_file_tracked`: a file whose tail ends
+    // inside a multi-byte UTF-8 sequence (a line the daemon is still writing,
+    // or one cut short by a crash) or a legacy `.txt` log holding raw console
+    // bytes must not make every log of the dataflow unreadable.
+    let bytes =
+        std::fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
+    Ok(parse_log_content(path, &String::from_utf8_lossy(&bytes)))
 }
 
 /// Read a log file for follow mode: the messages to print plus the follow state
@@ -2034,6 +2038,29 @@ mod tests {
         // Only the newline-terminated prefix is consumed; the partial tail waits
         // for a later poll, and the stored offset is the raw byte offset.
         assert_eq!(state.offset, complete.len() as u64);
+    }
+
+    #[test]
+    fn read_log_file_tolerates_invalid_utf8() {
+        // `dora logs` without `--follow` used strict decoding, so one partial
+        // multi-byte character made the whole command fail.
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("log_n.jsonl");
+        let mut raw = jsonl("日本語").into_bytes();
+        raw.extend_from_slice(b"{\"ts\":\"\xe4\xbd");
+        std::fs::write(&path, &raw).unwrap();
+        let msgs = read_log_file(&path).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].message, "日本語");
+
+        // A legacy raw-text log keeps its lines, with the bad byte replaced.
+        let path = dir.path().join("log_n.txt");
+        std::fs::write(&path, b"before\nbad \xff byte\nafter").unwrap();
+        let msgs = read_log_file(&path).unwrap();
+        let lines: Vec<_> = msgs.iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(lines, ["before", "bad \u{fffd} byte", "after"]);
     }
 
     fn snap_from(path: &Path, size: u64, content: &str) -> LogFileSnapshot {
