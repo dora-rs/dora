@@ -282,7 +282,9 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
 
 /// Rewrites each recorded node in the descriptor into a replay node: swaps its
 /// `path` for the `dora-replay-node` binary, strips the build/source/operator
-/// keys and its `inputs`, republishes its recorded `outputs`, and injects the
+/// keys (including `hub:`/`ros2:`, which are exclusive with `path`, and a
+/// `path_sha256` that would now point at the local replay binary) and its
+/// `inputs`/`input_types`, republishes its recorded `outputs`, and injects the
 /// `DORA_REPLAY_*` env the replay node reads (file, node id, speed, loop).
 fn replace_recorded_nodes_with_replay(
     nodes: &mut serde_yaml::Sequence,
@@ -317,7 +319,11 @@ fn replace_recorded_nodes_with_replay(
                 "operators",
                 "custom",
                 "args",
+                "hub",
+                "ros2",
+                "path_sha256",
                 "inputs",
+                "input_types",
             ] {
                 map.remove(serde_yaml::Value::String(key.to_string()));
             }
@@ -734,6 +740,56 @@ mod tests {
             parsed["nodes"][2]["inputs"]["image"].as_str(),
             Some("single/image")
         );
+    }
+
+    #[test]
+    fn replay_replacement_strips_fields_exclusive_with_path() {
+        let out = replaced_with_replay(
+            concat!(
+                "nodes:\n",
+                "- id: detector\n",
+                "  hub: dora-yolo@^0.5\n",
+                "  inputs:\n",
+                "    image: camera/image\n",
+                "  input_types:\n",
+                "    image: std/media/v1/Image\n",
+                "  outputs:\n",
+                "    - bbox\n",
+                "- id: bridge\n",
+                "  ros2:\n",
+                "    topic: /chatter\n",
+                "    message_type: std_msgs/String\n",
+                "  outputs:\n",
+                "    - chatter\n",
+                "- id: downloaded\n",
+                "  path: https://example.com/node\n",
+                "  path_sha256: 0000000000000000000000000000000000000000000000000000000000000000\n",
+                "  outputs:\n",
+                "    - data\n",
+            ),
+            &["detector", "bridge", "downloaded"],
+        );
+        let descriptor: dora_message::descriptor::Descriptor =
+            serde_yaml::from_str(&out).expect("rewritten descriptor must deserialize");
+        for node in &descriptor.nodes {
+            assert!(node.hub.is_none(), "`{}` kept `hub`", node.id);
+            assert!(node.ros2.is_none(), "`{}` kept `ros2`", node.id);
+            assert!(
+                node.path_sha256.is_none(),
+                "`{}` kept `path_sha256`",
+                node.id
+            );
+            assert!(
+                node.input_types.is_empty(),
+                "`{}` kept `input_types`",
+                node.id
+            );
+            assert_eq!(node.path.as_deref(), Some("/tmp/dora-replay-node"));
+            dora_core::descriptor::NodeExt::kind(node)
+                .unwrap_or_else(|err| panic!("`{}` is not a valid node: {err}", node.id));
+        }
+        assert_eq!(descriptor.nodes[0].outputs.len(), 1);
+        assert_eq!(descriptor.nodes[1].outputs.len(), 1);
     }
 
     #[test]
