@@ -4163,6 +4163,71 @@ mod tests {
         assert!(!ingress.takes(&slow));
     }
 
+    /// The daemon thread files a `drop_oldest` input into its queue as it
+    /// arrives (dora-rs/dora#3591): a batch of three samples for a
+    /// `queue_size: 1` input leaves one queued, two counted as dropped and
+    /// nothing on the shared channel, before the node has read anything.
+    #[test]
+    fn daemon_thread_files_inputs_into_the_ingress_on_arrival() {
+        use dora_message::{
+            daemon_to_node::DaemonReply,
+            node_to_daemon::{DaemonRequest, Timestamped},
+        };
+
+        let slow = DataId::from("slow".to_string());
+        let mut queues = HashMap::new();
+        queues.insert(slow.clone(), (1, VecDeque::new()));
+        let (ingress, mut rings) = test_ingress(queues, HashSet::new());
+        let ingress = Arc::new(ingress);
+        let clock = Arc::new(dora_core::uhlc::HLC::default());
+
+        // A daemon stand-in: one batch of three samples, then the stream ends.
+        let (requests, mut poll) = tokio::sync::mpsc::channel::<(
+            Timestamped<DaemonRequest>,
+            tokio::sync::oneshot::Sender<DaemonReply>,
+        )>(8);
+        let daemon_clock = clock.clone();
+        let daemon = std::thread::spawn(move || {
+            let mut batches = vec![
+                Vec::new(),
+                (0..3)
+                    .map(|_| Timestamped {
+                        inner: daemon_input("slow"),
+                        timestamp: daemon_clock.new_timestamp(),
+                    })
+                    .collect(),
+            ];
+            while let Some((_request, reply)) = poll.blocking_recv() {
+                let events = batches.pop().unwrap_or_default();
+                let _ = reply.send(DaemonReply::NextEvents(events));
+            }
+        });
+
+        let (tx, mut channel) = tokio::sync::mpsc::channel(64);
+        let handle = thread::init(
+            "test-node".parse().unwrap(),
+            tx,
+            DaemonChannel::IntegrationTestChannel(requests),
+            clock,
+            Some(ingress.clone()),
+        )
+        .unwrap();
+        // Dropping the handle joins the thread, which has consumed both batches.
+        drop(handle);
+        daemon.join().unwrap();
+
+        let mut scheduler = ingress.scheduler();
+        assert!(scheduler.next().is_some(), "one sample must be queued");
+        assert!(scheduler.next().is_none(), "queue_size 1 must hold one");
+        assert_eq!(scheduler.drain_drop_counts().get(&slow), Some(&2));
+        drop(scheduler);
+        assert!(rings.try_recv().is_ok(), "a push must ring the doorbell");
+        assert!(
+            channel.try_recv().is_err(),
+            "a queued input must not also travel the channel"
+        );
+    }
+
     /// `recv` must wake when another thread files an input, since nothing
     /// passes through the shared channel for it.
     #[test]
