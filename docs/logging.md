@@ -581,7 +581,7 @@ fields.insert("reading".to_string(), "42.5".to_string());
 node.log_with_fields("info", "reading acquired", None, Some(&fields));
 ```
 
-The `level` parameter accepts `"error"`, `"warn"` (or `"warning"`), `"info"`, `"debug"`, `"trace"`. Unknown levels default to `"info"`. Fields are capped at 60 KB total to match the downstream 64 KB parse limit.
+The `level` parameter accepts `"error"`, `"warn"` (or `"warning"`), `"info"`, `"debug"`, `"trace"`. Unknown levels default to `"info"`. Fields are capped at 60 KB total (serialized), which keeps an entry well below the daemon's 1 MiB per-line limit.
 
 ### Python
 

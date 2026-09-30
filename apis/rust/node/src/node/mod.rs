@@ -2333,8 +2333,9 @@ impl DoraNode {
     }
 
     /// Maximum serialized size of the log `fields` object before it is
-    /// dropped (60 KB). Matches the downstream 64 KB parse limit with headroom
-    /// for the message envelope. Measured on the serialized JSON (see
+    /// dropped (60 KB). Keeps a structured entry far below the daemon's 1 MiB
+    /// per-line limit, past which the JSON line would be cut and no longer
+    /// parse as structured. Measured on the serialized JSON (see
     /// [`log_fields_within_budget`]), not the raw key/value byte sum.
     const MAX_LOG_FIELDS_BYTES: usize = 60 * 1024;
 
@@ -2645,12 +2646,12 @@ impl DoraNode {
 
 /// Return the serialized log `fields` object when it fits `limit`, else `None`.
 ///
-/// The budget guards a downstream JSON-line parse limit, so it must measure
-/// the *serialized* size: `"fields":{...}` adds structural bytes (quotes,
+/// The budget keeps the structured entry well under the daemon's 1 MiB
+/// per-line limit, past which the line is cut and no longer parses as
+/// structured, so it must measure the *serialized* size: `"fields":{...}` adds structural bytes (quotes,
 /// colons, commas) and JSON escaping — a value full of `"`/`\` doubles and
 /// control characters expand ~6x via `\uXXXX`. Summing raw key/value byte
-/// lengths can pass a map whose serialized form is well over the limit, which
-/// the downstream parser then drops or truncates whole.
+/// lengths can pass a map whose serialized form is well over the budget.
 fn log_fields_within_budget(
     fields: &std::collections::BTreeMap<String, String>,
     limit: usize,
@@ -3724,8 +3725,8 @@ mod tests {
         // budget by the old raw-sum measure — but made entirely of control
         // characters, each of which JSON-escapes to `` (6 bytes). Its
         // serialized form is ~120 KB, over the budget, so it must be dropped.
-        // The pre-fix raw-byte check would have let it through and blown the
-        // downstream parse limit.
+        // The pre-fix raw-byte check would have let it through, well past the
+        // budget.
         let mut big = BTreeMap::new();
         big.insert("k".to_string(), "\u{1}".repeat(20 * 1024));
         assert!(big.values().map(String::len).sum::<usize>() < limit);
