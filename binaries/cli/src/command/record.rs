@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    io::Write,
     path::PathBuf,
     time::SystemTime,
 };
@@ -406,7 +405,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
         return Ok(());
     }
 
-    // The tempfile lives in /tmp but descriptor-relative paths
+    // The descriptor lives in a temp dir but descriptor-relative paths
     // (`build:` cargo, node binaries) must still resolve against the
     // original source dir, so pass it as an explicit `working_dir`
     // override to `Run`.
@@ -415,11 +414,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let mut tmp =
-        tempfile::NamedTempFile::with_suffix(".yml").wrap_err("failed to create temp file")?;
-    tmp.write_all(modified_yaml.as_bytes())?;
-    tmp.flush()?;
-    let tmp_path = tmp.into_temp_path();
+    let (_tmp_dir, run) = Run::for_generated_dataflow(&modified_yaml, source_dir)?;
 
     eprintln!("Recording {} topics to {output_file}", topics.len());
     eprintln!(
@@ -428,9 +423,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
     );
     eprintln!();
 
-    Run::new(tmp_path.to_string_lossy().to_string())
-        .with_working_dir(source_dir)
-        .execute()
+    run.execute()
 }
 
 /// What a Ctrl-C on the recording loop should do, given whether one was already

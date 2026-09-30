@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -233,13 +232,6 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         return Ok(());
     }
 
-    // Write to temp file and run
-    let mut tmp =
-        tempfile::NamedTempFile::with_suffix(".yml").wrap_err("failed to create temp file")?;
-    tmp.write_all(modified_yaml.as_bytes())?;
-    tmp.flush()?;
-    let tmp_path = tmp.into_temp_path();
-
     eprintln!(
         "Replaying {} nodes from {}",
         nodes_to_replace.len(),
@@ -255,7 +247,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     );
     eprintln!("Speed: {}x\n", args.speed);
 
-    // The modified YAML lives in /tmp, but the original descriptor's
+    // The modified YAML lives in a temp dir, but the original descriptor's
     // `build: cargo build -p <node>` directives need to run in a dir where
     // Cargo.toml is reachable and the descriptor's relative `path:` entries
     // resolve. Mirror `dora record`'s fix (#1674) with the .drec file's
@@ -273,7 +265,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let run = Run::new(tmp_path.to_string_lossy().to_string()).with_working_dir(recording_dir);
+    let (_tmp_dir, run) = Run::for_generated_dataflow(&modified_yaml, recording_dir)?;
     // A replay exists to reproduce the recording: every replayed input is a
     // backpressure input, and a message lost on one makes the run exit
     // non-zero rather than warn (dora-rs/dora#3397).
