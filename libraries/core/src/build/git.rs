@@ -232,6 +232,16 @@ impl GitManager {
                 .context("no path in git URL")?
                 .map(sanitize_dir_component),
         );
+        // The commit hash becomes a path component, and on the `--locked` path
+        // it comes verbatim from the lockfile (only its repo is compared). A
+        // value such as `../../..` would escape `base_dir`: the node would be
+        // built in an arbitrary existing directory, and a later update of the
+        // same repo would rename (and, if the fetch then failed, delete) it.
+        // Every legitimate source (`git rev-parse`, descriptor `rev:`, hub
+        // pins) produces a (possibly abbreviated) hex hash.
+        if !is_commit_hash_component(commit_hash) {
+            eyre::bail!("invalid git commit hash `{commit_hash}`: expected 4 to 64 hex digits");
+        }
         let path = path.join(commit_hash);
         Ok(dunce::simplified(&path).to_owned())
     }
@@ -600,6 +610,12 @@ async fn promote_clone(
     }
 }
 
+/// Whether `s` is a (possibly abbreviated) hex commit hash and therefore safe
+/// to use as a single path component.
+fn is_commit_hash_component(s: &str) -> bool {
+    (4..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// True for a full-length hex commit id (40 chars for SHA-1, 64 for SHA-256).
 /// Branch and tag names are shorter or non-hex, and I can't resolve those to a
 /// commit without hitting the network, so those pins skip the HEAD check.
@@ -764,6 +780,39 @@ mod tests {
     // well-formed `file:///C:/...` on every platform.
     fn file_url(path: &Path) -> Url {
         Url::from_file_path(path).expect("test repo path must be absolute")
+    }
+
+    #[test]
+    fn clone_dir_path_rejects_a_commit_hash_that_is_not_hex() {
+        let url = Url::parse("https://github.com/dora-rs/dora").unwrap();
+        for bad in [
+            "../../../../home/user/project",
+            "..",
+            "a/b",
+            "abc\\def",
+            "",
+            "abc",
+            "main",
+            &"a".repeat(65),
+        ] {
+            let err = GitManager::clone_dir_path(Path::new("base"), &url, &bad.to_string())
+                .expect_err(&format!("`{bad}` must be rejected"));
+            assert!(
+                err.to_string().contains("invalid git commit hash"),
+                "unexpected error for `{bad}`: {err}"
+            );
+        }
+        for good in [
+            "abcd",
+            "0123456789abcdefABCDEF",
+            &"f".repeat(40),
+            &"0".repeat(64),
+        ] {
+            let dir =
+                GitManager::clone_dir_path(Path::new("base"), &url, &good.to_string()).unwrap();
+            assert!(dir.starts_with("base"));
+            assert!(dir.ends_with(good));
+        }
     }
 
     #[test]
