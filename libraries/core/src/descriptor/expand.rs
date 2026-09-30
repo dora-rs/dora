@@ -1,6 +1,6 @@
 use super::classify;
 use dora_message::{
-    config::{Input, InputMapping, UserInputMapping},
+    config::{Input, InputMapping, LogSubscriptionFilter, UserInputMapping},
     descriptor::{
         DYNAMIC_SOURCE, Descriptor, EnvValue, Node, OperatorConfig, OperatorSource, SHELL_SOURCE,
     },
@@ -1200,6 +1200,19 @@ fn rewrite_module_input(
     optional_inputs: &BTreeSet<String>,
 ) -> eyre::Result<Option<Input>> {
     match &input.mapping {
+        // `dora/logs/<level>/<node>` naming a sibling: prefix the node filter
+        // like a sibling data source, or it would match no node after
+        // expansion and the sink would silently receive nothing.
+        InputMapping::Logs(LogSubscriptionFilter {
+            min_level,
+            node_filter: Some(node),
+        }) if inner_node_ids.contains(node.as_ref()) => Ok(Some(Input {
+            mapping: InputMapping::Logs(LogSubscriptionFilter {
+                min_level: min_level.clone(),
+                node_filter: Some(format!("{module_id}.{node}").into()),
+            }),
+            ..input.clone()
+        })),
         InputMapping::Timer { .. } | InputMapping::Logs(_) => Ok(Some(input.clone())),
         InputMapping::User(user_mapping) => {
             let source_str = user_mapping.source.to_string();
@@ -4082,6 +4095,66 @@ nodes:
             msg.contains("resolves outside the project directory"),
             "got: {msg}"
         );
+    }
+
+    /// A `dora/logs/<level>/<node>` input naming a sibling inside a module must
+    /// follow the sibling's prefixed id, or the daemon's exact node-id filter
+    /// matches nothing and the sink silently receives no logs.
+    #[test]
+    fn expand_prefixes_sibling_log_filter() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "logs_module.yml",
+            r#"
+module:
+  name: logs_module
+  outputs: []
+
+nodes:
+  - id: worker
+    path: worker.py
+  - id: sink
+    path: sink.py
+    inputs:
+      sibling: dora/logs/info/worker
+      external: dora/logs/warn/outside
+      all: dora/logs/info
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: logs_module.yml
+  - id: outside
+    path: outside.py
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let sink = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.sink")
+            .unwrap();
+        let filter_of = |input: &str| match &sink.inputs[&DataId::from(input.to_string())].mapping {
+            InputMapping::Logs(filter) => filter.clone(),
+            other => panic!("expected a logs mapping, got {other:?}"),
+        };
+
+        let sibling = filter_of("sibling");
+        assert_eq!(sibling.node_filter.unwrap().to_string(), "m.worker");
+        assert!(sibling.min_level.is_some(), "level must be preserved");
+        // A node outside the module and an unfiltered subscription are left as is.
+        assert_eq!(
+            filter_of("external").node_filter.unwrap().to_string(),
+            "outside"
+        );
+        assert!(filter_of("all").node_filter.is_none());
     }
 
     #[test]
