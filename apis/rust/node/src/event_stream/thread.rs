@@ -159,7 +159,7 @@ fn event_stream_loop(
             // Inputs are queued on arrival (see `Ingress`), the same as on the
             // zenoh path; the channel carries the rest, numbered when sent.
             if let Some(ingress) = ingress.as_deref()
-                && matches!(&inner, NodeEvent::Input { id, .. } if ingress.takes(id))
+                && matches!(&inner, NodeEvent::Input { id, .. } if ingress.queues_on_arrival(id))
             {
                 ingress.push(EventItem::NodeEvent { event: inner });
             } else if let Some(tx) = tx.as_ref() {
