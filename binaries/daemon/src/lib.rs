@@ -1320,7 +1320,6 @@ impl Daemon {
                 } else {
                     MulticastScouting::Allowed
                 },
-                ..Default::default()
             })
             .await
             .wrap_err("failed to open zenoh session")?;

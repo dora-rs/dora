@@ -7,7 +7,7 @@ pub(super) async fn open_session(
     let Some(peering) = peering else {
         // Static nodes use the spawn environment; old daemons supply no
         // dynamic bootstrap information and retain their discovery behaviour.
-        return open_zenoh_session(None).await;
+        return open_zenoh_session().await;
     };
     if std::env::var_os(zenoh::Config::DEFAULT_CONFIG_PATH_ENV).is_some() {
         // Preserve the explicit full-configuration override, just as for
@@ -15,7 +15,7 @@ pub(super) async fn open_session(
         tracing::warn!(
             "ZENOH_CONFIG overrides dynamic node peer connections; use DORA_ZENOH_CONFIG_OVERLAY to retain automatic peering"
         );
-        return open_zenoh_session(None).await;
+        return open_zenoh_session().await;
     }
     let (session, bound) = open_zenoh_session_with_listen(ZenohSessionParams {
         listen_endpoint: Some(&peering.listen),

@@ -512,7 +512,7 @@ async fn publish_topic(
 
     if session.is_none() {
         *session = Some(
-            dora_core::topics::open_zenoh_session(None)
+            dora_core::topics::open_zenoh_session()
                 .await
                 .map_err(|e| format!("failed to open zenoh session: {e}"))?,
         );
