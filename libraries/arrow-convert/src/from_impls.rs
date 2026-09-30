@@ -1,5 +1,5 @@
 use arrow::{
-    array::{Array, AsArray, PrimitiveArray, StringArray},
+    array::{Array, ArrayAccessor, AsArray, PrimitiveArray},
     datatypes::{ArrowPrimitiveType, ArrowTemporalType},
 };
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
@@ -86,21 +86,41 @@ impl_try_from_arrow_data!(
 
 impl<'a> TryFrom<&'a DoraArray> for &'a str {
     type Error = eyre::Report;
+    /// Accepts all three Arrow string encodings: `Utf8`, `LargeUtf8` and
+    /// `Utf8View`. Senders outside Rust (Polars, pyarrow) commonly produce
+    /// the latter two, and this crate's own `IntoArrow` builds them too.
     fn try_from(value: &'a DoraArray) -> Result<Self, Self::Error> {
-        let array: &StringArray = array_ref(value)
-            .as_string_opt()
-            .wrap_err("not a string array")?;
-        if array.is_empty() {
-            eyre::bail!("empty array");
+        let array = array_ref(value);
+        if let Some(array) = array.as_string_opt::<i32>() {
+            single_string(array)
+        } else if let Some(array) = array.as_string_opt::<i64>() {
+            single_string(array)
+        } else if let Some(array) = array.as_string_view_opt() {
+            single_string(array)
+        } else {
+            eyre::bail!(
+                "not a string array (expected Utf8, LargeUtf8 or Utf8View, got {})",
+                array.data_type()
+            )
         }
-        if array.len() != 1 {
-            eyre::bail!("expected length 1");
-        }
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.value(0))
     }
+}
+
+fn single_string<'a, A>(array: &'a A) -> eyre::Result<&'a str>
+where
+    A: Array,
+    &'a A: ArrayAccessor<Item = &'a str>,
+{
+    if array.is_empty() {
+        eyre::bail!("empty array");
+    }
+    if array.len() != 1 {
+        eyre::bail!("expected length 1");
+    }
+    if array.null_count() != 0 {
+        eyre::bail!("array has nulls");
+    }
+    Ok(array.value(0))
 }
 
 impl TryFrom<&DoraArray> for String {
@@ -248,5 +268,64 @@ mod tests {
         let data: DoraArray = from_array_ref(array);
         let value: u8 = (&data).try_into().unwrap();
         assert_eq!(value, 42);
+    }
+
+    /// #3661: every Arrow string encoding converts to `&str` and `String`,
+    /// not only `Utf8`.
+    #[test]
+    fn test_string_encodings() {
+        use arrow::array::{ArrayRef, LargeStringArray, StringArray, StringViewArray};
+        use std::sync::Arc;
+
+        let arrays: [ArrayRef; 3] = [
+            Arc::new(StringArray::from(vec!["hello"])),
+            Arc::new(LargeStringArray::from(vec!["hello"])),
+            Arc::new(StringViewArray::from(vec!["hello"])),
+        ];
+        for array in arrays {
+            let data_type = array.data_type().clone();
+            let data: DoraArray = from_array_ref(array);
+            let s: &str = (&data).try_into().unwrap();
+            assert_eq!(s, "hello", "{data_type}");
+            let s: String = (&data).try_into().unwrap();
+            assert_eq!(s, "hello", "{data_type}");
+        }
+    }
+
+    /// The single-element / no-null checks apply to every encoding.
+    #[test]
+    fn test_string_encodings_reject_invalid_shapes() {
+        use arrow::array::{ArrayRef, LargeStringArray, StringViewArray};
+        use std::sync::Arc;
+
+        let cases: [(ArrayRef, &str); 6] = [
+            (
+                Arc::new(LargeStringArray::from(Vec::<&str>::new())),
+                "empty",
+            ),
+            (Arc::new(LargeStringArray::from(vec!["a", "b"])), "length 1"),
+            (
+                Arc::new(LargeStringArray::from(vec![None::<&str>])),
+                "nulls",
+            ),
+            (Arc::new(StringViewArray::from(Vec::<&str>::new())), "empty"),
+            (Arc::new(StringViewArray::from(vec!["a", "b"])), "length 1"),
+            (Arc::new(StringViewArray::from(vec![None::<&str>])), "nulls"),
+        ];
+        for (array, expected) in cases {
+            let data: DoraArray = from_array_ref(array);
+            let err = <&str>::try_from(&data).unwrap_err().to_string();
+            assert!(err.contains(expected), "{err}");
+        }
+    }
+
+    #[test]
+    fn test_string_rejects_non_string() {
+        let array =
+            make_array(PrimitiveArray::<arrow::datatypes::UInt8Type>::from(vec![42]).into());
+        let data: DoraArray = from_array_ref(array);
+        let err = String::try_from(&data).unwrap_err().to_string();
+        assert!(err.contains("not a string array"), "{err}");
+        assert!(err.contains("UInt8"), "{err}");
     }
 }

@@ -87,6 +87,8 @@ pub trait IntoArrow {
 /// - **Scalar** conversions (`bool`, the primitive integer/float types,
 ///   `String`, `&str`, and the `chrono` date/time types) require the array to
 ///   hold **exactly one element and no nulls**; any other length is an error.
+///   `String` and `&str` accept all three Arrow string encodings (`Utf8`,
+///   `LargeUtf8` and `Utf8View`).
 /// - **Slice / `Vec`** conversions (`&[T]` and `Vec<T>` for the primitive
 ///   types) accept **any length** but still reject **any null values**.
 ///
