@@ -29,6 +29,14 @@ pub(super) async fn spawn_dataflow(
     write_events_to: Option<PathBuf>,
 ) -> eyre::Result<SpawnedDataflow> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+    // Neither the CLI nor the daemon validates a `dora start` descriptor
+    // (only `dora run` goes through `check_dataflow`), so check the timing
+    // fields here, before any daemon is contacted: the daemon feeds them to
+    // `Duration::from_secs_f64`, which panics on a negative, non-finite, or
+    // overflowing value and would take down every dataflow on that daemon.
+    for node in nodes.values() {
+        dora_core::descriptor::validate::check_node_timing(node)?;
+    }
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
 
     // Resolve each node to its target daemon, then group by daemon.
@@ -476,5 +484,56 @@ mod tests {
             first_stop_received.load(std::sync::atomic::Ordering::SeqCst),
             "first daemon should have received StopDataflow for rollback"
         );
+    }
+
+    /// A `dora start` descriptor is never run through `check_dataflow`, so
+    /// `spawn_dataflow` must reject a timing value the daemon would panic on
+    /// (`Duration::from_secs_f64`) before sending `Spawn` to any daemon.
+    #[tokio::test]
+    async fn spawn_rejects_invalid_timing_before_contacting_daemons() {
+        let clock = HLC::default();
+        for (node_field, input_field) in [
+            (r#""restart_delay": -1.0,"#, ""),
+            (r#""health_check_timeout": 1e300,"#, ""),
+            ("", r#", "input_timeout": -0.5"#),
+        ] {
+            let conn = mock_daemon(|variant| panic!("daemon must not be contacted: {variant}"));
+            let mut connections = DaemonConnections::default();
+            connections.add(DaemonId::new(None), conn);
+
+            let dataflow: Descriptor = serde_json::from_str(&format!(
+                r#"{{
+                    "nodes": [
+                        {{ "id": "src", "path": "/tmp/dummy-a", "outputs": ["out"] }},
+                        {{
+                            "id": "sink",
+                            "path": "/tmp/dummy-b",
+                            {node_field}
+                            "inputs": {{ "in": {{ "source": "src/out"{input_field} }} }}
+                        }}
+                    ]
+                }}"#
+            ))
+            .unwrap();
+
+            let err = spawn_dataflow(
+                None,
+                SessionId::generate(),
+                dataflow,
+                None,
+                &mut connections,
+                &clock,
+                false,
+                None,
+            )
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("spawn should fail for `{node_field}{input_field}`"));
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("sink"),
+                "error should name the offending node, got: {msg}"
+            );
+        }
     }
 }
