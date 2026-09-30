@@ -457,12 +457,26 @@ impl Scheduler {
     }
 
     /// The oldest queued event across every queue, control events included:
-    /// arrival order, which is what the Stream path promises.
-    pub(crate) fn next_in_arrival_order(&mut self) -> Option<EventItem> {
-        let (id, _) = self.oldest()?;
+    /// arrival order, which is what the Stream path promises. Returned with
+    /// its arrival number.
+    pub(crate) fn next_in_arrival_order(&mut self) -> Option<(u64, EventItem)> {
+        self.pop_oldest(u64::MAX)
+    }
+
+    /// The oldest queued event, if it arrived before `bound`.
+    pub(crate) fn next_arrived_before(&mut self, bound: u64) -> Option<(u64, EventItem)> {
+        self.pop_oldest(bound)
+    }
+
+    fn pop_oldest(&mut self, bound: u64) -> Option<(u64, EventItem)> {
+        let (id, seq) = self.oldest()?;
+        if seq >= bound {
+            return None;
+        }
+        let id = id.clone();
         self.arrivals.get_mut(&id)?.pop_front();
         let (_size, queue) = self.event_queues.get_mut(&id)?;
-        queue.pop_front()
+        queue.pop_front().map(|event| (seq, event))
     }
 
     /// The arrival number of the oldest queued event, if any.
@@ -470,22 +484,27 @@ impl Scheduler {
         self.oldest().map(|(_, seq)| seq)
     }
 
-    fn oldest(&self) -> Option<(DataId, u64)> {
+    /// Borrowed, so a read costs no allocation; a pop clones only the winner.
+    fn oldest(&self) -> Option<(&DataId, u64)> {
         self.arrivals
             .iter()
-            .filter_map(|(id, seqs)| seqs.front().map(|seq| (id.clone(), *seq)))
+            .filter_map(|(id, seqs)| seqs.front().map(|seq| (id, *seq)))
             .min_by_key(|(_, seq)| *seq)
     }
 
-    pub(crate) fn next(&mut self) -> Option<EventItem> {
+    /// The next event in `recv`'s order, control events first, then the
+    /// inputs round-robin. Returned with its arrival number.
+    pub(crate) fn next(&mut self) -> Option<(u64, EventItem)> {
         // Retrieve message from the non input event first that have priority over input message.
         if let Some((_size, queue)) = self.event_queues.get_mut(&*NON_INPUT_EVENT_ID)
             && let Some(event) = queue.pop_front()
         {
-            self.arrivals
+            let seq = self
+                .arrivals
                 .get_mut(&*NON_INPUT_EVENT_ID)
-                .and_then(|s| s.pop_front());
-            return Some(event);
+                .and_then(|s| s.pop_front())
+                .unwrap_or_default();
+            return Some((seq, event));
         }
 
         // Yield from the first non-empty input queue in least-recently-used
@@ -496,12 +515,16 @@ impl Scheduler {
             if let Some((_size, queue)) = self.event_queues.get_mut(id)
                 && let Some(event) = queue.pop_front()
             {
-                self.arrivals.get_mut(id).and_then(|s| s.pop_front());
+                let seq = self
+                    .arrivals
+                    .get_mut(id)
+                    .and_then(|s| s.pop_front())
+                    .unwrap_or_default();
                 // Put last used at last
                 if let Some(id) = self.last_used.remove(index) {
                     self.last_used.push_back(id);
                 }
-                return Some(event);
+                return Some((seq, event));
             }
         }
 

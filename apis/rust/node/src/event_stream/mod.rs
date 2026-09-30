@@ -285,6 +285,9 @@ pub struct EventStream {
     /// Returning `None` here lets the caller exit and drops the
     /// `EventStream`, which signals subscriber shutdown.
     stop_received: bool,
+    /// Arrival number of the `Stop` taken out of the scheduler, if one was:
+    /// the Stream path's post-Stop drain delivers only what arrived before it.
+    stop_seq: Option<u64>,
     /// Testing-mode shutdown flag shared with the in-process daemon thread.
     /// Set in [`Drop`] before `EventStreamDropped` so a scheduled `next_event`
     /// sleep cannot deadlock the close handshake (dora-rs/dora#2855).
@@ -965,6 +968,7 @@ impl EventStream {
             input_type_checks,
             pending_passthrough: std::collections::VecDeque::new(),
             stop_received: false,
+            stop_seq: None,
             testing_shutdown,
         })
     }
@@ -1142,15 +1146,7 @@ impl EventStream {
                 self.scheduler_next()
             };
             let Some(item) = next else { break };
-            if inputs_only
-                && !matches!(
-                    &item,
-                    EventItem::NodeEvent {
-                        event: NodeEvent::Input { .. },
-                        ..
-                    } | EventItem::ZenohInput { .. }
-                )
-            {
+            if inputs_only && !Self::is_input(&item) {
                 continue;
             }
             // Route through the shared post-process helper, exactly like the
@@ -1258,6 +1254,35 @@ impl EventStream {
         self.ingress.scheduler()
     }
 
+    /// The Stream path's post-Stop drain: the inputs that arrived before the
+    /// Stop, which `recv` served ahead of them. A Stop that never went through
+    /// the scheduler has no arrival number; then everything queued is drained,
+    /// as `recv` does.
+    fn pop_input_queued_before_stop(&mut self) -> Option<Event> {
+        let Some(bound) = self.stop_seq else {
+            return self.pop_scheduled(true, true);
+        };
+        loop {
+            let (_, item) = self.scheduler().next_arrived_before(bound)?;
+            self.record_delivered(&item);
+            if Self::is_input(&item) {
+                let event = Self::convert_event_item(item);
+                self.note_produced_event(&event);
+                return Some(event);
+            }
+        }
+    }
+
+    fn is_input(item: &EventItem) -> bool {
+        matches!(
+            item,
+            EventItem::NodeEvent {
+                event: NodeEvent::Input { .. },
+                ..
+            } | EventItem::ZenohInput { .. }
+        )
+    }
+
     /// File an event from the shared channel into the scheduler, under the
     /// number it was sent with.
     fn add_event(&mut self, Stamped { seq, item }: Stamped) {
@@ -1271,16 +1296,29 @@ impl EventStream {
     /// arrives: the JSON conversion is far too heavy for zenoh's IO worker, and
     /// the file is meant to hold what the node received.
     fn scheduler_next(&mut self) -> Option<EventItem> {
-        let item = self.scheduler().next()?;
-        self.record_delivered(&item);
+        let (seq, item) = self.scheduler().next()?;
+        self.note_popped(seq, &item);
         Some(item)
     }
 
     /// Like `scheduler_next`, in arrival order: the Stream path's contract.
     fn scheduler_next_in_arrival_order(&mut self) -> Option<EventItem> {
-        let item = self.scheduler().next_in_arrival_order()?;
-        self.record_delivered(&item);
+        let (seq, item) = self.scheduler().next_in_arrival_order()?;
+        self.note_popped(seq, &item);
         Some(item)
+    }
+
+    fn note_popped(&mut self, seq: u64, item: &EventItem) {
+        if matches!(
+            item,
+            EventItem::NodeEvent {
+                event: NodeEvent::Stop,
+                ..
+            }
+        ) {
+            self.stop_seq = Some(seq);
+        }
+        self.record_delivered(item);
     }
 
     fn record_delivered(&mut self, event: &EventItem) {
@@ -2170,10 +2208,12 @@ impl Stream for EventStream {
         }
 
         // Close the stream after a Stop event: zenoh subscriber threads
-        // hold sender clones that would otherwise keep `receiver` open. In
-        // arrival order everything before the Stop was already delivered.
+        // hold sender clones that would otherwise keep `receiver` open. A Stop
+        // delivered here left nothing older queued, but one delivered by
+        // `recv` was served ahead of the inputs that arrived before it, so
+        // hand those out first, as `recv` does.
         if self.stop_received {
-            return std::task::Poll::Ready(None);
+            return std::task::Poll::Ready(self.pop_input_queued_before_stop());
         }
 
         if !self.use_scheduler {
@@ -3492,7 +3532,7 @@ mod tests {
     fn stream_next_delivers_inputs_buffered_in_scheduler() {
         use futures::{FutureExt, StreamExt};
 
-        let (_node, mut events) = test_event_stream();
+        let (_node, mut events, _channel) = quiet_event_stream();
         events.push_scheduler_input_for_testing("cam");
 
         let next = events.next().now_or_never();
@@ -3502,19 +3542,25 @@ mod tests {
         );
     }
 
-    /// The Stream path ends at `Stop`, unlike `recv`: in arrival order,
-    /// whatever is still queued arrived after the Stop.
+    /// A `Stop` that `recv` delivered was served ahead of the inputs queued
+    /// before it; the Stream path must still hand those out, then close.
     #[test]
-    fn stream_next_ends_at_stop() {
+    fn stream_next_drains_buffered_inputs_after_stop() {
         use futures::{FutureExt, StreamExt};
 
         let (_node, mut events) = test_event_stream();
         assert!(matches!(events.recv(), Some(Event::Stop(_))));
+        events.push_scheduler_stop_for_testing();
         events.push_scheduler_input_for_testing("cam");
 
+        let drained = events.next().now_or_never();
+        assert!(
+            matches!(&drained, Some(Some(Event::Input { id, .. })) if id.as_str() == "cam"),
+            "buffered input must be drained after Stop, got {drained:?}"
+        );
         assert!(
             matches!(events.next().now_or_never(), Some(None)),
-            "the stream must close at Stop"
+            "stream must close after draining buffered inputs"
         );
     }
 
@@ -4093,7 +4139,7 @@ mod tests {
         ingress.push(cam_item(2));
 
         let mut scheduler = ingress.scheduler();
-        let kept = scheduler.next().expect("one event must be queued");
+        let (_, kept) = scheduler.next().expect("one event must be queued");
         assert!(
             scheduler.next().is_none(),
             "queue_size 1 must hold one event"
@@ -4272,6 +4318,34 @@ mod tests {
             }
         }
         assert_eq!(order, ["cam", "stop", "end"]);
+    }
+
+    /// `recv` serves a `Stop` ahead of the inputs queued before it; a later
+    /// `next()` must still hand those out, and nothing that came after.
+    #[test]
+    fn stream_next_drains_inputs_older_than_a_stop_recv_delivered() {
+        use futures::{FutureExt, StreamExt};
+
+        let (_node, mut events, channel) = quiet_event_stream();
+        events.ingress.push(cam_item(0));
+        let stop = stamped(
+            &events,
+            EventItem::NodeEvent {
+                event: NodeEvent::Stop,
+            },
+        );
+        channel.try_send(stop).unwrap();
+        assert!(matches!(events.recv(), Some(Event::Stop(_))));
+
+        let mut order = Vec::new();
+        for _ in 0..2 {
+            match events.next().now_or_never() {
+                Some(Some(Event::Input { id, .. })) => order.push(id.to_string()),
+                Some(None) => order.push("end".into()),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(order, ["cam", "end"]);
     }
 
     /// A channel event keeps its place among direct arrivals: numbered when
