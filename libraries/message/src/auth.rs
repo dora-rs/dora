@@ -77,45 +77,71 @@ pub fn config_token_path() -> Option<PathBuf> {
 /// Write the token to `<working_dir>/.dora-token` **and** to the user config
 /// directory (e.g. `~/.config/dora/.dora-token`).
 ///
-/// On Unix, files are created with mode `0o600` atomically to prevent
-/// a TOCTOU window where the file is briefly world-readable.
+/// On Unix, each file is written to a fresh `0o600` inode that replaces the
+/// old one, so the secret is never readable by other users.
 pub fn write_token(working_dir: &Path, token: &AuthToken) -> std::io::Result<()> {
-    write_token_to(&token_path(working_dir), token)?;
+    write_token_with_config_copy(
+        &token_path(working_dir),
+        config_token_path().as_deref(),
+        token,
+    )
+}
 
-    // Best-effort write to config dir so CLIs in other directories can find it.
-    if let Some(config_path) = config_token_path() {
+fn write_token_with_config_copy(
+    path: &Path,
+    config_path: Option<&Path>,
+    token: &AuthToken,
+) -> std::io::Result<()> {
+    let result = write_token_to(path, token);
+
+    // Best-effort write to config dir so CLIs in other directories can find
+    // it — attempted even if the working-dir write failed.
+    if let Some(config_path) = config_path {
         if let Some(parent) = config_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        if let Err(e) = write_token_to(&config_path, token) {
+        if let Err(e) = write_token_to(config_path, token) {
             log::warn!("failed to write token to config dir: {e}");
         }
     }
 
-    Ok(())
+    result
 }
 
 fn write_token_to(path: &Path, token: &AuthToken) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        // `mode` only applies when the file is created. A token file that
-        // already exists with a looser mode (created by hand, copied with
-        // `cp`, restored from a backup) would keep it, so tighten the mode on
-        // the open fd before truncating and writing the new secret into it.
-        // Without this the secret lands world-readable, and
-        // `read_token_from_path` then rejects the file as too permissive.
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            // Truncated below, once the mode is tight.
-            .truncate(false)
-            .mode(0o600)
-            .open(path)?;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.set_len(0)?;
-        file.write_all(token.as_hex().as_bytes())?;
-        file.write_all(b"\n")?;
+        use std::os::unix::fs::OpenOptionsExt;
+        // Write a fresh 0600 inode and rename it over `path` instead of
+        // reusing an existing file: `mode` only applies on creation, and
+        // tightening an existing file's mode does not revoke descriptors
+        // other users already hold on it. `create_new` (O_EXCL) also refuses
+        // to follow a symlink planted at the temporary path, and the rename
+        // replaces a symlink at `path` rather than writing through it.
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| std::io::Error::other("token path has no file name"))?;
+        let mut tmp_name = std::ffi::OsString::from(".");
+        tmp_name.push(file_name);
+        tmp_name.push(format!(".tmp-{}", std::process::id()));
+        let tmp = path.with_file_name(tmp_name);
+        // A leftover from a crashed write by this pid would block `create_new`.
+        let _ = fs::remove_file(&tmp);
+
+        let written = (|| {
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&tmp)?;
+            file.write_all(token.as_hex().as_bytes())?;
+            file.write_all(b"\n")?;
+            fs::rename(&tmp, path)
+        })();
+        if written.is_err() {
+            let _ = fs::remove_file(&tmp);
+        }
+        written?;
     }
     #[cfg(not(unix))]
     {
@@ -277,8 +303,18 @@ mod tests {
         std::fs::write(&path, "stale token that is longer than the new one\n").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
+        // Another user who opened the loose file earlier keeps their fd.
+        let mut early_reader = std::fs::File::open(&path).unwrap();
+
         let token = generate_token();
         write_token_to(&path, &token).unwrap();
+
+        let mut seen = String::new();
+        std::io::Read::read_to_string(&mut early_reader, &mut seen).unwrap();
+        assert!(
+            !seen.contains(token.as_hex()),
+            "a descriptor opened before the write must not see the new secret"
+        );
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "the secret must not stay world-readable");
@@ -307,6 +343,18 @@ mod tests {
         // Config dir copy is best-effort; just verify the working-dir copy works
         let read_back = read_token(dir.path()).unwrap().unwrap();
         assert_eq!(token.as_hex(), read_back.as_hex());
+    }
+
+    #[test]
+    fn config_copy_is_written_even_if_the_working_dir_write_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let unwritable = dir.path().join("missing-dir").join(".dora-token");
+        let config = dir.path().join("config").join(".dora-token");
+
+        let token = generate_token();
+        assert!(write_token_with_config_copy(&unwritable, Some(&config), &token).is_err());
+        let read_back = read_token_from_path(&config).unwrap().unwrap();
+        assert_eq!(read_back.as_hex(), token.as_hex());
     }
 
     #[test]
