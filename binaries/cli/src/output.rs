@@ -244,6 +244,12 @@ pub fn parse_jsonl_line(line: &str) -> Option<LogMessage> {
         .get("target")
         .and_then(|t| t.as_str())
         .map(|s| s.to_string());
+    // The daemon writes a node's structured `tracing` fields here; keep them
+    // so `--log-format json` shows them. A malformed value is dropped rather
+    // than failing the line.
+    let fields = v
+        .get("fields")
+        .and_then(|f| serde::Deserialize::deserialize(f).ok());
 
     Some(LogMessage {
         build_id: None,
@@ -257,7 +263,7 @@ pub fn parse_jsonl_line(line: &str) -> Option<LogMessage> {
         line: None,
         message,
         timestamp,
-        fields: None,
+        fields,
     })
 }
 
@@ -606,6 +612,24 @@ mod tests {
             LogLevelOrStdout::LogLevel(log::Level::Info)
         ));
         assert_eq!(msg.node_id.unwrap().to_string(), "sensor");
+    }
+
+    #[test]
+    fn parse_jsonl_daemon_compact_keeps_fields() {
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","level":"info","node":"sensor","msg":"reading","target":null,"fields":{"sensor_id":"temp-01"}}"#;
+        let msg = parse_jsonl_line(line).unwrap();
+        assert_eq!(
+            msg.fields,
+            Some(std::collections::BTreeMap::from([(
+                "sensor_id".to_string(),
+                "temp-01".to_string()
+            )]))
+        );
+
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","level":"info","msg":"m","fields":null}"#;
+        assert_eq!(parse_jsonl_line(line).unwrap().fields, None);
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","level":"info","msg":"m","fields":[1]}"#;
+        assert_eq!(parse_jsonl_line(line).unwrap().fields, None);
     }
 
     #[test]
