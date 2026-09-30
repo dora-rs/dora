@@ -18,7 +18,7 @@ use eyre::Result;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
-        Arc, atomic,
+        Arc, Mutex, PoisonError, atomic,
         atomic::{AtomicBool, AtomicU64},
     },
     time::Instant,
@@ -41,12 +41,18 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub(crate) struct DeferredDelivery {
     pub receiver: NodeId,
+    /// The receiver's input the event is for; checked against
+    /// `DrainSignal::closed_inputs` before the event is sent.
+    pub input: DataId,
     pub channel: mpsc::Sender<Timestamped<NodeEvent>>,
     /// The receiver's pending-message counter, bumped once the event is in.
     pub pending: Option<Arc<AtomicU64>>,
     /// The receiver's side of the hold.
     pub drained: Arc<DrainSignal>,
     pub event: Timestamped<NodeEvent>,
+    /// Marks `input` as having a held message until this delivery is done,
+    /// however it ends.
+    pub held: HeldInput,
 }
 
 /// What a producer held for a full backpressure receiver shares with that
@@ -67,6 +73,84 @@ pub(crate) struct DrainSignal {
     /// Set when the node dropped its event stream deliberately, so a held
     /// delivery that finds its channel closed afterwards is not a loss.
     pub stream_dropped: AtomicBool,
+    /// Inputs of this receiver the daemon loop has closed for good. A held
+    /// delivery checks it and sends under the same lock, and `close_input`
+    /// adds to it before sending `InputClosed`, so a held message either
+    /// lands before the close or not at all: its producer crashing while it
+    /// is held must not put an `Input` behind that input's `InputClosed`
+    /// (dora-rs/dora#3619).
+    pub closed_inputs: Mutex<BTreeSet<DataId>>,
+    /// How many held deliveries each input of this receiver has in flight.
+    /// The circuit breaker does not break an input while this is nonzero:
+    /// its producer is alive and produced, and a break's `InputClosed`
+    /// could otherwise land ahead of the held `Input` (dora-rs/dora#3623
+    /// review).
+    held_inputs: Mutex<BTreeMap<DataId, usize>>,
+}
+
+impl DrainSignal {
+    /// Marks `input` closed for held deliveries, and wakes them so they
+    /// give up on it now rather than after waiting for room.
+    pub fn close_input(&self, input: &DataId) {
+        self.closed_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(input.clone());
+        self.notify.notify_waiters();
+    }
+
+    /// Counts a held delivery for `input` until the returned guard drops.
+    pub fn hold(self: &Arc<Self>, input: &DataId) -> HeldInput {
+        *self
+            .held_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(input.clone())
+            .or_default() += 1;
+        HeldInput {
+            drained: self.clone(),
+            input: input.clone(),
+        }
+    }
+
+    /// Whether a delivery for `input` is still held.
+    pub fn is_held(&self, input: &DataId) -> bool {
+        self.held_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(input)
+    }
+
+    /// Undoes [`Self::close_input`] for an input a reload maps again.
+    pub fn reopen_input(&self, input: &DataId) {
+        self.closed_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(input);
+    }
+}
+
+/// A held delivery's entry in [`DrainSignal::held_inputs`].
+#[derive(Debug)]
+pub(crate) struct HeldInput {
+    drained: Arc<DrainSignal>,
+    input: DataId,
+}
+
+impl Drop for HeldInput {
+    fn drop(&mut self) {
+        let mut held = self
+            .drained
+            .held_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = held.get_mut(&self.input) {
+            *count -= 1;
+            if *count == 0 {
+                held.remove(&self.input);
+            }
+        }
+    }
 }
 
 pub(crate) fn note_output_sent_to_local_receivers(
@@ -264,8 +348,10 @@ fn offer_event<'a>(
             );
             deferred.push(DeferredDelivery {
                 receiver: receiver_id.clone(),
+                input: input_id.clone(),
                 channel: channel.clone(),
                 pending: dataflow.pending_messages.get(receiver_id).cloned(),
+                held: drained.hold(input_id),
                 drained,
                 event,
             });
@@ -557,6 +643,12 @@ pub(crate) fn close_input(
 
     if !was_open && !was_broken {
         return;
+    }
+
+    // Before `InputClosed` goes out, so a message still held for this input
+    // cannot land behind it (dora-rs/dora#3619).
+    if let Some(drained) = dataflow.drain_signals.get(receiver_id) {
+        drained.close_input(input_id);
     }
 
     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
