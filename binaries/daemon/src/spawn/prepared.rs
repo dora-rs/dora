@@ -860,13 +860,15 @@ impl PreparedNode {
             std::fs::create_dir_all(&dataflow_dir).context("could not create dataflow_dir")?;
         }
         let (tx, mut rx) = mpsc::channel::<LogLine>(100);
-        let mut file = File::create(log::log_path(
+        // Append rather than truncate: on a restart this path holds the
+        // previous incarnation's output, including why it crashed.
+        let (mut file, mut bytes_written) = log::open_log_file_for_append(&log::log_path(
             &self.node_working_dir,
             &self.dataflow_id,
             &self.node.id,
         ))
         .await
-        .context("failed to create log file")?;
+        .context("failed to open log file")?;
         let mut child_stdout = tokio::io::BufReader::new(
             child
                 .stdout()
@@ -1079,7 +1081,6 @@ impl PreparedNode {
         let quiet = std::env::var_os("DORA_QUIET").is_some();
         // Log to file stream.
         tokio::spawn(async move {
-            let mut bytes_written: u64 = 0;
             while let Some(log_line) = rx.recv().await {
                 let LogLine { content, stream } = log_line;
                 let stream_str = match stream {
@@ -1514,6 +1515,51 @@ mod tests {
             daemon_rx.try_recv().is_err(),
             "an unregistered restart loop must terminate without emitting events"
         );
+    }
+
+    /// A respawn runs `spawn_inner` again on the same log path. It must
+    /// append, not truncate: the previous incarnation's output is what
+    /// explains why the node was restarted.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_respawn_keeps_the_previous_incarnations_log() {
+        use clonable_command::{Command, Stdio};
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        for marker in ["first-incarnation", "second-incarnation"] {
+            let (daemon_tx, _daemon_rx) = tokio::sync::mpsc::channel(64);
+            let mut node = test_prepared_node(daemon_tx, 0, 0.0);
+            node.node_working_dir = tmp.path().to_path_buf();
+            node.command = Some(
+                Command::new("sh")
+                    .arg("-c")
+                    .arg(format!("echo {marker}"))
+                    .stdin(Stdio::Null)
+                    .stdout(Stdio::Piped)
+                    .stderr(Stdio::Piped),
+            );
+            let (_op_tx, op_rx) = flume::bounded(2);
+            let (finished_tx, finished_rx) = oneshot::channel();
+            let kind = node
+                .spawn_inner(&mut test_logger().await, op_rx, finished_tx)
+                .await
+                .expect("spawn test node");
+            assert!(matches!(kind, NodeKind::Spawned { .. }));
+            // Sent only after the log writer has flushed and finished.
+            finished_rx.await.expect("node finished");
+        }
+
+        let log = std::fs::read_to_string(log::log_path(
+            tmp.path(),
+            &uuid::Uuid::nil(),
+            &NodeId::from("test".to_string()),
+        ))
+        .expect("read node log");
+        assert!(
+            log.contains("first-incarnation"),
+            "the respawn truncated the previous incarnation's log: {log}"
+        );
+        assert!(log.contains("second-incarnation"), "{log}");
     }
 
     /// The incarnation that crashes in the abort-path tests below.
