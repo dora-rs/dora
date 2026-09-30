@@ -130,7 +130,7 @@ fn should_warn_ingress_drop(count: u64) -> bool {
 /// next calls `recv`. A node that is slow to poll therefore holds at most
 /// `queue_size` messages per input, instead of a shared channel's worth.
 ///
-/// What still travels through the shared channel (see [`Self::takes`]) is
+/// What still travels through the shared channel (see [`Self::queues_on_arrival`]) is
 /// numbered by its sender with [`Self::stamp`], so the Stream path can put it
 /// in sequence with what was filed here directly.
 ///
@@ -138,7 +138,7 @@ fn should_warn_ingress_drop(count: u64) -> bool {
 /// doorbell is what a waiting node thread sleeps on.
 pub(crate) struct Ingress {
     scheduler: std::sync::Mutex<Scheduler>,
-    /// Inputs that keep going through the shared channel (see [`Self::takes`]).
+    /// Inputs that keep going through the shared channel (see [`Self::queues_on_arrival`]).
     via_channel: HashSet<DataId>,
     doorbell: tokio::sync::mpsc::Sender<()>,
     /// Set once `Stop` was delivered or the stream dropped; later arrivals are
@@ -155,7 +155,7 @@ impl Ingress {
     /// Whether `input` is queued on arrival. `backpressure` inputs are not:
     /// they keep going through the shared channel, because the daemon holding
     /// the producer when that channel is full is what the policy means.
-    pub(crate) fn takes(&self, input: &DataId) -> bool {
+    pub(crate) fn queues_on_arrival(&self, input: &DataId) -> bool {
         !self.via_channel.contains(input)
     }
 
@@ -197,6 +197,15 @@ impl Stamped {
             item,
         }
     }
+}
+
+/// The order a pop takes queued events in.
+#[derive(Debug, Clone, Copy)]
+enum Order {
+    /// `recv`'s: control events first, then the inputs round-robin.
+    Recv,
+    /// The Stream path's: the order they arrived in.
+    Arrival,
 }
 
 /// Asynchronous iterator over the incoming [`Event`]s destined for this node.
@@ -254,7 +263,7 @@ pub struct EventStream {
     doorbell: tokio::sync::mpsc::Receiver<()>,
     /// Per-input counters for events dropped at the shared channel. Only
     /// events that bypass the per-input queues on arrival reach that channel
-    /// (see [`Ingress::takes`]); a full channel drops them there, out of the
+    /// (see [`Ingress::queues_on_arrival`]); a full channel drops them there, out of the
     /// scheduler's sight, so the callback counts them lock-free and
     /// `drain_drop_counts` folds them in (#3282).
     ingress_drops: HashMap<DataId, Arc<AtomicU64>>,
@@ -872,7 +881,7 @@ impl EventStream {
                                     // Queue on arrival, so `queue_size` bounds what
                                     // this node holds however slowly it polls.
                                     if let Some(ingress) = ingress_cb.as_deref()
-                                        && ingress.takes(&input_id_cb)
+                                        && ingress.queues_on_arrival(&input_id_cb)
                                     {
                                         ingress.push(item);
                                         return;
@@ -987,7 +996,7 @@ impl EventStream {
     /// documentation of the [`EventScheduler`] struct.
     ///
     /// If you want to receive the events in their original chronological order, use the
-    /// [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
+    /// asynchronous [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
     ///
     /// The canonical node loop drains this stream until it closes, reacting to
@@ -1031,7 +1040,7 @@ impl EventStream {
     /// documentation of the [`EventScheduler`] struct.
     ///
     /// If you want to receive the events in their original chronological order, use the
-    /// [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
+    /// asynchronous [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
     pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
         futures::executor::block_on(self.recv_async_timeout(dur))
@@ -1048,8 +1057,8 @@ impl EventStream {
     /// documentation of the [`EventScheduler`] struct.
     ///
     /// If you want to receive the events in their original chronological order, use the
-    /// [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
-    /// [`Stream`] trait).
+    /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
+    /// ([`EventStream`] implements the [`Stream`] trait).
     pub async fn recv_async(&mut self) -> Option<Event> {
         // Drain any events that were stashed by pattern-aware helpers
         // (`recv_service_response`, `recv_action_result`) while they
@@ -1092,7 +1101,7 @@ impl EventStream {
             // events from `receiver`; the dataflow is stopping, and on the
             // non-scheduler path returning `None` closes the stream against
             // zenoh-held senders.
-            return self.pop_scheduled(true, false);
+            return self.pop_next_input(Order::Recv);
         }
         let event = if !self.use_scheduler {
             self.receiver
@@ -1131,22 +1140,27 @@ impl EventStream {
     }
 
     /// Pop the next event buffered in the scheduler, converted and
-    /// post-processed. With `inputs_only` (the post-`Stop` drain, see
-    /// `recv_from_stream`), control events are discarded instead of returned.
-    /// `in_arrival_order` is the Stream path's order; `recv` takes the
-    /// scheduler's.
-    fn pop_scheduled(&mut self, inputs_only: bool, in_arrival_order: bool) -> Option<Event> {
+    /// post-processed.
+    fn pop_next(&mut self, order: Order) -> Option<Event> {
+        self.pop_where(order, |_| true)
+    }
+
+    /// Like `pop_next`, but discards control events instead of returning them:
+    /// the post-`Stop` drain (see `recv_from_stream`).
+    fn pop_next_input(&mut self, order: Order) -> Option<Event> {
+        self.pop_where(order, Self::is_input)
+    }
+
+    fn pop_where(&mut self, order: Order, keep: fn(&EventItem) -> bool) -> Option<Event> {
         if !self.use_scheduler {
             return None;
         }
         loop {
-            let next = if in_arrival_order {
-                self.scheduler_next_in_arrival_order()
-            } else {
-                self.scheduler_next()
-            };
-            let Some(item) = next else { break };
-            if inputs_only && !Self::is_input(&item) {
+            let item = match order {
+                Order::Recv => self.scheduler_next(),
+                Order::Arrival => self.scheduler_next_in_arrival_order(),
+            }?;
+            if !keep(&item) {
                 continue;
             }
             // Route through the shared post-process helper, exactly like the
@@ -1157,7 +1171,6 @@ impl EventStream {
             self.note_produced_event(&event);
             return Some(event);
         }
-        None
     }
 
     /// Post-process an event just produced by `recv_async` / `poll_next`: run
@@ -1260,7 +1273,7 @@ impl EventStream {
     /// as `recv` does.
     fn pop_input_queued_before_stop(&mut self) -> Option<Event> {
         let Some(bound) = self.stop_seq else {
-            return self.pop_scheduled(true, true);
+            return self.pop_next_input(Order::Arrival);
         };
         loop {
             let (_, item) = self.scheduler().next_arrived_before(bound)?;
@@ -1433,8 +1446,8 @@ impl EventStream {
     /// documentation of the [`EventScheduler`] struct.
     ///
     /// If you want to receive the events in their original chronological order, use the
-    /// [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
-    /// [`Stream`] trait).
+    /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
+    /// ([`EventStream`] implements the [`Stream`] trait).
     pub fn try_recv(&mut self) -> Result<Event, TryRecvError> {
         match self.recv_async().now_or_never() {
             Some(Some(event)) => Ok(event),
@@ -1483,8 +1496,8 @@ impl EventStream {
     /// documentation of the [`EventScheduler`] struct.
     ///
     /// If you want to receive the events in their original chronological order, use the
-    /// [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
-    /// [`Stream`] trait).
+    /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
+    /// ([`EventStream`] implements the [`Stream`] trait).
     pub async fn recv_async_timeout(&mut self, dur: Duration) -> Option<Event> {
         match select(Delay::new(dur), pin!(self.recv_async())).await {
             Either::Left((_elapsed, _)) => Some(Self::convert_event_item(EventItem::TimeoutError(
@@ -2259,14 +2272,14 @@ impl Stream for EventStream {
                 }
             }
             if self.ingress.maybe_nonempty.load(Ordering::Relaxed) {
-                if let Some(event) = self.pop_scheduled(false, true) {
+                if let Some(event) = self.pop_next(Order::Arrival) {
                     return std::task::Poll::Ready(Some(event));
                 }
                 self.ingress.maybe_nonempty.store(false, Ordering::Relaxed);
             }
             if channel_closed {
                 // Nothing can arrive anymore; end once the queues are empty.
-                return std::task::Poll::Ready(self.pop_scheduled(false, true));
+                return std::task::Poll::Ready(self.pop_next(Order::Arrival));
             }
             match self.doorbell.poll_recv(cx) {
                 std::task::Poll::Ready(Some(())) => {
@@ -4159,8 +4172,8 @@ mod tests {
         let cam = DataId::from("cam".to_string());
         let slow = DataId::from("slow".to_string());
         let (ingress, _rings) = test_ingress(HashMap::new(), HashSet::from([slow.clone()]));
-        assert!(ingress.takes(&cam));
-        assert!(!ingress.takes(&slow));
+        assert!(ingress.queues_on_arrival(&cam));
+        assert!(!ingress.queues_on_arrival(&slow));
     }
 
     /// The daemon thread files a `drop_oldest` input into its queue as it
