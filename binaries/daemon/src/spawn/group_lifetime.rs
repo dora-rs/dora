@@ -32,10 +32,18 @@ pub(super) type StopLadder = (tokio::time::Instant, tokio::time::Instant);
 /// coordinator-attached `dora up` path. It decides one case only, the one with
 /// no stop to wait for: a node that exited on its own.
 ///
-/// On `dora run` such a group is killed, and that is #3472. `dora run` is a
-/// foreground process the user is watching, it is about to exit, and the fork is
-/// unreachable from it — leaving it behind is the hang #3472 reports, not a
-/// feature.
+/// On `dora run` such a group is killed, and that is #3472. The node is what
+/// owned that group, and it goes away with the process-wait task that was
+/// watching it, so nothing is left that can reach the fork — not the node, since
+/// it has exited, and not the daemon, since its task for that node has ended.
+/// Whatever the fork holds stays held until `dora run` itself exits, which for
+/// an inherited stdout is the hang #3472 reports, not a feature.
+///
+/// Note that this fires whenever a node exits on its own, not only as the run
+/// winds down: a source that sent its N messages and returned leaves the same
+/// unreachable group whether the dataflow has three seconds left or three
+/// minutes. The orphan is the same either way, and it is the orphan, not the
+/// countdown, that the SIGKILL is for.
 ///
 /// On `dora up` the group is left alone, deliberately. That dataflow outlives
 /// the node: a node that starts a viewer, a helper server or a launcher is
@@ -97,8 +105,8 @@ pub(super) async fn contain_exited_group(
         // `dora run` prints warnings, so a warning here would tell every user
         // with a short-lived node that their node had been SIGKILLed. The
         // kernel's answer is the whole one, for the same reason as in the loop
-        // below: process-wrap's group wait reaps every process in the group
-        // before this runs, so a member still in the group is still running.
+        // below: the leader is reaped, so a group still holding a member holds
+        // something alive.
         if !group_has_members(pid) {
             return;
         }
@@ -118,10 +126,14 @@ pub(super) async fn contain_exited_group(
         // the group is empty keeps that window to a poll interval instead of the
         // rest of the grace period.
         //
-        // And the kernel's answer is the whole one here, zombies included: this
-        // runs after process-wrap's group wait has completed, which reaps every
-        // process in the group (it loops `waitpid(-pgid)` until `ECHILD`), so a
-        // member still in the group is still running, not a corpse.
+        // And the kernel's answer is the whole one here: the leader is reaped
+        // before this runs, so a group still holding a member holds something
+        // alive, not just a corpse. `killpg(pgid, 0)` does count a zombie, so
+        // a reparented grandchild that has exited but that its new parent has
+        // not reaped yet reads as a member. That only costs a no-op signal and,
+        // on the `dora run` branch above, a warning about a group that is
+        // already down — the alternative was reading the group as empty and
+        // walking away from a live orphan (#3472 review).
         if !group_has_members(pid) {
             return;
         }
@@ -220,9 +232,70 @@ mod tests {
     /// is first asked for, so only the escalation can end it.
     const TERM_IGNORING_CHILD: &str = "trap '' TERM; sleep 300";
 
+    /// Whether `pid` is still running, as opposed to merely present.
+    ///
+    /// `kill(pid, 0)` cannot tell those apart: a zombie is still a group member
+    /// until it is reaped, so it answers 0 long after the process has stopped.
+    /// These children are grandchildren of the test binary — their parent is
+    /// the group's leader, so when the containment kills the group they are
+    /// reparented to PID 1, and only PID 1 can reap them. Whether that has
+    /// happened yet is PID 1's business, not ours, so a test that waited on
+    /// `kill` alone would be asserting on the host's init. Linux exposes the
+    /// state, so ask it; elsewhere, fall back to `kill` and hope.
     fn process_alive(pid: u32) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            // The comm field is parenthesised and may itself contain spaces and
+            // parens, so the state is the first field after the *last* `)`.
+            if let Some(state) = stat
+                .rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next())
+            {
+                return state != "Z";
+            }
+        }
         // SAFETY: signal 0 performs error checking only and sends no signal.
         unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    /// The helper the rest of these tests lean on: a child that has exited but
+    /// not been reaped is gone as far as they are concerned. Without this the
+    /// suite would pass or fail on whether the host's PID 1 got round to it.
+    #[tokio::test]
+    async fn a_zombie_does_not_count_as_alive() {
+        let mut child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        // No `wait()`: the child stays a zombie, and a zombie is exactly the
+        // state `kill(pid, 0)` still answers 0 for.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        #[cfg(target_os = "linux")]
+        {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+            let state = stat
+                .rsplit_once(')')
+                .unwrap()
+                .1
+                .split_whitespace()
+                .next()
+                .unwrap();
+            assert_eq!(state, "Z", "the child should be an unreaped zombie here");
+            // SAFETY: signal 0 performs error checking only and sends no signal.
+            assert_eq!(
+                unsafe { libc::kill(pid as libc::pid_t, 0) },
+                0,
+                "kill still reports a zombie as present, which is the whole reason \
+                 this helper reads the state instead"
+            );
+        }
+        assert!(
+            !process_alive(pid),
+            "a reaped-or-not, exited process must not read as alive"
+        );
+        let _ = child.start_kill();
     }
 
     async fn wait_for_exit(pid: u32, what: &str) {

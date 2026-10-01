@@ -291,8 +291,10 @@ dora run <PATH> [OPTIONS]
 **Node process groups:** each node is spawned as its own process group leader, so
 everything it starts shares that group. `dora run` reaps what a node leaves
 behind — if a node exits on its own with a background child still in its group
-(`sh -c 'cmd &'`), the group is `SIGKILL`ed, because `dora run` is about to exit
-and nothing else can reach the child. On the coordinator-attached `dora up` /
+(`sh -c 'cmd &'`), the group is `SIGKILL`ed. The node owned that group and is
+gone, and the daemon's watch for that node has ended with it, so nothing is left
+that can reach the child: it would otherwise hold whatever it holds until `dora
+run` itself exits. On the coordinator-attached `dora up` /
 `dora start` path that group is left alone: the dataflow outlives the node, so a
 helper, viewer or launcher a node started is allowed to keep running, and a
 child the node itself stopped just before returning is left to finish. Stopping a

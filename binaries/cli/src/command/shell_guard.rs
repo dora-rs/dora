@@ -219,7 +219,7 @@ fn re_raise(signal: i32) -> ! {
 }
 
 /// Drop the core-dump limit, so dying from a crash that belongs to the guarded
-/// process leaves no dump behind.
+/// process leaves no dump of its own.
 ///
 /// The guard dies from the *guarded* process's signal on purpose, because the
 /// daemon classifies a stop by signal (`143` for SIGTERM, `139` for SIGSEGV).
@@ -227,6 +227,13 @@ fn re_raise(signal: i32) -> ! {
 /// core's executable is `dora` — so `coredumpctl` answers "dora segfaulted" for
 /// a crash inside someone's node, and a `dora`-sized core file lands in the cwd
 /// of a container. The exit status the daemon acts on is unaffected either way.
+///
+/// This is the file-based case only, which is the one a container gets by
+/// default. Where `core_pattern` pipes to a handler instead — `systemd-coredump`
+/// and `apport` both do — the kernel collects the core regardless of
+/// `RLIMIT_CORE`, so the dump still reaches the handler and only the *filename*
+/// on disk goes away. Suppressing that is the handler's configuration, not this
+/// process's, and guessing at it is more risk than the dump is worth.
 fn clear_core_dumps() {
     let no_core = libc::rlimit {
         rlim_cur: 0,
