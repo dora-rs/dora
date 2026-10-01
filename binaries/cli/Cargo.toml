@@ -86,6 +86,8 @@ dunce = "1.0.5"
 git2 = { workspace = true }
 zenoh = { workspace = true }
 arrow-json.workspace = true
+mcap = { version = "0.25.0", default-features = false }
+same-file = { version = "1.0.6" }
 chrono = "0.4.45"
 dora-recording = { workspace = true }
 which = "8"
@@ -102,3 +104,7 @@ path = "src/lib.rs"
 dist = true
 
 [dev-dependencies]
+# Matches dora-message's pin (libraries/message/Cargo.toml); used only by the
+# `dora recording export` round-trip test to assemble the recorded `Output`
+# payload.
+aligned-vec = { version = "0.6.4", features = ["serde"] }
