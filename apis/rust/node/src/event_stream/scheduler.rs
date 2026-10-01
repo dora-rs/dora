@@ -229,6 +229,12 @@ pub struct Scheduler {
     queue_policies: HashMap<DataId, QueuePolicy>,
     /// Drop counters per input ID
     dropped: HashMap<DataId, u64>,
+    /// Arrival number of every queued event, per queue, kept in step with
+    /// `event_queues`, so the Stream path can hand events out in the order
+    /// they arrived (`next_in_arrival_order`) while `next` keeps its
+    /// control-first, round-robin order.
+    arrivals: HashMap<DataId, VecDeque<u64>>,
+    next_arrival: u64,
 }
 
 impl Scheduler {
@@ -242,11 +248,23 @@ impl Scheduler {
                 .filter(|t| **t != *NON_INPUT_EVENT_ID)
                 .cloned(),
         );
+        // Queues handed in pre-filled count as having arrived in order.
+        let mut next_arrival = 0;
+        let arrivals = event_queues
+            .iter()
+            .map(|(id, (_size, queue))| {
+                let seqs = (next_arrival..next_arrival + queue.len() as u64).collect();
+                next_arrival += queue.len() as u64;
+                (id.clone(), seqs)
+            })
+            .collect();
         Self {
             last_used: topic,
             event_queues,
             queue_policies,
             dropped: HashMap::new(),
+            arrivals,
+            next_arrival,
         }
     }
 
@@ -292,6 +310,21 @@ impl Scheduler {
     }
 
     pub(crate) fn add_event(&mut self, event: EventItem) {
+        let seq = self.stamp();
+        self.add_event_stamped(seq, event);
+    }
+
+    /// Take the next arrival number. An event that travels through the shared
+    /// channel is numbered by its sender, so it keeps its place among the
+    /// events filed here directly.
+    pub(crate) fn stamp(&mut self) -> u64 {
+        let seq = self.next_arrival;
+        self.next_arrival += 1;
+        seq
+    }
+
+    /// Queue `event` under arrival number `seq`.
+    pub(crate) fn add_event_stamped(&mut self, seq: u64, event: EventItem) {
         let (event_id, should_flush) = match &event {
             EventItem::NodeEvent {
                 event: NodeEvent::Input { id, metadata, .. },
@@ -328,7 +361,18 @@ impl Scheduler {
         // permits — so guard the flush path too rather than rely on that.
         if should_flush && let Some((_size, queue)) = self.event_queues.get_mut(event_id) {
             let before = queue.len();
+            let keep: Vec<bool> = queue
+                .iter()
+                .map(|e| is_correlated(e) || is_stop(e))
+                .collect();
             queue.retain(|e| is_correlated(e) || is_stop(e));
+            if let Some(seqs) = self.arrivals.get_mut(event_id) {
+                let mut i = 0;
+                seqs.retain(|_| {
+                    i += 1;
+                    keep[i - 1]
+                });
+            }
             let drained = before - queue.len();
             if drained > 0 {
                 tracing::debug!(
@@ -371,18 +415,26 @@ impl Scheduler {
 
         let cap = policy.effective_cap(*size);
         if queue.len() >= cap {
+            let dropped = self.dropped.entry(event_id.clone()).or_insert(0);
+            *dropped += 1;
             if policy == QueuePolicy::Backpressure {
                 tracing::error!(
                     "Backpressure input `{event_id}` hit hard cap ({cap}), \
                      dropping oldest to prevent OOM"
                 );
-            } else {
-                tracing::warn!("Discarding event for input `{event_id}` due to queue size limit");
+            } else if super::should_warn_ingress_drop(*dropped) {
+                // This runs on whichever thread received the message, under
+                // the scheduler lock, so log at the same power-of-two cadence
+                // as the ingress-drop counter rather than on every eviction.
+                tracing::warn!(
+                    "Discarding event for input `{event_id}` due to queue size limit \
+                     ({dropped} dropped since last drained)"
+                );
             }
-            *self.dropped.entry(event_id.clone()).or_insert(0) += 1;
             match select_eviction(queue, &event) {
                 Eviction::RemoveAt(idx) => {
                     queue.remove(idx);
+                    self.arrivals.get_mut(event_id).and_then(|s| s.remove(idx));
                 }
                 Eviction::DropIncoming => {
                     // Queue is entirely correlated; preserve correlations
@@ -393,18 +445,66 @@ impl Scheduler {
                     if let Some(dropped) = queue.remove(idx) {
                         log_correlation_drop(event_id, &dropped);
                     }
+                    self.arrivals.get_mut(event_id).and_then(|s| s.remove(idx));
                 }
             }
         }
+        self.arrivals
+            .entry(event_id.clone())
+            .or_default()
+            .push_back(seq);
         queue.push_back(event);
     }
 
-    pub(crate) fn next(&mut self) -> Option<EventItem> {
+    /// The oldest queued event across every queue, control events included:
+    /// arrival order, which is what the Stream path promises. Returned with
+    /// its arrival number.
+    pub(crate) fn next_in_arrival_order(&mut self) -> Option<(u64, EventItem)> {
+        self.pop_oldest(u64::MAX)
+    }
+
+    /// The oldest queued event, if it arrived before `bound`.
+    pub(crate) fn next_arrived_before(&mut self, bound: u64) -> Option<(u64, EventItem)> {
+        self.pop_oldest(bound)
+    }
+
+    fn pop_oldest(&mut self, bound: u64) -> Option<(u64, EventItem)> {
+        let (id, seq) = self.oldest()?;
+        if seq >= bound {
+            return None;
+        }
+        let id = id.clone();
+        self.arrivals.get_mut(&id)?.pop_front();
+        let (_size, queue) = self.event_queues.get_mut(&id)?;
+        queue.pop_front().map(|event| (seq, event))
+    }
+
+    /// The arrival number of the oldest queued event, if any.
+    pub(crate) fn oldest_arrival(&self) -> Option<u64> {
+        self.oldest().map(|(_, seq)| seq)
+    }
+
+    /// Borrowed, so a read costs no allocation; a pop clones only the winner.
+    fn oldest(&self) -> Option<(&DataId, u64)> {
+        self.arrivals
+            .iter()
+            .filter_map(|(id, seqs)| seqs.front().map(|seq| (id, *seq)))
+            .min_by_key(|(_, seq)| *seq)
+    }
+
+    /// The next event in `recv`'s order, control events first, then the
+    /// inputs round-robin. Returned with its arrival number.
+    pub(crate) fn next(&mut self) -> Option<(u64, EventItem)> {
         // Retrieve message from the non input event first that have priority over input message.
         if let Some((_size, queue)) = self.event_queues.get_mut(&*NON_INPUT_EVENT_ID)
             && let Some(event) = queue.pop_front()
         {
-            return Some(event);
+            let seq = self
+                .arrivals
+                .get_mut(&*NON_INPUT_EVENT_ID)
+                .and_then(|s| s.pop_front())
+                .unwrap_or_default();
+            return Some((seq, event));
         }
 
         // Yield from the first non-empty input queue in least-recently-used
@@ -415,11 +515,16 @@ impl Scheduler {
             if let Some((_size, queue)) = self.event_queues.get_mut(id)
                 && let Some(event) = queue.pop_front()
             {
+                let seq = self
+                    .arrivals
+                    .get_mut(id)
+                    .and_then(|s| s.pop_front())
+                    .unwrap_or_default();
                 // Put last used at last
                 if let Some(id) = self.last_used.remove(index) {
                     self.last_used.push_back(id);
                 }
-                return Some(event);
+                return Some((seq, event));
             }
         }
 
