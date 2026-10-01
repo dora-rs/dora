@@ -4917,3 +4917,97 @@ async fn initiate_restart_rejects_duplicate_request() {
         "original PendingRestart must not be overwritten by duplicate"
     );
 }
+
+fn deploy_from(value: serde_json::Value) -> dora_message::descriptor::Deploy {
+    serde_json::from_value(value).unwrap()
+}
+
+#[test]
+fn add_node_daemon_honours_deploy_placement() {
+    // #3672: `dora node add` used to spawn on whichever daemon of the
+    // dataflow sorted first, ignoring the node's `_unstable_deploy`.
+    let daemon_a = DaemonId::new(Some("machine-a".to_string()));
+    let daemon_b = DaemonId::new(Some("machine-b".to_string()));
+    let outsider = DaemonId::new(Some("machine-c".to_string()));
+
+    let mut daemon_connections = DaemonConnections::default();
+    for (id, labels) in [
+        (&daemon_a, BTreeMap::new()),
+        (
+            &daemon_b,
+            BTreeMap::from([("camera".to_string(), "true".to_string())]),
+        ),
+        (
+            &outsider,
+            BTreeMap::from([("gpu".to_string(), "true".to_string())]),
+        ),
+    ] {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<String>(1);
+        let pending = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        daemon_connections.add(
+            id.clone(),
+            crate::state::DaemonConnection::new(tx, pending, labels),
+        );
+    }
+    let dataflow_daemons = BTreeSet::from([daemon_a.clone(), daemon_b.clone()]);
+
+    // machine placement picks the named daemon, not the first one
+    let by_machine = deploy_from(serde_json::json!({ "machine": "machine-b" }));
+    assert_eq!(
+        daemon_connections
+            .resolve_add_node_daemon(&dataflow_daemons, Some(&by_machine))
+            .unwrap(),
+        daemon_b
+    );
+
+    // label placement picks the daemon whose labels match
+    let by_labels = deploy_from(serde_json::json!({ "labels": { "camera": "true" } }));
+    assert_eq!(
+        daemon_connections
+            .resolve_add_node_daemon(&dataflow_daemons, Some(&by_labels))
+            .unwrap(),
+        daemon_b
+    );
+
+    // a placement only a daemon outside the dataflow satisfies is rejected
+    let other_machine = deploy_from(serde_json::json!({ "machine": "machine-c" }));
+    assert!(
+        daemon_connections
+            .resolve_add_node_daemon(&dataflow_daemons, Some(&other_machine))
+            .is_err()
+    );
+    let other_labels = deploy_from(serde_json::json!({ "labels": { "gpu": "true" } }));
+    assert!(
+        daemon_connections
+            .resolve_add_node_daemon(&dataflow_daemons, Some(&other_labels))
+            .is_err()
+    );
+
+    // no placement keeps working on a dataflow without unnamed daemons
+    assert_eq!(
+        daemon_connections
+            .resolve_add_node_daemon(&dataflow_daemons, None)
+            .unwrap(),
+        daemon_a
+    );
+}
+
+#[test]
+fn add_node_daemon_without_placement_prefers_unnamed_daemon() {
+    let named = DaemonId::new(Some("a-named".to_string()));
+    let unnamed = DaemonId::new(None);
+    let dataflow_daemons = BTreeSet::from([named.clone(), unnamed.clone()]);
+    let daemon_connections = DaemonConnections::default();
+
+    assert_eq!(
+        daemon_connections
+            .resolve_add_node_daemon(&dataflow_daemons, None)
+            .unwrap(),
+        unnamed
+    );
+    assert!(
+        daemon_connections
+            .resolve_add_node_daemon(&BTreeSet::new(), None)
+            .is_err()
+    );
+}
