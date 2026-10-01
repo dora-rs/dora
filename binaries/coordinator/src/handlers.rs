@@ -67,6 +67,27 @@ pub(crate) fn resolve_name(
     }
 }
 
+/// Register `subscriber` and replay the logs buffered before it attached.
+///
+/// `found_tx` is answered *before* the replay. The WS task that owns the
+/// subscriber's receiver waits on it and only resumes draining that receiver
+/// once it fires, so replaying first let the bounded channel fill up: every
+/// further message then took `send_log_message`'s 100 ms timeout, which
+/// stalled the coordinator's event loop and finally evicted the subscriber
+/// with the rest of the backlog lost.
+pub(crate) async fn attach_log_subscriber(
+    log_subscribers: &mut Vec<LogSubscriber>,
+    buffered_log_messages: &mut Vec<LogMessage>,
+    subscriber: LogSubscriber,
+    found_tx: tokio::sync::oneshot::Sender<bool>,
+) {
+    log_subscribers.push(subscriber);
+    let _ = found_tx.send(true);
+    for message in std::mem::take(buffered_log_messages) {
+        send_log_message(log_subscribers, &message).await;
+    }
+}
+
 pub(crate) async fn send_log_message(
     log_subscribers: &mut Vec<LogSubscriber>,
     message: &LogMessage,
@@ -1219,6 +1240,43 @@ mod tests {
             3,
             "a filtered message must not reset the timeout streak"
         );
+    }
+
+    /// Attaching to a dataflow that buffered more logs than the subscriber's
+    /// channel holds must deliver the whole backlog. The WS task only drains
+    /// the channel after `found_tx` fires, so answering it after the replay
+    /// left the channel full: the replay hit 100 send timeouts, stalled the
+    /// event loop and evicted the subscriber with most of the backlog lost.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn attach_log_subscriber_delivers_backlog_larger_than_channel() {
+        const BACKLOG: usize = 200;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let (found_tx, found_rx) = tokio::sync::oneshot::channel::<bool>();
+
+        // Mirrors `ws_control`: wait for the subscribe answer, then drain.
+        let drain = tokio::spawn(async move {
+            assert!(found_rx.await.expect("found_tx dropped"));
+            let mut received = 0;
+            while rx.recv().await.is_some() {
+                received += 1;
+            }
+            received
+        });
+
+        let mut subscribers = Vec::new();
+        let mut buffered = vec![test_log_message(); BACKLOG];
+        attach_log_subscriber(
+            &mut subscribers,
+            &mut buffered,
+            LogSubscriber::new(log::LevelFilter::Info, tx),
+            found_tx,
+        )
+        .await;
+
+        assert!(buffered.is_empty(), "the backlog is handed over once");
+        assert_eq!(subscribers.len(), 1, "subscriber must not be evicted");
+        drop(subscribers); // close the channel so the drain task finishes
+        assert_eq!(drain.await.unwrap(), BACKLOG);
     }
 
     /// A topic subscriber that got closed (its CLI went away) is evicted when
