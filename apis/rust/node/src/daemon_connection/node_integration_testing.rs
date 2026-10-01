@@ -30,8 +30,31 @@ use crate::{
     integration_testing::{TestingInput, TestingOptions, TestingOutput},
 };
 
+/// Convert an input event's `time_offset_secs` into the delay after replay
+/// start and the event's timestamp.
+///
+/// `Duration::from_secs_f64` panics on a negative, NaN or overflowing value
+/// and `NTP64::from` / `NTP64 + NTP64` panic past `u32::MAX` seconds, and the
+/// offset comes straight from a user-authored input file, so reject those
+/// values with an error instead.
+fn event_time(start: &NTP64, time_offset_secs: f64) -> eyre::Result<(Duration, NTP64)> {
+    let offset = Duration::try_from_secs_f64(time_offset_secs)
+        .map_err(|err| eyre::eyre!("invalid `time_offset_secs` {time_offset_secs}: {err}"))?;
+    let out_of_range = || eyre::eyre!("`time_offset_secs` {time_offset_secs} is out of range");
+    if offset.as_secs() > u64::from(u32::MAX) {
+        return Err(out_of_range());
+    }
+    let time = start
+        .0
+        .checked_add(NTP64::from(offset).0)
+        .ok_or_else(out_of_range)?;
+    Ok((offset, NTP64(time)))
+}
+
 pub struct IntegrationTestingEvents {
-    events: std::vec::IntoIter<TimedIncomingEvent>,
+    /// Input events sorted by offset, each with its delay after replay start
+    /// and its timestamp, both computed (and validated) once at load.
+    events: std::vec::IntoIter<(Duration, NTP64, TimedIncomingEvent)>,
     output_writer: OutputWriter,
     start_timestamp: uhlc::Timestamp,
     start_time: Instant,
@@ -81,6 +104,22 @@ impl IntegrationTestingEvents {
             );
         }
 
+        let clock = HLC::default();
+        let start_timestamp = clock.new_timestamp();
+        // Reject a bad offset up front, naming the event, instead of panicking
+        // the testing daemon thread once replay reaches it. Runs before the
+        // output file is created, so a rejected input leaves it untouched.
+        let mut events = std::mem::take(&mut node_info.events)
+            .into_iter()
+            .enumerate()
+            .map(|(index, event)| {
+                let (delay, time) = event_time(start_timestamp.get_time(), event.time_offset_secs)
+                    .with_context(|| format!("invalid input event at index {index}"))?;
+                Ok((delay, time, event))
+            })
+            .collect::<eyre::Result<Vec<_>>>()?;
+        events.sort_by(|a, b| a.2.time_offset_secs.total_cmp(&b.2.time_offset_secs));
+
         let output_writer = match output {
             TestingOutput::ToFile(output_file_path) => {
                 let file = File::create(&output_file_path)
@@ -91,17 +130,9 @@ impl IntegrationTestingEvents {
             TestingOutput::ToChannel(sender) => OutputWriter::Channel(sender),
         };
 
-        node_info
-            .events
-            .as_mut_slice()
-            .sort_by(|a, b| a.time_offset_secs.total_cmp(&b.time_offset_secs));
-        let inputs = std::mem::take(&mut node_info.events).into_iter();
-
-        let clock = HLC::default();
-        let start_timestamp = clock.new_timestamp();
         let start_time = Instant::now();
         Ok(Self {
-            events: inputs,
+            events: events.into_iter(),
             output_writer,
             start_timestamp,
             start_time,
@@ -193,15 +224,17 @@ impl IntegrationTestingEvents {
             return Ok(None);
         }
 
-        let Some(event) = self.events.next() else {
+        let Some((
+            time_offset,
+            time,
+            TimedIncomingEvent {
+                time_offset_secs,
+                event,
+            },
+        )) = self.events.next()
+        else {
             return Ok(None);
         };
-
-        let TimedIncomingEvent {
-            time_offset_secs,
-            event,
-        } = event;
-        let time_offset = Duration::from_secs_f64(time_offset_secs);
         let elapsed = self.start_time.elapsed();
         if let Some(wait_time) = time_offset.checked_sub(elapsed) {
             // Sleep in short slices so `DoraNode::drop` can interrupt a
@@ -216,10 +249,7 @@ impl IntegrationTestingEvents {
             }
         }
 
-        let timestamp = Timestamp::new(
-            self.start_timestamp.get_time() + NTP64::from(time_offset),
-            *self.start_timestamp.get_id(),
-        );
+        let timestamp = Timestamp::new(time, *self.start_timestamp.get_id());
 
         let converted = match event {
             IncomingEvent::Stop => NodeEvent::Stop,
@@ -634,6 +664,42 @@ fn wrap_value_into_object(value: serde_json::Value) -> serde_json::Value {
 mod tests {
     use super::*;
     use arrow::array::{ArrayRef, Float32Array, Float64Array, Int32Array, make_array};
+
+    /// A negative, non-finite or out-of-range offset in a user-authored input
+    /// file used to panic the testing daemon thread at replay time.
+    #[test]
+    fn invalid_time_offsets_are_rejected_at_load() {
+        for offset in [-0.1, f64::NAN, f64::INFINITY, 1e20, 5e9] {
+            let input = IntegrationTestInput::new(
+                "node".parse().unwrap(),
+                vec![TimedIncomingEvent {
+                    time_offset_secs: offset,
+                    event: IncomingEvent::Stop,
+                }],
+            );
+            let err = IntegrationTestingEvents::new(
+                TestingInput::Input(input),
+                TestingOutput::ToWriter(Box::new(std::io::sink())),
+                TestingOptions::default(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .err()
+            .unwrap_or_else(|| panic!("offset {offset} should be rejected"));
+            assert!(
+                format!("{err:#}").contains("index 0"),
+                "error should name the event, got: {err:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_time_offsets_are_accepted() {
+        let start = NTP64::from(Duration::from_secs(1_800_000_000));
+        let (delay, time) = event_time(&start, 1.5).unwrap();
+        assert_eq!(delay, Duration::from_millis(1500));
+        assert_eq!(time, start + NTP64::from(delay));
+        assert_eq!(event_time(&start, 0.0).unwrap().1, start);
+    }
 
     /// Record an array via the recorder's encoder, then replay it back through
     /// the reader — the property record/replay rests on.
