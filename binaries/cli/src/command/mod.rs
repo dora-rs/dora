@@ -17,7 +17,6 @@ mod node;
 mod node_binary;
 mod param;
 mod record;
-#[cfg(feature = "mcap-export")]
 mod recording;
 mod replay;
 mod restart;
@@ -55,7 +54,6 @@ use new::NewArgs;
 use node::Node;
 use param::Param;
 use record::Record;
-#[cfg(feature = "mcap-export")]
 use recording::Recording;
 use replay::Replay;
 use restart::Restart;
@@ -127,7 +125,6 @@ pub enum Command {
     #[clap(display_order = 17)]
     Replay(Replay),
     /// Manage dataflow recordings
-    #[cfg(feature = "mcap-export")]
     #[clap(subcommand, display_order = 18)]
     Recording(Recording),
     /// View coordinator tracing spans
@@ -220,7 +217,6 @@ impl Executable for Command {
             Command::Param(args) => args.execute(),
             Command::Record(args) => args.execute(),
             Command::Replay(args) => args.execute(),
-            #[cfg(feature = "mcap-export")]
             Command::Recording(args) => args.execute(),
             Command::Trace(args) => args.execute(),
             Command::Status(args) => args.execute(),

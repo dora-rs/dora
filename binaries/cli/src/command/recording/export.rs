@@ -181,6 +181,7 @@ fn write_mcap<W: Write + Seek>(
     let mut channels: HashMap<String, (u16, u32)> = HashMap::new();
     let mut matched: HashSet<usize> = HashSet::new();
     let mut message_count: u64 = 0;
+    let mut skipped: u64 = 0;
 
     while let Some(entry) = reader
         .next_entry()
@@ -194,8 +195,26 @@ fn write_mcap<W: Write + Seek>(
             matched.insert(pos);
         }
 
-        let timestamped = Timestamped::deserialize_inter_daemon_event(&entry.event_bytes)
-            .wrap_err("failed to deserialize a recorded event")?;
+        // Skip an entry we cannot decode, and say so, rather than failing the
+        // whole export: `InterDaemonEvent` is `#[non_exhaustive]` and postcard
+        // rejects an unknown variant index outright, so one event added by a
+        // newer 1.x daemon makes its recordings unexportable by an older
+        // binary, and a single corrupt record costs the user every other
+        // message in the file. `dora replay` already resolves this the same way
+        // (`replay-node/src/main.rs`). The count is reported below, and a pass
+        // that decoded nothing usable still fails, so systematic format drift
+        // cannot pass for an empty recording.
+        let timestamped = match Timestamped::deserialize_inter_daemon_event(&entry.event_bytes) {
+            Ok(timestamped) => timestamped,
+            Err(err) => {
+                eprintln!(
+                    "warning: skipping undecodable event for {}/{}: {err}",
+                    entry.node_id, entry.output_id
+                );
+                skipped += 1;
+                continue;
+            }
+        };
         let (publish_time, publish_data) = match timestamped.inner {
             InterDaemonEvent::Output { metadata, data, .. } => (
                 metadata.timestamp().get_time().to_duration().as_nanos() as u64,
@@ -258,6 +277,20 @@ fn write_mcap<W: Write + Seek>(
         eprintln!(
             "warning: --topics entry `{node}/{output_id}` matched no messages in the recording"
         );
+    }
+
+    if skipped > 0 {
+        eprintln!("Skipped {skipped} undecodable record(s)");
+        // Skipping individual records keeps a mostly-good recording exportable,
+        // but a *systematically* undecodable one (format drift, truncation) must
+        // not pass for a recording that had nothing in it. Same rule, same
+        // reason as `dora replay`'s `replay_emitted_nothing_usable`.
+        if message_count == 0 {
+            eyre::bail!(
+                "export emitted nothing: all {skipped} record(s) were undecodable \
+                 (corrupt or format-drifted recording)"
+            );
+        }
     }
 
     Ok(message_count)
@@ -844,16 +877,77 @@ mod tests {
         );
     }
 
-    /// A failed export must not leave a half-written file where a good one
-    /// used to be, and must not leave its temp file behind either.
+    /// One undecodable record must not cost the user the rest of the file.
+    ///
+    /// `InterDaemonEvent` is `#[non_exhaustive]` and postcard rejects an unknown
+    /// variant index outright, so this is not only a corrupt-file case: a
+    /// recording written by a 1.x daemon that added an event cannot be exported
+    /// at all by an older binary if we abort on the first one. `dora replay`
+    /// skips the same way.
     #[test]
-    fn failed_export_keeps_the_previous_output_and_cleans_up() {
+    fn an_undecodable_record_is_skipped_and_the_rest_still_exports() {
         let dir = tempdir().expect("tempdir");
-        let recording_path = dir.path().join("garbled.drec");
+        let recording_path = dir.path().join("mixed.drec");
         let mcap_path = dir.path().join("output.mcap");
-        // A structurally valid recording whose one entry carries unparseable
-        // event bytes: the header parses and the temp file is created, so the
-        // export only fails once it is already writing.
+        {
+            let file = fs::File::create(&recording_path).expect("create recording");
+            let mut writer =
+                RecordingWriter::new(BufWriter::new(file), &header()).expect("init writer");
+            let entries: [(u64, Vec<u8>); 3] = [
+                (100, output_event_bytes("camera", "image", b"first")),
+                // Stands in for a variant a newer daemon added: postcard cannot
+                // decode a tag it does not know.
+                (200, vec![0xff; 16]),
+                (300, output_event_bytes("camera", "image", b"second")),
+            ];
+            for (offset, event_bytes) in entries {
+                writer
+                    .write_entry(&RecordEntry {
+                        node_id: "camera".to_string(),
+                        output_id: "image".to_string(),
+                        timestamp_offset_nanos: offset,
+                        event_bytes,
+                    })
+                    .expect("write entry");
+            }
+            writer.finish().expect("finish recording");
+        }
+
+        run_export(Export {
+            input: recording_path.to_string_lossy().into(),
+            output: Some(mcap_path.to_string_lossy().into()),
+            topics: vec![],
+        })
+        .expect("one bad record must not fail the whole export");
+
+        let mcap_bytes = fs::read(&mcap_path).expect("read mcap");
+        let messages: Vec<_> = MessageStream::new(&mcap_bytes)
+            .expect("read mcap")
+            .map(|result| result.expect("read message"))
+            .collect();
+        assert_eq!(
+            messages.len(),
+            2,
+            "both decodable messages must survive the skipped one"
+        );
+        assert_eq!(messages[0].data.as_ref(), &b"first"[..]);
+        assert_eq!(messages[1].data.as_ref(), &b"second"[..]);
+        // The skipped entry must not leave a hole in the sequence numbering.
+        assert_eq!(messages[0].sequence, 1);
+        assert_eq!(
+            messages[1].sequence, 2,
+            "sequence counts messages, not records"
+        );
+    }
+
+    /// …but a recording of *nothing but* undecodable records is a failure, not
+    /// an empty export. Skipping must not turn format drift into a file that
+    /// looks like a recording with no messages in it.
+    #[test]
+    fn a_recording_of_only_undecodable_records_fails() {
+        let dir = tempdir().expect("tempdir");
+        let recording_path = dir.path().join("alldrift.drec");
+        let mcap_path = dir.path().join("output.mcap");
         {
             let file = fs::File::create(&recording_path).expect("create recording");
             let mut writer =
@@ -868,6 +962,69 @@ mod tests {
                 .expect("write entry");
             writer.finish().expect("finish recording");
         }
+
+        let err = run_export(Export {
+            input: recording_path.to_string_lossy().into(),
+            output: Some(mcap_path.to_string_lossy().into()),
+            topics: vec![],
+        })
+        .expect_err("an export that emitted nothing must not report success");
+
+        assert!(
+            err.to_string().contains("undecodable"),
+            "the error must name the cause: {err}"
+        );
+        assert!(
+            !mcap_path.exists(),
+            "a failed export must leave no output behind"
+        );
+    }
+
+    /// A failed export must not leave a half-written file where a good one
+    /// used to be, and must not leave its temp file behind either.
+    #[test]
+    fn failed_export_keeps_the_previous_output_and_cleans_up() {
+        let dir = tempdir().expect("tempdir");
+        let recording_path = dir.path().join("garbled.drec");
+        let mcap_path = dir.path().join("output.mcap");
+        // A recording with one good entry, then a record claiming more bytes
+        // than a recording may hold: the header parses, the temp file is
+        // created, the first message goes out, and the read then fails.
+        //
+        // The failure has to come from the reader, not from an undecodable
+        // event: those are skipped on purpose now, so a newer daemon's variant
+        // cannot make a whole recording unexportable. It also cannot be a torn
+        // tail, because `read_next_record` treats *every* short read as a clean
+        // EOF on purpose (`libraries/recording/src/lib.rs`) — a crashed
+        // recording must still export the records that were fully written. A
+        // record over `MAX_RECORD_BYTES` is the failure that survives that rule,
+        // and it is a real one: it means the length prefix is not what the
+        // writer would have written.
+        {
+            let file = fs::File::create(&recording_path).expect("create recording");
+            let mut writer =
+                RecordingWriter::new(BufWriter::new(file), &header()).expect("init writer");
+            writer
+                .write_entry(&RecordEntry {
+                    node_id: "camera".to_string(),
+                    output_id: "image".to_string(),
+                    timestamp_offset_nanos: 100,
+                    event_bytes: output_event_bytes("camera", "image", b"good-payload"),
+                })
+                .expect("write entry");
+            writer.finish().expect("finish recording");
+            // Splice in a length prefix past the per-record cap, so the reader
+            // rejects it after the first message is already in the temp file.
+            let mut full = fs::read(&recording_path).expect("read recording");
+            let at = full.len() - 24; // start of the 8-byte magic + two u64s
+            // `MAX_RECORD_BYTES` is 64 MB and private to the recording crate, so
+            // name the number the reader compares against: anything over it is
+            // rejected, and 4 GB also happens to start with the footer magic's
+            // first four bytes, so pick a value clear of that.
+            let over_cap = 0x1000_0000u32;
+            full.splice(at..at, over_cap.to_le_bytes());
+            fs::write(&recording_path, &full).expect("write oversized record prefix");
+        }
         fs::write(&mcap_path, b"previous good export").expect("seed output");
 
         let err = run_export(Export {
@@ -875,10 +1032,10 @@ mod tests {
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec![],
         })
-        .expect_err("unparseable event bytes must fail the export");
+        .expect_err("an unreadable record must fail the export");
 
         assert!(
-            err.to_string().contains("deserialize"),
+            err.to_string().contains("read a recording entry"),
             "the failure must come from the entry loop, i.e. after the temp file \
              exists, otherwise this test proves nothing: {err}"
         );
