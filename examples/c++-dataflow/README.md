@@ -2,7 +2,7 @@
 
 This example shows how to create dora operators and custom nodes with C++.
 
-Dora does not provide a C++ API yet, but we can create adapters for either the C or Rust API. The `operator-rust-api` and `node-rust-api` folders implement an example operator and node based on dora's Rust API, using the `cxx` crate for bridging. The `operator-c-api` and `node-c-api` show how to create operators and nodes based on dora's C API. Both approaches work, so you can choose the API that fits your application better.
+Dora provides a C++ API (`dora-node-api-cxx` / `dora-operator-api-cxx`, documented in the [C++ API reference](../../docs/api-cxx.md)); it is bridged from dora's Rust API via the `cxx` crate. It also provides a C API. The `node-rust-api` and `operator-rust-api` folders use the C++ API, while the `node-c-api` and `operator-c-api` folders use the C API. Both approaches work, so you can choose the API that fits your application better.
 
 ## Compile and Run
 
@@ -11,11 +11,13 @@ To try it out, you can use the [`run.rs`](./run.rs) binary. It performs all requ
 For a manual build, follow these steps:
 
 - Create a `build` folder in this directory
-- Build the `cxx-dataflow-example-node-rust-api` and `cxx-dataflow-example-operator-rust-api` crates:
+- Build the C++ variants (`node-rust-api`, `operator-rust-api`), which are bridged from the Rust API with the `cxx` crate:
   ```
-  cargo build -p cxx-dataflow-example-node-rust-api --release
-  cargo build -p cxx-dataflow-example-operator-rust-api --release
+  cargo build -p dora-node-api-cxx
+  cargo build -p dora-operator-api-cxx
   ```
+  This only builds the crates. Producing the `build/node_rust_api` and `build/operator_rust_api` artifacts that `dataflow.yml` expects additionally requires copying the generated bridge sources (`target/cxxbridge/dora-node-api-cxx/src/lib.rs.{cc,h}` and the `dora-operator-api-cxx` equivalent) into `build/`, writing the `build/operator.h` shim, compiling the `node-rust-api` / `operator-rust-api` sources against them (linking `-l dora_node_api_cxx` and `-l dora_operator_api_cxx -L target/debug`), and building the operator as a shared library. [`run.rs`](./run.rs) does all of this, so running it is the simplest way to build the C++ variants.
+- The steps below build only the C-API variants (`node_c_api`, `operator_c_api`). `dataflow.yml` also needs the C++ artifacts above, so the C-API half alone is not enough to run the example end to end.
 - Compile the `dora-node-api-c` crate into a static library.
   - Run `cargo build -p dora-node-api-c --release`
   - The resulting staticlib is then available under `../../target/release/libdora-node-api-c.a`.
