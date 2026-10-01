@@ -171,6 +171,12 @@ impl Daemon {
         if self.running.contains_key(&dataflow_id) {
             bail!("there is already a running dataflow with ID `{dataflow_id}`")
         }
+        // The coordinator validates this too; check again here, where a bad
+        // value would panic `Duration::from_secs_f64`, so an older coordinator
+        // cannot crash this daemon (same as `AddNode` / `ReplaceNode`).
+        for node in nodes.values() {
+            dora_core::descriptor::validate::check_node_timing(node)?;
+        }
         // Reclaim `/dev/shm` segments a previous crash of this dataflow's
         // nodes left behind. Scoped to the nodes this daemon spawns, since
         // a co-located daemon may be starting the other half of the same
