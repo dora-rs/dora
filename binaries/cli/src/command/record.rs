@@ -4,6 +4,7 @@ use std::{
     time::SystemTime,
 };
 
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use clap::Args;
 use dora_core::descriptor::Descriptor;
 use dora_message::{
@@ -292,6 +293,16 @@ fn build_record_inputs(topic_map: &BTreeMap<&str, &str>, queue_size: u64) -> ser
     inputs
 }
 
+/// The record node's env var carrying the original descriptor, base64-encoded.
+///
+/// Every `env:` value goes through `$VAR` expansion each time the
+/// descriptor is parsed (by the CLI, then again by the daemon), so the raw
+/// YAML must not travel as one: a `$NAME` anywhere in it, even in a
+/// comment, failed `dora record` when unset, and was substituted otherwise,
+/// writing e.g. the value of an `${API_TOKEN}` reference into the
+/// recording's header. The base64 alphabet has no `$`.
+const DESCRIPTOR_ENV: &str = "DORA_RECORD_DESCRIPTOR_BASE64";
+
 fn run_record(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
         std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
@@ -364,8 +375,8 @@ fn run_record(args: Record) -> eyre::Result<()> {
         serde_yaml::Value::String(topics_json),
     );
     env_mapping.insert(
-        serde_yaml::Value::String("DORA_RECORD_DESCRIPTOR".to_string()),
-        serde_yaml::Value::String(String::from_utf8_lossy(&yaml_bytes).to_string()),
+        serde_yaml::Value::String(DESCRIPTOR_ENV.to_string()),
+        serde_yaml::Value::String(BASE64_STANDARD.encode(&yaml_bytes)),
     );
 
     // Build the record node YAML entry
@@ -821,6 +832,25 @@ mod tests {
             .into_iter()
             .map(|(node, output)| format!("{node}/{output}"))
             .collect()
+    }
+
+    /// The descriptor reaches the record node through an `env:` value, which
+    /// is `$VAR`-expanded on every parse. Its encoding must survive that
+    /// unchanged, whatever `$` references the YAML contains.
+    #[test]
+    fn descriptor_env_value_survives_env_expansion() {
+        let yaml = b"# set $DORA_TEST_SURELY_UNSET_VAR first\nnodes:\n- id: a\n  env:\n    TOKEN: ${HOME}\n";
+        let env = serde_yaml::Mapping::from_iter([(
+            serde_yaml::Value::String(DESCRIPTOR_ENV.to_string()),
+            serde_yaml::Value::String(BASE64_STANDARD.encode(yaml)),
+        )]);
+        let parsed: BTreeMap<String, dora_message::descriptor::EnvValue> =
+            serde_yaml::from_value(serde_yaml::Value::Mapping(env))
+                .expect("the encoded descriptor must parse as an env value");
+        let decoded = BASE64_STANDARD
+            .decode(parsed[DESCRIPTOR_ENV].to_string())
+            .expect("valid base64");
+        assert_eq!(decoded, yaml);
     }
 
     #[test]
