@@ -2139,6 +2139,7 @@ dependencies = [
  "arrow 59.3.0",
  "arrow-json",
  "arrow-schema 59.3.0",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "clap_complete",
@@ -2619,6 +2620,7 @@ name = "dora-record-node"
 version = "1.1.0"
 dependencies = [
  "aligned-vec",
+ "base64 0.22.1",
  "dora-message",
  "dora-node-api",
  "dora-recording",

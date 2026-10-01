@@ -6,6 +6,7 @@ use std::{
 };
 
 use aligned_vec::{AVec, ConstAlign};
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dora_message::{
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
@@ -318,17 +319,32 @@ fn record_entry<W: Write>(
     }
 }
 
+/// The original descriptor YAML. `dora record` passes it base64-encoded in
+/// `DORA_RECORD_DESCRIPTOR_BASE64`, because `env:` values are
+/// `$VAR`-expanded on the way here; the raw `DORA_RECORD_DESCRIPTOR` of an
+/// older CLI is still accepted.
+fn descriptor_from_env() -> eyre::Result<Vec<u8>> {
+    const ENCODED: &str = "DORA_RECORD_DESCRIPTOR_BASE64";
+    const LEGACY_RAW: &str = "DORA_RECORD_DESCRIPTOR";
+    match std::env::var(ENCODED) {
+        Ok(encoded) => BASE64_STANDARD
+            .decode(encoded)
+            .wrap_err_with(|| format!("{ENCODED} is not valid base64")),
+        Err(_) => Ok(std::env::var(LEGACY_RAW).unwrap_or_default().into_bytes()),
+    }
+}
+
 /// The header of the recording `node` makes.
 ///
 /// It carries the id of the dataflow `node` runs in, which is the one being
 /// recorded, as `dora record --proxy` does, so `dora recording export` names
 /// a dataflow `dora list` knows.
-fn recording_header(node: &DoraNode, start_nanos: u64, descriptor_yaml: String) -> RecordingHeader {
+fn recording_header(node: &DoraNode, start_nanos: u64, descriptor_yaml: Vec<u8>) -> RecordingHeader {
     RecordingHeader {
         version: dora_recording::FORMAT_VERSION,
         start_nanos,
         dataflow_id: *node.dataflow_id(),
-        descriptor_yaml: descriptor_yaml.into_bytes(),
+        descriptor_yaml,
     }
 }
 
@@ -337,7 +353,7 @@ fn main() -> eyre::Result<()> {
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
     let topics_json =
         std::env::var("DORA_RECORD_TOPICS").wrap_err("DORA_RECORD_TOPICS env var not set")?;
-    let descriptor_yaml = std::env::var("DORA_RECORD_DESCRIPTOR").unwrap_or_default();
+    let descriptor_yaml = descriptor_from_env()?;
 
     // Build reverse map: input_id -> (source_node_id, source_output_id).
     let reverse_map = build_reverse_map(&topics_json)?;
@@ -547,7 +563,7 @@ mod tests {
         )
         .unwrap();
         let dataflow_id = *node.dataflow_id();
-        let header = recording_header(&node, 42, "nodes: []".to_string());
+        let header = recording_header(&node, 42, b"nodes: []".to_vec());
 
         let mut buf = Vec::new();
         RecordingWriter::new(&mut buf, &header).unwrap();

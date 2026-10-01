@@ -23,5 +23,6 @@ dora-recording = { workspace = true }
 dora-message = { workspace = true }
 eyre = { workspace = true }
 aligned-vec = { version = "0.6.4", features = ["serde"] }
+base64 = "0.22"
 serde_json = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
