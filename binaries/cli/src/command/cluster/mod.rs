@@ -56,9 +56,28 @@ pub(crate) fn query_connected_daemons(session: &WsSession) -> eyre::Result<Vec<D
 
 /// Format the SSH target string from a machine config.
 pub(super) fn ssh_target(machine: &MachineConfig) -> String {
+    with_user(machine, &machine.host)
+}
+
+/// Format the `scp` destination for `path` on a machine.
+///
+/// scp splits host from path at the first `:` outside brackets, so an IPv6
+/// literal host must be bracketed: `2001:db8::1:/path` would otherwise name
+/// host `2001`. A hostname or IPv4 address never contains `:`.
+pub(super) fn scp_target(machine: &MachineConfig, path: &str) -> String {
+    let host = &machine.host;
+    if host.contains(':') && !host.starts_with('[') {
+        format!("{}:{path}", with_user(machine, &format!("[{host}]")))
+    } else {
+        format!("{}:{path}", with_user(machine, host))
+    }
+}
+
+/// `host`, prefixed with the machine's `user@` if it has one.
+fn with_user(machine: &MachineConfig, host: &str) -> String {
     match &machine.user {
-        Some(user) => format!("{user}@{}", machine.host),
-        None => machine.host.clone(),
+        Some(user) => format!("{user}@{host}"),
+        None => host.to_owned(),
     }
 }
 
@@ -170,5 +189,44 @@ pub(super) fn print_summary(action: &str, total: usize, failures: &[(String, Str
         for (id, reason) in failures {
             eprintln!("  {id}: {reason}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn machine(host: &str, user: Option<&str>) -> MachineConfig {
+        let mut yaml = format!("id: a\nhost: \"{host}\"\n");
+        if let Some(user) = user {
+            yaml.push_str(&format!("user: {user}\n"));
+        }
+        serde_yaml::from_str(&yaml).expect("valid machine config")
+    }
+
+    #[test]
+    fn scp_target_brackets_ipv6_hosts() {
+        let path = "/usr/local/bin/dora";
+        assert_eq!(
+            scp_target(&machine("2001:db8::1", Some("u")), path),
+            "u@[2001:db8::1]:/usr/local/bin/dora"
+        );
+        assert_eq!(
+            scp_target(&machine("::1", None), path),
+            "[::1]:/usr/local/bin/dora"
+        );
+        // Already bracketed: left as is.
+        assert_eq!(
+            scp_target(&machine("[::1]", None), path),
+            "[::1]:/usr/local/bin/dora"
+        );
+        assert_eq!(
+            scp_target(&machine("192.168.1.10", Some("u")), path),
+            "u@192.168.1.10:/usr/local/bin/dora"
+        );
+        assert_eq!(
+            scp_target(&machine("robot.local", None), path),
+            "robot.local:/usr/local/bin/dora"
+        );
     }
 }
