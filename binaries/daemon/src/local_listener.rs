@@ -202,7 +202,7 @@ async fn handle_connection_loop(
 /// `ExtensionRequest` carry multi-MB byte vectors, so Debug-formatting the
 /// whole request (`{req:?}`) would amplify one request into a huge string —
 /// both in the log and in the reply body that is then written back.
-fn request_kind(request: &DaemonRequest) -> &'static str {
+pub(crate) fn request_kind(request: &DaemonRequest) -> &'static str {
     match request {
         DaemonRequest::Register(_) => "Register",
         DaemonRequest::Subscribe => "Subscribe",
