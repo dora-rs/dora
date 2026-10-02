@@ -2,13 +2,15 @@
 //! replaying persisted parameters to a daemon that (re)joins a dataflow.
 
 use crate::state::{DaemonConnections, RunningDataflow};
-use crate::{FALLBACK_REPLAY_BACKOFF, nodes_on_daemon};
+use crate::{Event, FALLBACK_REPLAY_BACKOFF, nodes_on_daemon};
 use dora_core::uhlc::HLC;
 use dora_message::{DataflowId, common::DaemonId, daemon_to_coordinator::DaemonCoordinatorReply};
 use eyre::eyre;
 use serde::Serialize;
 use serde_json::value::RawValue;
 use std::{sync::Arc, time::Instant};
+use tokio::sync::mpsc;
+use uuid::Uuid;
 
 pub(crate) struct ParamReplayItem {
     pub(crate) node_id: dora_core::config::NodeId,
@@ -22,15 +24,40 @@ pub(crate) struct ParamReplaySummary {
     pub(crate) failed: usize,
 }
 
-pub(crate) async fn handle_pruned_state_catchup_fallback(
+/// Start a full param replay for a daemon whose state-log ack was pruned.
+///
+/// The replay sends every persisted param one round-trip at a time, each
+/// bounded by `TCP_READ_TIMEOUT`, so it runs in a spawned task rather than on
+/// the event loop (#3684). It reports back through `events` with
+/// [`Event::ParamFallbackReplayFinished`], handled by
+/// [`finish_pruned_state_catchup_fallback`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn start_pruned_state_catchup_fallback(
     dataflow_id: DataflowId,
     dataflow: &mut RunningDataflow,
     daemon_id: &DaemonId,
     store: Arc<dyn dora_coordinator_store::CoordinatorStore>,
     daemon_connections: &mut DaemonConnections,
     clock: Arc<HLC>,
+    events: mpsc::Sender<Event>,
     now: Instant,
 ) {
+    let Some(connection) = daemon_connections.get_mut(daemon_id).cloned() else {
+        tracing::warn!(
+            "failed to run fallback replay for dataflow {dataflow_id}: \
+             daemon {daemon_id} is not connected"
+        );
+        return;
+    };
+    let connection_id = connection.connection_id;
+
+    if dataflow.fallback_replay_in_flight.get(daemon_id) == Some(&connection_id) {
+        tracing::debug!(
+            "skipping fallback replay for dataflow {dataflow_id} on daemon {daemon_id}: \
+             a replay is already in flight"
+        );
+        return;
+    }
     if let Some(last_replay_attempt) = dataflow.last_replay_attempt.get(daemon_id)
         && now.duration_since(*last_replay_attempt) < FALLBACK_REPLAY_BACKOFF
     {
@@ -41,56 +68,88 @@ pub(crate) async fn handle_pruned_state_catchup_fallback(
         return;
     }
 
-    let Some(connection) = daemon_connections.get_mut(daemon_id).cloned() else {
-        tracing::warn!(
-            "failed to run fallback replay for dataflow {dataflow_id}: \
-             daemon {daemon_id} is not connected"
+    let node_ids_on_daemon = nodes_on_daemon(dataflow, daemon_id);
+    dataflow.last_replay_attempt.insert(daemon_id.clone(), now);
+    dataflow
+        .fallback_replay_in_flight
+        .insert(daemon_id.clone(), connection_id);
+    // Captured before the replay reads the store: everything up to here is
+    // in the store, so the replay covers it. Entries appended while it runs
+    // were forwarded to the daemon by their own handlers.
+    let ack_sequence = dataflow.state_log_sequence;
+    let daemon_id = daemon_id.clone();
+
+    tokio::spawn(async move {
+        let replay_summary = replay_persisted_params_for_daemon(
+            dataflow_id,
+            daemon_id.clone(),
+            node_ids_on_daemon,
+            store,
+            connection,
+            clock,
+        )
+        .await;
+        if replay_summary.failed != 0 {
+            tracing::warn!(
+                "fallback replay incomplete for dataflow {dataflow_id} on daemon \
+                 {daemon_id}: attempted={}, failed={}",
+                replay_summary.attempted,
+                replay_summary.failed,
+            );
+        }
+        let finished = Event::ParamFallbackReplayFinished {
+            dataflow_id,
+            daemon_id,
+            connection_id,
+            ack_sequence,
+            succeeded: replay_summary.failed == 0,
+        };
+        // Fails only when the coordinator is shutting down.
+        let _ = events.send(finished).await;
+    });
+}
+
+/// Record the outcome of a replay started by
+/// [`start_pruned_state_catchup_fallback`].
+///
+/// `current_connection_id` is the daemon's connection now. A replay sent on
+/// an older connection says nothing about the daemon behind the new one, so
+/// it neither advances the ack nor clears that connection's in-flight mark.
+pub(crate) fn finish_pruned_state_catchup_fallback(
+    dataflow: &mut RunningDataflow,
+    daemon_id: &DaemonId,
+    connection_id: Uuid,
+    current_connection_id: Option<Uuid>,
+    ack_sequence: u64,
+    succeeded: bool,
+) {
+    if dataflow.fallback_replay_in_flight.get(daemon_id) == Some(&connection_id) {
+        dataflow.fallback_replay_in_flight.remove(daemon_id);
+    }
+    if current_connection_id != Some(connection_id) {
+        tracing::debug!(
+            "ignoring fallback replay result for daemon {daemon_id}: \
+             it was sent on a connection that has since been replaced"
         );
         return;
-    };
-
-    let node_ids_on_daemon: Vec<_> = dataflow
-        .node_to_daemon
-        .iter()
-        .filter(|(_, did)| *did == daemon_id)
-        .map(|(node_id, _)| node_id.clone())
-        .collect();
-    dataflow.last_replay_attempt.insert(daemon_id.clone(), now);
-
-    let replay_summary = replay_persisted_params_for_daemon(
-        dataflow_id,
-        daemon_id.clone(),
-        node_ids_on_daemon,
-        store,
-        connection,
-        clock,
-    )
-    .await;
-
-    let last_ack = dataflow
+    }
+    if !succeeded {
+        // Advancing the ack on partial failure could silently diverge
+        // runtime and store state; the next status report retries.
+        return;
+    }
+    // Replay is authoritative for pruned history. Individual SetParam
+    // events don't trigger StateCatchUpAck, so set the ack here to avoid
+    // repeated fallback replays on every status-report cycle. Never move it
+    // backwards past an ack that arrived meanwhile.
+    let current = dataflow
         .daemon_ack_sequence
         .get(daemon_id)
         .copied()
         .unwrap_or(0);
-    if replay_summary.failed == 0 {
-        // Mark daemon as caught up only when full replay succeeds:
-        // replay is authoritative for pruned history, and advancing
-        // ack on partial failure can silently diverge runtime/store state.
-        // Individual SetParam events don't trigger StateCatchUpAck, so
-        // we set ack here for successful full replay to avoid repeated
-        // fallback replays on every status-report cycle.
-        dataflow
-            .daemon_ack_sequence
-            .insert(daemon_id.clone(), dataflow.state_log_sequence);
-    } else {
-        tracing::warn!(
-            "fallback replay incomplete for dataflow {dataflow_id} on daemon \
-             {daemon_id}: attempted={}, failed={}; leaving ack at {}",
-            replay_summary.attempted,
-            replay_summary.failed,
-            last_ack
-        );
-    }
+    dataflow
+        .daemon_ack_sequence
+        .insert(daemon_id.clone(), current.max(ack_sequence));
 }
 
 /// Load the persisted params of every node on a daemon, flattened into

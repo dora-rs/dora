@@ -314,6 +314,7 @@ fn test_running_dataflow(
         store_generation: 0,
         last_recovery_attempt: BTreeMap::new(),
         last_replay_attempt: BTreeMap::new(),
+        fallback_replay_in_flight: BTreeMap::new(),
         uv: false,
         state_log_sequence: 0,
         state_log: Vec::new(),
@@ -1771,16 +1772,17 @@ async fn fallback_replay_keeps_ack_unchanged_when_daemon_is_disconnected() {
     dataflow.daemon_ack_sequence.insert(daemon_id.clone(), 3);
 
     let mut daemon_connections = DaemonConnections::default();
-    handle_pruned_state_catchup_fallback(
+    let (events_tx, _events_rx) = tokio::sync::mpsc::channel(8);
+    start_pruned_state_catchup_fallback(
         dataflow_id,
         &mut dataflow,
         &daemon_id,
         store,
         &mut daemon_connections,
         Arc::new(HLC::default()),
+        events_tx,
         Instant::now(),
-    )
-    .await;
+    );
 
     assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&3));
     assert!(!dataflow.last_replay_attempt.contains_key(&daemon_id));
@@ -1801,19 +1803,250 @@ async fn fallback_replay_respects_backoff_window() {
         .insert(daemon_id.clone(), Instant::now());
 
     let mut daemon_connections = DaemonConnections::default();
-    handle_pruned_state_catchup_fallback(
+    let (events_tx, _events_rx) = tokio::sync::mpsc::channel(8);
+    start_pruned_state_catchup_fallback(
         dataflow_id,
         &mut dataflow,
         &daemon_id,
         store,
         &mut daemon_connections,
         Arc::new(HLC::default()),
+        events_tx,
         Instant::now(),
-    )
-    .await;
+    );
 
     // No replay attempted while backoff is active, so ack remains unchanged.
     assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&2));
+}
+
+#[tokio::test]
+async fn fallback_replay_does_not_wait_for_an_unresponsive_daemon() {
+    // #3684: the fallback runs from the daemon-status handler on the event
+    // loop. A daemon that never answers must not stall that loop for
+    // `TCP_READ_TIMEOUT` per persisted param.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+    let value_bytes = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "threshold", &value_bytes)
+        .unwrap();
+
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
+    dataflow.state_log_sequence = 10;
+    dataflow.daemon_ack_sequence.insert(daemon_id.clone(), 3);
+
+    // Accepts commands but never replies.
+    let (tx, mut stalled_rx) = tokio::sync::mpsc::channel::<String>(8);
+    let connection = crate::state::DaemonConnection::new(
+        tx,
+        Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        BTreeMap::new(),
+    );
+    let connection_id = connection.connection_id;
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), connection);
+
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(8);
+    start_pruned_state_catchup_fallback(
+        dataflow_id,
+        &mut dataflow,
+        &daemon_id,
+        store.clone(),
+        &mut daemon_connections,
+        Arc::new(HLC::default()),
+        events_tx.clone(),
+        Instant::now(),
+    );
+
+    // Returned without an answer, with the replay running in the background.
+    tokio::time::timeout(Duration::from_secs(10), stalled_rx.recv())
+        .await
+        .expect("replay must still be sent")
+        .expect("connection open");
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&3));
+    assert_eq!(
+        dataflow.fallback_replay_in_flight.get(&daemon_id),
+        Some(&connection_id)
+    );
+    assert!(events_rx.try_recv().is_err(), "replay has not finished");
+
+    // A second status report on the same connection, past the backoff,
+    // does not start a duplicate replay while the first is in flight.
+    start_pruned_state_catchup_fallback(
+        dataflow_id,
+        &mut dataflow,
+        &daemon_id,
+        store,
+        &mut daemon_connections,
+        Arc::new(HLC::default()),
+        events_tx,
+        Instant::now() + FALLBACK_REPLAY_BACKOFF * 2,
+    );
+    assert!(
+        tokio::time::timeout(TokioDuration::from_millis(50), stalled_rx.recv())
+            .await
+            .is_err(),
+        "no duplicate replay while one is in flight"
+    );
+}
+
+#[tokio::test]
+async fn fallback_replay_reports_back_and_acks_the_sequence_it_started_at() {
+    // #3684: once the replay is off the event loop, entries may be appended
+    // while it runs. The ack must advance to the sequence captured when the
+    // replay started, not the one current at completion.
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        id: String,
+    }
+
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+    let value_bytes = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "threshold", &value_bytes)
+        .unwrap();
+
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
+    dataflow.state_log_sequence = 10;
+    dataflow.daemon_ack_sequence.insert(daemon_id.clone(), 3);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    let connection_id = connection.connection_id;
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), connection);
+
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(8);
+    start_pruned_state_catchup_fallback(
+        dataflow_id,
+        &mut dataflow,
+        &daemon_id,
+        store,
+        &mut daemon_connections,
+        Arc::new(HLC::default()),
+        events_tx,
+        Instant::now(),
+    );
+    // A `dora param set` appended to the log while the replay is running.
+    dataflow.state_log_sequence = 12;
+
+    let outbound = rx.recv().await.expect("replay command");
+    let request_id: Uuid = serde_json::from_str::<OutboundRaw>(&outbound)
+        .unwrap()
+        .id
+        .parse()
+        .unwrap();
+    let reply = serde_json::to_string(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+    let _ = pending_replies
+        .lock()
+        .await
+        .remove(&request_id)
+        .expect("pending reply sender")
+        .send(reply);
+
+    let event = tokio::time::timeout(Duration::from_secs(10), events_rx.recv())
+        .await
+        .expect("replay must report back")
+        .expect("channel open");
+    let Event::ParamFallbackReplayFinished {
+        dataflow_id: finished_df,
+        daemon_id: finished_daemon,
+        connection_id: finished_connection,
+        ack_sequence,
+        succeeded,
+    } = event
+    else {
+        panic!("unexpected event {event:?}");
+    };
+    assert_eq!(finished_df, dataflow_id);
+    assert_eq!(finished_daemon, daemon_id);
+    assert_eq!(finished_connection, connection_id);
+    assert_eq!(ack_sequence, 10);
+    assert!(succeeded);
+
+    finish_pruned_state_catchup_fallback(
+        &mut dataflow,
+        &daemon_id,
+        finished_connection,
+        Some(connection_id),
+        ack_sequence,
+        succeeded,
+    );
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&10));
+    assert!(!dataflow.fallback_replay_in_flight.contains_key(&daemon_id));
+}
+
+#[test]
+fn fallback_replay_result_from_a_replaced_connection_is_ignored() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
+    dataflow.state_log_sequence = 10;
+    dataflow.daemon_ack_sequence.insert(daemon_id.clone(), 3);
+    let old_connection = Uuid::new_v4();
+    let new_connection = Uuid::new_v4();
+    // The reconnected daemon already has its own replay in flight.
+    dataflow
+        .fallback_replay_in_flight
+        .insert(daemon_id.clone(), new_connection);
+
+    finish_pruned_state_catchup_fallback(
+        &mut dataflow,
+        &daemon_id,
+        old_connection,
+        Some(new_connection),
+        10,
+        true,
+    );
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&3));
+    assert_eq!(
+        dataflow.fallback_replay_in_flight.get(&daemon_id),
+        Some(&new_connection)
+    );
+}
+
+#[test]
+fn failed_fallback_replay_leaves_the_ack_and_never_moves_it_back() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
+    let connection = Uuid::new_v4();
+    dataflow.daemon_ack_sequence.insert(daemon_id.clone(), 3);
+    dataflow
+        .fallback_replay_in_flight
+        .insert(daemon_id.clone(), connection);
+
+    finish_pruned_state_catchup_fallback(
+        &mut dataflow,
+        &daemon_id,
+        connection,
+        Some(connection),
+        10,
+        false,
+    );
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&3));
+    assert!(!dataflow.fallback_replay_in_flight.contains_key(&daemon_id));
+
+    // A StateCatchUpAck past the replay's start sequence arrived meanwhile.
+    dataflow.daemon_ack_sequence.insert(daemon_id.clone(), 15);
+    finish_pruned_state_catchup_fallback(
+        &mut dataflow,
+        &daemon_id,
+        connection,
+        Some(connection),
+        10,
+        true,
+    );
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&15));
 }
 
 #[tokio::test]

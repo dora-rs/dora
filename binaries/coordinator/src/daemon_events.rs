@@ -5,10 +5,10 @@ use crate::{
     Coordinator, DaemonRequest, apply_disconnect_actions, build_result_timeout,
     check_build_timeouts, check_spawn_timeouts, cleanup_disconnected_daemons_from_running_builds,
     cleanup_disconnected_daemons_from_running_dataflows, expire_stopped_nodes,
-    handle_pruned_state_catchup_fallback, notify_daemons_about_disconnected_peers,
+    finish_pruned_state_catchup_fallback, notify_daemons_about_disconnected_peers,
     reestablish_running_dataflow, replay_all_nodes_ready, restore_topic_debug_streams_for_daemon,
-    send_heartbeat_with_timeout, state, status_report_should_stop_orphan,
-    stop_orphaned_dataflow_on_daemon,
+    send_heartbeat_with_timeout, start_pruned_state_catchup_fallback, state,
+    status_report_should_stop_orphan, stop_orphaned_dataflow_on_daemon,
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
 use dora_message::{
@@ -750,20 +750,45 @@ impl Coordinator {
                         "state catch-up: log pruned for dataflow {uuid}, \
                                  falling back to full param replay for daemon {daemon_id}"
                     );
-                    handle_pruned_state_catchup_fallback(
+                    start_pruned_state_catchup_fallback(
                         *uuid,
                         df,
                         &daemon_id,
                         self.store.clone(),
                         &mut self.daemon_connections,
                         self.clock.clone(),
+                        self.internal_events.clone(),
                         now,
-                    )
-                    .await;
+                    );
                 }
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn handle_param_fallback_replay_finished(
+        &mut self,
+        dataflow_id: DataflowId,
+        daemon_id: DaemonId,
+        connection_id: Uuid,
+        ack_sequence: u64,
+        succeeded: bool,
+    ) {
+        let Some(df) = self.running_dataflows.get_mut(&dataflow_id) else {
+            return;
+        };
+        let current_connection_id = self
+            .daemon_connections
+            .get_mut(&daemon_id)
+            .map(|connection| connection.connection_id);
+        finish_pruned_state_catchup_fallback(
+            df,
+            &daemon_id,
+            connection_id,
+            current_connection_id,
+            ack_sequence,
+            succeeded,
+        );
     }
 
     pub(crate) async fn handle_state_catch_up_ack(

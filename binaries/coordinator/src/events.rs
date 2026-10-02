@@ -92,6 +92,22 @@ pub enum Event {
         node_id: NodeId,
         clean_stop: bool,
     },
+    /// A full param replay started by the pruned-state-log fallback has
+    /// finished. It runs in a spawned task, off the event loop (#3684), and
+    /// reports back here so the loop can advance the daemon's ack.
+    ParamFallbackReplayFinished {
+        dataflow_id: DataflowId,
+        daemon_id: DaemonId,
+        /// The connection the replay was sent on: a reply for an older
+        /// connection must not mark a reconnected daemon as caught up.
+        connection_id: Uuid,
+        /// `state_log_sequence` when the replay started. The ack advances to
+        /// this, not to the sequence at completion, which may include entries
+        /// appended while the replay ran.
+        ack_sequence: u64,
+        /// Whether every param was replayed.
+        succeeded: bool,
+    },
 }
 
 impl Event {
@@ -122,6 +138,7 @@ impl Event {
             Event::DaemonStatusReport { .. } => "DaemonStatusReport",
             Event::DaemonStateCatchUpAck { .. } => "DaemonStateCatchUpAck",
             Event::DaemonNodeStopped { .. } => "DaemonNodeStopped",
+            Event::ParamFallbackReplayFinished { .. } => "ParamFallbackReplayFinished",
         }
     }
 }
