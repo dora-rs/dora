@@ -9,11 +9,11 @@ use eyre::eyre;
 use serde::Serialize;
 use serde_json::value::RawValue;
 use std::{sync::Arc, time::Instant};
+use tokio::sync::Mutex;
 
 pub(crate) struct ParamReplayItem {
     pub(crate) node_id: dora_core::config::NodeId,
     pub(crate) key: String,
-    pub(crate) value_json: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
@@ -63,6 +63,7 @@ pub(crate) async fn handle_pruned_state_catchup_fallback(
         node_ids_on_daemon,
         store,
         connection,
+        dataflow.param_write_lock.clone(),
         clock,
     )
     .await;
@@ -93,10 +94,13 @@ pub(crate) async fn handle_pruned_state_catchup_fallback(
     }
 }
 
-/// Load the persisted params of every node on a daemon, flattened into
-/// replay items. Also returns how many nodes' params could not be loaded:
-/// the caller must count those as failed, or a store read error would look
-/// like "nothing to replay" and let the daemon be marked caught up.
+/// List the persisted params of every node on a daemon, flattened into
+/// replay items. Only the keys are kept: the replay re-reads each value under
+/// the dataflow's param write lock, since it may have changed by then.
+///
+/// Also returns how many nodes' params could not be loaded: the caller must
+/// count those as failed, or a store read error would look like "nothing to
+/// replay" and let the daemon be marked caught up.
 pub(crate) fn collect_param_replay_items(
     dataflow_id: DataflowId,
     node_ids_on_daemon: &[dora_core::config::NodeId],
@@ -115,11 +119,10 @@ pub(crate) fn collect_param_replay_items(
                 continue;
             }
         };
-        for (key, bytes) in params {
+        for (key, _) in params {
             items.push(ParamReplayItem {
                 node_id: node_id.clone(),
                 key,
-                value_json: bytes,
             });
         }
     }
@@ -216,6 +219,7 @@ pub(crate) fn schedule_param_replay_for_ready_dataflow(
         };
         let node_ids_on_daemon = nodes_on_daemon(dataflow, &daemon_id);
         let store = store.clone();
+        let param_write_lock = dataflow.param_write_lock.clone();
         let clock = clock.clone();
         tokio::spawn(async move {
             replay_persisted_params_for_daemon(
@@ -224,6 +228,7 @@ pub(crate) fn schedule_param_replay_for_ready_dataflow(
                 node_ids_on_daemon,
                 store,
                 connection,
+                param_write_lock,
                 clock,
             )
             .await;
@@ -231,12 +236,23 @@ pub(crate) fn schedule_param_replay_for_ready_dataflow(
     }
 }
 
+/// Send every persisted param of the daemon's nodes to it, one `SetParam` at
+/// a time.
+///
+/// This usually runs in a spawned task, concurrently with `dora param
+/// set`/`delete` on the event loop. Each item is therefore read from the store
+/// and sent while holding `param_write_lock`, the lock those handlers hold
+/// from persisting to forwarding: the replay then either sends the value a
+/// `set` just stored, or finishes before the `set` forwards its own. It never
+/// sends a value the store no longer holds, and skips a param deleted since
+/// the keys were listed (#3683).
 pub(crate) async fn replay_persisted_params_for_daemon(
     dataflow_id: DataflowId,
     daemon_id: DaemonId,
     node_ids_on_daemon: Vec<dora_core::config::NodeId>,
     store: Arc<dyn dora_coordinator_store::CoordinatorStore>,
     connection: crate::state::DaemonConnection,
+    param_write_lock: Arc<Mutex<()>>,
     clock: Arc<HLC>,
 ) -> ParamReplaySummary {
     let (replay_items, load_failures) =
@@ -257,12 +273,34 @@ pub(crate) async fn replay_persisted_params_for_daemon(
     );
 
     for item in replay_items {
+        let _write_guard = param_write_lock.lock().await;
+        let value_json = match store.get_node_param(&dataflow_id, &item.node_id, &item.key) {
+            Ok(Some(value_json)) => value_json,
+            Ok(None) => {
+                tracing::debug!(
+                    "not replaying param {dataflow_id}/{}/{}: deleted since replay started",
+                    item.node_id,
+                    item.key
+                );
+                continue;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "failed to load persisted param {dataflow_id}/{}/{}: {err}",
+                    item.node_id,
+                    item.key
+                );
+                summary.attempted += 1;
+                summary.failed += 1;
+                continue;
+            }
+        };
         summary.attempted += 1;
         let message = match build_set_param_message_from_raw_json(
             dataflow_id,
             &item.node_id,
             &item.key,
-            &item.value_json,
+            &value_json,
             clock.new_timestamp(),
         ) {
             Ok(msg) => msg,
