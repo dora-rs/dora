@@ -704,17 +704,16 @@ pub(crate) async fn build_dataflow(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Start `dataflow` as described by `launch`, which the returned
+/// `RunningDataflow` keeps so that `dora restart` can relaunch it the same
+/// way.
 pub(crate) async fn start_dataflow(
-    build_id: Option<BuildId>,
-    session_id: SessionId,
     dataflow: Descriptor,
-    local_working_dir: Option<PathBuf>,
+    launch: state::LaunchContext,
     name: Option<String>,
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
     uv: bool,
-    write_events_to: Option<PathBuf>,
 ) -> eyre::Result<RunningDataflow> {
     let SpawnedDataflow {
         uuid,
@@ -722,14 +721,14 @@ pub(crate) async fn start_dataflow(
         nodes,
         node_to_daemon,
     } = spawn_dataflow(
-        build_id,
-        session_id,
+        launch.build_id,
+        launch.session_id,
         dataflow.clone(),
-        local_working_dir,
+        launch.local_working_dir.clone(),
         daemon_connections,
         clock,
         uv,
-        write_events_to,
+        launch.write_events_to.clone(),
     )
     .await?;
     Ok(RunningDataflow {
@@ -768,6 +767,7 @@ pub(crate) async fn start_dataflow(
         last_recovery_attempt: BTreeMap::new(),
         last_replay_attempt: BTreeMap::new(),
         uv,
+        launch,
         state_log_sequence: 0,
         state_log: Vec::new(),
     })
@@ -1003,6 +1003,7 @@ mod tests {
             last_recovery_attempt: BTreeMap::new(),
             last_replay_attempt: BTreeMap::new(),
             uv: false,
+            launch: state::LaunchContext::unknown(),
             state_log_sequence: 0,
             state_log: Vec::new(),
             daemon_ack_sequence: BTreeMap::new(),

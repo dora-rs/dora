@@ -93,15 +93,12 @@ impl Coordinator {
                             if let Some(restart) = self.pending_restarts.remove(&uuid) {
                                 let name = restart.name.clone();
                                 match start_dataflow(
-                                    None,
-                                    dora_message::SessionId::generate(),
                                     restart.descriptor,
-                                    None,
+                                    restart.launch,
                                     restart.name,
                                     &mut self.daemon_connections,
                                     &self.clock,
                                     restart.uv,
-                                    None,
                                 )
                                 .await
                                 {
