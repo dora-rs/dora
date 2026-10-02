@@ -84,6 +84,15 @@ impl serde::Serialize for TypedValue<'_> {
                 }
             };
 
+            // A ROS2 field always has a value. A null row would otherwise go
+            // out as whatever its masked buffers hold: for a sequence, array
+            // or nested message, values the producer never meant to send.
+            if !column.is_empty() && column.is_null(0) {
+                return Err(error(format!(
+                    "field {}.{} is null, but ROS2 messages cannot represent null",
+                    message.name, field.name
+                )));
+            }
             self.serialize_field::<S>(field, column, &mut s)
                 .map_err(|e| {
                     error(format!(
@@ -324,6 +333,7 @@ mod tests {
 
     use arrow::{
         array::{ArrayRef, Int32Array, StringArray, StructArray},
+        buffer::NullBuffer,
         datatypes::{DataType, Field},
     };
     use byteorder::LittleEndian;
@@ -416,6 +426,53 @@ mod tests {
         let err = serialize(&messages, &null).unwrap_err();
         assert!(
             err.to_string().contains("null"),
+            "expected a null-rejection error, got: {err}"
+        );
+    }
+
+    /// A null nested-message row must error too, not go out as its masked
+    /// child values (here `x = 7`).
+    #[test]
+    fn null_nested_message_field_is_rejected() {
+        let mut messages = Arc::unwrap_or_clone(single_field_message(
+            "inner",
+            NestableType::NamedType(dora_ros2_bridge_msg_gen::types::primitives::NamedType(
+                "Inner".to_string(),
+            )),
+        ));
+        let inner_message = Message {
+            package: "test_msgs".to_string(),
+            name: "Inner".to_string(),
+            members: vec![Member {
+                name: "x".to_string(),
+                r#type: MemberType::NestableType(NestableType::BasicType(BasicType::I32)),
+                default: None,
+            }],
+            constants: vec![],
+        };
+        messages
+            .get_mut("test_msgs")
+            .unwrap()
+            .insert("Inner".to_string(), inner_message);
+        let messages = Arc::new(messages);
+
+        let inner_fields = vec![Arc::new(Field::new("x", DataType::Int32, true))];
+        let value = |nulls| {
+            let inner = StructArray::new(
+                inner_fields.clone().into(),
+                vec![Arc::new(Int32Array::from(vec![7])) as ArrayRef],
+                nulls,
+            );
+            struct_of(
+                "inner",
+                DataType::Struct(inner_fields.clone().into()),
+                Arc::new(inner),
+            )
+        };
+        assert!(serialize(&messages, &value(None)).is_ok());
+        let err = serialize(&messages, &value(Some(NullBuffer::new_null(1)))).unwrap_err();
+        assert!(
+            err.contains("inner is null"),
             "expected a null-rejection error, got: {err}"
         );
     }
