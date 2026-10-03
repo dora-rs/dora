@@ -91,6 +91,13 @@ pub(super) async fn contain_exited_group(
     /// wait ends right after the last member exits, long enough to be free.
     const POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
+    /// How often the zombie-aware check runs. `killpg` is one syscall, but
+    /// telling a corpse from a live member costs a `/proc` scan, and a dataflow
+    /// stopping many nodes at once would pay it per node per poll. Once per
+    /// `ZOMBIE_CHECK_EVERY` polls is well under a tenth of a core per stopping
+    /// node, and bounds the extra wait for a zombie-only group to a second.
+    const ZOMBIE_CHECK_EVERY: u32 = 4;
+
     let Some((soft_kill_at, kill_at)) = stop else {
         // Nothing is waiting for this group: its members are abandoned, which
         // only the `dora run` path acts on. Everywhere else they are somebody's
@@ -106,7 +113,9 @@ pub(super) async fn contain_exited_group(
         // with a short-lived node that their node had been SIGKILLed. The
         // kernel's answer is the whole one, for the same reason as in the loop
         // below: the leader is reaped, so a group still holding a member holds
-        // something alive.
+        // something alive. (A zombie counts as a member there too; on this
+        // branch that costs a spurious warning, which is why the check below
+        // bothers to exclude them.)
         if !group_has_members(pid) {
             return;
         }
@@ -118,6 +127,7 @@ pub(super) async fn contain_exited_group(
         return;
     };
     let mut replayed = signalled;
+    let mut since_zombie_check = 0;
 
     loop {
         // Re-checking is also what keeps the wait from outliving the group: the
@@ -128,14 +138,27 @@ pub(super) async fn contain_exited_group(
         //
         // And the kernel's answer is the whole one here: the leader is reaped
         // before this runs, so a group still holding a member holds something
-        // alive, not just a corpse. `killpg(pgid, 0)` does count a zombie, so
-        // a reparented grandchild that has exited but that its new parent has
-        // not reaped yet reads as a member. That only costs a no-op signal and,
-        // on the `dora run` branch above, a warning about a group that is
-        // already down — the alternative was reading the group as empty and
-        // walking away from a live orphan (#3472 review).
-        if !group_has_members(pid) {
-            return;
+        // alive, not just a corpse — with one exception. `killpg(pgid, 0)`
+        // counts a zombie, so a reparented grandchild that has exited but whose
+        // new parent has not reaped it yet reads as a member, and it is not
+        // ours to reap: only PID 1 can, so under any init that leaves orphans
+        // lying (`docker run` without `--init`, with dora not PID 1) it may never
+        // be.
+        //
+        // On the `dora run` branch above that costs a no-op signal and a warning
+        // about a group that is already down. Here it is worse, because this
+        // check decides when the wait *ends*, and the caller sends the node's
+        // exit report only after this returns (`prepared.rs`). So a zombie keeps
+        // a correctly-stopped node's report — and with it the dataflow
+        // finishing, `dora run` exiting and any restart — held back until
+        // `kill_at`, and logs a false "ignored the stop grace period" on the
+        // way. See `group_has_live_member` for what that costs to fix.
+        since_zombie_check += 1;
+        if since_zombie_check >= ZOMBIE_CHECK_EVERY {
+            since_zombie_check = 0;
+            if !group_has_members(pid) {
+                return;
+            }
         }
         let now = tokio::time::Instant::now();
         if now >= kill_at {
@@ -155,11 +178,73 @@ pub(super) async fn contain_exited_group(
     }
 }
 
-/// Whether the process group still has a member left in it.
+/// Whether the process group still holds anything worth signalling, treating a
+/// zombie as gone.
+///
+/// `killpg(pgid, 0)` cannot tell those apart: a zombie stays in its group until
+/// it is reaped, so it answers 0 for a group with nothing left to signal. When
+/// the members are our own children that gap is invisible — the process-wait
+/// task reaps them. It is not invisible for a reparented grandchild, which is
+/// not ours to reap: only PID 1 can, and an init that leaves orphans lying
+/// (`docker run` without `--init`, with dora not PID 1) may never.
+///
+/// The cost is not a stale log line. On the stop branch this decides when the
+/// wait *ends*, and the caller reports the node's exit only after it returns
+/// (`prepared.rs`), so a zombie holds back the dataflow finishing, `dora run`
+/// exiting and any restart for the rest of the grace period — and logs a false
+/// "ignored the stop grace period" on the way. Treating a zombie-only group as
+/// empty is safe: a group cannot gain a member except by a member forking into
+/// it, so once all of them are zombies it is empty for good, and there is
+/// nothing left to signal either way.
+///
+/// Linux exposes the state, so ask it. The scan costs a few milliseconds per
+/// process group, which is why the caller pays it only every `ZOMBIE_CHECK_EVERY`
+/// polls rather than every poll. Elsewhere the `killpg` answer stands.
 #[cfg(unix)]
 fn group_has_members(pid: u32) -> bool {
     // SAFETY: signal 0 performs error checking only and sends no signal.
-    unsafe { libc::killpg(pid as libc::pid_t, 0) == 0 }
+    if unsafe { libc::killpg(pid as libc::pid_t, 0) } != 0 {
+        return false;
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let pgid = pid as libc::pid_t;
+        let Ok(dir) = std::fs::read_dir("/proc") else {
+            return true;
+        };
+        for entry in dir.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if !name.as_bytes()[0].is_ascii_digit() {
+                continue;
+            }
+            let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+                // The process exited between readdir and now, or is not ours to
+                // read. Either way it is not a live member we can act on.
+                continue;
+            };
+            // `pid (comm) state ppid pgrp ...`, and comm can contain both spaces
+            // and parens, so the fields after it start at the *last* `)`.
+            let Some(state_and_rest) = stat.rsplit_once(')').map(|(_, rest)| rest) else {
+                continue;
+            };
+            let mut fields = state_and_rest.split_whitespace();
+            let (Some(state), Some(_ppid), Some(pgrp)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if state != "Z" && pgrp.parse::<libc::pid_t>().ok() == Some(pgid) {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// Signal the whole group, best effort: an already-empty group just yields ESRCH.
@@ -228,6 +313,31 @@ mod tests {
         (leader, child_pid)
     }
 
+    /// A group whose only member is a corpse, which is what an unreaped child
+    /// looks like: it stays in its group, `killpg` keeps answering 0 for it, and
+    /// nothing but its parent can clear it.
+    ///
+    /// `std::process::Child` is what makes this deterministic. Dropping one
+    /// leaks the child as a zombie, because `std` never reaps without an
+    /// explicit `wait`, whereas `tokio::process::Child` reaps in the background
+    /// the moment it is dropped and the zombie is gone before the first
+    /// assertion. `process_group(0)` then puts that corpse alone in its group:
+    /// the child is its own group leader, so there is no second member to keep
+    /// the group occupied. Returns the group, which is the zombie's own pid.
+    async fn spawn_zombie_only_group() -> (std::process::Child, u32) {
+        use std::os::unix::process::CommandExt as _;
+
+        // No `wait` yet: that is what keeps it a zombie.
+        let child = std::process::Command::new("true")
+            .process_group(0)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn the group leader");
+        let pgid = wait_until_zombie_only().await;
+        (child, pgid)
+    }
+
     /// A child that only stops when the group is killed: it ignores the stop it
     /// is first asked for, so only the escalation can end it.
     const TERM_IGNORING_CHILD: &str = "trap '' TERM; sleep 300";
@@ -256,6 +366,96 @@ mod tests {
         }
         // SAFETY: signal 0 performs error checking only and sends no signal.
         unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    /// The production check, not the test helper: a group whose only member is
+    /// an unreaped zombie must read as empty, or the wait runs to `kill_at` and
+    /// the node's exit report — and the dataflow finishing — is held back with
+    /// it. This is the case a non-reaping PID 1 makes permanent.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_zombie_only_group_has_no_live_member() {
+        // The leader is our own child and is not reaped until the assertions are
+        // done, so unlike a reparented grandchild this zombie needs no help from
+        // PID 1 to survive the test.
+        let (mut leader, pgid) = spawn_zombie_only_group().await;
+
+        // The premise: the cheap syscall still sees it, so this test cannot pass
+        // by accident on a platform where the group is genuinely empty.
+        // SAFETY: signal 0 performs error checking only and sends no signal.
+        assert_eq!(
+            unsafe { libc::killpg(pgid as libc::pid_t, 0) },
+            0,
+            "killpg must still report the zombie, else this proves nothing"
+        );
+
+        assert!(
+            !group_has_members(pgid),
+            "a group whose only member is a corpse must read as empty (#3472 review)"
+        );
+
+        // And a group with something running in it must still read as occupied,
+        // or the fix would end every wait early and leave the group behind.
+        let mut live = tokio::process::Command::new("sleep")
+            .arg("300")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let live_pgid = unsafe { libc::getpgid(live.id().unwrap() as libc::pid_t) } as u32;
+        assert!(
+            group_has_members(live_pgid),
+            "a group with a running member must still read as occupied"
+        );
+        let _ = live.kill().await;
+
+        // Reap the corpse. Leaking it would keep a zombie parented to the test
+        // binary for the rest of the run, which every other test's `/proc`
+        // lookup then has to look past.
+        let _ = leader.wait();
+    }
+
+    /// Wait for the freshly spawned group to be nothing but an unreaped corpse,
+    /// and hand back its group. Returns once that is true, so the caller's
+    /// premise cannot be a race.
+    #[cfg(target_os = "linux")]
+    async fn wait_until_zombie_only() -> u32 {
+        // SAFETY: reads our own group, and nothing.
+        let our_pgid = unsafe { libc::getpgid(0) };
+        for _ in 0..200 {
+            for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+                let Ok(name) = entry.file_name().into_string() else {
+                    continue;
+                };
+                if !name.as_bytes()[0].is_ascii_digit() {
+                    continue;
+                }
+                let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+                    continue;
+                };
+                let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r) else {
+                    continue;
+                };
+                let mut f = rest.split_whitespace();
+                let (Some(state), Some(ppid), Some(pgrp)) = (f.next(), f.next(), f.next()) else {
+                    continue;
+                };
+                // Our own dead child, alone in a group of its own: the
+                // test binary's pgid is excluded so a zombie from another
+                // test cannot be mistaken for this one.
+                if state == "Z"
+                    && ppid.parse::<u32>().ok() == Some(std::process::id())
+                    && pgrp.parse::<i32>().ok() != Some(our_pgid)
+                {
+                    return pgrp.parse().unwrap();
+                }
+            }
+            // On the tokio clock, not `std::thread::sleep`: `#[tokio::test]`
+            // runs a single-threaded runtime, and blocking that thread stalls
+            // every other test sharing the process to the point where their own
+            // timers fire late.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("no lone zombie of ours appeared");
     }
 
     /// The helper the rest of these tests lean on: a child that has exited but
