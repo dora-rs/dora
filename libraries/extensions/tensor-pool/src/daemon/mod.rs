@@ -1005,9 +1005,17 @@ mod cross_pool_write_tests {
             });
             let payload: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8).collect();
             let conns = Arc::new(std::sync::Mutex::new(HashMap::new()));
-            send_cross_data_frame(&conns, addr, dataflow_id, pool_id, 42, &payload)
-                .await
-                .unwrap();
+            send_cross_data_frame(
+                &conns,
+                addr,
+                dataflow_id,
+                pool_id,
+                42,
+                &payload,
+                CROSS_DATA_READ_TIMEOUT,
+            )
+            .await
+            .unwrap();
             let ack_info = server.await.unwrap().unwrap().unwrap();
             assert_eq!(ack_info.0, dataflow_id);
             assert_eq!(ack_info.1, pool_id);
@@ -1025,6 +1033,62 @@ mod cross_pool_write_tests {
             let generation =
                 unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
             assert_eq!(generation % 2, 0, "odd generation after write");
+        });
+    }
+
+    /// The origin's direct-TCP send is bounded (#3688): a mirror that
+    /// accepts the connection but stops reading must fail the send
+    /// instead of leaving the task streaming forever, and the stalled
+    /// mid-frame connection must not be pooled for reuse.
+    #[test]
+    fn direct_tcp_send_times_out_on_stalled_peer() {
+        // Token-less contract, see `direct_tcp_frame_round_trip_writes_mirror`.
+        // SAFETY (env mutation in tests): serialized by `CROSS_DATA_AUTH_ENV_LOCK`.
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            // Accept and hold the connection without ever reading, so the
+            // socket buffers fill and the sender's write stalls.
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                drop(stream);
+            });
+            // Far larger than any loopback socket buffer pair.
+            let payload = vec![0u8; 32 * 1024 * 1024];
+            let conns = Arc::new(std::sync::Mutex::new(HashMap::new()));
+            let started = std::time::Instant::now();
+            let err = send_cross_data_frame(
+                &conns,
+                addr,
+                Uuid::new_v4(),
+                "pool_node_0",
+                1,
+                &payload,
+                std::time::Duration::from_millis(300),
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                matches!(err, DirectSendError::TimedOut(_)),
+                "unexpected error: {err}"
+            );
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(10),
+                "send was not bounded by its timeout"
+            );
+            assert!(
+                conns.lock().unwrap().is_empty(),
+                "a timed-out mid-frame connection must not be reused"
+            );
+            server.abort();
         });
     }
 
