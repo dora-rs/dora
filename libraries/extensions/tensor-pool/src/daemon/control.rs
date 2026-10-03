@@ -2,12 +2,54 @@
 
 use super::*;
 
+/// The zenoh key for pool messages addressed to `target_machine`.
+///
+/// `None` is the dataflow-wide broadcast key every participating daemon
+/// subscribes to. `Some` is a per-machine key below it that only that
+/// daemon subscribes to, so zenoh routes the bytes to that daemon alone
+/// rather than to every daemon in the dataflow (#3689).
+pub(crate) fn pool_message_topic(dataflow_id: &Uuid, target_machine: Option<&str>) -> String {
+    let base = dataflow_extension_topic(dataflow_id, NAMESPACE);
+    match target_machine {
+        None => base,
+        Some(machine_id) => format!("{base}/machine/{}", machine_key_chunk(machine_id)),
+    }
+}
+
+/// Encode a machine id as one non-empty zenoh key chunk. Machine ids are
+/// free-form, so `/` and zenoh's wildcard/verbatim characters (`*`, `$`,
+/// `#`, `?`) must not reach the key; everything outside `[A-Za-z0-9.-]`
+/// (including `_`, the escape itself) becomes `_xx`. Injective, so two
+/// machines never share a key; the empty id maps to a bare `_`.
+fn machine_key_chunk(machine_id: &str) -> String {
+    use std::fmt::Write;
+
+    if machine_id.is_empty() {
+        return "_".to_string();
+    }
+    let mut chunk = String::with_capacity(machine_id.len());
+    for byte in machine_id.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-' {
+            chunk.push(byte as char);
+        } else {
+            let _ = write!(chunk, "_{byte:02x}");
+        }
+    }
+    chunk
+}
+
 /// Publish one [`PeerMessage`] to the dataflow's extension topic, wrapped in
 /// dora's opaque [`InterDaemonEvent::ExtensionMessage`] envelope.
 ///
 /// `target_machine` addresses a single daemon (`None` = every daemon in the
-/// dataflow); dora drops the message on every daemon it does not name, so
-/// this side needs no gating of its own.
+/// dataflow); dora drops the message on every daemon it does not name.
+///
+/// A targeted bulk [`PeerMessage::Write`] goes on the target's own key
+/// (see [`pool_message_topic`]), so its payload — up to 1 GiB — crosses
+/// the network to the mirror only, not to every daemon in the dataflow
+/// (#3689). KB-scale control messages stay on the broadcast key, which
+/// keeps register, ack and free working with daemons that subscribe to
+/// the broadcast key alone.
 ///
 /// serialize + declare + put all run off the event loop (Block congestion
 /// control can block declare_publisher on a degraded link). Logs the
@@ -36,7 +78,7 @@ pub(crate) async fn publish_pool_message(
     }
     .serialize()?;
     let payload_len = serialized.len();
-    let topic = dataflow_extension_topic(dataflow_id, NAMESPACE);
+    let topic = pool_message_topic(dataflow_id, target_machine.filter(|_| is_bulk));
     // Zenoh errors are boxed trait objects — eyre's `From` conversion
     // needs a Sized error, so convert explicitly instead of `?`.
     let declared = std::time::Instant::now();

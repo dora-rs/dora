@@ -530,35 +530,7 @@ mod cross_pool_write_tests {
     async fn serve_error_publishes_failed_write_ack() {
         use tokio::io::AsyncWriteExt;
 
-        // Hermetic zenoh pair: mirror listens, origin dials; no scouting.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-        let mut mirror_cfg = zenoh::Config::default();
-        let mut origin_cfg = zenoh::Config::default();
-        for cfg in [&mut mirror_cfg, &mut origin_cfg] {
-            cfg.insert_json5("scouting/multicast/enabled", "false")
-                .unwrap();
-            cfg.insert_json5("scouting/gossip/enabled", "false")
-                .unwrap();
-        }
-        mirror_cfg
-            .insert_json5(
-                "listen/endpoints",
-                &format!(r#"{{ peer: ["tcp/127.0.0.1:{port}"] }}"#),
-            )
-            .unwrap();
-        mirror_cfg
-            .insert_json5("listen/exit_on_failure", "false")
-            .unwrap();
-        origin_cfg
-            .insert_json5(
-                "connect/endpoints",
-                &format!(r#"{{ peer: ["tcp/127.0.0.1:{port}"] }}"#),
-            )
-            .unwrap();
-        let mirror_session = zenoh::open(mirror_cfg).await.unwrap();
-        let origin_session = zenoh::open(origin_cfg).await.unwrap();
+        let (mirror_session, origin_session) = hermetic_zenoh_pair().await;
 
         // Mirror pool the frame will target.
         let dataflow_id = Uuid::new_v4();
@@ -639,8 +611,8 @@ mod cross_pool_write_tests {
                         InterDaemonEvent::ExtensionMessage {
                             dataflow_id: df,
                             namespace,
+                            target_machine,
                             payload,
-                            ..
                         } => {
                             assert_eq!(namespace, NAMESPACE);
                             let PeerMessage::WriteAck {
@@ -656,6 +628,7 @@ mod cross_pool_write_tests {
                             assert_eq!(shared_memory_id, pool_id);
                             assert_eq!(seq, 1);
                             assert!(!ok, "failed write must ack ok=false");
+                            assert_eq!(target_machine.as_deref(), Some("A"));
                             assert!(
                                 error.is_some()
                                     && (error.as_deref().unwrap().contains("overflow")
@@ -678,6 +651,135 @@ mod cross_pool_write_tests {
             }
         }
         assert!(ack_received, "failed-write ack never arrived over zenoh");
+    }
+
+    /// Hermetic zenoh pair over loopback TCP: the mirror listens, the
+    /// origin dials, no scouting — so a test can neither touch nor be
+    /// touched by other zenoh instances on the host. Two sessions because
+    /// pool messages are published with `Locality::Remote`: a same-session
+    /// subscriber would never receive its own put.
+    async fn hermetic_zenoh_pair() -> (zenoh::Session, zenoh::Session) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut mirror_cfg = zenoh::Config::default();
+        let mut origin_cfg = zenoh::Config::default();
+        for cfg in [&mut mirror_cfg, &mut origin_cfg] {
+            cfg.insert_json5("scouting/multicast/enabled", "false")
+                .unwrap();
+            cfg.insert_json5("scouting/gossip/enabled", "false")
+                .unwrap();
+        }
+        mirror_cfg
+            .insert_json5(
+                "listen/endpoints",
+                &format!(r#"{{ peer: ["tcp/127.0.0.1:{port}"] }}"#),
+            )
+            .unwrap();
+        mirror_cfg
+            .insert_json5("listen/exit_on_failure", "false")
+            .unwrap();
+        origin_cfg
+            .insert_json5(
+                "connect/endpoints",
+                &format!(r#"{{ peer: ["tcp/127.0.0.1:{port}"] }}"#),
+            )
+            .unwrap();
+        let mirror_session = zenoh::open(mirror_cfg).await.unwrap();
+        let origin_session = zenoh::open(origin_cfg).await.unwrap();
+        (mirror_session, origin_session)
+    }
+
+    /// A relayed bulk `Write` addressed to the mirror goes on the
+    /// mirror's own machine key, so a daemon listening only on the
+    /// dataflow's broadcast key never receives the payload (#3689).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn relayed_write_is_routed_to_the_mirror_only() {
+        let (mirror_session, origin_session) = hermetic_zenoh_pair().await;
+        let df = Uuid::new_v4();
+        let mirror = mirror_session
+            .declare_subscriber(pool_message_topic(&df, Some("B")))
+            .await
+            .unwrap();
+        let bystander = mirror_session
+            .declare_subscriber(pool_message_topic(&df, None))
+            .await
+            .unwrap();
+
+        // Retry the put until it arrives: the subscriber interest must
+        // propagate to the origin session over the fresh link first.
+        let clock = Arc::new(HLC::default());
+        let mut received = None;
+        for _ in 0..10 {
+            publish_pool_message(
+                &origin_session,
+                &clock,
+                &df,
+                Some("B"),
+                &PeerMessage::Write {
+                    shared_memory_id: "pool_node_0".to_string(),
+                    tensor_data: vec![7; 1024],
+                    size: 1024,
+                    seq: 1,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+            if let Ok(Ok(sample)) =
+                tokio::time::timeout(std::time::Duration::from_secs(2), mirror.recv_async()).await
+            {
+                received = Some(sample);
+                break;
+            }
+        }
+        let sample = received.expect("relayed write never reached the mirror's key");
+        let event = Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(
+            &sample.payload().to_bytes(),
+        )
+        .unwrap();
+        let InterDaemonEvent::ExtensionMessage { target_machine, .. } = event.inner else {
+            panic!("unexpected event: {:?}", event.inner)
+        };
+        assert_eq!(target_machine.as_deref(), Some("B"));
+        assert!(
+            bystander.try_recv().unwrap().is_none(),
+            "a relayed write must not reach daemons on the broadcast key"
+        );
+    }
+
+    /// Machine-addressed pool messages get a per-machine key below the
+    /// broadcast key (#3689); the machine chunk is injective and never carries a
+    /// key separator or zenoh wildcard.
+    #[test]
+    fn pool_message_topic_is_per_machine_for_targeted_messages() {
+        let df = Uuid::new_v4();
+        let broadcast = pool_message_topic(&df, None);
+        assert_eq!(broadcast, dataflow_extension_topic(&df, NAMESPACE));
+        assert_eq!(
+            pool_message_topic(&df, Some("gpu-box.1")),
+            format!("{broadcast}/machine/gpu-box.1")
+        );
+        assert_eq!(
+            pool_message_topic(&df, Some("a/*$#?_b")),
+            format!("{broadcast}/machine/a_2f_2a_24_23_3f_5fb")
+        );
+        assert_eq!(
+            pool_message_topic(&df, Some("")),
+            format!("{broadcast}/machine/_")
+        );
+        // `_` is escaped too, so an id that spells an escape stays distinct.
+        assert_ne!(
+            pool_message_topic(&df, Some("a_2f")),
+            pool_message_topic(&df, Some("a/"))
+        );
+        for machine in ["a/*$#?_b", "", "x y", "ü"] {
+            let topic = pool_message_topic(&df, Some(machine));
+            assert!(
+                zenoh::key_expr::KeyExpr::try_from(topic.clone()).is_ok(),
+                "{topic} must be a valid zenoh key"
+            );
+        }
     }
 
     /// A payload read that fails mid-frame (TCP drop) leaves the seqlock
@@ -807,38 +909,7 @@ mod cross_pool_write_tests {
     /// never receive its own put.
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn zenoh_ack_publish_resolves_pending_reply() {
-        // Free loopback port for the mirror session's listener.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        drop(listener);
-
-        let mut mirror_cfg = zenoh::Config::default();
-        let mut origin_cfg = zenoh::Config::default();
-        for cfg in [&mut mirror_cfg, &mut origin_cfg] {
-            // Hermetic: no scouting, so the test can neither touch nor be
-            // touched by other zenoh instances on the host.
-            cfg.insert_json5("scouting/multicast/enabled", "false")
-                .unwrap();
-            cfg.insert_json5("scouting/gossip/enabled", "false")
-                .unwrap();
-        }
-        mirror_cfg
-            .insert_json5(
-                "listen/endpoints",
-                &format!(r#"{{ peer: ["tcp/127.0.0.1:{port}"] }}"#),
-            )
-            .unwrap();
-        mirror_cfg
-            .insert_json5("listen/exit_on_failure", "false")
-            .unwrap();
-        origin_cfg
-            .insert_json5(
-                "connect/endpoints",
-                &format!(r#"{{ peer: ["tcp/127.0.0.1:{port}"] }}"#),
-            )
-            .unwrap();
-        let mirror_session = zenoh::open(mirror_cfg).await.unwrap();
-        let origin_session = zenoh::open(origin_cfg).await.unwrap();
+        let (mirror_session, origin_session) = hermetic_zenoh_pair().await;
 
         let df = Uuid::new_v4();
         let pool = "pool_sender_node_1".to_string();
