@@ -63,14 +63,14 @@ fn with_noisy_crates_off(mut filter: EnvFilter) -> EnvFilter {
 }
 
 /// Whether `RUST_LOG` already carries a directive targeting `target` (the exact
-/// crate/module, or a submodule of it), so a hard-coded default for that target
-/// should defer to the user's choice instead of being appended.
+/// crate/module, or a submodule of it), so the user's directive for it must
+/// override the hard-coded default (see [`with_target_default`]).
 ///
 /// `RUST_LOG` is a comma-separated list of `[target[=level]]` directives. Match
 /// the directive's target on a name boundary — exactly `target`, or a
 /// `target::…` submodule — rather than with a bare substring, so an unrelated
 /// directive that merely contains the letters (e.g. `zenoh_transport=trace` or
-/// `my_dora_daemon=info`) does not silently suppress the intended default.
+/// `my_dora_daemon=info`) is not applied to the wrong target.
 fn env_configures_target(env_log: &str, target: &str) -> bool {
     env_log.split(',').any(|directive| {
         // The bare target name is everything up to the first `=` (level) or `[`
@@ -82,6 +82,42 @@ fn env_configures_target(env_log: &str, target: &str) -> bool {
                 .strip_prefix(target)
                 .is_some_and(|rest| rest.starts_with("::"))
     })
+}
+
+/// Add the hard-coded `default` directive for `target` to `filter`, followed
+/// by any `RUST_LOG` directives for that target (or a submodule of it), which
+/// take precedence over the default.
+///
+/// Just leaving the default out when `RUST_LOG` names the target is not
+/// enough: the stdout filters are `EnvFilter::from_default_env().or(filter)`,
+/// which enables an event when *either* side does, so a target missing from
+/// `filter` falls back to its global level. A `RUST_LOG=zenoh=error` meant to
+/// quiet zenoh would then let zenoh through at `info`, louder than the
+/// `zenoh=warn` default.
+fn with_target_default(
+    filter: EnvFilter,
+    env_log: &str,
+    target: &str,
+    default: &'static str,
+) -> EnvFilter {
+    let mut filter = filter.add_directive(directive(default));
+    for user_directive in env_log
+        .split(',')
+        .filter(|d| env_configures_target(d, target))
+    {
+        if let Ok(user_directive) = user_directive.trim().parse::<Directive>() {
+            filter = filter.add_directive(user_directive);
+        }
+    }
+    filter
+}
+
+/// The non-`RUST_LOG` side of [`TracingBuilder::with_stdout`]'s filter.
+fn stdout_filter(filter: &str, env_log: &str) -> EnvFilter {
+    let parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
+    let parsed = with_target_default(parsed, env_log, "dora_daemon", "dora_daemon=info");
+    let parsed = with_target_default(parsed, env_log, "dora_core", "dora_core=warn");
+    with_target_default(parsed, env_log, "zenoh", "zenoh=warn")
 }
 
 /// Setup tracing with a default configuration.
@@ -129,11 +165,9 @@ impl TracingBuilder {
     /// This is the recommended layer for user nodes: `tracing::info!()` calls
     /// are automatically parsed by the daemon and routed through the log pipeline.
     pub fn with_node_stdout(mut self, filter: impl AsRef<str>) -> Self {
-        let mut parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
+        let parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
-        if !env_configures_target(&env_log, "zenoh") {
-            parsed = parsed.add_directive(directive("zenoh=warn"));
-        }
+        let parsed = with_target_default(parsed, &env_log, "zenoh", "zenoh=warn");
         let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
             .json()
@@ -149,17 +183,8 @@ impl TracingBuilder {
     /// it uses [std::io::stdout] which is synchronous
     /// and might block the logging thread.
     pub fn with_stdout(mut self, filter: impl AsRef<str>, json: bool) -> Self {
-        let mut parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
-        if !env_configures_target(&env_log, "dora_daemon") {
-            parsed = parsed.add_directive(directive("dora_daemon=info"));
-        }
-        if !env_configures_target(&env_log, "dora_core") {
-            parsed = parsed.add_directive(directive("dora_core=warn"));
-        }
-        if !env_configures_target(&env_log, "zenoh") {
-            parsed = parsed.add_directive(directive("zenoh=warn"));
-        }
+        let parsed = stdout_filter(filter.as_ref(), &env_log);
         let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
             .compact()
@@ -228,11 +253,13 @@ impl TracingBuilder {
 
         self.guard = Some(guard);
         self.layers.push(MetricsLayer::new(meter_provider).boxed());
-        let mut filter_otel = with_noisy_crates_off(EnvFilter::new("trace"));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
-        if !env_configures_target(&env_log, "dora_daemon") {
-            filter_otel = filter_otel.add_directive(directive("dora_daemon=debug"));
-        }
+        let filter_otel = with_target_default(
+            with_noisy_crates_off(EnvFilter::new("trace")),
+            &env_log,
+            "dora_daemon",
+            "dora_daemon=debug",
+        );
         self.layers.push(
             OpenTelemetryLayer::new(tracer)
                 .with_filter(filter_otel)
@@ -368,8 +395,53 @@ fn log_file_path(out_dir: &Path, file_name: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{env_configures_target, log_file_path};
+    use super::{EnvFilter, Layer, env_configures_target, log_file_path, stdout_filter};
     use std::path::Path;
+    use tracing::Level;
+    use tracing_subscriber::{filter::FilterExt, layer::SubscriberExt};
+
+    /// Whether `target` at `level` passes `with_stdout("info", _)`'s filter
+    /// with `RUST_LOG` set to `env_log`.
+    fn stdout_enabled(env_log: &str, target: &'static str, level: Level) -> bool {
+        let filter = EnvFilter::builder()
+            .parse_lossy(env_log)
+            .or(stdout_filter("info", env_log));
+        let layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::io::sink)
+            .with_filter(filter);
+        let subscriber = tracing_subscriber::Registry::default().with(layer);
+        tracing::subscriber::with_default(subscriber, || match (target, level) {
+            ("zenoh", Level::INFO) => tracing::enabled!(target: "zenoh", Level::INFO),
+            ("zenoh", Level::WARN) => tracing::enabled!(target: "zenoh", Level::WARN),
+            ("zenoh", Level::DEBUG) => tracing::enabled!(target: "zenoh", Level::DEBUG),
+            ("zenoh::net", Level::INFO) => tracing::enabled!(target: "zenoh::net", Level::INFO),
+            ("zenoh::net", Level::WARN) => tracing::enabled!(target: "zenoh::net", Level::WARN),
+            ("dora_core", Level::INFO) => tracing::enabled!(target: "dora_core", Level::INFO),
+            other => unreachable!("add a case for {other:?}"),
+        })
+    }
+
+    #[test]
+    fn quieter_rust_log_for_a_target_is_not_louder_than_the_default() {
+        // Defaults with no RUST_LOG.
+        assert!(!stdout_enabled("", "zenoh", Level::INFO));
+        assert!(stdout_enabled("", "zenoh", Level::WARN));
+        // Asking for less zenoh output must not yield more.
+        assert!(!stdout_enabled("zenoh=error", "zenoh", Level::INFO));
+        assert!(!stdout_enabled("zenoh=error", "zenoh", Level::WARN));
+        assert!(!stdout_enabled("zenoh=off", "zenoh", Level::WARN));
+        assert!(!stdout_enabled("dora_core=error", "dora_core", Level::INFO));
+        // A submodule directive keeps the default for the rest of the crate.
+        assert!(!stdout_enabled("zenoh::net=error", "zenoh", Level::INFO));
+        assert!(!stdout_enabled(
+            "zenoh::net=error",
+            "zenoh::net",
+            Level::WARN
+        ));
+        // Raising verbosity still works.
+        assert!(stdout_enabled("zenoh=debug", "zenoh", Level::DEBUG));
+        assert!(stdout_enabled("zenoh::net=info", "zenoh::net", Level::INFO));
+    }
 
     #[test]
     fn log_file_path_keeps_dots_in_the_name() {
