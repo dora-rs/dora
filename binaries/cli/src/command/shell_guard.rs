@@ -1,5 +1,5 @@
 use eyre::Context;
-use std::time::Duration;
+use std::{process::Command, time::Duration};
 
 use super::Executable;
 use dora_core::topics::DORA_RUN_PARENT_PID_ENV;
@@ -134,8 +134,10 @@ fn armed(program: &str, args: &[String], parent: u32) -> eyre::Result<()> {
         std::process::exit(0);
     }
 
-    let mut child = Command::new(program)
-        .args(args)
+    let mut command = Command::new(program);
+    command.args(args);
+    restore_node_python_env(&mut command);
+    let mut child = command
         .spawn()
         .wrap_err_with(|| format!("failed to spawn `{program}` under guard"))?;
 
@@ -184,6 +186,28 @@ const STOP_SIGNALS: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHU
 /// ignored dispositions survive `exec` and would be inherited by the shell,
 /// changing shell semantics (e.g. rustup/sccache proxies that expect TERM to
 /// hurt).
+/// Put the node's interpreter selection back on `child`.
+///
+/// The daemon keeps `PYTHONHOME`/`PYTHONPATH` off the guard host on purpose,
+/// because the host may be a python console script (the `dora-rs-cli` wheel)
+/// and a node's interpreter settings can stop that python from starting, which
+/// would take the guard down with it. The child is the process those variables
+/// were meant for, so hand them over here — under the names the daemon chose,
+/// which it strips from its own environment on the way in.
+fn restore_node_python_env(child: &mut Command) {
+    for var in ["PYTHONHOME", "PYTHONPATH"] {
+        if let Ok(value) = std::env::var(format!("{GUARD_ENV_PREFIX}{var}")) {
+            child.env(var, value);
+        }
+    }
+}
+
+/// Prefix the daemon hands `restore_node_python_env`'s variables under, spelled
+/// the same as `GUARD_ENV_PREFIX` in the daemon's `spawn/command.rs`. One
+/// string in two crates, so they have to be changed together — if either is
+/// edited alone the node silently loses its interpreter.
+const GUARD_ENV_PREFIX: &str = "DORA_SHELL_GUARD_";
+
 extern "C" fn swallow_stop_signal(_signal: libc::c_int) {}
 
 fn install_stop_signal_handlers() -> eyre::Result<()> {
@@ -315,6 +339,40 @@ fn clear_parent_death_signal() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The child's interpreter selection is restored from the passthrough, so a
+    /// node that needs `PYTHONHOME` still gets it even though the guard host
+    /// runs without it.
+    #[test]
+    fn the_node_python_env_reaches_the_child_but_not_the_host() {
+        let mut command = Command::new("sh");
+        // SAFETY: single-threaded test process for this test; the vars are
+        // process-global, so they are restored immediately below.
+        unsafe {
+            std::env::set_var("DORA_SHELL_GUARD_PYTHONHOME", "/opt/py");
+            std::env::remove_var("PYTHONHOME");
+        }
+        restore_node_python_env(&mut command);
+
+        let envs: Vec<(String, Option<String>)> = command
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(
+            envs.contains(&("PYTHONHOME".into(), Some("/opt/py".into()))),
+            "the child must get the node's PYTHONHOME back, got {envs:?}"
+        );
+        assert!(
+            !envs.iter().any(|(k, _)| k.starts_with(GUARD_ENV_PREFIX)),
+            "the passthrough names are the daemon's business, not the child's: {envs:?}"
+        );
+        unsafe { std::env::remove_var("DORA_SHELL_GUARD_PYTHONHOME") };
+    }
 
     /// The guard must never be the executable in a core dump: it dies from the
     /// guarded process's signal by design, and `ulimit -c` is inherited (#3472
