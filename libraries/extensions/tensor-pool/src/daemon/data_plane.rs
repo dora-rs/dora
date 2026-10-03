@@ -385,6 +385,25 @@ pub(crate) async fn handle_cross_data_frame(
     Ok(Some((dataflow_id, shared_memory_id, seq)))
 }
 
+/// Why [`send_cross_data_frame`] failed.
+#[derive(Debug)]
+pub(crate) enum DirectSendError {
+    /// The frame could not be sent; the zenoh relay may still deliver it.
+    Failed(String),
+    /// Sending the frame outlasted its bound. The ack window is nearly
+    /// spent, so relaying the frame would only race the safety-net
+    /// timeout — the write is failed instead.
+    TimedOut(String),
+}
+
+impl std::fmt::Display for DirectSendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failed(e) | Self::TimedOut(e) => f.write_str(e),
+        }
+    }
+}
+
 /// Send one direct-TCP data frame to a peer's data listener (origin side).
 /// Reuses a persistent connection per endpoint; a dead connection is
 /// dropped and re-established lazily. The connection is taken out of the
@@ -393,6 +412,12 @@ pub(crate) async fn handle_cross_data_frame(
 /// map lock instead — fine for the turn-based benchmark cadence. When
 /// auth is configured, a freshly connected socket performs the token
 /// handshake before the first frame.
+///
+/// Sending the frame is bounded by `send_timeout` (production passes
+/// [`CROSS_DATA_READ_TIMEOUT`], the limit the mirror applies to reading
+/// it): past that the mirror has given up on the frame anyway, and an
+/// unbounded send would keep streaming a payload nobody is waiting for
+/// after the node's write already failed (#3688).
 pub(crate) async fn send_cross_data_frame(
     conns: &Arc<std::sync::Mutex<HashMap<std::net::SocketAddr, tokio::net::TcpStream>>>,
     endpoint: std::net::SocketAddr,
@@ -400,7 +425,8 @@ pub(crate) async fn send_cross_data_frame(
     shared_memory_id: &str,
     seq: u64,
     data: &[u8],
-) -> Result<(), String> {
+    send_timeout: std::time::Duration,
+) -> Result<(), DirectSendError> {
     use tokio::io::AsyncWriteExt;
 
     let mut stream = {
@@ -418,8 +444,10 @@ pub(crate) async fn send_cross_data_frame(
                     tokio::net::TcpStream::connect(endpoint),
                 )
                 .await
-                .map_err(|_| format!("connect timeout to {endpoint}"))?
-                .map_err(|e| format!("connect to {endpoint} failed: {e}"))?;
+                .map_err(|_| DirectSendError::Failed(format!("connect timeout to {endpoint}")))?
+                .map_err(|e| {
+                    DirectSendError::Failed(format!("connect to {endpoint} failed: {e}"))
+                })?;
                 // Auth handshake on fresh connections only. A rejected
                 // handshake is an error on this side too — the caller
                 // degrades to the zenoh relay.
@@ -430,31 +458,47 @@ pub(crate) async fn send_cross_data_frame(
                         auth_handshake_send(&mut stream, &token),
                     )
                     .await
-                    .map_err(|_| format!("auth handshake timeout to {endpoint}"))?
-                    .map_err(|e| format!("auth handshake to {endpoint} failed: {e}"))?;
+                    .map_err(|_| {
+                        DirectSendError::Failed(format!("auth handshake timeout to {endpoint}"))
+                    })?
+                    .map_err(|e| {
+                        DirectSendError::Failed(format!("auth handshake to {endpoint} failed: {e}"))
+                    })?;
                 }
                 stream
             }
         }
     };
-    let mut buf = Vec::with_capacity(4 + 16 + 4 + shared_memory_id.len() + 8 + 8 + data.len());
+    let mut buf = Vec::with_capacity(4 + 16 + 4 + shared_memory_id.len() + 8 + 8);
     buf.extend_from_slice(&CROSS_DATA_MAGIC.to_be_bytes());
     buf.extend_from_slice(dataflow_id.as_bytes());
     buf.extend_from_slice(&(shared_memory_id.len() as u32).to_be_bytes());
     buf.extend_from_slice(shared_memory_id.as_bytes());
     buf.extend_from_slice(&seq.to_be_bytes());
     buf.extend_from_slice(&(data.len() as u64).to_be_bytes());
-    let result = async {
+    let result = tokio::time::timeout(send_timeout, async {
         stream.write_all(&buf).await?;
         stream.write_all(data).await?;
         stream.flush().await?;
         Ok::<(), std::io::Error>(())
-    }
+    })
     .await;
-    if let Err(e) = result {
-        // Dead connection — drop it (not re-inserted) so the next write
-        // reconnects.
-        return Err(format!("direct write to {endpoint} failed: {e}"));
+    match result {
+        Ok(Ok(())) => {}
+        // Dead or stalled connection — drop it (not re-inserted) so the
+        // next write reconnects. A timed-out stream is mid-frame, so it
+        // can never be reused.
+        Ok(Err(e)) => {
+            return Err(DirectSendError::Failed(format!(
+                "direct write to {endpoint} failed: {e}"
+            )));
+        }
+        Err(_) => {
+            return Err(DirectSendError::TimedOut(format!(
+                "direct write to {endpoint} timed out after {}s",
+                send_timeout.as_secs_f64()
+            )));
+        }
     }
     conns
         .lock()
