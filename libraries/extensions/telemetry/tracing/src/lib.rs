@@ -401,46 +401,50 @@ mod tests {
     use tracing_subscriber::{filter::FilterExt, layer::SubscriberExt};
 
     /// Whether `target` at `level` passes `with_stdout("info", _)`'s filter
-    /// with `RUST_LOG` set to `env_log`.
-    fn stdout_enabled(env_log: &str, target: &'static str, level: Level) -> bool {
-        let filter = EnvFilter::builder()
-            .parse_lossy(env_log)
-            .or(stdout_filter("info", env_log));
-        let layer = tracing_subscriber::fmt::layer()
-            .with_writer(std::io::sink)
-            .with_filter(filter);
-        let subscriber = tracing_subscriber::Registry::default().with(layer);
-        tracing::subscriber::with_default(subscriber, || match (target, level) {
-            ("zenoh", Level::INFO) => tracing::enabled!(target: "zenoh", Level::INFO),
-            ("zenoh", Level::WARN) => tracing::enabled!(target: "zenoh", Level::WARN),
-            ("zenoh", Level::DEBUG) => tracing::enabled!(target: "zenoh", Level::DEBUG),
-            ("zenoh::net", Level::INFO) => tracing::enabled!(target: "zenoh::net", Level::INFO),
-            ("zenoh::net", Level::WARN) => tracing::enabled!(target: "zenoh::net", Level::WARN),
-            ("dora_core", Level::INFO) => tracing::enabled!(target: "dora_core", Level::INFO),
-            other => unreachable!("add a case for {other:?}"),
-        })
+    /// with `RUST_LOG` set to `env_log`. A macro because `tracing::enabled!`
+    /// needs a literal target.
+    macro_rules! stdout_enabled {
+        ($env_log:expr, $target:literal, $level:expr) => {{
+            let env_log: &str = $env_log;
+            let filter = EnvFilter::builder()
+                .parse_lossy(env_log)
+                .or(stdout_filter("info", env_log));
+            let subscriber = tracing_subscriber::Registry::default()
+                .with(tracing_subscriber::layer::Identity::new().with_filter(filter));
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::enabled!(target: $target, $level)
+            })
+        }};
     }
 
     #[test]
     fn quieter_rust_log_for_a_target_is_not_louder_than_the_default() {
         // Defaults with no RUST_LOG.
-        assert!(!stdout_enabled("", "zenoh", Level::INFO));
-        assert!(stdout_enabled("", "zenoh", Level::WARN));
+        assert!(!stdout_enabled!("", "zenoh", Level::INFO));
+        assert!(stdout_enabled!("", "zenoh", Level::WARN));
         // Asking for less zenoh output must not yield more.
-        assert!(!stdout_enabled("zenoh=error", "zenoh", Level::INFO));
-        assert!(!stdout_enabled("zenoh=error", "zenoh", Level::WARN));
-        assert!(!stdout_enabled("zenoh=off", "zenoh", Level::WARN));
-        assert!(!stdout_enabled("dora_core=error", "dora_core", Level::INFO));
+        assert!(!stdout_enabled!("zenoh=error", "zenoh", Level::INFO));
+        assert!(!stdout_enabled!("zenoh=error", "zenoh", Level::WARN));
+        assert!(!stdout_enabled!("zenoh=off", "zenoh", Level::WARN));
+        assert!(!stdout_enabled!(
+            "dora_core=error",
+            "dora_core",
+            Level::INFO
+        ));
         // A submodule directive keeps the default for the rest of the crate.
-        assert!(!stdout_enabled("zenoh::net=error", "zenoh", Level::INFO));
-        assert!(!stdout_enabled(
+        assert!(!stdout_enabled!("zenoh::net=error", "zenoh", Level::INFO));
+        assert!(!stdout_enabled!(
             "zenoh::net=error",
             "zenoh::net",
             Level::WARN
         ));
         // Raising verbosity still works.
-        assert!(stdout_enabled("zenoh=debug", "zenoh", Level::DEBUG));
-        assert!(stdout_enabled("zenoh::net=info", "zenoh::net", Level::INFO));
+        assert!(stdout_enabled!("zenoh=debug", "zenoh", Level::DEBUG));
+        assert!(stdout_enabled!(
+            "zenoh::net=info",
+            "zenoh::net",
+            Level::INFO
+        ));
     }
 
     #[test]
