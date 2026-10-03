@@ -21,6 +21,9 @@ use dora_message::{
 use dora_node_api::{DoraArray, Metadata, arrow_utils::encode_arrow_ipc};
 use eyre::{ContextCompat, WrapErr};
 use process_wrap::tokio::CommandWrap;
+
+#[cfg(unix)]
+use super::group_lifetime::contain_exited_group;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -184,8 +187,10 @@ fn line_to_forward(raw: Vec<u8>) -> Option<Vec<u8>> {
 /// `dora run` / `Daemon::run_dataflow` spawn path, never on the
 /// coordinator-attached `dora up` path. The Linux `PR_SET_PDEATHSIG` arm and the
 /// Windows kill-on-close Job Object both key off it, so a daemon restart does
-/// not take `dora up`'s nodes down (dora-rs/dora#2029, dora-rs/dora#3474).
-#[cfg(any(target_os = "linux", windows, test))]
+/// not take `dora up`'s nodes down (dora-rs/dora#2029, dora-rs/dora#3474), and
+/// so does the exit-time group containment (#3472), which is why this is not
+/// restricted to the two platforms that signal on it.
+#[cfg(any(unix, windows, test))]
 fn run_parent_marker(command: &std::process::Command) -> Option<&std::ffi::OsStr> {
     command
         .get_envs()
@@ -227,6 +232,33 @@ pub struct PreparedNode {
     pub(super) spawned_at: Arc<AtomicU64>,
     pub(super) startup_kill_sent: Arc<AtomicBool>,
     pub(super) ft_stats: Arc<crate::FaultToleranceStats>,
+}
+
+/// Take the stop marker left in a node's queue by the time it exits, which its
+/// wait task can no longer deliver: the task's `select!` breaks on whichever
+/// branch is ready and picks between two ready branches at random, so a marker
+/// queued in the same slot as the node's exit is left behind — and the ladder's
+/// later submits then go nowhere, because `op_rx` is dropped right after. Without
+/// the marker the containment would SIGKILL the group at once rather than hold it
+/// to the node's own ladder (#3472 review).
+///
+/// Only the marker is taken. Whatever the ladder queued behind it — a `SoftKill`
+/// or a `Kill` — is deliberately not run: the node process is already reaped, so
+/// signalling it risks hitting a recycled pid, and the marker's deadlines already
+/// tell the containment to deliver those same two signals to the whole group.
+fn take_queued_stop(
+    op_rx: &flume::Receiver<ProcessOperation>,
+    stop: &mut Option<super::group_lifetime::StopLadder>,
+) {
+    while let Ok(op) = op_rx.try_recv() {
+        if let ProcessOperation::StopRequested {
+            soft_kill_at,
+            kill_at,
+        } = op
+        {
+            stop.get_or_insert((soft_kill_at, kill_at));
+        }
+    }
 }
 
 impl PreparedNode {
@@ -658,6 +690,15 @@ impl PreparedNode {
         op_rx: flume::Receiver<ProcessOperation>,
         finished_tx: oneshot::Sender<NodeProcessFinished>,
     ) -> eyre::Result<NodeKind> {
+        // Whether this node was spawned on the in-process `dora run` path, which
+        // the wait task below needs and cannot work out for itself. The marker is
+        // on the command the spawner built (`bind_nodes_to_parent` injects
+        // `DORA_RUN_PARENT_PID`, and nothing in the spawn arm removes it), so it
+        // is read here rather than after the command is consumed.
+        let bind_to_run_parent = self
+            .command
+            .as_ref()
+            .is_some_and(|command| run_parent_marker(&command.to_std()).is_some());
         let mut child = match &mut self.command {
             Some(command) => {
                 // Re-serialize DORA_NODE_CONFIG from the current
@@ -787,15 +828,6 @@ impl PreparedNode {
                         }
                     }
                 }
-
-                // The marker the spawner injects only on the in-process
-                // `dora run` / `Daemon::run_dataflow` spawn path
-                // (`bind_nodes_to_parent`), never on the coordinator-attached
-                // `dora up` path. The Linux `PR_SET_PDEATHSIG` arm above reads
-                // it too; the Windows Job Object limit below is gated on it so
-                // a daemon restart does not take its nodes down (#2029).
-                #[cfg(windows)]
-                let bind_to_run_parent = run_parent_marker(&std_command).is_some();
 
                 let mut command = CommandWrap::from(tokio::process::Command::from(std_command));
 
@@ -1009,6 +1041,15 @@ impl PreparedNode {
         let dataflow_id = self.dataflow_id;
 
         tokio::spawn(async move {
+            // When a stop is in flight, when its escalation deadline is. Sticky:
+            // once a stop has been requested, this node's exit is a stop, whatever
+            // else arrives after.
+            let mut stop = None;
+            // Whether an op we ran already signalled the whole group: process-wrap
+            // turns `child.signal` into a `killpg`, so a `SoftKill` here already
+            // asked the group's members to stop, and the containment must not
+            // ask them again (#3472 review).
+            let mut signalled = false;
             let exit_status: NodeExitStatus = loop {
                 tokio::select! {
                     status = child.wait() => {
@@ -1016,7 +1057,19 @@ impl PreparedNode {
                     }
                     result = op_rx.recv_async() => {
                         match result {
-                            Ok(op) => op.execute(child.as_mut()),
+                            Ok(op) => {
+                                if let ProcessOperation::StopRequested {
+                                    soft_kill_at,
+                                    kill_at,
+                                } = op
+                                {
+                                    stop.get_or_insert((soft_kill_at, kill_at));
+                                }
+                                if matches!(op, ProcessOperation::SoftKill | ProcessOperation::Kill) {
+                                    signalled = true;
+                                }
+                                op.execute(child.as_mut());
+                            }
                             Err(_) => {
                                 // Sender dropped
                                 break child.wait().await.into();
@@ -1026,12 +1079,35 @@ impl PreparedNode {
                 }
             };
 
-            let _ = log_finish_rx.await;
-            // Drop `op_rx` here so any grace-kill task still holding
-            // the paired `op_tx` sees a closed channel on the next
-            // `submit()` instead of routing operations to the
-            // subsequent incarnation (dora-rs/adora#152).
+            // Both halves of the marker guarantee land here. It is queued before
+            // the ladder task's first sleep, and the wait task cannot reach the
+            // point where it takes one until the executor yields, which the
+            // submits in `schedule_process_stop` do not do; so the only way a
+            // marker is missed is if it is never submitted. `select!` breaks on
+            // whichever branch is ready and picks between two ready branches at
+            // random, so take whatever is still queued — before the receiver goes,
+            // since the ladder's later submits would then find it open.
+            take_queued_stop(&op_rx, &mut stop);
+
+            // The node is gone, so nothing can be delivered to it. Drop the
+            // receiver before waiting anything out: a held receiver would make the
+            // ladder's later submits succeed, filing a "killed for not stopping"
+            // classification and a `grace_duration_kills` entry for a node that
+            // stopped in time, and would route any op to the next incarnation
+            // (dora-rs/adora#152).
             drop(op_rx);
+
+            // Contain stragglers the gone node left in its process group, before
+            // the log drain below — a straggler still holding the node's
+            // stdout/stderr pipes would keep that drain open forever — and before
+            // reporting the exit, so the dataflow cannot finish while a group it
+            // deferred is still outstanding. Whether a group the node *abandoned*
+            // is taken with it is the spawn path's call, not this task's: only
+            // `dora run` reaps those (#3472 review).
+            #[cfg(unix)]
+            contain_exited_group(pid, stop, signalled, bind_to_run_parent).await;
+
+            let _ = log_finish_rx.await;
             let _ = finished_tx.send(NodeProcessFinished { exit_status, pid });
         });
 
@@ -1339,6 +1415,53 @@ struct RestartLoopReceivers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The rule `take_queued_stop` applies to a node that exits with its stop
+    /// marker still queued: the group it leaves behind must go through that
+    /// marker's own ladder, not be SIGKILLed at once (#3472 review).
+    #[test]
+    fn a_stop_marker_queued_behind_the_node_s_exit_is_still_taken() {
+        let (op_tx, op_rx) = flume::bounded(2);
+        let (soft_kill_at, kill_at) = (tokio::time::Instant::now(), tokio::time::Instant::now());
+        op_tx
+            .send(ProcessOperation::StopRequested {
+                soft_kill_at,
+                kill_at,
+            })
+            .expect("marker fits in an empty channel");
+
+        let mut stop = None;
+        take_queued_stop(&op_rx, &mut stop);
+        assert_eq!(
+            stop,
+            Some((soft_kill_at, kill_at)),
+            "a marker queued behind the node's exit must still put its group on \
+             the ladder it was scheduled with"
+        );
+
+        // Whatever the ladder queued behind the marker is left to the
+        // containment, which signals the group itself; the node process is
+        // reaped by now, so nothing here may signal it.
+        op_tx
+            .send(ProcessOperation::SoftKill)
+            .expect("the channel is still open");
+        take_queued_stop(&op_rx, &mut stop);
+        assert_eq!(
+            stop,
+            Some((soft_kill_at, kill_at)),
+            "the marker stays the group's ladder"
+        );
+    }
+
+    /// A node that was never asked to stop must not acquire a deadline from an
+    /// empty queue — that is what makes the containment kill its group at once.
+    #[test]
+    fn an_empty_operation_queue_leaves_the_stop_untouched() {
+        let (_op_tx, op_rx) = flume::bounded(2);
+        let mut stop = None;
+        take_queued_stop(&op_rx, &mut stop);
+        assert_eq!(stop, None);
+    }
 
     #[test]
     fn restart_backoff_doubles_and_caps() {

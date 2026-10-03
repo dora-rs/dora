@@ -6,6 +6,7 @@ pub use spawner::{
 
 mod command;
 pub mod endpoint_exchange;
+mod group_lifetime;
 mod prepared;
 mod runtime_registry;
 mod spawner;

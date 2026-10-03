@@ -539,6 +539,7 @@ impl Daemon {
             disable_multicast: self.disable_multicast,
             machine_id: self.machine_id.clone(),
             bind_nodes_to_parent: self.bind_nodes_to_parent,
+            shell_guard_host: self.shell_guard_host.clone(),
         };
 
         // Startup-handshake routing, from actual placement (`spawn_nodes`):
