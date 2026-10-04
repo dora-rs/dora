@@ -31,6 +31,9 @@ mod ffi {
 
         fn new_operator() -> UniquePtr<Operator>;
 
+        /// Called for each input. `data` is the payload's bytes; it is
+        /// empty for a metadata-only input such as a timer tick, so
+        /// check its length before indexing.
         fn on_input(
             op: Pin<&mut Operator>,
             id: &str,
@@ -126,9 +129,16 @@ impl DoraOperator for OperatorWrapper {
                 metadata: _,
                 data,
             } => {
-                let data: &[u8] = data
-                    .try_into()
-                    .map_err(|err| format!("expected byte array: {err}"))?;
+                // Metadata-only inputs -- timer ticks, or a sender passing
+                // `()` -- arrive as an empty `Null` array, which is not a
+                // `UInt8` array: hand any empty payload to C++ as an empty
+                // slice, as the C/C++ node APIs already do for `Null`.
+                let data: &[u8] = if data.is_empty() {
+                    &[]
+                } else {
+                    data.try_into()
+                        .map_err(|err| format!("expected byte array: {err}"))?
+                };
                 ffi::on_input(self.operator()?, id, data, &mut output_sender)
             }
             Event::InputClosed { id } => {
