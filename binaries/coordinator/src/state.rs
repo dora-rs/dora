@@ -538,6 +538,30 @@ impl RunningDataflow {
         )
     }
 
+    /// [`state_log_delta`](Self::state_log_delta), narrowed to the entries
+    /// targeting nodes that `daemon_id` runs.
+    ///
+    /// The log is dataflow-wide, but a daemon can only deliver an entry to a
+    /// node it hosts: it stops replaying at the first entry whose node it has
+    /// no channel for, so an entry for another daemon's node (or for a node
+    /// since removed) would block every later entry for its own nodes on
+    /// every reconnect.
+    pub(crate) fn state_log_delta_for_daemon(
+        &self,
+        last_ack: u64,
+        daemon_id: &DaemonId,
+    ) -> Option<Vec<StateCatchUpEntry>> {
+        let mut entries = self.state_log_delta(last_ack)?;
+        entries.retain(|entry| {
+            let node_id = match &entry.operation {
+                StateCatchUpOperation::SetParam { node_id, .. }
+                | StateCatchUpOperation::DeleteParam { node_id, .. } => node_id,
+            };
+            self.node_to_daemon.get(node_id) == Some(daemon_id)
+        });
+        Some(entries)
+    }
+
     /// Reconstruct the live `RunningDataflow` for a dataflow that survived a
     /// coordinator-connection drop, from its persisted record + a reconnecting
     /// daemon's status report (dora-rs/dora#2029 P1).

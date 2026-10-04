@@ -2428,6 +2428,44 @@ fn state_log_prune_ignores_disconnected_daemon_ack() {
     assert!(matches!(df.state_log_delta(5), Some(entries) if entries.is_empty()));
 }
 
+// The state log is dataflow-wide, but a reconnecting daemon stops replaying
+// at the first entry for a node it has no channel for. Entries for another
+// daemon's node (or a removed node) must not be sent to it, or they block
+// every later entry for its own nodes on every reconnect.
+#[test]
+fn state_log_delta_for_daemon_keeps_only_its_own_nodes() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let d1 = DaemonId::new(Some("m1".to_string()));
+    let d2 = DaemonId::new(Some("m2".to_string()));
+    let node_a: dora_core::config::NodeId = "a".to_string().into();
+    let node_b: dora_core::config::NodeId = "b".to_string().into();
+    let removed: dora_core::config::NodeId = "removed".to_string().into();
+
+    let mut df = test_running_dataflow(dataflow_id, d1.clone(), node_a.clone());
+    df.daemons.insert(d2.clone());
+    df.node_to_daemon.insert(node_b.clone(), d2.clone());
+
+    for node_id in [&node_b, &removed, &node_a] {
+        df.append_state_log(StateCatchUpOperation::SetParam {
+            node_id: node_id.clone(),
+            key: "k".to_string(),
+            value: serde_json::json!(1),
+        });
+    }
+
+    let for_d1 = df.state_log_delta_for_daemon(0, &d1).expect("not pruned");
+    assert_eq!(for_d1.len(), 1);
+    assert_eq!(for_d1[0].sequence, 3);
+
+    let for_d2 = df.state_log_delta_for_daemon(0, &d2).expect("not pruned");
+    assert_eq!(for_d2.len(), 1);
+    assert_eq!(for_d2[0].sequence, 1);
+
+    // Nothing after seq 1 targets d2: an empty delta, not a pruned one.
+    let for_d2 = df.state_log_delta_for_daemon(1, &d2).expect("not pruned");
+    assert!(for_d2.is_empty());
+}
+
 #[test]
 fn state_log_delta_returns_none_when_pruned() {
     let dataflow_id = DataflowId::from(Uuid::new_v4());
