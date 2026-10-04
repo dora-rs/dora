@@ -48,24 +48,22 @@ pub fn parse_env_overrides(flags: &[String]) -> Result<BTreeMap<String, EnvValue
 /// Reject a `--env` value that the descriptor's wire encoding would not
 /// deliver verbatim.
 ///
-/// `EnvValue` is an untagged enum whose variants deserialize through
-/// `with_expand_envs`, so a value is re-interpreted *every time the
-/// descriptor is deserialized* — in the coordinator, then again in the
-/// daemon. Two consequences, both verified against `dora-message`:
+/// A string `EnvValue` is passed through `with_expand_envs`, so it is
+/// re-expanded *every time the descriptor is deserialized* — in the
+/// coordinator, then again in the daemon. So **`$` is expanded in the
+/// receiving process**: a wire value of `${DORA_AUTH_TOKEN}` becomes the
+/// *coordinator's or daemon's* token by the time a node sees it, which
+/// would let `--env` read host secrets that `strip_denied_env` exists to
+/// keep out of nodes (that guard matches key names, so an innocuous key
+/// sails through). YAML `env:` values are expanded CLI-side when the
+/// descriptor is read, so they reach the wire already substituted —
+/// `--env` is the only path that can put an unexpanded `$` on it.
 ///
-/// * **`$` is expanded in the receiving process.** A wire value of
-///   `${DORA_AUTH_TOKEN}` becomes the *coordinator's or daemon's* token
-///   by the time a node sees it, which would let `--env` read host
-///   secrets that `strip_denied_env` exists to keep out of nodes (that
-///   guard matches key names, so an innocuous key sails through).
-///   YAML `env:` values are expanded CLI-side when the descriptor is
-///   read, so they reach the wire already substituted — `--env` is the
-///   only path that can put an unexpanded `$` on it.
-/// * **Numeric-looking strings are coerced.** `1.10` arrives as `1.1`,
-///   `01234` as `1234`, because the untagged enum tries `Bool`,
-///   `Integer` and `Float` before `String`.
+/// Numeric-looking strings (`1.10`, `01234`) are carried verbatim, since
+/// a string `EnvValue` stays a string; the round-trip check below still
+/// rejects any value the encoding would not deliver unchanged.
 ///
-/// Escaping cannot fix either: the value is deserialized twice, so a
+/// Escaping cannot fix the `$` case: the value is deserialized twice, so a
 /// `$$` that survives one hop is expanded on the next. Rejecting is the
 /// honest option — silently handing a node a different value than the
 /// operator typed is worse than refusing to start.
@@ -93,9 +91,9 @@ fn ensure_wire_safe(key: &str, value: &str) -> Result<()> {
         );
     }
 
-    // Beyond `$`, the untagged enum coerces numeric-looking strings —
-    // `1.10` decodes as Float(1.1). A round-trip IS a sound test for
-    // that, since no environment lookup is involved.
+    // Beyond `$`, refuse anything the encoding would not deliver
+    // verbatim. A round-trip IS a sound test for that, since no
+    // environment lookup is involved.
     let encoded = serde_json::to_string(&EnvValue::String(value.to_string()))
         .with_context(|| format!("failed to encode --env `{key}`"))?;
     match serde_json::from_str::<EnvValue>(&encoded) {
@@ -103,9 +101,8 @@ fn ensure_wire_safe(key: &str, value: &str) -> Result<()> {
         Ok(decoded) => bail!(
             "--env `{key}={value}` would not survive the dataflow descriptor's \
              encoding: nodes would receive `{decoded}` instead.\n\n  \
-             hint: numeric-looking values are coerced (`1.10` -> `1.1`, \
-             `01234` -> `1234`). Set this one in the node's `env:` block in \
-             the dataflow YAML instead."
+             hint: set this one in the node's `env:` block in the dataflow \
+             YAML instead."
         ),
         Err(err) => bail!(
             "--env `{key}={value}` cannot be represented in the dataflow \
@@ -261,19 +258,16 @@ mod tests {
         assert!(result.is_err(), "expected Err, got {result:?}");
     }
 
-    /// The untagged `EnvValue` enum tries Bool/Integer/Float before
-    /// String, so numeric-looking values are coerced in transit. Better
-    /// to refuse than to hand a node `1.1` when the operator typed
-    /// `1.10`.
+    /// A string `EnvValue` stays a string on the wire, so numeric-looking
+    /// values reach the node exactly as typed. They used to be coerced
+    /// (`1.10` -> `1.1`) and had to be refused here.
     #[test]
-    fn rejects_values_the_wire_encoding_would_coerce() {
-        for value in ["VERSION=1.10", "ZIP=01234", "SCI=1e5"] {
-            let result = parse_env_overrides(&flags(&[value]));
-            assert!(
-                result.is_err(),
-                "`{value}` is silently coerced on the wire and must be rejected, got {result:?}"
-            );
-        }
+    fn accepts_numeric_looking_values_verbatim() {
+        let parsed = parse_env_overrides(&flags(&["VERSION=1.10", "ZIP=01234", "SCI=1e5"]))
+            .expect("numeric-looking values are wire-safe");
+        assert_eq!(parsed["VERSION"], EnvValue::String("1.10".into()));
+        assert_eq!(parsed["ZIP"], EnvValue::String("01234".into()));
+        assert_eq!(parsed["SCI"], EnvValue::String("1e5".into()));
     }
 
     /// Values that DO survive the encoding must still be accepted —

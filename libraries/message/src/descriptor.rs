@@ -1580,15 +1580,23 @@ pub enum GitRepoRev {
     Rev(String),
 }
 
+// The value of an `env:` entry. (A plain comment, not a doc comment:
+// schemars would publish a doc comment as the `EnvValue` description in
+// `dora-schema.json`.)
+//
+// A native YAML/JSON bool or number keeps its type. A string has its
+// `$VAR` / `${VAR}` references expanded and always stays a string, even
+// when it looks like a number: quoting a value is how a dataflow asks for
+// it verbatim, so `"1.10"` must reach the node as `1.10`, not `1.1`.
 #[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum EnvValue {
-    #[serde(deserialize_with = "with_expand_envs")]
+    // Only `String` expands env vars. `with_expand_envs` accepts a string for
+    // any target type and parses it, so on the other variants it turned a
+    // quoted `"1.10"` into `Float(1.1)` and `"007"` into `Integer(7)`.
     Bool(bool),
-    #[serde(deserialize_with = "with_expand_envs")]
     Integer(i64),
-    #[serde(deserialize_with = "with_expand_envs")]
     Float(f64),
     #[serde(deserialize_with = "with_expand_envs")]
     String(String),
@@ -1891,6 +1899,49 @@ pub struct Ros2QosConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A quoted `env:` value must reach the node verbatim. The derived
+    /// untagged enum parsed strings into the first matching variant, so
+    /// `"1.10"` became `1.1` and `"007"` became `7`.
+    #[test]
+    fn env_value_keeps_quoted_strings_verbatim() {
+        for quoted in ["1.10", "007", "+5", "1e3", "12345678901234567890", "true"] {
+            let yaml = format!("\"{quoted}\"");
+            let value: EnvValue = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(value, EnvValue::String(quoted.into()), "yaml {yaml}");
+
+            // ...and survives the JSON hops CLI -> coordinator -> daemon.
+            let json = serde_json::to_string(&value).unwrap();
+            let value: EnvValue = serde_json::from_str(&json).unwrap();
+            assert_eq!(value.to_string(), quoted, "json {json}");
+        }
+    }
+
+    #[test]
+    fn env_value_keeps_native_types() {
+        let parse = |yaml: &str| serde_yaml::from_str::<EnvValue>(yaml).unwrap();
+        assert_eq!(parse("true"), EnvValue::Bool(true));
+        assert_eq!(parse("8080"), EnvValue::Integer(8080));
+        assert_eq!(parse("-3"), EnvValue::Integer(-3));
+        assert_eq!(parse("1.5"), EnvValue::Float(1.5));
+        assert_eq!(parse("hello"), EnvValue::String("hello".into()));
+    }
+
+    /// Strings still expand `$VAR` references; the expansion result stays a
+    /// string even when it looks like a number.
+    #[test]
+    fn env_value_expands_variables_in_strings() {
+        let parse = |yaml: &str| serde_yaml::from_str::<EnvValue>(yaml).unwrap();
+        assert_eq!(
+            parse("\"${DORA_TEST_ENV_VALUE_UNSET_VAR:-1.10}\""),
+            EnvValue::String("1.10".into())
+        );
+        assert_eq!(
+            parse("\"v${DORA_TEST_ENV_VALUE_UNSET_VAR:-2}\""),
+            EnvValue::String("v2".into())
+        );
+        assert!(serde_yaml::from_str::<EnvValue>("\"$DORA_TEST_ENV_VALUE_UNSET_VAR\"").is_err());
+    }
 
     /// Assert that `constructed` serializes to exactly what `yaml`
     /// deserializes to — that a hand-written constructor agrees with the
