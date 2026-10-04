@@ -134,6 +134,19 @@ pub const TCP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 ///   series, `Hello` waves it through and only this version catches it.
 pub const TOPIC_DATA_PROTOCOL_VERSION: u16 = 2;
 
+/// Largest topic-data payload the coordinator forwards over the WebSocket
+/// topic data channel. Larger payloads are dropped with a warning.
+pub const MAX_TOPIC_DATA_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+
+/// Largest binary frame a topic-data subscriber must accept: a forwarded
+/// payload of up to [`MAX_TOPIC_DATA_PAYLOAD_BYTES`] plus its 16-byte
+/// subscription-id prefix, sent as one unfragmented WebSocket frame.
+///
+/// tungstenite's default client limits (16 MiB per frame, 64 MiB per message)
+/// are below this, so a client that keeps them loses its whole session on the
+/// first large topic message (#3698).
+pub const MAX_TOPIC_DATA_FRAME_BYTES: usize = MAX_TOPIC_DATA_PAYLOAD_BYTES + 16;
+
 /// Rejection message for a topic-data peer whose binary-frame encoding is not
 /// [`TOPIC_DATA_PROTOCOL_VERSION`].
 ///

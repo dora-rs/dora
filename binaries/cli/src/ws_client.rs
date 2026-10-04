@@ -95,7 +95,12 @@ impl WsSession {
                     request = request.header("Authorization", format!("Bearer {}", token.as_hex()));
                 }
                 let request = request.body(()).expect("failed to build WS request");
-                tokio_tungstenite::connect_async(request).await
+                tokio_tungstenite::connect_async_with_config(
+                    request,
+                    Some(client_ws_config()),
+                    false,
+                )
+                .await
             })
             .map_err(|e| {
                 let msg = e.to_string();
@@ -417,7 +422,10 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                     Ok(other) => {
                         tracing::trace!("ignoring unexpected WS message type: {other:?}");
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        tracing::warn!("coordinator WebSocket session ended: {e}");
+                        break;
+                    }
                 }
             }
         }
@@ -433,6 +441,17 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
     for (_, (ack, _)) in pending_topic_subscribes.drain() {
         let _ = ack.send(Err(eyre!("WS connection closed")));
     }
+}
+
+/// WebSocket limits for the coordinator session.
+///
+/// Topic data arrives as single binary frames of up to
+/// [`dora_message::MAX_TOPIC_DATA_FRAME_BYTES`], above tungstenite's default
+/// 16 MiB frame limit; a frame over the limit ends the whole session (#3698).
+fn client_ws_config() -> tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+    tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+        .max_frame_size(Some(dora_message::MAX_TOPIC_DATA_FRAME_BYTES))
+        .max_message_size(Some(dora_message::MAX_TOPIC_DATA_FRAME_BYTES))
 }
 
 /// Error for a `TopicSubscribed` ack whose binary-frame encoding does not match
@@ -765,6 +784,41 @@ mod tests {
             ),
             Ok(_) => panic!("expected error from async context"),
         }
+    }
+
+    /// The coordinator forwards topic payloads up to
+    /// `MAX_TOPIC_DATA_PAYLOAD_BYTES` as one frame with a 16-byte prefix; the
+    /// client must accept the largest such frame instead of dropping the
+    /// session at tungstenite's 16 MiB default (#3698).
+    #[tokio::test]
+    async fn client_accepts_largest_topic_data_frame() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let frame_len = dora_message::MAX_TOPIC_DATA_FRAME_BYTES;
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            ws.send(Message::Binary(vec![7u8; frame_len].into()))
+                .await
+                .unwrap();
+            // Keep the socket open until the client has read the frame.
+            let _ = ws.next().await;
+        });
+
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mut ws, _) = tokio_tungstenite::client_async_with_config(
+            format!("ws://{addr}/api/control"),
+            stream,
+            Some(client_ws_config()),
+        )
+        .await
+        .unwrap();
+        match ws.next().await {
+            Some(Ok(Message::Binary(data))) => assert_eq!(data.len(), frame_len),
+            other => panic!("expected the full binary frame, got: {other:?}"),
+        }
+        drop(ws);
+        server.await.unwrap();
     }
 
     #[tokio::test]
