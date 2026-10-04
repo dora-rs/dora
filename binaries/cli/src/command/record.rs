@@ -7,8 +7,10 @@ use std::{
 use clap::Args;
 use dora_core::descriptor::Descriptor;
 use dora_message::{
-    common::Timestamped, coordinator_to_cli::DataflowIdAndName, daemon_to_daemon::InterDaemonEvent,
-    id::NodeId,
+    common::Timestamped,
+    coordinator_to_cli::DataflowIdAndName,
+    daemon_to_daemon::InterDaemonEvent,
+    id::{DataId, NodeId},
 };
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::{Context, bail};
@@ -130,6 +132,25 @@ impl Executable for Record {
             run_record(self)
         }
     }
+}
+
+/// Parse the `(node, output)` pairs discovered by the untyped YAML walk into
+/// typed ids for the WS topic subscription.
+///
+/// The walk accepts any string, so both ids go through the fallible
+/// `parse` -- `DataId`'s `From<String>` panics on an invalid id.
+fn parse_ws_topics(topics: &[(String, String)]) -> eyre::Result<Vec<(NodeId, DataId)>> {
+    topics
+        .iter()
+        .map(|(n, o)| {
+            Ok((
+                n.parse::<NodeId>()
+                    .map_err(|e| eyre::eyre!("invalid node ID in topic: {e}"))?,
+                o.parse::<DataId>()
+                    .map_err(|e| eyre::eyre!("invalid output ID in topic: {e}"))?,
+            ))
+        })
+        .collect()
 }
 
 /// Discover all `(node_id, output_id)` pairs from a parsed descriptor YAML.
@@ -555,16 +576,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     };
 
     // Subscribe to topics via WS
-    let ws_topics: Vec<_> = topics
-        .iter()
-        .map(|(n, o)| -> eyre::Result<_> {
-            Ok((
-                n.parse::<NodeId>()
-                    .map_err(|e| eyre::eyre!("invalid node ID in topic: {e}"))?,
-                o.clone().into(),
-            ))
-        })
-        .collect::<eyre::Result<Vec<_>>>()?;
+    let ws_topics = parse_ws_topics(&topics)?;
     let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
     // Set up recording writer. `duration_since(UNIX_EPOCH)` errors when the
@@ -812,6 +824,17 @@ mod tests {
             uuid: Uuid::new_v4(),
             name: name.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn invalid_output_id_in_proxy_topics_is_an_error_not_a_panic() {
+        let topics = |n: &str, o: &str| vec![(n.to_string(), o.to_string())];
+        assert!(parse_ws_topics(&topics("n", "bad id")).is_err());
+        assert!(parse_ws_topics(&topics("n", "a//b")).is_err());
+        assert!(parse_ws_topics(&topics("n", "/out")).is_err());
+        let parsed = parse_ws_topics(&topics("n", "op/out")).unwrap();
+        assert_eq!(parsed[0].0.to_string(), "n");
+        assert_eq!(parsed[0].1.to_string(), "op/out");
     }
 
     fn discovered_topics(yaml: &str) -> Vec<String> {
