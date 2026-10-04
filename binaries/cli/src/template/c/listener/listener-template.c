@@ -43,7 +43,11 @@ int main()
             read_dora_input_data(event, &data_ptr, &data_len);
 
             unsigned long long timestamp = read_dora_input_timestamp(event);
-            printf("I heard %s from %.*s at %llu\n", data_ptr, (int)id_len, id_ptr, timestamp);
+            // `data_ptr` points into the input's Arrow buffer: it is not
+            // NUL-terminated (and is NULL for an empty or non-byte input), so
+            // print exactly `data_len` bytes rather than using `%s`.
+            printf("I heard %.*s from %.*s at %llu\n", (int)data_len, data_ptr ? data_ptr : "",
+                   (int)id_len, id_ptr, timestamp);
         }
         else if (ty == DoraEventType_Stop)
         {
