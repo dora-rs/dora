@@ -195,8 +195,15 @@ const STOP_SIGNALS: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHU
 /// were meant for, so hand them over here — under the names the daemon chose,
 /// which it strips from its own environment on the way in.
 fn restore_node_python_env(child: &mut Command) {
+    restore_python_env_from(child, |var| std::env::var(var).ok());
+}
+
+/// `restore_node_python_env`, with the passthrough read from `source` instead of
+/// this process's environment — which is the only thing a test can supply
+/// without `set_var`, and that is process-global.
+fn restore_python_env_from(child: &mut Command, source: impl Fn(&str) -> Option<String>) {
     for var in ["PYTHONHOME", "PYTHONPATH"] {
-        if let Ok(value) = std::env::var(format!("{GUARD_ENV_PREFIX}{var}")) {
+        if let Some(value) = source(&format!("{GUARD_ENV_PREFIX}{var}")) {
             child.env(var, value);
         }
     }
@@ -344,15 +351,11 @@ mod tests {
     /// node that needs `PYTHONHOME` still gets it even though the guard host
     /// runs without it.
     #[test]
-    fn the_node_python_env_reaches_the_child_but_not_the_host() {
+    fn the_node_python_env_reaches_the_child() {
         let mut command = Command::new("sh");
-        // SAFETY: single-threaded test process for this test; the vars are
-        // process-global, so they are restored immediately below.
-        unsafe {
-            std::env::set_var("DORA_SHELL_GUARD_PYTHONHOME", "/opt/py");
-            std::env::remove_var("PYTHONHOME");
-        }
-        restore_node_python_env(&mut command);
+        restore_python_env_from(&mut command, |var| {
+            (var == "DORA_SHELL_GUARD_PYTHONHOME").then(|| "/opt/py".to_string())
+        });
 
         let envs: Vec<(String, Option<String>)> = command
             .get_envs()
@@ -367,11 +370,20 @@ mod tests {
             envs.contains(&("PYTHONHOME".into(), Some("/opt/py".into()))),
             "the child must get the node's PYTHONHOME back, got {envs:?}"
         );
-        assert!(
-            !envs.iter().any(|(k, _)| k.starts_with(GUARD_ENV_PREFIX)),
-            "the passthrough names are the daemon's business, not the child's: {envs:?}"
+    }
+
+    /// A node that set no interpreter env of its own must not be overridden:
+    /// the child simply keeps what it inherited.
+    #[test]
+    fn without_a_passthrough_the_child_is_left_alone() {
+        let mut command = Command::new("sh");
+        restore_python_env_from(&mut command, |_| None);
+        assert_eq!(
+            command.get_envs().count(),
+            0,
+            "nothing handed over must mean nothing overridden, or the child \
+             loses the value it inherited from the daemon"
         );
-        unsafe { std::env::remove_var("DORA_SHELL_GUARD_PYTHONHOME") };
     }
 
     /// The guard must never be the executable in a core dump: it dies from the

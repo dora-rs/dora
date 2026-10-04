@@ -3,7 +3,10 @@ use crate::{
     CoreNodeKindExt, Event,
     log::NodeLogger,
     node_communication::spawn_listener_loop,
-    spawn::{command::path_spawn_command, prepared::PreparedNode},
+    spawn::{
+        command::{handoff_python_env_to_guard, is_shell_guard, path_spawn_command},
+        prepared::PreparedNode,
+    },
 };
 use clonable_command::{Command, Stdio};
 use crossbeam::queue::ArrayQueue;
@@ -874,6 +877,13 @@ impl Spawner {
                     }
 
                     command = command.env("PYTHONUNBUFFERED", "1");
+                    // The shell guard host is the `dora` CLI, which under the wheel
+                    // is a python console script, so the node's own interpreter
+                    // selection has to come off it *now* — once `compose_node_env`
+                    // has put it there.
+                    if is_shell_guard(&command) {
+                        command = handoff_python_env_to_guard(command);
+                    }
                     command = command
                         .stdin(Stdio::Null)
                         .stdout(Stdio::Piped)

@@ -302,31 +302,62 @@ fn dora_guard_command(shell_args: &str, shell_guard_host: Option<&Path>) -> Opti
         .or_else(dora_executable)?;
     let mut cmd = Command::new(dora_bin);
     cmd = cmd.args(["__shell-guard", "--", "sh", "-c", shell_args]);
-    cmd = clear_python_env_for_guard_host(cmd);
     Some(cmd)
 }
 
-/// Keep the node's interpreter selection off the guard host, handing it to the
-/// guard under another name so the guard can put it back on the child.
+/// Whether `command` is the `dora __shell-guard` wrapper, which needs
+/// [`handoff_python_env_to_guard`] once the node's environment is on it.
+#[cfg(unix)]
+pub(super) fn is_shell_guard(command: &Command) -> bool {
+    command
+        .arguments
+        .first()
+        .is_some_and(|arg| arg == "__shell-guard")
+}
+
+/// Move the node's own interpreter selection off the guard host, handing it to
+/// the guard under another name so the guard can put it back on the child.
 ///
-/// The guard host may be a python console script (the `dora-rs-cli` wheel) and
-/// the caller applies the node's environment to this whole command. A
-/// `PYTHONHOME`/`PYTHONPATH` meant for the node's interpreter can leave python
+/// The guard host may be a python console script (the `dora-rs-cli` wheel), and
+/// a `PYTHONHOME`/`PYTHONPATH` meant for the node's interpreter can leave python
 /// unable to start at all, taking the guard — and with it the containment it
 /// exists to provide — down with it. The child is the process those variables
 /// were meant for. Everything else the node sets is harmless to the host and is
 /// left alone (#3472 review).
+///
+/// This must run *after* the node's environment is applied (`compose_node_env`),
+/// because that is what puts the node's value here: read any earlier and the
+/// node's value simply overwrites whatever this set, which is the bug the commit
+/// setting it in `dora_guard_command` had.
+///
+/// Only the node's own value moves. A variable the node never set is left alone,
+/// so the host keeps inheriting the daemon's value — and under the wheel that is
+/// exactly what the host needs to import `dora_cli`, so clearing it would take
+/// the guard down for every shell node.
 #[cfg(unix)]
-fn clear_python_env_for_guard_host(mut cmd: Command) -> Command {
-    // `clonable_command::Command::env_remove` deletes the entry instead of
-    // recording the removal, so the variable is inherited anyway (verified
-    // against 0.2.0). Overriding it with an empty value is the way to keep it
-    // off the host: python treats an empty `PYTHONHOME`/`PYTHONPATH` as unset,
-    // and no node has an interpreter there anyway.
+pub(super) fn handoff_python_env_to_guard(mut cmd: Command) -> Command {
     for var in PYTHON_ENV_VARS {
-        let value = std::env::var(var).unwrap_or_default();
-        cmd = cmd.env(format!("{GUARD_ENV_PREFIX}{var}"), value);
-        cmd = cmd.env(var, "");
+        let key = std::ffi::OsString::from(var);
+        let Some(Some(node_value)) = cmd.environment.get(&key).cloned() else {
+            continue;
+        };
+        cmd.environment.insert(
+            std::ffi::OsString::from(format!("{GUARD_ENV_PREFIX}{var}")),
+            Some(node_value),
+        );
+        // Give the host the daemon's own value rather than the node's...
+        match std::env::var_os(var) {
+            Some(daemon_value) => {
+                cmd.environment.insert(key, Some(daemon_value));
+            }
+            // ...or none at all, when the daemon had none either. `None` is the
+            // removal sentinel that becomes a real `env_remove`; `env_remove`
+            // itself is a map deletion in `clonable_command` 0.2.0, so it would
+            // leave the node's value inherited (see `deny_inherited_env`).
+            None => {
+                cmd.environment.insert(key, None);
+            }
+        }
     }
     cmd
 }
@@ -364,7 +395,6 @@ fn is_dora_cli(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clonable_command::Stdio;
 
     #[test]
     fn shlex_splits_quoted_args() {
@@ -399,69 +429,68 @@ mod tests {
         );
     }
 
-    /// The guard host must not inherit the node's interpreter selection.
+    /// The node's interpreter selection must reach the child and not the guard
+    /// host.
     ///
     /// The host is the `dora` CLI, which under the `dora-rs-cli` wheel is a
-    /// python console script: a `PYTHONHOME`/`PYTHONPATH` pointing at the
-    /// node's interpreter can stop that python from starting at all, and the
-    /// guard is what contains the shell's background forks. Losing it there
-    /// loses the containment silently (#3472 review).
+    /// python console script: a `PYTHONHOME`/`PYTHONPATH` meant for the node's
+    /// interpreter can stop that python from starting at all, and the guard is
+    /// what contains the shell's background forks. Losing it there loses the
+    /// containment silently (#3472 review).
     #[cfg(unix)]
     #[test]
-    fn the_guard_host_is_kept_clear_of_the_nodes_python_env() {
-        // SAFETY: single-threaded test process; both are process-global and
-        // restored before the test returns.
-        unsafe {
-            std::env::set_var("PYTHONHOME", "/nonexistent/interpreter");
-            std::env::set_var("PYTHONPATH", "/nonexistent/modules");
-        }
+    fn the_node_python_env_goes_to_the_child_and_not_the_guard_host() {
+        let node_env = "some-node-interpreter/modules";
 
-        let guard = dora_guard_command("sleep 9527", Some(Path::new("/opt/venv/bin/dora")))
-            .expect("an explicit host must always produce a guard");
-        let cmd = std::process::Command::from(&guard);
-        let envs: Vec<(String, Option<String>)> = cmd
-            .get_envs()
-            .map(|(k, v)| {
-                (
-                    k.to_string_lossy().into_owned(),
-                    v.map(|v| v.to_string_lossy().into_owned()),
-                )
-            })
-            .collect();
+        // What the spawner does: build the command, then apply the node's own
+        // env, which is where the node's value first appears.
+        let composed = Command::new("sh")
+            .args(["-c", "echo [${PYTHONPATH-unset}]"])
+            .env("PYTHONPATH", node_env);
 
-        for var in PYTHON_ENV_VARS {
-            assert!(
-                envs.contains(&(format!("{GUARD_ENV_PREFIX}{var}"), std::env::var(var).ok())),
-                "{var} must be handed to the guard for the child, got {envs:?}"
-            );
-        }
+        let handed = handoff_python_env_to_guard(composed);
 
-        // And the host must really start without it, which `get_envs` cannot
-        // show: run the guard command for real and read its own environment.
-        // `get_envs` cannot show this — the values are overridden, not removed,
-        // so nothing about the removal is visible in the command's own record.
-        // Read them off a process actually started from the command instead.
-        let probe = clear_python_env_for_guard_host(Command::new("sh"))
-            .args([
-                "-c",
-                "echo PYTHONHOME=[${PYTHONHOME-unset}] PYTHONPATH=[${PYTHONPATH-unset}]",
-            ])
-            .stdout(Stdio::Piped);
-        let out = std::process::Command::from(&probe)
-            .output()
-            .expect("spawn the probe");
         assert_eq!(
-            String::from_utf8_lossy(&out.stdout).trim(),
-            // Empty, not absent: overriding is the only lever that works
-            // through `clonable_command`, and python reads an empty value as
-            // unset, so the host still starts on its own interpreter.
-            "PYTHONHOME=[] PYTHONPATH=[]",
-            "the guard host must not inherit the node's python env (#3472 review)"
+            handed.environment.get(std::ffi::OsStr::new(&format!(
+                "{GUARD_ENV_PREFIX}PYTHONPATH"
+            ))),
+            Some(&Some(std::ffi::OsString::from(node_env))),
+            "the node's value must be handed to the guard to put on the child"
         );
 
-        unsafe {
-            std::env::remove_var("PYTHONHOME");
-            std::env::remove_var("PYTHONPATH");
+        // And the host must really start without it, which the environment map
+        // alone cannot show: run a process from it and read its own environment.
+        let out = std::process::Command::from(&handed)
+            .output()
+            .expect("spawn the probe");
+        let seen = String::from_utf8_lossy(&out.stdout);
+        assert_ne!(
+            seen.trim(),
+            format!("[{node_env}]"),
+            "the guard host must not inherit the node's python env (#3472 review), \
+             saw {seen:?}"
+        );
+    }
+
+    /// A node that sets no interpreter env of its own must leave the host
+    /// untouched: the host is started by the daemon and needs the daemon's own
+    /// `PYTHONPATH` to import `dora_cli` under the wheel (#3472 review).
+    #[cfg(unix)]
+    #[test]
+    fn a_node_without_python_env_leaves_the_guard_host_inheriting() {
+        let handed = handoff_python_env_to_guard(Command::new("sh").args(["-c", "true"]));
+        for var in PYTHON_ENV_VARS {
+            assert!(
+                !handed.environment.contains_key(std::ffi::OsStr::new(var)),
+                "{var} must be left to the host's inheritance, got {:?}",
+                handed.environment
+            );
+            assert!(
+                !handed
+                    .environment
+                    .contains_key(std::ffi::OsStr::new(&format!("{GUARD_ENV_PREFIX}{var}"))),
+                "{var} must not be handed over when the node never set it"
+            );
         }
     }
 
