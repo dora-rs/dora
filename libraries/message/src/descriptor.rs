@@ -99,11 +99,9 @@ pub struct Descriptor {
     pub nodes: Vec<Node>,
 
     /// Deployment configuration (optional).
-    #[schemars(skip)]
     pub deploy: Option<Deploy>,
 
     /// Debug options (optional).
-    #[schemars(skip)]
     #[serde(default)]
     pub debug: Debug,
 
@@ -1003,7 +1001,6 @@ pub struct Node {
     pub cpu_affinity: Option<Vec<usize>>,
 
     /// Machine deployment configuration.
-    #[schemars(skip)]
     pub deploy: Option<Deploy>,
 
     /// Startup connection deadline in seconds.

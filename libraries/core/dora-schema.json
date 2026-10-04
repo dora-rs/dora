@@ -4,6 +4,24 @@
   "description": "The main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```\n# fn main() -> Result<(), Box<dyn std::error::Error>> {\nuse dora_message::descriptor::Descriptor;\nlet yaml = r#\"\nnodes:\n  - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n\"#;\nlet descriptor: Descriptor = serde_yaml::from_str(yaml)?;\nassert_eq!(descriptor.nodes.len(), 2);\n# Ok(())\n# }\n```",
   "type": "object",
   "properties": {
+    "debug": {
+      "description": "Debug options (optional).",
+      "$ref": "#/$defs/Debug",
+      "default": {
+        "enable_debug_inspection": false
+      }
+    },
+    "deploy": {
+      "description": "Deployment configuration (optional).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Deploy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "env": {
       "description": "Global environment variables inherited by every node.\n\nEach node's own `env` map takes precedence on key conflicts, so nodes\ncan override a global default without repeating shared values like\n`RUST_LOG`, `OTEL_EXPORTER_OTLP_ENDPOINT`, or `CUDA_VISIBLE_DEVICES`.\n\n## Example\n\n```yaml\nenv:\n  RUST_LOG: info\n  OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4317\nnodes:\n  - id: verbose-node\n    path: path/to/node\n    env:\n      RUST_LOG: debug  # overrides the global RUST_LOG for this node\n```",
       "type": [
@@ -71,6 +89,71 @@
     "DataId": {
       "description": "A validated data (output) identifier.\n\nA `DataId` may contain only `[a-zA-Z0-9_./-]` and must be non-empty. Unlike\n[`NodeId`], a `DataId` **may** contain `/` (runtime-operator outputs are\nnamespaced as `<operator-id>/<output-name>`), but leading, trailing, or\nconsecutive slashes — which would produce empty path segments — are\nrejected.\n\n# Parsing vs. conversion (panic footgun)\n\nUse [`str::parse`] / [`FromStr`](std::str::FromStr) for untrusted input: it\nreturns `Result<DataId, InvalidId>`. The `From<String>` / `From<&str>`\nconversions — and therefore `.into()` and the auto-derived `TryFrom` —\n**panic** on an invalid id.\n\n```\nuse dora_message::id::DataId;\n\nassert!(\"image\".parse::<DataId>().is_ok());\nassert!(\"op/status\".parse::<DataId>().is_ok()); // '/' is allowed in a DataId\nassert!(\"a//b\".parse::<DataId>().is_err());     // empty path segment rejected\nassert!(\"/out\".parse::<DataId>().is_err());     // leading '/' rejected\nassert!(\"bad id\".parse::<DataId>().is_err());   // space rejected\n```\n\nThe infallible-looking conversion panics on the same invalid input:\n\n```should_panic\nuse dora_message::id::DataId;\nlet _ = DataId::from(\"a//b\".to_string()); // panics — prefer .parse()\n```",
       "type": "string"
+    },
+    "Debug": {
+      "description": "Debug options for dataflow development and troubleshooting.",
+      "type": "object",
+      "properties": {
+        "enable_debug_inspection": {
+          "description": "When true, daemons mirror every node output to the coordinator WebSocket\nso that `dora topic echo`, `dora topic hz`, and `dora topic info` can\ninspect runtime messages.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "Deploy": {
+      "description": "Deployment configuration for distributing nodes across machines.",
+      "type": "object",
+      "properties": {
+        "distribute": {
+          "description": "How built binaries are distributed to remote daemons.",
+          "$ref": "#/$defs/DistributeStrategy",
+          "default": "local"
+        },
+        "labels": {
+          "description": "Labels for label-based scheduling (e.g. `gpu: \"true\"`, `arch: arm64`).\nThe coordinator matches these against daemon labels reported at registration.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "machine": {
+          "description": "Target machine for deployment",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "working_dir": {
+          "description": "Working directory for the deployment",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "DistributeStrategy": {
+      "description": "Strategy for distributing built binaries to daemons.",
+      "oneOf": [
+        {
+          "description": "Each daemon builds from source (current/default behavior).",
+          "type": "string",
+          "const": "local"
+        },
+        {
+          "description": "CLI pushes built binary via SSH/SCP before spawn.",
+          "type": "string",
+          "const": "scp"
+        },
+        {
+          "description": "Daemon pulls binary from coordinator HTTP artifact store before spawn.",
+          "type": "string",
+          "const": "http"
+        }
+      ]
     },
     "Duration": {
       "type": "object",
@@ -267,6 +350,17 @@
             "format": "uint",
             "minimum": 0
           }
+        },
+        "deploy": {
+          "description": "Machine deployment configuration.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Deploy"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "description": {
           "description": "Detailed description of the node's functionality.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_node\n    description: \"Captures video frames from webcam\"\n```",
