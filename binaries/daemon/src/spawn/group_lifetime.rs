@@ -91,12 +91,12 @@ pub(super) async fn contain_exited_group(
     /// wait ends right after the last member exits, long enough to be free.
     const POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
-    /// How often the zombie-aware check runs. `killpg` is one syscall, but
-    /// telling a corpse from a live member costs a `/proc` scan, and a dataflow
-    /// stopping many nodes at once would pay it per node per poll. Once per
-    /// `ZOMBIE_CHECK_EVERY` polls is well under a tenth of a core per stopping
+    /// How often the `/proc` scan runs. `killpg` is one syscall and happens every
+    /// poll, but telling a corpse from a live member costs a `/proc` walk, and a
+    /// dataflow stopping many nodes at once would pay it per node per poll. Once
+    /// per `ZOMBIE_SCAN_EVERY` polls is well under a tenth of a core per stopping
     /// node, and bounds the extra wait for a zombie-only group to a second.
-    const ZOMBIE_CHECK_EVERY: u32 = 4;
+    const ZOMBIE_SCAN_EVERY: u32 = 4;
 
     let Some((soft_kill_at, kill_at)) = stop else {
         // Nothing is waiting for this group: its members are abandoned, which
@@ -116,7 +116,7 @@ pub(super) async fn contain_exited_group(
         // something alive. (A zombie counts as a member there too; on this
         // branch that costs a spurious warning, which is why the check below
         // bothers to exclude them.)
-        if !group_has_members(pid) {
+        if !group_has_live_member(pid).await {
             return;
         }
         tracing::warn!(
@@ -127,7 +127,7 @@ pub(super) async fn contain_exited_group(
         return;
     };
     let mut replayed = signalled;
-    let mut since_zombie_check = 0;
+    let mut since_zombie_scan = 0;
 
     loop {
         // Re-checking is also what keeps the wait from outliving the group: the
@@ -136,7 +136,14 @@ pub(super) async fn contain_exited_group(
         // the group is empty keeps that window to a poll interval instead of the
         // rest of the grace period.
         //
-        // And the kernel's answer is the whole one here: the leader is reaped
+        // The `killpg` answer decides that, on every poll including the first:
+        // it is one syscall, and a node that stopped cleanly leaves an empty
+        // group, so checking it every poll costs nothing and reports the exit
+        // as soon as it happens. Throttling *it* would hold every graceful stop
+        // of every unix node back by up to `ZOMBIE_SCAN_EVERY - 1` polls, and
+        // with it the dataflow finishing, `dora run` exiting and any restart.
+        //
+        // The kernel's answer is the whole one here: the leader is reaped
         // before this runs, so a group still holding a member holds something
         // alive, not just a corpse — with one exception. `killpg(pgid, 0)`
         // counts a zombie, so a reparented grandchild that has exited but whose
@@ -145,18 +152,19 @@ pub(super) async fn contain_exited_group(
         // lying (`docker run` without `--init`, with dora not PID 1) it may never
         // be.
         //
-        // On the `dora run` branch above that costs a no-op signal and a warning
-        // about a group that is already down. Here it is worse, because this
-        // check decides when the wait *ends*, and the caller sends the node's
-        // exit report only after this returns (`prepared.rs`). So a zombie keeps
-        // a correctly-stopped node's report — and with it the dataflow
-        // finishing, `dora run` exiting and any restart — held back until
-        // `kill_at`, and logs a false "ignored the stop grace period" on the
-        // way. See `group_has_live_member` for what that costs to fix.
-        since_zombie_check += 1;
-        if since_zombie_check >= ZOMBIE_CHECK_EVERY {
-            since_zombie_check = 0;
-            if !group_has_members(pid) {
+        // That exception is the only thing the scan corrects, and it is a
+        // filesystem walk, so it is the part that waits: the zombie-only group
+        // holds back the node's exit report — and with it the dataflow
+        // finishing, `dora run` exiting and any restart — until `kill_at`, and
+        // logs a false "ignored the stop grace period" on the way. See
+        // `group_has_live_member`.
+        if !group_has_members(pid) {
+            return;
+        }
+        since_zombie_scan += 1;
+        if since_zombie_scan >= ZOMBIE_SCAN_EVERY {
+            since_zombie_scan = 0;
+            if !group_has_live_member(pid).await {
                 return;
             }
         }
@@ -178,8 +186,15 @@ pub(super) async fn contain_exited_group(
     }
 }
 
-/// Whether the process group still holds anything worth signalling, treating a
-/// zombie as gone.
+/// Whether the process group still holds anything, zombie or not. One syscall,
+/// so it is safe to run on every poll: this is the check that ends a wait.
+#[cfg(unix)]
+fn group_has_members(pid: u32) -> bool {
+    // SAFETY: signal 0 performs error checking only and sends no signal.
+    unsafe { libc::killpg(pid as libc::pid_t, 0) == 0 }
+}
+
+/// [`group_has_members`] with zombies treated as gone.
 ///
 /// `killpg(pgid, 0)` cannot tell those apart: a zombie stays in its group until
 /// it is reaped, so it answers 0 for a group with nothing left to signal. When
@@ -197,54 +212,82 @@ pub(super) async fn contain_exited_group(
 /// it, so once all of them are zombies it is empty for good, and there is
 /// nothing left to signal either way.
 ///
-/// Linux exposes the state, so ask it. The scan costs a few milliseconds per
-/// process group, which is why the caller pays it only every `ZOMBIE_CHECK_EVERY`
-/// polls rather than every poll. Elsewhere the `killpg` answer stands.
+/// Linux exposes the state, so ask it. Everywhere else the `killpg` answer
+/// stands.
 #[cfg(unix)]
-fn group_has_members(pid: u32) -> bool {
-    // SAFETY: signal 0 performs error checking only and sends no signal.
-    if unsafe { libc::killpg(pid as libc::pid_t, 0) } != 0 {
+async fn group_has_live_member(pid: u32) -> bool {
+    if !group_has_members(pid) {
         return false;
     }
     #[cfg(not(target_os = "linux"))]
     {
         true
     }
+    // The scan walks /proc, which is blocking filesystem I/O on a runtime that
+    // also drives the daemon event loop, so it goes to a blocking thread. A
+    // join error is treated as "still a member": acting on a group we could not
+    // look at would risk killing a recycled one.
     #[cfg(target_os = "linux")]
     {
-        let pgid = pid as libc::pid_t;
-        let Ok(dir) = std::fs::read_dir("/proc") else {
-            return true;
-        };
-        for entry in dir.flatten() {
-            let Ok(name) = entry.file_name().into_string() else {
-                continue;
-            };
-            if !name.as_bytes()[0].is_ascii_digit() {
-                continue;
-            }
-            let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
-                // The process exited between readdir and now, or is not ours to
-                // read. Either way it is not a live member we can act on.
-                continue;
-            };
-            // `pid (comm) state ppid pgrp ...`, and comm can contain both spaces
-            // and parens, so the fields after it start at the *last* `)`.
-            let Some(state_and_rest) = stat.rsplit_once(')').map(|(_, rest)| rest) else {
-                continue;
-            };
-            let mut fields = state_and_rest.split_whitespace();
-            let (Some(state), Some(_ppid), Some(pgrp)) =
-                (fields.next(), fields.next(), fields.next())
-            else {
-                continue;
-            };
-            if state != "Z" && pgrp.parse::<libc::pid_t>().ok() == Some(pgid) {
-                return true;
-            }
-        }
-        false
+        tokio::task::spawn_blocking(move || proc_has_live_member(pid as libc::pid_t))
+            .await
+            .unwrap_or(true)
     }
+}
+
+/// Whether any process in `pgid` is still running rather than a zombie.
+#[cfg(target_os = "linux")]
+fn proc_has_live_member(pgid: libc::pid_t) -> bool {
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return true;
+    };
+    for entry in dir.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if !name.as_bytes()[0].is_ascii_digit() {
+            continue;
+        }
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            // The process exited between readdir and now, or is not ours to
+            // read. Either way it is not a live member we can act on.
+            continue;
+        };
+        if stat_is_live_member(&stat, pgid) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether one `/proc/<pid>/stat` line describes a process in `pgid` that is
+/// still running rather than a corpse.
+///
+/// `state` on its own is not enough: the kernel reports `Z` for a process whose
+/// main thread has ended while other threads keep running — a
+/// `pthread_exit(0)` out of `main`, which some C/C++ daemons and runtimes do,
+/// verified here as `state=Z` with `num_threads=2` while `killpg` still answers
+/// 0. Reading that as a corpse abandons the #3472 orphan all over again. Only a
+/// single-threaded `Z` is a real one.
+#[cfg(target_os = "linux")]
+fn stat_is_live_member(stat: &str, pgid: libc::pid_t) -> bool {
+    // `pid (comm) state ppid pgrp ...`, and comm can contain both spaces and
+    // parens, so the fields after it start at the *last* `)`. Index 0 there is
+    // field 3 (`state`), so field 20 (`num_threads`) is index 17.
+    let Some(rest) = stat.rsplit_once(')').map(|(_, rest)| rest) else {
+        return false;
+    };
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    if fields.get(2).and_then(|p| p.parse::<libc::pid_t>().ok()) != Some(pgid) {
+        return false;
+    }
+    let threads = fields
+        .get(17)
+        .and_then(|n| n.parse::<u32>().ok())
+        .unwrap_or(1);
+    fields
+        .first()
+        .is_some_and(|state| *state != "Z" || threads > 1)
 }
 
 /// Signal the whole group, best effort: an already-empty group just yields ESRCH.
@@ -265,6 +308,49 @@ fn signal_group(pid: u32, signal: libc::c_int) {
 #[cfg(unix)]
 mod tests {
     use super::*;
+
+    /// A `/proc/<pid>/stat` line for a process in `pgid`. `comm` is filled to
+    /// the right field count so `num_threads` really lands in field 20.
+    #[cfg(target_os = "linux")]
+    fn stat_line(state: &str, pgid: libc::pid_t, threads: u32) -> String {
+        let mut fields = vec![state.to_string(), "1".to_string(), pgid.to_string()];
+        fields.extend((3..17).map(|i| i.to_string()));
+        fields.push(threads.to_string());
+        fields.push("0".to_string());
+        format!(
+            "4242 (a comm with spaces and ) a paren) {}",
+            fields.join(" ")
+        )
+    }
+
+    /// `Z` is only a corpse when nothing else is left running in it.
+    ///
+    /// A process whose main thread ends while other threads keep running — a
+    /// `pthread_exit(0)` out of `main`, as some C/C++ daemons do — is reported
+    /// as `Z` while the group is very much still there. Treating it as dead is
+    /// the #3472 orphan again, and on the stop branch it also skips the SIGKILL
+    /// that a TERM-ignoring member needs (#3472 review).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_zombie_with_live_threads_is_still_a_member() {
+        let pgid = 4242;
+        assert!(
+            !stat_is_live_member(&stat_line("Z", pgid, 1), pgid),
+            "a single-threaded Z is a corpse and must not count as a member"
+        );
+        assert!(
+            stat_is_live_member(&stat_line("Z", pgid, 2), pgid),
+            "a Z whose main thread exited with threads still running must count"
+        );
+        assert!(
+            stat_is_live_member(&stat_line("R", pgid, 1), pgid),
+            "a running process must count"
+        );
+        assert!(
+            !stat_is_live_member(&stat_line("Z", pgid, 2), 4243),
+            "a member of another group must not count"
+        );
+    }
 
     /// Spawn a group-leading `sh` whose background child outlives it, as a node's
     /// process group looks to [`contain_exited_group`]: `pgid == pid`, and members
@@ -390,7 +476,7 @@ mod tests {
         );
 
         assert!(
-            !group_has_members(pgid),
+            !group_has_live_member(pgid).await,
             "a group whose only member is a corpse must read as empty (#3472 review)"
         );
 
@@ -403,7 +489,7 @@ mod tests {
             .unwrap();
         let live_pgid = unsafe { libc::getpgid(live.id().unwrap() as libc::pid_t) } as u32;
         assert!(
-            group_has_members(live_pgid),
+            group_has_live_member(live_pgid).await,
             "a group with a running member must still read as occupied"
         );
         let _ = live.kill().await;
@@ -768,6 +854,37 @@ mod tests {
         );
         let _ = reaper.await;
         let _ = child;
+    }
+
+    /// A group that is already empty must end the wait on the first check, with
+    /// nothing slept through: that is the path every correctly-stopped unix node
+    /// takes, and the node's exit report — and with it the dataflow finishing,
+    /// `dora run` exiting and any restart — goes out only after this returns
+    /// (`prepared.rs`). Waiting for the `/proc` scan before checking at all holds
+    /// every graceful stop back by up to `ZOMBIE_SCAN_EVERY - 1` polls for a
+    /// group that was empty all along (#3472 review).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_already_empty_group_ends_the_wait_at_once() {
+        // A pgid no process can have, so `killpg` answers ESRCH and the group is
+        // empty before the wait even starts.
+        let started = tokio::time::Instant::now();
+        contain_exited_group(
+            libc::pid_t::MAX as u32,
+            Some((
+                started + std::time::Duration::from_secs(120),
+                started + std::time::Duration::from_secs(240),
+            )),
+            false,
+            true,
+        )
+        .await;
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(100),
+            "an empty group must not cost a poll, took {:?}",
+            started.elapsed()
+        );
     }
 
     /// …and the wait does not outlive the group: members that shut down on their
