@@ -309,10 +309,11 @@ mod callback_impl {
         array::{ArrayData, UInt8Array},
         pyarrow::FromPyArrow,
     };
+    use dora_core::config::DataId;
     use dora_operator_api_python::pydict_to_metadata;
     #[cfg(feature = "telemetry")]
     use dora_tracing::telemetry::deserialize_context;
-    use eyre::{Context, Result};
+    use eyre::{Context, Result, eyre};
     use pyo3::{
         Bound, Py, PyAny, Python, pymethods,
         types::{PyBytes, PyBytesMethods, PyDict},
@@ -337,6 +338,13 @@ mod callback_impl {
             py: Python,
         ) -> Result<()> {
             let parameters = pydict_to_metadata(metadata).wrap_err("failed to parse metadata")?;
+            // Parse the operator-supplied id fallibly, like the shared-library
+            // backend does: `DataId::from` panics on an invalid id, which
+            // Python could not catch and which made the runtime report the
+            // whole operator as panicked.
+            let output_id: DataId = output
+                .parse()
+                .map_err(|err| eyre!("invalid output id: {err}"))?;
             let span = span!(
                 tracing::Level::TRACE,
                 "send_output",
@@ -380,12 +388,40 @@ mod callback_impl {
             // channel, and other Python threads stay runnable meanwhile.
             let arrow_array =
                 dora_node_api::DoraArray::from_array(arrow::array::make_array(arrow_array));
-            py.detach(|| {
-                self.handle
-                    .send_output(output.to_owned().into(), parameters, &arrow_array)
-            })?;
+            py.detach(|| self.handle.send_output(output_id, parameters, &arrow_array))?;
 
             Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use dora_runtime_api::{RuntimeHandle, SharedAllocator};
+
+        /// A typo in an operator's output id must come back as a Python
+        /// exception, not a panic that takes the whole operator down.
+        #[test]
+        fn send_output_rejects_invalid_id_without_panicking() {
+            let (events_tx, _events_rx) = tokio::sync::mpsc::channel(1);
+            let mut callback = SendOutputCallback {
+                handle: RuntimeHandle::new(events_tx, SharedAllocator::default()),
+            };
+            // Without the `auto-initialize` feature (unified in only when
+            // `dora-node-api-python` is in the same build).
+            Python::initialize();
+            Python::attach(|py| {
+                for bad in ["bad id", "a//b", ""] {
+                    let data: Py<PyAny> = PyBytes::new(py, b"x").into_any().unbind();
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        callback.__call__(bad, data, None, py)
+                    }));
+                    let err = result
+                        .unwrap_or_else(|_| panic!("`{bad}` must not panic"))
+                        .expect_err("an invalid id must be rejected");
+                    assert!(err.to_string().contains("invalid output id"), "{err}");
+                }
+            });
         }
     }
 }

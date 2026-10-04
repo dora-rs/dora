@@ -200,28 +200,14 @@ impl Node {
             }
         });
 
-        let dataflow_id = *node.dataflow_id();
-        let node_id = node.id().clone();
-        let node = DelayedCleanup::new(node);
-        let events = events;
-        let cleanup_handle = NodeCleanupHandle {
-            _handles: Arc::new(node.handle()),
-        };
+        let node = Node::from_parts(node, events);
 
         Python::attach(|py| {
             // Extend the `logging` module to interact with tracing
             setup_logging(py)
         })?;
 
-        Ok(Node {
-            events: Events {
-                inner: Arc::new(Mutex::new(EventsInner::Dora(events))),
-                _cleanup_handle: cleanup_handle,
-            },
-            dataflow_id,
-            node_id,
-            node,
-        })
+        Ok(node)
     }
 
     /// `.next()` gives you the next input that the node has received.
@@ -491,9 +477,7 @@ impl Node {
         _py: Python,
     ) -> eyre::Result<SampleHandler> {
         let parameters = pydict_to_metadata(metadata)?;
-        let data_id: DataId = output_id
-            .parse()
-            .map_err(|e| eyre::eyre!("invalid output_id: {e}"))?;
+        let data_id = parse_output_id(&output_id)?;
         if !self.node.get_mut().validate_output(&data_id) {
             eyre::bail!("Output `{data_id}` not in node's output list.")
         }
@@ -1115,6 +1099,25 @@ impl Node {
         self.node_id.to_string()
     }
 
+    /// Wrap an initialized node and its event stream.
+    fn from_parts(node: DoraNode, events: EventStream) -> Self {
+        let dataflow_id = *node.dataflow_id();
+        let node_id = node.id().clone();
+        let node = DelayedCleanup::new(node);
+        let cleanup_handle = NodeCleanupHandle {
+            _handles: Arc::new(node.handle()),
+        };
+        Node {
+            events: Events {
+                inner: Arc::new(Mutex::new(EventsInner::Dora(events))),
+                _cleanup_handle: cleanup_handle,
+            },
+            dataflow_id,
+            node_id,
+            node,
+        }
+    }
+
     /// Dispatch a payload to `output_id`: a `PyBytes` value is sent as raw
     /// bytes, a pyarrow array is sent as an Arrow array, and anything else is an
     /// error. `bytes_context` labels a failure of the byte-path send. Shared by
@@ -1128,15 +1131,21 @@ impl Node {
         py: Python,
         bytes_context: &'static str,
     ) -> eyre::Result<()> {
+        // Parse before taking the node lock: `DataId::from(String)` panics on
+        // an invalid id, which surfaced in Python as an uncatchable-by-
+        // `except Exception` `PanicException` and, since the panic unwound
+        // through the held `get_mut()` guard, poisoned the node for every
+        // later call.
+        let output_id = parse_output_id(&output_id)?;
         if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
             let bytes = py_bytes.as_bytes();
             self.node
                 .get_mut()
-                .send_output_bytes(output_id.into(), parameters, bytes.len(), bytes)
+                .send_output_bytes(output_id, parameters, bytes.len(), bytes)
                 .wrap_err(bytes_context)?;
         } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
             self.node.get_mut().send_output(
-                output_id.into(),
+                output_id,
                 parameters,
                 arrow::array::make_array(arrow_array),
             )?;
@@ -1257,6 +1266,14 @@ fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 // test binary links libpython), but the module below still runs in CI via
 // the `contract-tests` job's `make qa-test-python`.
 
+/// Parse a user-supplied output id, returning an error (raised in Python as
+/// an ordinary exception) instead of panicking like `DataId::from(String)`.
+fn parse_output_id(output_id: &str) -> eyre::Result<DataId> {
+    output_id
+        .parse()
+        .map_err(|e| eyre::eyre!("invalid output_id: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1278,6 +1295,54 @@ mod tests {
         .unwrap();
         py.run(&code, None, Some(&locals)).unwrap();
         locals.get_item("record").unwrap().unwrap()
+    }
+
+    fn testing_node() -> Node {
+        use dora_node_api::integration_testing::{
+            IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
+            integration_testing_format::{IncomingEvent, TimedIncomingEvent},
+            output_channel,
+        };
+
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            vec![TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Stop,
+            }],
+        ));
+        let (tx, _rx) = output_channel();
+        let (node, events) = DoraNode::init_testing(
+            inputs,
+            TestingOutput::ToChannel(tx),
+            TestingOptions {
+                skip_output_time_offsets: true,
+            },
+        )
+        .expect("failed to init testing node");
+        Node::from_parts(node, events)
+    }
+
+    // An invalid output id must be an ordinary error, not a panic: the panic
+    // (from `DataId::from(String)`) unwound through the held node lock and
+    // poisoned it, so every later call on the node panicked too.
+    #[test]
+    fn send_output_rejects_invalid_id_without_poisoning_the_node() {
+        let node = testing_node();
+        Python::attach(|py| {
+            let data: Py<PyAny> = PyBytes::new(py, b"x").into_any().unbind();
+            for bad in ["bad id", "a//b", ""] {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    node.send_payload(bad.to_string(), Default::default(), &data, py, "send")
+                }));
+                let err = result
+                    .unwrap_or_else(|_| panic!("`{bad}` must not panic"))
+                    .expect_err("an invalid id must be rejected");
+                assert!(err.to_string().contains("invalid output_id"), "{err}");
+            }
+            // The node is still usable after the rejected sends.
+            drop(node.node.get_mut());
+        });
     }
 
     // A large custom level (> 255) must be accepted, not rejected with
