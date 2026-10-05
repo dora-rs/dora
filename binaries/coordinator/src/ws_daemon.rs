@@ -23,6 +23,7 @@ use uuid::Uuid;
 pub(crate) async fn handle_daemon_ws(
     socket: WebSocket,
     event_tx: mpsc::Sender<Event>,
+    topic_debug_tx: mpsc::Sender<Event>,
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
     peer_addr: std::net::SocketAddr,
@@ -40,6 +41,7 @@ pub(crate) async fn handle_daemon_ws(
     // Track daemon_id and connection_id from incoming events for cleanup on disconnect
     let mut tracked_daemon_id: Option<DaemonId> = None;
     let mut tracked_connection_id: Option<Uuid> = None;
+    let mut dropped_debug_frames = DroppedDebugFrames::default();
 
     loop {
         tokio::select! {
@@ -78,6 +80,8 @@ pub(crate) async fn handle_daemon_ws(
                     if !handle_daemon_request(
                         &text,
                         &event_tx,
+                        &topic_debug_tx,
+                        &mut dropped_debug_frames,
                         &clock,
                         &cmd_tx,
                         &pending_replies,
@@ -119,6 +123,57 @@ pub(crate) async fn handle_daemon_ws(
     }
 }
 
+/// Hand a daemon event to the main loop. Returns false if the connection
+/// should close, on its channel closing.
+///
+/// A topic debug frame goes on its own channel and is dropped if that is full,
+/// never waited for: waiting would stop this connection from reading the
+/// socket, the daemon's next stop reply included, whenever the main loop falls
+/// behind (dora-rs/dora#3535).
+async fn forward_daemon_event(
+    event: Event,
+    event_tx: &mpsc::Sender<Event>,
+    topic_debug_tx: &mpsc::Sender<Event>,
+    dropped_debug_frames: &mut DroppedDebugFrames,
+) -> bool {
+    match event {
+        Event::TopicDebugData { .. } => match topic_debug_tx.try_send(event) {
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                dropped_debug_frames.record();
+                true
+            }
+            result => result.is_ok(),
+        },
+        event => event_tx.send(event).await.is_ok(),
+    }
+}
+
+/// Topic debug frames a daemon connection had to drop, warned about at most
+/// once per interval with the count since the last warning.
+#[derive(Default)]
+struct DroppedDebugFrames {
+    count: u64,
+    last_log: Option<std::time::Instant>,
+}
+
+impl DroppedDebugFrames {
+    fn record(&mut self) {
+        self.count += 1;
+        let now = std::time::Instant::now();
+        if self
+            .last_log
+            .is_none_or(|last| now - last >= std::time::Duration::from_secs(5))
+        {
+            tracing::warn!(
+                "dropped {} topic debug frame(s): the coordinator's topic debug queue is full",
+                self.count,
+            );
+            self.count = 0;
+            self.last_log = Some(now);
+        }
+    }
+}
+
 /// A helper struct to deserialize `Timestamped<CoordinatorRequest>` directly
 /// from the raw JSON text, so the payload is parsed once into its real type
 /// instead of going through the `serde_json::Value` used for routing.
@@ -132,11 +187,14 @@ struct DaemonWsRequestRaw {
     >,
 }
 
-/// Handle a daemon request (event or register). Returns false if the event channel closed.
+/// Handle a daemon request (event or register). Returns false if the channel
+/// it belongs on closed: the shared event one, or the topic debug one.
 #[allow(clippy::too_many_arguments)]
 async fn handle_daemon_request(
     raw_text: &str,
     event_tx: &mpsc::Sender<Event>,
+    topic_debug_tx: &mpsc::Sender<Event>,
+    dropped_debug_frames: &mut DroppedDebugFrames,
     clock: &HLC,
     cmd_tx: &mpsc::Sender<String>,
     pending_replies: &Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
@@ -235,7 +293,13 @@ async fn handle_daemon_request(
             let connection_id = tracked_connection_id.unwrap_or_else(Uuid::new_v4);
             if let Some(coordinator_event) = translate_daemon_event(daemon_id, event, connection_id)
             {
-                event_tx.send(coordinator_event).await.is_ok()
+                forward_daemon_event(
+                    coordinator_event,
+                    event_tx,
+                    topic_debug_tx,
+                    dropped_debug_frames,
+                )
+                .await
             } else {
                 true
             }
@@ -448,6 +512,52 @@ async fn handle_daemon_response(
         let _ = sender.send(result_json);
     } else {
         tracing::warn!("no pending reply for daemon WS response id {}", response.id);
+    }
+}
+
+#[cfg(test)]
+mod topic_debug_tests {
+    use super::*;
+    use futures::FutureExt;
+
+    /// Regression test for dora-rs/dora#3535: with the main loop's topic debug
+    /// channel full, a daemon connection drops the next frame instead of
+    /// waiting for room, and the daemon's control events still get through.
+    #[test]
+    fn a_full_topic_debug_channel_does_not_hold_up_control_events() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let (topic_debug_tx, mut topic_debug_rx) = mpsc::channel(1);
+        let mut dropped = DroppedDebugFrames::default();
+        let mut forward = |event| {
+            forward_daemon_event(event, &event_tx, &topic_debug_tx, &mut dropped)
+                .now_or_never()
+                .expect("a daemon connection must not wait on the main loop")
+        };
+        let debug_frame = || Event::TopicDebugData {
+            dataflow_id: Uuid::new_v4(),
+            subscription_ids: Vec::new(),
+            payload: Vec::new(),
+        };
+
+        assert!(forward(debug_frame()));
+        assert!(
+            forward(debug_frame()),
+            "dropping a frame keeps the connection"
+        );
+        assert!(forward(Event::DaemonHeartbeat {
+            daemon_id: DaemonId::new(None),
+            ft_stats: None,
+        }));
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(Event::DaemonHeartbeat { .. })
+        ));
+        assert!(topic_debug_rx.try_recv().is_ok());
+        assert!(
+            topic_debug_rx.try_recv().is_err(),
+            "the second frame is dropped"
+        );
     }
 }
 
