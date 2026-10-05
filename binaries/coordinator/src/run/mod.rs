@@ -35,7 +35,7 @@ pub(super) async fn spawn_dataflow(
     // `Duration::from_secs_f64`, which panics on a negative, non-finite, or
     // overflowing value and would take down every dataflow on that daemon.
     for node in nodes.values() {
-        dora_core::descriptor::validate::check_node_timing(node)?;
+        dora_core::descriptor::validate::check_node_timing_values(node)?;
     }
     let uuid = Uuid::new_v7(Timestamp::now(NoContext));
 
@@ -535,5 +535,70 @@ mod tests {
                 "error should name the offending node, got: {msg}"
             );
         }
+    }
+
+    /// The spawn-path check guards against the `Duration::from_secs_f64`
+    /// panic only; it must not newly reject a descriptor that `dora start`
+    /// accepts on 1.0.x. A dynamic node carrying a `startup_timeout` is the
+    /// case in point: `check_node_timing` rejects it as a descriptor-policy
+    /// matter, but the daemon ignores the value for a node it does not spawn
+    /// (`check_node_health` skips nodes with no process), so it never
+    /// panicked and must still start.
+    #[tokio::test]
+    async fn spawn_accepts_a_dynamic_node_with_a_startup_timeout() {
+        let clock = HLC::default();
+
+        let spawn_received = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let spawn_flag = spawn_received.clone();
+        let conn = mock_daemon(move |variant| match variant {
+            "Spawn" => {
+                spawn_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                DaemonCoordinatorReply::TriggerSpawnResult(Ok(()))
+            }
+            other => panic!("unexpected variant: {other}"),
+        });
+        let mut connections = DaemonConnections::default();
+        connections.add(DaemonId::new(None), conn);
+
+        let dataflow: Descriptor = serde_json::from_str(
+            r#"{
+                "nodes": [
+                    {
+                        "id": "dyn-src",
+                        "path": "dynamic",
+                        "startup_timeout": 30.0,
+                        "outputs": ["out"]
+                    },
+                    {
+                        "id": "sink",
+                        "path": "/tmp/dummy-b",
+                        "inputs": { "in": "dyn-src/out" }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let result = spawn_dataflow(
+            None,
+            SessionId::generate(),
+            dataflow,
+            None,
+            &mut connections,
+            &clock,
+            false,
+            None,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "a dynamic node's ignored `startup_timeout` must not block `dora start`, got: {:#}",
+            result.err().unwrap()
+        );
+        assert!(
+            spawn_received.load(std::sync::atomic::Ordering::SeqCst),
+            "daemon should have been contacted with Spawn"
+        );
     }
 }

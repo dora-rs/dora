@@ -213,15 +213,39 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
 /// runs this for every node; call it directly for a node that joins a running
 /// dataflow (`dora node add` / `dora node replace`), which never goes through
 /// whole-dataflow validation.
+///
+/// This also enforces the `startup_timeout` rule for dynamic nodes, which is
+/// a descriptor-policy check rather than a panic guard. The spawn path of an
+/// existing dataflow (`dora start`) must not apply that rule to a descriptor
+/// that started fine before, so it calls [`check_node_timing_values`] instead.
 pub fn check_node_timing(node: &ResolvedNode) -> eyre::Result<()> {
+    check_node_timing_values(node)?;
+    if let descriptor::CoreNodeKind::Custom(custom) = &node.kind
+        && custom.path.as_str() == DYNAMIC_SOURCE
+        && custom.startup_timeout.is_some()
+    {
+        bail!(
+            "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
+            node.id
+        );
+    }
+    Ok(())
+}
+
+/// The panic-guard half of [`check_node_timing`]: reject only the values the
+/// daemon would panic on in `Duration::from_secs_f64`, with no
+/// descriptor-policy rules on top.
+///
+/// `dora start` never ran whole-dataflow validation before, so applying a
+/// policy rule there would reject descriptors that start fine on 1.0.x and
+/// never panicked -- a dynamic node carrying an (ignored) `startup_timeout`,
+/// for one. The spawn path therefore guards against the panic only, and
+/// leaves the policy rules to `dora run` / `dora validate`
+/// ([`check_dataflow_static`]) and to the node-join path
+/// ([`check_node_timing`]).
+pub fn check_node_timing_values(node: &ResolvedNode) -> eyre::Result<()> {
     if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
         check_timing_fields(&node.id, custom)?;
-        if custom.path.as_str() == DYNAMIC_SOURCE && custom.startup_timeout.is_some() {
-            bail!(
-                "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
-                node.id
-            );
-        }
     }
     // `input_timeout` is a second-valued `f64` that the daemon also feeds
     // to `Duration::from_secs_f64`, on both the initial-spawn and the
@@ -1507,6 +1531,55 @@ nodes:
         assert!(
             err.contains("dynamic node `dyn` cannot specify `startup_timeout`"),
             "error should explain dynamic node startup_timeout rejection, got: {err}"
+        );
+    }
+
+    /// `check_node_timing_values` is the panic guard the `dora start` path
+    /// uses, so it must stop at the values `Duration::from_secs_f64` panics
+    /// on and leave the dynamic-node `startup_timeout` policy rule to
+    /// `check_node_timing` (`dora node add` / `replace`) and
+    /// `check_dataflow_static` (`dora run` / `validate`). Were the policy
+    /// rule in both, `dora start` would reject a descriptor that starts fine
+    /// on 1.0.x.
+    #[test]
+    fn timing_values_check_skips_the_dynamic_node_policy_rule() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: dyn
+    path: dynamic
+    startup_timeout: 5.0
+"#,
+        )
+        .unwrap();
+        let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+        let node = nodes.values().next().unwrap();
+
+        check_node_timing_values(node)
+            .expect("an ignored startup_timeout is not a panic risk, so the spawn path allows it");
+        let err = check_node_timing(node).unwrap_err().to_string();
+        assert!(
+            err.contains("dynamic node `dyn` cannot specify `startup_timeout`"),
+            "the node-join path keeps the policy rule, got: {err}"
+        );
+
+        // The panic guard itself is unchanged by the split.
+        let bad: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: dyn
+    path: dynamic
+    restart_delay: -1.0
+"#,
+        )
+        .unwrap();
+        let bad_nodes = bad.resolve_aliases_and_set_defaults().unwrap();
+        let err = check_node_timing_values(bad_nodes.values().next().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("restart_delay"),
+            "the spawn path still rejects a panicking value, got: {err}"
         );
     }
 
