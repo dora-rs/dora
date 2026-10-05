@@ -1032,7 +1032,9 @@ mod cross_pool_write_tests {
         let dataflow_id = Uuid::new_v4();
         let pool_id = "pool_node_0";
         let payload = [7u8; 64];
-        let frame_len = 4 + 16 + 4 + pool_id.len() + 8 + 8 + payload.len();
+        // Frame layout: magic, dataflow id, id length, pool id, seq, size, data.
+        let seq_at = 4 + 16 + 4 + pool_id.len();
+        let frame_len = seq_at + 8 + 8 + payload.len();
 
         // First frame: the peer reads it whole, then closes the connection
         // the way the mirror does on its read timeout.
@@ -1056,7 +1058,6 @@ mod cross_pool_write_tests {
                 .expect("the stale pooled connection was reused instead of reconnecting")
                 .unwrap();
         second.read_exact(&mut frame).await.unwrap();
-        let seq_at = 4 + 16 + 4 + pool_id.len();
         assert_eq!(
             u64::from_be_bytes(frame[seq_at..seq_at + 8].try_into().unwrap()),
             2,
