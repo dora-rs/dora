@@ -17,8 +17,8 @@ use dora_core::{
         validate,
     },
     topics::{
-        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, MulticastScouting,
-        open_zenoh_session_with_listen, validate_zenoh_listen, zenoh_bind_address_for,
+        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session_with_listen,
+        validate_zenoh_listen, zenoh_bind_address_for,
     },
     uhlc::{self, HLC},
 };
@@ -189,7 +189,7 @@ pub(crate) use running_dataflow::{
 };
 pub use zenoh_bind::ZenohOptions;
 pub(crate) use zenoh_bind::{
-    AdvertiseListener, ZenohBind, ZenohRegistration, announce_zenoh_bind,
+    AdvertiseListener, ZenohBind, ZenohRegistration, announce_zenoh_bind, daemon_session_multicast,
     reserve_zenoh_listen_endpoint,
 };
 
@@ -1264,8 +1264,9 @@ impl Daemon {
         requested_listen_endpoint: Option<String>,
         // Peers the coordinator reported at registration. Kept separate from
         // `zenoh_connect` (which the operator named) because a discovered list
-        // must not disable multicast scouting — see
-        // `ZenohSessionParams::discovered_connect_endpoints`.
+        // must not disable multicast scouting on its own — see
+        // `ZenohSessionParams::discovered_connect_endpoints`. The exception is
+        // a same-host peer, see `daemon_session_multicast`.
         zenoh_discovered_connect: Vec<String>,
         zenoh_bind: ZenohBind,
         disable_multicast: bool,
@@ -1315,14 +1316,19 @@ impl Daemon {
                 inter_daemon_peer: inter_daemon_peer.as_deref(),
                 connect_endpoints: &zenoh_connect,
                 discovered_connect_endpoints: &zenoh_discovered_connect,
-                multicast: if disable_multicast {
-                    MulticastScouting::Disabled
-                } else {
-                    MulticastScouting::Allowed
-                },
+                // May be off for a same-host peer even when the operator
+                // allowed scouting; spawned nodes still get the operator's flag.
+                multicast: daemon_session_multicast(
+                    disable_multicast,
+                    requested_listen_endpoint.as_deref(),
+                    &zenoh_discovered_connect,
+                ),
             })
             .await
             .wrap_err("failed to open zenoh session")?;
+        // Lets another daemon's link-probe diagnostics, which list the zids it
+        // is linked to, be matched against this daemon (#3711).
+        tracing::info!("zenoh session open with id {}", zenoh_session.zid());
         // Same-host control notifications (`PeerMessage::Register`/`PeerMessage::Free`) go over
         // zenoh SHM: the payload stays in shared memory and peer daemons
         if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {

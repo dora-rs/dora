@@ -1412,6 +1412,10 @@ jobs:
         # still compiling zenoh when the step was force-killed (#2742). 45 min
         # gives the release build margin without masking a genuine hang.
         timeout-minutes: 45
+        # Zenoh face/route and scouting/connect debug logs, to diagnose a run
+        # where the two daemons never link (#3711). Adds ~500 lines per run.
+        env:
+          RUST_LOG: info,zenoh::net::routing=debug,zenoh::net::runtime=debug
         run: cargo run --example multiple-daemons
       - name: C Dataflow example
         timeout-minutes: 15

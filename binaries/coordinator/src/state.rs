@@ -126,8 +126,9 @@ impl DaemonConnections {
     /// own loopback. The peer address is a proxy: a daemon that reaches the
     /// coordinator through a local port forward (`ssh -L`, a container's
     /// forwarded port) looks local too and is handed loopback endpoints it
-    /// cannot use — a futile dial, since discovered endpoints leave multicast
-    /// scouting on, but not a lost link.
+    /// cannot use — a futile dial. A daemon handed a loopback endpoint may
+    /// also turn its own multicast scouting off; see
+    /// `daemon_session_multicast` in the daemon (#3711).
     pub(crate) fn zenoh_endpoints_for(
         &self,
         joining: &DaemonId,
