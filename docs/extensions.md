@@ -75,6 +75,13 @@ dora reads exactly two fields: `namespace`, to pick an extension, and
 `target_machine`, to drop a dataflow-scope broadcast on daemons it does not
 name. The payload is bytes it never parses.
 
+That drop happens only after delivery, so a targeted message still crosses the
+network to every subscribed daemon. An extension that sends bulk data can route
+a targeted message on its own key below `dataflow_extension_topic`. Only the
+target daemon subscribes to that key. The tensor-pool extension does this with
+a per-machine key (`…/machine/<machine>`), so a relayed frame reaches only the
+pool's mirror (#3689).
+
 ## What dora deliberately does not provide
 
 No shared-memory helpers, no CUDA, no wire vocabulary for any particular
