@@ -1573,8 +1573,7 @@ unsafe fn send_arrow_output_impl(
         Ok(array_data) => {
             let arrow_array = arrow::array::make_array(array_data);
             let parameters: DoraMetadataParameters = metadata
-                .as_ref()
-                .map(|metadata| metadata.parameters.clone())
+                .map(|metadata| metadata.into_parameters())
                 .unwrap_or_default();
             let output_id = match parse_output_id(&id) {
                 Ok(parsed) => parsed,
