@@ -96,6 +96,17 @@ fn format_response_json(id: Uuid, reply: &impl serde::Serialize) -> String {
     }
 }
 
+/// Push one log line to the CLI.
+async fn send_log_line(
+    ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
+    log_json: String,
+) -> Result<(), ()> {
+    ws_tx
+        .send(Message::Text(log_json.into()))
+        .await
+        .map_err(|_| ())
+}
+
 /// Push one topic data frame to the CLI as `subscription_id ++ payload`.
 async fn send_topic_frame(
     ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
@@ -126,26 +137,37 @@ async fn await_reply_forwarding_pushes(
     ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
     log_rx: &mut mpsc::Receiver<String>,
     binary_rx: &mut mpsc::Receiver<crate::topic_subscriber::TopicFrame>,
-) -> Result<Result<eyre::Result<ControlRequestReply>, oneshot::error::RecvError>, ()> {
-    loop {
+) -> Result<ControlRequestReply, ()> {
+    let reply = loop {
         tokio::select! {
-            reply = &mut reply_rx => {
-                // Lines the event loop queued before answering belong ahead
-                // of the reply: a CLI that exits on it would lose them.
-                while let Ok(log_json) = log_rx.try_recv() {
-                    ws_tx.send(Message::Text(log_json.into())).await.map_err(|_| ())?;
-                }
-                while let Ok(frame) = binary_rx.try_recv() {
-                    send_topic_frame(ws_tx, frame).await?;
-                }
-                return Ok(reply);
-            }
-            Some(log_json) = log_rx.recv() => {
-                ws_tx.send(Message::Text(log_json.into())).await.map_err(|_| ())?;
-            }
+            reply = &mut reply_rx => break reply,
+            Some(log_json) = log_rx.recv() => send_log_line(ws_tx, log_json).await?,
             Some(frame) = binary_rx.recv() => send_topic_frame(ws_tx, frame).await?,
         }
+    };
+    // Lines the event loop queued before answering belong ahead of the
+    // reply: a CLI that exits on it would lose them.
+    while let Ok(log_json) = log_rx.try_recv() {
+        send_log_line(ws_tx, log_json).await?;
     }
+    while let Ok(frame) = binary_rx.try_recv() {
+        send_topic_frame(ws_tx, frame).await?;
+    }
+    Ok(match reply {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(err)) => {
+            tracing::error!("control request failed: {err:?}");
+            // Send only the root error message to the client, not the
+            // full internal chain (which may leak implementation details).
+            let root = err.root_cause().to_string();
+            ControlRequestReply::Error(root)
+        }
+        Err(_) => ControlRequestReply::Error(
+            "coordinator dropped the request without a reply \
+             (it may have shut down or the dataflow exited unexpectedly)"
+                .to_string(),
+        ),
+    })
 }
 
 /// Handle a single CLI WebSocket connection on `/api/control`.
@@ -471,21 +493,6 @@ pub(crate) async fn handle_control_ws(
                 else {
                     break;
                 };
-                let reply = match reply {
-                    Ok(Ok(reply)) => reply,
-                    Ok(Err(err)) => {
-                        tracing::error!("control request failed: {err:?}");
-                        // Send only the root error message to the client, not the
-                        // full internal chain (which may leak implementation details).
-                        let root = err.root_cause().to_string();
-                        ControlRequestReply::Error(root)
-                    }
-                    Err(_) => ControlRequestReply::Error(
-                        "coordinator dropped the request without a reply \
-                         (it may have shut down or the dataflow exited unexpectedly)"
-                            .to_string(),
-                    ),
-                };
 
                 let stop = matches!(reply, ControlRequestReply::CoordinatorStopped);
 
@@ -496,7 +503,7 @@ pub(crate) async fn handle_control_ws(
             }
             // Log events to push to CLI
             Some(log_json) = log_rx.recv() => {
-                if ws_tx.send(Message::Text(log_json.into())).await.is_err() {
+                if send_log_line(&mut ws_tx, log_json).await.is_err() {
                     break;
                 }
             }
