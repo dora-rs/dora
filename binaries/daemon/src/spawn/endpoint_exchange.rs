@@ -1062,19 +1062,29 @@ mod tests {
             "the declare must finish after its waiter gave up: {answered:?}"
         );
 
-        drop(handle);
-        let (_, answered) = collect(
-            &b,
-            dataflow,
-            &Wanted::new(),
-            &on_machine("A"),
-            Duration::from_millis(500),
-        )
-        .await;
-        assert!(
-            answered.is_empty(),
-            "dropping the handle undeclares the queryable: {answered:?}"
-        );
+        // Aborting only requests cancellation, and the undeclare then has to
+        // reach `b`: wait for the task to end, then for `b` to stop seeing
+        // the queryable, instead of assuming both happen within one query.
+        handle.abort();
+        let _ = handle.await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let (_, answered) = collect(
+                &b,
+                dataflow,
+                &Wanted::new(),
+                &on_machine("A"),
+                Duration::from_millis(500),
+            )
+            .await;
+            if answered.is_empty() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "dropping the handle undeclares the queryable: {answered:?}"
+            );
+        }
     }
 
     /// The probe that runs after an unanswered exchange returns as soon as the
