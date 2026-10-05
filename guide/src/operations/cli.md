@@ -1544,8 +1544,8 @@ class Operator:
 ### Setup
 
 ```bash
-# Machine A (coordinator + daemon)
-dora up
+# Machine A (coordinator + daemon, listening on the LAN address so B and C can reach it)
+dora up --interface 192.168.1.10
 
 # Machine B (daemon only, pointing to coordinator on Machine A)
 dora daemon --coordinator-addr 192.168.1.10 --machine-id B

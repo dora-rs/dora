@@ -143,7 +143,7 @@ dora coordinator --store redb:/tmp/dora-coord
 # Terminal 2
 dora daemon --machine-id A --coordinator-addr 127.0.0.1
 # Terminal 3 — kill coordinator, restart, verify daemon auto-reconnects
-pkill dora-coordinator
+pkill -f 'dora coordinator'
 dora coordinator --store redb:/tmp/dora-coord
 ```
 
