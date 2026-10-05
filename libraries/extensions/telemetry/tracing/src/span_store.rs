@@ -175,13 +175,20 @@ where
     fn on_record(&self, id: &Id, values: &tracing::span::Record<'_>, ctx: Context<'_, S>) {
         if let Some(span) = ctx.span(id) {
             let mut ext = span.extensions_mut();
-            if let Some(data) = ext.get_mut::<SpanData>()
-                && data.fields.len() < MAX_FIELDS_PER_SPAN
-            {
+            if let Some(data) = ext.get_mut::<SpanData>() {
                 let mut visitor = FieldVisitor(Vec::new());
                 values.record(&mut visitor);
-                let remaining = MAX_FIELDS_PER_SPAN.saturating_sub(data.fields.len());
-                data.fields.extend(visitor.0.into_iter().take(remaining));
+                // `span.record` sets a field's value: overwrite a field the
+                // span already has instead of appending a duplicate, so
+                // re-recording one field cannot fill the cap and crowd out
+                // others. Only new names count against the cap.
+                for (name, value) in visitor.0 {
+                    if let Some(existing) = data.fields.iter_mut().find(|(k, _)| *k == name) {
+                        existing.1 = value;
+                    } else if data.fields.len() < MAX_FIELDS_PER_SPAN {
+                        data.fields.push((name, value));
+                    }
+                }
             }
         }
     }
@@ -287,5 +294,31 @@ mod tests {
 
         // Fields
         assert!(outer.fields.iter().any(|(k, _)| k == "key"));
+    }
+
+    #[test]
+    fn recording_a_field_again_overwrites_its_value() {
+        let store = new_shared_store();
+        let layer = SpanCaptureLayer::new(store.clone());
+        let subscriber = Registry::default().with(layer);
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("s", status = "pending", late = tracing::field::Empty);
+            span.record("status", "running");
+            span.record("status", "done");
+            span.record("late", 7);
+        });
+
+        let store = store.lock().unwrap();
+        let fields = &store.spans()[0].fields;
+        let values = |name: &str| {
+            fields
+                .iter()
+                .filter(|(k, _)| k == name)
+                .map(|(_, v)| v.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(values("status"), ["done"], "{fields:?}");
+        assert_eq!(values("late"), ["7"], "{fields:?}");
     }
 }
