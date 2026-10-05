@@ -95,7 +95,10 @@ impl WsSession {
                     request = request.header("Authorization", format!("Bearer {}", token.as_hex()));
                 }
                 let request = request.body(()).expect("failed to build WS request");
-                tokio_tungstenite::connect_async(request).await
+                let config = tungstenite::protocol::WebSocketConfig::default()
+                    .max_message_size(Some(dora_message::MAX_MESSAGE_BYTES))
+                    .max_frame_size(Some(dora_message::MAX_MESSAGE_BYTES));
+                tokio_tungstenite::connect_async_with_config(request, Some(config), false).await
             })
             .map_err(|e| {
                 let msg = e.to_string();
