@@ -442,7 +442,8 @@ pub struct ZenohSessionParams<'a> {
     /// Letting such a list disable scouting would make a partial answer *worse*
     /// than no answer — it would strip the fallback that was working — so
     /// discovery here is strictly additive: it adds links, and multicast stays
-    /// available to cover whatever it missed.
+    /// available to cover whatever it missed. (The daemon may still request
+    /// scouting off via [`Self::multicast`] for a same-host peer, #3711.)
     pub discovered_connect_endpoints: &'a [String],
     /// Whether this session may scout by multicast. A request, not a command —
     /// see the `#1856` guard below.

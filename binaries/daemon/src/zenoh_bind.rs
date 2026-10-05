@@ -1,7 +1,9 @@
 //! How a daemon wires its zenoh session: which endpoint it listens on, how it
 //! reserves and announces that endpoint, and what it hands to spawned nodes.
 
-use dora_core::topics::{ZenohListen, reserve_zenoh_endpoint};
+use dora_core::topics::{
+    MulticastScouting, ZenohListen, reserve_zenoh_endpoint, zenoh_endpoint_is_loopback,
+};
 use eyre::Context;
 use std::net::{IpAddr, SocketAddr};
 
@@ -204,6 +206,98 @@ pub(crate) fn reserve_zenoh_listen_endpoint(zenoh_bind: ZenohBind) -> eyre::Resu
                 zenoh_bind.addr()
             );
             Ok(None)
+        }
+    }
+}
+
+/// Whether the daemon's own zenoh session may scout by multicast, given the
+/// operator's flag, the endpoint this daemon will listen on, and the peer
+/// endpoints the coordinator handed over at registration (`discovered_connect`,
+/// already passed through `coordinator::usable_peer_endpoints`).
+///
+/// Scouting is also turned off when this daemon listens on loopback and one of
+/// those endpoints is a loopback one: a daemon on this host registered earlier,
+/// and this one is about to dial it. Leaving multicast on next to that dial
+/// gives the pair up to three concurrent link attempts: the explicit dial
+/// (which zenoh runs in the background, so it does not finish before scouting
+/// starts) plus each side's multicast autoconnect. A simultaneous open between
+/// two peers can leave one with a single face to the other that never carries
+/// anything, and zenoh never opens a second transport to a zid it already has,
+/// so the pair stays unlinked (#3711). With scouting off this daemon neither
+/// scouts nor answers scouts, so the earlier daemon cannot autoconnect to it
+/// either: one side dials, once.
+///
+/// Both ends being loopback is what makes this safe. A loopback listener is
+/// reachable from this host only, so scouting could not have made this daemon
+/// reachable from anywhere else; daemons on this host that register later are
+/// handed this daemon's endpoint and dial it. What scouting still did was let
+/// this daemon dial out to scouted daemons on other hosts. Those are either
+/// handed over by the coordinator (when they registered earlier with a routable
+/// endpoint) or learned by gossip, which stays on, through the daemons this
+/// one links to. A daemon with a routable listener (a port-forwarded daemon
+/// with `--zenoh-listen`) or none at all keeps scouting.
+///
+/// The earlier daemon keeps scouting (it was handed nothing), and the request
+/// is honored only when the listener is actually configured (see
+/// `ZenohSessionParams::multicast`). Not covered: same-host daemons that reach
+/// the coordinator over a routable address, and a third same-host daemon's
+/// dial racing gossip autoconnect.
+pub(crate) fn daemon_session_multicast(
+    disable_multicast: bool,
+    own_listener: Option<&str>,
+    discovered_connect: &[String],
+) -> MulticastScouting {
+    let listens_on_loopback = own_listener.is_some_and(zenoh_endpoint_is_loopback);
+    let same_host_peer = listens_on_loopback
+        && discovered_connect
+            .iter()
+            .map(String::as_str)
+            .any(zenoh_endpoint_is_loopback);
+    if disable_multicast || same_host_peer {
+        MulticastScouting::Disabled
+    } else {
+        MulticastScouting::Allowed
+    }
+}
+
+#[cfg(test)]
+mod daemon_session_multicast_tests {
+    use super::*;
+    use MulticastScouting::{Allowed, Disabled};
+
+    const OWN_LOOPBACK: Option<&str> = Some("tcp/127.0.0.1:40001");
+    const SAME_HOST: &[&str] = &["tcp/127.0.0.1:43217"];
+
+    #[test]
+    fn scouting_is_off_only_for_a_loopback_daemon_handed_a_loopback_peer() {
+        let cases: &[(bool, Option<&str>, &[&str], MulticastScouting)] = &[
+            // The `multiple-daemons` shape (#3711): this daemon dials an
+            // earlier same-host daemon, so scouting must not race that dial.
+            (false, OWN_LOOPBACK, SAME_HOST, Disabled),
+            (
+                false,
+                OWN_LOOPBACK,
+                &["tcp/10.0.2.7:5456", "tcp/[::1]:43217"],
+                Disabled,
+            ),
+            // First daemon to register, or only other hosts handed over.
+            (false, OWN_LOOPBACK, &[], Allowed),
+            (false, OWN_LOOPBACK, &["tcp/10.0.2.7:5456"], Allowed),
+            // A routable listener (port-forwarded daemon with
+            // `--zenoh-listen`) may need scouting to find its own network;
+            // no listener at all leaves scouting as the only fallback.
+            (false, Some("tcp/192.168.1.20:5456"), SAME_HOST, Allowed),
+            (false, None, SAME_HOST, Allowed),
+            // The operator flag still wins.
+            (true, OWN_LOOPBACK, &[], Disabled),
+        ];
+        for &(disable, own, handed, expected) in cases {
+            let handed: Vec<String> = handed.iter().map(|s| s.to_string()).collect();
+            assert_eq!(
+                daemon_session_multicast(disable, own, &handed),
+                expected,
+                "disable={disable} own={own:?} handed={handed:?}"
+            );
         }
     }
 }

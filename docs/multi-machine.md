@@ -41,7 +41,7 @@ You do not have to list the daemons anywhere. Each daemon works out its own netw
 
 This means two things:
 
-- **The coordinator must listen on an address that the daemons can reach.** By default it listens on loopback (`127.0.0.1`) only. A daemon that reaches its coordinator over loopback also listens on loopback only, and the coordinator announces that address only to other daemons on the same machine, because `127.0.0.1` would be useless to anyone else. From another machine, such a daemon can only be found through multicast.
+- **The coordinator must listen on an address that the daemons can reach.** By default it listens on loopback (`127.0.0.1`) only. A daemon that reaches its coordinator over loopback also listens on loopback only, and the coordinator announces that address only to other daemons on the same machine, because `127.0.0.1` would be useless to anyone else. From another machine, such a daemon can only be found through multicast. A daemon that is handed such an address connects to that daemon directly and turns its own multicast discovery off, see [Multicast, and what to do without it](#multicast-and-what-to-do-without-it).
 - **The address a daemon announces must be reachable by the other daemons.** If it is not, for example because of a NAT, or because a machine with several network interfaces picked the wrong one, either set the address with `--zenoh-listen`, or use setup 2.
 
 Zenoh's multicast discovery (UDP on `224.0.0.224:7446`) stays enabled by default, in addition to the coordinator mechanism. It is not needed for the setup below, but on a network that supports it, it repairs a few rare situations automatically. See [Multicast, and what to do without it](#multicast-and-what-to-do-without-it).
@@ -123,6 +123,8 @@ Nothing above depends on multicast. Zenoh's multicast discovery stays enabled by
 
 - A daemon that registers while the coordinator is down or restarting gets the list that the coordinator has at that moment, which may be empty. Daemons that are already running are not affected, because their connections do not go through the coordinator.
 - A daemon gets the addresses of its peers only once, when it registers. If one of these addresses is no longer valid, that daemon keeps the invalid address. A daemon whose listener could not be created withdraws its address, so this only affects daemons that already received it.
+
+There is one exception: a daemon that listens on loopback and is given the loopback address of another daemon on the same machine turns its own multicast discovery off, because discovery would race its direct connection to that daemon and can leave the two unconnected. Multicast does not repair the second situation above for such a daemon; restart it. It still reaches daemons on other machines whose routable address the coordinator announced to it, and the ones that the daemons it is connected to know about.
 
 These networks usually do not support multicast: guest or company Wi-Fi with client isolation, Docker's default bridge network, dev containers, cloud VPCs, and all VPN or mesh tunnels. On such a network, the first two situations are not repaired automatically. Restart the affected daemon in both cases. There is also a third situation that only the explicit configuration below can handle: only the new daemon opens connections, so on a network that allows connections in one direction only, the connection only works if the daemon that can connect registers second.
 
