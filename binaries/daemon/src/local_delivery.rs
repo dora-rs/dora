@@ -3,7 +3,7 @@
 
 use crate::{
     CONTROL_EVENT_HEADROOM, FaultToleranceStats, InputDeadline, NODE_EVENT_CHANNEL_CAPACITY,
-    OutputId, RunningDataflow, runtime_node_inputs, send_with_timestamp,
+    OutputId, RunningDataflow, runtime_node_inputs, send_timestamped, send_with_timestamp,
 };
 use aligned_vec::{AVec, ConstAlign};
 use dora_core::{
@@ -41,17 +41,15 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub(crate) struct DeferredDelivery {
     pub receiver: NodeId,
-    /// The receiver's input the event is for; checked against
-    /// `DrainSignal::closed_inputs` before the event is sent.
-    pub input: DataId,
     pub channel: mpsc::Sender<Timestamped<NodeEvent>>,
     /// The receiver's pending-message counter, bumped once the event is in.
     pub pending: Option<Arc<AtomicU64>>,
     /// The receiver's side of the hold.
     pub drained: Arc<DrainSignal>,
     pub event: Timestamped<NodeEvent>,
-    /// Marks `input` as having a held message until this delivery is done,
-    /// however it ends.
+    /// Marks the receiver's input as having a held message until this
+    /// delivery is done, however it ends; a close waiting for it goes out
+    /// then (`DrainSignal::send_close`).
     pub held: HeldInput,
 }
 
@@ -73,38 +71,61 @@ pub(crate) struct DrainSignal {
     /// Set when the node dropped its event stream deliberately, so a held
     /// delivery that finds its channel closed afterwards is not a loss.
     pub stream_dropped: AtomicBool,
-    /// Inputs of this receiver the daemon loop has closed for good. A held
-    /// delivery checks it and sends under the same lock, and `close_input`
-    /// adds to it before sending `InputClosed`, so a held message either
-    /// lands before the close or not at all: its producer crashing while it
-    /// is held must not put an `Input` behind that input's `InputClosed`
-    /// (dora-rs/dora#3619).
-    pub closed_inputs: Mutex<BTreeSet<DataId>>,
+    /// Held deliveries per input, and the close events waiting for them.
+    holds: Mutex<Holds>,
+}
+
+/// See [`DrainSignal::holds`].
+#[derive(Debug, Default)]
+struct Holds {
     /// How many held deliveries each input of this receiver has in flight.
-    /// The circuit breaker does not break an input while this is nonzero:
-    /// its producer is alive and produced, and a break's `InputClosed`
-    /// could otherwise land ahead of the held `Input` (dora-rs/dora#3623
-    /// review).
-    held_inputs: Mutex<BTreeMap<DataId, usize>>,
+    /// The circuit breaker does not break an input while it has one
+    /// (`RunningDataflow::timed_out_inputs`): its `InputClosed` goes out at
+    /// once, and could land ahead of the held `Input`.
+    count: BTreeMap<DataId, usize>,
+    /// Close events that must not overtake a held delivery, in the order the
+    /// daemon loop decided them (see [`DrainSignal::send_close`]).
+    waiting: Vec<WaitingClose>,
+}
+
+#[derive(Debug)]
+struct WaitingClose {
+    /// The input an `InputClosed` is for; `None` for `AllInputsClosed`,
+    /// which waits for every held delivery.
+    input: Option<DataId>,
+    channel: mpsc::Sender<Timestamped<NodeEvent>>,
+    pending: Option<Arc<AtomicU64>>,
+    event: Timestamped<NodeEvent>,
+}
+
+impl Holds {
+    fn holds_back(&self, input: Option<&DataId>) -> bool {
+        match input {
+            Some(input) => self.count.contains_key(input),
+            None => !self.count.is_empty(),
+        }
+    }
+
+    /// Sends the waiting closes nothing holds back any more, in order.
+    fn release(&mut self) {
+        for close in std::mem::take(&mut self.waiting) {
+            if self.holds_back(close.input.as_ref()) {
+                self.waiting.push(close);
+            } else {
+                send_control(&close.channel, close.pending.as_ref(), close.event);
+            }
+        }
+    }
 }
 
 impl DrainSignal {
-    /// Marks `input` closed for held deliveries, and wakes them so they
-    /// give up on it now rather than after waiting for room.
-    pub fn close_input(&self, input: &DataId) {
-        self.closed_inputs
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(input.clone());
-        self.notify.notify_waiters();
-    }
-
     /// Counts a held delivery for `input` until the returned guard drops.
     pub fn hold(self: &Arc<Self>, input: &DataId) -> HeldInput {
         *self
-            .held_inputs
+            .holds
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .count
             .entry(input.clone())
             .or_default() += 1;
         HeldInput {
@@ -115,22 +136,53 @@ impl DrainSignal {
 
     /// Whether a delivery for `input` is still held.
     pub fn is_held(&self, input: &DataId) -> bool {
-        self.held_inputs
+        self.holds
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+            .count
             .contains_key(input)
     }
 
-    /// Undoes [`Self::close_input`] for an input a reload maps again.
+    /// Sends a close event to this receiver — `InputClosed` for `input`, or
+    /// `AllInputsClosed` for `None` — or, while a held delivery it must not
+    /// overtake is in flight, keeps it until that delivery is done, however
+    /// it ends ([`HeldInput`]'s drop). A producer that exits while one of its
+    /// messages is held must neither lose it nor have it land behind the
+    /// close (dora-rs/dora#3619). Returns whether the event was sent or is
+    /// waiting.
+    fn send_close(
+        &self,
+        input: Option<&DataId>,
+        channel: &mpsc::Sender<Timestamped<NodeEvent>>,
+        pending: Option<&Arc<AtomicU64>>,
+        event: Timestamped<NodeEvent>,
+    ) -> bool {
+        let mut holds = self.holds.lock().unwrap_or_else(PoisonError::into_inner);
+        if !holds.holds_back(input) {
+            return send_control(channel, pending, event);
+        }
+        holds.waiting.push(WaitingClose {
+            input: input.cloned(),
+            channel: channel.clone(),
+            pending: pending.cloned(),
+            event,
+        });
+        true
+    }
+
+    /// Drops the closes still waiting for `input`, which a reload maps
+    /// again: an `InputClosed` for it, and an `AllInputsClosed`.
     pub fn reopen_input(&self, input: &DataId) {
-        self.closed_inputs
+        self.holds
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .remove(input);
+            .waiting
+            .retain(|close| close.input.as_ref().is_some_and(|other| other != input));
     }
 }
 
-/// A held delivery's entry in [`DrainSignal::held_inputs`].
+/// A held delivery's entry in [`DrainSignal::holds`]; the last one for an
+/// input to go releases the closes waiting for it.
 #[derive(Debug)]
 pub(crate) struct HeldInput {
     drained: Arc<DrainSignal>,
@@ -139,17 +191,54 @@ pub(crate) struct HeldInput {
 
 impl Drop for HeldInput {
     fn drop(&mut self) {
-        let mut held = self
+        let mut holds = self
             .drained
-            .held_inputs
+            .holds
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if let Some(count) = held.get_mut(&self.input) {
+        if let Some(count) = holds.count.get_mut(&self.input) {
             *count -= 1;
             if *count == 0 {
-                held.remove(&self.input);
+                holds.count.remove(&self.input);
+                holds.release();
             }
         }
+    }
+}
+
+/// Sends a control event, bumping the receiver's pending counter if it got
+/// in. Returns whether it did.
+fn send_control(
+    channel: &mpsc::Sender<Timestamped<NodeEvent>>,
+    pending: Option<&Arc<AtomicU64>>,
+    event: Timestamped<NodeEvent>,
+) -> bool {
+    let sent = send_timestamped(channel, event).ok() == Some(true);
+    if sent && let Some(pending) = pending {
+        pending.fetch_add(1, atomic::Ordering::Relaxed);
+    }
+    sent
+}
+
+/// [`DrainSignal::send_close`] for `receiver_id`, if it has an event stream.
+fn send_close(
+    dataflow: &RunningDataflow,
+    receiver_id: &NodeId,
+    input: Option<&DataId>,
+    event: NodeEvent,
+    clock: &HLC,
+) -> bool {
+    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+        return false;
+    };
+    let pending = dataflow.pending_messages.get(receiver_id);
+    let event = Timestamped {
+        inner: event,
+        timestamp: clock.new_timestamp(),
+    };
+    match dataflow.drain_signals.get(receiver_id) {
+        Some(drained) => drained.send_close(input, channel, pending, event),
+        None => send_control(channel, pending, event),
     }
 }
 
@@ -348,7 +437,6 @@ fn offer_event<'a>(
             );
             deferred.push(DeferredDelivery {
                 receiver: receiver_id.clone(),
-                input: input_id.clone(),
                 channel: channel.clone(),
                 pending: dataflow.pending_messages.get(receiver_id).cloned(),
                 held: drained.hold(input_id),
@@ -645,25 +733,17 @@ pub(crate) fn close_input(
         return;
     }
 
-    // Before `InputClosed` goes out, so a message still held for this input
-    // cannot land behind it (dora-rs/dora#3619).
-    if let Some(drained) = dataflow.drain_signals.get(receiver_id) {
-        drained.close_input(input_id);
-    }
-
-    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
-        && was_open
-        && send_with_timestamp(
-            channel,
+    if was_open {
+        // Waits for a message still held for this input, if any.
+        send_close(
+            dataflow,
+            receiver_id,
+            Some(input_id),
             NodeEvent::InputClosed {
                 id: input_id.clone(),
             },
             clock,
-        )
-        .ok()
-            == Some(true)
-    {
-        dataflow.inc_pending(receiver_id);
+        );
     }
 
     signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
@@ -683,9 +763,9 @@ pub(crate) fn signal_all_inputs_closed_if_drained(
     receiver_id: &NodeId,
     clock: &HLC,
 ) {
-    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+    if !dataflow.subscribe_channels.contains_key(receiver_id) {
         return;
-    };
+    }
     // As at the subscribe site: either "nothing left open" (pre-existing
     // behavior, and true for a source) or "drained" (the node we are about
     // to tell to finish) disables restart.
@@ -695,10 +775,20 @@ pub(crate) fn signal_all_inputs_closed_if_drained(
     {
         node.disable_restart();
     }
+    // Sent after every message still held for the node, which are all for
+    // inputs that have closed by now.
     if dataflow.is_finished(receiver_id)
-        && send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true)
+        && send_close(
+            dataflow,
+            receiver_id,
+            None,
+            NodeEvent::AllInputsClosed,
+            clock,
+        )
     {
-        dataflow.inc_pending(receiver_id);
+        // The drain clock starts here even if the event waits behind a held
+        // message: that wait ends once the node makes room, or at the stall
+        // limit, well inside the default finish grace.
         dataflow
             .all_inputs_closed_at
             .insert(receiver_id.clone(), Instant::now());

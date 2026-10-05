@@ -788,18 +788,19 @@ impl Listener {
 /// waited for any longer: the event is dropped, loudly, and counted as lost,
 /// and the receiver is marked `gave_up` so that its producers are not held
 /// for it again until it drains.
-async fn deliver_when_room(
+pub(crate) async fn deliver_when_room(
     delivery: DeferredDelivery,
     last_activity: &AtomicU64,
     ft_stats: &FaultToleranceStats,
 ) {
     let DeferredDelivery {
         receiver,
-        input,
         channel,
         pending,
         drained,
         mut event,
+        // Dropped on return, once the event is in or given up on: a close
+        // waiting for it goes out only then (dora-rs/dora#3619).
         held: _held,
     } = delivery;
     let mut stalled = Duration::ZERO;
@@ -809,37 +810,17 @@ async fn deliver_when_room(
         let notified = drained.notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        match try_deliver(&drained, &input, &channel, event) {
-            HeldOutcome::Delivered => {
-                if let Some(pending) = &pending {
-                    pending.fetch_add(1, Ordering::Relaxed);
+        if channel.capacity() >= CONTROL_EVENT_HEADROOM {
+            match channel.try_send(event) {
+                Ok(()) => {
+                    if let Some(pending) = &pending {
+                        pending.fetch_add(1, Ordering::Relaxed);
+                    }
+                    return;
                 }
-                return;
+                Err(mpsc::error::TrySendError::Closed(_)) => break,
+                Err(mpsc::error::TrySendError::Full(returned)) => event = returned,
             }
-            HeldOutcome::InputClosed => {
-                // Its producer went away while this was held, and the
-                // receiver has been (or is about to be) told the input is
-                // closed: nothing may follow that.
-                if drained.stream_dropped.load(Ordering::Acquire) {
-                    tracing::debug!(
-                        receiver = %receiver,
-                        input = %input,
-                        "input closed and event stream dropped before a deferred delivery \
-                         could complete"
-                    );
-                } else {
-                    tracing::warn!(
-                        receiver = %receiver,
-                        input = %input,
-                        "input closed before a deferred delivery could complete: dropping \
-                         a held message the input (queue_policy: backpressure) was promised"
-                    );
-                    ft_stats.record_drop(1, true);
-                }
-                return;
-            }
-            HeldOutcome::ChannelClosed => break,
-            HeldOutcome::NoRoom(returned) => event = returned,
         }
         if channel.is_closed() {
             break;
@@ -892,41 +873,6 @@ async fn deliver_when_room(
              dropping a message its input (queue_policy: backpressure) was promised"
         );
         ft_stats.record_drop(1, true);
-    }
-}
-
-enum HeldOutcome {
-    Delivered,
-    InputClosed,
-    ChannelClosed,
-    NoRoom(Timestamped<NodeEvent>),
-}
-
-/// One attempt at a held delivery. The check that `input` is still open and
-/// the send happen under the `closed_inputs` lock that
-/// [`DrainSignal::close_input`] takes before the daemon loop sends
-/// `InputClosed`, so the event lands ahead of that close or not at all
-/// (dora-rs/dora#3619).
-fn try_deliver(
-    drained: &DrainSignal,
-    input: &DataId,
-    channel: &mpsc::Sender<Timestamped<NodeEvent>>,
-    event: Timestamped<NodeEvent>,
-) -> HeldOutcome {
-    let closed_inputs = drained
-        .closed_inputs
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if closed_inputs.contains(input) {
-        return HeldOutcome::InputClosed;
-    }
-    if channel.capacity() < CONTROL_EVENT_HEADROOM {
-        return HeldOutcome::NoRoom(event);
-    }
-    match channel.try_send(event) {
-        Ok(()) => HeldOutcome::Delivered,
-        Err(mpsc::error::TrySendError::Closed(_)) => HeldOutcome::ChannelClosed,
-        Err(mpsc::error::TrySendError::Full(returned)) => HeldOutcome::NoRoom(returned),
     }
 }
 
@@ -1025,7 +971,6 @@ mod tests {
         let pending = Arc::new(AtomicU64::new(0));
         let delivery = DeferredDelivery {
             receiver: NodeId::from("sink".to_string()),
-            input: DataId::from("in".to_string()),
             channel: channel.clone(),
             pending: Some(pending.clone()),
             held: drained.hold(&DataId::from("in".to_string())),
@@ -1239,72 +1184,6 @@ mod tests {
                 .lost_backpressure_messages
                 .load(Ordering::Relaxed),
             0
-        );
-    }
-
-    /// A message held for a full receiver whose producer then goes away
-    /// must not reach the receiver behind that input's `InputClosed`: the
-    /// daemon loop marks the input closed before it sends the close, and the
-    /// held delivery gives it up — counted, since the producer's send was
-    /// acknowledged — instead of landing after it (dora-rs/dora#3619).
-    #[tokio::test]
-    async fn held_delivery_does_not_land_after_its_input_closed() {
-        let (listener, _tx) = listener();
-        let clock = listener.clock.clone();
-        let drained = Arc::new(DrainSignal::default());
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
-        for _ in 0..NODE_EVENT_CHANNEL_CAPACITY - (CONTROL_EVENT_HEADROOM - 1) {
-            tx.try_send(input(&clock, 0)).unwrap();
-        }
-        let (delivery, pending) = deferred(&tx, &drained, metadata_heavy_input(&clock, 7));
-        let deliver = tokio::spawn({
-            let last_activity = listener.last_activity.clone();
-            let ft_stats = listener.backpressure.ft_stats.clone();
-            async move { deliver_when_room(delivery, &last_activity, &ft_stats).await }
-        });
-        tokio::task::yield_now().await;
-
-        // The producer crashed: the daemon loop closes the input, which goes
-        // into the control headroom of the still-full channel.
-        let input_id = DataId::from("in".to_string());
-        drained.close_input(&input_id);
-        assert!(
-            crate::send_with_timestamp(&tx, NodeEvent::InputClosed { id: input_id }, &clock)
-                .unwrap()
-        );
-        // The receiver drains.
-        let mut events = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            events.push(event);
-        }
-        drained.notify.notify_waiters();
-        tokio::time::timeout(std::time::Duration::from_secs(5), deliver)
-            .await
-            .expect("the held delivery gives up once its input is closed")
-            .unwrap();
-        while let Ok(event) = rx.try_recv() {
-            events.push(event);
-        }
-
-        let close = events
-            .iter()
-            .position(|event| matches!(event.inner, NodeEvent::InputClosed { .. }))
-            .expect("InputClosed was delivered");
-        assert!(
-            events[close + 1..]
-                .iter()
-                .all(|event| !matches!(event.inner, NodeEvent::Input { .. })),
-            "no Input may follow its InputClosed"
-        );
-        assert_eq!(pending.load(Ordering::Relaxed), 0);
-        assert_eq!(
-            listener
-                .backpressure
-                .ft_stats
-                .lost_backpressure_messages
-                .load(Ordering::Relaxed),
-            1,
-            "the held message was acknowledged to its producer, so its loss is counted"
         );
     }
 

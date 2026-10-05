@@ -244,12 +244,22 @@ pub(crate) fn send_with_timestamp(
     event: NodeEvent,
     clock: &HLC,
 ) -> Result<bool, mpsc::error::SendError<Timestamped<NodeEvent>>> {
-    let is_control = !matches!(event, NodeEvent::Input { .. });
-    let msg = Timestamped {
-        inner: event,
-        timestamp: clock.new_timestamp(),
-    };
+    send_timestamped(
+        sender,
+        Timestamped {
+            inner: event,
+            timestamp: clock.new_timestamp(),
+        },
+    )
+}
 
+/// [`send_with_timestamp`] for an event that already has its timestamp.
+#[allow(clippy::result_large_err)]
+pub(crate) fn send_timestamped(
+    sender: &mpsc::Sender<Timestamped<NodeEvent>>,
+    msg: Timestamped<NodeEvent>,
+) -> Result<bool, mpsc::error::SendError<Timestamped<NodeEvent>>> {
+    let is_control = !matches!(msg.inner, NodeEvent::Input { .. });
     if !is_control && sender.capacity() < CONTROL_EVENT_HEADROOM {
         tracing::warn!(
             "event channel low on capacity, dropping data event to preserve control headroom"
