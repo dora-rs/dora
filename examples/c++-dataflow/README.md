@@ -16,11 +16,11 @@ For a manual build, follow these steps:
   cargo build -p dora-node-api-cxx
   cargo build -p dora-operator-api-cxx
   ```
-  This only builds the crates. Producing the `build/node_rust_api` and `build/operator_rust_api` artifacts that `dataflow.yml` expects additionally requires copying the generated bridge sources (`target/cxxbridge/dora-node-api-cxx/src/lib.rs.{cc,h}` and the `dora-operator-api-cxx` equivalent) into `build/`, writing the `build/operator.h` shim, compiling the `node-rust-api` / `operator-rust-api` sources against them (linking `-l dora_node_api_cxx` and `-l dora_operator_api_cxx -L target/debug`), and building the operator as a shared library. [`run.rs`](./run.rs) does all of this, so running it is the simplest way to build the C++ variants.
+  This only builds the crates. Producing the `build/node_rust_api` and `build/operator_rust_api` artifacts that `dataflow.yml` expects additionally requires copying the generated bridge sources into `build/` under the names the C++ sources include: `dora-node-api-cxx`'s `target/cxxbridge/.../src/lib.rs.cc` → `build/node-bridge.cc` and `lib.rs.h` → `build/dora-node-api.h`, the `dora-operator-api-cxx` equivalents → `build/operator-bridge.cc` and `build/dora-operator-api.h`, plus the `build/operator.h` shim. Then compile the `node-rust-api` / `operator-rust-api` sources against them, linking `-l dora_node_api_cxx` and `-l dora_operator_api_cxx -L ../../target/debug` (from this directory), and build the operator as a shared library. [`run.rs`](./run.rs) does all of this, so running it is the simplest way to build the C++ variants.
 - The steps below build only the C-API variants (`node_c_api`, `operator_c_api`). `dataflow.yml` also needs the C++ artifacts above, so the C-API half alone is not enough to run the example end to end.
 - Compile the `dora-node-api-c` crate into a static library.
   - Run `cargo build -p dora-node-api-c --release`
-  - The resulting staticlib is then available under `../../target/release/libdora-node-api-c.a`.
+  - The resulting staticlib is then available under `../../target/release/libdora_node_api_c.a`.
 - Compile the `node-c-api/main.cc` (e.g. using `clang++`) and link the staticlib
   - For example, use the following command:
     ```
@@ -37,11 +37,12 @@ For a manual build, follow these steps:
       -Wl,-nodefaultlib:libcmt -D_DLL -lmsvcrt
       ```
       Also: On Windows, the output file should have an `.exe` extension: `--output build/c_node.exe`
-- Compile the `operator-c-api/operator.cc` file into a shared library.
+- Compile the `operator-c-api/operator.cc` file into a shared library. The operator calls into the `dora-operator-api-c` staticlib, so build that and link it too:
   - For example, use the following commands:
     ```
+    cargo build -p dora-operator-api-c --release
     clang++ -c operator-c-api/operator.cc -std=c++14 -o build/operator_c_api.o -fPIC
-    clang++ -shared build/operator_c_api.o -o build/liboperator_c_api.so
+    clang++ -shared build/operator_c_api.o -o build/liboperator_c_api.so -ldora_operator_api_c -L ../../target/release
     ```
     Omit the `-fPIC` argument on Windows. Replace the `liboperator_c_api.so` name with the shared library standard library prefix/extensions used on your OS, e.g. `.dll` on Windows.
 
