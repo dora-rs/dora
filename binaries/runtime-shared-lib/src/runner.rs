@@ -299,7 +299,13 @@ struct OperatorContext<'lib> {
 
 impl Drop for OperatorContext<'_> {
     fn drop(&mut self) {
-        unsafe { (self.drop_fn.drop_operator)(self.raw) };
+        let result = unsafe { (self.drop_fn.drop_operator)(self.raw) };
+        // A panic in the operator's `Drop` is caught on the operator side and
+        // returned here; log it rather than losing it (the runtime is already
+        // tearing down, so there is nobody to propagate it to).
+        if let Some(error) = result.error {
+            tracing::warn!("failed to drop operator: {}", *error);
+        }
     }
 }
 
