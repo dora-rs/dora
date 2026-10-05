@@ -1326,6 +1326,9 @@ impl Daemon {
             })
             .await
             .wrap_err("failed to open zenoh session")?;
+        // Lets another daemon's link-probe diagnostics, which list the zids it
+        // is linked to, be matched against this daemon (#3711).
+        tracing::info!("zenoh session open with id {}", zenoh_session.zid());
         // Same-host control notifications (`PeerMessage::Register`/`PeerMessage::Free`) go over
         // zenoh SHM: the payload stays in shared memory and peer daemons
         if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {
