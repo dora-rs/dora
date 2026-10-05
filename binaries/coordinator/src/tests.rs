@@ -315,6 +315,7 @@ fn test_running_dataflow(
         last_recovery_attempt: BTreeMap::new(),
         last_replay_attempt: BTreeMap::new(),
         uv: false,
+        launch: crate::state::LaunchContext::unknown(),
         state_log_sequence: 0,
         state_log: Vec::new(),
         daemon_ack_sequence: BTreeMap::new(),
@@ -3438,6 +3439,7 @@ async fn async_partial_spawn_failure_rolls_back_started_daemon() {
                 .expect("valid descriptor"),
             name: None,
             uv: false,
+            launch: crate::state::LaunchContext::unknown(),
             reply_sender: restart_tx,
         },
     );
@@ -4866,6 +4868,7 @@ fn cleanup_disconnected_daemons_drains_pending_restarts() {
             descriptor,
             name: None,
             uv: false,
+            launch: crate::state::LaunchContext::unknown(),
             reply_sender: tx,
         },
     );
@@ -4893,6 +4896,174 @@ fn cleanup_disconnected_daemons_drains_pending_restarts() {
     );
 }
 
+/// `dora restart` must relaunch with the original launch context. The
+/// replacement used to be spawned with no working dir, a fresh session and
+/// no build, so the daemon ran it in `_work/<new session>`: relative node
+/// paths stopped resolving and built nodes lost their build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn restart_relaunches_with_the_original_launch_context() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    // Unnamed, so nodes without a `deploy` block resolve to it.
+    let daemon_id = DaemonId::new(None);
+
+    // A daemon that acks every request and records each `Spawn` it gets.
+    let spawns = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let pending: Arc<tokio::sync::Mutex<HashMap<Uuid, tokio::sync::oneshot::Sender<String>>>> =
+        Default::default();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let conn = crate::state::DaemonConnection::new(tx, pending.clone(), BTreeMap::new());
+    let spawns_task = spawns.clone();
+    tokio::spawn(async move {
+        #[derive(serde::Deserialize)]
+        struct OutboundRaw {
+            id: Uuid,
+            params: Timestamped<DaemonCoordinatorEvent>,
+        }
+        while let Some(outbound) = rx.recv().await {
+            let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            let reply = match outbound.params.inner {
+                DaemonCoordinatorEvent::Spawn(spawn) => {
+                    spawns_task.lock().await.push(spawn);
+                    DaemonCoordinatorReply::TriggerSpawnResult(Ok(()))
+                }
+                DaemonCoordinatorEvent::StopDataflow { .. } => {
+                    DaemonCoordinatorReply::StopResult(Ok(()))
+                }
+                other => panic!("unexpected event: {other:?}"),
+            };
+            if let Some(sender) = pending.lock().await.remove(&outbound.id) {
+                let _ = sender.send(serde_json::to_string(&reply).unwrap());
+            }
+        }
+    });
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), conn);
+
+    let launch = crate::state::LaunchContext {
+        build_id: Some(BuildId::generate()),
+        session_id: dora_message::SessionId::generate(),
+        local_working_dir: Some("/home/user/project".into()),
+        write_events_to: Some("/home/user/events".into()),
+    };
+    let mut df = test_running_dataflow(dataflow_id, daemon_id, "sender".to_string().into());
+    df.launch = launch.clone();
+    let mut running_dataflows = HashMap::new();
+    running_dataflows.insert(dataflow_id, df);
+
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let clock = Arc::new(HLC::default());
+    let mut pending_restarts = HashMap::new();
+    let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+    initiate_restart(
+        dataflow_id,
+        None,
+        false,
+        &mut running_dataflows,
+        &mut pending_restarts,
+        &mut daemon_connections,
+        &clock,
+        store.as_ref(),
+        reply_tx,
+    )
+    .await;
+
+    // What the event loop does once every daemon reports the old one done.
+    let restart = pending_restarts
+        .remove(&dataflow_id)
+        .expect("restart should be pending");
+    let new_dataflow = crate::handlers::start_dataflow(
+        restart.descriptor,
+        restart.launch,
+        restart.name,
+        &mut daemon_connections,
+        &clock,
+        restart.uv,
+    )
+    .await
+    .expect("restart spawn should succeed");
+
+    let spawns = spawns.lock().await;
+    let [spawn] = spawns.as_slice() else {
+        panic!("expected exactly one spawn, got {}", spawns.len());
+    };
+    assert_eq!(spawn.local_working_dir, launch.local_working_dir);
+    assert_eq!(spawn.session_id, launch.session_id);
+    assert_eq!(spawn.build_id, launch.build_id);
+    assert_eq!(spawn.write_events_to, launch.write_events_to);
+    // ... and kept on the replacement, so a second restart works too.
+    assert_eq!(new_dataflow.launch, launch);
+}
+
+/// Auto-recovery re-spawns a dataflow on a daemon that reconnects without
+/// reporting it. The re-spawn reuses the dataflow's UUID, so it must also
+/// reuse its launch context: with a fresh session and no working dir, the
+/// daemon ran the re-spawned nodes in a different `_work/<session>` dir
+/// than the rest of the dataflow, without its build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn auto_recovery_respawns_with_the_original_launch_context() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(None);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let conn = crate::state::DaemonConnection::new(tx, Default::default(), BTreeMap::new());
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), conn);
+
+    let launch = crate::state::LaunchContext {
+        build_id: Some(BuildId::generate()),
+        session_id: dora_message::SessionId::generate(),
+        local_working_dir: Some("/home/user/project".into()),
+        write_events_to: Some("/home/user/events".into()),
+    };
+    let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+    df.launch = launch.clone();
+    let mut running_dataflows = HashMap::new();
+    running_dataflows.insert(dataflow_id, df);
+
+    let mut coordinator = Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows,
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections,
+        clock: Arc::new(HLC::default()),
+        store: Arc::new(InMemoryStore::new()),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    };
+
+    // The daemon reconnects reporting no running dataflows.
+    coordinator
+        .handle_daemon_status_report(daemon_id, vec![])
+        .await
+        .expect("status report should be handled");
+
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+    let mut spawns = Vec::new();
+    while let Ok(outbound) = rx.try_recv() {
+        let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+        if let DaemonCoordinatorEvent::Spawn(spawn) = outbound.params.inner {
+            spawns.push(spawn);
+        }
+    }
+    let [spawn] = spawns.as_slice() else {
+        panic!("expected exactly one re-spawn, got {}", spawns.len());
+    };
+    assert_eq!(spawn.dataflow_id, dataflow_id);
+    assert_eq!(spawn.local_working_dir, launch.local_working_dir);
+    assert_eq!(spawn.session_id, launch.session_id);
+    assert_eq!(spawn.build_id, launch.build_id);
+    assert_eq!(spawn.write_events_to, launch.write_events_to);
+}
+
 #[tokio::test]
 async fn initiate_restart_rejects_duplicate_request() {
     let dataflow_id = DataflowId::from(Uuid::new_v4());
@@ -4916,6 +5087,7 @@ async fn initiate_restart_rejects_duplicate_request() {
             descriptor: descriptor.clone(),
             name: None,
             uv: false,
+            launch: crate::state::LaunchContext::unknown(),
             reply_sender: existing_tx,
         },
     );

@@ -682,16 +682,18 @@ impl Coordinator {
                 "auto-recovery: re-spawning {} node(s) for dataflow {uuid} on daemon {daemon_id}",
                 spawn_nodes.len()
             );
+            // Same launch context as the original spawn, so the daemon runs
+            // the nodes in the same working dir with the same build.
             let spawn_command = dora_message::coordinator_to_daemon::SpawnDataflowNodes {
-                build_id: None,
-                session_id: dora_message::SessionId::generate(),
+                build_id: df.launch.build_id,
+                session_id: df.launch.session_id,
                 dataflow_id: *uuid,
-                local_working_dir: None,
+                local_working_dir: df.launch.local_working_dir.clone(),
                 nodes: df.nodes.clone(),
                 dataflow_descriptor: df.descriptor.clone(),
                 spawn_nodes,
                 uv: df.uv,
-                write_events_to: None,
+                write_events_to: df.launch.write_events_to.clone(),
                 artifact_base_url: None,
             };
             let message = match serde_json::to_vec(&Timestamped {

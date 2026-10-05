@@ -14,7 +14,7 @@ use crate::{
     initiate_restart,
     log_subscriber::LogSubscriber,
     resolve_param_target, resolve_single_node, start_topic_debug_stream,
-    state::{ParamTarget, RunningDataflow},
+    state::{LaunchContext, ParamTarget, RunningDataflow},
     stop_topic_debug_stream, topic_debug_enabled, topic_outputs_by_daemon,
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
@@ -621,16 +621,19 @@ impl Coordinator {
                     bail!("there is already a running dataflow with name `{name}`");
                 }
             }
-            let dataflow = start_dataflow(
+            let launch = LaunchContext {
                 build_id,
                 session_id,
-                dataflow,
                 local_working_dir,
+                write_events_to,
+            };
+            let dataflow = start_dataflow(
+                dataflow,
+                launch,
                 name,
                 &mut self.daemon_connections,
                 &self.clock,
                 uv,
-                write_events_to,
             )
             .await?;
             Ok(dataflow)

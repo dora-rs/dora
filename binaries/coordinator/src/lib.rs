@@ -618,14 +618,19 @@ async fn initiate_restart(
         return;
     }
     // 1. Extract descriptor, name, and uv from the running dataflow
-    let (descriptor, name, uv) = {
+    let (descriptor, name, uv, launch) = {
         let Some(df) = running_dataflows.get(&dataflow_uuid) else {
             let _ = reply_sender.send(Err(eyre!(
                 "no running dataflow with UUID `{dataflow_uuid}`"
             )));
             return;
         };
-        (df.descriptor.clone(), df.name.clone(), df.uv)
+        (
+            df.descriptor.clone(),
+            df.name.clone(),
+            df.uv,
+            df.launch.clone(),
+        )
     };
 
     // 2. Stop the old dataflow
@@ -663,6 +668,7 @@ async fn initiate_restart(
             descriptor,
             name,
             uv,
+            launch,
             reply_sender,
         },
     );
