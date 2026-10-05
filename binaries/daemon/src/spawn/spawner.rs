@@ -4,7 +4,7 @@ use crate::{
     log::NodeLogger,
     node_communication::spawn_listener_loop,
     spawn::{
-        command::{handoff_python_env_to_guard, is_shell_guard, path_spawn_command},
+        command::{GUARD_ENV_PREFIX, PYTHON_ENV_VARS, is_shell_guard, path_spawn_command},
         prepared::PreparedNode,
     },
 };
@@ -165,8 +165,28 @@ fn apply_descriptor_env(
     envs: Option<&BTreeMap<String, EnvValue>>,
 ) -> Command {
     if let Some(envs) = envs {
+        // A shell node's own interpreter selection is the one thing that must
+        // not land on the guard host: the host is the `dora` CLI, which under
+        // the `dora-rs-cli` wheel is a python console script, and a
+        // `PYTHONHOME`/`PYTHONPATH` meant for the node's interpreter can leave
+        // python unable to start at all, taking the guard — and with it the
+        // containment it exists to provide — down with it (#3472 review).
+        //
+        // Handed over under another name for the guard to put back on the child,
+        // and done here rather than anywhere else: at the point the node's env
+        // is applied is the only place the value can be kept off the host
+        // altogether. Every later step is free to overwrite an override, which
+        // is exactly how the wheel bug survived a fix that ran before
+        // `compose_node_env`, and clearing it to `""` instead would take down
+        // every shell node in a colcon or `pip install --target` workspace,
+        // where the host needs the daemon's own value to import `dora_cli`.
+        let guard = is_shell_guard(&command);
         for (key, value) in envs {
             if !is_denied_env(key) {
+                if guard && PYTHON_ENV_VARS.contains(&key.as_str()) {
+                    command = command.env(format!("{GUARD_ENV_PREFIX}{key}"), value.to_string());
+                    continue;
+                }
                 command = command.env(key, value.to_string());
             }
         }
@@ -877,13 +897,6 @@ impl Spawner {
                     }
 
                     command = command.env("PYTHONUNBUFFERED", "1");
-                    // The shell guard host is the `dora` CLI, which under the wheel
-                    // is a python console script, so the node's own interpreter
-                    // selection has to come off it *now* — once `compose_node_env`
-                    // has put it there.
-                    if is_shell_guard(&command) {
-                        command = handoff_python_env_to_guard(command);
-                    }
                     command = command
                         .stdin(Stdio::Null)
                         .stdout(Stdio::Piped)
@@ -1202,6 +1215,83 @@ mod tests {
             "case variants are only a bypass where the OS folds env keys"
         );
         assert_eq!(is_denied_env("ld_preload"), cfg!(windows));
+    }
+
+    /// A shell node's own interpreter selection must be handed to the guard
+    /// instead of landing on the guard host.
+    ///
+    /// This goes through `apply_descriptor_env` rather than calling a helper
+    /// directly, because *where* the swap happens is the whole fix: the node's
+    /// value must never reach the host, or the wheel bug comes back (#3472
+    /// review). A test that called the helper on a hand-built command passed
+    /// even with the swap moved back ahead of `compose_node_env`, which is
+    /// exactly the regression that was reported.
+    #[test]
+    fn a_guard_host_inherits_the_python_env_the_node_never_gets_to_break() {
+        let envs = BTreeMap::from([("PYTHONPATH".to_string(), EnvValue::String("./lib".into()))]);
+        let guard = Command::new("dora").args(["__shell-guard", "--", "sh", "-c", "python n.py"]);
+        let spawner = spawner_for(None, false);
+
+        // Through `compose_node_env`, not the helper: where the swap sits in
+        // this chain is the whole fix, and a test that called the helper
+        // directly passed even with the swap moved back ahead of
+        // `compose_node_env` — the regression that was reported (#3472 review).
+        let applied = spawner.compose_node_env(
+            guard,
+            &NodeId::from("guard-node".to_string()),
+            &[Some(&envs)],
+            "DORA_NODE_CONFIG",
+            "{}".to_string(),
+        );
+
+        assert_eq!(
+            applied
+                .environment
+                .get(&OsString::from(format!("{GUARD_ENV_PREFIX}PYTHONPATH"))),
+            Some(&Some(OsString::from("./lib"))),
+            "the node's value must reach the guard, to put on the child"
+        );
+        assert!(
+            !applied
+                .environment
+                .contains_key(&OsString::from("PYTHONPATH")),
+            "the node's value must never reach the guard host: {:?}",
+            applied.environment
+        );
+
+        // And a node that sets none of it is untouched, so the host keeps
+        // inheriting the daemon's own value — which under the wheel is what
+        // lets it import `dora_cli` at all.
+        let bare = apply_descriptor_env(
+            Command::new("dora").args(["__shell-guard", "--", "sh", "-c", "true"]),
+            Some(&BTreeMap::from([(
+                "PATH".to_string(),
+                EnvValue::String("/bin".into()),
+            )])),
+        );
+        assert!(
+            !bare.environment.contains_key(&OsString::from("PYTHONPATH")),
+            "nothing to hand over must mean nothing set on the host"
+        );
+        assert_eq!(
+            bare.environment.get(&OsString::from("PATH")),
+            Some(&Some(OsString::from("/bin"))),
+            "everything else the node sets is still the host's business"
+        );
+
+        // A plain node command is not a guard host, so it keeps its own value.
+        let plain = spawner.compose_node_env(
+            Command::new("python3").args(["-m", "n"]),
+            &NodeId::from("plain-node".to_string()),
+            &[Some(&envs)],
+            "DORA_NODE_CONFIG",
+            "{}".to_string(),
+        );
+        assert_eq!(
+            plain.environment.get(&OsString::from("PYTHONPATH")),
+            Some(&Some(OsString::from("./lib"))),
+            "a non-guard node must get its python env directly"
+        );
     }
 
     /// A descriptor key the OS would not read as one variable name is a
