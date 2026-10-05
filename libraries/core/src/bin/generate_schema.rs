@@ -76,6 +76,21 @@ mod tests {
     use super::{descriptor_schema_json, workspace_root};
     use std::{fs, path::Path};
 
+    #[test]
+    fn input_mapping_schema_is_string() {
+        let generated: serde_json::Value = serde_json::from_str(&descriptor_schema_json())
+            .expect("the generated descriptor schema is not valid JSON");
+        let input_mapping = &generated["$defs"]["InputMapping"];
+        assert_eq!(
+            input_mapping["type"], "string",
+            "InputMapping schema must be type 'string'"
+        );
+        assert!(
+            input_mapping.get("oneOf").is_none(),
+            "InputMapping schema should not contain object alternatives"
+        );
+    }
+
     /// The checked-in descriptor schema must match what the generator produces.
     ///
     /// Nothing asserted this: `root_schema_matches_crate_copy` below only
