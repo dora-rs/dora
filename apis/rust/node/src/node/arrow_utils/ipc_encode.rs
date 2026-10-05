@@ -15,24 +15,27 @@
 //! offset, matching what the official writer produces with its default
 //! `alignment = 64`.
 //!
-//! ## How the fast path stays correct without slice-truncation logic
+//! ## How the fast path stays correct with minimal slice handling
 //!
-//! Arrow's writer contains a lot of per-type code to *truncate* buffers for
-//! sliced arrays. We sidestep all of it with two rules:
+//! Arrow's writer contains a lot of per-type code to *truncate* and *rebase*
+//! buffers for sliced arrays. We avoid most of it with two rules:
 //!  * **Require `offset() == 0` on every node** — so logical element `i` lives at
 //!    physical position `i`. Any array (or child) with a non-zero offset routes
-//!    to the fallback.
-//!  * **Copy each data buffer in full.** Arrow tolerates buffers that are larger
-//!    than strictly required for `len` elements, so copying the whole buffer (a
-//!    freshly built array's buffers are exactly sized anyway) always decodes to
-//!    a logically-equal array. The only generated buffer is the all-ones
-//!    validity bitmap for a node with no nulls, exactly as arrow emits.
+//!    to the fallback. So do offset-carrying arrays (`Binary`, `Utf8`, `List`
+//!    and their `Large` variants) whose first offset is not 0, which would
+//!    need their offsets rebased.
+//!  * **Copy each buffer's prefix, never rewrite it.** A buffer is copied from
+//!    its start up to the bytes the node's `len` elements use: `len * width`
+//!    for fixed-width data, `len + 1` offsets, and values up to the last offset.
+//!    Slicing an offset-carrying array keeps `offset() == 0` but leaves the
+//!    parent's whole values buffer (or `List` child) attached, so without that
+//!    cut every sliced send would ship the entire parent. The only generated
+//!    buffer is the all-ones validity bitmap for a node with no nulls, exactly
+//!    as arrow emits.
 //!
-//! Two types need their children sliced before recursion because the child's
-//! IPC length is the parent's rather than the child's own: `Struct` (each field
-//! to the struct's `len`) and `FixedSizeList` (its child to `len * value_size`).
-//! `List`/`LargeList` children are bounded by an offsets buffer and recursed at
-//! full length.
+//! Children are sliced before recursion to the length the parent implies:
+//! `Struct` fields to the struct's `len`, a `FixedSizeList` child to
+//! `len * value_size`, and a `List`/`LargeList` child to its last offset.
 
 use arrow::array::ArrayData;
 use arrow::buffer::Buffer as ArrowBuffer;
@@ -190,9 +193,54 @@ fn build_layout_rec(array: &ArrayData, layout: &mut Layout, off: &mut usize) -> 
         }
     }
 
-    // Data buffers, copied in full (empty for Struct/FixedSizeList).
-    for buffer in array.buffers() {
-        layout.push_buffer(off, buffer.len(), BufferSrc::Bytes(buffer.clone(), 0))?;
+    // Offset-carrying types: a sliced array keeps the parent's whole values
+    // buffer (or List child) and only slices its offsets buffer, so copying
+    // buffers in full would ship the entire parent. Bound them by the offsets
+    // instead; `last` is the number of values (bytes or child elements) the
+    // array actually references.
+    let offset_width = match data_type {
+        DataType::Binary | DataType::Utf8 | DataType::List(_) => Some(4),
+        DataType::LargeBinary | DataType::LargeUtf8 | DataType::LargeList(_) => Some(8),
+        _ => None,
+    };
+    let mut list_values_len = None;
+    if let Some(width) = offset_width {
+        let (offsets, values) = match array.buffers() {
+            [offsets] => (offsets, None),
+            [offsets, values] => (offsets, Some(values)),
+            _ => return None,
+        };
+        let offsets_len = len.checked_add(1)?.checked_mul(width)?;
+        let first = read_offset(offsets, 0, width)?;
+        let last = read_offset(offsets, len, width)?;
+        // Offsets that do not start at 0 would need rebasing; leave that to
+        // the official writer.
+        if first != 0 {
+            return None;
+        }
+        layout.push_buffer(off, offsets_len, BufferSrc::Bytes(offsets.clone(), 0))?;
+        match values {
+            Some(values) => {
+                if values.len() < last {
+                    return None;
+                }
+                layout.push_buffer(off, last, BufferSrc::Bytes(values.clone(), 0))?;
+            }
+            None => list_values_len = Some(last),
+        }
+    } else {
+        // Fixed-width data buffers, capped at the bytes `len` elements occupy:
+        // a child sliced to its parent's length (List/Struct/FixedSizeList
+        // below) keeps its full buffer. Empty for Struct/FixedSizeList.
+        let needed = match data_type {
+            DataType::Boolean => Some(len.div_ceil(8)),
+            DataType::FixedSizeBinary(width) => len.checked_mul(usize::try_from(*width).ok()?),
+            _ => data_type.primitive_width().and_then(|w| len.checked_mul(w)),
+        };
+        for buffer in array.buffers() {
+            let bytes = needed.map_or(buffer.len(), |n| n.min(buffer.len()));
+            layout.push_buffer(off, bytes, BufferSrc::Bytes(buffer.clone(), 0))?;
+        }
     }
 
     // Children.
@@ -222,15 +270,36 @@ fn build_layout_rec(array: &ArrayData, layout: &mut Layout, off: &mut usize) -> 
         }
         _ => {
             // List/LargeList: the single child is the values array, bounded by
-            // the offsets buffer (its length is independent of the parent's), so
-            // it is recursed at full length.
+            // the offsets buffer rather than the parent's length. Slice it to
+            // the last offset so a sliced list does not ship the whole child.
             for child in array.child_data() {
-                build_layout_rec(child, layout, off)?;
+                let values_len = list_values_len?;
+                match child.len().cmp(&values_len) {
+                    std::cmp::Ordering::Less => return None,
+                    // Nothing to cut: skip `slice`, which clones the child.
+                    std::cmp::Ordering::Equal => build_layout_rec(child, layout, off)?,
+                    std::cmp::Ordering::Greater => {
+                        build_layout_rec(&child.slice(0, values_len), layout, off)?
+                    }
+                }
             }
         }
     }
 
     Some(())
+}
+
+/// Read the `index`-th entry of an offsets buffer of `width` (4 or 8) bytes per
+/// entry as a `usize`. Returns `None` if it is out of bounds or negative.
+fn read_offset(offsets: &ArrowBuffer, index: usize, width: usize) -> Option<usize> {
+    let start = index.checked_mul(width)?;
+    let bytes = offsets.as_slice().get(start..start.checked_add(width)?)?;
+    let value = match width {
+        4 => i64::from(i32::from_ne_bytes(bytes.try_into().ok()?)),
+        8 => i64::from_ne_bytes(bytes.try_into().ok()?),
+        _ => return None,
+    };
+    usize::try_from(value).ok()
 }
 
 /// Everything needed to write the stream, plus the exact total length.
@@ -1865,6 +1934,53 @@ mod tests {
         let dec = arrow::array::make_array(decoded);
         let dec = dec.as_any().downcast_ref::<UInt64Array>().unwrap();
         assert_eq!(dec.values(), &[30, 40]);
+    }
+
+    /// Slicing a `Utf8`/`Binary`/`List` array keeps `offset() == 0` and only
+    /// slices the offsets buffer, so the parent's whole values buffer (or List
+    /// child) is still attached. The fast path must cut it at the last offset
+    /// instead of shipping the entire parent with every sliced send.
+    #[test]
+    fn sliced_offset_arrays_do_not_ship_the_parent_values() {
+        use arrow::array::{Array, LargeBinaryArray, ListArray, StringArray};
+        use arrow::datatypes::Float32Type;
+
+        let big = "x".repeat(1024);
+        let strings = StringArray::from(vec![big.as_str(); 1000]);
+        let head = strings.slice(0, 1).into_data();
+        assert_eq!(head.offset(), 0, "array slice keeps offset 0");
+        let len = ipc_fast_path_len_data(&head).expect("offsets start at 0: fast path");
+        assert!(
+            len < 4096,
+            "one 1 KiB string must not encode to {len} bytes"
+        );
+        assert_fast_roundtrip(&head);
+
+        // Offsets that do not start at 0 go to the official writer, which
+        // rebases them, and must be just as small.
+        let middle = strings.slice(500, 2).into_data();
+        assert!(ipc_fast_path_len_data(&middle).is_none());
+        let encoded = encode_ipc_to_vec_data(&middle).unwrap();
+        assert!(encoded.len() < 4096, "encoded {} bytes", encoded.len());
+        assert_eq!(middle, read_official(&encoded));
+
+        let blobs = vec![vec![7u8; 64 * 1024]; 64];
+        let blobs = LargeBinaryArray::from_iter_values(blobs.iter());
+        let head = blobs.slice(0, 2).into_data();
+        let len = ipc_fast_path_len_data(&head).expect("fast path");
+        assert!(
+            len < 3 * 64 * 1024,
+            "two 64 KiB blobs encoded to {len} bytes"
+        );
+        assert_fast_roundtrip(&head);
+
+        let lists = ListArray::from_iter_primitive::<Float32Type, _, _>(
+            (0..100).map(|i| Some((0..1000).map(move |j| Some((i * j) as f32)))),
+        );
+        let head = lists.slice(0, 1).into_data();
+        let len = ipc_fast_path_len_data(&head).expect("fast path");
+        assert!(len < 8 * 1024, "one 1000-float list encoded to {len} bytes");
+        assert_fast_roundtrip(&head);
     }
 
     /// A `*View` type must route to the fallback (validate the classifier).
