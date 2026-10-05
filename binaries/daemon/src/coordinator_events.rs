@@ -426,7 +426,14 @@ impl Daemon {
                     }
                     None => {
                         tracing::warn!("received Logs for unknown dataflow (ID `{dataflow_id}`)");
-                        let _ = reply_tx.send(None).map_err(|_| {
+                        // Reply with an error rather than `None`: the WS layer
+                        // drops a `None` reply, so the coordinator would wait out
+                        // its 30s reply timeout for a request it sent with
+                        // `send_and_receive` (same bug class as `AddMapping`).
+                        let reply = DaemonCoordinatorReply::Logs(Err(format!(
+                            "no dataflow with ID `{dataflow_id}` on this daemon"
+                        )));
+                        let _ = reply_tx.send(Some(reply)).map_err(|_| {
                             error!("could not send Logs reply from daemon to coordinator")
                         });
                     }
