@@ -148,9 +148,10 @@ std::shared_ptr<arrow::Array> input_array = result.ValueOrDie();
 ```
 
 The metadata JSON contains:
-- `timestamp` - Message timestamp with `secs` and `nanos` fields
-- `type_info` - Arrow type information
-- `parameters` - Custom metadata parameters (key-value pairs)
+- `timestamp` - The message's raw HLC timestamp as a single unsigned integer (the same value `metadata->timestamp()` returns)
+- `parameters` - Custom metadata parameters, keyed by name; each value is tagged with its type, e.g. `{"Integer": 3}` or `{"String": "base"}`
+
+For example: `{"timestamp":7389450938482194432,"parameters":{"count":{"Integer":3}}}`.
 
 ### Sending Outputs
 
