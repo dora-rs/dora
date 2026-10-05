@@ -1008,6 +1008,62 @@ mod cross_pool_write_tests {
         }
     }
 
+    /// A pooled direct-TCP connection the mirror has since closed (its
+    /// read timeout fires on a connection idle between writes, or the
+    /// mirror daemon restarted) must not be reused: a small frame written
+    /// into the half-closed socket "succeeds" locally and is lost, leaving
+    /// the node's write to time out. The next send has to reconnect.
+    // The env guard is held across the awaits on purpose, keeping the
+    // token-less contract stable for the whole exchange (see the auth test).
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn direct_tcp_send_reconnects_after_peer_closed_pooled_conn() {
+        use tokio::io::AsyncReadExt;
+
+        // Token-less contract; see `direct_tcp_frame_round_trip_writes_mirror`.
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let conns = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let dataflow_id = Uuid::new_v4();
+        let pool_id = "pool_node_0";
+        let payload = [7u8; 64];
+        let frame_len = 4 + 16 + 4 + pool_id.len() + 8 + 8 + payload.len();
+
+        // First frame: the peer reads it whole, then closes the connection
+        // the way the mirror does on its read timeout.
+        send_cross_data_frame(&conns, addr, dataflow_id, pool_id, 1, &payload)
+            .await
+            .unwrap();
+        let (mut first, _) = listener.accept().await.unwrap();
+        let mut frame = vec![0u8; frame_len];
+        first.read_exact(&mut frame).await.unwrap();
+        drop(first);
+        // Let the FIN reach the origin's socket.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Second frame: must go out on a fresh connection and arrive.
+        send_cross_data_frame(&conns, addr, dataflow_id, pool_id, 2, &payload)
+            .await
+            .unwrap();
+        let (mut second, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
+                .await
+                .expect("the stale pooled connection was reused instead of reconnecting")
+                .unwrap();
+        second.read_exact(&mut frame).await.unwrap();
+        let seq_at = 4 + 16 + 4 + pool_id.len();
+        assert_eq!(
+            u64::from_be_bytes(frame[seq_at..seq_at + 8].try_into().unwrap()),
+            2,
+            "the second frame must arrive on the new connection"
+        );
+    }
+
     /// The direct-TCP data-plane codec: a frame sent via
     /// `send_cross_data_frame` over a loopback connection is parsed by
     /// `handle_cross_data_frame` and written straight into the mirror
