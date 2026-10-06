@@ -2096,6 +2096,149 @@ async fn start_topic_debug_stream_rolls_back_on_daemon_error() {
     }
 }
 
+/// #3722: an unreachable daemon during rollback must neither stop the
+/// remaining daemons from getting their stop, nor replace the daemon's
+/// original reason for rejecting the subscription.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn start_topic_debug_stream_rollback_reaches_every_started_daemon() {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        id: String,
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Behavior {
+        RejectStart,
+        DropStopReply,
+        Accept,
+    }
+
+    let dataflow_id = Uuid::new_v4();
+    let data_id: dora_core::config::DataId = "message".to_string().into();
+    let (frame_tx, _frame_rx) =
+        tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+
+    // Daemons are visited in `DaemonId` order, so `daemon-b` (whose stop
+    // fails) comes before `daemon-c` (which must still get one).
+    let daemons = [
+        ("daemon-a", "sender", Behavior::RejectStart),
+        ("daemon-b", "relay", Behavior::DropStopReply),
+        ("daemon-c", "sink", Behavior::Accept),
+    ];
+
+    let mut daemon_connections = DaemonConnections::default();
+    let mut daemon_tasks = Vec::new();
+    let stop_seen_by_c = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut node_daemons = Vec::new();
+    for (name, node, behavior) in daemons {
+        let daemon_id = DaemonId::new(Some(name.to_string()));
+        node_daemons.push((
+            dora_message::id::NodeId::from(node.to_string()),
+            daemon_id.clone(),
+        ));
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let connection =
+            crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+        daemon_connections.add(daemon_id, connection);
+
+        let stop_seen_by_c = stop_seen_by_c.clone();
+        daemon_tasks.push(tokio::spawn(async move {
+            while let Some(outbound) = rx.recv().await {
+                let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+                let request_id = Uuid::parse_str(&outbound_raw.id).expect("valid request id");
+                let reply_tx = pending_replies
+                    .lock()
+                    .await
+                    .remove(&request_id)
+                    .expect("pending reply sender should exist");
+                let reply = match outbound_raw.params.inner {
+                    DaemonCoordinatorEvent::StartTopicDebugStream { .. } => {
+                        DaemonCoordinatorReply::StartTopicDebugStreamResult(
+                            if behavior == Behavior::RejectStart {
+                                Err("daemon rejected debug stream".to_string())
+                            } else {
+                                Ok(())
+                            },
+                        )
+                    }
+                    DaemonCoordinatorEvent::StopTopicDebugStream { .. } => {
+                        match behavior {
+                            // Dropping the reply sender fails the coordinator's
+                            // `send_and_receive` like a closed connection does.
+                            Behavior::DropStopReply => continue,
+                            Behavior::Accept => {
+                                stop_seen_by_c.store(true, std::sync::atomic::Ordering::SeqCst)
+                            }
+                            Behavior::RejectStart => {
+                                panic!("a daemon that rejected the start must not be stopped")
+                            }
+                        }
+                        DaemonCoordinatorReply::StopTopicDebugStreamResult(Ok(()))
+                    }
+                    other => panic!("unexpected daemon event during rollback test: {other:?}"),
+                };
+                let _ = reply_tx.send(serde_json::to_string(&reply).unwrap());
+            }
+        }));
+    }
+
+    let mut running_dataflows = HashMap::new();
+    let (first_node, first_daemon) = node_daemons[0].clone();
+    let mut dataflow = test_running_dataflow(dataflow_id, first_daemon, first_node);
+    dataflow.descriptor.debug.enable_debug_inspection = true;
+    let mut descriptor_json = serde_json::to_value(&dataflow.descriptor).unwrap();
+    let nodes = descriptor_json
+        .get_mut("nodes")
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("descriptor nodes array");
+    for (node_id, daemon_id) in &node_daemons[1..] {
+        dataflow
+            .node_to_daemon
+            .insert(node_id.clone(), daemon_id.clone());
+        nodes.push(serde_json::json!({
+            "id": node_id,
+            "path": node_id,
+            "outputs": [data_id.clone()],
+        }));
+    }
+    dataflow.descriptor = serde_json::from_value(descriptor_json).unwrap();
+    dataflow.nodes = dataflow
+        .descriptor
+        .resolve_aliases_and_set_defaults()
+        .expect("test descriptor should resolve");
+    running_dataflows.insert(dataflow_id, dataflow);
+
+    let err = start_topic_debug_stream(
+        &mut running_dataflows,
+        &mut daemon_connections,
+        dataflow_id,
+        node_daemons
+            .iter()
+            .map(|(node_id, _)| (node_id.clone(), data_id.clone()))
+            .collect(),
+        frame_tx,
+        &HLC::default(),
+    )
+    .await
+    .expect_err("subscription should fail");
+
+    assert!(
+        format!("{err:#}").contains("daemon rejected debug stream"),
+        "the daemon's rejection must be returned, got: {err:#}"
+    );
+    assert!(
+        stop_seen_by_c.load(std::sync::atomic::Ordering::SeqCst),
+        "daemon-c must be stopped even though daemon-b's stop failed"
+    );
+    assert!(running_dataflows[&dataflow_id].topic_subscribers.is_empty());
+
+    for task in daemon_tasks {
+        task.abort();
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn restore_topic_debug_streams_re_issues_start_after_reconnect() {
     // Regression test for the daemon-reconnect lifecycle fix (#238 / #242):

@@ -224,27 +224,40 @@ pub(crate) async fn start_topic_debug_stream(
     }
 
     if let Some(err) = first_error {
-        rollback_topic_debug_stream(
+        // The daemon's reason for rejecting the subscription is what the CLI
+        // needs to see; an incomplete rollback is only logged.
+        if let Err(rollback_err) = rollback_topic_debug_stream(
             running_dataflows,
             daemon_connections,
             dataflow_id,
             subscription_id,
-            &started_daemons,
+            started_daemons,
             clock,
         )
-        .await?;
+        .await
+        {
+            tracing::warn!(
+                %subscription_id,
+                "topic debug stream rollback incomplete: {rollback_err:?}"
+            );
+        }
         return Err(err);
     }
 
     Ok(subscription_id)
 }
 
+/// Stop the daemon streams of a subscription whose start failed part-way.
+///
+/// Every daemon in `started_daemons` gets a stop, even if an earlier one
+/// can't be reached: the subscriber is removed first, so nothing could tear
+/// a leftover stream down later.
 pub(crate) async fn rollback_topic_debug_stream(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     daemon_connections: &mut DaemonConnections,
     dataflow_id: DataflowId,
     subscription_id: Uuid,
-    started_daemons: &[DaemonId],
+    started_daemons: Vec<DaemonId>,
     clock: &HLC,
 ) -> eyre::Result<()> {
     let Some(_) = running_dataflows
@@ -254,34 +267,14 @@ pub(crate) async fn rollback_topic_debug_stream(
         return Ok(());
     };
 
-    for daemon_id in started_daemons {
-        let Some(connection) = daemon_connections.get_mut(daemon_id).cloned() else {
-            continue;
-        };
-        let message = serde_json::to_vec(&Timestamped {
-            inner: DaemonCoordinatorEvent::StopTopicDebugStream {
-                dataflow_id,
-                subscription_id,
-            },
-            timestamp: clock.new_timestamp(),
-        })?;
-        let reply_raw = connection
-            .send_and_receive(&message)
-            .await
-            .wrap_err("failed to roll back start-topic-debug-stream message")?;
-        let reply: DaemonCoordinatorReply = serde_json::from_slice(&reply_raw)
-            .wrap_err("failed to deserialize rollback stop-topic-debug-stream reply")?;
-        match reply {
-            DaemonCoordinatorReply::StopTopicDebugStreamResult(Ok(())) => {}
-            DaemonCoordinatorReply::StopTopicDebugStreamResult(Err(err)) => {
-                tracing::warn!(%daemon_id, %subscription_id, "failed to roll back topic debug stream: {err}");
-            }
-            other => {
-                tracing::warn!(%daemon_id, %subscription_id, "unexpected rollback reply: {other:?}");
-            }
-        }
-    }
-    Ok(())
+    teardown_topic_debug_stream(
+        daemon_connections,
+        dataflow_id,
+        subscription_id,
+        started_daemons,
+        clock,
+    )
+    .await
 }
 
 pub(crate) async fn stop_topic_debug_stream(
