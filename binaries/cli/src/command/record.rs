@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    io::Write,
     path::PathBuf,
     time::SystemTime,
 };
@@ -8,8 +7,10 @@ use std::{
 use clap::Args;
 use dora_core::descriptor::Descriptor;
 use dora_message::{
-    common::Timestamped, coordinator_to_cli::DataflowIdAndName, daemon_to_daemon::InterDaemonEvent,
-    id::NodeId,
+    common::Timestamped,
+    coordinator_to_cli::DataflowIdAndName,
+    daemon_to_daemon::InterDaemonEvent,
+    id::{DataId, NodeId},
 };
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::{Context, bail};
@@ -131,6 +132,25 @@ impl Executable for Record {
             run_record(self)
         }
     }
+}
+
+/// Parse the `(node, output)` pairs discovered by the untyped YAML walk into
+/// typed ids for the WS topic subscription.
+///
+/// The walk accepts any string, so both ids go through the fallible
+/// `parse` -- `DataId`'s `From<String>` panics on an invalid id.
+fn parse_ws_topics(topics: &[(String, String)]) -> eyre::Result<Vec<(NodeId, DataId)>> {
+    topics
+        .iter()
+        .map(|(n, o)| {
+            Ok((
+                n.parse::<NodeId>()
+                    .map_err(|e| eyre::eyre!("invalid node ID in topic: {e}"))?,
+                o.parse::<DataId>()
+                    .map_err(|e| eyre::eyre!("invalid output ID in topic: {e}"))?,
+            ))
+        })
+        .collect()
 }
 
 /// Discover all `(node_id, output_id)` pairs from a parsed descriptor YAML.
@@ -406,7 +426,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
         return Ok(());
     }
 
-    // The tempfile lives in /tmp but descriptor-relative paths
+    // The descriptor lives in a temp dir but descriptor-relative paths
     // (`build:` cargo, node binaries) must still resolve against the
     // original source dir, so pass it as an explicit `working_dir`
     // override to `Run`.
@@ -415,11 +435,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let mut tmp =
-        tempfile::NamedTempFile::with_suffix(".yml").wrap_err("failed to create temp file")?;
-    tmp.write_all(modified_yaml.as_bytes())?;
-    tmp.flush()?;
-    let tmp_path = tmp.into_temp_path();
+    let (_tmp_dir, run) = Run::for_generated_dataflow(&modified_yaml, source_dir)?;
 
     eprintln!("Recording {} topics to {output_file}", topics.len());
     eprintln!(
@@ -428,9 +444,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
     );
     eprintln!();
 
-    Run::new(tmp_path.to_string_lossy().to_string())
-        .with_working_dir(source_dir)
-        .execute()
+    run.execute()
 }
 
 /// What a Ctrl-C on the recording loop should do, given whether one was already
@@ -562,16 +576,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     };
 
     // Subscribe to topics via WS
-    let ws_topics: Vec<_> = topics
-        .iter()
-        .map(|(n, o)| -> eyre::Result<_> {
-            Ok((
-                n.parse::<NodeId>()
-                    .map_err(|e| eyre::eyre!("invalid node ID in topic: {e}"))?,
-                o.clone().into(),
-            ))
-        })
-        .collect::<eyre::Result<Vec<_>>>()?;
+    let ws_topics = parse_ws_topics(&topics)?;
     let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
     // Set up recording writer. `duration_since(UNIX_EPOCH)` errors when the
@@ -819,6 +824,17 @@ mod tests {
             uuid: Uuid::new_v4(),
             name: name.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn invalid_output_id_in_proxy_topics_is_an_error_not_a_panic() {
+        let topics = |n: &str, o: &str| vec![(n.to_string(), o.to_string())];
+        assert!(parse_ws_topics(&topics("n", "bad id")).is_err());
+        assert!(parse_ws_topics(&topics("n", "a//b")).is_err());
+        assert!(parse_ws_topics(&topics("n", "/out")).is_err());
+        let parsed = parse_ws_topics(&topics("n", "op/out")).unwrap();
+        assert_eq!(parsed[0].0.to_string(), "n");
+        assert_eq!(parsed[0].1.to_string(), "op/out");
     }
 
     fn discovered_topics(yaml: &str) -> Vec<String> {

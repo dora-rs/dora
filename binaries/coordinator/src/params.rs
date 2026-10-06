@@ -93,12 +93,17 @@ pub(crate) async fn handle_pruned_state_catchup_fallback(
     }
 }
 
+/// Load the persisted params of every node on a daemon, flattened into
+/// replay items. Also returns how many nodes' params could not be loaded:
+/// the caller must count those as failed, or a store read error would look
+/// like "nothing to replay" and let the daemon be marked caught up.
 pub(crate) fn collect_param_replay_items(
     dataflow_id: DataflowId,
     node_ids_on_daemon: &[dora_core::config::NodeId],
     store: &dyn dora_coordinator_store::CoordinatorStore,
-) -> Vec<ParamReplayItem> {
+) -> (Vec<ParamReplayItem>, usize) {
     let mut items = Vec::new();
+    let mut load_failures = 0;
     for node_id in node_ids_on_daemon {
         let params = match store.list_node_params(&dataflow_id, node_id) {
             Ok(params) => params,
@@ -106,6 +111,7 @@ pub(crate) fn collect_param_replay_items(
                 tracing::warn!(
                     "failed to load persisted params for {dataflow_id}/{node_id}: {err}"
                 );
+                load_failures += 1;
                 continue;
             }
         };
@@ -117,7 +123,7 @@ pub(crate) fn collect_param_replay_items(
             });
         }
     }
-    items
+    (items, load_failures)
 }
 
 pub(crate) fn build_set_param_message_from_raw_json(
@@ -233,8 +239,12 @@ pub(crate) async fn replay_persisted_params_for_daemon(
     connection: crate::state::DaemonConnection,
     clock: Arc<HLC>,
 ) -> ParamReplaySummary {
-    let replay_items = collect_param_replay_items(dataflow_id, &node_ids_on_daemon, store.as_ref());
-    let mut summary = ParamReplaySummary::default();
+    let (replay_items, load_failures) =
+        collect_param_replay_items(dataflow_id, &node_ids_on_daemon, store.as_ref());
+    let mut summary = ParamReplaySummary {
+        attempted: load_failures,
+        failed: load_failures,
+    };
     if replay_items.is_empty() {
         return summary;
     }

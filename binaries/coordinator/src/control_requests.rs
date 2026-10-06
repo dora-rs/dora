@@ -7,14 +7,14 @@ use crate::{
     ensure_remove_node_applied, ensure_replace_node_applied, ensure_set_param_forward_applied,
     handle_get_trace_spans, handle_get_traces,
     handlers::{
-        build_dataflow, dataflow_result, handle_destroy, parse_logs_node_id, reload_dataflow,
-        resolve_name, restart_node, retrieve_logs, send_log_message, start_dataflow, stop_dataflow,
+        attach_log_subscriber, build_dataflow, dataflow_result, handle_destroy, parse_logs_node_id,
+        reload_dataflow, resolve_name, restart_node, retrieve_logs, start_dataflow, stop_dataflow,
         stop_node,
     },
     initiate_restart,
     log_subscriber::LogSubscriber,
     resolve_param_target, resolve_single_node, start_topic_debug_stream,
-    state::{ParamTarget, RunningDataflow},
+    state::{LaunchContext, ParamTarget, RunningDataflow},
     stop_topic_debug_stream, topic_debug_enabled, topic_outputs_by_daemon,
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
@@ -514,14 +514,13 @@ impl Coordinator {
                 found_tx,
             } => {
                 if let Some(dataflow) = self.running_dataflows.get_mut(&dataflow_id) {
-                    dataflow
-                        .log_subscribers
-                        .push(LogSubscriber::new(level, sender));
-                    let buffered = std::mem::take(&mut dataflow.buffered_log_messages);
-                    for message in buffered {
-                        send_log_message(&mut dataflow.log_subscribers, &message).await;
-                    }
-                    let _ = found_tx.send(true);
+                    attach_log_subscriber(
+                        &mut dataflow.log_subscribers,
+                        &mut dataflow.buffered_log_messages,
+                        LogSubscriber::new(level, sender),
+                        found_tx,
+                    )
+                    .await;
                 } else if self.archived_dataflows.contains_key(&dataflow_id) {
                     // Dataflow already finished before the CLI could subscribe.
                     // Acknowledge the subscription so the CLI doesn't error, then
@@ -538,14 +537,13 @@ impl Coordinator {
                 found_tx,
             } => {
                 if let Some(build) = self.running_builds.get_mut(&build_id) {
-                    build
-                        .log_subscribers
-                        .push(LogSubscriber::new(level, sender));
-                    let buffered = std::mem::take(&mut build.buffered_log_messages);
-                    for message in buffered {
-                        send_log_message(&mut build.log_subscribers, &message).await;
-                    }
-                    let _ = found_tx.send(true);
+                    attach_log_subscriber(
+                        &mut build.log_subscribers,
+                        &mut build.buffered_log_messages,
+                        LogSubscriber::new(level, sender),
+                        found_tx,
+                    )
+                    .await;
                 } else {
                     let _ = found_tx.send(false);
                 }
@@ -623,16 +621,19 @@ impl Coordinator {
                     bail!("there is already a running dataflow with name `{name}`");
                 }
             }
-            let dataflow = start_dataflow(
+            let launch = LaunchContext {
                 build_id,
                 session_id,
-                dataflow,
                 local_working_dir,
+                write_events_to,
+            };
+            let dataflow = start_dataflow(
+                dataflow,
+                launch,
                 name,
                 &mut self.daemon_connections,
                 &self.clock,
                 uv,
-                write_events_to,
             )
             .await?;
             Ok(dataflow)

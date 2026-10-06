@@ -74,6 +74,23 @@ struct LogLine {
 /// a single multi-GB stdout/stderr line.
 const MAX_LOG_LINE_BYTES: usize = 1024 * 1024;
 
+/// Exponential restart backoff: `base_delay * 2^(window_count - 1)`, with the
+/// exponent capped at 16 and the result capped at `max_delay`.
+///
+/// Saturating, so a huge (but descriptor-valid) `restart_delay` cannot panic
+/// the restart loop: `Duration::mul_f64` panics once the product exceeds
+/// `Duration::MAX`, which a `restart_delay` above ~2.8e14 s reached within the
+/// first 16 restarts even when `max_restart_delay` would have capped it.
+fn restart_backoff(
+    base_delay: Duration,
+    window_count: u32,
+    max_delay: Option<Duration>,
+) -> Duration {
+    let exp = window_count.saturating_sub(1).min(16);
+    let backoff = base_delay.saturating_mul(1u32 << exp);
+    max_delay.map_or(backoff, |max| backoff.min(max))
+}
+
 /// Truncate a log line to `MAX_LOG_LINE_BYTES`, respecting UTF-8 char boundaries.
 fn truncate_log_line(content: &mut String) {
     if content.len() > MAX_LOG_LINE_BYTES {
@@ -472,11 +489,8 @@ impl PreparedNode {
             if restart {
                 // Exponential backoff
                 if let Some(base_delay) = config.restart_delay {
-                    let exp = (window_count - 1).min(16); // cap exponent to avoid overflow
-                    let backoff = base_delay.mul_f64(2f64.powi(exp as i32));
-                    let backoff = config
-                        .max_restart_delay
-                        .map_or(backoff, |max| backoff.min(max));
+                    let backoff =
+                        restart_backoff(base_delay, window_count, config.max_restart_delay);
                     logger
                         .log(
                             LogLevel::Info,
@@ -846,13 +860,15 @@ impl PreparedNode {
             std::fs::create_dir_all(&dataflow_dir).context("could not create dataflow_dir")?;
         }
         let (tx, mut rx) = mpsc::channel::<LogLine>(100);
-        let mut file = File::create(log::log_path(
+        // Append rather than truncate: on a restart this path holds the
+        // previous incarnation's output, including why it crashed.
+        let (mut file, mut bytes_written) = log::open_log_file_for_append(&log::log_path(
             &self.node_working_dir,
             &self.dataflow_id,
             &self.node.id,
         ))
         .await
-        .context("failed to create log file")?;
+        .context("failed to open log file")?;
         let mut child_stdout = tokio::io::BufReader::new(
             child
                 .stdout()
@@ -1065,7 +1081,6 @@ impl PreparedNode {
         let quiet = std::env::var_os("DORA_QUIET").is_some();
         // Log to file stream.
         tokio::spawn(async move {
-            let mut bytes_written: u64 = 0;
             while let Some(log_line) = rx.recv().await {
                 let LogLine { content, stream } = log_line;
                 let stream_str = match stream {
@@ -1253,7 +1268,10 @@ impl PreparedNode {
                                     format!("Could not create new log file after rotation: {err}"),
                                 )
                                 .await;
-                            break;
+                            // The old file was already flushed and dropped
+                            // above, so there is nothing left to flush.
+                            let _ = log_finish_tx.send(());
+                            return;
                         }
                     };
                     bytes_written = 0;
@@ -1267,16 +1285,29 @@ impl PreparedNode {
                 // Note: no per-line sync_all() — OS write-back is sufficient
                 // for log data. Avoids 1000+ fsync/s for high-frequency loggers.
             }
-            // Note: file may have been rotated (drop+recreate) inside the loop.
-            // No explicit flush needed here — the file is flushed during rotation
-            // and will be flushed on drop when this task ends.
-            let _ = log_finish_tx.send(()).map_err(|_| {
-                logger_c.log(
-                    LogLevel::Error,
-                    Some("daemon".into()),
-                    "Could not inform that log file thread finished".to_string(),
-                )
-            });
+            // `tokio::fs::File::write_all` can return before the bytes reach
+            // the OS (the last write may still be in flight on the blocking
+            // pool), and dropping the handle does not wait for it. Flush before
+            // signalling, so the log file is complete by the time the
+            // exit-waiter reports the node as finished.
+            if let Err(err) = file.flush().await {
+                logger_c
+                    .log(
+                        LogLevel::Error,
+                        Some("daemon".into()),
+                        format!("Could not flush log file: {err}"),
+                    )
+                    .await;
+            }
+            if log_finish_tx.send(()).is_err() {
+                logger_c
+                    .log(
+                        LogLevel::Error,
+                        Some("daemon".into()),
+                        "Could not inform that log file thread finished".to_string(),
+                    )
+                    .await;
+            }
         });
         Ok(NodeKind::Spawned { pid })
     }
@@ -1308,6 +1339,32 @@ struct RestartLoopReceivers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restart_backoff_doubles_and_caps() {
+        let base = Duration::from_millis(100);
+        assert_eq!(restart_backoff(base, 1, None), base);
+        assert_eq!(restart_backoff(base, 2, None), base * 2);
+        assert_eq!(restart_backoff(base, 4, None), base * 8);
+        // Exponent is capped at 16.
+        assert_eq!(restart_backoff(base, 17, None), base * 65536);
+        assert_eq!(restart_backoff(base, 100, None), base * 65536);
+        let max = Duration::from_secs(1);
+        assert_eq!(restart_backoff(base, 5, Some(max)), max);
+    }
+
+    /// A `restart_delay` the descriptor validator accepts (anything up to
+    /// `Duration::MAX`) must not panic once the backoff doubles it: this used
+    /// to go through `Duration::mul_f64`, which panics on overflow, even with a
+    /// `max_restart_delay` that would have capped the result.
+    #[test]
+    fn restart_backoff_saturates_on_huge_delay() {
+        let base = Duration::from_secs_f64(1e15);
+        let max = Duration::from_secs(1);
+        assert_eq!(restart_backoff(base, 16, Some(max)), max);
+        assert_eq!(restart_backoff(base, 16, None), Duration::MAX);
+        assert_eq!(restart_backoff(Duration::MAX, 2, None), Duration::MAX);
+    }
 
     #[test]
     fn strip_trailing_newline_matches_lines_for_single_line() {
@@ -1458,6 +1515,51 @@ mod tests {
             daemon_rx.try_recv().is_err(),
             "an unregistered restart loop must terminate without emitting events"
         );
+    }
+
+    /// A respawn runs `spawn_inner` again on the same log path. It must
+    /// append, not truncate: the previous incarnation's output is what
+    /// explains why the node was restarted.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_respawn_keeps_the_previous_incarnations_log() {
+        use clonable_command::{Command, Stdio};
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        for marker in ["first-incarnation", "second-incarnation"] {
+            let (daemon_tx, _daemon_rx) = tokio::sync::mpsc::channel(64);
+            let mut node = test_prepared_node(daemon_tx, 0, 0.0);
+            node.node_working_dir = tmp.path().to_path_buf();
+            node.command = Some(
+                Command::new("sh")
+                    .arg("-c")
+                    .arg(format!("echo {marker}"))
+                    .stdin(Stdio::Null)
+                    .stdout(Stdio::Piped)
+                    .stderr(Stdio::Piped),
+            );
+            let (_op_tx, op_rx) = flume::bounded(2);
+            let (finished_tx, finished_rx) = oneshot::channel();
+            let kind = node
+                .spawn_inner(&mut test_logger().await, op_rx, finished_tx)
+                .await
+                .expect("spawn test node");
+            assert!(matches!(kind, NodeKind::Spawned { .. }));
+            // Sent only after the log writer has flushed and finished.
+            finished_rx.await.expect("node finished");
+        }
+
+        let log = std::fs::read_to_string(log::log_path(
+            tmp.path(),
+            &uuid::Uuid::nil(),
+            &NodeId::from("test".to_string()),
+        ))
+        .expect("read node log");
+        assert!(
+            log.contains("first-incarnation"),
+            "the respawn truncated the previous incarnation's log: {log}"
+        );
+        assert!(log.contains("second-incarnation"), "{log}");
     }
 
     /// The incarnation that crashes in the abort-path tests below.

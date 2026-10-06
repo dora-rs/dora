@@ -1750,14 +1750,7 @@ fn run_action_server(
                                 status,
                                 BridgeMessage(Some(array_data)),
                             );
-                            let result = futures::executor::block_on(async {
-                                futures::pin_mut!(send_result);
-                                let timeout = futures_timer::Delay::new(ACTION_RESULT_TIMEOUT);
-                                match futures::future::select(send_result, timeout).await {
-                                    futures::future::Either::Left((r, _)) => Some(r),
-                                    futures::future::Either::Right(_) => None,
-                                }
-                            });
+                            let result = block_on_result_timeout(send_result);
                             match result {
                                 Some(Err(e)) => {
                                     tracing::warn!(
@@ -1828,11 +1821,42 @@ fn abort_executing_goal(
     let send = server.send_result_response(
         handle,
         ros2_client::action::GoalEndStatus::Aborted,
-        BridgeMessage(None),
+        default_result_message(),
     );
-    if let Err(e) = futures::executor::block_on(send) {
-        tracing::warn!("failed to send abort for goal {goal_id}: {e:?}");
+    // `send_result_response` first waits for the client's GetResult
+    // request, so bound it like the regular result path: a client that never
+    // asks must not wedge this event loop forever.
+    match block_on_result_timeout(send) {
+        Some(Err(e)) => tracing::warn!("failed to send abort for goal {goal_id}: {e:?}"),
+        None => tracing::warn!("abort result response timed out for goal {goal_id}"),
+        Some(Ok(())) => {}
     }
+}
+
+/// Block on an action-server result send, giving up after
+/// [`ACTION_RESULT_TIMEOUT`] (`None`).
+fn block_on_result_timeout<F: std::future::Future>(send: F) -> Option<F::Output> {
+    futures::executor::block_on(async {
+        futures::pin_mut!(send);
+        let timeout = futures_timer::Delay::new(ACTION_RESULT_TIMEOUT);
+        match futures::future::select(send, timeout).await {
+            futures::future::Either::Left((r, _)) => Some(r),
+            futures::future::Either::Right(_) => None,
+        }
+    })
+}
+
+/// A result message with every field at its ROS2 default, for goals the
+/// bridge ends itself (aborted) without a result from the handler.
+///
+/// It must carry a value: `BridgeMessage(None)` cannot be serialized, so an
+/// abort sent with it failed after ros2-client had already marked the goal
+/// Aborted, and the client never received any result. A one-row struct
+/// without columns serializes every member as its default.
+fn default_result_message() -> BridgeMessage {
+    BridgeMessage(Some(arrow::array::Array::into_data(
+        arrow::array::StructArray::new_empty_fields(1, None),
+    )))
 }
 
 // ---------------------------------------------------------------------------
@@ -2313,5 +2337,49 @@ mod zenoh_goal_result_request_tests {
     fn no_pending_requests_drains_to_empty() {
         let mut goal = goal();
         assert!(goal.take_result_requests().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod abort_result_tests {
+    use super::*;
+    use dora_ros2_bridge_msg_gen::types::{
+        Member, MemberType,
+        primitives::{BasicType, NestableType},
+    };
+    use std::borrow::Cow;
+
+    fn result_type_info() -> TypeInfo<'static> {
+        let message = Message {
+            package: "test_pkg".to_string(),
+            name: "R".to_string(),
+            members: vec![Member {
+                name: "code".to_string(),
+                r#type: MemberType::NestableType(NestableType::BasicType(BasicType::I32)),
+                default: None,
+            }],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("R".to_string(), message);
+        let mut messages = HashMap::new();
+        messages.insert("test_pkg".to_string(), package);
+        TypeInfo {
+            package_name: Cow::Borrowed("test_pkg"),
+            message_name: Cow::Borrowed("R"),
+            messages: Arc::new(messages),
+        }
+    }
+
+    /// The abort payload must serialize: it used to be `BridgeMessage(None)`,
+    /// which always fails, so the aborted goal's client never got a result.
+    #[test]
+    fn abort_result_payload_serializes_with_defaults() {
+        let _guard = TypeInfoGuard::serialize(result_type_info());
+        assert!(serialize_cdr(&BridgeMessage(None)).is_err());
+
+        let payload = serialize_cdr(&default_result_message()).expect("abort payload");
+        // CDR encapsulation header, then the defaulted `int32 code`.
+        assert_eq!(&payload[4..], &[0, 0, 0, 0]);
     }
 }

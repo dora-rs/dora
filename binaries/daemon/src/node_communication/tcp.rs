@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, atomic::AtomicU64},
 };
 
-use super::{Connection, Listener};
+use super::{BackpressureConfig, Connection, Listener};
 use crate::{
     Event,
     socket_stream_utils::{socket_stream_receive_with_header_timeout, socket_stream_send},
@@ -18,13 +18,18 @@ use tokio::{
     sync::mpsc,
 };
 
-#[tracing::instrument(skip(listener, daemon_tx, clock, last_activity), level = "trace")]
+#[tracing::instrument(
+    skip(listener, daemon_tx, clock, last_activity, backpressure),
+    level = "trace"
+)]
+#[allow(clippy::too_many_arguments)]
 pub async fn listener_loop(
     listener: TcpListener,
     generation: Arc<AtomicU64>,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
+    backpressure: Arc<BackpressureConfig>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
     mut node_shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
@@ -40,6 +45,7 @@ pub async fn listener_loop(
                             daemon_tx.clone(),
                             clock.clone(),
                             last_activity.clone(),
+                            backpressure.clone(),
                         ));
                     }
                 }
@@ -65,13 +71,17 @@ pub async fn listener_loop(
     }
 }
 
-#[tracing::instrument(skip(connection, daemon_tx, clock, last_activity), level = "trace")]
+#[tracing::instrument(
+    skip(connection, daemon_tx, clock, last_activity, backpressure),
+    level = "trace"
+)]
 async fn handle_connection_loop(
     connection: TcpStream,
     generation: Arc<AtomicU64>,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
+    backpressure: Arc<BackpressureConfig>,
 ) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");
@@ -83,6 +93,7 @@ async fn handle_connection_loop(
         daemon_tx,
         clock,
         last_activity,
+        backpressure,
     )
     .await
 }
@@ -95,16 +106,28 @@ impl Connection for TcpConnection {
         // between requests, so only mid-frame (body) stalls are faults.
         let raw = match socket_stream_receive_with_header_timeout(&mut self.0, None).await {
             Ok(raw) => raw,
-            Err(err) => match err.kind() {
-                ErrorKind::UnexpectedEof
-                | ErrorKind::ConnectionAborted
-                | ErrorKind::ConnectionReset => return Ok(None),
-                _other => {
-                    return Err(err)
-                        .context("unexpected I/O error while trying to receive DaemonRequest");
+            Err(err) => {
+                // Any error leaves the stream at an unknown offset inside a
+                // frame (e.g. an oversized length header, or a body stalled
+                // past `TCP_READ_TIMEOUT`), so the next "header" would be old
+                // body bytes. Treat it as a disconnect: the node sees EOF
+                // instead of waiting forever on a reply.
+                if !matches!(
+                    err.kind(),
+                    ErrorKind::UnexpectedEof
+                        | ErrorKind::ConnectionAborted
+                        | ErrorKind::ConnectionReset
+                ) {
+                    tracing::warn!(
+                        "closing node connection after I/O error while receiving \
+                         DaemonRequest: {err}"
+                    );
                 }
-            },
+                return Ok(None);
+            }
         };
+        // A decode error is different: the whole frame was consumed, so the
+        // stream is still aligned and the listener can keep going.
         dora_message::decode(&raw)
             .wrap_err("failed to deserialize DaemonRequest")
             .map(Some)
@@ -121,5 +144,48 @@ impl Connection for TcpConnection {
             .await
             .wrap_err("failed to send DaemonReply")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    async fn connected_pair() -> (TcpConnection, TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (client, server) = tokio::join!(TcpStream::connect(addr), listener.accept());
+        (TcpConnection(server.unwrap().0), client.unwrap())
+    }
+
+    #[tokio::test]
+    async fn oversized_header_closes_the_connection() {
+        let (mut conn, mut client) = connected_pair().await;
+        let len = dora_message::MAX_MESSAGE_BYTES as u64 + 1;
+        client.write_all(&len.to_le_bytes()).await.unwrap();
+        // Bytes that would otherwise be misread as the next frame header.
+        client.write_all(&[0xAB; 32]).await.unwrap();
+
+        let received = conn.receive_message().await;
+        assert!(
+            matches!(received, Ok(None)),
+            "a frame the listener cannot consume must end the connection, got {received:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn undecodable_frame_keeps_the_connection() {
+        let (mut conn, mut client) = connected_pair().await;
+        let body = [0xFF; 16];
+        client
+            .write_all(&(body.len() as u64).to_le_bytes())
+            .await
+            .unwrap();
+        client.write_all(&body).await.unwrap();
+
+        // The frame was consumed in full, so the stream is still aligned:
+        // report the error but don't treat it as a disconnect.
+        assert!(conn.receive_message().await.is_err());
     }
 }

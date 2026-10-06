@@ -91,9 +91,9 @@ pub struct DaemonRegisterRequest {
     /// [`DaemonEvent::ZenohListenEndpoint`]`(None)`, so the coordinator never
     /// keeps handing out an endpoint with nothing behind it for long.
     ///
-    /// `None` for a daemon with no dialable listener — a single-machine
-    /// deployment (loopback, which would point a remote peer at its own host)
-    /// or a failed reservation.
+    /// `None` when the reservation failed. A loopback listener is reported
+    /// like any other; the coordinator hands it only to daemons on the same
+    /// host, so a remote peer is never pointed at its own loopback.
     #[serde(default)]
     pub zenoh_listen_endpoint: Option<String>,
 }

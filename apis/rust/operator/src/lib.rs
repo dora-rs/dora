@@ -463,4 +463,59 @@ mod tests {
             "panic must stop the operator"
         );
     }
+
+    struct PanicInDefault;
+
+    impl Default for PanicInDefault {
+        fn default() -> Self {
+            panic!("missing MODEL env var");
+        }
+    }
+
+    impl DoraOperator for PanicInDefault {
+        fn on_event(
+            &mut self,
+            _event: &Event,
+            _output_sender: &mut DoraOutputSender,
+        ) -> Result<DoraStatus, String> {
+            Ok(DoraStatus::Continue)
+        }
+    }
+
+    /// A panic in the operator's `Default` impl must come back as an init
+    /// error, not unwind out of the `extern "C"` shim and abort the runtime.
+    #[test]
+    fn init_panic_is_reported_as_error() {
+        let result = unsafe { raw::dora_init_operator::<PanicInDefault>() };
+        let error = result.result.error.expect("init panic must be an error");
+        assert!(error.contains("operator init panicked: missing MODEL env var"));
+        assert!(result.operator_context.is_null());
+    }
+
+    struct PanicInDrop;
+
+    impl Drop for PanicInDrop {
+        fn drop(&mut self) {
+            panic!("teardown failed");
+        }
+    }
+
+    /// Likewise, a panic in the operator's `Drop` impl must be reported.
+    #[test]
+    fn drop_panic_is_reported_as_error() {
+        let ptr: *mut PanicInDrop = Box::leak(Box::new(PanicInDrop));
+        let result = unsafe { raw::dora_drop_operator::<PanicInDrop>(ptr.cast()) };
+        let error = result.error.expect("drop panic must be an error");
+        assert!(error.contains("operator drop panicked: teardown failed"));
+    }
+
+    #[test]
+    fn init_and_drop_succeed_without_panic() {
+        let result = unsafe { raw::dora_init_operator::<RecordingOperator>() };
+        assert!(result.result.error.is_none());
+        assert!(!result.operator_context.is_null());
+        let dropped =
+            unsafe { raw::dora_drop_operator::<RecordingOperator>(result.operator_context) };
+        assert!(dropped.error.is_none());
+    }
 }

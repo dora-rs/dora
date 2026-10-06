@@ -1183,23 +1183,21 @@ EOF
   # binary resolves under target/debug; the run's working_dir is the .drec's
   # parent ($WORK), so node logs land in $WORK/out/.
   #
-  # Paced replay (`--speed 1`), not `--speed 0`: the validation below asserts
-  # that every recorded message reaches the sink, and only a paced replay
-  # makes that assertion sound. `dora replay` already sizes each replayed
-  # input's queue to the recorded message count under `queue_policy:
-  # backpressure` (#2144), but that only covers the node-level queue; the
-  # direct node-to-node zenoh data plane below it is declared
-  # `CongestionControl::Drop`, and an unpaced burst can lose a sample there
-  # with the sender still reporting success (see the note on
-  # `raise_replayed_input_queue_sizes` in binaries/cli/src/command/replay.rs:
-  # "Drops below this layer ... are not addressed here"). That is what made
-  # this job fail in the 2026-09-01 nightly (dora-rs/dora#3372): 99 of 100
-  # values reached the sink, the recording and the replay node both reporting
-  # a clean 100. The recording spans ~1s of 10ms ticks, so replaying it at
-  # the rate the cluster produced it costs about a second.
-  echo "=== dora replay $DREC (local single-daemon run) ==="
+  # Unpaced (`--speed 0`) on purpose: the validation below asserts that every
+  # recorded message reaches the sink, and a full-speed burst is the case
+  # that used to break that. In the 2026-09-01 nightly (dora-rs/dora#3372) 99
+  # of 100 values reached the sink while the recording and the replay node
+  # both reported a clean 100 — a drop on the direct node-to-node zenoh
+  # path, declared `CongestionControl::Drop`. #3376 worked around it by
+  # pacing the replay (`--speed 1`), which also removed the only coverage of
+  # full-speed faithfulness. Since #3429 every replayed input is a
+  # `backpressure` input, which pins its producer to the daemon path, and
+  # since #3397 the daemon path holds the producer instead of dropping when
+  # the receiver's channel is full, so a full-speed pass must be lossless —
+  # and `dora replay` now exits non-zero if the daemon dropped anything.
+  echo "=== dora replay $DREC --speed 0 (local single-daemon run) ==="
   rm -rf "$WORK/out"
-  if ! timeout -k 30s 120s dora replay "$DREC" --speed 1; then
+  if ! timeout -k 30s 120s dora replay "$DREC" --speed 0; then
     echo "ERROR: dora replay failed or exceeded 120s"
     rm -rf "$WORK"
     return 1
@@ -1222,11 +1220,11 @@ EOF
   fi
 
   # Validate that the replayed random-value sequence exactly reproduces the
-  # committed seed(42) baseline. At the paced `--speed 1` used above, dora
-  # delivers every recorded output in order, so the replayed sink must see
-  # the full baseline sequence -- any drop, reorder, or value change is a
-  # genuine record/replay regression, not expected noise. (This does not hold
-  # for an unpaced `--speed 0` replay; see the note on the replay invocation.)
+  # committed seed(42) baseline. dora delivers every recorded output in
+  # order, even at the unpaced `--speed 0` used above (see the note on the
+  # replay invocation), so the replayed sink must see the full baseline
+  # sequence -- any drop, reorder, or value change is a genuine record/replay
+  # regression, not expected noise.
   echo "=== validate replayed state against seed(42) baseline ==="
   local baseline="tests/sample-inputs/expected-outputs-rust-status-node.jsonl"
   if ! python3 - "$sink_log" "$baseline" <<'PY'; then

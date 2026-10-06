@@ -22,11 +22,12 @@ use dora_core::{
 use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig, OutputRouting},
+    dynamic_node::{DynamicNodeConfigReply, DynamicNodePeering},
     metadata::{
         FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter,
         SCHEMA_HASH, SEGMENT_ID, SEQ, SESSION_ID,
     },
-    node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
+    node_to_daemon::{DaemonRequest, DataMessage},
 };
 use eyre::WrapErr;
 use is_terminal::IsTerminal;
@@ -49,6 +50,7 @@ use tracing::{debug, error, info, warn};
 
 pub mod arrow_utils;
 mod control_channel;
+mod peering;
 
 /// Runtime type checking mode, controlled by `DORA_RUNTIME_TYPE_CHECK` env var.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1132,7 +1134,7 @@ impl DoraNode {
             output,
             options,
         };
-        let (mut node, events) = Self::init_with_options(node_config, Some(testing_comm))?;
+        let (mut node, events) = Self::init_with_options(node_config, Some(testing_comm), None)?;
         node.interactive = true;
         Ok((node, events))
     }
@@ -1141,13 +1143,14 @@ impl DoraNode {
     #[doc(hidden)]
     #[tracing::instrument]
     pub fn init(node_config: NodeConfig) -> NodeResult<(Self, EventStream)> {
-        Self::init_with_options(node_config, None)
+        Self::init_with_options(node_config, None, None)
     }
 
     #[tracing::instrument(skip(testing_communication))]
     fn init_with_options(
         node_config: NodeConfig,
         testing_communication: Option<TestingCommunication>,
+        dynamic_peering: Option<DynamicNodePeering>,
     ) -> NodeResult<(Self, EventStream)> {
         // Before anything that can fail or block: a node spawned by `dora run`
         // must not outlive the CLI even if the rest of this initialization
@@ -1278,7 +1281,7 @@ impl DoraNode {
             // current-thread runtimes).
             let session = std::thread::scope(|s| {
                 match s
-                    .spawn(|| handle.block_on(dora_core::topics::open_zenoh_session(None)))
+                    .spawn(|| handle.block_on(peering::open_session(dynamic_peering.as_ref())))
                     .join()
                 {
                     Ok(Ok(session)) => Ok(session),
@@ -1540,7 +1543,7 @@ impl DoraNode {
             FRAMING.to_string(),
             Parameter::String(FRAMING_ARROW_IPC.to_string()),
         );
-        self.send_output_sample(output_id, parameters, Some(sample))
+        self.send_output_sample_unchecked(output_id, parameters, Some(sample))
     }
 
     /// Sends the given Arrow array as an output message.
@@ -1635,7 +1638,7 @@ impl DoraNode {
             Parameter::String(FRAMING_ARROW_IPC.to_string()),
         );
 
-        self.send_output_sample(output_id, parameters, Some(sample))
+        self.send_output_sample_unchecked(output_id, parameters, Some(sample))
             .wrap_err("failed to send output")?;
 
         Ok(())
@@ -1736,6 +1739,21 @@ impl DoraNode {
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
     pub fn send_output_sample(
+        &mut self,
+        output_id: DataId,
+        parameters: MetadataParameters,
+        sample: Option<DataSample>,
+    ) -> NodeResult<()> {
+        if !self.validate_output(&output_id) {
+            return Ok(());
+        }
+        self.send_output_sample_unchecked(output_id, parameters, sample)
+    }
+
+    /// [`send_output_sample`](Self::send_output_sample) without the
+    /// declared-output check, for internal callers that already ran
+    /// [`validate_output`](Self::validate_output).
+    fn send_output_sample_unchecked(
         &mut self,
         output_id: DataId,
         mut parameters: MetadataParameters,
@@ -2315,8 +2333,9 @@ impl DoraNode {
     }
 
     /// Maximum serialized size of the log `fields` object before it is
-    /// dropped (60 KB). Matches the downstream 64 KB parse limit with headroom
-    /// for the message envelope. Measured on the serialized JSON (see
+    /// dropped (60 KB). Keeps a structured entry far below the daemon's 1 MiB
+    /// per-line limit, past which the JSON line would be cut and no longer
+    /// parse as structured. Measured on the serialized JSON (see
     /// [`log_fields_within_budget`]), not the raw key/value byte sum.
     const MAX_LOG_FIELDS_BYTES: usize = 60 * 1024;
 
@@ -2627,12 +2646,12 @@ impl DoraNode {
 
 /// Return the serialized log `fields` object when it fits `limit`, else `None`.
 ///
-/// The budget guards a downstream JSON-line parse limit, so it must measure
-/// the *serialized* size: `"fields":{...}` adds structural bytes (quotes,
+/// The budget keeps the structured entry well under the daemon's 1 MiB
+/// per-line limit, past which the line is cut and no longer parses as
+/// structured, so it must measure the *serialized* size: `"fields":{...}` adds structural bytes (quotes,
 /// colons, commas) and JSON escaping — a value full of `"`/`\` doubles and
 /// control characters expand ~6x via `\uXXXX`. Summing raw key/value byte
-/// lengths can pass a map whose serialized form is well over the limit, which
-/// the downstream parser then drops or truncates whole.
+/// lengths can pass a map whose serialized form is well over the budget.
 fn log_fields_within_budget(
     fields: &std::collections::BTreeMap<String, String>,
     limit: usize,
@@ -2717,23 +2736,22 @@ impl DoraNodeBuilder {
         let clock = Arc::new(uhlc::HLC::default());
 
         let reply = channel
-            .request(&Timestamped {
-                inner: DaemonRequest::NodeConfig { node_id },
-                timestamp: clock.new_timestamp(),
-            })
+            .dynamic_node_config(node_id, clock.new_timestamp())
             .wrap_err("failed to request node config from daemon")?;
 
         match reply {
-            DaemonReply::NodeConfig {
+            DynamicNodeConfigReply::NodeConfig {
                 result: Ok(node_config),
-            } => DoraNode::init(node_config),
-            DaemonReply::NodeConfig { result: Err(error) } => {
+                zenoh,
+            } => DoraNode::init_with_options(node_config, None, zenoh),
+            DynamicNodeConfigReply::NodeConfig {
+                result: Err(error), ..
+            } => {
                 let capped: String = error.chars().take(512).collect();
                 Err(NodeError::Init(format!(
                     "failed to get node config from daemon: {capped}"
                 )))
             }
-            _ => Err(NodeError::Init("unexpected reply from daemon".into())),
         }
     }
 }
@@ -3707,8 +3725,8 @@ mod tests {
         // budget by the old raw-sum measure — but made entirely of control
         // characters, each of which JSON-escapes to `` (6 bytes). Its
         // serialized form is ~120 KB, over the budget, so it must be dropped.
-        // The pre-fix raw-byte check would have let it through and blown the
-        // downstream parse limit.
+        // The pre-fix raw-byte check would have let it through, well past the
+        // budget.
         let mut big = BTreeMap::new();
         big.insert("k".to_string(), "\u{1}".repeat(20 * 1024));
         assert!(big.values().map(String::len).sum::<usize>() < limit);
@@ -4138,6 +4156,37 @@ mod tests {
             ])
             .into_data(),
         );
+    }
+
+    /// `send_output_sample` must honor its documented contract and ignore an
+    /// output that is not declared — including one closed via
+    /// `close_outputs` — like every other `send_output*` entry point does.
+    #[test]
+    fn send_output_sample_ignores_undeclared_and_closed_outputs() {
+        let (mut node, events, mut rx) = test_node();
+        // The testing node is interactive (accepts any output id); make it
+        // enforce a real output declaration.
+        node.interactive = false;
+        let declared: DataId = "out".into();
+        node.node_config.outputs.insert(declared.clone());
+
+        node.send_output_sample("undeclared".into(), Default::default(), None)
+            .unwrap();
+        node.send_output_sample(declared.clone(), Default::default(), None)
+            .unwrap();
+        node.close_outputs(vec![declared.clone()]).unwrap();
+        node.send_output_sample(declared, Default::default(), None)
+            .unwrap();
+
+        drop(node);
+        drop(events);
+        let outputs = drain_outputs(&mut rx);
+        assert_eq!(
+            outputs.len(),
+            1,
+            "only the send to the open, declared output may go out: {outputs:?}"
+        );
+        assert_eq!(outputs[0]["id"], "out");
     }
 
     /// `close_outputs` must be atomic: if any id in the batch is unknown, the

@@ -1,6 +1,7 @@
 use crate::socket_stream_utils::{socket_stream_receive_with_header_timeout, socket_stream_send};
 use dora_message::{
     daemon_to_node::DaemonReply,
+    dynamic_node::DynamicNodeConfigReply,
     node_to_daemon::{DaemonRequest, DynamicNodeEvent, Timestamped},
 };
 use eyre::Context;
@@ -13,7 +14,7 @@ use tokio::{
 #[derive(Debug)]
 pub struct DynamicNodeEventWrapper {
     pub event: DynamicNodeEvent,
-    pub reply_tx: oneshot::Sender<Option<DaemonReply>>,
+    pub reply_tx: oneshot::Sender<Option<DynamicNodeConfigReply>>,
 }
 
 pub async fn spawn_listener_loop(
@@ -201,7 +202,7 @@ async fn handle_connection_loop(
 /// `ExtensionRequest` carry multi-MB byte vectors, so Debug-formatting the
 /// whole request (`{req:?}`) would amplify one request into a huge string —
 /// both in the log and in the reply body that is then written back.
-fn request_kind(request: &DaemonRequest) -> &'static str {
+pub(crate) fn request_kind(request: &DaemonRequest) -> &'static str {
     match request {
         DaemonRequest::Register(_) => "Register",
         DaemonRequest::Subscribe => "Subscribe",

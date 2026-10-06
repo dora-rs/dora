@@ -54,10 +54,13 @@ fn resolve_trace_id(session: &WsSession, prefix: &str) -> eyre::Result<String> {
     }
 
     // Full UUID — skip the round-trip.
-    if uuid::Uuid::parse_str(prefix).is_ok() {
-        return Ok(prefix.to_string());
+    if let Some(trace_id) = canonical_trace_id(prefix) {
+        return Ok(trace_id);
     }
 
+    // The coordinator stores trace IDs as lowercase hex, so match a prefix
+    // case-insensitively.
+    let prefix = &prefix.to_ascii_lowercase();
     let traces = super::fetch_traces(session)?;
 
     let matches: Vec<_> = traces
@@ -70,6 +73,17 @@ fn resolve_trace_id(session: &WsSession, prefix: &str) -> eyre::Result<String> {
         1 => Ok(matches[0].trace_id.clone()),
         n => bail!("prefix `{prefix}` is ambiguous ({n} matches). Use a longer prefix."),
     }
+}
+
+/// Returns the coordinator's spelling of `id` if it is a full UUID.
+///
+/// `Uuid::parse_str` also accepts uppercase, simple (no hyphens), braced and
+/// `urn:uuid:` forms, but the coordinator stores trace IDs as lowercase
+/// hyphenated strings and matches them exactly.
+fn canonical_trace_id(id: &str) -> Option<String> {
+    uuid::Uuid::parse_str(id)
+        .ok()
+        .map(|uuid| uuid.hyphenated().to_string())
 }
 
 fn print_span_tree(spans: &[TraceSpan]) {
@@ -200,6 +214,25 @@ mod tests {
         let plan = plan_span_tree(spans);
         let rows = plan.rows.iter().map(|(s, d)| (s.span_id, *d)).collect();
         (rows, plan.partial)
+    }
+
+    #[test]
+    fn full_uuid_in_any_spelling_resolves_to_canonical_form() {
+        let canonical = "a1b2c3d4-e5f6-4789-abcd-0123456789ab";
+        for input in [
+            canonical,
+            "A1B2C3D4-E5F6-4789-ABCD-0123456789AB",
+            "a1b2c3d4e5f64789abcd0123456789ab",
+            "{a1b2c3d4-e5f6-4789-abcd-0123456789ab}",
+            "urn:uuid:a1b2c3d4-e5f6-4789-abcd-0123456789ab",
+        ] {
+            assert_eq!(
+                canonical_trace_id(input).as_deref(),
+                Some(canonical),
+                "input: {input}"
+            );
+        }
+        assert_eq!(canonical_trace_id("a1b2c3d4"), None);
     }
 
     #[test]

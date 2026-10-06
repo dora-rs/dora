@@ -27,7 +27,6 @@ arrow-schema = { workspace = true }
 which = "8"
 uuid = { workspace = true }
 tracing = { workspace = true }
-serde-with-expand-env = "1.1.0"
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "sync", "rt"] }
 tokio-stream = { workspace = true, features = ["io-util"] }
 schemars = "1.2.1"
@@ -48,6 +47,4 @@ json5 = { version = "0.4", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-# Direct arrow-buffer access for unit tests of metadata.rs unsafe paths.
-arrow-buffer = "59"
 proptest = { workspace = true }

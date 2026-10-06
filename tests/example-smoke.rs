@@ -1298,8 +1298,12 @@ fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
     }
 
     // ---- Step 2: replay ----
+    // Unpaced (`--speed 0`): the shape that used to drop on the direct
+    // zenoh path (dora-rs/dora#3397). A full-speed pass must deliver every
+    // recorded message, and `dora replay` exits non-zero if the daemon
+    // dropped any, so this also covers the flag CI lost in #3376.
     let rep = Command::new(dora)
-        .args(["replay", drec.to_str().unwrap()])
+        .args(["replay", drec.to_str().unwrap(), "--speed", "0"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

@@ -120,12 +120,14 @@ pub(crate) async fn serve_cross_data_frame(
     match frame {
         Ok(Some((dataflow_id, shared_memory_id, seq))) => {
             // Remote commit ack via zenoh (the origin's pending reply
-            // waits on it).
+            // waits on it), addressed to the pool's origin.
+            let origin_machine =
+                tensor_pool.cross_peer(&dataflow_id.to_string(), &shared_memory_id);
             publish_pool_message(
                 session,
                 clock,
                 &dataflow_id,
-                None,
+                origin_machine.as_deref(),
                 &PeerMessage::WriteAck {
                     shared_memory_id,
                     seq,
@@ -149,7 +151,9 @@ pub(crate) async fn serve_cross_data_frame(
                     session,
                     clock,
                     &dataflow_id,
-                    None,
+                    tensor_pool
+                        .cross_peer(&dataflow_id.to_string(), &shared_memory_id)
+                        .as_deref(),
                     &PeerMessage::WriteAck {
                         shared_memory_id,
                         seq,

@@ -77,6 +77,7 @@ members = [
     "libraries/extensions/ros2-bridge/arrow",
     "tests/queue_size_latest_data_rust/receive_data",
     "tests/fault_tolerance/always_crash_node",
+    "tests/fault_tolerance/burst_source_node",
     "tests/fault_tolerance/clean_exit_node",
     "tests/fault_tolerance/delayed_crash_node",
     "tests/fault_tolerance/drain_recording_node",
@@ -90,6 +91,7 @@ members = [
     "tests/fault_tolerance/reconnect_survivor_node",
     "tests/fault_tolerance/sigterm_ignoring_node",
     "tests/fault_tolerance/silent_source_node",
+    "tests/fault_tolerance/slow_sequence_sink_node",
     "tests/fault_tolerance/stop_delay_node",
     "tests/fault_tolerance/timed_burst_source_node",
     "tests/fault_tolerance/timer_tick_recorder_node",
@@ -163,7 +165,6 @@ arrow-schema = { version = "59" }
 arrow-data = { version = "59" }
 arrow-array = { version = "59" }
 arrow-json = { version = "59" }
-parquet = { version = "59" }
 # Kept in lockstep with `arrow-pyarrow` — see the `arrow` floor above.
 pyo3 = { version = "0.29", features = [
     "eyre",
@@ -203,7 +204,6 @@ flume = "0.12.0"
 tempfile = "3.27.0"
 proptest = "1.11"
 mavlink = { version = "0.18", default-features = false, features = ["std", "serde", "dialect-common", "transport-tcp", "transport-udp", "transport-direct-serial"] }
-serialport = "4.9"
 url = "2.5"
 percent-encoding = "2.3"
 
@@ -232,9 +232,7 @@ dora-core = { workspace = true }
 dora-daemon = { workspace = true }
 dora-message = { workspace = true }
 dora-tracing = { workspace = true }
-dora-download = { workspace = true }
 dunce = "1.0.5"
-serde_yaml = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }

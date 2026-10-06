@@ -25,3 +25,6 @@ opentelemetry-otlp = { version = "0.32.0", features = [
     "grpc-tonic",
 ] }
 uuid = { workspace = true, features = ["v4"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt"] }

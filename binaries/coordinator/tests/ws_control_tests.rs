@@ -607,3 +607,45 @@ async fn param_list_rejects_unknown_target() {
 // NOTE: TopicPublish integration testing requires Zenoh with a multi-thread
 // tokio runtime, which is incompatible with the test coordinator's current
 // thread runtime. TopicPublish is tested via the ws-cli-e2e tests instead.
+
+/// The per-endpoint cap (`MAX_WS_CONNECTIONS` in `ws_server.rs`) must count
+/// *open* sockets, not just in-flight handshakes: once the cap is reached the
+/// next handshake is refused with 503, and closing a socket frees its slot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn control_connection_cap_holds_for_socket_lifetime() {
+    const MAX_WS_CONNECTIONS: usize = 256;
+    let (port, _handle) = common::start_test_coordinator().await;
+
+    let mut open = Vec::with_capacity(MAX_WS_CONNECTIONS);
+    for _ in 0..MAX_WS_CONNECTIONS {
+        open.push(connect_control(port).await);
+    }
+
+    let url = format!("ws://127.0.0.1:{port}/api/control");
+    match tokio_tungstenite::connect_async(&url).await {
+        Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+            assert_eq!(response.status(), 503, "cap must reject with 503");
+        }
+        Err(other) => panic!("expected an HTTP 503 rejection, got {other:?}"),
+        Ok(_) => panic!(
+            "connection {} was accepted past the cap",
+            MAX_WS_CONNECTIONS + 1
+        ),
+    }
+
+    let mut closed = open.pop().unwrap();
+    closed.close(None).await.unwrap();
+    drop(closed);
+
+    // The server releases the slot once its socket task observes the close.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match tokio_tungstenite::connect_async(&url).await {
+            Ok(_) => break,
+            Err(_) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            Err(err) => panic!("slot was not released after closing a socket: {err:?}"),
+        }
+    }
+}

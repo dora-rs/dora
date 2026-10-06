@@ -624,7 +624,7 @@ jobs:
         # implementation detail (LD_LIBRARY_PATH only adds a search path).
         env:
           LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
-      - uses: astral-sh/setup-uv@v10.1.0
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -762,7 +762,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: crate-ci/typos@512fc24f32f44ab01972217aaaf3dc86ec234d53 # v1.50.2
+      - uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
 
   # ===== Fast supply-chain gates =====
   # Only the cheap, deterministic QA gates run remotely. The deeper

@@ -17,10 +17,57 @@ use dora_message::{
 use eyre::Result;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, atomic},
+    sync::{
+        Arc, atomic,
+        atomic::{AtomicBool, AtomicU64},
+    },
     time::Instant,
 };
 use tokio::sync::mpsc;
+
+/// A delivery the daemon loop could not complete without dropping, on an
+/// edge whose input declares `queue_policy: backpressure`.
+///
+/// The receiver's event channel is full (or below its control-event
+/// headroom), and the daemon loop must never wait for it — every node's
+/// traffic funnels through that loop. So the event is handed back to the
+/// *producer's* listener task (`SendOut::deferred_reply`), which waits for
+/// room on `drained`, sends it, and holds the producer's next request until
+/// it is in. Only that producer's `send_output` stalls, which is what
+/// backpressure means; the drop-with-a-warning that used to happen here was
+/// the last silent loss on the daemon path (dora-rs/dora#3397, #3439). The
+/// producer's listener asks for this only on outputs that have a
+/// backpressure consumer (`output_routing::backpressured_outputs`).
+#[derive(Debug)]
+pub(crate) struct DeferredDelivery {
+    pub receiver: NodeId,
+    pub channel: mpsc::Sender<Timestamped<NodeEvent>>,
+    /// The receiver's pending-message counter, bumped once the event is in.
+    pub pending: Option<Arc<AtomicU64>>,
+    /// The receiver's side of the hold.
+    pub drained: Arc<DrainSignal>,
+    pub event: Timestamped<NodeEvent>,
+}
+
+/// What a producer held for a full backpressure receiver shares with that
+/// receiver's listener (`RunningDataflow::drain_signals`). One per listener,
+/// so a restarted node starts with a fresh one.
+#[derive(Debug, Default)]
+pub(crate) struct DrainSignal {
+    /// Fires when the receiver's listener takes an event out of its channel.
+    pub notify: tokio::sync::Notify,
+    /// Set when a held delivery to this receiver ran into the stall limit:
+    /// the receiver is wedged, or blocked on its own producer in a
+    /// backpressure cycle. While set, deliveries to its full channel are
+    /// dropped and counted instead of holding their producer for another
+    /// stall limit each — once is enough to know (dora-rs/dora#3601).
+    /// Cleared once the receiver has drained its channel back to the
+    /// headroom a held delivery waits for.
+    pub gave_up: AtomicBool,
+    /// Set when the node dropped its event stream deliberately, so a held
+    /// delivery that finds its channel closed afterwards is not a loss.
+    pub stream_dropped: AtomicBool,
+}
 
 pub(crate) fn note_output_sent_to_local_receivers(
     node_id: NodeId,
@@ -151,6 +198,98 @@ pub(crate) fn note_output_sent_to_local_receivers(
     }
 }
 
+/// Offers `event` to `receiver_id`'s event channel, keeping the
+/// control-event headroom: data never takes the last
+/// `CONTROL_EVENT_HEADROOM` slots. Returns whether the receiver has it —
+/// delivered, or deferred to the producer's listener (see
+/// [`DeferredDelivery`]), which counts the same for the caller's bookkeeping:
+/// the producer is alive and produced, which is what the input deadline and
+/// the circuit breaker watch. A closed channel is noted in `closed` and, like
+/// a full one with no way to defer, is a counted drop.
+#[allow(clippy::too_many_arguments)]
+fn offer_event<'a>(
+    dataflow: &RunningDataflow,
+    receiver_id: &'a NodeId,
+    input_id: &DataId,
+    output_id: &OutputId,
+    channel: &mpsc::Sender<Timestamped<NodeEvent>>,
+    event: Timestamped<NodeEvent>,
+    deferred: Option<&mut Vec<DeferredDelivery>>,
+    ft_stats: Option<&FaultToleranceStats>,
+    closed: &mut Vec<&'a NodeId>,
+) -> bool {
+    let event = if channel.capacity() < CONTROL_EVENT_HEADROOM {
+        event
+    } else {
+        match channel.try_send(event) {
+            Ok(()) => {
+                dataflow.inc_pending(receiver_id);
+                return true;
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                // A deliberate `EventStreamDropped` unregisters the channel
+                // before it closes, so a registered one found closed means
+                // the listener died: this message is lost, and counted like
+                // the ones the no-channel branch drops after it
+                // (dora-rs/dora#3620).
+                if let Some(stats) = ft_stats {
+                    stats.record_drop(
+                        1,
+                        dataflow.input_requires_backpressure(receiver_id, input_id),
+                    );
+                }
+                closed.push(receiver_id);
+                return false;
+            }
+            Err(mpsc::error::TrySendError::Full(event)) => event,
+        }
+    };
+    let requires_backpressure = dataflow.input_requires_backpressure(receiver_id, input_id);
+    let deferred = deferred
+        .filter(|_| requires_backpressure)
+        .and_then(|deferred| Some((deferred, dataflow.drain_signals.get(receiver_id)?.clone())))
+        // A receiver that already let a held delivery run into the stall
+        // limit is not waited for again until it drains.
+        .filter(|(_, drained)| !drained.gave_up.load(atomic::Ordering::Acquire));
+    match deferred {
+        Some((deferred, drained)) => {
+            tracing::debug!(
+                node = %receiver_id,
+                input = %input_id,
+                "event channel full ({}/{}), holding the producer of `{}` until the receiver \
+                 makes room (queue_policy: backpressure)",
+                channel.capacity(),
+                NODE_EVENT_CHANNEL_CAPACITY,
+                output_id.1,
+            );
+            deferred.push(DeferredDelivery {
+                receiver: receiver_id.clone(),
+                channel: channel.clone(),
+                pending: dataflow.pending_messages.get(receiver_id).cloned(),
+                drained,
+                event,
+            });
+            true
+        }
+        None => {
+            tracing::warn!(
+                node = %receiver_id,
+                "event channel full ({}/{}), dropping message (node is too slow)",
+                channel.capacity(),
+                NODE_EVENT_CHANNEL_CAPACITY,
+            );
+            if let Some(stats) = ft_stats {
+                stats.record_drop(1, requires_backpressure);
+            }
+            false
+        }
+    }
+}
+
+/// `deferred` is where deliveries to a full backpressure receiver go instead
+/// of being dropped (see [`DeferredDelivery`]); `None` means no one can wait
+/// for room on the caller's behalf (a remote forward, a benchmark), and such
+/// a delivery is dropped and counted like any other.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_output_to_local_receivers(
     output_id: &OutputId,
@@ -160,6 +299,7 @@ pub(crate) async fn send_output_to_local_receivers(
     clock: &HLC,
     ft_stats: Option<&FaultToleranceStats>,
     need_data_bytes: bool,
+    mut deferred: Option<&mut Vec<DeferredDelivery>>,
 ) -> Result<Option<AVec<u8, ConstAlign<128>>>, eyre::ErrReport> {
     let timestamp = metadata.timestamp();
     let empty_set = BTreeSet::new();
@@ -175,107 +315,115 @@ pub(crate) async fn send_output_to_local_receivers(
     let mut metadata_arc = None;
     for (receiver_id, input_id) in local_receivers {
         if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-            // Reserve headroom for control events (Stop, InputClosed, etc.)
-            if channel.capacity() < CONTROL_EVENT_HEADROOM {
-                tracing::warn!(
-                    node = %receiver_id,
-                    "event channel low on capacity ({}/{}), dropping data to preserve control headroom",
-                    channel.capacity(),
-                    NODE_EVENT_CHANNEL_CAPACITY,
-                );
+            let event = Timestamped {
+                inner: NodeEvent::Input {
+                    id: input_id.clone(),
+                    metadata: metadata_arc
+                        .get_or_insert_with(|| Arc::new(metadata.clone()))
+                        .clone(),
+                    data: data.clone(),
+                },
+                timestamp,
+            };
+            let accepted = offer_event(
+                dataflow,
+                receiver_id,
+                input_id,
+                output_id,
+                channel,
+                event,
+                deferred.as_deref_mut(),
+                ft_stats,
+                &mut closed,
+            );
+            if !accepted {
                 continue;
             }
-            let item = NodeEvent::Input {
-                id: input_id.clone(),
-                metadata: metadata_arc
-                    .get_or_insert_with(|| Arc::new(metadata.clone()))
-                    .clone(),
-                data: data.clone(),
-            };
-            match channel.try_send(Timestamped {
-                inner: item,
-                timestamp,
-            }) {
-                Ok(()) => {
-                    dataflow.inc_pending(receiver_id);
-                    // Looking up these maps requires cloning the `(NodeId, DataId)`
-                    // key (the tuple key type can't borrow). Both maps are empty
-                    // unless input deadlines or circuit breakers are configured, so
-                    // skip the per-message key clone + hash in the common case.
-                    if !dataflow.input_deadlines.is_empty()
-                        && let Some(deadline) = dataflow
-                            .input_deadlines
-                            .get_mut(&(receiver_id.clone(), input_id.clone()))
-                    {
-                        deadline.last_received = Some(Instant::now());
-                    }
-                    // Circuit breaker recovery: re-open broken input
-                    if !dataflow.broken_inputs.is_empty()
-                        && let Some(timeout) = dataflow
-                            .broken_inputs
-                            .remove(&(receiver_id.clone(), input_id.clone()))
-                    {
-                        tracing::info!(
-                            "input `{receiver_id}/{input_id}` recovered, \
-                             re-opening (circuit breaker reset)",
-                        );
-                        if let Some(stats) = ft_stats {
-                            stats
-                                .circuit_breaker_recoveries
-                                .fetch_add(1, atomic::Ordering::Relaxed);
-                        }
-                        dataflow
-                            .open_inputs
-                            .entry(receiver_id.clone())
-                            .or_default()
-                            .insert(input_id.clone());
-                        dataflow.input_deadlines.insert(
-                            (receiver_id.clone(), input_id.clone()),
-                            InputDeadline {
-                                timeout,
-                                // A message just arrived — arm immediately.
-                                last_received: Some(Instant::now()),
-                            },
-                        );
-                        match send_with_timestamp(
-                            channel,
-                            NodeEvent::InputRecovered {
-                                id: input_id.clone(),
-                            },
-                            clock,
-                        ) {
-                            Ok(true) => {
-                                dataflow.inc_pending(receiver_id);
-                            }
-                            Ok(false) => { /* event dropped (channel full) */ }
-                            Err(_) => {
-                                tracing::warn!(
-                                    "failed to send InputRecovered for `{receiver_id}/{input_id}`"
-                                );
-                            }
-                        }
-                    }
+            // Looking up these maps requires cloning the `(NodeId, DataId)`
+            // key (the tuple key type can't borrow). Both maps are empty
+            // unless input deadlines or circuit breakers are configured, so
+            // skip the per-message key clone + hash in the common case.
+            if !dataflow.input_deadlines.is_empty()
+                && let Some(deadline) = dataflow
+                    .input_deadlines
+                    .get_mut(&(receiver_id.clone(), input_id.clone()))
+            {
+                deadline.last_received = Some(Instant::now());
+            }
+            // Circuit breaker recovery: re-open broken input
+            if !dataflow.broken_inputs.is_empty()
+                && let Some(timeout) = dataflow
+                    .broken_inputs
+                    .remove(&(receiver_id.clone(), input_id.clone()))
+            {
+                tracing::info!(
+                    "input `{receiver_id}/{input_id}` recovered, \
+                         re-opening (circuit breaker reset)",
+                );
+                if let Some(stats) = ft_stats {
+                    stats
+                        .circuit_breaker_recoveries
+                        .fetch_add(1, atomic::Ordering::Relaxed);
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    closed.push(receiver_id);
-                }
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    tracing::warn!(
-                        node = %receiver_id,
-                        "event channel full (capacity {}), dropping message (node is too slow)",
-                        NODE_EVENT_CHANNEL_CAPACITY,
-                    );
+                dataflow
+                    .open_inputs
+                    .entry(receiver_id.clone())
+                    .or_default()
+                    .insert(input_id.clone());
+                dataflow.input_deadlines.insert(
+                    (receiver_id.clone(), input_id.clone()),
+                    InputDeadline {
+                        timeout,
+                        // A message just arrived — arm immediately.
+                        last_received: Some(Instant::now()),
+                    },
+                );
+                match send_with_timestamp(
+                    channel,
+                    NodeEvent::InputRecovered {
+                        id: input_id.clone(),
+                    },
+                    clock,
+                ) {
+                    Ok(true) => {
+                        dataflow.inc_pending(receiver_id);
+                    }
+                    Ok(false) => { /* event dropped (channel full) */ }
+                    Err(_) => {
+                        tracing::warn!(
+                            "failed to send InputRecovered for `{receiver_id}/{input_id}`"
+                        );
+                    }
                 }
             }
-        } else if dataflow.running_nodes.contains_key(receiver_id) {
+        } else if dataflow.running_nodes.contains_key(receiver_id)
+            && !dataflow.dropped_event_streams.contains(receiver_id)
+        {
             // The receiver is registered in `mappings` AND still a live node,
-            // but has no daemon event stream: its channel was dropped (crash
-            // that never re-subscribed, `EventStreamDropped`, or a closed
-            // listener). This is the silent-routing-loss mode of
+            // but has no daemon event stream and did not drop it deliberately:
+            // its channel was dropped by a crash that never re-subscribed or a
+            // closed listener. This is the silent-routing-loss mode of
             // dora-rs/dora#3201 — the producer's send still "succeeds" but the
             // consumer receives nothing, indefinitely. Make it visible, once
             // per edge; the marker is cleared on (re)subscribe so an edge that
             // drops its stream again after reconnecting gets a fresh warning.
+            //
+            // A consumer that finished normally sends `EventStreamDropped` (so
+            // it is in `dropped_event_streams`) but is still in `running_nodes`
+            // until its process exit is observed. Producing to it in that
+            // window is expected, not a fault, so it falls through to the
+            // debug arm below instead of a misleading "failed to re-subscribe"
+            // warning (dora-rs/dora#3556).
+            //
+            // Every such message is a counted drop — and a lost one on a
+            // backpressure input — so a run that promised delivery
+            // (`fail_on_lost_backpressure_messages`) cannot pass over it.
+            if let Some(stats) = ft_stats {
+                stats.record_drop(
+                    1,
+                    dataflow.input_requires_backpressure(receiver_id, input_id),
+                );
+            }
             if dataflow
                 .missing_channel_warned
                 .insert((receiver_id.clone(), input_id.clone()))
@@ -303,20 +451,28 @@ pub(crate) async fn send_output_to_local_receivers(
                 );
             }
         } else {
-            // The receiver's node has already exited or been removed
-            // (`running_nodes` has no entry): a consumer that finished or was
-            // stopped before the dataflow tore down. Its receiver-edge mapping
-            // outlives the node until the dataflow finishes (lib.rs:
-            // handle_node_stop_inner), so an upstream that keeps sending still
-            // reaches here — expected, not a restart failure, so debug only.
+            // The receiver has no daemon event stream and either already exited
+            // (`running_nodes` has no entry) or finished normally and dropped
+            // its stream while its process exit is still pending (still in
+            // `running_nodes`, in `dropped_event_streams` — dora-rs/dora#3556).
+            // Either way its receiver-edge mapping outlives the node until the
+            // dataflow finishes (lib.rs: handle_node_stop_inner), so an upstream
+            // that keeps sending still reaches here — expected, not a restart
+            // failure, so debug only.
+            let finished_but_running = dataflow.running_nodes.contains_key(receiver_id);
             tracing::debug!(
                 receiver = %receiver_id,
                 input = %input_id,
                 output = %output_id.1,
-                "dropping `{}/{}` to `{receiver_id}`: node has exited (no \
-                 daemon event stream, no running node)",
+                "dropping `{}/{}` to `{receiver_id}`: node has {} (no daemon \
+                 event stream)",
                 output_id.0,
                 output_id.1,
+                if finished_but_running {
+                    "finished but not yet exited"
+                } else {
+                    "exited"
+                },
             );
         }
     }

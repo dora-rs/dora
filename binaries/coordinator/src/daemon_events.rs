@@ -71,7 +71,8 @@ impl Coordinator {
                         // `RegisterResult::Ok::peer_zenoh_endpoints`.
                         Ok(_) => RegisterResult::ok(
                             daemon_id.clone(),
-                            self.daemon_connections.zenoh_endpoints_for(&daemon_id),
+                            self.daemon_connections
+                                .zenoh_endpoints_for(&daemon_id, connection.peer_addr),
                         ),
                         Err(err) => RegisterResult::Err(err.clone()),
                     },
@@ -681,16 +682,18 @@ impl Coordinator {
                 "auto-recovery: re-spawning {} node(s) for dataflow {uuid} on daemon {daemon_id}",
                 spawn_nodes.len()
             );
+            // Same launch context as the original spawn, so the daemon runs
+            // the nodes in the same working dir with the same build.
             let spawn_command = dora_message::coordinator_to_daemon::SpawnDataflowNodes {
-                build_id: None,
-                session_id: dora_message::SessionId::generate(),
+                build_id: df.launch.build_id,
+                session_id: df.launch.session_id,
                 dataflow_id: *uuid,
-                local_working_dir: None,
+                local_working_dir: df.launch.local_working_dir.clone(),
                 nodes: df.nodes.clone(),
                 dataflow_descriptor: df.descriptor.clone(),
                 spawn_nodes,
                 uv: df.uv,
-                write_events_to: None,
+                write_events_to: df.launch.write_events_to.clone(),
                 artifact_base_url: None,
             };
             let message = match serde_json::to_vec(&Timestamped {
@@ -720,8 +723,15 @@ impl Coordinator {
             if last_ack >= df.state_log_sequence {
                 continue; // already up to date
             }
-            match df.state_log_delta(last_ack) {
-                Some(entries) if entries.is_empty() => {}
+            match df.state_log_delta_for_daemon(last_ack, &daemon_id) {
+                Some(entries) if entries.is_empty() => {
+                    // Everything this daemon missed targets other daemons'
+                    // nodes: it is current, so record that and let the log
+                    // prune instead of re-checking these entries forever.
+                    df.daemon_ack_sequence
+                        .insert(daemon_id.clone(), df.state_log_sequence);
+                    df.prune_state_log();
+                }
                 Some(entries) => {
                     tracing::info!(
                         "state catch-up: sending {} entry(ies) for dataflow {uuid} \

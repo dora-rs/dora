@@ -1,0 +1,32 @@
+# An unpaced burst into a slow `queue_policy: backpressure` consumer —
+# the shape of `dora replay --speed 0` (dora-rs/dora#3397).
+#
+# The consumer stalls for 3 s on its first message while the producer
+# sends 6000 in well under a second. The consumer's ingress channel is
+# sized from its queue sizes (1000 + 1000 for lifecycle events), and the
+# daemon-side buffers for the edge hold another 2000 (the per-node
+# channel plus the listener's queue), so roughly a third of the burst
+# arrives with nowhere to go. A backpressure edge must then stall the
+# producer, not drop; the sink records every sequence gap it sees.
+nodes:
+  - id: burst-source
+    build: cargo build -p burst-source-node
+    path: ../../target/debug/burst-source-node
+    env:
+      DORA_TEST_BURST_COUNT: "6000"
+    inputs:
+      tick: dora/timer/millis/200
+    outputs:
+      - value
+
+  - id: slow-sink
+    build: cargo build -p slow-sequence-sink-node
+    path: ../../target/debug/slow-sequence-sink-node
+    env:
+      DORA_TEST_SINK_STALL_MS: "3000"
+      DORA_TEST_SINK_RECORD: /tmp/dora-backpressure-burst-delivery.log
+    inputs:
+      value:
+        source: burst-source/value
+        queue_size: 1000
+        queue_policy: backpressure
