@@ -537,6 +537,40 @@ mod tests {
         }
     }
 
+    /// Likewise an operator id the daemon would turn into an invalid `DataId`
+    /// (`DataId::from` panics) must be rejected before any daemon is contacted
+    /// (by descriptor resolution, which every coordinator path goes through).
+    #[tokio::test]
+    async fn spawn_rejects_invalid_operator_id_before_contacting_daemons() {
+        let clock = HLC::default();
+        let conn = mock_daemon(|variant| panic!("daemon must not be contacted: {variant}"));
+        let mut connections = DaemonConnections::default();
+        connections.add(DaemonId::new(None), conn);
+
+        let dataflow: Descriptor = serde_json::from_str(
+            r#"{ "nodes": [ { "id": "rt", "operators": [
+                { "id": "my op", "python": "op.py", "outputs": ["out"] }
+            ] } ] }"#,
+        )
+        .unwrap();
+
+        let err = spawn_dataflow(
+            None,
+            SessionId::generate(),
+            dataflow,
+            None,
+            &mut connections,
+            &clock,
+            false,
+            None,
+        )
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("spawn should fail for an invalid operator id"));
+        let msg = format!("{err:#}");
+        assert!(msg.contains("invalid operator id"), "got: {msg}");
+    }
+
     /// The spawn-path check guards against the `Duration::from_secs_f64`
     /// panic only; it must not newly reject a descriptor that `dora start`
     /// accepts on 1.0.x. A dynamic node carrying a `startup_timeout` is the

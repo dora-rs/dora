@@ -304,6 +304,50 @@ async fn spawn_rejects_invalid_timing_fields() {
     assert!(!daemon.running.contains_key(&dataflow_id));
 }
 
+/// Same for an operator id that is not a valid `DataId` segment: the daemon
+/// would panic in `DataId::from` building the runtime node's input/output ids.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn spawn_rejects_invalid_operator_id() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let descriptor: Descriptor = serde_json::from_str(
+        r#"{ "nodes": [ { "id": "rt", "operators": [
+            { "id": "op", "python": "op.py", "outputs": ["out"] }
+        ] } ] }"#,
+    )
+    .unwrap();
+    // Current resolution rejects the bad id, so plant it after resolving, as
+    // an older coordinator's `Spawn` could carry it.
+    let mut nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+    for node in nodes.values_mut() {
+        if let dora_core::descriptor::CoreNodeKind::Runtime(runtime) = &mut node.kind {
+            runtime.operators[0].id = "my op".to_string().into();
+        }
+    }
+    let spawn_nodes = nodes.keys().cloned().collect();
+    let dataflow_id = Uuid::new_v4();
+    let err = daemon
+        .spawn_dataflow(
+            None,
+            dataflow_id,
+            std::env::temp_dir(),
+            nodes,
+            descriptor,
+            spawn_nodes,
+            false,
+            None,
+        )
+        .await
+        .err()
+        .expect("spawn must reject an invalid operator id");
+    assert!(
+        format!("{err:#}").contains("invalid operator id"),
+        "{err:#}"
+    );
+    assert!(!daemon.running.contains_key(&dataflow_id));
+}
+
 /// A daemon whose coordinator connection is `coordinator_sender`. The one
 /// place these tests call `build_daemon`, so a signature change touches only
 /// this.

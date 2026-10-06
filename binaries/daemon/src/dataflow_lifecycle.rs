@@ -174,8 +174,11 @@ impl Daemon {
         // The coordinator validates this too; check again here, where a bad
         // value would panic `Duration::from_secs_f64`, so an older coordinator
         // cannot crash this daemon (same as `AddNode` / `ReplaceNode`).
+        // Operator ids likewise: they become `DataId`s via the panicking
+        // `DataId::from`.
         for node in nodes.values() {
             dora_core::descriptor::validate::check_node_timing_values(node)?;
+            dora_core::descriptor::validate::check_operator_ids(node)?;
         }
         // Reclaim `/dev/shm` segments a previous crash of this dataflow's
         // nodes left behind. Scoped to the nodes this daemon spawns, since
