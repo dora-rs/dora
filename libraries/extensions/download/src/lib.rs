@@ -176,8 +176,9 @@ fn filename_from_url(url: &reqwest::Url) -> Option<String> {
 /// reject Windows reserved device names. Returns `None` when nothing usable
 /// survives — e.g. `".."` or `"."` (which `Path::file_name` maps to `None`),
 /// a name over 255 bytes / containing a NUL, a name that is only dots and
-/// spaces, or a reserved device name such as `NUL`. (A trailing slash such as
-/// `"dir/"` keeps its last component: `Path::file_name` returns `"dir"`.)
+/// spaces, a hidden (leading-dot) name such as `.bashrc`, or a reserved device
+/// name such as `NUL`. (A trailing slash such as `"dir/"` keeps its last
+/// component: `Path::file_name` returns `"dir"`.)
 ///
 /// The `Content-Disposition` header is attacker-influenced, so the returned
 /// name is a name a hostile server could pick. The two hardening steps below
@@ -199,6 +200,16 @@ fn sanitize_filename(name: &str) -> Option<String> {
     // Trim them and reject a name that trims away to nothing.
     let sanitized = sanitized.trim_end_matches(['.', ' ']);
     if sanitized.is_empty() {
+        return None;
+    }
+    // The download is renamed over any existing file of the same name and made
+    // executable, and `dora run/build/start <url>` downloads into the current
+    // directory — often `$HOME`. A hostile `Content-Disposition:
+    // filename=".bashrc"` (or `.profile`, `.envrc`, …) would otherwise replace a
+    // shell startup file with server-chosen content. No legitimate dataflow or
+    // node artifact is a dotfile, and the leading dot also keeps a hostile name
+    // out of the `.dora-download-*.partial` temp-file namespace.
+    if sanitized.starts_with('.') {
         return None;
     }
     // `tokio::fs::File::create(dir/NUL)` opens the *null device* on Windows
@@ -644,6 +655,22 @@ mod tests {
     }
 
     #[test]
+    fn resolve_falls_back_to_url_when_header_names_a_dotfile() {
+        // A hostile server must not be able to drop `.bashrc` & co. into the
+        // download dir (the CLI's is the current directory).
+        for cd in [
+            "attachment; filename=\".bashrc\"",
+            "attachment; filename=\"../.profile\"",
+        ] {
+            assert_eq!(
+                resolve(Some(cd), "https://example.com/df.yml"),
+                Some("df.yml".to_string()),
+                "header {cd:?} should fall back to the URL name"
+            );
+        }
+    }
+
+    #[test]
     fn resolve_returns_none_when_both_sources_are_unusable() {
         assert_eq!(
             resolve(Some("attachment; filename=\"..\""), "https://example.com/"),
@@ -722,6 +749,18 @@ mod tests {
         // A name that is nothing but dots/spaces trims to empty and is rejected.
         assert_eq!(sanitize_filename("..."), None);
         assert_eq!(sanitize_filename("   "), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_hidden_names() {
+        assert_eq!(sanitize_filename(".bashrc"), None);
+        assert_eq!(sanitize_filename("dir/.ssh"), None);
+        assert_eq!(sanitize_filename(".dora-download-1-0.partial"), None);
+        // A dot anywhere but the start is an ordinary extension separator.
+        assert_eq!(
+            sanitize_filename("model.v2.bin"),
+            Some("model.v2.bin".to_string())
+        );
     }
 
     // --- read timeout (stalled body) ---
