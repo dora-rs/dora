@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 
 use clap::Args;
@@ -19,8 +19,8 @@ use crate::command::{Executable, Run, default_tracing, topic::selector::public_t
 
 /// Wall-clock nanoseconds since the Unix epoch, falling back to `0` when the
 /// clock is set before 1970 (e.g. an embedded target booting with an unset RTC
-/// before NTP sync) rather than panicking. Using the same fallback for both the
-/// recording base and each entry keeps `timestamp_offset_nanos` consistent.
+/// before NTP sync) rather than panicking. Only the header's `start_nanos`
+/// uses it; entry offsets are measured on the monotonic clock instead.
 fn epoch_nanos() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -583,6 +583,8 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     // wall clock is set before 1970; `epoch_nanos` falls back to a zero base
     // rather than panicking the recorder (see its doc).
     let start_nanos = epoch_nanos();
+    // Monotonic base for entry offsets (see `dora_recording::offset_since`).
+    let start = Instant::now();
 
     let header = RecordingHeader {
         version: dora_recording::FORMAT_VERSION,
@@ -697,12 +699,10 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                     }
                 };
 
-                let now_nanos = epoch_nanos();
-
                 let entry = RecordEntry {
                     node_id,
                     output_id,
-                    timestamp_offset_nanos: now_nanos.saturating_sub(start_nanos),
+                    timestamp_offset_nanos: dora_recording::offset_since(start),
                     event_bytes,
                 };
                 writer.write_entry(&entry)?;
