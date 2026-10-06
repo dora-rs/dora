@@ -214,7 +214,7 @@ static NEXT_NODE_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// the currently registered incarnation.
 pub(crate) fn next_node_generation() -> u64 {
     NEXT_NODE_GENERATION
-        .fetch_update(
+        .try_update(
             atomic::Ordering::Relaxed,
             atomic::Ordering::Relaxed,
             |generation| generation.checked_add(1),
