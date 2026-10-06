@@ -1056,12 +1056,14 @@ mod tests {
         );
     }
 
-    /// A flush that fails has to fail the export. `finish` writes the footer
-    /// into the buffer and never flushes it, and both `Writer`'s and
-    /// `BufWriter`'s `Drop` throw the error away — so a full disk used to be
-    /// renamed into place as an `.mcap` with no footer, while the CLI reported
-    /// success. That is the one outcome the temp-file-and-rename exists to
-    /// prevent (#3541 review).
+    /// Pins the guarantee the write-then-rename rests on. `finish` writes the
+    /// footer *and then* flushes (`write_summary_and_footer_magic` ends in
+    /// `writer.flush()?`), so a flush error comes back as `Err` and fails the
+    /// export before the rename; both `Writer`'s and `BufWriter`'s `Drop` would
+    /// otherwise throw it away. Nothing in this repo states that, so the test
+    /// hands the export a stream that fails only at that flush and requires it
+    /// to fail — a `mcap` that moves the flush makes the test go red, which is
+    /// where `into_inner().into_inner()` would earn its place (#3541 review).
     #[test]
     fn a_flush_that_fails_fails_the_export() {
         /// Takes every byte, then fails the way a full disk does at the one
