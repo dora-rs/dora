@@ -2043,7 +2043,9 @@ impl DoraNode {
                 }
                 publisher
                     .put(sbuf)
-                    .attachment(&metadata_bytes[..])
+                    // Move the encoded metadata in: `ZBytes::from(&[u8])`
+                    // copies, `ZBytes::from(Vec<u8>)` takes ownership.
+                    .attachment(metadata_bytes)
                     .wait()
                     .map_err(|e| eyre::eyre!("zenoh SHM publish failed: {e}"))?;
                 Ok(PublishOutcome::Published)
@@ -2100,11 +2102,7 @@ impl DoraNode {
                                          copied SHM buffer (dora-rs/dora#2742 diagnostic)"
                                     );
                                 }
-                                return match publisher
-                                    .put(sbuf)
-                                    .attachment(&metadata_bytes[..])
-                                    .wait()
-                                {
+                                return match publisher.put(sbuf).attachment(metadata_bytes).wait() {
                                     Ok(()) => Ok(PublishOutcome::Published),
                                     Err(e) => {
                                         tracing::warn!(
@@ -2177,9 +2175,6 @@ impl DoraNode {
                 // schema change at a segment boundary is just the one-time
                 // re-prime window any schema-once output has, not the per-message
                 // alternation that makes service/action lossy.
-                //
-                // `schema_once` is bound here, not inside the match, so its
-                // attachment bytes outlive the `put` below.
                 let schema_once = if schema_once_eligible(
                     avec.len(),
                     self.sample_allocator.zero_copy_threshold,
@@ -2208,22 +2203,20 @@ impl DoraNode {
                 // pairing is chosen by `select_zenoh_put` (unit-tested pure
                 // decision) — mispairing here silently drops messages at the
                 // receiver (dora-rs/dora#2366).
-                let choice = select_zenoh_put(
-                    schema_once.as_deref(),
-                    arrow_utils::ipc_encode::batch_slice(&avec),
-                );
-                let fallback_meta;
-                let (payload, attachment): (&[u8], &[u8]) = match choice {
+                let choice =
+                    select_zenoh_put(schema_once, arrow_utils::ipc_encode::batch_slice(&avec));
+                // Both attachments are encoded per message, so move them in:
+                // a borrowed `&[u8]` would make zenoh copy them again.
+                let (payload, attachment): (&[u8], zenoh::bytes::ZBytes) = match choice {
                     ZenohPutChoice::SchemaOnce {
                         payload,
                         attachment,
-                    } => (payload, attachment),
+                    } => (payload, attachment.into()),
                     ZenohPutChoice::FullStream => {
                         let Some(bytes) = encode_metadata() else {
                             return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)));
                         };
-                        fallback_meta = bytes;
-                        (&avec[..], &fallback_meta[..])
+                        (&avec[..], bytes.into())
                     }
                 };
                 match publisher.put(payload).attachment(attachment).wait() {
@@ -3431,9 +3424,12 @@ enum ZenohPutChoice<'a> {
     /// schema-tagged `attachment` from [`publish_schema_once`]. No metadata is
     /// re-encoded — the receiver primes its decoder from the `@schema` subtopic
     /// and matches this batch by the schema hash carried in the attachment.
+    ///
+    /// The attachment is owned so it moves into zenoh's `ZBytes` without a
+    /// copy.
     SchemaOnce {
         payload: &'a [u8],
-        attachment: &'a [u8],
+        attachment: Vec<u8>,
     },
     /// Fallback: send the whole IPC payload as a self-describing stream, with
     /// the caller-encoded [`Metadata`] blob as the attachment, so the message
@@ -3449,10 +3445,7 @@ enum ZenohPutChoice<'a> {
 /// schema-tagged blob for this message) and a schema-less `batch_slice` could
 /// be taken. If either is absent the message must go out as a full
 /// self-describing stream so it decodes standalone at the receiver.
-fn select_zenoh_put<'a>(
-    schema_att: Option<&'a [u8]>,
-    batch_slice: Option<&'a [u8]>,
-) -> ZenohPutChoice<'a> {
+fn select_zenoh_put(schema_att: Option<Vec<u8>>, batch_slice: Option<&[u8]>) -> ZenohPutChoice<'_> {
     match (schema_att, batch_slice) {
         (Some(attachment), Some(payload)) => ZenohPutChoice::SchemaOnce {
             payload,
@@ -4448,7 +4441,7 @@ mod tests {
 
     #[test]
     fn select_zenoh_put_takes_fast_path_only_when_primed_and_sliceable() {
-        let schema_att: &[u8] = b"schema-tagged-attachment";
+        let schema_att = b"schema-tagged-attachment".to_vec();
         let batch: &[u8] = b"schema-less-batch";
 
         // Primed (schema attachment present) AND a batch slice could be taken →
@@ -4456,10 +4449,10 @@ mod tests {
         // the attachment; pinning this pairing guards against the silent-drop
         // swap of dora-rs/dora#2366.
         assert_eq!(
-            select_zenoh_put(Some(schema_att), Some(batch)),
+            select_zenoh_put(Some(schema_att.clone()), Some(batch)),
             ZenohPutChoice::SchemaOnce {
                 payload: batch,
-                attachment: schema_att,
+                attachment: schema_att.clone(),
             }
         );
 
