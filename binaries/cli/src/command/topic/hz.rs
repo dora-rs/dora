@@ -1,4 +1,4 @@
-use crossterm::event::{Event, KeyCode, KeyModifiers};
+use crossterm::event::{Event, KeyCode};
 use dora_core::descriptor::Descriptor;
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use itertools::Itertools;
@@ -474,9 +474,7 @@ fn run_hz(
         if crossterm::event::poll(Duration::from_millis(50))?
             && let Event::Key(key) = crossterm::event::read()?
         {
-            if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
-            {
+            if crate::common::is_quit_key(&key) {
                 break;
             }
 
