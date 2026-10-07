@@ -40,10 +40,12 @@ mod ros2_distro {
             RosDistro::Jazzy
         } else if cfg!(feature = "ros2-iron") {
             RosDistro::Iron
-        } else if cfg!(feature = "ros2-humble") {
-            RosDistro::Humble
         } else {
-            RosDistro::Galactic
+            // `ros2-humble`, and the `--no-default-features` case: the root
+            // `Cargo.toml` keeps Humble as a floor on `ros2-client`, so a
+            // build with none of the dora `ros2-*` features resolves to
+            // Humble rather than to `ros2-client`'s Galactic fallback.
+            RosDistro::Humble
         };
         assert_eq!(COMPILED_ROS_DISTRO, expected);
     }
