@@ -272,7 +272,7 @@ impl IndexFetcher {
         // origin (see `cached_source_differs`)
         let _ = std::fs::write(
             marker_path(clone_dir, SOURCE_MARKER),
-            format!("{git_url}\n{catalog_subpath}"),
+            source_record(git_url, catalog_subpath),
         );
         // mark the clone sound so a later missing catalog subpath is treated
         // as a config error, not an interrupted clone to re-fetch
@@ -339,14 +339,57 @@ fn short(commit: &str) -> &str {
 /// Lives under `.git/` (see [`marker_path`]).
 const SOURCE_MARKER: &str = "dora-index-source";
 
+/// Pre-#3655 file names of the markers, in the clone's working-tree root.
+/// Written by dora <= 1.0.1.
+const LEGACY_SOURCE_MARKER: &str = ".dora-index-source";
+const LEGACY_CLONE_COMPLETE_MARKER: &str = ".dora-clone-complete";
+
+/// Contents of [`SOURCE_MARKER`] for a clone of `git_url` + `catalog_subpath`.
+fn source_record(git_url: &str, catalog_subpath: &str) -> String {
+    format!("{git_url}\n{catalog_subpath}")
+}
+
 /// Whether the cached clone was made from a different source than now
 /// configured. A missing/unreadable marker counts as "differs" so an old
-/// cache (or a tampered one) is re-cloned rather than trusted.
+/// cache (or a tampered one) is re-cloned rather than trusted, unless it is
+/// a dora <= 1.0.1 cache that [`migrate_legacy_markers`] can vouch for.
 fn cached_source_differs(clone_dir: &Path, git_url: &str, catalog_subpath: &str) -> bool {
+    let expected = source_record(git_url, catalog_subpath);
     match std::fs::read_to_string(marker_path(clone_dir, SOURCE_MARKER)) {
-        Ok(recorded) => recorded != format!("{git_url}\n{catalog_subpath}"),
-        Err(_) => true,
+        Ok(recorded) => recorded != expected,
+        Err(_) => !migrate_legacy_markers(clone_dir, &expected),
     }
+}
+
+/// Move the markers of a cache written by dora <= 1.0.1 from the working
+/// tree into `.git/`, so an upgrade does not make every cached index look
+/// like it is for a different source (fatal under `--offline`, #3735).
+/// Returns whether the legacy source marker records `expected`.
+///
+/// A legacy marker counts only if it is a regular file (never followed
+/// through a symlink, see [`marker_path`]); anything else is left for the
+/// re-clone path. Can be dropped once caches from 1.0.x no longer matter.
+fn migrate_legacy_markers(clone_dir: &Path, expected: &str) -> bool {
+    let is_regular_file =
+        |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file());
+    let legacy_source = clone_dir.join(LEGACY_SOURCE_MARKER);
+    if !is_regular_file(&legacy_source)
+        || std::fs::read_to_string(&legacy_source).ok().as_deref() != Some(expected)
+    {
+        return false;
+    }
+    let legacy_complete = clone_dir.join(LEGACY_CLONE_COMPLETE_MARKER);
+    if is_regular_file(&legacy_complete)
+        && std::fs::write(marker_path(clone_dir, CLONE_COMPLETE_MARKER), b"").is_ok()
+    {
+        let _ = std::fs::remove_file(legacy_complete);
+    }
+    // the source marker goes last: it is what stops this migration from
+    // running again, so a failed write above is retried on the next run
+    if std::fs::write(marker_path(clone_dir, SOURCE_MARKER), expected).is_ok() {
+        let _ = std::fs::remove_file(legacy_source);
+    }
+    true
 }
 
 /// Run a git command, returning trimmed stdout.
@@ -497,6 +540,78 @@ source:
         let mut offline = IndexFetcher::with_cache_root(cache_dir.path().into(), true);
         let catalog_dir = offline.catalog_dir(&index, Path::new(".")).unwrap();
         assert!(catalog_dir.join("dora-rs/dora-yolo/0.5.1.yml").is_file());
+    }
+
+    /// A cache in the layout dora <= 1.0.1 wrote (markers in the working
+    /// tree root instead of `.git/`). Returns the remote and cache tempdirs
+    /// (keep them alive), the index and the clone dir.
+    fn legacy_cache() -> (tempfile::TempDir, tempfile::TempDir, IndexConfig, PathBuf) {
+        let remote_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        make_remote(remote_dir.path());
+        let index = remote_index(remote_dir.path());
+        let clone_dir = cache_dir.path().join(&index.alias);
+        let mut online = IndexFetcher::with_cache_root(cache_dir.path().into(), false);
+        online.catalog_dir(&index, Path::new(".")).unwrap();
+        for (marker, legacy) in [
+            (SOURCE_MARKER, LEGACY_SOURCE_MARKER),
+            (CLONE_COMPLETE_MARKER, LEGACY_CLONE_COMPLETE_MARKER),
+        ] {
+            std::fs::rename(marker_path(&clone_dir, marker), clone_dir.join(legacy)).unwrap();
+        }
+        (remote_dir, cache_dir, index, clone_dir)
+    }
+
+    /// Resolving `index` offline must fail as "different source" and leave
+    /// the legacy cache unmigrated.
+    fn assert_not_migrated(cache_dir: &Path, index: &IndexConfig, clone_dir: &Path) {
+        let mut offline = IndexFetcher::with_cache_root(cache_dir.into(), true);
+        let err = offline.catalog_dir(index, Path::new(".")).unwrap_err();
+        assert!(format!("{err:#}").contains("different source"), "{err:#}");
+        assert!(!marker_path(clone_dir, SOURCE_MARKER).exists());
+    }
+
+    /// #3735: a cache filled by dora <= 1.0.1 must keep working offline
+    /// after an upgrade, and its markers move into `.git/`.
+    #[test]
+    fn legacy_markers_are_migrated_offline() {
+        let (remote_dir, cache_dir, index, clone_dir) = legacy_cache();
+        std::fs::remove_dir_all(remote_dir.path()).unwrap();
+
+        let mut offline = IndexFetcher::with_cache_root(cache_dir.path().into(), true);
+        let catalog_dir = offline.catalog_dir(&index, Path::new(".")).unwrap();
+        assert!(catalog_dir.join("dora-rs/dora-yolo/0.5.1.yml").is_file());
+        assert!(marker_path(&clone_dir, SOURCE_MARKER).is_file());
+        assert!(marker_path(&clone_dir, CLONE_COMPLETE_MARKER).is_file());
+        assert!(!clone_dir.join(LEGACY_SOURCE_MARKER).exists());
+        assert!(!clone_dir.join(LEGACY_CLONE_COMPLETE_MARKER).exists());
+    }
+
+    /// A legacy marker that names another source is not migrated: the
+    /// cache still counts as being for a different source.
+    #[test]
+    fn legacy_marker_for_other_source_is_not_migrated() {
+        let (_remote_dir, cache_dir, index, clone_dir) = legacy_cache();
+        std::fs::write(
+            clone_dir.join(LEGACY_SOURCE_MARKER),
+            "https://example.invalid/other.git\nindex",
+        )
+        .unwrap();
+        assert_not_migrated(cache_dir.path(), &index, &clone_dir);
+    }
+
+    /// A legacy marker name that is a symlink is never read through, so it
+    /// cannot vouch for the cache (#3654).
+    #[cfg(unix)]
+    #[test]
+    fn legacy_marker_symlink_is_not_migrated() {
+        let (_remote_dir, cache_dir, index, clone_dir) = legacy_cache();
+        let other_dir = tempfile::tempdir().unwrap();
+        let target = other_dir.path().join("source");
+        std::fs::rename(clone_dir.join(LEGACY_SOURCE_MARKER), &target).unwrap();
+        std::os::unix::fs::symlink(&target, clone_dir.join(LEGACY_SOURCE_MARKER)).unwrap();
+        assert_not_migrated(cache_dir.path(), &index, &clone_dir);
+        assert!(target.is_file(), "symlink target must be left alone");
     }
 
     #[test]
@@ -667,8 +782,8 @@ source:
         let victims = tempfile::tempdir().unwrap();
         let mut targets = Vec::new();
         for name in [
-            ".dora-clone-complete",
-            ".dora-index-source",
+            LEGACY_CLONE_COMPLETE_MARKER,
+            LEGACY_SOURCE_MARKER,
             CLONE_COMPLETE_MARKER,
             SOURCE_MARKER,
         ] {
