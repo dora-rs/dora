@@ -2,11 +2,18 @@
 
 ## Unreleased
 
+## v1.1.0 (2026-10-07)
+
 ### Breaking
 
 - **`DoraEventType` has a new `NodeRestarted` variant** ([#3046](https://github.com/dora-rs/dora/issues/3046)). A restart of an upstream node reached C++ as `Unknown`, so a node could not reset state, resend work it had in flight, or even tell that anything had happened. It now arrives as `DoraEventType::NodeRestarted`, with `event_as_node_restarted(event)` returning the restarted node's id. This changes what existing C++ nodes see: a `switch` over `DoraEventType` without a `default` arm stops compiling under `-Werror=switch`. Add a `default`, or handle the new variant.
 
 ### Added
+
+- **Node startup watchdog via `startup_timeout`** ([#3360](https://github.com/dora-rs/dora/pull/3360)). Set the optional YAML field to bound how long a spawned node may take to connect. A node that exceeds the limit is killed and handled according to its restart policy; checks run at the configured `health_check_interval`.
+- **Thread-safe output sending from C++ worker threads** ([#2288](https://github.com/dora-rs/dora/pull/2288)). `clone_output_sender()` creates a `SafeOutputSender`, and `safe_send_output()` sends raw bytes from worker threads while serializing access with the main thread's sender.
+- **Rust `IntoArrow` conversion for `Vec<bool>`** ([#3445](https://github.com/dora-rs/dora/pull/3445)). Boolean vectors can be converted directly into Arrow boolean arrays.
+- **Expanded Python `MockNode` testing support** ([#3516](https://github.com/dora-rs/dora/pull/3516)). Adds configuration getters, structured-log capture, queue inspection, and service request/reply simulation for node unit tests.
 
 - **`dora record --queue-size`** ([#3282](https://github.com/dora-rs/dora/issues/3282)). Sets the `queue_size` of every topic the recorder subscribes to, default 100 — roughly one flush window of slack per topic. Raise it to ride out longer write stalls; peak memory is about `2 x queue_size x payload size` per topic. Rejected together with `--proxy`, which does not route through those queues.
 
