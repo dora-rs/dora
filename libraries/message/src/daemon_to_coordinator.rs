@@ -91,11 +91,15 @@ pub struct DaemonRegisterRequest {
     /// [`DaemonEvent::ZenohListenEndpoint`]`(None)`, so the coordinator never
     /// keeps handing out an endpoint with nothing behind it for long.
     ///
-    /// `None` when the reservation failed. A loopback listener is reported
-    /// like any other; the coordinator hands it only to daemons on the same
-    /// host, so a remote peer is never pointed at its own loopback.
+    /// `None` when the reservation failed or the listener is loopback. Keep
+    /// loopback out of this field: 1.0.x coordinators forward it to every host.
     #[serde(default)]
     pub zenoh_listen_endpoint: Option<String>,
+    /// Loopback listener, advertised separately so 1.0.x coordinators ignore
+    /// it. New coordinators hand it only to peers on the coordinator's host.
+    /// Missing means no loopback advertisement, as in 1.0.x.
+    #[serde(default)]
+    pub zenoh_loopback_listen_endpoint: Option<String>,
 }
 
 impl DaemonRegisterRequest {
@@ -104,12 +108,15 @@ impl DaemonRegisterRequest {
     }
 
     /// [`Self::new`] plus the zenoh endpoint this daemon will bind; see
-    /// [`Self::zenoh_listen_endpoint`].
+    /// [`Self::zenoh_listen_endpoint`] and [`Self::zenoh_loopback_listen_endpoint`].
+    /// Loopback listeners are placed only in the latter field.
     pub fn with_zenoh_endpoint(
         machine_id: Option<String>,
         labels: BTreeMap<String, String>,
         zenoh_listen_endpoint: Option<String>,
     ) -> Self {
+        let (zenoh_listen_endpoint, zenoh_loopback_listen_endpoint) =
+            split_zenoh_listen_endpoint(zenoh_listen_endpoint);
         Self {
             dora_version: current_crate_version(),
             machine_id,
@@ -118,6 +125,7 @@ impl DaemonRegisterRequest {
             supports_hub_sources: true,
             metadata_version: Metadata::CURRENT_VERSION,
             zenoh_listen_endpoint,
+            zenoh_loopback_listen_endpoint,
         }
     }
 
@@ -193,6 +201,7 @@ mod register_version_tests {
             supports_hub_sources: true,
             metadata_version: Metadata::CURRENT_VERSION,
             zenoh_listen_endpoint: None,
+            zenoh_loopback_listen_endpoint: None,
         }
     }
 
@@ -325,8 +334,15 @@ pub enum DaemonEvent {
     /// The registration carries the endpoint in the first place — see
     /// [`DaemonRegisterRequest::zenoh_listen_endpoint`] for why it cannot wait
     /// until here. This is the correction, not the announcement.
+    #[non_exhaustive]
     ZenohListenEndpoint {
+        /// Non-loopback listener; `None` withdraws the previous advertisement
+        /// on a 1.0.x coordinator, which ignores `loopback_endpoint`.
         endpoint: Option<String>,
+        /// Loopback listener, understood only by coordinators that filter it
+        /// by host. Both fields `None` withdraw the advertisement.
+        #[serde(default)]
+        loopback_endpoint: Option<String>,
     },
     /// Sent by the daemon after registration to report its current state.
     /// Enables coordinator-daemon reconciliation on reconnect.
@@ -511,4 +527,139 @@ pub enum DaemonCoordinatorReply {
     DeleteParamResult(Result<(), String>),
     StartTopicDebugStreamResult(Result<(), String>),
     StopTopicDebugStreamResult(Result<(), String>),
+}
+
+impl DaemonEvent {
+    /// Confirm or withdraw a listener while keeping loopback addresses out of
+    /// the field understood by 1.0.x coordinators. Used on every reconnect too.
+    pub fn zenoh_listen_endpoint(endpoint: Option<String>) -> Self {
+        let (endpoint, loopback_endpoint) = split_zenoh_listen_endpoint(endpoint);
+        Self::ZenohListenEndpoint {
+            endpoint,
+            loopback_endpoint,
+        }
+    }
+}
+
+fn split_zenoh_listen_endpoint(endpoint: Option<String>) -> (Option<String>, Option<String>) {
+    // Daemon listeners are produced by dora_core::topics::zenoh_endpoint:
+    // TCP with a numeric SocketAddr (including bracketed IPv6).
+    let is_loopback = endpoint
+        .as_deref()
+        .and_then(|ep| ep.strip_prefix("tcp/"))
+        .and_then(|addr| addr.parse::<std::net::SocketAddr>().ok())
+        .is_some_and(|addr| addr.ip().to_canonical().is_loopback());
+    if is_loopback {
+        (None, endpoint)
+    } else {
+        (endpoint, None)
+    }
+}
+
+#[cfg(test)]
+mod zenoh_wire_compatibility_tests {
+    use super::*;
+
+    // The endpoint-bearing fields understood by a 1.0.x coordinator. Serde
+    // ignores other named fields, as the released control-plane types do.
+    #[derive(serde::Deserialize)]
+    struct LegacyRegistration {
+        zenoh_listen_endpoint: Option<String>,
+    }
+
+    #[derive(serde::Deserialize)]
+    enum LegacyEvent {
+        ZenohListenEndpoint { endpoint: Option<String> },
+    }
+
+    #[test]
+    fn loopback_reports_are_invisible_to_legacy_coordinators() {
+        for endpoint in [
+            "tcp/127.0.0.1:45001",
+            "tcp/127.0.0.2:45001",
+            "tcp/[::1]:45001",
+            "tcp/[::ffff:127.0.0.1]:45001",
+        ] {
+            let request = DaemonRegisterRequest::with_zenoh_endpoint(
+                None,
+                Default::default(),
+                Some(endpoint.into()),
+            );
+            let json = serde_json::to_string(&request).unwrap();
+            let legacy: LegacyRegistration = serde_json::from_str(&json).unwrap();
+            assert_eq!(legacy.zenoh_listen_endpoint, None, "{endpoint}");
+            let decoded: DaemonRegisterRequest = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                decoded.zenoh_loopback_listen_endpoint.as_deref(),
+                Some(endpoint)
+            );
+
+            // The confirmation and every reconnect use the same constructor.
+            let event = DaemonEvent::zenoh_listen_endpoint(Some(endpoint.into()));
+            let json = serde_json::to_string(&event).unwrap();
+            let LegacyEvent::ZenohListenEndpoint { endpoint: legacy } =
+                serde_json::from_str(&json).unwrap();
+            assert_eq!(legacy, None, "{endpoint}");
+            let decoded: DaemonEvent = serde_json::from_str(&json).unwrap();
+            assert!(matches!(decoded, DaemonEvent::ZenohListenEndpoint {
+                endpoint: None, loopback_endpoint: Some(ep),
+            } if ep == endpoint));
+        }
+    }
+
+    #[test]
+    fn non_loopback_reports_and_withdrawals_keep_the_legacy_behavior() {
+        for endpoint in [
+            None,
+            Some("tcp/10.0.2.100:45001"),
+            Some("tcp/[2001:db8::1]:45001"),
+        ] {
+            let request = DaemonRegisterRequest::with_zenoh_endpoint(
+                None,
+                Default::default(),
+                endpoint.map(str::to_owned),
+            );
+            let json = serde_json::to_string(&request).unwrap();
+            let legacy: LegacyRegistration = serde_json::from_str(&json).unwrap();
+            assert_eq!(legacy.zenoh_listen_endpoint.as_deref(), endpoint);
+            assert!(request.zenoh_loopback_listen_endpoint.is_none());
+
+            let event = DaemonEvent::zenoh_listen_endpoint(endpoint.map(str::to_owned));
+            let json = serde_json::to_string(&event).unwrap();
+            let LegacyEvent::ZenohListenEndpoint { endpoint: legacy } =
+                serde_json::from_str(&json).unwrap();
+            assert_eq!(legacy.as_deref(), endpoint);
+            assert!(matches!(
+                event,
+                DaemonEvent::ZenohListenEndpoint {
+                    loopback_endpoint: None,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_reports_default_to_no_loopback_advertisement() {
+        // These frames have precisely the endpoint fields sent by 1.0.x.
+        for endpoint in [None, Some("tcp/10.0.2.100:45001")] {
+            let json = serde_json::json!({
+                "dora_version": "1.0.1",
+                "machine_id": null,
+                "labels": {},
+                "supports_hub_sources": true,
+                "metadata_version": Metadata::CURRENT_VERSION,
+                "zenoh_listen_endpoint": endpoint,
+            });
+            let request: DaemonRegisterRequest = serde_json::from_value(json).unwrap();
+            assert_eq!(request.zenoh_listen_endpoint.as_deref(), endpoint);
+            assert!(request.zenoh_loopback_listen_endpoint.is_none());
+
+            let json = serde_json::json!({"ZenohListenEndpoint": {"endpoint": endpoint}});
+            let event: DaemonEvent = serde_json::from_value(json).unwrap();
+            assert!(matches!(event, DaemonEvent::ZenohListenEndpoint {
+                endpoint: ep, loopback_endpoint: None,
+            } if ep.as_deref() == endpoint));
+        }
+    }
 }

@@ -183,7 +183,9 @@ async fn handle_daemon_request(
             // capture before the partial moves below consume `register_request`
             let supports_hub_sources = register_request.supports_hub_sources();
             let zenoh_listen_endpoint = accept_reported_zenoh_endpoint(
-                register_request.zenoh_listen_endpoint,
+                register_request
+                    .zenoh_listen_endpoint
+                    .or(register_request.zenoh_loopback_listen_endpoint),
                 "registering",
             );
             let labels = register_request.labels;
@@ -351,10 +353,14 @@ fn translate_daemon_event(
             daemon_id,
             ft_stats,
         }),
-        DaemonEvent::ZenohListenEndpoint { endpoint } => Some(Event::DaemonZenohEndpoint {
+        DaemonEvent::ZenohListenEndpoint {
+            endpoint,
+            loopback_endpoint,
+            ..
+        } => Some(Event::DaemonZenohEndpoint {
             daemon_id,
             connection_id,
-            endpoint: accept_reported_zenoh_endpoint(endpoint, "connected"),
+            endpoint: accept_reported_zenoh_endpoint(endpoint.or(loopback_endpoint), "connected"),
         }),
         DaemonEvent::Log(message) => Some(Event::Log(message)),
         DaemonEvent::Exit => Some(Event::DaemonExit {
@@ -465,9 +471,17 @@ mod reported_endpoint_tests {
     fn translate(endpoint: Option<String>) -> Option<String> {
         endpoint_of(translate_daemon_event(
             DaemonId::new(Some("A".to_string())),
-            DaemonEvent::ZenohListenEndpoint { endpoint },
+            DaemonEvent::zenoh_listen_endpoint(endpoint),
             Uuid::new_v4(),
         ))
+    }
+
+    #[test]
+    fn a_loopback_confirmation_is_kept_for_host_filtering() {
+        assert_eq!(
+            translate(Some("tcp/127.0.0.1:5456".into())),
+            Some("tcp/127.0.0.1:5456".to_string())
+        );
     }
 
     #[test]
