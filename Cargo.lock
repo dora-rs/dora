@@ -2381,6 +2381,7 @@ dependencies = [
  "tokio",
  "uhlc 0.9.0",
  "uuid",
+ "zenoh-protocol",
 ]
 
 [[package]]

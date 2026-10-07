@@ -181,6 +181,9 @@ pyo3-build-config = "0.29"
 git2 = { version = "0.21", features = ["vendored-openssl", "https", "ssh"] }
 serde_yaml = "0.9.34"
 zenoh = { version = "~1.10", default-features = false, features = ["shared-memory", "unstable", "transport_tcp", "transport_udp", "transport_unixsock-stream"] }
+# Endpoint grammar shared by the control-plane senders and receivers. Use the
+# protocol crate so dora-message does not pull in the Zenoh runtime/transports.
+zenoh-protocol = { version = "~1.10" }
 # Advanced pub/sub (schema-cache subtopic): retain the last schema sample so a
 # late-joining subscriber fetches it via a history query. `unstable` gates the
 # AdvancedPublisher/AdvancedSubscriber API and forwards zenoh's `unstable`.
