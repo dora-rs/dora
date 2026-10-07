@@ -370,6 +370,13 @@ pub(crate) struct RunningDataflow {
     /// never sends one, since `PendingNodes::reported_init_to_coordinator` is
     /// set once and never reset.
     pub(crate) ready_barrier_released: bool,
+    /// Set when a daemon disconnect empties `pending_daemons` while the
+    /// spawn is still pending. The disconnect cleanup leaves spawn-pending
+    /// dataflows alone, and every survivor has already sent its
+    /// `ReadyOnDaemon`, so nothing else would release the barrier once a
+    /// survivor's spawn result resolves the spawn as Ok (dora-rs/dora#3736).
+    /// Acted on by [`crate::release_owed_ready_barrier`].
+    pub(crate) ready_barrier_owed: bool,
     pub(crate) nodes: BTreeMap<NodeId, ResolvedNode>,
     /// Maps each node to the daemon it's running on
     pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
@@ -632,6 +639,7 @@ impl RunningDataflow {
                 .map(|n| NodeId::from(n.clone()))
                 .collect(),
             ready_barrier_released: record.ready_barrier_released,
+            ready_barrier_owed: false,
             nodes,
             node_to_daemon,
             node_metrics: BTreeMap::new(),

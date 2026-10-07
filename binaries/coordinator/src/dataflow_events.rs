@@ -6,6 +6,7 @@ use crate::{
     broadcast_all_nodes_ready, buffer_log_message, cap_dataflow_results,
     close_topic_subscribers_on_finish, finalize_build, handle_dataflow_spawn_result,
     handlers::{dataflow_result, send_log_message, start_dataflow},
+    release_owed_ready_barrier,
     state::{ArchivedDataflow, CachedResult},
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
@@ -388,6 +389,13 @@ impl Coordinator {
             self.store.as_ref(),
         )
         .await;
-        Ok(())
+        release_owed_ready_barrier(
+            dataflow_id,
+            &mut self.running_dataflows,
+            &mut self.daemon_connections,
+            &self.store,
+            &self.clock,
+        )
+        .await
     }
 }

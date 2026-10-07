@@ -149,7 +149,7 @@ pub(crate) use params::{
     schedule_param_replay_for_ready_dataflow,
 };
 pub(crate) use ready_barrier::{
-    broadcast_all_nodes_ready, nodes_on_daemon, replay_all_nodes_ready,
+    broadcast_all_nodes_ready, nodes_on_daemon, release_owed_ready_barrier, replay_all_nodes_ready,
 };
 pub(crate) use spawn_build::{
     MAX_BUFFERED_LOG_MESSAGES, buffer_log_message, cap_dataflow_results, check_build_timeouts,
