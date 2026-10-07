@@ -251,6 +251,11 @@ impl Coordinator {
                             };
                             record.generation += 1;
                             record.updated_at = now_ms;
+                            // Parked partial resent reports are for a dataflow
+                            // the coordinator has now terminally given up on;
+                            // nothing can settle it, so drop them rather than
+                            // let them accumulate.
+                            self.resent_finish_reports.remove(&record.uuid);
                             if let Err(e) = self.store.put_dataflow(&record) {
                                 tracing::warn!("failed to mark dataflow as Failed: {e}");
                             }
@@ -520,12 +525,23 @@ impl Coordinator {
                         // surviving nodes are visible + manageable again
                         // (#2029 P1) — store status alone doesn't drive
                         // `dora list` / `stop` / `logs`.
-                        if reestablish_running_dataflow(
+                        let barrier_released = reestablish_running_dataflow(
                             &mut self.running_dataflows,
                             &record,
                             &daemon_id,
                             &entry.running_nodes,
-                        ) && let Some(df) = self.running_dataflows.get(&record.uuid)
+                        );
+                        if self.running_dataflows.contains_key(&record.uuid) {
+                            // A daemon that finished before the reclaim may
+                            // have parked its resent finish report here
+                            // (`record_resent_finish_report`). The dataflow is
+                            // running again, so fold those results into
+                            // `dataflow_results`; otherwise the eventual finish
+                            // would settle without them.
+                            self.merge_resent_finish_reports(record.uuid);
+                        }
+                        if barrier_released
+                            && let Some(df) = self.running_dataflows.get(&record.uuid)
                         {
                             // Barrier released while this daemon was
                             // gone; nothing else will tell it (#2998).
