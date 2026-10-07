@@ -2724,6 +2724,81 @@ mod tests {
         crate::DoraNode::init_testing(inputs, outputs, options).unwrap()
     }
 
+    /// `EventStream::init` must not register the control-event id in the
+    /// per-input queue map. `dora.non_input_event` is a valid `DataId`, so a
+    /// dataflow can declare an input with that name, and the old
+    /// `queue_size_limit.insert(NON_INPUT_EVENT, ...)` overwrote that input's
+    /// configured `queue_size` with the control cap of 1000 (dora-rs/dora#3632).
+    ///
+    /// The scheduler-level tests build `Scheduler::with_policies` directly, so
+    /// none of them reaches the map `init` builds; this one goes through `init`
+    /// and asserts the cap the scheduler would actually enforce.
+    #[test]
+    fn init_keeps_configured_queue_size_for_reserved_named_input() {
+        use dora_core::config::InputMapping;
+
+        let reserved = DataId::from(super::scheduler::NON_INPUT_EVENT.to_string());
+        let input_config = BTreeMap::from([(
+            reserved.clone(),
+            Input {
+                mapping: InputMapping::Timer {
+                    interval: Duration::from_secs(1),
+                },
+                queue_size: Some(1),
+                input_timeout: None,
+                queue_policy: None,
+            },
+        )]);
+
+        // Minimal in-process daemon: answer the register/subscribe handshake,
+        // and end the event-stream loop on its first `NextEvent` poll.
+        let (channel, mut requests) = tokio::sync::mpsc::channel::<(
+            Timestamped<DaemonRequest>,
+            tokio::sync::oneshot::Sender<DaemonReply>,
+        )>(16);
+        let responder = std::thread::spawn(move || {
+            while let Some((request, reply)) = requests.blocking_recv() {
+                let reply_value = match request.inner {
+                    DaemonRequest::NextEvent => DaemonReply::NextEvents(Vec::new()),
+                    _ => DaemonReply::Result(Ok(())),
+                };
+                if reply.send(reply_value).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let daemon_communication = DaemonCommunicationWrapper::Testing {
+            channel,
+            shutdown: Arc::new(AtomicBool::new(false)),
+        };
+        let events = EventStream::init(
+            DataflowId::new_v4(),
+            &"test-node".parse().unwrap(),
+            &daemon_communication,
+            input_config,
+            &BTreeMap::new(),
+            Arc::new(uhlc::HLC::default()),
+            None,
+            None,
+        )
+        .expect("EventStream::init should succeed against the in-process daemon");
+
+        assert_eq!(
+            events.scheduler.effective_cap_for(&reserved),
+            1,
+            "an input named `{}` must keep its configured queue_size through `init`",
+            super::scheduler::NON_INPUT_EVENT
+        );
+
+        // Both holders of a sender clone must go before the responder can see
+        // the channel close: `daemon_communication` owns the original sender,
+        // `events` owns `close_channel`.
+        drop(daemon_communication);
+        drop(events);
+        let _ = responder.join();
+    }
+
     /// #2956: outputs sent through `TestingOutput::ToChannel` must reach the
     /// receiver, in order, when drained after the node has finished — the
     /// documented usage pattern, and previously untested (every other
