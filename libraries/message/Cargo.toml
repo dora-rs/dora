@@ -25,6 +25,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+zenoh-protocol = { workspace = true }
 arrow-data = { workspace = true }
 serde = { workspace = true }
 eyre = { workspace = true }

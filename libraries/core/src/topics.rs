@@ -1039,29 +1039,10 @@ pub fn validate_zenoh_endpoint(endpoint: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether a zenoh endpoint (`tcp/127.0.0.1:5456`, `tcp/[::1]:5456`,
-/// `tcp/localhost:5456`, optionally with a `?config` suffix) names a loopback
-/// address — one that only reaches something on the host it was bound on.
-///
-/// An endpoint that does not parse counts as not loopback.
+// Keep the existing path while all endpoint classification shares the
+// parser used by daemon advertisement splitting in dora-message.
 #[cfg(feature = "zenoh")]
-pub fn zenoh_endpoint_is_loopback(endpoint: &str) -> bool {
-    // zenoh's own parser strips the protocol and the `?metadata` / `#config`
-    // suffixes; what is left is `host:port`, bracketed for IPv6.
-    let Ok(endpoint) = endpoint.parse::<zenoh::config::EndPoint>() else {
-        return false;
-    };
-    let address = endpoint.address().as_str();
-    // `[v6]:port`, `[v6]`, `v4:port`, or a bare host.
-    let host = match address.strip_prefix('[') {
-        Some(rest) => rest.split(']').next().unwrap_or_default(),
-        None => address
-            .rsplit_once(':')
-            .map_or(address, |(host, _port)| host),
-    };
-    host.parse::<IpAddr>()
-        .map_or(host == "localhost", |ip| ip.to_canonical().is_loopback())
-}
+pub use dora_message::zenoh::zenoh_endpoint_is_loopback;
 
 /// Default TCP port for a daemon's inter-daemon zenoh listener.
 ///

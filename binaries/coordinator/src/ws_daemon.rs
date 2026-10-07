@@ -183,9 +183,8 @@ async fn handle_daemon_request(
             // capture before the partial moves below consume `register_request`
             let supports_hub_sources = register_request.supports_hub_sources();
             let zenoh_listen_endpoint = accept_reported_zenoh_endpoint(
-                register_request
-                    .zenoh_listen_endpoint
-                    .or(register_request.zenoh_loopback_listen_endpoint),
+                register_request.zenoh_listen_endpoint,
+                register_request.zenoh_loopback_listen_endpoint,
                 "registering",
             );
             let labels = register_request.labels;
@@ -302,7 +301,7 @@ async fn handle_daemon_request(
 ///
 /// Both ways a daemon can report one — in its registration, and in the
 /// `ZenohListenEndpoint` correction that follows — end at the same place: the
-/// coordinator stores it and hands it to every daemon that registers later,
+/// coordinator stores it and hands it to eligible daemons that register later,
 /// which puts it straight into their zenoh `connect/endpoints`. So both are
 /// checked here, through one function, rather than at each site: a daemon is
 /// not a trusted input just because it registered, and the correction exists
@@ -315,10 +314,34 @@ async fn handle_daemon_request(
 /// back to the daemon-forwarded path. Never fatal — the daemon is otherwise
 /// healthy, and dropping its connection over a malformed endpoint would cost
 /// far more than the direct link is worth.
-fn accept_reported_zenoh_endpoint(endpoint: Option<String>, state: &str) -> Option<String> {
-    let endpoint = endpoint?;
+fn accept_reported_zenoh_endpoint(
+    endpoint: Option<String>,
+    loopback_endpoint: Option<String>,
+    state: &str,
+) -> Option<String> {
+    let uses_legacy_field = endpoint.is_some();
+    let has_both_fields = uses_legacy_field && loopback_endpoint.is_some();
+    let endpoint = endpoint.or(loopback_endpoint)?;
     match dora_core::topics::validate_zenoh_endpoint(&endpoint) {
-        Ok(()) => Some(endpoint),
+        Ok(()) => {
+            if uses_legacy_field && dora_message::zenoh::zenoh_endpoint_is_loopback(&endpoint) {
+                // Pre-split daemons used this field for loopback too. Accept
+                // them, but make the old format visible when debugging upgrades.
+                tracing::debug!(
+                    state,
+                    %endpoint,
+                    "daemon reported a loopback zenoh address in the legacy endpoint field"
+                );
+            }
+            if has_both_fields {
+                tracing::debug!(
+                    state,
+                    %endpoint,
+                    "daemon reported both zenoh endpoint fields; preferring the legacy endpoint field"
+                );
+            }
+            Some(endpoint)
+        }
         Err(err) => {
             tracing::warn!("ignoring zenoh endpoint reported by {state} daemon: {err}");
             None
@@ -360,7 +383,7 @@ fn translate_daemon_event(
         } => Some(Event::DaemonZenohEndpoint {
             daemon_id,
             connection_id,
-            endpoint: accept_reported_zenoh_endpoint(endpoint.or(loopback_endpoint), "connected"),
+            endpoint: accept_reported_zenoh_endpoint(endpoint, loopback_endpoint, "connected"),
         }),
         DaemonEvent::Log(message) => Some(Event::Log(message)),
         DaemonEvent::Exit => Some(Event::DaemonExit {
@@ -481,6 +504,36 @@ mod reported_endpoint_tests {
         assert_eq!(
             translate(Some("tcp/127.0.0.1:5456".into())),
             Some("tcp/127.0.0.1:5456".to_string())
+        );
+    }
+
+    #[test]
+    fn legacy_loopback_confirmations_are_kept_for_host_filtering() {
+        for endpoint in ["tcp/127.0.0.1:5456", "tcp/localhost:5456#iface=lo"] {
+            // Daemons built before the split advertised loopback in this
+            // field. Decode their frame directly, without the new constructor.
+            let json = serde_json::json!({"ZenohListenEndpoint": {"endpoint": endpoint}});
+            let event: DaemonEvent = serde_json::from_value(json).unwrap();
+            assert_eq!(
+                endpoint_of(translate_daemon_event(
+                    DaemonId::new(Some("A".to_string())),
+                    event,
+                    Uuid::new_v4(),
+                )),
+                Some(endpoint.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn both_endpoint_fields_preserve_the_legacy_precedence() {
+        assert_eq!(
+            accept_reported_zenoh_endpoint(
+                Some("tcp/10.0.2.100:5456".into()),
+                Some("tcp/127.0.0.1:5456".into()),
+                "connected",
+            ),
+            Some("tcp/10.0.2.100:5456".into())
         );
     }
 
