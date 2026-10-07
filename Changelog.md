@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v1.0.2 (2026-10-07)
+
 ### Breaking
 
 - **`DoraEventType` has a new `NodeRestarted` variant** ([#3046](https://github.com/dora-rs/dora/issues/3046)). A restart of an upstream node reached C++ as `Unknown`, so a node could not reset state, resend work it had in flight, or even tell that anything had happened. It now arrives as `DoraEventType::NodeRestarted`, with `event_as_node_restarted(event)` returning the restarted node's id. This changes what existing C++ nodes see: a `switch` over `DoraEventType` without a `default` arm stops compiling under `-Werror=switch`. Add a `default`, or handle the new variant.
