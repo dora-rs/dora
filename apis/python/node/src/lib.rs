@@ -9,7 +9,7 @@ use dora_node_api::dora_core::config::{DataId, NodeId};
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, init_tracing};
 use dora_operator_api_python::{
-    DelayedCleanup, NodeCleanupHandle, PyEvent, datetime_module, pydict_to_metadata,
+    DelayedCleanup, ExternalEvent, NodeCleanupHandle, PyEvent, datetime_module, pydict_to_metadata,
 };
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
@@ -885,13 +885,24 @@ impl Node {
     /// Merge an external event stream with dora main loop.
     /// This currently only work with ROS2.
     ///
+    /// Events from the subscription arrive with ``kind`` set to
+    /// ``"external"`` and ``id`` set to the given ``id``, or to the
+    /// subscription's ROS2 topic name (e.g. ``"/turtle1/pose"``) when no
+    /// ``id`` is given. Call this once per subscription to handle several
+    /// topics in one node, and use ``event["id"]`` to tell them apart.
+    ///
     /// :type subscription: dora.Ros2Subscription
+    /// :type id: str, optional
     /// :rtype: None
+    #[pyo3(signature = (subscription, id=None))]
     pub fn merge_external_events(
         &self,
         py: Python,
         subscription: &mut Ros2Subscription,
+        id: Option<String>,
     ) -> eyre::Result<()> {
+        // Validate before `into_stream`, which consumes the subscription.
+        let id = external_event_id(id, subscription.topic_name())?;
         let subscription = subscription.into_stream()?;
         let stream = futures::stream::poll_fn(move |cx| {
             let s = subscription.as_stream().map(|item| {
@@ -910,23 +921,7 @@ impl Node {
             s.poll_next_unpin(cx)
         });
 
-        // Release the GIL while blocking on the node's event mutex. Holding the
-        // GIL across `blocking_lock()` can deadlock against a suspended
-        // `recv_async` task that holds the same lock (`inner.lock().await`) and
-        // needs the GIL to make progress (dora-rs/dora#2027). Clone the `Arc` so
-        // the closure doesn't capture `&self` (keeping the `Ungil` bound clean).
-        let inner = self.events.inner.clone();
-        py.detach(move || {
-            // take out the event stream and temporarily replace it with a dummy
-            let mut guard = inner.blocking_lock();
-            let events = std::mem::replace(
-                &mut *guard,
-                EventsInner::Merged(Box::new(futures::stream::empty())),
-            );
-            // update the stream with the merged one
-            *guard = EventsInner::Merged(events.merge_external_send(Box::pin(stream)));
-        });
-
+        self.merge_external_stream(py, stream, id);
         Ok(())
     }
 }
@@ -951,6 +946,22 @@ impl Node {
              which only became part of the stable C API in 3.11. \
              Upgrade Python or use send_output() instead (1 copy)."
         )))
+    }
+}
+
+/// Resolve the `id` external events are tagged with: the caller's `id` if
+/// given, otherwise the subscription's topic name. An empty id is rejected,
+/// since it could not be told apart from a missing one in Python.
+fn external_event_id(id: Option<String>, topic_name: &str) -> eyre::Result<Arc<str>> {
+    match id {
+        Some(id) if id.is_empty() => {
+            let err = pyo3::exceptions::PyValueError::new_err(
+                "`id` must not be empty; omit it to use the topic name",
+            );
+            Err(err.into())
+        }
+        Some(id) => Ok(id.into()),
+        None => Ok(topic_name.into()),
     }
 }
 
@@ -981,9 +992,9 @@ struct Events {
 async fn recv_merged_with_timeout<S>(
     events: &mut S,
     timeout: Option<Duration>,
-) -> Option<MergedEvent<Py<PyAny>>>
+) -> Option<MergedEvent<ExternalEvent>>
 where
-    S: Stream<Item = MergedEvent<Py<PyAny>>> + Unpin,
+    S: Stream<Item = MergedEvent<ExternalEvent>> + Unpin,
 {
     match timeout {
         Some(timeout) => match select(events.next(), Delay::new(timeout)).await {
@@ -1071,15 +1082,15 @@ impl Events {
 #[allow(clippy::large_enum_variant)]
 enum EventsInner {
     Dora(EventStream),
-    Merged(Box<dyn Stream<Item = MergedEvent<Py<PyAny>>> + Unpin + Send + Sync>),
+    Merged(Box<dyn Stream<Item = MergedEvent<ExternalEvent>> + Unpin + Send + Sync>),
 }
 
-impl<'a> MergeExternalSend<'a, Py<PyAny>> for EventsInner {
-    type Item = MergedEvent<Py<PyAny>>;
+impl<'a> MergeExternalSend<'a, ExternalEvent> for EventsInner {
+    type Item = MergedEvent<ExternalEvent>;
 
     fn merge_external_send(
         self,
-        external_events: impl Stream<Item = Py<PyAny>> + Unpin + Send + Sync + 'a,
+        external_events: impl Stream<Item = ExternalEvent> + Unpin + Send + Sync + 'a,
     ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
         match self {
             EventsInner::Dora(events) => events.merge_external_send(external_events),
@@ -1116,6 +1127,41 @@ impl Node {
             node_id,
             node,
         }
+    }
+
+    /// Merge `stream` into this node's event loop, tagging every item with
+    /// `id` so that Python can tell merged sources apart (dora-rs/dora#2801).
+    ///
+    /// Merging again keeps the ids of earlier merges: the nested
+    /// `Either` produced by `merge_external_send` is flattened in
+    /// `EventsInner`, but each item already carries its own `id`.
+    fn merge_external_stream(
+        &self,
+        py: Python<'_>,
+        stream: impl Stream<Item = Py<PyAny>> + Send + Sync + 'static,
+        id: Arc<str>,
+    ) {
+        let stream = stream.map(move |value| ExternalEvent {
+            id: id.clone(),
+            value,
+        });
+
+        // Release the GIL while blocking on the node's event mutex. Holding the
+        // GIL across `blocking_lock()` can deadlock against a suspended
+        // `recv_async` task that holds the same lock (`inner.lock().await`) and
+        // needs the GIL to make progress (dora-rs/dora#2027). Clone the `Arc` so
+        // the closure doesn't capture `&self` (keeping the `Ungil` bound clean).
+        let inner = self.events.inner.clone();
+        py.detach(move || {
+            // take out the event stream and temporarily replace it with a dummy
+            let mut guard = inner.blocking_lock();
+            let events = std::mem::replace(
+                &mut *guard,
+                EventsInner::Merged(Box::new(futures::stream::empty())),
+            );
+            // update the stream with the merged one
+            *guard = EventsInner::Merged(events.merge_external_send(Box::pin(stream)));
+        });
     }
 
     /// Dispatch a payload to `output_id`: a `PyBytes` value is sent as raw
@@ -1366,10 +1412,10 @@ mod tests {
     // A merged stream that never yields must time out (return `None`) rather
     // than block forever — the bug this change fixes. No ROS2 or GIL needed:
     // the helper is generic over the stream and the pending stream yields no
-    // `Py<PyAny>`.
+    // `ExternalEvent`.
     #[test]
     fn merged_timeout_returns_none_when_stream_is_idle() {
-        let mut stream = futures::stream::pending::<MergedEvent<Py<PyAny>>>();
+        let mut stream = futures::stream::pending::<MergedEvent<ExternalEvent>>();
         let event = block_on(recv_merged_with_timeout(
             &mut stream,
             Some(Duration::from_millis(10)),
@@ -1393,5 +1439,65 @@ mod tests {
         let mut stream = futures::stream::iter([MergedEvent::Dora(Event::Stop(StopCause::Manual))]);
         let event = block_on(recv_merged_with_timeout(&mut stream, None));
         assert!(matches!(event, Some(MergedEvent::Dora(Event::Stop(_)))));
+    }
+
+    // `merge_external_events` tags events with the caller's `id`, falls back to
+    // the subscription's topic name, and rejects an empty id (dora-rs/dora#2801).
+    #[test]
+    fn external_event_id_defaults_to_topic_name() {
+        let topic = "/turtle1/pose";
+        assert_eq!(&*external_event_id(None, topic).unwrap(), "/turtle1/pose");
+        assert_eq!(
+            &*external_event_id(Some("pose".to_string()), topic).unwrap(),
+            "pose"
+        );
+        assert!(external_event_id(Some(String::new()), topic).is_err());
+    }
+
+    // Regression test for dora-rs/dora#2801: events from several merged
+    // external sources must stay distinguishable. Before the fix, the second
+    // merge flattened both sources into one stream and the Python event dict
+    // carried only `kind` and `value`, so every external event looked the
+    // same. No ROS2 needed: `merge_external_stream` is what
+    // `merge_external_events` uses once the subscription is turned into a
+    // stream.
+    #[test]
+    fn merged_external_events_keep_their_source_id() {
+        let node = testing_node();
+        Python::attach(|py| {
+            let values = |values: &[i64]| -> Vec<Py<PyAny>> {
+                values
+                    .iter()
+                    .map(|&v| v.into_pyobject(py).unwrap().into_any().unbind())
+                    .collect()
+            };
+            let first = futures::stream::iter(values(&[1, 2][..]));
+            let second = futures::stream::iter(values(&[10, 20][..]));
+            node.merge_external_stream(py, first, "/a".into());
+            node.merge_external_stream(py, second, "b".into());
+
+            let mut seen: Vec<(String, i64)> = Vec::new();
+            while let Some(event) = node.events.recv(Some(Duration::from_secs(2))) {
+                let dict = event.to_py_dict(py).unwrap();
+                let dict = dict.bind(py);
+                let item = |key: &str| dict.get_item(key).unwrap().unwrap();
+                if item("kind").extract::<String>().unwrap() != "external" {
+                    continue;
+                }
+                seen.push((
+                    item("id").extract::<String>().unwrap(),
+                    item("value").extract::<i64>().unwrap(),
+                ));
+            }
+
+            seen.sort();
+            let expected: Vec<(String, i64)> = vec![
+                ("/a".to_string(), 1),
+                ("/a".to_string(), 2),
+                ("b".to_string(), 10),
+                ("b".to_string(), 20),
+            ];
+            assert_eq!(seen, expected);
+        });
     }
 }

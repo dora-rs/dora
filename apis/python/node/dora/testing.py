@@ -295,7 +295,7 @@ class MockNode:
         """Return the current UTC time, mirroring the HLC readout."""
         return datetime.datetime.now(datetime.UTC)
 
-    def merge_external_events(self, subscription: Any) -> None:
+    def merge_external_events(self, subscription: Any, id: str | None = None) -> None:
         """Raise NotImplementedError; requires a live ROS2 subscription.
 
         The real node only supports this for a dora.ros2 bridge subscription
