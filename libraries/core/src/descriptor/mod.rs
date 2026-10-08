@@ -317,6 +317,11 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
             );
         }
         let mut resolved_node = ResolvedNode::from_node(node, kind);
+        // Checked here on the resolution path rather than in `validate` alone:
+        // the coordinator's `dora start`, `dora node add/replace` and recovery
+        // paths resolve without validating, and an invalid operator id makes
+        // `DataId::from` panic in the coordinator and the daemon.
+        validate::check_operator_ids(&resolved_node)?;
         // Merge the dataflow-level `env` into the per-node `env`. Per-node keys
         // win on conflict so a node can override a shared default (e.g. global
         // `RUST_LOG=info` with one verbose node setting `RUST_LOG=debug`).
