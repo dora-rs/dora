@@ -311,8 +311,9 @@ pub async fn register(
 ///
 /// The coordinator already hands loopback endpoints only to same-host daemons
 /// (`DaemonConnections::zenoh_endpoints_for`), but a 1.0.x coordinator hands
-/// out whatever it was told, and daemons now report loopback listeners too. A
-/// daemon on another host would dial its own loopback.
+/// out whatever it was told. New daemons advertise loopback in a separate
+/// field it ignores; this also guards endpoints from other reporting peers,
+/// which could otherwise make a daemon on another host dial its own loopback.
 fn usable_peer_endpoints(coordinator: SocketAddr, endpoints: Vec<String>) -> Vec<String> {
     if coordinator.ip().to_canonical().is_loopback() {
         return endpoints;
