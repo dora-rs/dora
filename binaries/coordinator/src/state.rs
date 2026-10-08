@@ -661,6 +661,30 @@ impl RunningDataflow {
         }
     }
 
+    /// Re-persist this dataflow after a runtime topology change
+    /// (`dora node add/remove/replace`), keeping the stored status.
+    ///
+    /// A coordinator restarted on a persistent store rebuilds the dataflow's
+    /// nodes from the stored descriptor, so a change that never reaches the
+    /// store is lost (an added node) or undone (a removed one) by a restart.
+    pub(crate) fn persist_topology_change(&mut self, store: &dyn CoordinatorStore) {
+        let status = match store.get_dataflow(&self.uuid) {
+            Ok(Some(record)) => record.status,
+            // Nothing stored to keep in step.
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!(dataflow = %self.uuid, "failed to read dataflow record: {e}");
+                return;
+            }
+        };
+        if let Err(e) = self
+            .make_record(status)
+            .and_then(|r| store.put_dataflow(&r))
+        {
+            tracing::warn!(dataflow = %self.uuid, "failed to persist node topology change: {e}");
+        }
+    }
+
     /// Create a persistable [`DataflowRecord`] snapshot of this dataflow.
     /// Increments `store_generation` on each call.
     pub(crate) fn make_record(&mut self, status: DataflowStatus) -> eyre::Result<DataflowRecord> {

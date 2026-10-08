@@ -5203,3 +5203,131 @@ async fn initiate_restart_rejects_duplicate_request() {
         "original PendingRestart must not be overwritten by duplicate"
     );
 }
+
+/// `dora node add` / `remove` / `replace` change the running descriptor, and
+/// a coordinator restarted on a persistent store rebuilds `nodes` from the
+/// stored `descriptor_json` (`reestablish_running_dataflow`). So each change
+/// has to reach the store, or the restarted coordinator forgets an added
+/// node (dropping it from `dora node list` and topic echo/publish) and
+/// resurrects a removed one. The stored status must be left as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn node_topology_changes_are_persisted() {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        id: String,
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(None);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let conn = crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), conn);
+
+    // A daemon that accepts every topology change.
+    let daemon_task = tokio::spawn(async move {
+        while let Some(outbound) = rx.recv().await {
+            let raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            let reply = match raw.params.inner {
+                DaemonCoordinatorEvent::AddNode { .. } => {
+                    DaemonCoordinatorReply::AddNodeResult(Ok(()))
+                }
+                DaemonCoordinatorEvent::RemoveNode { .. } => {
+                    DaemonCoordinatorReply::RemoveNodeResult(Ok(()))
+                }
+                DaemonCoordinatorEvent::ReplaceNode { .. } => {
+                    DaemonCoordinatorReply::ReplaceNodeResult(Ok(()))
+                }
+                other => panic!("unexpected daemon event {other:?}"),
+            };
+            let request_id = Uuid::parse_str(&raw.id).expect("valid request id");
+            if let Some(reply_tx) = pending_replies.lock().await.remove(&request_id) {
+                let _ = reply_tx.send(serde_json::to_string(&reply).unwrap());
+            }
+        }
+    });
+
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let mut df = test_running_dataflow(dataflow_id, daemon_id, "sender".to_string().into());
+    store
+        .put_dataflow(&df.make_record(StoreDataflowStatus::Running).unwrap())
+        .unwrap();
+    let mut running_dataflows = HashMap::new();
+    running_dataflows.insert(dataflow_id, df);
+
+    let mut coordinator = Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows,
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections,
+        clock: Arc::new(HLC::default()),
+        store: store.clone(),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    };
+
+    let stored_nodes = || {
+        let record = store.get_dataflow(&dataflow_id).unwrap().expect("record");
+        assert_eq!(record.status, StoreDataflowStatus::Running);
+        let descriptor: Descriptor = serde_json::from_str(&record.descriptor_json).unwrap();
+        descriptor
+            .nodes
+            .iter()
+            .map(|n| (n.id.to_string(), n.path.clone()))
+            .collect::<Vec<_>>()
+    };
+    let node = |id: &str, path: &str| -> dora_message::descriptor::Node {
+        serde_json::from_value(serde_json::json!({ "id": id, "path": path })).unwrap()
+    };
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_add_node(dataflow_id, node("extra", "extra-v1"), reply_tx)
+        .await
+        .unwrap();
+    reply_rx.await.unwrap().expect("add should succeed");
+    assert_eq!(
+        stored_nodes(),
+        [
+            ("sender".to_string(), Some("sender".to_string())),
+            ("extra".to_string(), Some("extra-v1".to_string()))
+        ]
+    );
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_replace_node(dataflow_id, node("extra", "extra-v2"), None, reply_tx)
+        .await
+        .unwrap();
+    reply_rx.await.unwrap().expect("replace should succeed");
+    assert_eq!(
+        stored_nodes(),
+        [
+            ("sender".to_string(), Some("sender".to_string())),
+            ("extra".to_string(), Some("extra-v2".to_string()))
+        ]
+    );
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_remove_node(dataflow_id, "extra".to_string().into(), None, reply_tx)
+        .await
+        .unwrap();
+    reply_rx.await.unwrap().expect("remove should succeed");
+    assert_eq!(
+        stored_nodes(),
+        [("sender".to_string(), Some("sender".to_string()))]
+    );
+
+    drop(coordinator);
+    daemon_task.await.unwrap();
+}
