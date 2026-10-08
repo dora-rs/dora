@@ -2228,8 +2228,15 @@ async fn start_topic_debug_stream_rollback_reaches_every_started_daemon() {
         format!("{err:#}").contains("daemon rejected debug stream"),
         "the daemon's rejection must be returned, got: {err:#}"
     );
+    // The rollback stops are sent from a spawned task.
+    let stopped = timeout(TokioDuration::from_secs(10), async {
+        while !stop_seen_by_c.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(TokioDuration::from_millis(5)).await;
+        }
+    })
+    .await;
     assert!(
-        stop_seen_by_c.load(std::sync::atomic::Ordering::SeqCst),
+        stopped.is_ok(),
         "daemon-c must be stopped even though daemon-b's stop failed"
     );
     assert!(running_dataflows[&dataflow_id].topic_subscribers.is_empty());
@@ -2237,6 +2244,82 @@ async fn start_topic_debug_stream_rollback_reaches_every_started_daemon() {
     for task in daemon_tasks {
         task.abort();
     }
+}
+
+/// #3723: `TopicUnsubscribe` runs inside the serial event loop, and the
+/// daemon may not answer the stop while it is still flooding the coordinator
+/// with frames. The unsubscribe must return with the subscriber removed and
+/// the stop in flight, instead of waiting up to `TCP_READ_TIMEOUT` for the
+/// reply.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn stop_topic_debug_stream_does_not_wait_for_daemon_reply() {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "sender".to_string().into();
+    let data_id: dora_core::config::DataId = "message".to_string().into();
+    let subscription_id = Uuid::new_v4();
+
+    // The daemon never answers: nothing ever takes the reply sender out of
+    // `pending_replies`.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), connection);
+
+    let mut running_dataflows = HashMap::new();
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+    let (frame_tx, _frame_rx) =
+        tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    let mut outputs_by_daemon = BTreeMap::new();
+    outputs_by_daemon.insert(daemon_id, vec![(node_id, data_id)]);
+    dataflow.topic_subscribers.insert(
+        subscription_id,
+        crate::topic_subscriber::TopicSubscriber::new(outputs_by_daemon, frame_tx),
+    );
+    running_dataflows.insert(dataflow_id, dataflow);
+
+    let started = tokio::time::Instant::now();
+    stop_topic_debug_stream(
+        &mut running_dataflows,
+        &mut daemon_connections,
+        subscription_id,
+        &HLC::default(),
+    )
+    .expect("unsubscribe should succeed");
+    assert!(
+        running_dataflows[&dataflow_id].topic_subscribers.is_empty(),
+        "the subscriber must be removed right away"
+    );
+
+    // The stop still reaches the daemon, from the spawned task.
+    let outbound = rx.recv().await.expect("daemon should receive the stop");
+    let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+    match outbound_raw.params.inner {
+        DaemonCoordinatorEvent::StopTopicDebugStream {
+            dataflow_id: stop_df,
+            subscription_id: stop_sub,
+        } => {
+            assert_eq!(stop_df, dataflow_id);
+            assert_eq!(stop_sub, subscription_id);
+        }
+        other => panic!("unexpected event on unsubscribe: {other:?}"),
+    }
+    assert!(
+        started.elapsed() < dora_message::TCP_READ_TIMEOUT,
+        "unsubscribe must not wait for the daemon's reply"
+    );
+    assert_eq!(
+        pending_replies.lock().await.len(),
+        1,
+        "the stop's reply should still be outstanding"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

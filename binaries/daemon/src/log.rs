@@ -607,6 +607,7 @@ impl std::fmt::Display for Indent<'_> {
 mod tests {
     use super::*;
     use crate::coordinator::CoordinatorSender;
+    use crate::test_tracing::LevelCapture;
 
     /// #2029 P2: a per-node log-forwarding clone captured at spawn must follow a
     /// later reconnect — after `update_coordinator_target`, the clone emits under
@@ -883,30 +884,6 @@ mod tests {
         assert_eq!(out, "");
     }
 
-    /// Minimal `tracing::Subscriber` that records the level of every event it
-    /// receives, so a test can assert which severities the `Tracing` log
-    /// destination actually forwards.
-    #[derive(Clone, Default)]
-    struct LevelCapture {
-        levels: Arc<Mutex<Vec<tracing::Level>>>,
-    }
-
-    impl tracing::Subscriber for LevelCapture {
-        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            self.levels.lock().unwrap().push(*event.metadata().level());
-        }
-        fn enter(&self, _span: &tracing::span::Id) {}
-        fn exit(&self, _span: &tracing::span::Id) {}
-    }
-
     fn log_message_at(level: LogLevel, message: &str) -> LogMessage {
         LogMessage {
             build_id: None,
@@ -930,7 +907,7 @@ mod tests {
     /// just like `Debug` and above.
     #[test]
     fn tracing_destination_forwards_trace_level() {
-        let capture = LevelCapture::default();
+        let capture = LevelCapture::new();
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();

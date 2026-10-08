@@ -233,9 +233,7 @@ pub(crate) async fn start_topic_debug_stream(
             subscription_id,
             started_daemons,
             clock,
-        )
-        .await
-        {
+        ) {
             tracing::warn!(
                 %subscription_id,
                 "topic debug stream rollback incomplete: {rollback_err:?}"
@@ -249,10 +247,11 @@ pub(crate) async fn start_topic_debug_stream(
 
 /// Stop the daemon streams of a subscription whose start failed part-way.
 ///
-/// Every daemon in `started_daemons` gets a stop, even if an earlier one
-/// can't be reached: the subscriber is removed first, so nothing could tear
-/// a leftover stream down later.
-pub(crate) async fn rollback_topic_debug_stream(
+/// Every daemon in `started_daemons` gets a stop, even if another one can't
+/// be reached: the subscriber is removed first, so nothing could tear a
+/// leftover stream down later. The stops are sent without waiting for their
+/// replies (see [`spawn_topic_debug_teardown`]).
+pub(crate) fn rollback_topic_debug_stream(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     daemon_connections: &mut DaemonConnections,
     dataflow_id: DataflowId,
@@ -267,17 +266,21 @@ pub(crate) async fn rollback_topic_debug_stream(
         return Ok(());
     };
 
-    teardown_topic_debug_stream(
+    spawn_topic_debug_teardown(
         daemon_connections,
         dataflow_id,
         subscription_id,
         started_daemons,
         clock,
     )
-    .await
 }
 
-pub(crate) async fn stop_topic_debug_stream(
+/// Remove a CLI topic subscription and stop its daemon streams.
+///
+/// The stops are sent without waiting for their replies (see
+/// [`spawn_topic_debug_teardown`]); once the subscriber is removed no further
+/// frames reach the CLI, so there is nothing left to wait for.
+pub(crate) fn stop_topic_debug_stream(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     daemon_connections: &mut DaemonConnections,
     subscription_id: Uuid,
@@ -290,14 +293,13 @@ pub(crate) async fn stop_topic_debug_stream(
     }) else {
         return Ok(());
     };
-    teardown_topic_debug_stream(
+    spawn_topic_debug_teardown(
         daemon_connections,
         dataflow_id,
         subscription_id,
         subscriber.outputs_by_daemon().keys().cloned(),
         clock,
     )
-    .await
 }
 
 /// Forward a daemon's topic debug frame to its CLI subscribers.
@@ -326,45 +328,31 @@ pub(crate) async fn forward_topic_frames(
     )
     .await;
     for (subscription_id, subscriber) in evicted {
-        let stop_requests = match topic_stop_requests(
+        if let Err(err) = spawn_topic_debug_teardown(
             daemon_connections,
             dataflow_id,
             subscription_id,
             subscriber.outputs_by_daemon().keys().cloned(),
             clock,
         ) {
-            Ok(requests) => requests,
-            Err(err) => {
-                tracing::warn!(
-                    %subscription_id,
-                    "failed to stop topic debug stream of a closed subscriber: {err:?}"
-                );
-                continue;
-            }
-        };
-        // Don't wait for the replies here: this runs inside the serial
-        // coordinator event loop, and the daemon streaming these frames may
-        // have its WS task blocked on a full event channel. That task can
-        // then neither forward the stop nor read the reply, so awaiting it
-        // would stall the whole coordinator until `TCP_READ_TIMEOUT`.
-        tokio::spawn(async move {
-            for (daemon_id, result) in join_all(stop_requests).await {
-                if let Err(err) = result {
-                    tracing::warn!(
-                        %daemon_id,
-                        %subscription_id,
-                        "failed to stop topic debug stream of a closed subscriber: {err}"
-                    );
-                }
-            }
-        });
+            tracing::warn!(
+                %subscription_id,
+                "failed to stop topic debug stream of a closed subscriber: {err:?}"
+            );
+        }
     }
 }
 
 /// Send `StopTopicDebugStream` for `subscription_id` to every daemon in
-/// `daemon_ids` and wait for their replies. The subscriber must already be
-/// removed from the dataflow's `topic_subscribers`.
-async fn teardown_topic_debug_stream(
+/// `daemon_ids`, and log failed replies from a spawned task. The subscriber
+/// must already be removed from the dataflow's `topic_subscribers`.
+///
+/// Don't wait for the replies: this runs inside the serial coordinator event
+/// loop, and a daemon still streaming frames for the subscription may have
+/// its WS task blocked on a full event channel. That task can then neither
+/// forward the stop nor read the reply, so awaiting it would stall the whole
+/// coordinator until `TCP_READ_TIMEOUT`.
+fn spawn_topic_debug_teardown(
     daemon_connections: &mut DaemonConnections,
     dataflow_id: DataflowId,
     subscription_id: Uuid,
@@ -378,31 +366,22 @@ async fn teardown_topic_debug_stream(
         daemon_ids,
         clock,
     )?;
-
-    let mut first_error = None;
-    for (daemon_id, result) in join_all(stop_requests).await {
-        if let Err(err) = result {
-            tracing::warn!(
-                %daemon_id,
-                %subscription_id,
-                "failed to stop topic debug stream on daemon: {err}"
-            );
-            if first_error.is_none() {
-                first_error = Some(err);
+    tokio::spawn(async move {
+        for (daemon_id, result) in join_all(stop_requests).await {
+            if let Err(err) = result {
+                tracing::warn!(
+                    %daemon_id,
+                    %subscription_id,
+                    "failed to stop topic debug stream on daemon: {err}"
+                );
             }
         }
-    }
-
-    if let Some(err) = first_error {
-        return Err(err);
-    }
-
+    });
     Ok(())
 }
 
 /// Build one `StopTopicDebugStream` request per daemon in `daemon_ids`. Each
-/// future owns its connection handle, so it can be awaited in place or
-/// spawned.
+/// future owns its connection handle, so it can be spawned.
 fn topic_stop_requests(
     daemon_connections: &mut DaemonConnections,
     dataflow_id: DataflowId,

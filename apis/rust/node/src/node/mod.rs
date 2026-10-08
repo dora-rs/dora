@@ -790,6 +790,9 @@ pub struct DoraNode {
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
     interactive: bool,
+    /// Outputs an `interactive` node closed via `close_outputs`. Such a node
+    /// has no static output declaration to remove them from.
+    closed_interactive_outputs: BTreeSet<DataId>,
     restart_count: u32,
 
     /// Runtime type checking state. `None` when off (zero overhead).
@@ -1427,6 +1430,7 @@ impl DoraNode {
             large_send_diag_count: 0,
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
+            closed_interactive_outputs: BTreeSet::new(),
             interactive: false,
             restart_count,
             runtime_type_checks,
@@ -1469,12 +1473,18 @@ impl DoraNode {
     /// Check whether `output_id` is declared as an output of this node.
     ///
     /// Returns `true` if the output is declared (or this node is `interactive`,
-    /// which has no static output declaration); `false` and emits a one-time
+    /// which has no static output declaration, and has not closed it); `false`
+    /// and emits a one-time
     /// warning if the output is unknown. Public so callers building higher-level
     /// send helpers (e.g. the Python `send_output_raw` zero-copy path) can
     /// validate before allocating a buffer.
     pub fn validate_output(&mut self, output_id: &DataId) -> bool {
-        if !self.node_config.outputs.contains(output_id) && !self.interactive {
+        let declared = if self.interactive {
+            !self.closed_interactive_outputs.contains(output_id)
+        } else {
+            self.node_config.outputs.contains(output_id)
+        };
+        if !declared {
             if !self.warned_unknown_output.contains(output_id) {
                 warn!("Ignoring output `{output_id}` not in node's output list.");
                 self.warned_unknown_output.insert(output_id.clone());
@@ -1926,19 +1936,26 @@ impl DoraNode {
     /// Returns [`NodeError::Output`] if any id is not a declared output of this node. Unlike
     /// [`send_output`](Self::send_output), which silently ignores unknown outputs, this validates
     /// the whole batch *before* closing any output, so on error none of them are closed.
+    /// A node in interactive or testing mode has no output declaration, so it accepts any id,
+    /// as its `send_output*` methods do.
     pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> NodeResult<()> {
-        // Validate the whole batch before mutating any local state. Removing
-        // outputs eagerly would leave the node's local output set out of sync
-        // with the daemon if a later id is unknown: the early ones would be
-        // gone locally, yet `report_closed_outputs` is skipped on error so the
-        // daemon never learns about them.
-        for output_id in &outputs_ids {
-            if !self.node_config.outputs.contains(output_id) {
-                return Err(NodeError::Output(format!("unknown output {output_id}")));
+        if self.interactive {
+            self.closed_interactive_outputs
+                .extend(outputs_ids.iter().cloned());
+        } else {
+            // Validate the whole batch before mutating any local state. Removing
+            // outputs eagerly would leave the node's local output set out of sync
+            // with the daemon if a later id is unknown: the early ones would be
+            // gone locally, yet `report_closed_outputs` is skipped on error so the
+            // daemon never learns about them.
+            for output_id in &outputs_ids {
+                if !self.node_config.outputs.contains(output_id) {
+                    return Err(NodeError::Output(format!("unknown output {output_id}")));
+                }
             }
-        }
-        for output_id in &outputs_ids {
-            self.node_config.outputs.remove(output_id);
+            for output_id in &outputs_ids {
+                self.node_config.outputs.remove(output_id);
+            }
         }
 
         self.control_channel
@@ -4189,6 +4206,37 @@ mod tests {
         assert_eq!(outputs[0]["id"], "out");
     }
 
+    /// A testing/interactive node has no static output declaration, so every
+    /// `send_output*` accepts any id. `close_outputs` must accept them too —
+    /// otherwise a node that closes an output early works under a daemon but
+    /// fails in `init_testing` with "unknown output" — and a closed output
+    /// must then be ignored, as it is for a daemon-run node.
+    #[test]
+    fn interactive_node_can_close_outputs() {
+        let (mut node, events, mut rx) = test_node();
+        assert!(node.interactive);
+        let out: DataId = "out".into();
+
+        node.send_output_sample(out.clone(), Default::default(), None)
+            .unwrap();
+        node.close_outputs(vec![out.clone()])
+            .expect("an interactive node must be able to close any output");
+        node.send_output_sample(out.clone(), Default::default(), None)
+            .unwrap();
+        node.send_output_sample("other".into(), Default::default(), None)
+            .unwrap();
+
+        drop(node);
+        drop(events);
+        let outputs = drain_outputs(&mut rx);
+        let ids: Vec<_> = outputs.iter().map(|o| o["id"].clone()).collect();
+        assert_eq!(
+            ids,
+            ["out", "other"],
+            "the send after closing `out` must be dropped"
+        );
+    }
+
     /// `close_outputs` must be atomic: if any id in the batch is unknown, the
     /// call fails *without* removing the valid ids from the local output set.
     /// Otherwise the daemon (never notified, because `report_closed_outputs` is
@@ -4197,6 +4245,8 @@ mod tests {
     #[test]
     fn close_outputs_is_atomic_on_unknown_id() {
         let (mut node, events, _rx) = test_node();
+        // Enforce a real output declaration (the testing node is interactive).
+        node.interactive = false;
         let valid: DataId = "valid".into();
         node.node_config.outputs.insert(valid.clone());
 

@@ -889,6 +889,7 @@ trait Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_tracing::TextCapture;
     use aligned_vec::AVec;
     use dora_core::config::DataId;
     use dora_message::{
@@ -1402,39 +1403,6 @@ mod tests {
         assert_eq!(listener.queue.len(), 5, "room again: the channel drains");
     }
 
-    /// Records the text of every tracing event's fields.
-    #[derive(Clone, Default)]
-    struct TextCapture(Arc<std::sync::Mutex<Vec<String>>>);
-
-    impl tracing::Subscriber for TextCapture {
-        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            struct Text<'a>(&'a mut String);
-            impl tracing::field::Visit for Text<'_> {
-                fn record_debug(
-                    &mut self,
-                    _field: &tracing::field::Field,
-                    value: &dyn std::fmt::Debug,
-                ) {
-                    use std::fmt::Write;
-                    let _ = write!(self.0, "{value:?}");
-                }
-            }
-            let mut text = String::new();
-            event.record(&mut Text(&mut text));
-            self.0.lock().unwrap().push(text);
-        }
-        fn enter(&self, _span: &tracing::span::Id) {}
-        fn exit(&self, _span: &tracing::span::Id) {}
-    }
-
     /// A connection that yields one request, then reports a disconnect.
     struct OneRequest(Option<Timestamped<DaemonRequest>>);
 
@@ -1456,7 +1424,7 @@ mod tests {
     /// hundred MB.
     #[test]
     fn non_register_first_request_is_logged_by_kind() {
-        let capture = TextCapture::default();
+        let capture = TextCapture::new();
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
