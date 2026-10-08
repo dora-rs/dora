@@ -437,6 +437,76 @@ async fn node_stop_does_not_block_on_a_full_event_channel() {
     );
 }
 
+/// A `dora/logs` subscriber whose channel closed (its node crashed) must keep
+/// its subscription: once the restarted node re-subscribes it has to receive
+/// log inputs again. The broadcast used to prune the subscriber entry along
+/// with the dead channel, and nothing ever re-added it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn log_subscriber_receives_logs_again_after_restart() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let mut dataflow = test_dataflow();
+    let dataflow_id = dataflow.id;
+    let monitor = NodeId::from("monitor".to_string());
+    dataflow
+        .log_subscribers
+        .push(crate::running_dataflow::LogSubscriber {
+            node_id: monitor.clone(),
+            input_id: DataId::from("logs".to_string()),
+            filter: dora_message::config::LogSubscriptionFilter {
+                min_level: None,
+                node_filter: None,
+            },
+        });
+    // The crashed incarnation's listener is gone, but its sender is still
+    // registered until the restarted node subscribes again.
+    let (dead_tx, dead_rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    drop(dead_rx);
+    dataflow.subscribe_channels.insert(monitor.clone(), dead_tx);
+    daemon.running.insert(dataflow_id, dataflow);
+
+    let log_message = || dora_message::common::LogMessage {
+        build_id: None,
+        dataflow_id: Some(dataflow_id),
+        node_id: Some(NodeId::from("other".to_string())),
+        daemon_id: None,
+        level: dora_core::build::LogLevelOrStdout::LogLevel(LogLevel::Info),
+        target: None,
+        module_path: None,
+        file: None,
+        line: None,
+        message: "hello".into(),
+        timestamp: chrono::Utc::now(),
+        fields: None,
+    };
+    daemon
+        .handle_dora_event(DoraEvent::LogBroadcast {
+            dataflow_id,
+            log_message: log_message(),
+        })
+        .await
+        .unwrap();
+
+    // The restarted incarnation re-subscribes.
+    let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    let dataflow = daemon.running.get_mut(&dataflow_id).unwrap();
+    Daemon::subscribe(dataflow, monitor.clone(), tx, &clock).await;
+    daemon
+        .handle_dora_event(DoraEvent::LogBroadcast {
+            dataflow_id,
+            log_message: log_message(),
+        })
+        .await
+        .unwrap();
+
+    let event = rx.try_recv().map(|event| event.inner);
+    assert!(
+        matches!(event, Ok(NodeEvent::Input { .. })),
+        "restarted log subscriber received {event:?}"
+    );
+}
+
 /// The coordinator sends `Logs` with `send_and_receive`, and the WS layer
 /// drops a `None` reply, so a `Logs` request for a dataflow this daemon does
 /// not know must still get an explicit error reply instead of leaving the

@@ -375,7 +375,14 @@ impl Daemon {
                     return Ok(());
                 };
 
-                if dataflow.log_subscribers.is_empty() {
+                // Skip the encode below unless some subscriber is connected:
+                // a subscriber that exited keeps its entry (its `dora/logs`
+                // edge) but has no channel until it is restarted.
+                if !dataflow
+                    .log_subscribers
+                    .iter()
+                    .any(|sub| dataflow.subscribe_channels.contains_key(&sub.node_id))
+                {
                     return Ok(());
                 }
 
@@ -463,13 +470,15 @@ impl Daemon {
                         }
                     }
                 }
+                // Drop only the dead channel, like the timer path does. The
+                // `log_subscribers` entry is the node's `dora/logs` edge, which
+                // only spawn and `dora node add` ever create: pruning it here
+                // would leave a node that crashed and restarted (and so
+                // re-subscribed) without logs for the rest of the run.
+                // `dora node remove` drops the entry when the edge really goes.
                 for id in &closed {
                     dataflow.subscribe_channels.remove(id);
                 }
-                // Prune stale log subscribers whose channels were just removed
-                dataflow
-                    .log_subscribers
-                    .retain(|sub| !closed.contains(&sub.node_id));
             }
             DoraEvent::SpawnedNodeResult {
                 dataflow_id,
