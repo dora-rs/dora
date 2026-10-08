@@ -1307,6 +1307,9 @@ impl Coordinator {
                                                                 .node_finalized
                                                                 .remove(&node_id);
                                                             dataflow.node_metrics.remove(&node_id);
+                                                            dataflow.persist_topology_change(
+                                                                &*self.store,
+                                                            );
                                                             Ok(ControlRequestReply::NodeAdded {
                                                                 dataflow_id,
                                                                 node_id,
@@ -1374,6 +1377,7 @@ impl Coordinator {
                                                         .nodes
                                                         .retain(|n| n.id != node_id);
                                                     dataflow.nodes.remove(&node_id);
+                                                    dataflow.persist_topology_change(&*self.store);
                                                 }
                                                 Ok(ControlRequestReply::NodeRemoved {
                                                     dataflow_id,
@@ -1481,6 +1485,7 @@ impl Coordinator {
                 dataflow.node_stopped_at.remove(&node_id);
                 dataflow.node_finalized.remove(&node_id);
                 dataflow.node_metrics.remove(&node_id);
+                dataflow.persist_topology_change(&*self.store);
             }
             Ok(ControlRequestReply::NodeReplaced {
                 dataflow_id,
