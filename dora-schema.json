@@ -72,25 +72,6 @@
       "description": "A validated data (output) identifier.\n\nA `DataId` may contain only `[a-zA-Z0-9_./-]` and must be non-empty. Unlike\n[`NodeId`], a `DataId` **may** contain `/` (runtime-operator outputs are\nnamespaced as `<operator-id>/<output-name>`), but leading, trailing, or\nconsecutive slashes — which would produce empty path segments — are\nrejected.\n\n# Parsing vs. conversion (panic footgun)\n\nUse [`str::parse`] / [`FromStr`](std::str::FromStr) for untrusted input: it\nreturns `Result<DataId, InvalidId>`. The `From<String>` / `From<&str>`\nconversions — and therefore `.into()` and the auto-derived `TryFrom` —\n**panic** on an invalid id.\n\n```\nuse dora_message::id::DataId;\n\nassert!(\"image\".parse::<DataId>().is_ok());\nassert!(\"op/status\".parse::<DataId>().is_ok()); // '/' is allowed in a DataId\nassert!(\"a//b\".parse::<DataId>().is_err());     // empty path segment rejected\nassert!(\"/out\".parse::<DataId>().is_err());     // leading '/' rejected\nassert!(\"bad id\".parse::<DataId>().is_err());   // space rejected\n```\n\nThe infallible-looking conversion panics on the same invalid input:\n\n```should_panic\nuse dora_message::id::DataId;\nlet _ = DataId::from(\"a//b\".to_string()); // panics — prefer .parse()\n```",
       "type": "string"
     },
-    "Duration": {
-      "type": "object",
-      "properties": {
-        "nanos": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "secs": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        }
-      },
-      "required": [
-        "secs",
-        "nanos"
-      ]
-    },
     "EnvValue": {
       "anyOf": [
         {
@@ -154,81 +135,8 @@
       ]
     },
     "InputMapping": {
-      "description": "The source an [`Input`] subscribes to.\n\nThe wire form is a `/`-separated string; [`FromStr`] parses it and\n[`fmt::Display`] renders it back, so the two round-trip:\n\n```\nuse dora_message::config::InputMapping;\n\nlet mapping: InputMapping = \"camera/image\".parse().unwrap();\nassert!(matches!(mapping, InputMapping::User(_)));\nassert_eq!(mapping.to_string(), \"camera/image\");\n\n// Built-in timer source.\nlet timer: InputMapping = \"dora/timer/millis/100\".parse().unwrap();\nassert_eq!(timer.to_string(), \"dora/timer/millis/100\");\n\n// A mapping without a `/` separator is rejected.\nassert!(\"no-slash\".parse::<InputMapping>().is_err());\n```",
-      "oneOf": [
-        {
-          "description": "A built-in timer that fires at a fixed `interval`.\n\nSyntax: `dora/timer/{unit}/{value}`, e.g. `dora/timer/millis/100`.",
-          "type": "object",
-          "properties": {
-            "Timer": {
-              "type": "object",
-              "properties": {
-                "interval": {
-                  "description": "How often the timer fires.",
-                  "$ref": "#/$defs/Duration"
-                }
-              },
-              "required": [
-                "interval"
-              ]
-            }
-          },
-          "additionalProperties": true,
-          "required": [
-            "Timer"
-          ]
-        },
-        {
-          "description": "Subscribe to log messages from all (or filtered) nodes in the dataflow.\n\nSyntax: `dora/logs`, `dora/logs/{level}`, `dora/logs/{level}/{node_id}`",
-          "type": "object",
-          "properties": {
-            "Logs": {
-              "$ref": "#/$defs/LogSubscriptionFilter"
-            }
-          },
-          "additionalProperties": true,
-          "required": [
-            "Logs"
-          ]
-        },
-        {
-          "description": "Subscribe to another node's output — the common case.",
-          "type": "object",
-          "properties": {
-            "User": {
-              "$ref": "#/$defs/UserInputMapping"
-            }
-          },
-          "additionalProperties": true,
-          "required": [
-            "User"
-          ]
-        }
-      ]
-    },
-    "LogSubscriptionFilter": {
-      "description": "Filter for the `dora/logs` virtual input.\n\nThe wire form parsed by [`FromStr`] / rendered by [`Display`](fmt::Display)\nis `dora/logs/{level}/{node}`, so a `node_filter` can only be expressed\ntogether with a `min_level`. Parsing therefore never produces a filter with\n`node_filter: Some(_)` while `min_level` is `None`. That combination is still\nconstructible directly (both fields are public); when it is rendered, the\n`stdout` level is emitted to keep the node restriction — see the\n[`Display`](fmt::Display) impl of [`InputMapping`]. A `Stdout` minimum is the\nmost permissive level filter ([`LogLevelOrStdout::passes`](crate::common::LogLevelOrStdout::passes)\nlets every message through it), so it delivers the same messages as `None`\n(all levels, including stdout); such a value round-trips to\n`{ min_level: Some(stdout), node_filter }`, which is behaviorally equivalent\nto the original rather than exactly equal to it.",
-      "type": "object",
-      "properties": {
-        "min_level": {
-          "description": "Minimum log level to receive. `None` means all levels (including stdout).",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "node_filter": {
-          "description": "Only receive logs from this specific node. `None` means all nodes.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/NodeId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      }
+      "description": "The source an [`Input`] subscribes to.\n\nWritten as `source/output`, `dora/timer/{unit}/{value}`, or `dora/logs[/{level}[/{node}]]`.",
+      "type": "string"
     },
     "Node": {
       "title": "Dora Node Configuration",
@@ -1261,24 +1169,6 @@
       "required": [
         "from",
         "to"
-      ]
-    },
-    "UserInputMapping": {
-      "description": "A subscription to another node's output, written as `source/output` in YAML.",
-      "type": "object",
-      "properties": {
-        "output": {
-          "description": "The id of that node's output to subscribe to.",
-          "$ref": "#/$defs/DataId"
-        },
-        "source": {
-          "description": "The id of the node that produces the output.",
-          "$ref": "#/$defs/NodeId"
-        }
-      },
-      "required": [
-        "source",
-        "output"
       ]
     }
   }

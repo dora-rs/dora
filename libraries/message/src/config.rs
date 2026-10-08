@@ -267,7 +267,7 @@ impl From<InputDef> for Input {
 /// // A mapping without a `/` separator is rejected.
 /// assert!("no-slash".parse::<InputMapping>().is_err());
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InputMapping {
     /// A built-in timer that fires at a fixed `interval`.
     ///
@@ -282,6 +282,19 @@ pub enum InputMapping {
     Logs(LogSubscriptionFilter),
     /// Subscribe to another node's output — the common case.
     User(UserInputMapping),
+}
+
+impl JsonSchema for InputMapping {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "InputMapping".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "description": "The source an [`Input`] subscribes to.\n\nWritten as `source/output`, `dora/timer/{unit}/{value}`, or `dora/logs[/{level}[/{node}]]`."
+        })
+    }
 }
 
 impl fmt::Display for InputMapping {
