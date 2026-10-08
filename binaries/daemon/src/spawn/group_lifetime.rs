@@ -604,7 +604,16 @@ mod tests {
         let (mut leader, child) = spawn_group_with_child(dir.path(), TERM_IGNORING_CHILD, 300);
         let started = std::time::Instant::now();
 
+        // A subscriber here is not about this test's own assertions — it has
+        // none. It is the same `warn!` call site
+        // `an_abandoned_group_is_killed_on_the_dora_run_path` asserts on, and
+        // reaching it with no subscriber registered at all can make
+        // tracing-core cache that call site as uninterested for the whole
+        // process, which then silently costs that test its warning whenever the
+        // two run in parallel.
+        let _guard = tracing::subscriber::set_default(crate::tests::LevelCapture::default());
         contain_exited_group(leader.id(), None, false, true).await;
+        drop(_guard);
 
         wait_for_exit(child, "the abandoned fork").await;
         assert!(
