@@ -585,9 +585,7 @@ impl Coordinator {
                     &mut self.daemon_connections,
                     subscription_id,
                     &self.clock,
-                )
-                .await
-                {
+                ) {
                     tracing::warn!("failed to unsubscribe topic debug stream: {err:?}");
                 }
                 let _ = done_tx.send(());
