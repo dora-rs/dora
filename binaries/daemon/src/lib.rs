@@ -165,6 +165,8 @@ mod shutdown;
 mod socket_stream_utils;
 mod spawn;
 #[cfg(test)]
+mod test_tracing;
+#[cfg(test)]
 mod tests;
 mod zenoh_bind;
 

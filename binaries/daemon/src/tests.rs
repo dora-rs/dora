@@ -5,8 +5,9 @@ use crate::coordinator_events::{
 use crate::node_exit::{DEFAULT_FINISH_DRAIN_GRACE, parse_finish_drain_grace};
 use crate::pending::DataflowStatus;
 use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
+use crate::test_tracing::LevelCapture;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
-use std::sync::{Arc, Mutex};
 
 use aligned_vec::AVec;
 use crossbeam::queue::ArrayQueue;
@@ -1398,7 +1399,7 @@ async fn restart_clears_connected_marker() {
 /// covers both a `restart_policy` respawn and `dora node restart`.
 #[test]
 fn restart_exit_reset_clears_dropped_event_stream_marker() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2148,29 +2149,6 @@ async fn data_bytes_returned_with_and_without_local_receivers() {
 // -- Regression tests for dora-rs/dora#3201: a receiver whose event
 //    stream is gone must not be silently starved. --
 
-/// Minimal `tracing::Subscriber` that records the level of every event it
-/// receives, so a test can assert whether (and how often) a warning fires.
-#[derive(Clone, Default)]
-struct LevelCapture {
-    levels: Arc<Mutex<Vec<tracing::Level>>>,
-}
-
-impl tracing::Subscriber for LevelCapture {
-    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-        true
-    }
-    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-    fn event(&self, event: &tracing::Event<'_>) {
-        self.levels.lock().unwrap().push(*event.metadata().level());
-    }
-    fn enter(&self, _span: &tracing::span::Id) {}
-    fn exit(&self, _span: &tracing::span::Id) {}
-}
-
 /// With the receiver's event channel full, a `backpressure` input's message
 /// is handed back for the producer's listener to deliver once there is room,
 /// while a `drop_oldest` input's is dropped, warned about and counted — and
@@ -2179,7 +2157,7 @@ impl tracing::Subscriber for LevelCapture {
 #[test]
 fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
     use dora_message::config::QueuePolicy;
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2307,11 +2285,7 @@ fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
 #[test]
 fn full_channel_of_a_given_up_receiver_is_a_counted_drop() {
     use dora_message::config::QueuePolicy;
-    // Run under a scoped subscriber like the other tests that reach
-    // `send_output_to_local_receivers`: a first hit of its log callsites on a
-    // thread with none caches their interest as `never`, and a concurrently
-    // running test's `LevelCapture` then sees none of their events.
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2532,7 +2506,7 @@ fn closed_event_channel_drop_is_counted() {
 /// of silently starving the consumer (dora-rs/dora#3201).
 #[test]
 fn receiver_missing_channel_is_skipped_with_once_per_edge_warning() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2590,7 +2564,7 @@ fn receiver_missing_channel_is_skipped_with_once_per_edge_warning() {
 /// one is warned about exactly once.
 #[test]
 fn healthy_receiver_still_receives_when_peer_channel_is_missing() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2653,7 +2627,7 @@ fn healthy_receiver_still_receives_when_peer_channel_is_missing() {
 /// is an expected dead edge, not #3201 symptomatology — it must NOT WARN.
 #[test]
 fn finished_receiver_does_not_warn() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2705,7 +2679,7 @@ fn finished_receiver_does_not_warn() {
 /// still-running window (dora-rs/dora#3556).
 #[test]
 fn finished_but_still_running_receiver_does_not_warn() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
