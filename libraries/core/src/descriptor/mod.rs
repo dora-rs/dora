@@ -1530,9 +1530,8 @@ nodes:
     /// Every `CustomNode` field name, taken from its JSON schema.
     ///
     /// A field marked `#[schemars(skip)]` would never appear in `properties`
-    /// and would slip past the carried-through tests below. `Node::deploy` is
-    /// exactly such a field, and the classify test compensates with a
-    /// hardcoded insert — do the same here if `CustomNode` ever gains one.
+    /// and would slip past the carried-through tests below; if `CustomNode` ever
+    /// gains one, add it here by hand.
     fn custom_node_field_names() -> BTreeSet<String> {
         let schema = schemars::schema_for!(dora_message::descriptor::CustomNode);
         let schema = serde_json::to_value(schema).expect("schema should serialize");
