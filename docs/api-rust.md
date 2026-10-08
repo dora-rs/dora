@@ -897,6 +897,8 @@ back it:
    skipped all 254 lints, and reported "no semver update required" having
    checked nothing.
 
+   A finding that cannot affect anything working today, such as a schema alternative that dora never accepted on load, can be listed in `ACCEPTED_FINDINGS` in `scripts/qa/breaking_changes.py`: the exact finding text, keyed by the baseline tag, with a reason, and reviewed by a maintainer. Those are reported but do not fail the gate. `docs/qa-runbook.md` (section 3.13) has the details.
+
 A consequence of (1): a patch fix in an internal crate requires re-releasing
 its dependents. With `shared-version = true` in `release.toml` that already
 happens on every release, so the extra cost is close to zero.
