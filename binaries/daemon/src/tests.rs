@@ -311,7 +311,16 @@ async fn daemon_reporting_to(
     coordinator_sender: coordinator::CoordinatorSender,
     clock: Arc<HLC>,
 ) -> Daemon {
-    let (daemon, _events_rx) = Daemon::build_daemon(
+    daemon_and_events_rx(coordinator_sender, clock).await.0
+}
+
+/// Like [`daemon_reporting_to`], but also returns the receiver half of the
+/// daemon's internal event channel (`events_tx`), which `run_inner` drains.
+async fn daemon_and_events_rx(
+    coordinator_sender: coordinator::CoordinatorSender,
+    clock: Arc<HLC>,
+) -> (Daemon, mpsc::Receiver<Timestamped<Event>>) {
+    Daemon::build_daemon(
         None,
         Some(coordinator_sender),
         DaemonId::new(None),
@@ -329,8 +338,58 @@ async fn daemon_reporting_to(
         false,
     )
     .await
-    .expect("daemon should build");
-    daemon
+    .expect("daemon should build")
+}
+
+/// `handle_node_stop` runs on the daemon's main loop, which is the only
+/// reader of `events_tx`. If that channel is full (e.g. chatty nodes filling
+/// it with `LogBroadcast` events while the loop was busy), awaiting a send of
+/// `NodeStopped` into it would wait forever for a slot only the waiting task
+/// can free, hanging the whole daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn node_stop_does_not_block_on_a_full_event_channel() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let (mut daemon, mut events_rx) = daemon_and_events_rx(coordinator_sender, clock.clone()).await;
+
+    let filler = || Timestamped {
+        inner: Event::NodeStopped {
+            dataflow_id: Uuid::new_v4(),
+            node_id: NodeId::from("filler".to_string()),
+        },
+        timestamp: clock.new_timestamp(),
+    };
+    let mut queued = 0;
+    while daemon.events_tx.try_send(filler()).is_ok() {
+        queued += 1;
+    }
+
+    let dataflow_id = Uuid::new_v4();
+    let node_id = NodeId::from("node".to_string());
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        daemon.handle_node_stop(dataflow_id, &node_id, false, true),
+    )
+    .await
+    .expect("handle_node_stop must not wait for the main loop to drain its own channel")
+    .expect("an unknown dataflow is benign");
+
+    // The `NodeStopped` notification is still delivered once the loop drains.
+    for _ in 0..queued {
+        events_rx.recv().await.expect("filler event");
+    }
+    let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+        .await
+        .expect("NodeStopped must still be delivered")
+        .expect("channel open");
+    assert!(
+        matches!(
+            event.inner,
+            Event::NodeStopped { dataflow_id: id, node_id: ref n } if id == dataflow_id && *n == node_id
+        ),
+        "unexpected event: {}",
+        event.inner.kind()
+    );
 }
 
 /// The coordinator sends `Logs` with `send_and_receive`, and the WS layer

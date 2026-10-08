@@ -876,16 +876,22 @@ impl Daemon {
         let result = self
             .handle_node_stop_inner(dataflow_id, node_id, dynamic_node, exit_clean)
             .await;
-        let _ = self
-            .events_tx
-            .send(Timestamped {
-                inner: Event::NodeStopped {
-                    dataflow_id,
-                    node_id: node_id.clone(),
-                },
-                timestamp: self.clock.new_timestamp(),
-            })
-            .await;
+        let event = Timestamped {
+            inner: Event::NodeStopped {
+                dataflow_id,
+                node_id: node_id.clone(),
+            },
+            timestamp: self.clock.new_timestamp(),
+        };
+        // This runs on the main loop, the only reader of `events_tx`, so
+        // awaiting a free slot in a full channel would wait forever. Hand
+        // the send to a task instead when the channel is full.
+        if let Err(mpsc::error::TrySendError::Full(event)) = self.events_tx.try_send(event) {
+            let events_tx = self.events_tx.clone();
+            tokio::spawn(async move {
+                let _ = events_tx.send(event).await;
+            });
+        }
         result
     }
 
