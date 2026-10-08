@@ -362,7 +362,7 @@ impl GitFolder {
                         )
                         .await;
 
-                    let repository = fetch_changes(&tmp_dir, None).await?;
+                    let repository = fetch_changes(&tmp_dir, &commit_hash).await?;
                     checkout_tree(&repository, &commit_hash)?;
                     Ok(())
                     // `repository` is dropped at the end of this block, before
@@ -402,7 +402,7 @@ impl GitFolder {
                     .await;
 
                 let result: eyre::Result<()> = async {
-                    let repository = fetch_changes(&tmp_dir, None).await?;
+                    let repository = fetch_changes(&tmp_dir, &commit_hash).await?;
                     checkout_tree(&repository, &commit_hash)?;
                     Ok(())
                     // `repository` is dropped at the end of this block, before
@@ -662,34 +662,37 @@ fn clone_into(repo_addr: Url, clone_dir: &Path) -> eyre::Result<git2::Repository
         .context("failed to clone repo")
 }
 
+/// Make sure an existing clone contains `commit_hash`, fetching from
+/// `origin` if it does not.
+///
+/// The fetch must get what a fresh clone would (the remote's configured
+/// refspecs, i.e. all of `refs/heads/*`), not only the default branch: the
+/// commit being checked out may only be reachable from another branch (a
+/// node with `branch: dev`, or a `rev:` on a feature branch), and a fetch of
+/// the default branch alone would leave it missing.
 async fn fetch_changes(
     repo_dir: &Path,
-    refname: Option<String>,
+    commit_hash: &str,
 ) -> Result<git2::Repository, eyre::Error> {
     let repo_dir = repo_dir.to_owned();
+    let commit_hash = commit_hash.to_owned();
     let fetch_changes = tokio::task::spawn_blocking(move || {
         let repository = git2::Repository::open(&repo_dir).context("failed to open git repo")?;
 
-        {
+        let present = repository
+            .revparse_single(&commit_hash)
+            .and_then(|object| object.peel_to_commit())
+            .is_ok();
+        if !present {
             let mut remote = repository
                 .find_remote("origin")
                 .context("failed to find remote `origin` in repo")?;
-            remote
-                .connect(git2::Direction::Fetch)
-                .context("failed to connect to remote")?;
-            let default_branch = remote
-                .default_branch()
-                .context("failed to get default branch for remote")?;
-            let fetch = match &refname {
-                Some(refname) => refname,
-                None => default_branch
-                    .as_str()
-                    .context("failed to read default branch as string")?,
-            };
             let mut fetch_options = FetchOptions::new();
             fetch_options.download_tags(git2::AutotagOption::All);
+            // An empty refspec list makes libgit2 use the remote's configured
+            // fetch refspecs.
             remote
-                .fetch(&[&fetch], Some(&mut fetch_options), None)
+                .fetch::<&str>(&[], Some(&mut fetch_options), None)
                 .context("failed to fetch from git repo")?;
         }
         Result::<_, eyre::Error>::Ok(repository)
@@ -1517,6 +1520,72 @@ mod tests {
         assert_eq!(head_commit(&target), commit);
         assert!(!from.exists(), "the source clone is consumed by the rename");
         assert!(!has_partial_leftover(&target), "temp must be gone");
+    }
+
+    // Add a commit on top of `branch` in `repo` (creating the branch from HEAD
+    // if needed) without moving HEAD, and return its hash.
+    fn commit_on_branch(repo_path: &Path, branch: &str, content: &[u8]) -> String {
+        let repo = git2::Repository::open(repo_path).unwrap();
+        let parent = match repo.find_branch(branch, git2::BranchType::Local) {
+            Ok(b) => b.get().peel_to_commit().unwrap(),
+            Err(_) => repo.head().unwrap().peel_to_commit().unwrap(),
+        };
+        let blob = repo.blob(content).unwrap();
+        let mut builder = repo.treebuilder(Some(&parent.tree().unwrap())).unwrap();
+        builder.insert("file.txt", blob, 0o100644).unwrap();
+        let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        repo.commit(
+            Some(&format!("refs/heads/{branch}")),
+            &sig,
+            &sig,
+            "on branch",
+            &tree,
+            &[&parent],
+        )
+        .unwrap()
+        .to_string()
+    }
+
+    // Updating a clone of a node pinned to a non-default branch must fetch
+    // that branch too: a fresh clone gets every branch, and the reuse arms
+    // must see the same commits. They used to fetch only the remote's
+    // default branch, so the checkout failed and (for `RenameAndFetch`) the
+    // previous clone was deleted.
+    #[tokio::test]
+    async fn fetch_reuse_reaches_commits_on_non_default_branches() {
+        for rename in [false, true] {
+            let base = tempfile::tempdir().unwrap();
+            let origin = base.path().join("origin");
+            init_repo_with_commit(&origin);
+            commit_on_branch(&origin, "dev", b"dev 1");
+            let from = base.path().join("localhost").join("prev");
+            clone_from_origin(&origin, &from);
+            // A new commit lands on `dev` after the first build.
+            let commit = commit_on_branch(&origin, "dev", b"dev 2");
+
+            let target = base.path().join("localhost").join(&commit);
+            let reuse = if rename {
+                ReuseOptions::RenameAndFetch {
+                    from,
+                    target_dir: target.clone(),
+                    commit_hash: commit.clone(),
+                }
+            } else {
+                ReuseOptions::CopyAndFetch {
+                    from,
+                    target_dir: target.clone(),
+                    commit_hash: commit.clone(),
+                }
+            };
+            let folder = GitFolder {
+                reuse,
+                _claim: None,
+            };
+            let out = folder.prepare(&mut TestLogger).await.unwrap();
+            assert_eq!(out, target);
+            assert_eq!(head_commit(&target), commit, "rename = {rename}");
+        }
     }
 
     // A `RenameAndFetch` whose fetch fails must leave nothing at `target_dir`
