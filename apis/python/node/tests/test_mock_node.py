@@ -273,3 +273,6 @@ def test_mock_node_runtime_only_methods_raise_not_implemented():
         node.send_output_raw("out", 8)
     with pytest.raises(NotImplementedError):
         node.merge_external_events(None)
+    # Accepts the same optional `id` keyword as `dora.Node` (dora-rs/dora#2801).
+    with pytest.raises(NotImplementedError):
+        node.merge_external_events(None, id="pose")

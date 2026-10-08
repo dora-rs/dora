@@ -501,7 +501,11 @@ impl Ros2Node {
             messages: self.messages.clone(),
         };
 
-        Ok(Ros2Topic { topic, type_info })
+        Ok(Ros2Topic {
+            name: name.to_owned(),
+            topic,
+            type_info,
+        })
     }
 
     /// Create a ROS2 publisher
@@ -608,6 +612,7 @@ impl Ros2Node {
             _ => eyre::bail!("topic belongs to a different ROS2 transport"),
         };
         Ok(Ros2Subscription {
+            topic_name: topic.name.clone(),
             subscription,
             deserializer: StructDeserializer::new(Cow::Owned(topic.type_info.clone())),
         })
@@ -1272,6 +1277,8 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Topic {
+    /// The ROS2 topic name as passed to `create_topic`, e.g. `/turtle1/pose`.
+    name: String,
     topic: TopicBackend,
     type_info: TypeInfo<'static>,
 }
@@ -1357,6 +1364,8 @@ impl Ros2Publisher {
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Subscription {
+    /// Name of the subscribed ROS2 topic (see [`Ros2Subscription::topic_name`]).
+    topic_name: String,
     deserializer: StructDeserializer<'static>,
     subscription: SubscriptionBackend,
 }
@@ -1401,6 +1410,14 @@ impl Ros2Subscription {
 }
 
 impl Ros2Subscription {
+    /// The name of the ROS2 topic this subscription reads, e.g. `/turtle1/pose`.
+    ///
+    /// Used as the default event `id` when the subscription is merged into a
+    /// dora node's event loop (`Node.merge_external_events`).
+    pub fn topic_name(&self) -> &str {
+        &self.topic_name
+    }
+
     pub fn into_stream(&mut self) -> eyre::Result<Ros2SubscriptionStream> {
         let subscription = match &mut self.subscription {
             SubscriptionBackend::Dds(value) => Ros2SubscriptionStreamBackend::Dds(
