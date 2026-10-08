@@ -7,7 +7,7 @@ use dora_message::{
     coordinator_to_cli::{ControlRequestReply, LogMessage},
     coordinator_to_daemon::{StateCatchUpEntry, StateCatchUpOperation},
     daemon_to_coordinator::{FaultToleranceSnapshot, NodeMetrics},
-    descriptor::{Descriptor, ResolvedNode},
+    descriptor::{Deploy, Descriptor, ResolvedNode},
 };
 use eyre::eyre;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -173,6 +173,47 @@ impl DaemonConnections {
             let all_match = required.iter().all(|(k, v)| conn.labels.get(k) == Some(v));
             if all_match { Some(id) } else { None }
         })
+    }
+
+    /// Pick the daemon that should run a node added to a running dataflow
+    /// (`dora node add`), honouring the node's `_unstable_deploy` the same way
+    /// the static spawn path does (machine > labels > unnamed), but only among
+    /// `dataflow_daemons`, the daemons that already run the dataflow.
+    ///
+    /// A declared machine or label set that no daemon of the dataflow matches
+    /// is an error rather than a silent fallback, so the node never runs on a
+    /// host it did not ask for (#3672). Without a placement, an unnamed daemon
+    /// is preferred like in the static path, then any daemon of the dataflow.
+    pub(crate) fn resolve_add_node_daemon(
+        &self,
+        dataflow_daemons: &BTreeSet<DaemonId>,
+        deploy: Option<&Deploy>,
+    ) -> eyre::Result<DaemonId> {
+        match deploy {
+            Some(Deploy {
+                machine: Some(machine),
+                ..
+            }) => dataflow_daemons
+                .iter()
+                .find(|id| id.matches_machine_id(machine))
+                .cloned()
+                .ok_or_else(|| eyre!("no daemon of this dataflow matches machine id `{machine}`")),
+            Some(d) if !d.labels.is_empty() => dataflow_daemons
+                .iter()
+                .find(|id| {
+                    self.daemons.get(*id).is_some_and(|conn| {
+                        d.labels.iter().all(|(k, v)| conn.labels.get(k) == Some(v))
+                    })
+                })
+                .cloned()
+                .ok_or_else(|| eyre!("no daemon of this dataflow matches labels {:?}", d.labels)),
+            _ => dataflow_daemons
+                .iter()
+                .find(|id| id.machine_id().is_none())
+                .or_else(|| dataflow_daemons.iter().next())
+                .cloned()
+                .ok_or_else(|| eyre!("no daemons registered for this dataflow")),
+        }
     }
 }
 

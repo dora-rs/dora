@@ -1237,11 +1237,15 @@ impl Coordinator {
                     // #2877).
                     match resolve_single_node(node, &dataflow.descriptor) {
                         Ok((node_id, resolved_node)) => {
-                            // Pick the first daemon (single-daemon case)
-                            // TODO: use machine label or load balancing for multi-daemon
-                            let daemon_id = dataflow.daemons.iter().next().cloned();
+                            // Honour the node's `_unstable_deploy`
+                            // placement among the dataflow's daemons
+                            // (#3672).
+                            let daemon_id = self.daemon_connections.resolve_add_node_daemon(
+                                &dataflow.daemons,
+                                resolved_node.deploy.as_ref(),
+                            );
                             match daemon_id {
-                                Some(did) => {
+                                Ok(did) => {
                                     let msg = serde_json::to_vec(&Timestamped {
                                         inner: DaemonCoordinatorEvent::AddNode {
                                             dataflow_id,
@@ -1321,9 +1325,9 @@ impl Coordinator {
                                         None => Err(eyre!("no connection for daemon {did}")),
                                     }
                                 }
-                                None => {
-                                    Err(eyre!("no daemons registered for dataflow {dataflow_id}"))
-                                }
+                                Err(e) => Err(e.wrap_err(format!(
+                                    "cannot place node in dataflow {dataflow_id}"
+                                ))),
                             }
                         }
                         // `resolve_single_node` already
