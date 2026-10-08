@@ -157,6 +157,11 @@
       "description": "The source an [`Input`] subscribes to.\n\nThe wire form is a `/`-separated string; [`FromStr`] parses it and\n[`fmt::Display`] renders it back, so the two round-trip:\n\n```\nuse dora_message::config::InputMapping;\n\nlet mapping: InputMapping = \"camera/image\".parse().unwrap();\nassert!(matches!(mapping, InputMapping::User(_)));\nassert_eq!(mapping.to_string(), \"camera/image\");\n\n// Built-in timer source.\nlet timer: InputMapping = \"dora/timer/millis/100\".parse().unwrap();\nassert_eq!(timer.to_string(), \"dora/timer/millis/100\");\n\n// A mapping without a `/` separator is rejected.\nassert!(\"no-slash\".parse::<InputMapping>().is_err());\n```",
       "oneOf": [
         {
+          "description": "`<source>/<output>` for another node's output, `dora/timer/{unit}/{value}` for a built-in timer, or `dora/logs[/{level}[/{node_id}]]` for node logs.",
+          "type": "string",
+          "pattern": "/"
+        },
+        {
           "description": "A built-in timer that fires at a fixed `interval`.\n\nSyntax: `dora/timer/{unit}/{value}`, e.g. `dora/timer/millis/100`.",
           "type": "object",
           "properties": {

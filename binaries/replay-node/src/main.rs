@@ -35,20 +35,30 @@ fn replay_emitted_nothing_usable(replayed: u64, skipped: u64) -> bool {
     replayed == 0 && skipped > 0
 }
 
-/// Nanoseconds to sleep before emitting an entry, given the previous entry's
-/// recording offset, this entry's offset, and the replay `speed`.
+/// How long to wait before emitting an entry, given the time `elapsed` since
+/// the current replay pass started, the entry's recording offset, and the
+/// replay `speed`.
 ///
-/// `prev_offset` starts at 0 (recording start), so the very first entry sleeps
+/// Pacing is against an absolute schedule: the entry is due `entry_offset /
+/// speed` after the pass started. Waiting only the gap to the *previous*
+/// entry would add every entry's decode/send time and every timer overshoot to
+/// the schedule, so a long replay would drift later and later and different
+/// replay nodes (which drift at different rates) would lose their relative
+/// alignment. An entry that is already late is emitted immediately, letting
+/// the replay catch up.
+///
+/// The schedule starts at 0 (recording start), so the very first entry waits
 /// for its own `timestamp_offset_nanos` — the delay from recording-start to the
-/// node's first output. Dropping that initial gap (by starting the baseline at
-/// the first entry's own offset) would emit every node's first message at ~t=0
-/// and destroy cross-node alignment on replay (dora-rs/dora#2602).
-fn pacing_sleep_nanos(prev_offset: u64, entry_offset: u64, speed: f64) -> u64 {
+/// node's first output. Dropping that initial gap would emit every node's first
+/// message at ~t=0 and destroy cross-node alignment on replay
+/// (dora-rs/dora#2602).
+fn pacing_gap(elapsed: Duration, entry_offset: u64, speed: f64) -> Duration {
     if speed <= 0.0 {
-        return 0;
+        return Duration::ZERO;
     }
-    let delta_nanos = entry_offset.saturating_sub(prev_offset);
-    (delta_nanos as f64 / speed) as u64
+    // `as u64` saturates, so a tiny `speed` cannot overflow.
+    let due = Duration::from_nanos((entry_offset as f64 / speed) as u64);
+    due.saturating_sub(elapsed)
 }
 
 /// Whether the replay loop should keep going or wind down.
@@ -141,23 +151,19 @@ fn main() -> eyre::Result<()> {
             File::open(&replay_file).wrap_err_with(|| format!("failed to open {replay_file}"))?;
         let mut reader = RecordingReader::open(file).wrap_err("failed to read recording")?;
 
-        // Baseline for inter-message pacing. Seeded to 0 (recording start)
-        // rather than the first entry's own offset so the initial gap — each
-        // node's `timestamp_offset_nanos` from recording-start to its first
-        // output — is honored, preserving cross-node alignment on replay.
-        let mut prev_offset: u64 = 0;
+        // Start of this pass's pacing schedule; see `pacing_gap`.
+        let pass_start = Instant::now();
         let mut replayed = 0u64;
         let mut skipped = 0u64;
         let mut stopped = false;
 
         while let Some(entry) = reader.next_entry_for_node(&replay_node)? {
             // Wait out the pacing gap, watching for `Stop` while we do.
-            let sleep_nanos = pacing_sleep_nanos(prev_offset, entry.timestamp_offset_nanos, speed);
-            if wait_out_gap(&mut events, Duration::from_nanos(sleep_nanos)) == Replay::Stop {
+            let gap = pacing_gap(pass_start.elapsed(), entry.timestamp_offset_nanos, speed);
+            if wait_out_gap(&mut events, gap) == Replay::Stop {
                 stopped = true;
                 break;
             }
-            prev_offset = entry.timestamp_offset_nanos;
 
             let timestamped: Timestamped<InterDaemonEvent> =
                 match Timestamped::deserialize_inter_daemon_event(&entry.event_bytes) {
@@ -262,13 +268,13 @@ fn main() -> eyre::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Replay, classify_event, decode_recorded_payload, pacing_sleep_nanos,
-        replay_emitted_nothing_usable,
+        Replay, classify_event, decode_recorded_payload, pacing_gap, replay_emitted_nothing_usable,
     };
     use dora_node_api::DoraArray;
     use dora_node_api::arrow_utils::encode_arrow_ipc;
     use dora_node_api::arrow_v59::array::Int32Array;
     use dora_node_api::{Event, StopCause};
+    use std::time::Duration;
 
     #[test]
     fn stop_event_ends_the_replay() {
@@ -310,34 +316,61 @@ mod tests {
         );
     }
 
+    const MS: u64 = 1_000_000;
+    const SEC: u64 = 1_000_000_000;
+
     #[test]
     fn first_entry_honors_its_initial_offset() {
         // A node whose first output was recorded 1s after recording-start must
-        // sleep ~1s before emitting it, not fire immediately (dora-rs/dora#2602).
-        let one_sec = 1_000_000_000;
-        assert_eq!(pacing_sleep_nanos(0, one_sec, 1.0), one_sec);
-    }
-
-    #[test]
-    fn subsequent_entries_sleep_the_inter_message_delta() {
-        // From offset 1s to offset 1.25s the pacing sleeps only the 250ms gap.
+        // wait ~1s before emitting it, not fire immediately (dora-rs/dora#2602).
         assert_eq!(
-            pacing_sleep_nanos(1_000_000_000, 1_250_000_000, 1.0),
-            250_000_000
+            pacing_gap(Duration::ZERO, SEC, 1.0),
+            Duration::from_nanos(SEC)
         );
     }
 
     #[test]
-    fn speed_scales_the_sleep() {
-        // 2x speed halves the sleep; a non-positive speed disables pacing.
-        assert_eq!(pacing_sleep_nanos(0, 1_000_000_000, 2.0), 500_000_000);
-        assert_eq!(pacing_sleep_nanos(0, 1_000_000_000, 0.0), 0);
+    fn time_spent_since_the_previous_entry_is_not_waited_again() {
+        // Entry due at 1.25s; 1.2s have already passed (the 1s entry was
+        // emitted, and decoding/sending it plus timer overshoot took 200ms).
+        // Only the remaining 50ms is waited, so that overhead does not
+        // accumulate into drift over a long replay.
+        assert_eq!(
+            pacing_gap(Duration::from_millis(1200), 1250 * MS, 1.0),
+            Duration::from_millis(50)
+        );
     }
 
     #[test]
-    fn non_monotonic_offset_saturates_to_zero() {
-        // A later entry with a smaller offset must not underflow into a huge sleep.
-        assert_eq!(pacing_sleep_nanos(1_000_000_000, 500_000_000, 1.0), 0);
+    fn late_entry_is_emitted_immediately() {
+        assert_eq!(pacing_gap(Duration::from_secs(2), SEC, 1.0), Duration::ZERO);
+        // A non-monotonic (earlier) offset is simply late: no underflow.
+        assert_eq!(
+            pacing_gap(Duration::from_secs(1), 500 * MS, 1.0),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn speed_scales_the_schedule() {
+        // 2x speed halves the due time; a non-positive speed disables pacing.
+        assert_eq!(
+            pacing_gap(Duration::ZERO, SEC, 2.0),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            pacing_gap(Duration::from_millis(400), SEC, 2.0),
+            Duration::from_millis(100)
+        );
+        assert_eq!(pacing_gap(Duration::ZERO, SEC, 0.0), Duration::ZERO);
+    }
+
+    #[test]
+    fn tiny_speed_saturates_instead_of_overflowing() {
+        assert_eq!(
+            pacing_gap(Duration::ZERO, u64::MAX, f64::MIN_POSITIVE),
+            Duration::from_nanos(u64::MAX)
+        );
     }
 
     #[test]

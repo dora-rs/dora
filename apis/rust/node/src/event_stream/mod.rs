@@ -21,7 +21,7 @@ use futures::{
     future::{Either, select},
 };
 use futures_timer::Delay;
-use scheduler::{NON_INPUT_EVENT, NON_INPUT_EVENT_QUEUE_SIZE, Scheduler};
+use scheduler::{NON_INPUT_EVENT_QUEUE_SIZE, Scheduler};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
@@ -314,6 +314,23 @@ fn connect_daemon_channel(
     Ok(channel)
 }
 
+/// Capacity of a node's ingress event channel: the sum of its inputs'
+/// `queue_size`s, at least 64.
+///
+/// `queue_size` is unvalidated, so the sum saturates and is clamped to the
+/// `usize::MAX >> 3` limit above which tokio's `mpsc::channel` panics. The
+/// channel allocates lazily, so a huge capacity costs nothing up front.
+fn ingress_channel_capacity<'a>(inputs: impl Iterator<Item = &'a Input>) -> usize {
+    const MAX_CHANNEL_CAPACITY: usize = usize::MAX >> 3;
+    inputs
+        .map(|c| {
+            c.queue_size
+                .unwrap_or(dora_message::config::DEFAULT_QUEUE_SIZE)
+        })
+        .fold(0, usize::saturating_add)
+        .clamp(64, MAX_CHANNEL_CAPACITY)
+}
+
 impl EventStream {
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
@@ -337,7 +354,7 @@ impl EventStream {
         let close_channel =
             connect_daemon_channel(daemon_communication, node_id, "event close channel")?;
 
-        let mut queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config
+        let queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config
             .iter()
             .map(|(input, config)| {
                 (
@@ -352,10 +369,12 @@ impl EventStream {
             })
             .collect();
 
-        queue_size_limit.insert(
-            DataId::from(NON_INPUT_EVENT.to_string()),
-            (NON_INPUT_EVENT_QUEUE_SIZE, VecDeque::new()),
-        );
+        // Control events (`Stop`, `InputClosed`, ...) live in a queue of their
+        // own inside the scheduler, so this map holds input ids only. Registering
+        // a `NON_INPUT_EVENT` entry here used to overwrite the `queue_size` of a
+        // user input with that exact id — `dora.non_input_event` is a valid
+        // `DataId` — and merged its data events with the control events
+        // (dora-rs/dora#3632).
 
         let queue_policies: HashMap<DataId, dora_message::config::QueuePolicy> = input_config
             .iter()
@@ -364,14 +383,7 @@ impl EventStream {
 
         let scheduler = Scheduler::with_policies(queue_size_limit, queue_policies);
 
-        let total_queue_capacity: usize = input_config
-            .values()
-            .map(|c| {
-                c.queue_size
-                    .unwrap_or(dora_message::config::DEFAULT_QUEUE_SIZE)
-            })
-            .sum::<usize>()
-            .max(64);
+        let total_queue_capacity = ingress_channel_capacity(input_config.values());
 
         let write_events_to = match write_events_to {
             Some(path) => {
@@ -2249,6 +2261,34 @@ impl EventStream {
 mod tests {
     use super::*;
 
+    fn input_with_queue_size(queue_size: usize) -> Input {
+        serde_yaml::from_str(&format!("source: a/out\nqueue_size: {queue_size}\n"))
+            .expect("parse input")
+    }
+
+    #[test]
+    fn ingress_channel_capacity_saturates_for_huge_queue_sizes() {
+        for sizes in [
+            vec![usize::MAX],
+            vec![usize::MAX / 2 + 1, usize::MAX / 2 + 1],
+        ] {
+            let inputs: Vec<Input> = sizes.into_iter().map(input_with_queue_size).collect();
+            let capacity = ingress_channel_capacity(inputs.iter());
+            assert_eq!(capacity, usize::MAX >> 3);
+            // The capacity must be one tokio accepts.
+            let _ = tokio::sync::mpsc::channel::<()>(capacity);
+        }
+    }
+
+    #[test]
+    fn ingress_channel_capacity_sums_queue_sizes_with_a_floor() {
+        let inputs = [input_with_queue_size(50), input_with_queue_size(70)];
+        assert_eq!(ingress_channel_capacity(inputs.iter()), 120);
+        let small = [input_with_queue_size(1)];
+        assert_eq!(ingress_channel_capacity(small.iter()), 64);
+        assert_eq!(ingress_channel_capacity(std::iter::empty()), 64);
+    }
+
     // A caller may pass a very large `Duration` to a pattern-wait helper to mean
     // "wait effectively forever". The `Instant::now() + timeout` deadline used to
     // panic on such a value (monotonic-clock overflow), aborting the process.
@@ -2722,6 +2762,81 @@ mod tests {
         crate::DoraNode::init_testing(inputs, outputs, options).unwrap()
     }
 
+    /// `EventStream::init` must not register the control-event id in the
+    /// per-input queue map. `dora.non_input_event` is a valid `DataId`, so a
+    /// dataflow can declare an input with that name, and the old
+    /// `queue_size_limit.insert(NON_INPUT_EVENT, ...)` overwrote that input's
+    /// configured `queue_size` with the control cap of 1000 (dora-rs/dora#3632).
+    ///
+    /// The scheduler-level tests build `Scheduler::with_policies` directly, so
+    /// none of them reaches the map `init` builds; this one goes through `init`
+    /// and asserts the cap the scheduler would actually enforce.
+    #[test]
+    fn init_keeps_configured_queue_size_for_reserved_named_input() {
+        use dora_core::config::InputMapping;
+
+        let reserved = DataId::from(super::scheduler::NON_INPUT_EVENT.to_string());
+        let input_config = BTreeMap::from([(
+            reserved.clone(),
+            Input {
+                mapping: InputMapping::Timer {
+                    interval: Duration::from_secs(1),
+                },
+                queue_size: Some(1),
+                input_timeout: None,
+                queue_policy: None,
+            },
+        )]);
+
+        // Minimal in-process daemon: answer the register/subscribe handshake,
+        // and end the event-stream loop on its first `NextEvent` poll.
+        let (channel, mut requests) = tokio::sync::mpsc::channel::<(
+            Timestamped<DaemonRequest>,
+            tokio::sync::oneshot::Sender<DaemonReply>,
+        )>(16);
+        let responder = std::thread::spawn(move || {
+            while let Some((request, reply)) = requests.blocking_recv() {
+                let reply_value = match request.inner {
+                    DaemonRequest::NextEvent => DaemonReply::NextEvents(Vec::new()),
+                    _ => DaemonReply::Result(Ok(())),
+                };
+                if reply.send(reply_value).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let daemon_communication = DaemonCommunicationWrapper::Testing {
+            channel,
+            shutdown: Arc::new(AtomicBool::new(false)),
+        };
+        let events = EventStream::init(
+            DataflowId::new_v4(),
+            &"test-node".parse().unwrap(),
+            &daemon_communication,
+            input_config,
+            &BTreeMap::new(),
+            Arc::new(uhlc::HLC::default()),
+            None,
+            None,
+        )
+        .expect("EventStream::init should succeed against the in-process daemon");
+
+        assert_eq!(
+            events.scheduler.effective_cap_for(&reserved),
+            1,
+            "an input named `{}` must keep its configured queue_size through `init`",
+            super::scheduler::NON_INPUT_EVENT
+        );
+
+        // Both holders of a sender clone must go before the responder can see
+        // the channel close: `daemon_communication` owns the original sender,
+        // `events` owns `close_channel`.
+        drop(daemon_communication);
+        drop(events);
+        let _ = responder.join();
+    }
+
     /// #2956: outputs sent through `TestingOutput::ToChannel` must reach the
     /// receiver, in order, when drained after the node has finished — the
     /// documented usage pattern, and previously untested (every other
@@ -3043,7 +3158,7 @@ mod tests {
         assert_eq!(
             events
                 .drain_drop_counts()
-                .get(&DataId::from(NON_INPUT_EVENT.to_string())),
+                .get(&DataId::from(super::scheduler::NON_INPUT_EVENT.to_string())),
             Some(&expected_drops),
             "control-event overflow must be accounted under the non-input key"
         );

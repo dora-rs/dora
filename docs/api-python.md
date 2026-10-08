@@ -359,30 +359,37 @@ print(f"Restart #{node.restart_count()}")
 
 ---
 
-#### `merge_external_events(subscription)`
+#### `merge_external_events(subscription, id=None)`
 
-Merge a ROS2 subscription stream into the node's main event loop. After calling this method, ROS2 messages arrive as events with `kind` set to `"external"`.
+Merge a ROS2 subscription stream into the node's main event loop. After calling this method, ROS2 messages arrive as events with `kind` set to `"external"` and `id` set to the subscription's `id` (by default its ROS2 topic name). Call it once per subscription to handle several topics in one node.
 
 ```python
-from dora import Node, Ros2Context, Ros2Node, Ros2NodeOptions, Ros2Topic
+from dora import Node, Ros2Context, Ros2NodeOptions, Ros2QosPolicies
 
 node = Node()
 ros2_context = Ros2Context()
-ros2_node = ros2_context.new_node("listener", Ros2NodeOptions())
-topic = Ros2Topic("/chatter", "std_msgs/String", ros2_node)
-subscription = ros2_node.create_subscription(topic)
+ros2_node = ros2_context.new_node("listener", "/", Ros2NodeOptions())
+qos = Ros2QosPolicies()
+chatter = ros2_node.create_subscription(
+    ros2_node.create_topic("/chatter", "std_msgs/String", qos)
+)
+pose = ros2_node.create_subscription(
+    ros2_node.create_topic("/turtle1/pose", "turtlesim/Pose", qos)
+)
 
-node.merge_external_events(subscription)
+node.merge_external_events(chatter)            # id defaults to "/chatter"
+node.merge_external_events(pose, id="pose")    # or choose your own label
 
 for event in node:
     if event["kind"] == "external":
-        print("ROS2:", event["value"])
+        print("ROS2", event["id"], event["value"])
     elif event["type"] == "INPUT":
         print("Dora:", event["id"])
 ```
 
 **Parameters:**
 - `subscription` (`dora.Ros2Subscription`) -- A ROS2 subscription created via the dora ROS2 bridge.
+- `id` (`str`, optional) -- Label for events from this subscription, returned as `event["id"]`. Defaults to the subscription's topic name exactly as passed to `create_topic` (not namespace-resolved). Must not be empty.
 
 ---
 
@@ -474,6 +481,7 @@ When using `merge_external_events`, ROS2 messages arrive as:
 ```python
 {
     "kind": "external",
+    "id": "/turtle1/pose",      # the `id` given to merge_external_events, or the topic name
     "value": <pyarrow.Array>,   # the ROS2 message as an Arrow array
 }
 ```

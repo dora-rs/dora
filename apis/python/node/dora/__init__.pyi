@@ -154,9 +154,21 @@ class Node:
         """Returns the current timestamp from the node's Hybrid Logical Clock
         as a UTC datetime object."""
 
-    def merge_external_events(self, subscription: dora.Ros2Subscription) -> None:
+    def merge_external_events(
+        self, subscription: dora.Ros2Subscription, id: typing.Optional[str] = None
+    ) -> None:
         """Merge an external event stream with dora main loop.
-        This currently only work with ROS2."""
+        This currently only work with ROS2.
+
+        Events from the subscription arrive with ``kind`` set to
+        ``"external"`` and ``id`` set to the given ``id``, or to the
+        subscription's ROS2 topic name (e.g. ``"/turtle1/pose"``) when no
+        ``id`` is given. Call this once per subscription to handle several
+        topics in one node, and use ``event["id"]`` to tell them apart.
+
+        :type subscription: dora.Ros2Subscription
+        :type id: str, optional
+        :rtype: None"""
 
     def next(self, timeout: float = None) -> dict:
         """`.next()` gives you the next input that the node has received.

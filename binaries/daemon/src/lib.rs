@@ -165,6 +165,8 @@ mod shutdown;
 mod socket_stream_utils;
 mod spawn;
 #[cfg(test)]
+mod test_tracing;
+#[cfg(test)]
 mod tests;
 mod zenoh_bind;
 
@@ -1354,7 +1356,6 @@ impl Daemon {
                 } else {
                     MulticastScouting::Allowed
                 },
-                ..Default::default()
             })
             .await
             .wrap_err("failed to open zenoh session")?;
@@ -1640,9 +1641,7 @@ impl Daemon {
             let stamped = Timestamped {
                 inner: CoordinatorRequest::Event {
                     daemon_id: self.daemon_id.clone(),
-                    event: DaemonEvent::ZenohListenEndpoint {
-                        endpoint: self.zenoh_listen_endpoint.clone(),
-                    },
+                    event: DaemonEvent::zenoh_listen_endpoint(self.zenoh_listen_endpoint.clone()),
                 },
                 timestamp: self.clock.new_timestamp(),
             };

@@ -286,7 +286,12 @@ impl Listener {
                 }
             }
             other => {
-                tracing::warn!("expected register message, got `{other:?}`");
+                // The request kind only, never `{other:?}`: `ExtensionStore`
+                // and `ExtensionRequest` carry payloads of up to 64 MiB, which
+                // Debug formatting would amplify into a log line several times
+                // that size (see `request_kind`).
+                let kind = crate::local_listener::request_kind(&other);
+                tracing::warn!("expected register message, got `{kind}`");
                 let reply = DaemonReply::Result(Err("must send register message first".into()));
                 if let Err(err) = connection
                     .send_reply(reply)
@@ -628,7 +633,8 @@ impl Listener {
             // that never comes.
             other => {
                 let reply = DaemonReply::Result(Err(format!(
-                    "unsupported request from node (node is likely newer than this daemon): {other:?}"
+                    "unsupported request `{}` from node (node is likely newer than this daemon)",
+                    crate::local_listener::request_kind(&other)
                 )));
                 self.send_reply(reply, connection).await?;
             }
@@ -883,6 +889,7 @@ trait Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_tracing::TextCapture;
     use aligned_vec::AVec;
     use dora_core::config::DataId;
     use dora_message::{
@@ -1394,5 +1401,71 @@ mod tests {
         assert_eq!(batch.len(), LISTENER_QUEUE_MAX_EVENTS);
         listener.handle_events().await.unwrap();
         assert_eq!(listener.queue.len(), 5, "room again: the channel drains");
+    }
+
+    /// A connection that yields one request, then reports a disconnect.
+    struct OneRequest(Option<Timestamped<DaemonRequest>>);
+
+    impl Connection for OneRequest {
+        fn receive_message(
+            &mut self,
+        ) -> impl Future<Output = eyre::Result<Option<Timestamped<DaemonRequest>>>> + Send {
+            let request = self.0.take();
+            async move { Ok(request) }
+        }
+        async fn send_reply(&mut self, _message: DaemonReply) -> eyre::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A first request that is not `Register` is logged by kind. It used to
+    /// be Debug-formatted whole, so one `ExtensionStore` carrying up to
+    /// 64 MiB from any local process turned into a log line of several
+    /// hundred MB.
+    #[test]
+    fn non_register_first_request_is_logged_by_kind() {
+        let capture = TextCapture::new();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let clock = Arc::new(uhlc::HLC::default());
+        let request = Timestamped {
+            inner: DaemonRequest::ExtensionStore {
+                namespace: "ns".to_string(),
+                key: "key".to_string(),
+                value: vec![0u8; MIB],
+            },
+            timestamp: clock.new_timestamp(),
+        };
+
+        tracing::subscriber::with_default(capture.clone(), || {
+            rt.block_on(async {
+                let (daemon_tx, _daemon_rx) = mpsc::channel(1);
+                Listener::run(
+                    OneRequest(Some(request)),
+                    Arc::new(AtomicU64::new(0)),
+                    daemon_tx,
+                    clock,
+                    Arc::new(AtomicU64::new(0)),
+                    Arc::new(BackpressureConfig {
+                        outputs: Default::default(),
+                        ft_stats: Default::default(),
+                    }),
+                )
+                .await;
+            });
+        });
+
+        let logged = capture.0.lock().unwrap();
+        let line = logged
+            .iter()
+            .find(|line| line.contains("expected register message"))
+            .unwrap_or_else(|| panic!("rejection must be logged, got {logged:?}"));
+        assert!(line.contains("ExtensionStore"), "got: {line}");
+        assert!(
+            line.len() < 1024,
+            "the payload must not be logged ({} bytes)",
+            line.len()
+        );
     }
 }

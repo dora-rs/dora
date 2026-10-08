@@ -2,6 +2,7 @@ use crate::{log_subscriber::LogSubscriber, topic_subscriber::TopicSubscriber};
 use dora_coordinator_store::{CoordinatorStore, DataflowRecord, DataflowStatus};
 use dora_core::config::NodeId;
 use dora_message::{
+    BuildId, SessionId,
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, LogMessage},
     coordinator_to_daemon::{StateCatchUpEntry, StateCatchUpOperation},
@@ -11,6 +12,7 @@ use dora_message::{
 use eyre::eyre;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -24,7 +26,35 @@ pub(crate) struct PendingRestart {
     pub descriptor: Descriptor,
     pub name: Option<String>,
     pub uv: bool,
+    pub launch: LaunchContext,
     pub reply_sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
+}
+
+/// What a dataflow was started with besides its descriptor, kept so that
+/// `dora restart` relaunches it the same way: relative node paths resolve
+/// against `local_working_dir`, nodes built by `dora build` find their
+/// artifacts through `build_id` and `session_id`, and nodes keep writing
+/// their events to `write_events_to` (`DORA_WRITE_EVENTS_TO`).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LaunchContext {
+    pub build_id: Option<BuildId>,
+    pub session_id: SessionId,
+    pub local_working_dir: Option<PathBuf>,
+    pub write_events_to: Option<PathBuf>,
+}
+
+impl LaunchContext {
+    /// For a dataflow whose launch context was not kept (one recovered from
+    /// the store): a fresh session with no build, run in the daemon's own
+    /// working directory.
+    pub(crate) fn unknown() -> Self {
+        Self {
+            build_id: None,
+            session_id: SessionId::generate(),
+            local_working_dir: None,
+            write_events_to: None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -393,6 +423,8 @@ pub(crate) struct RunningDataflow {
 
     /// Whether UV was used for this dataflow (needed for restart).
     pub(crate) uv: bool,
+    /// How the dataflow was launched (needed for restart).
+    pub(crate) launch: LaunchContext,
 
     // --- State catch-up replication log ---
     /// Monotonically increasing sequence counter for state mutations.
@@ -538,6 +570,30 @@ impl RunningDataflow {
         )
     }
 
+    /// [`state_log_delta`](Self::state_log_delta), narrowed to the entries
+    /// targeting nodes that `daemon_id` runs.
+    ///
+    /// The log is dataflow-wide, but a daemon can only deliver an entry to a
+    /// node it hosts: it stops replaying at the first entry whose node it has
+    /// no channel for, so an entry for another daemon's node (or for a node
+    /// since removed) would block every later entry for its own nodes on
+    /// every reconnect.
+    pub(crate) fn state_log_delta_for_daemon(
+        &self,
+        last_ack: u64,
+        daemon_id: &DaemonId,
+    ) -> Option<Vec<StateCatchUpEntry>> {
+        let mut entries = self.state_log_delta(last_ack)?;
+        entries.retain(|entry| {
+            let node_id = match &entry.operation {
+                StateCatchUpOperation::SetParam { node_id, .. }
+                | StateCatchUpOperation::DeleteParam { node_id, .. } => node_id,
+            };
+            self.node_to_daemon.get(node_id) == Some(daemon_id)
+        });
+        Some(entries)
+    }
+
     /// Reconstruct the live `RunningDataflow` for a dataflow that survived a
     /// coordinator-connection drop, from its persisted record + a reconnecting
     /// daemon's status report (dora-rs/dora#2029 P1).
@@ -598,6 +654,7 @@ impl RunningDataflow {
             last_recovery_attempt: BTreeMap::new(),
             last_replay_attempt: BTreeMap::new(),
             uv: record.uv,
+            launch: LaunchContext::unknown(),
             state_log_sequence: 0,
             state_log: Vec::new(),
             daemon_ack_sequence: daemons.iter().map(|d| (d.clone(), 0)).collect(),

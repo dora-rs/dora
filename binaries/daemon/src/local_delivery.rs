@@ -204,8 +204,8 @@ pub(crate) fn note_output_sent_to_local_receivers(
 /// delivered, or deferred to the producer's listener (see
 /// [`DeferredDelivery`]), which counts the same for the caller's bookkeeping:
 /// the producer is alive and produced, which is what the input deadline and
-/// the circuit breaker watch. A closed channel is noted in `closed`; a full
-/// one with no way to defer is a counted drop.
+/// the circuit breaker watch. A closed channel is noted in `closed` and, like
+/// a full one with no way to defer, is a counted drop.
 #[allow(clippy::too_many_arguments)]
 fn offer_event<'a>(
     dataflow: &RunningDataflow,
@@ -227,6 +227,17 @@ fn offer_event<'a>(
                 return true;
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
+                // A deliberate `EventStreamDropped` unregisters the channel
+                // before it closes, so a registered one found closed means
+                // the listener died: this message is lost, and counted like
+                // the ones the no-channel branch drops after it
+                // (dora-rs/dora#3620).
+                if let Some(stats) = ft_stats {
+                    stats.record_drop(
+                        1,
+                        dataflow.input_requires_backpressure(receiver_id, input_id),
+                    );
+                }
                 closed.push(receiver_id);
                 return false;
             }

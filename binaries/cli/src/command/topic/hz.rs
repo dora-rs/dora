@@ -276,18 +276,23 @@ impl HzStats {
         Self::intervals_from(&samples)
     }
 
-    /// Producer-stamp intervals (ms) between consecutive samples, skipping any
-    /// non-positive delta (duplicate or out-of-order stamps).
+    /// Producer-stamp intervals (ms) between consecutive stamps, skipping any
+    /// zero delta (duplicate stamps).
+    ///
+    /// Samples are kept in *arrival* order (pruning needs that), but the relay
+    /// can deliver frames out of producer order -- across topics in the `ALL`
+    /// aggregate, which interleaves several publishers, and occasionally within
+    /// one topic. Taking deltas in arrival order would drop the negative delta
+    /// and then measure the next one from the stale stamp, inflating it, so the
+    /// stamps are sorted first.
     fn intervals_from(samples: &VecDeque<Sample>) -> Vec<f64> {
-        samples
+        let mut stamps: Vec<Duration> = samples.iter().map(|s| s.producer_stamp).collect();
+        stamps.sort_unstable();
+        stamps
             .iter()
             .tuple_windows()
             .filter_map(|(a, b)| {
-                let dt = b
-                    .producer_stamp
-                    .saturating_sub(a.producer_stamp)
-                    .as_secs_f64()
-                    * 1000.0;
+                let dt = b.saturating_sub(*a).as_secs_f64() * 1000.0;
                 if dt > 0.0 { Some(dt) } else { None }
             })
             .collect()
@@ -777,6 +782,29 @@ mod tests {
         stats.record(Duration::from_millis(1_200), now + Duration::from_millis(2));
         assert_eq!(stats.intervals_ms().len(), 1);
         assert!((stats.intervals_ms()[0] - 200.0).abs() < 1.0);
+    }
+
+    // The `ALL` aggregate interleaves several publishers, and the relay can
+    // deliver their frames out of producer order. Intervals must follow the
+    // producer stamps, not arrival order: arrival-order deltas would drop the
+    // negative one and inflate the next.
+    #[test]
+    fn intervals_follow_stamp_order_when_frames_arrive_out_of_order() {
+        let stats = HzStats::new(10);
+        let now = Instant::now();
+        // Topic A stamps 0/100/200 ms, topic B 50/150 ms, B delayed ~60 ms.
+        for (i, stamp_ms) in [0u64, 100, 50, 200, 150].into_iter().enumerate() {
+            stats.record(
+                Duration::from_millis(1_000 + stamp_ms),
+                now + Duration::from_millis(i as u64),
+            );
+        }
+        let intervals = stats.intervals_ms();
+        assert_eq!(intervals.len(), 4, "{intervals:?}");
+        assert!(
+            intervals.iter().all(|dt| (dt - 50.0).abs() < 1.0),
+            "{intervals:?}"
+        );
     }
 
     // The live gauge anchors to wall-clock arrivals, not producer stamps: a

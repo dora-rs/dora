@@ -5,8 +5,9 @@ use crate::coordinator_events::{
 use crate::node_exit::{DEFAULT_FINISH_DRAIN_GRACE, parse_finish_drain_grace};
 use crate::pending::DataflowStatus;
 use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
+use crate::test_tracing::LevelCapture;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
-use std::sync::{Arc, Mutex};
 
 use aligned_vec::AVec;
 use crossbeam::queue::ArrayQueue;
@@ -271,6 +272,39 @@ async fn failed_pending_finish_retry_does_not_abort_reconnect_cycle() {
     );
 }
 
+/// A `Spawn` from a coordinator that predates `dora start` validation must
+/// not reach `Duration::from_secs_f64` with a bad timing value, which would
+/// panic the daemon and every dataflow on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn spawn_rejects_invalid_timing_fields() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let descriptor: Descriptor = serde_json::from_str(
+        r#"{ "nodes": [ { "id": "node", "path": "/tmp/dummy", "restart_delay": -1.0 } ] }"#,
+    )
+    .unwrap();
+    let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+    let spawn_nodes = nodes.keys().cloned().collect();
+    let dataflow_id = Uuid::new_v4();
+    let err = daemon
+        .spawn_dataflow(
+            None,
+            dataflow_id,
+            std::env::temp_dir(),
+            nodes,
+            descriptor,
+            spawn_nodes,
+            false,
+            None,
+        )
+        .await
+        .err()
+        .expect("spawn must reject a negative restart_delay");
+    assert!(format!("{err:#}").contains("restart_delay"), "{err:#}");
+    assert!(!daemon.running.contains_key(&dataflow_id));
+}
+
 /// A daemon whose coordinator connection is `coordinator_sender`. The one
 /// place these tests call `build_daemon`, so a signature change touches only
 /// this.
@@ -278,7 +312,16 @@ async fn daemon_reporting_to(
     coordinator_sender: coordinator::CoordinatorSender,
     clock: Arc<HLC>,
 ) -> Daemon {
-    let (daemon, _events_rx) = Daemon::build_daemon(
+    daemon_and_events_rx(coordinator_sender, clock).await.0
+}
+
+/// Like [`daemon_reporting_to`], but also returns the receiver half of the
+/// daemon's internal event channel (`events_tx`), which `run_inner` drains.
+async fn daemon_and_events_rx(
+    coordinator_sender: coordinator::CoordinatorSender,
+    clock: Arc<HLC>,
+) -> (Daemon, mpsc::Receiver<Timestamped<Event>>) {
+    Daemon::build_daemon(
         None,
         Some(coordinator_sender),
         DaemonId::new(None),
@@ -297,8 +340,89 @@ async fn daemon_reporting_to(
         None,
     )
     .await
-    .expect("daemon should build");
-    daemon
+    .expect("daemon should build")
+}
+
+/// `handle_node_stop` runs on the daemon's main loop, which is the only
+/// reader of `events_tx`. If that channel is full (e.g. chatty nodes filling
+/// it with `LogBroadcast` events while the loop was busy), awaiting a send of
+/// `NodeStopped` into it would wait forever for a slot only the waiting task
+/// can free, hanging the whole daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn node_stop_does_not_block_on_a_full_event_channel() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let (mut daemon, mut events_rx) = daemon_and_events_rx(coordinator_sender, clock.clone()).await;
+
+    let filler = || Timestamped {
+        inner: Event::NodeStopped {
+            dataflow_id: Uuid::new_v4(),
+            node_id: NodeId::from("filler".to_string()),
+        },
+        timestamp: clock.new_timestamp(),
+    };
+    let mut queued = 0;
+    while daemon.events_tx.try_send(filler()).is_ok() {
+        queued += 1;
+    }
+
+    let dataflow_id = Uuid::new_v4();
+    let node_id = NodeId::from("node".to_string());
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        daemon.handle_node_stop(dataflow_id, &node_id, false, true),
+    )
+    .await
+    .expect("handle_node_stop must not wait for the main loop to drain its own channel")
+    .expect("an unknown dataflow is benign");
+
+    // The `NodeStopped` notification is still delivered once the loop drains.
+    for _ in 0..queued {
+        events_rx.recv().await.expect("filler event");
+    }
+    let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+        .await
+        .expect("NodeStopped must still be delivered")
+        .expect("channel open");
+    assert!(
+        matches!(
+            event.inner,
+            Event::NodeStopped { dataflow_id: id, node_id: ref n } if id == dataflow_id && *n == node_id
+        ),
+        "unexpected event: {}",
+        event.inner.kind()
+    );
+}
+
+/// The coordinator sends `Logs` with `send_and_receive`, and the WS layer
+/// drops a `None` reply, so a `Logs` request for a dataflow this daemon does
+/// not know must still get an explicit error reply instead of leaving the
+/// coordinator to hit its 30s reply timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn logs_for_unknown_dataflow_replies_with_an_error() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let dataflow_id = Uuid::new_v4();
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _status = daemon
+        .handle_coordinator_event(
+            DaemonCoordinatorEvent::Logs {
+                dataflow_id,
+                node_id: NodeId::from("node".to_string()),
+                tail: None,
+            },
+            reply_tx,
+        )
+        .await
+        .expect("Logs must not fail the daemon loop");
+
+    match reply_rx.await.expect("a reply must be sent") {
+        Some(DaemonCoordinatorReply::Logs(Err(err))) => {
+            assert!(err.contains(&dataflow_id.to_string()), "{err}");
+        }
+        other => panic!("expected a Logs error reply, got {other:?}"),
+    }
 }
 
 /// A finish report the WS writer accepted can still be lost with the
@@ -1340,7 +1464,7 @@ async fn restart_clears_connected_marker() {
 /// covers both a `restart_policy` respawn and `dora node restart`.
 #[test]
 fn restart_exit_reset_clears_dropped_event_stream_marker() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2090,29 +2214,6 @@ async fn data_bytes_returned_with_and_without_local_receivers() {
 // -- Regression tests for dora-rs/dora#3201: a receiver whose event
 //    stream is gone must not be silently starved. --
 
-/// Minimal `tracing::Subscriber` that records the level of every event it
-/// receives, so a test can assert whether (and how often) a warning fires.
-#[derive(Clone, Default)]
-pub(crate) struct LevelCapture {
-    pub(crate) levels: Arc<Mutex<Vec<tracing::Level>>>,
-}
-
-impl tracing::Subscriber for LevelCapture {
-    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-        true
-    }
-    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-    fn event(&self, event: &tracing::Event<'_>) {
-        self.levels.lock().unwrap().push(*event.metadata().level());
-    }
-    fn enter(&self, _span: &tracing::span::Id) {}
-    fn exit(&self, _span: &tracing::span::Id) {}
-}
-
 /// With the receiver's event channel full, a `backpressure` input's message
 /// is handed back for the producer's listener to deliver once there is room,
 /// while a `drop_oldest` input's is dropped, warned about and counted — and
@@ -2121,7 +2222,7 @@ impl tracing::Subscriber for LevelCapture {
 #[test]
 fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
     use dora_message::config::QueuePolicy;
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2249,11 +2350,7 @@ fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
 #[test]
 fn full_channel_of_a_given_up_receiver_is_a_counted_drop() {
     use dora_message::config::QueuePolicy;
-    // Run under a scoped subscriber like the other tests that reach
-    // `send_output_to_local_receivers`: a first hit of its log callsites on a
-    // thread with none caches their interest as `never`, and a concurrently
-    // running test's `LevelCapture` then sees none of their events.
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2405,6 +2502,68 @@ fn missing_event_stream_drops_are_counted_per_message() {
     });
 }
 
+/// A receiver whose event channel is still registered but closed (its
+/// listener died without `EventStreamDropped`, which would have unregistered
+/// it first) loses the message that finds it closed. That message is a
+/// counted drop like the ones after it, so `fail_on_lost_backpressure_messages`
+/// sees it even when it is the last one on the edge (dora-rs/dora#3620).
+#[test]
+fn closed_event_channel_drop_is_counted() {
+    use dora_message::config::QueuePolicy;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        df.mappings.insert(
+            OutputId(sender.clone(), output.clone()),
+            BTreeSet::from([(receiver.clone(), input.clone())]),
+        );
+        let inputs = BTreeMap::from([(
+            input.clone(),
+            user_input("sender", "output", Some(QueuePolicy::Backpressure)),
+        )]);
+        df.running_nodes
+            .insert(receiver.clone(), running_node_with(inputs, None));
+        let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(receiver.clone(), tx);
+        drop(rx);
+
+        let ft_stats = FaultToleranceStats::default();
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
+        let output_id = OutputId(sender, output);
+        send_output_to_local_receivers(
+            &output_id,
+            &mut df,
+            &metadata,
+            None,
+            &clock,
+            Some(&ft_stats),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !df.subscribe_channels.contains_key(&receiver),
+            "the closed channel is unregistered"
+        );
+        assert_eq!(ft_stats.dropped_messages.load(atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            ft_stats
+                .lost_backpressure_messages
+                .load(atomic::Ordering::Relaxed),
+            1,
+            "the message that found the channel closed is a lost promise"
+        );
+    });
+}
+
 /// A receiver recorded in `mappings` but missing from
 /// `subscribe_channels` gets routed to *nothing*: `send_output_to_local_receivers`
 /// cannot deliver, and the producer's send still "succeeds". The missing
@@ -2412,7 +2571,7 @@ fn missing_event_stream_drops_are_counted_per_message() {
 /// of silently starving the consumer (dora-rs/dora#3201).
 #[test]
 fn receiver_missing_channel_is_skipped_with_once_per_edge_warning() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2470,7 +2629,7 @@ fn receiver_missing_channel_is_skipped_with_once_per_edge_warning() {
 /// one is warned about exactly once.
 #[test]
 fn healthy_receiver_still_receives_when_peer_channel_is_missing() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2533,7 +2692,7 @@ fn healthy_receiver_still_receives_when_peer_channel_is_missing() {
 /// is an expected dead edge, not #3201 symptomatology — it must NOT WARN.
 #[test]
 fn finished_receiver_does_not_warn() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2585,7 +2744,7 @@ fn finished_receiver_does_not_warn() {
 /// still-running window (dora-rs/dora#3556).
 #[test]
 fn finished_but_still_running_receiver_does_not_warn() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();

@@ -59,7 +59,7 @@ use dora_mavlink2_bridge::{
     transport,
 };
 use dora_node_api::{
-    DoraNode, Event, MetadataParameters, TryRecvError,
+    DoraNode, Event, MetadataParameters,
     arrow_v59::array::{Array, ArrayRef, AsArray, RecordBatch, StructArray},
     dora_core::config::DataId,
 };
@@ -70,6 +70,7 @@ use mavlink::{
 };
 use serde::Deserialize;
 use std::{
+    pin::pin,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU8, Ordering},
@@ -79,6 +80,44 @@ use std::{
 use url::Url;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// What woke the main loop in [`wait_for_event_or_frame`].
+enum Wake<T> {
+    /// A dora event, or `None` once the event stream has closed. A timeout
+    /// is `Some(Event::Error(..))`, as with [`recv_async_timeout`](dora_node_api::EventStream::recv_async_timeout).
+    Event(Option<Event>),
+    /// A telemetry frame the reader thread decoded.
+    Frame(T),
+    /// The reader thread exited: its sender is gone and the queue is empty.
+    ReaderGone,
+}
+
+/// Block until `event` (a pending event-stream receive, e.g.
+/// [`recv_async_timeout`](dora_node_api::EventStream::recv_async_timeout)) completes or the reader decodes a
+/// frame — whichever comes first.
+///
+/// Waiting on the event stream alone (`recv_timeout(POLL_INTERVAL)`) held
+/// every frame decoded during the wait for up to `POLL_INTERVAL` when no dora
+/// input was arriving (the common telemetry-only case), and once the bounded
+/// channel filled it blocked the reader, capping forwarding at roughly one
+/// channel's worth of frames per interval.
+///
+/// If the frame wins, `event` is dropped, which is the same cancellation
+/// `recv_async_timeout` performs on every timeout.
+fn wait_for_event_or_frame<T>(
+    event: impl Future<Output = Option<Event>>,
+    rx: &flume::Receiver<T>,
+) -> Wake<T> {
+    use dora_node_api::futures::{
+        executor::block_on,
+        future::{Either, select},
+    };
+    match block_on(select(pin!(event), rx.recv_async())) {
+        Either::Left((event, _)) => Wake::Event(event),
+        Either::Right((Ok(frame), _)) => Wake::Frame(frame),
+        Either::Right((Err(flume::RecvError::Disconnected), _)) => Wake::ReaderGone,
+    }
+}
 /// Belt-and-suspenders fallback for shutdown after the interrupt
 /// signals below have already fired. Covers the only transport mavlink
 /// 0.18 doesn't let us interrupt cleanly (serial: `SerialConnection`'s
@@ -568,8 +607,11 @@ fn main() -> Result<()> {
     // shut down cleanly below but the failure is preserved as a non-zero exit
     // status (see the end of `main`).
     let mut send_failure: Option<eyre::Error> = None;
+    // A frame whose arrival woke the wait below; forwarded first on the next
+    // iteration, ahead of anything queued behind it.
+    let mut woken_frame = None;
     'run: loop {
-        while let Ok((id, arr)) = rx.try_recv() {
+        for (id, arr) in woken_frame.take().into_iter().chain(rx.try_iter()) {
             if let Err(e) = node.send_output(id, MetadataParameters::default(), arr) {
                 // A `send_output` failure means the dora stream is gone (the
                 // daemon went away). Returning `?` here would skip the
@@ -599,35 +641,32 @@ fn main() -> Result<()> {
             data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header, &sequence);
         }
 
-        let next = match events.recv_timeout(POLL_INTERVAL) {
-            Some(event) => Some(event),
-            // `recv_timeout` returns `None` for BOTH a timeout and a closed
-            // stream. Disambiguate with `try_recv`: a closed stream means the
-            // daemon went away without a `Stop` event, so exit instead of
-            // looping forever (dora-rs/dora#2027). `try_recv` also returns any
-            // event that raced in after the timeout, so none is lost.
-            None => match events.try_recv() {
-                Ok(event) => Some(event),
-                Err(TryRecvError::Closed) => break,
-                Err(TryRecvError::Empty) => None,
-            },
+        let event = match wait_for_event_or_frame(events.recv_async_timeout(POLL_INTERVAL), &rx) {
+            Wake::Frame(frame) => {
+                woken_frame = Some(frame);
+                continue;
+            }
+            // The reader exited on its own; the join below surfaces its error.
+            Wake::ReaderGone => break,
+            // The event stream closed: the daemon went away without a `Stop`
+            // event, so exit instead of looping forever (dora-rs/dora#2027).
+            Wake::Event(None) => break,
+            // A timeout surfaces as `Event::Error`, ignored below like before.
+            Wake::Event(Some(event)) => event,
         };
 
-        if let Some(event) = next {
-            match event {
-                Event::Input { id, data, .. } => {
-                    let array_ref: ArrayRef = data.into();
-                    if let Err(e) = handle_input(conn.as_ref(), &header, &sequence, &id, &array_ref)
-                    {
-                        // Writer errors mean the dora node's command did NOT reach the
-                        // autopilot. Surface at error level so users debugging missions see
-                        // it in default log filters rather than treating it as routine noise.
-                        tracing::error!("writer error on input '{id}': {e:#}");
-                    }
+        match event {
+            Event::Input { id, data, .. } => {
+                let array_ref: ArrayRef = data.into();
+                if let Err(e) = handle_input(conn.as_ref(), &header, &sequence, &id, &array_ref) {
+                    // Writer errors mean the dora node's command did NOT reach the
+                    // autopilot. Surface at error level so users debugging missions see
+                    // it in default log filters rather than treating it as routine noise.
+                    tracing::error!("writer error on input '{id}': {e:#}");
                 }
-                Event::Stop(_) => break,
-                _ => {}
             }
+            Event::Stop(_) => break,
+            _ => {}
         }
     }
 
@@ -1115,5 +1154,50 @@ mod tests {
             msg.contains("systemid") || msg.contains("unknown field"),
             "error should name the unknown field, got: {msg}"
         );
+    }
+
+    /// A frame the reader decodes while no dora event is arriving must wake
+    /// the main loop immediately rather than waiting for the event receive.
+    #[test]
+    fn frame_wakes_the_wait_before_the_event() {
+        let (tx, rx) = flume::bounded::<u32>(1);
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            tx.send(7).unwrap();
+        });
+        let wake = wait_for_event_or_frame(std::future::pending(), &rx);
+        assert!(matches!(wake, Wake::Frame(7)));
+        sender.join().unwrap();
+    }
+
+    #[test]
+    fn dora_event_wins_when_no_frame_arrives() {
+        let (_tx, rx) = flume::bounded::<u32>(1);
+        let event = async { Some(Event::Stop(dora_node_api::StopCause::Manual)) };
+        let wake = wait_for_event_or_frame(event, &rx);
+        assert!(matches!(wake, Wake::Event(Some(Event::Stop(_)))));
+    }
+
+    #[test]
+    fn closed_event_stream_is_reported() {
+        let (_tx, rx) = flume::bounded::<u32>(1);
+        let wake = wait_for_event_or_frame(async { None }, &rx);
+        assert!(matches!(wake, Wake::Event(None)));
+    }
+
+    #[test]
+    fn dropped_reader_sender_reports_reader_gone_after_the_queue_drains() {
+        let (tx, rx) = flume::bounded::<u32>(2);
+        tx.send(1).unwrap();
+        drop(tx);
+        // A frame still queued is delivered before the disconnect is reported.
+        assert!(matches!(
+            wait_for_event_or_frame(std::future::pending(), &rx),
+            Wake::Frame(1)
+        ));
+        assert!(matches!(
+            wait_for_event_or_frame(std::future::pending(), &rx),
+            Wake::ReaderGone
+        ));
     }
 }

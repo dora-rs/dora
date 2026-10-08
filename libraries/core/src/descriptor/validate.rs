@@ -89,29 +89,8 @@ fn check_dataflow_static_resolved(
     dataflow: &Descriptor,
     nodes: &BTreeMap<NodeId, ResolvedNode>,
 ) -> eyre::Result<()> {
-    // reject negative / non-finite / overflowing timing values before they
-    // reach the daemon, where `Duration::from_secs_f64` would panic on spawn.
     for node in nodes.values() {
-        if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
-            check_timing_fields(&node.id, custom)?;
-            if custom.path.as_str() == DYNAMIC_SOURCE && custom.startup_timeout.is_some() {
-                bail!(
-                    "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
-                    node.id
-                );
-            }
-        }
-        // `input_timeout` is a second-valued `f64` that the daemon also feeds
-        // to `Duration::from_secs_f64`, on both the initial-spawn and the
-        // reconnect paths.
-        for (input_id, input) in node_inputs(node) {
-            check_seconds_field(
-                &format!("input `{input_id}` of node `{}`", node.id),
-                "input_timeout",
-                input.input_timeout,
-                true,
-            )?;
-        }
+        check_node_timing(node)?;
     }
     // dataflow-level `health_check_interval` reaches `Duration::from_secs_f64`
     // in the same way (`binaries/daemon/src/lib.rs`). A zero interval must also
@@ -225,6 +204,63 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
     Ok(())
 }
 
+/// Validate the second-valued timing fields of one resolved node: the custom
+/// node's own timeouts and restart delays, plus every input's
+/// `input_timeout`.
+///
+/// The daemon feeds these to `Duration::from_secs_f64`, which panics on
+/// negative, non-finite, or overflowing values. [`check_dataflow_static`]
+/// runs this for every node; call it directly for a node that joins a running
+/// dataflow (`dora node add` / `dora node replace`), which never goes through
+/// whole-dataflow validation.
+///
+/// This also enforces the `startup_timeout` rule for dynamic nodes, which is
+/// a descriptor-policy check rather than a panic guard. The spawn path of an
+/// existing dataflow (`dora start`) must not apply that rule to a descriptor
+/// that started fine before, so it calls [`check_node_timing_values`] instead.
+pub fn check_node_timing(node: &ResolvedNode) -> eyre::Result<()> {
+    check_node_timing_values(node)?;
+    if let descriptor::CoreNodeKind::Custom(custom) = &node.kind
+        && custom.path.as_str() == DYNAMIC_SOURCE
+        && custom.startup_timeout.is_some()
+    {
+        bail!(
+            "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
+            node.id
+        );
+    }
+    Ok(())
+}
+
+/// The panic-guard half of [`check_node_timing`]: reject only the values the
+/// daemon would panic on in `Duration::from_secs_f64`, with no
+/// descriptor-policy rules on top.
+///
+/// `dora start` never ran whole-dataflow validation before, so applying a
+/// policy rule there would reject descriptors that start fine on 1.0.x and
+/// never panicked -- a dynamic node carrying an (ignored) `startup_timeout`,
+/// for one. The spawn path therefore guards against the panic only, and
+/// leaves the policy rules to `dora run` / `dora validate`
+/// ([`check_dataflow_static`]) and to the node-join path
+/// ([`check_node_timing`]).
+pub fn check_node_timing_values(node: &ResolvedNode) -> eyre::Result<()> {
+    if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
+        check_timing_fields(&node.id, custom)?;
+    }
+    // `input_timeout` is a second-valued `f64` that the daemon also feeds
+    // to `Duration::from_secs_f64`, on both the initial-spawn and the
+    // reconnect paths.
+    for (input_id, input) in node_inputs(node) {
+        check_seconds_field(
+            &format!("input `{input_id}` of node `{}`", node.id),
+            "input_timeout",
+            input.input_timeout,
+            true,
+        )?;
+    }
+    Ok(())
+}
+
 /// Reject negative / non-finite / overflowing second-valued timing fields on a
 /// custom node.
 ///
@@ -326,9 +362,20 @@ pub trait ResolvedNodeExt {
     fn max_rotated_files(&self) -> eyre::Result<Option<u32>>;
 }
 
+/// Check that a resolved `send_stdout_as` / `send_logs_as` name is a valid
+/// [`DataId`]. The daemon's per-node log task turns it into one for every log
+/// line, and an invalid name (empty, a space, `op/` from an empty operator
+/// entry, ...) would otherwise panic that task on the node's first line and
+/// silently drop all of the node's later logs.
+fn checked_output_name(field: &str, name: String) -> eyre::Result<String> {
+    name.parse::<DataId>()
+        .map_err(|err| eyre!("`{field}: {name}` is not a valid output id: {err}"))?;
+    Ok(name)
+}
+
 impl ResolvedNodeExt for ResolvedNode {
     fn send_stdout_as(&self) -> eyre::Result<Option<String>> {
-        match &self.kind {
+        let name = match &self.kind {
             // TODO: Split stdout between operators
             CoreNodeKind::Runtime(n) => {
                 let count = n
@@ -345,19 +392,21 @@ impl ResolvedNodeExt for ResolvedNode {
                         "More than one `send_stdout_as` entries for a runtime node. Please only use one `send_stdout_as` per runtime."
                     ));
                 }
-                Ok(n.operators.iter().find_map(|op| {
+                n.operators.iter().find_map(|op| {
                     op.config
                         .send_stdout_as
-                        .clone()
+                        .as_ref()
                         .map(|stdout| format!("{}/{}", op.id, stdout))
-                }))
+                })
             }
-            CoreNodeKind::Custom(n) => Ok(n.send_stdout_as.clone()),
-        }
+            CoreNodeKind::Custom(n) => n.send_stdout_as.clone(),
+        };
+        name.map(|name| checked_output_name("send_stdout_as", name))
+            .transpose()
     }
 
     fn send_logs_as(&self) -> eyre::Result<Option<String>> {
-        match &self.kind {
+        let name = match &self.kind {
             CoreNodeKind::Runtime(n) => {
                 let count = n
                     .operators
@@ -369,15 +418,17 @@ impl ResolvedNodeExt for ResolvedNode {
                         "More than one `send_logs_as` entries for a runtime node. Please only use one `send_logs_as` per runtime."
                     ));
                 }
-                Ok(n.operators.iter().find_map(|op| {
+                n.operators.iter().find_map(|op| {
                     op.config
                         .send_logs_as
-                        .clone()
+                        .as_ref()
                         .map(|logs| format!("{}/{}", op.id, logs))
-                }))
+                })
             }
-            CoreNodeKind::Custom(n) => Ok(n.send_logs_as.clone()),
-        }
+            CoreNodeKind::Custom(n) => n.send_logs_as.clone(),
+        };
+        name.map(|name| checked_output_name("send_logs_as", name))
+            .transpose()
     }
 
     fn min_log_level(&self) -> eyre::Result<Option<dora_message::common::LogLevelOrStdout>> {
@@ -1480,6 +1531,55 @@ nodes:
         assert!(
             err.contains("dynamic node `dyn` cannot specify `startup_timeout`"),
             "error should explain dynamic node startup_timeout rejection, got: {err}"
+        );
+    }
+
+    /// `check_node_timing_values` is the panic guard the `dora start` path
+    /// uses, so it must stop at the values `Duration::from_secs_f64` panics
+    /// on and leave the dynamic-node `startup_timeout` policy rule to
+    /// `check_node_timing` (`dora node add` / `replace`) and
+    /// `check_dataflow_static` (`dora run` / `validate`). Were the policy
+    /// rule in both, `dora start` would reject a descriptor that starts fine
+    /// on 1.0.x.
+    #[test]
+    fn timing_values_check_skips_the_dynamic_node_policy_rule() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: dyn
+    path: dynamic
+    startup_timeout: 5.0
+"#,
+        )
+        .unwrap();
+        let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+        let node = nodes.values().next().unwrap();
+
+        check_node_timing_values(node)
+            .expect("an ignored startup_timeout is not a panic risk, so the spawn path allows it");
+        let err = check_node_timing(node).unwrap_err().to_string();
+        assert!(
+            err.contains("dynamic node `dyn` cannot specify `startup_timeout`"),
+            "the node-join path keeps the policy rule, got: {err}"
+        );
+
+        // The panic guard itself is unchanged by the split.
+        let bad: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: dyn
+    path: dynamic
+    restart_delay: -1.0
+"#,
+        )
+        .unwrap();
+        let bad_nodes = bad.resolve_aliases_and_set_defaults().unwrap();
+        let err = check_node_timing_values(bad_nodes.values().next().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("restart_delay"),
+            "the spawn path still rejects a panicking value, got: {err}"
         );
     }
 
@@ -3307,6 +3407,73 @@ nodes:
         assert!(parse_byte_size("abc").is_err());
         assert!(parse_byte_size("abcKB").is_err());
         assert!(parse_byte_size("1.2.3KB").is_err());
+    }
+
+    #[test]
+    fn send_as_rejects_names_that_are_not_valid_output_ids() {
+        for (field, value) in [
+            ("send_stdout_as", "std out"),
+            ("send_stdout_as", "out/"),
+            ("send_logs_as", "\"\""),
+            ("send_logs_as", "a//b"),
+        ] {
+            let yaml = format!(
+                "nodes:\n  - id: talker\n    path: talker\n    {field}: {value}\n    outputs: [out]\n"
+            );
+            let descriptor: Descriptor = serde_yaml::from_str(&yaml).unwrap();
+            let err = check_dataflow_static(&descriptor)
+                .expect_err(&format!("`{field}: {value}` must be rejected"));
+            assert!(
+                format!("{err:?}").contains("is not a valid output id"),
+                "unexpected error for `{field}: {value}`: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn send_as_rejects_empty_operator_entry() {
+        let yaml = r#"
+nodes:
+  - id: rt
+    operators:
+      - id: op1
+        python: op.py
+        send_stdout_as: ""
+        send_logs_as: ""
+        outputs: [out]
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+        let node = &nodes[&NodeId::from("rt".to_string())];
+        assert!(node.send_stdout_as().is_err());
+        assert!(node.send_logs_as().is_err());
+    }
+
+    #[test]
+    fn send_as_accepts_valid_names() {
+        let yaml = r#"
+nodes:
+  - id: rt
+    operators:
+      - id: op1
+        python: op.py
+        send_stdout_as: stdout
+        send_logs_as: logs
+        outputs: [stdout, logs]
+  - id: talker
+    path: talker
+    send_stdout_as: stdout
+    send_logs_as: logs
+    outputs: [stdout, logs]
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+        let rt = &nodes[&NodeId::from("rt".to_string())];
+        assert_eq!(rt.send_stdout_as().unwrap().as_deref(), Some("op1/stdout"));
+        assert_eq!(rt.send_logs_as().unwrap().as_deref(), Some("op1/logs"));
+        let talker = &nodes[&NodeId::from("talker".to_string())];
+        assert_eq!(talker.send_stdout_as().unwrap().as_deref(), Some("stdout"));
+        assert_eq!(talker.send_logs_as().unwrap().as_deref(), Some("logs"));
     }
 
     // parse_log_level: every level variant ----
