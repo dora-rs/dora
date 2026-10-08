@@ -224,6 +224,21 @@ pub(crate) fn next_node_generation() -> u64 {
 
 #[derive(Debug)]
 pub(crate) enum ProcessOperation {
+    /// The stop sequence has started, but nothing is to be signalled yet: the
+    /// node still has its grace period before the ladder's first `SoftKill`.
+    ///
+    /// `kill_at` is when the ladder gives up and sends the `Kill` — the node's
+    /// process-wait task needs it to know how long a group it inherited may keep
+    /// running, without holding on to this operation channel: a node that honors
+    /// the `NodeEvent::Stop` it was just sent exits during the grace period,
+    /// with its children possibly still shutting down (#3472 review).
+    StopRequested {
+        /// When the ladder sends its `SoftKill` to the node process — the same
+        /// instant, for the process group that outlives it.
+        soft_kill_at: tokio::time::Instant,
+        /// When the ladder sends its `Kill`.
+        kill_at: tokio::time::Instant,
+    },
     SoftKill,
     Kill,
 }
@@ -231,6 +246,7 @@ pub(crate) enum ProcessOperation {
 impl ProcessOperation {
     pub fn execute(&self, child: &mut dyn ChildWrapper) {
         match self {
+            Self::StopRequested { .. } => {}
             Self::SoftKill => {
                 #[cfg(unix)]
                 {
@@ -806,13 +822,57 @@ impl RunningDataflow {
                 }
             }
             StopProcessPolicy::Graceful(duration) => {
+                // `Instant + Duration` panics on overflow, and a dataflow gets
+                // to ask for whatever grace period it likes — so a typo like
+                // `grace_duration: 1000000000000s` would take the daemon's
+                // event loop down with it, turning a stop that was asked for
+                // into a daemon that is gone. Clamp instead: a grace period
+                // this long means "do not stop it", which is what it said, and
+                // every deadline below is then arithmetic that cannot overflow
+                // (~6.5e18 ns against the 9.2e18 an `Instant` holds).
+                const MAX_GRACE: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
+                let duration = duration.min(MAX_GRACE);
+                let kill_duration = duration / 2;
+                // Mark the stop as in flight before the grace period starts: a
+                // node that exits because of the `NodeEvent::Stop` it just
+                // received leaves before any signal is due, and its children are
+                // then mid-shutdown rather than abandoned (#3472 review). Both
+                // deadlines travel with it so the node's process-wait task can
+                // put the group through this same ladder once the node process
+                // is gone, rather than cutting straight to the escalation — a
+                // node that stops promptly must not leave its children worse off
+                // than one that has to be chased (#3472 review).
+                //
+                // Submitted here and not from the task below, so the marker is
+                // queued before the wait task can look for one. `stop_all` sends
+                // `NodeEvent::Stop` to every node before it gets here, and a node
+                // is a separate process that can act on that event immediately,
+                // so the wait task may already be running; but it cannot reach
+                // the point where it takes a queued marker until the executor
+                // yields, and nothing between those sends and these submits
+                // awaits. A marker submitted by a spawned task would be queued a
+                // whole task wakeup later, by which time the group is SIGKILLed
+                // at once instead of held (#3472 review).
+                // A blocking `send` on the event loop, deliberately, and
+                // deliberately not `try_send`. It cannot block, because this is
+                // the *first* message on this incarnation's channel: the pair is
+                // made fresh per spawn, this `ProcessHandle` is moved in here
+                // and not `Clone`, and the only two later sends (`SoftKill` and
+                // `Kill`) come from the task below. So the queue is empty and
+                // the 2 slots are free. A `try_send` fallback would be a
+                // regression rather than a safety net: it drops the marker if
+                // the channel is ever full, and the marker is what holds the
+                // group for its grace period (#3472 review).
+                let soft_kill_at = tokio::time::Instant::now() + duration;
+                process.submit(ProcessOperation::StopRequested {
+                    soft_kill_at,
+                    kill_at: soft_kill_at + kill_duration,
+                });
                 tokio::spawn(async move {
                     tokio::time::sleep(duration).await;
                     if process.submit(ProcessOperation::SoftKill) {
                         grace_duration_kills.insert((node_id.clone(), generation));
                     }
-
-                    let kill_duration = duration / 2;
                     tokio::time::sleep(kill_duration).await;
                     if process.submit(ProcessOperation::Kill) {
                         grace_duration_kills.insert((node_id.clone(), generation));
@@ -993,27 +1053,19 @@ impl RunningDataflow {
         }
 
         if let Some(proc) = process {
-            let duration = grace_duration.unwrap_or(default_grace);
-            // Mirror `stop_all`'s population of `grace_duration_kills`
-            // so SpawnedNodeResult can distinguish "daemon explicitly
-            // sent SIGTERM to this node" from "node received SIGTERM
-            // from somewhere else". Without this marker, a source node
-            // (which has `disable_restart` set at subscribe time, see
-            // lib.rs:3203) cannot be told apart from an externally
-            // killed source node when classifying the exit status
-            // (dora-rs/dora#1882).
-            let grace_duration_kills = self.grace_duration_kills.clone();
-            let node_id = node_id.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(duration).await;
-                if proc.submit(ProcessOperation::SoftKill) {
-                    grace_duration_kills.insert((node_id.clone(), generation));
-                }
-                tokio::time::sleep(duration / 2).await;
-                if proc.submit(ProcessOperation::Kill) {
-                    grace_duration_kills.insert((node_id, generation));
-                }
-            });
+            // One ladder for every stop path, so they cannot drift apart: this
+            // is also what marks the stop as in flight, which a node that exits
+            // on the `NodeEvent::Stop` above depends on to keep its grace period
+            // (#3472 review). It mirrors `stop_process_policy` in
+            // `grace_duration_kills` so SpawnedNodeResult can distinguish
+            // "daemon explicitly sent SIGTERM to this node" from "node received
+            // SIGTERM from somewhere else" (dora-rs/dora#1882).
+            self.schedule_process_stop(
+                node_id.clone(),
+                generation,
+                proc,
+                StopProcessPolicy::Graceful(grace_duration.unwrap_or(default_grace)),
+            );
         }
     }
 
