@@ -234,19 +234,27 @@ pub(crate) fn note_direct_recovered(dataflow_id: Uuid, shared_memory_id: &str) -
         .remove(&(dataflow_id, shared_memory_id.to_string()))
 }
 
-/// How long a cross-machine write waits for the remote commit ack before
-/// failing loudly. Generous: the WAN transfer of a near-limit frame alone
-/// can take tens of seconds; a dead link fails earlier via the publish
-/// error path.
-pub(crate) const CROSS_WRITE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 /// Upper bound for reading one direct-TCP data frame (header + payload).
 /// A peer that sends a header with a large `size` and then stalls would
 /// otherwise hold the per-pool lock and leave the seqlock odd
 /// indefinitely, wedging every subsequent write to that pool. 300s covers
 /// a 1 GiB frame on a ~5 MB/s slow WAN link; on timeout the connection is
 /// dropped, the lock guard drops, and the odd generation marks the frame
-/// torn (next write self-heals).
+/// torn (next write self-heals). The origin bounds sending a frame by the
+/// same limit.
 pub(crate) const CROSS_DATA_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// How long a cross-machine write waits for the remote commit ack before
+/// failing loudly. Must outlast [`CROSS_DATA_READ_TIMEOUT`]: the mirror
+/// accepts a frame that takes up to that long to arrive (a 1 GiB frame on
+/// a ~5 MB/s link), and the origin bounds its own send by the same limit.
+/// If the ack timeout were shorter, a slow-but-successful transfer would
+/// be reported to the sender as failed while the mirror still commits it
+/// as a stable frame (#3688). The extra margin covers the origin's segment
+/// read before the send and the mirror's memcpy + ack publish after it. A
+/// dead link fails earlier via the send/publish error paths.
+pub(crate) const CROSS_WRITE_ACK_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(CROSS_DATA_READ_TIMEOUT.as_secs() + 60);
+const _: () = assert!(CROSS_WRITE_ACK_TIMEOUT.as_secs() > CROSS_DATA_READ_TIMEOUT.as_secs());
 
 /// Resolve the pending cross-machine write reply for a commit ack.
 /// Only the seq-matched pending entry is resolved — an ack for a previous
@@ -329,7 +337,7 @@ pub(crate) fn rekey_cross_write_to_relay(
     // it between the remove and the insert would leave the entry in no map at
     // all, so a concurrent `drain_cross_write_pending` walks past it and the
     // re-insert then outlives `finish_dataflow` — the node stays blocked until
-    // the 120s safety net and the entry leaks past the dataflow it belongs to.
+    // the ack-timeout safety net and the entry leaks past the dataflow it belongs to.
     // The counter bump nests `CROSS_WRITE_SEQ` inside this guard; that is the
     // only nesting of the two (every other site drops the seq lock before
     // touching the pending map), so the order cannot deadlock.

@@ -614,6 +614,7 @@ impl PoolState {
                             &shared_memory_id,
                             seq,
                             &tensor_data,
+                            CROSS_DATA_READ_TIMEOUT,
                         )
                         .await
                         {
@@ -629,7 +630,25 @@ impl PoolState {
                                 }
                                 return;
                             }
-                            Err(e) => {
+                            Err(DirectSendError::TimedOut(e)) => {
+                                // The send ran for the mirror's whole read
+                                // window, which leaves too little of the ack
+                                // window for a full relay: a relayed frame
+                                // would land after the safety net failed the
+                                // write, so the mirror would commit a frame
+                                // the sender was told had failed (#3688).
+                                // Fail the write now instead; the mirror has
+                                // given up on this frame too.
+                                resolve_cross_write_ack(
+                                    dataflow_id,
+                                    shared_memory_id,
+                                    seq,
+                                    false,
+                                    Some(format!("cross-machine write failed: {e}")),
+                                );
+                                return;
+                            }
+                            Err(DirectSendError::Failed(e)) => {
                                 // Warn exactly once per pool while degraded:
                                 // the zenoh fallback is the steady state on a
                                 // broken link, and a per-frame warn would
@@ -1282,7 +1301,7 @@ impl PoolState {
         }
         // Fail any cross-machine write replies still pending for this
         // dataflow. Without it a node whose write was in flight at finish
-        // hangs until the 120s safety-net timeout, and a relay entry orphaned
+        // hangs until the ack-timeout safety net, and a relay entry orphaned
         // by a failover (#3193) would leak for the daemon's lifetime.
         //
         // Must run *before* the `CROSS_WRITE_SEQ` retain below: a spawned
