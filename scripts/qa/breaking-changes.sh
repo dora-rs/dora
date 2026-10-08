@@ -27,7 +27,8 @@
 #   scripts/qa/breaking-changes.sh --update         # re-record the generated inputs
 #   scripts/qa/breaking-changes.sh --baseline v1.0.0
 #
-# Env: BREAKING_BASELINE=<ref>, ALLOW_MAJOR_BUMP=1.
+# Env: BREAKING_BASELINE=<ref>, ALLOW_MAJOR_BUMP=1. Reviewed findings that
+# cannot affect anything working today: ACCEPTED_FINDINGS in breaking_changes.py.
 
 set -euo pipefail
 
@@ -56,7 +57,7 @@ while [[ $# -gt 0 ]]; do
     --baseline)
       [[ $# -ge 2 ]] || { echo "--baseline needs a ref" >&2; exit 2; }
       BASELINE_OVERRIDE="$2"; shift ;;
-    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift

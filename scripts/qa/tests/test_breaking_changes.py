@@ -18,11 +18,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from breaking_changes import (  # noqa: E402
+    ACCEPTED,
+    ACCEPTED_FINDINGS,
     BREAK,
     NON_POSTCARD_MODULES,
     WARN,
     Baseline,
+    Finding,
+    SurfaceResult,
     abi3_floor,
+    accept_findings,
     baseline_ref,
     compare_ordered,
     diff_schema,
@@ -433,6 +438,50 @@ class SchemaUnionTest(unittest.TestCase):
             "$defs": {"Source": {"oneOf": self.BASE["$defs"]["Source"]["oneOf"][:2]}}
         }
         self.assertTrue(find(self.diff(new), "no longer accepts `Url`"))
+
+
+class AcceptedFindingsTest(unittest.TestCase):
+    GONE = "dora-schema.json #/$defs/Old: removed from the schema"
+    TABLE = {"v1.1.0": [("schema", GONE, "never loaded")]}
+
+    def results(self, *details):
+        return [SurfaceResult("schema", [Finding(BREAK, d) for d in details])]
+
+    def test_listed_finding_is_accepted_and_does_not_fail(self):
+        results = self.results(self.GONE)
+        unused = accept_findings(results, "v1.1.0", self.TABLE)
+        self.assertEqual(unused, [])
+        self.assertEqual(results[0].breaks(), [])
+        [accepted] = results[0].accepted()
+        self.assertEqual((accepted.level, accepted.reason), (ACCEPTED, "never loaded"))
+
+    def test_other_breaks_still_fail(self):
+        # Including one that merely contains the accepted text.
+        results = self.results(self.GONE + " and more", "#/$defs/Node: property `path` removed")
+        accept_findings(results, "v1.1.0", self.TABLE)
+        self.assertEqual(len(results[0].breaks()), 2)
+
+    def test_same_text_on_another_surface_still_fails(self):
+        results = [SurfaceResult("C node API", [Finding(BREAK, self.GONE)])]
+        accept_findings(results, "v1.1.0", self.TABLE)
+        self.assertEqual(len(results[0].breaks()), 1)
+
+    def test_entries_for_another_baseline_are_ignored(self):
+        for ref in ("v1.2.0", "668e59f2bbae38378f7e3d06226881ff37caabf6"):
+            results = self.results(self.GONE)
+            self.assertEqual(accept_findings(results, ref, self.TABLE), [])
+            self.assertEqual(len(results[0].breaks()), 1)
+
+    def test_unused_entry_is_reported(self):
+        results = self.results()
+        self.assertEqual(
+            accept_findings(results, "v1.1.0", self.TABLE), self.TABLE["v1.1.0"]
+        )
+
+    def test_every_entry_gives_a_reason(self):
+        for ref, entries in ACCEPTED_FINDINGS.items():
+            for surface, detail, reason in entries:
+                self.assertTrue(reason.strip(), f"{ref} {surface}: {detail}")
 
 
 class Abi3Test(unittest.TestCase):
