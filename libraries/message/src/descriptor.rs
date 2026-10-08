@@ -40,8 +40,8 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 ///
 /// A dataflow consists of:
 /// - **Nodes**: The computational units that process data
-/// - **Deployment**: Optional deployment configuration (unstable)
-/// - **Debug options**: Optional development and debugging settings (unstable)
+/// - **Deployment**: Optional deployment configuration
+/// - **Debug options**: Optional development and debugging settings
 ///
 /// ## Example
 ///
