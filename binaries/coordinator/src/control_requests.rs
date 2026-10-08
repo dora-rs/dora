@@ -740,63 +740,14 @@ impl Coordinator {
     ) -> eyre::Result<()> {
         match resolve_name(name, &self.running_dataflows, &self.archived_dataflows) {
             Ok(dataflow_uuid) => {
-                // Same pending-restart cancellation as `Stop`
-                // — see the comment there for why.
-                cancel_pending_restart(
-                    &mut self.pending_restarts,
-                    dataflow_uuid,
-                    format!(
-                        "dataflow `{dataflow_uuid}` was stopped before the restart could complete"
-                    ),
-                );
-
-                // Same partial-completion guard as `Stop`: a
-                // still-running multi-daemon dataflow has a
-                // partial `dataflow_results` entry, but must
-                // still be stopped rather than reported done.
-                if !self.running_dataflows.contains_key(&dataflow_uuid)
-                    && let Some(result) = self.dataflow_results.get(&dataflow_uuid)
-                {
-                    let reply = ControlRequestReply::DataflowStopped {
-                        uuid: dataflow_uuid,
-                        result: dataflow_result(result, dataflow_uuid, &self.clock),
-                    };
-                    let _ = reply_sender.send(Ok(reply));
-
-                    return Ok(());
-                }
-
-                let dataflow = stop_dataflow(
-                    &mut self.running_dataflows,
-                    dataflow_uuid,
-                    &mut self.daemon_connections,
-                    self.clock.new_timestamp(),
-                    grace_duration,
-                    force,
-                )
-                .await;
-
-                match dataflow {
-                    Ok(dataflow) => {
-                        // Persist: dataflow stopping
-                        if let Err(e) = dataflow
-                            .make_record(StoreDataflowStatus::Stopping)
-                            .and_then(|r| self.store.put_dataflow(&r))
-                        {
-                            tracing::warn!("failed to persist dataflow stopping: {e}");
-                        }
-                        dataflow.stop_reply_senders.push(reply_sender);
-                    }
-                    Err(err) => {
-                        let _ = reply_sender.send(Err(err));
-                    }
-                }
+                self.handle_stop(dataflow_uuid, grace_duration, force, reply_sender)
+                    .await
             }
             Err(err) => {
                 let _ = reply_sender.send(Err(err));
+                Ok(())
             }
         }
-        Ok(())
     }
 
     pub(crate) async fn handle_logs(
