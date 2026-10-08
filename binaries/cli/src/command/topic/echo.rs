@@ -3,7 +3,11 @@ use std::{collections::HashMap, ptr::NonNull, sync::Arc, time::SystemTime};
 use arrow::{buffer::OffsetBuffer, datatypes::Field};
 use clap::Args;
 use colored::Colorize;
-use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::Parameter};
+use dora_message::{
+    common::Timestamped,
+    daemon_to_daemon::InterDaemonEvent,
+    metadata::{Parameter, strip_internal_parameters},
+};
 use eyre::{Context, eyre};
 
 use crate::{
@@ -185,13 +189,17 @@ fn inspect(
 
         match event.inner {
             InterDaemonEvent::Output {
-                metadata,
+                mut metadata,
                 data,
                 node_id,
                 output_id,
                 ..
             } => {
                 use std::fmt::Write;
+
+                // The daemon stamps every debug frame with its on-wire size for
+                // `dora topic info`; it is not part of the node's metadata.
+                strip_internal_parameters(&mut metadata.parameters);
 
                 let display_output = nodes
                     .get(&node_id)

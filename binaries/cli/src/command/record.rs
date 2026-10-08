@@ -5,12 +5,13 @@ use std::{
 };
 
 use clap::Args;
-use dora_core::descriptor::Descriptor;
+use dora_core::descriptor::{Descriptor, Node};
 use dora_message::{
     common::Timestamped,
     coordinator_to_cli::DataflowIdAndName,
     daemon_to_daemon::InterDaemonEvent,
     id::{DataId, NodeId},
+    metadata::strip_internal_parameters,
 };
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::{Context, bail};
@@ -664,28 +665,12 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                     Err(_) => continue,
                 };
 
-                // The daemon reports the *wire* output id, which for a single
-                // `operator:` node is `op/image` where the descriptor (and
-                // `replay_node_outputs`) call it `image`. Rewrite it to the
-                // public id in both the entry index and the embedded event, so
-                // a `--proxy` recording is shaped exactly like one from the
-                // record node -- which stores the bare `source_output` in both
-                // places. Left as-is, replay declares `outputs: [image]` and
-                // then calls `send_output("op/image", ..)`; `validate_output`
-                // rejects it, `send_output` still returns `Ok(())`, and every
-                // message is dropped with a single warning (dora-rs/dora#2893).
-                let (node_id, output_id) = match &mut event.inner {
-                    InterDaemonEvent::Output {
-                        node_id, output_id, ..
-                    } => {
-                        if let Some(node) = nodes.get(node_id) {
-                            *output_id = public_topic_output_id(node, output_id);
-                        }
-                        (node_id.to_string(), output_id.to_string())
-                    }
-                    InterDaemonEvent::OutputClosed { .. } => continue,
-                    // `InterDaemonEvent` is `#[non_exhaustive]`: skip events this build predates.
-                    _ => continue,
+                // Rewrite the event in place so a `--proxy` recording is
+                // shaped exactly like one from the record node, which stores
+                // the bare `source_output` in both the entry and the event.
+                let Some((node_id, output_id)) = prepare_proxy_event(&mut event.inner, &nodes)
+                else {
+                    continue;
                 };
 
                 // Re-serialize rather than storing `payload`: the id inside the
@@ -814,6 +799,42 @@ fn select_dataflow(
     })
 }
 
+/// Shape a debug-topic frame received by `dora record --proxy` like an event
+/// recorded by the record node, returning its `(node_id, output_id)` entry key,
+/// or `None` for an event that isn't an output.
+///
+/// - The daemon reports the *wire* output id, which for a single `operator:`
+///   node is `op/image` where the descriptor (and `replay_node_outputs`) call it
+///   `image`. Rewrite it to the public id, so replay declares and sends the same
+///   id. Left as-is, `send_output("op/image", ..)` is rejected by
+///   `validate_output` and every message is dropped (dora-rs/dora#2893).
+/// - Drop internal parameters, notably the daemon's `_wire_size` stamp. It
+///   exists only for `dora topic info`'s bandwidth accounting on the debug
+///   path; stored in the recording, replay would forward it into every
+///   downstream node's input metadata.
+fn prepare_proxy_event(
+    event: &mut InterDaemonEvent,
+    nodes: &HashMap<NodeId, &Node>,
+) -> Option<(String, String)> {
+    match event {
+        InterDaemonEvent::Output {
+            node_id,
+            output_id,
+            metadata,
+            ..
+        } => {
+            if let Some(node) = nodes.get(node_id) {
+                *output_id = public_topic_output_id(node, output_id);
+            }
+            strip_internal_parameters(&mut metadata.parameters);
+            Some((node_id.to_string(), output_id.to_string()))
+        }
+        // `OutputClosed`, and (`InterDaemonEvent` is `#[non_exhaustive]`)
+        // events this build predates.
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -835,6 +856,37 @@ mod tests {
         let parsed = parse_ws_topics(&topics("n", "op/out")).unwrap();
         assert_eq!(parsed[0].0.to_string(), "n");
         assert_eq!(parsed[0].1.to_string(), "op/out");
+    }
+
+    #[test]
+    fn proxy_event_drops_the_debug_wire_size_stamp() {
+        use dora_message::metadata::{Metadata, MetadataParameters, Parameter, WIRE_SIZE};
+
+        // The daemon stamps `_wire_size` on every debug frame for `dora topic
+        // info`. A proxy recording must not keep it: replay would forward it
+        // into every downstream node's input metadata.
+        let mut parameters = MetadataParameters::default();
+        parameters.insert(WIRE_SIZE.to_string(), Parameter::Integer(42));
+        parameters.insert("user_key".to_string(), Parameter::Integer(7));
+        let mut event = InterDaemonEvent::Output {
+            dataflow_id: Uuid::new_v4(),
+            node_id: "camera".parse().unwrap(),
+            output_id: "image".parse().unwrap(),
+            metadata: Metadata::from_parameters(
+                dora_message::uhlc::HLC::default().new_timestamp(),
+                parameters,
+            ),
+            data: None,
+        };
+
+        let key = prepare_proxy_event(&mut event, &HashMap::new());
+
+        assert_eq!(key, Some(("camera".to_string(), "image".to_string())));
+        let InterDaemonEvent::Output { metadata, .. } = event else {
+            unreachable!()
+        };
+        assert!(!metadata.parameters.contains_key(WIRE_SIZE));
+        assert!(metadata.parameters.contains_key("user_key"));
     }
 
     fn discovered_topics(yaml: &str) -> Vec<String> {
