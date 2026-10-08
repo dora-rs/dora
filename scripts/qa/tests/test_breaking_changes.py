@@ -10,7 +10,6 @@ real differ and asserts it is caught.
 Run: python3 -m unittest discover -s scripts/qa/tests
 """
 
-import re
 import sys
 import unittest
 from pathlib import Path
@@ -21,9 +20,7 @@ from breaking_changes import (  # noqa: E402
     BREAK,
     NON_POSTCARD_MODULES,
     WARN,
-    Baseline,
     abi3_floor,
-    baseline_ref,
     compare_ordered,
     diff_schema,
     diff_wire_types,
@@ -511,37 +508,6 @@ class RealRepoCoverageTest(unittest.TestCase):
         parsed = parse_cli_surface((ROOT / "binaries/cli/cli-surface.txt").read_text())
         self.assertGreaterEqual(len(parsed), 50)
         self.assertIn("dora build", parsed)
-
-    def test_transitional_non_exhaustive_allow_is_retired(self):
-        """Fails once the baseline carries the attribute: delete the allow in
-        libraries/message/Cargo.toml and this test together."""
-        try:
-            baseline = baseline_ref(ROOT)
-        except SystemExit as e:
-            self.skipTest(str(e))
-        base = Baseline(ROOT, baseline)
-        marked_at_baseline = all(
-            re.search(
-                rf"#\[non_exhaustive\]\s*(?:(?:#\[[^\]]*\]|///[^\n]*)\s*)*{variant}\s*\{{",
-                base.read(f"libraries/message/src/{module}.rs") or "",
-            )
-            for module, variant in [
-                ("cli_to_coordinator", "TopicSubscribe"),
-                ("coordinator_to_daemon", "StartTopicDebugStream"),
-            ]
-        )
-        manifest = (ROOT / "libraries/message/Cargo.toml").read_text()
-        allowed = 'enum_variant_marked_non_exhaustive = "allow"' in manifest
-        self.assertEqual(
-            allowed,
-            not marked_at_baseline,
-            f"baseline {baseline} {'has' if marked_at_baseline else 'lacks'} "
-            "`#[non_exhaustive]` on `TopicSubscribe` and "
-            "`StartTopicDebugStream`, so the transitional "
-            "`enum_variant_marked_non_exhaustive` allow in "
-            "libraries/message/Cargo.toml must be "
-            f"{'deleted (with this test)' if marked_at_baseline else 'present'}",
-        )
 
 
 if __name__ == "__main__":
