@@ -2,12 +2,33 @@
 
 ## Unreleased
 
+## v1.1.0 (2026-10-07)
+
 ### Breaking
 
 - **`DoraEventType` has a new `NodeRestarted` variant** ([#3046](https://github.com/dora-rs/dora/issues/3046)). A restart of an upstream node reached C++ as `Unknown`, so a node could not reset state, resend work it had in flight, or even tell that anything had happened. It now arrives as `DoraEventType::NodeRestarted`, with `event_as_node_restarted(event)` returning the restarted node's id. This changes what existing C++ nodes see: a `switch` over `DoraEventType` without a `default` arm stops compiling under `-Werror=switch`. Add a `default`, or handle the new variant.
 
+### Upgrade notes
+
+These fixes reject input that 1.0.1 accepted or change how a running dataflow behaves. Each one replaces a crash, a hang, or silent data loss, but check them before upgrading.
+
+- **Timing fields are validated on every start path** ([#3649](https://github.com/dora-rs/dora/pull/3649), [#3666](https://github.com/dora-rs/dora/pull/3666)). Only `dora run` rejected a negative, non-finite or overflowing `input_timeout`, `restart_delay`, `health_check_timeout` or other seconds-valued field. On `dora start`, `dora restart` and `dora node add`/`replace` the value reached the daemon and panicked it, taking down every dataflow on that daemon. These paths now reject the descriptor before any node spawns, and the daemon checks again so an older coordinator cannot crash it. An interval that rounds to zero nanoseconds, such as `health_check_interval: 1e-10`, is now rejected too ([#3345](https://github.com/dora-rs/dora/pull/3345)); it used to be accepted and silently replaced by the 5 s default.
+- **`send_stdout_as` and `send_logs_as` must name a valid output id** ([#3643](https://github.com/dora-rs/dora/pull/3643)). Values such as `"std out"`, `out/` or `a//b` passed `dora validate`, then killed the node's log task at its first stdout line, so every later line of that node was lost. They are now rejected at validation and spawn time.
+- **A git commit hash must be 4 to 64 hex digits** ([#3647](https://github.com/dora-rs/dora/pull/3647)). The hash, whether from a descriptor `rev:` or from the lockfile under `--locked`, becomes a path component in the clone cache, so a value such as `../../home/u/project` reached outside it.
+- **ROS 2 bridge port mappings are checked against the node's declared ports** ([#3310](https://github.com/dora-rs/dora/pull/3310), [#3486](https://github.com/dora-rs/dora/pull/3486)). A `topics:` entry whose explicit or derived `output`/`input` is not declared on the node is now rejected by `dora validate`, `dora run` and `dora start`. Before, the bridge started and silently dropped every message for that topic. A single-topic bridge now binds to the declared port.
+- **`dora replay --speed` is validated** ([#3381](https://github.com/dora-rs/dora/pull/3381)). Negative values, `nan`, `-inf` and values between 0 and `1e-6` are rejected. `0` and `inf` still mean "as fast as possible".
+- **`dora record` rejects topics that collide under its input-id encoding** ([#3444](https://github.com/dora-rs/dora/pull/3444)). `x/y___z` and `x___y/z` both encode to `x___y___z`, and one of them used to be dropped from the recording without an error.
+- **A full `backpressure` receiver now holds its producer instead of dropping messages** ([#3590](https://github.com/dora-rs/dora/pull/3590), [#3610](https://github.com/dora-rs/dora/pull/3610)). On the daemon path, a message for a `queue_policy: backpressure` input whose receiver channel is full waits for room, and the producer's next `send_output` blocks until it is delivered. Only that producer stalls; the daemon loop does not wait. A producer that used to run ahead of a slow backpressure consumer is now throttled to the consumer's pace. If the receiver frees no room for 60 s, the held message is dropped and counted, and the receiver's messages keep being dropped until it reads an event again. `dora replay` now fails when it loses a backpressure message, which makes `--speed 0` lossless.
+- **`decode_arrow_ipc` rejects a stream with more than one record batch or with trailing bytes** ([#3588](https://github.com/dora-rs/dora/pull/3588)). It used to return the first batch and silently discard the rest.
+- **The coordinator's WebSocket connection cap now applies for a socket's whole lifetime** ([#3600](https://github.com/dora-rs/dora/pull/3600)). The limit used to be released once the upgrade response was sent, so open connections were unbounded. CLI and daemon connections now have separate budgets, so a flood of CLI connections cannot lock out daemons. TCP keepalive frees the slot of a peer that disappears without closing the connection.
+- `dora new` rejects some project names it used to accept, and `drain_drop_counts()` can report more drops than in 1.0.x. Both are described under Fixed.
+
 ### Added
 
+- **Node startup watchdog via `startup_timeout`** ([#3360](https://github.com/dora-rs/dora/pull/3360)). Set the optional YAML field to bound how long a spawned node may take to connect. A node that exceeds the limit is killed and handled according to its restart policy; checks run at the configured `health_check_interval`.
+- **Thread-safe output sending from C++ worker threads** ([#2288](https://github.com/dora-rs/dora/pull/2288)). `clone_output_sender()` creates a `SafeOutputSender`, and `safe_send_output()` sends raw bytes from worker threads while serializing access with the main thread's sender.
+- **Rust `IntoArrow` conversion for `Vec<bool>`** ([#3445](https://github.com/dora-rs/dora/pull/3445)). Boolean vectors can be converted directly into Arrow boolean arrays.
+- **Expanded Python `MockNode` testing support** ([#3516](https://github.com/dora-rs/dora/pull/3516)). Adds configuration getters, structured-log capture, queue inspection, and service request/reply simulation for node unit tests.
 - **`dora record --queue-size`** ([#3282](https://github.com/dora-rs/dora/issues/3282)). Sets the `queue_size` of every topic the recorder subscribes to, default 100 — roughly one flush window of slack per topic. Raise it to ride out longer write stalls; peak memory is about `2 x queue_size x payload size` per topic. Rejected together with `--proxy`, which does not route through those queues.
 
 ### Fixed
@@ -21,6 +42,101 @@
 - **Dataflow entrypoints referenced via symlinks resolve the project root consistently** ([#3247](https://github.com/dora-rs/dora/issues/3247), [#3465](https://github.com/dora-rs/dora/pull/3465)). Previously, canonicalizing the dataflow file resolved symlinks in the file itself to their physical target, causing `dora build`, `dora run`, and the daemon to treat the target directory as the project root. Project root resolution now canonicalizes the lexical parent directory of the entrypoint path, ensuring that relative module paths, node paths, and build workspaces resolve against the entrypoint's containing directory.
 - **`dora record` no longer ends up silently short** ([#3282](https://github.com/dora-rs/dora/issues/3282)). The hidden `__dora_record__` node wrote its subscriptions as bare `node/output` strings, which take dora's real-time defaults — a 10-deep queue with `drop_oldest`. That is the wrong shape for a node whose work is disk I/O: a producer burst or a stalled write evicted the oldest events before the writer saw them, and the `.drec` contained nothing to say so. Each input now carries an explicit `queue_size` (see `--queue-size` above), and the run ends with a per-topic report of what was lost instead of a bare message count. Depth alone cannot make recording lossless — a producer declares its publisher with `CongestionControl::Drop` at declare time, shared by every subscriber, so no lossless path is available to an observer that does not perturb the dataflow it is recording. The fix widens the window and reports the residue rather than promising zero loss.
 - **`drain_drop_counts()` no longer reports zero while a node is losing zero-copy messages** ([#3282](https://github.com/dora-rs/dora/issues/3282)). A payload on the direct node-to-node zenoh path is handed to the receiver by a `try_send` into one ingress channel shared by all of that node's inputs, and a full channel drops it there — before the scheduler, and so before the per-input queues whose counters this function returned. That site only logged, so the one programmatic way a node can learn it lost data read zero while every message it could not keep up with was being discarded. Both loss sites are now counted per input. **The returned numbers can therefore be larger than before** for a node on the direct path: a node that does its own drop accounting will see counts it did not see in 1.0.x. The ingress channel is sized from the sum of the node's input `queue_size`s (floor 64), so raising any input's `queue_size` also deepens it.
+
+#### Other fixes
+
+Dataflow lifecycle and daemon:
+
+- `dora restart` relaunches the dataflow with its original working directory, session, build and `write_events_to`. A relative node `path:` from a local `dora start` used to stop resolving after a restart, and built nodes lost their build ([#3677](https://github.com/dora-rs/dora/pull/3677)).
+- A hard-killed `dora run` no longer leaves nodes running: on Linux the kernel kills nodes that have not reached `init` yet ([#3482](https://github.com/dora-rs/dora/pull/3482)), and on Windows the node tree is killed when the job closes ([#3544](https://github.com/dora-rs/dora/pull/3544)).
+- A daemon resends finish reports that a failing coordinator link may have lost, so the coordinator no longer re-spawns a dataflow that finished normally ([#3118](https://github.com/dora-rs/dora/pull/3118), [#3612](https://github.com/dora-rs/dora/pull/3612)).
+- A node TCP connection whose framing is lost (oversized length header, a body that stalled past the read timeout) is dropped instead of read as garbage while the node waits forever for its reply ([#3624](https://github.com/dora-rs/dora/pull/3624)).
+- A coordinator no longer disconnects a live daemon on a heartbeat-send backpressure timeout ([#2886](https://github.com/dora-rs/dora/pull/2886)), and sends a reconnecting daemon only the catch-up entries for its own nodes ([#3692](https://github.com/dora-rs/dora/pull/3692)).
+- Joining dynamic nodes get explicit zenoh peers instead of relying on gossip or multicast to form their direct routes ([#3592](https://github.com/dora-rs/dora/pull/3592)). A daemon keeps answering the zenoh link probe when the endpoint exchange is disabled or slow, so it is no longer reported as unlinked ([#3611](https://github.com/dora-rs/dora/pull/3611)).
+- Zenoh connect and scouting timeouts are bounded, so teardown no longer hangs on an unreachable peer ([#3340](https://github.com/dora-rs/dora/pull/3340)).
+- A huge `restart_delay` saturates the restart backoff instead of panicking the daemon ([#3614](https://github.com/dora-rs/dora/pull/3614)).
+- The daemon counts a message that finds the receiver's channel closed ([#3622](https://github.com/dora-rs/dora/pull/3622)), drops a removed node's cached remote publishers ([#3351](https://github.com/dora-rs/dora/pull/3351)), answers unsupported requests on the local listener ([#3285](https://github.com/dora-rs/dora/pull/3285)), and logs an extension-request handler error instead of propagating it ([#3382](https://github.com/dora-rs/dora/pull/3382)).
+- The daemon warns when a registered receiver has no event stream ([#3520](https://github.com/dora-rs/dora/pull/3520)), but not for a consumer that finished normally ([#3558](https://github.com/dora-rs/dora/pull/3558)) or once per log line for an output with no consumer ([#3561](https://github.com/dora-rs/dora/pull/3561)).
+- `dora top` no longer counts node threads as processes ([#3559](https://github.com/dora-rs/dora/pull/3559)).
+- A node whose first request is not `Register` is logged by request kind, not by payload ([#3679](https://github.com/dora-rs/dora/pull/3679)).
+
+Coordinator:
+
+- The coordinator no longer orphans a topic subscriber when a start request fails ([#3352](https://github.com/dora-rs/dora/pull/3352)), and stops the daemon topic streams of an evicted subscriber ([#3599](https://github.com/dora-rs/dora/pull/3599)).
+- Log subscriptions tolerate transient send timeouts ([#3063](https://github.com/dora-rs/dora/pull/3063)) and are answered before their backlog is replayed ([#3676](https://github.com/dora-rs/dora/pull/3676)). A `Logs` request with an invalid node id gets an error instead of panicking the coordinator ([#3453](https://github.com/dora-rs/dora/pull/3453)), and one for a dataflow the daemon does not know gets an error instead of no answer ([#3667](https://github.com/dora-rs/dora/pull/3667)).
+- A param-store read failure counts as a failed replay ([#3650](https://github.com/dora-rs/dora/pull/3650)).
+- A trace whose root span is missing is summarized from its topmost captured span ([#3608](https://github.com/dora-rs/dora/pull/3608)).
+
+Descriptor and modules:
+
+- Module expansion no longer panics on an invalid operator output id ([#3378](https://github.com/dora-rs/dora/pull/3378)), resolves inner node paths relative to the lexical project root ([#3350](https://github.com/dora-rs/dora/pull/3350)), does not re-root a git node's path ([#3651](https://github.com/dora-rs/dora/pull/3651)), and prefixes a module's sibling log filter ([#3652](https://github.com/dora-rs/dora/pull/3652)).
+- `max_log_size` is parsed as `u64`, so sizes of 4 GiB and above work on 32-bit targets ([#3609](https://github.com/dora-rs/dora/pull/3609)).
+- Type strings with an empty base (`[sample_type=f32]`) no longer match each other, and typo suggestions work for long multibyte names ([#3423](https://github.com/dora-rs/dora/pull/3423)).
+- `dora graph` escapes Mermaid-significant characters in node descriptions ([#3371](https://github.com/dora-rs/dora/pull/3371)), sanitizes runtime-node subgraph ids ([#3456](https://github.com/dora-rs/dora/pull/3456)), and renders the description of runtime and operator nodes ([#3573](https://github.com/dora-rs/dora/pull/3573)).
+- The "no implementation field" error lists the `operator` kind ([#3549](https://github.com/dora-rs/dora/pull/3549)).
+
+CLI:
+
+- `dora logs`: per-node `--log-filter` levels apply when following ([#3323](https://github.com/dora-rs/dora/pull/3323)), `--until` applies to newly appended lines ([#3336](https://github.com/dora-rs/dora/pull/3336)), `--node` matches exact file suffixes ([#3452](https://github.com/dora-rs/dora/pull/3452)) and falls back to the local `out/` when the coordinator is unavailable ([#3550](https://github.com/dora-rs/dora/pull/3550)). Legacy `.txt` logs go through the filter pipeline and have their rotation index parsed ([#3315](https://github.com/dora-rs/dora/pull/3315), [#3383](https://github.com/dora-rs/dora/pull/3383)). Structured fields are kept ([#3671](https://github.com/dora-rs/dora/pull/3671)), and invalid UTF-8 is read lossily instead of failing ([#3670](https://github.com/dora-rs/dora/pull/3670)).
+- `dora run` flushes buffered logs before returning ([#2930](https://github.com/dora-rs/dora/pull/2930)).
+- `dora topic hz` times intervals from the producer's HLC stamp in stamp order, and stale watchers are cleared when a daemon reconnects ([#3523](https://github.com/dora-rs/dora/pull/3523), [#3696](https://github.com/dora-rs/dora/pull/3696)). Its `--duration` sample count matches its statistics ([#3570](https://github.com/dora-rs/dora/pull/3570)), and `topic hz`/`topic echo` no longer panic on an `Instant` overflow ([#3537](https://github.com/dora-rs/dora/pull/3537)).
+- `dora record` and `dora replay` run their rewritten descriptor from a private temporary directory instead of a shared, predictably named `$TMPDIR/out/` ([#3646](https://github.com/dora-rs/dora/pull/3646)). `dora record --proxy` rejects an invalid output id instead of panicking ([#3695](https://github.com/dora-rs/dora/pull/3695)). `dora replay` strips `hub`, `ros2` and `path_sha256` from the nodes it rewrites ([#3644](https://github.com/dora-rs/dora/pull/3644)) and warns that replayed outputs are pinned to the daemon path ([#3507](https://github.com/dora-rs/dora/pull/3507)).
+- `dora cluster install` passes the zenoh mesh arguments to its units ([#3504](https://github.com/dora-rs/dora/pull/3504)), and `dora cluster upgrade` brackets an IPv6 host in its `scp` target ([#3680](https://github.com/dora-rs/dora/pull/3680)).
+- A stray `dora-config.yml` no longer breaks `dora up`/`dora down` ([#3419](https://github.com/dora-rs/dora/pull/3419)).
+- `dora trace view` accepts a full UUID ([#3607](https://github.com/dora-rs/dora/pull/3607)).
+- A located node binary is kept when canonicalizing its path fails ([#3379](https://github.com/dora-rs/dora/pull/3379)), Python template errors name the actual path ([#3418](https://github.com/dora-rs/dora/pull/3418)), and the help text for `--uv` and `--local` is back ([#3548](https://github.com/dora-rs/dora/pull/3548)).
+- The C listener template prints its input with its length instead of as a C string ([#3706](https://github.com/dora-rs/dora/pull/3706)).
+
+Node and operator APIs:
+
+- Rust node API: a huge input `queue_size` no longer panics at init ([#3629](https://github.com/dora-rs/dora/pull/3629)); the event stream honors its timeout on merged (ROS 2) streams ([#3366](https://github.com/dora-rs/dora/pull/3366)) and delivers scheduler-buffered inputs on the `Stream` path ([#3596](https://github.com/dora-rs/dora/pull/3596)); `pending_passthrough` is bounded by the input's queue policy ([#3494](https://github.com/dora-rs/dora/pull/3494)); `send_output_sample` ignores undeclared and closed outputs ([#3597](https://github.com/dora-rs/dora/pull/3597)); the ingress-drop warning keeps recurring for a node that does not drain ([#3557](https://github.com/dora-rs/dora/pull/3557)); a pattern wait no longer panics on an `Instant` overflow ([#3538](https://github.com/dora-rs/dora/pull/3538)); and an invalid interactive input id re-prompts instead of panicking ([#3333](https://github.com/dora-rs/dora/pull/3333)).
+- Output type checks: the send-side check skips `Null` payloads ([#3380](https://github.com/dora-rs/dora/pull/3380)), and the receive-side check stays armed after a `Null` first message ([#3430](https://github.com/dora-rs/dora/pull/3430)) and runs on inputs drained after `Stop` ([#3574](https://github.com/dora-rs/dora/pull/3574)).
+- Integration testing: recordings replay zero-length arrays ([#3438](https://github.com/dora-rs/dora/pull/3438)), keep NaN and infinities ([#3490](https://github.com/dora-rs/dora/pull/3490)) and record finite floats bit-exactly ([#3508](https://github.com/dora-rs/dora/pull/3508)); an invalid time offset is rejected instead of panicking ([#3669](https://github.com/dora-rs/dora/pull/3669)).
+- Arrow conversions to `String`/`&str` accept `LargeUtf8` and `Utf8View` ([#3662](https://github.com/dora-rs/dora/pull/3662)).
+- Python: sending on an invalid output id raises instead of panicking ([#3705](https://github.com/dora-rs/dora/pull/3705)), and log levels above 255 are tolerated ([#3367](https://github.com/dora-rs/dora/pull/3367)).
+- Operators: an invalid output id is rejected instead of aborting across FFI ([#3356](https://github.com/dora-rs/dora/pull/3356)); an input with no configured size gets a bounded queue ([#3422](https://github.com/dora-rs/dora/pull/3422)); a panic in an operator's `Default` or `Drop` is caught instead of aborting the runtime ([#3613](https://github.com/dora-rs/dora/pull/3613)); and Rust operators see stream `Event::Error` ([#3276](https://github.com/dora-rs/dora/pull/3276)).
+- `NodeError`'s `Display` no longer panics ([#3562](https://github.com/dora-rs/dora/pull/3562)), and `InputMapping::Logs` keeps its `node_filter` when displayed without a `min_level` ([#3569](https://github.com/dora-rs/dora/pull/3569)).
+
+Logging and tracing:
+
+- A restarted node's previous log output is kept ([#3625](https://github.com/dora-rs/dora/pull/3625)), and the node log file is flushed before the log task reports that it finished ([#3598](https://github.com/dora-rs/dora/pull/3598)).
+- `send_logs_as` sinks accept every log entry the daemon forwards ([#3615](https://github.com/dora-rs/dora/pull/3615)), and Trace-level logs reach the tracing destination ([#3349](https://github.com/dora-rs/dora/pull/3349)).
+- `RUST_LOG` targets match on a name boundary instead of a bare substring ([#3337](https://github.com/dora-rs/dora/pull/3337)), and a log file name is no longer cut at its last dot ([#3628](https://github.com/dora-rs/dora/pull/3628)).
+- OTLP tracing installs the W3C TraceContext propagator ([#3642](https://github.com/dora-rs/dora/pull/3642)) and defaults zenoh to `warn` on its span layer ([#3658](https://github.com/dora-rs/dora/pull/3658)). A re-recorded span field overwrites the old value instead of adding a duplicate ([#3697](https://github.com/dora-rs/dora/pull/3697)), and the timer-tick span stays entered for the tick body ([#3464](https://github.com/dora-rs/dora/pull/3464)).
+- `extract_err_from_stderr` prefers a real error marker over a trailing warning ([#3413](https://github.com/dora-rs/dora/pull/3413)).
+
+Record and replay:
+
+- The recorder bounds crash loss by record count and wall-clock time ([#2895](https://github.com/dora-rs/dora/pull/2895)) and skips a single oversized frame instead of aborting the recording ([#3572](https://github.com/dora-rs/dora/pull/3572)).
+- The replay node paces against an absolute schedule, so it no longer drifts ([#3616](https://github.com/dora-rs/dora/pull/3616)).
+
+ROS 2 bridge:
+
+- A non-UTF-8 string field no longer aborts the process ([#3286](https://github.com/dora-rs/dora/pull/3286)), and a non-ASCII type hash fails closed instead of panicking ([#3415](https://github.com/dora-rs/dora/pull/3415)).
+- An unknown `goal_status` is no longer reported as success ([#3505](https://github.com/dora-rs/dora/pull/3505)), every pending Zenoh get-result request is answered ([#3506](https://github.com/dora-rs/dora/pull/3506)), and an abort result reaches the DDS action client ([#3704](https://github.com/dora-rs/dora/pull/3704)).
+- Message generation no longer misreads a member whose string default contains `=` ([#3457](https://github.com/dora-rs/dora/pull/3457)) or treats a `#` inside a string default as a comment ([#3488](https://github.com/dora-rs/dora/pull/3488)), and escapes the edition-2024 reserved keyword `gen` ([#3530](https://github.com/dora-rs/dora/pull/3530)).
+
+Extensions, downloads and security:
+
+- Tensor pool: a relayed pool write goes only to its mirror's machine instead of to every daemon in the dataflow ([#3691](https://github.com/dora-rs/dora/pull/3691)); the header's `json_len` is bounded before slicing the mirror segment ([#3408](https://github.com/dora-rs/dora/pull/3408)); and a daemon no longer sweeps a sibling's segments whose machine id extends its own ([#3595](https://github.com/dora-rs/dora/pull/3595)).
+- MAVLink 2 bridge: serial device paths containing `:` open ([#3648](https://github.com/dora-rs/dora/pull/3648)), and a `send_output` error no longer skips the graceful reader shutdown ([#3432](https://github.com/dora-rs/dora/pull/3432)).
+- Hub and downloads: one unreadable index entry no longer aborts version resolution ([#3355](https://github.com/dora-rs/dora/pull/3355)), index cache markers stay out of the checked-out tree ([#3655](https://github.com/dora-rs/dora/pull/3655)), and `download_file` has connect and read timeouts ([#3587](https://github.com/dora-rs/dora/pull/3587)).
+- An existing `.dora-token` file is tightened to mode `0600` before a new secret is written into it. A token file with a looser mode used to get the secret, and was then ignored as too permissive, so authentication failed silently ([#3627](https://github.com/dora-rs/dora/pull/3627)).
+- `rustls` is bumped to 0.23.45 for RUSTSEC-2026-0285 ([#3503](https://github.com/dora-rs/dora/pull/3503)).
+
+### Performance
+
+- The node API's IPC fast path no longer copies a sliced array's whole parent buffer. A 1 KiB string sliced from a 1000-row array used to encode to about 1 MB, and a slice of a large batch could exceed the 64 MiB transport limit ([#3653](https://github.com/dora-rs/dora/pull/3653)).
+- The C++ node API waits for events without busy-polling ([#3396](https://github.com/dora-rs/dora/pull/3396)).
+- Downloads stream to disk instead of buffering the whole body ([#3357](https://github.com/dora-rs/dora/pull/3357)).
+- `dora replay` no longer copies other nodes' payloads ([#3324](https://github.com/dora-rs/dora/pull/3324)).
+- The MAVLink 2 bridge forwards telemetry as soon as it is decoded ([#3618](https://github.com/dora-rs/dora/pull/3618)) and caches each message type's Arrow schema ([#3424](https://github.com/dora-rs/dora/pull/3424)).
+- Smaller hot-path savings: the daemon caps its coalescing copy in `socket_stream_send` ([#3265](https://github.com/dora-rs/dora/pull/3265)) and avoids an `OutputId` clone per remote send ([#3334](https://github.com/dora-rs/dora/pull/3334)); the schema-once send path skips a redundant metadata encode ([#3294](https://github.com/dora-rs/dora/pull/3294)); tracing skips context serialization when no span is active ([#3395](https://github.com/dora-rs/dora/pull/3395)); `LogMessage::from` no longer evaluates its fallback eagerly ([#3368](https://github.com/dora-rs/dora/pull/3368)); `NodeEvent::encode_size_hint` sizes `ParamUpdate`/`NodeFailed` payloads ([#3443](https://github.com/dora-rs/dora/pull/3443)); the ROS 2 bridge caches its trace-flag env var ([#3526](https://github.com/dora-rs/dora/pull/3526)) and filters its graph cache in place ([#3563](https://github.com/dora-rs/dora/pull/3563)); and `dora topic echo` computes timestamps only for JSON output ([#3552](https://github.com/dora-rs/dora/pull/3552)).
+
+### Internal
+
+- `ControlRequest::TopicSubscribe` and `DaemonCoordinatorEvent::StartTopicDebugStream` in `dora-message` are `#[non_exhaustive]` and built through constructors, so later fields can be added without a 2.0 ([#3531](https://github.com/dora-rs/dora/pull/3531)). This control-plane module is frozen on the wire, not as a Rust API (see `docs/api-rust.md`).
+- A `make qa-lockfile` gate keeps a stale `Cargo.lock` off `main` ([#3517](https://github.com/dora-rs/dora/pull/3517)), and the CLI surface snapshot comparison normalizes CRLF ([#3407](https://github.com/dora-rs/dora/pull/3407)).
 
 ## v1.0.1 (2026-09-03)
 
