@@ -1545,6 +1545,12 @@ unsafe fn send_arrow_output_with_metadata(
     unsafe { send_arrow_output_impl(sender, id, array_ptr, schema_ptr, Some(metadata)) }
 }
 
+/// Imports the caller's Arrow C Data Interface structs and sends them.
+///
+/// Ownership of the structs moves to Rust only once the id is valid, the
+/// node lock is held and both structs are live (non-null `release`). Every
+/// error returned before that point leaves the caller's structs untouched,
+/// so the caller still owns them and must release them itself.
 unsafe fn send_arrow_output_impl(
     sender: &mut Box<OutputSender>,
     id: String,
@@ -1560,6 +1566,22 @@ unsafe fn send_arrow_output_impl(
             error: "Received null Arrow array or schema pointer".to_string(),
         };
     }
+    // A released struct (`release == NULL`) has no valid buffers or format
+    // string; importing it would panic (and abort across the cxx bridge)
+    // or read freed memory.
+    if unsafe { (*array_ptr).is_released() || (*schema_ptr).release.is_none() } {
+        return ffi::DoraResult {
+            error: "Received an already released Arrow array or schema".to_string(),
+        };
+    }
+    let output_id = match parse_output_id(&id) {
+        Ok(parsed) => parsed,
+        Err(err) => return err,
+    };
+    let mut node = match lock_node(&sender.0, "send_arrow_output") {
+        Ok(node) => node,
+        Err(error) => return ffi::DoraResult { error },
+    };
 
     let array = unsafe { std::ptr::read(array_ptr) };
     let schema = unsafe { std::ptr::read(schema_ptr) };
@@ -1573,17 +1595,8 @@ unsafe fn send_arrow_output_impl(
         Ok(array_data) => {
             let arrow_array = arrow::array::make_array(array_data);
             let parameters: DoraMetadataParameters = metadata
-                .as_ref()
-                .map(|metadata| metadata.parameters.clone())
+                .map(|metadata| metadata.into_parameters())
                 .unwrap_or_default();
-            let output_id = match parse_output_id(&id) {
-                Ok(parsed) => parsed,
-                Err(err) => return err,
-            };
-            let mut node = match lock_node(&sender.0, "send_arrow_output") {
-                Ok(node) => node,
-                Err(error) => return ffi::DoraResult { error },
-            };
             let result = node.send_output(output_id, parameters, arrow_array);
             match result {
                 Ok(()) => ffi::DoraResult {
@@ -2206,5 +2219,69 @@ mod tests {
             event_as_node_restarted(event).is_err(),
             "a caller that branched wrongly must be told, not handed a plausible id"
         );
+    }
+
+    fn exported_u8_array() -> (arrow::ffi::FFI_ArrowArray, arrow::ffi::FFI_ArrowSchema) {
+        use arrow::array::{Array, UInt8Array};
+        arrow::ffi::to_ffi(&UInt8Array::from(vec![1u8, 2, 3]).to_data()).expect("export array")
+    }
+
+    /// An error returned before import (here: an invalid output id) must
+    /// leave the caller's Arrow structs live, so the caller can still
+    /// release or resend them. They used to be moved out and zeroed first.
+    #[test]
+    fn send_arrow_output_error_keeps_caller_ownership() {
+        let (mut sender, _rx, _events) = testing_output_sender();
+        let (mut array, mut schema) = exported_u8_array();
+
+        let result = unsafe {
+            send_arrow_output(
+                &mut sender,
+                "bad id".to_string(),
+                &mut array as *mut _ as *mut u8,
+                &mut schema as *mut _ as *mut u8,
+            )
+        };
+        assert!(
+            result.error.contains("invalid output id"),
+            "{}",
+            result.error
+        );
+        assert!(!array.is_released(), "array must stay owned by the caller");
+        assert!(
+            schema.release.is_some(),
+            "schema must stay owned by the caller"
+        );
+
+        // The same structs are still usable for a corrected retry.
+        let result = unsafe {
+            send_arrow_output(
+                &mut sender,
+                "out".to_string(),
+                &mut array as *mut _ as *mut u8,
+                &mut schema as *mut _ as *mut u8,
+            )
+        };
+        assert!(result.error.is_empty(), "{}", result.error);
+        assert!(array.is_released(), "a successful send consumes the array");
+    }
+
+    /// Released structs must be rejected with an error instead of panicking
+    /// inside the import (which aborts the process across the cxx bridge).
+    #[test]
+    fn send_arrow_output_rejects_released_structs() {
+        let (mut sender, _rx, _events) = testing_output_sender();
+        let mut array = arrow::ffi::FFI_ArrowArray::empty();
+        let mut schema = arrow::ffi::FFI_ArrowSchema::empty();
+
+        let result = unsafe {
+            send_arrow_output(
+                &mut sender,
+                "out".to_string(),
+                &mut array as *mut _ as *mut u8,
+                &mut schema as *mut _ as *mut u8,
+            )
+        };
+        assert!(result.error.contains("released"), "{}", result.error);
     }
 }

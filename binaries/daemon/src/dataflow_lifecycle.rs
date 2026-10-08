@@ -182,9 +182,11 @@ impl Daemon {
         // a co-located daemon may be starting the other half of the same
         // dataflow right now.
         #[cfg(feature = "tensor-pool")]
-        dora_tensor_pool::daemon::PoolState::sweep_orphans_for_dataflow(dataflow_id, |node| {
-            spawn_nodes.iter().any(|id| id.as_ref() == node)
-        });
+        dora_tensor_pool::daemon::PoolState::sweep_orphans_for_dataflow(
+            dataflow_id,
+            self.machine_id.as_deref(),
+            |node| spawn_nodes.iter().any(|id| id.as_ref() == node),
+        );
 
         #[cfg(feature = "tensor-pool")]
         self.pool_subscribe_dataflow(dataflow_id);

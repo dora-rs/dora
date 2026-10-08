@@ -50,8 +50,14 @@ pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
 /// Only pointers created through [`init_dora_context_from_env`] are allowed
 /// as arguments. Each context pointer must be freed exactly once. After
 /// freeing, the pointer must not be used anymore.
+///
+/// Like `free(NULL)`, passing a null pointer (e.g. the result of a failed
+/// [`init_dora_context_from_env`]) is a no-op.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_dora_context(context: *mut c_void) {
+    if context.is_null() {
+        return;
+    }
     let context: Box<DoraContext> = unsafe { Box::from_raw(context.cast()) };
     // drop all fields except for `node`
     let DoraContext { node, .. } = *context;
@@ -68,14 +74,19 @@ pub unsafe extern "C" fn free_dora_context(context: *mut c_void) {
 ///
 /// Returns a null pointer when all event streams were closed. This means that
 /// no more event will be available. Nodes typically react by stopping.
+/// A null `context` (e.g. from a failed [`init_dora_context_from_env`]) is
+/// treated the same way and also returns a null pointer.
 ///
 /// ## Safety
 ///
-/// The `context` argument must be a dora context created through
+/// The `context` argument must be null or a dora context created through
 /// [`init_dora_context_from_env`]. The context must be still valid, i.e., not
 /// freed yet.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn dora_next_event(context: *mut c_void) -> *mut c_void {
+    if context.is_null() {
+        return ptr::null_mut();
+    }
     let context: &mut DoraContext = unsafe { &mut *context.cast() };
     match context.events.recv() {
         Some(event) => Box::into_raw(Box::new(event)).cast(),
@@ -258,8 +269,13 @@ pub unsafe extern "C" fn read_dora_input_timestamp(event: *const ()) -> core::ff
 /// freeing, the pointer and all derived pointers must not be used anymore.
 /// This also applies to the `read_dora_event_*` functions, which return
 /// pointers into the original event structure.
+///
+/// Like `free(NULL)`, passing a null pointer is a no-op.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_dora_event(event: *mut c_void) {
+    if event.is_null() {
+        return;
+    }
     let _: Box<Event> = unsafe { Box::from_raw(event.cast()) };
 }
 
@@ -405,6 +421,20 @@ mod tests {
         uhlc::HLC,
     };
     use std::sync::Arc;
+
+    /// A failed `init_dora_context_from_env` returns NULL, and C cleanup
+    /// code commonly frees unconditionally (see
+    /// `examples/cmake-dataflow/node-c-api/main.cc`). NULL must be a no-op
+    /// for the free functions and end-of-stream for `dora_next_event`,
+    /// not a null dereference.
+    #[test]
+    fn null_context_and_event_are_tolerated() {
+        unsafe {
+            assert!(dora_next_event(ptr::null_mut()).is_null());
+            free_dora_event(ptr::null_mut());
+            free_dora_context(ptr::null_mut());
+        }
+    }
 
     /// Regression test for #2030: a non-UInt8 input (e.g. Int32 from another
     /// node) must not abort the process. The caller should instead observe

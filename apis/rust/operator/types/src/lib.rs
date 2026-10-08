@@ -285,11 +285,17 @@ pub unsafe fn dora_send_operator_output(
             // SAFETY: caller-provided per the function's #[safety] contract above.
             unsafe { slice::from_raw_parts(data_ptr, data_len) }
         };
+        // `char_p_ref::to_str` skips UTF-8 validation (`from_utf8_unchecked`),
+        // and the `ffi_export` shim only checks for null, so a non-UTF-8 id
+        // from C would build an invalid `str`. Validate it like the C node
+        // API's `dora_send_output` does.
+        let id = std::str::from_utf8(id.to_bytes())
+            .map_err(|err| format!("dora_send_operator_output: id is not valid UTF-8: {err}"))?;
         let arrow_data = data.to_owned().into_arrow();
         let (data_array, schema) =
             arrow::ffi::to_ffi(&array_ref(&arrow_data).to_data()).map_err(|err| err.to_string())?;
         let output = Output {
-            id: id.to_str().to_owned().into(),
+            id: id.to_owned().into(),
             data_array,
             schema,
             metadata: Metadata {
@@ -350,5 +356,43 @@ mod tests {
 
         assert!(dora_read_data(&mut input).is_some());
         assert!(dora_read_data(&mut input).is_none());
+    }
+
+    /// A non-UTF-8 output id from C must be rejected with an error before
+    /// the output reaches the runtime, instead of being turned into an
+    /// invalid `str` (UB).
+    #[test]
+    fn dora_send_operator_output_rejects_non_utf8_id() {
+        use safer_ffi::{char_p::char_p_ref, closure::ArcDynFn1};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let sent = Arc::new(AtomicUsize::new(0));
+        let send_output = SendOutput {
+            send_output: ArcDynFn1::new(Arc::new({
+                let sent = sent.clone();
+                move |_output| {
+                    sent.fetch_add(1, Ordering::SeqCst);
+                    DoraResult::SUCCESS
+                }
+            })),
+        };
+        let id_of = |bytes: &'static [u8]| unsafe {
+            char_p_ref::from_ptr_unchecked(std::ptr::NonNull::from(&bytes[0]))
+        };
+
+        let result = unsafe {
+            dora_send_operator_output(&send_output, id_of(b"\xffout\0"), [1u8].as_ptr(), 1)
+        };
+        let error = result.error.expect("non-UTF-8 id must be rejected");
+        assert!(error.contains("not valid UTF-8"), "{}", &**error);
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "nothing may be sent");
+
+        let result =
+            unsafe { dora_send_operator_output(&send_output, id_of(b"out\0"), [1u8].as_ptr(), 1) };
+        assert!(result.error.is_none());
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
     }
 }

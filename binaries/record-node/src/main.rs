@@ -127,9 +127,7 @@ impl FlushPolicy {
 /// `SystemTime::duration_since(UNIX_EPOCH)` returns `Err` whenever the clock is
 /// set before 1970 — common on battery-less embedded/robotics hardware that
 /// boots at (or before) the epoch until NTP/GPS sync lands. This runs once per
-/// recorded message, so an `.unwrap()` here would abort the recorder mid-capture.
-/// Saturating to 0 matches the `saturating_sub` already used when computing the
-/// per-entry offset from `start_nanos`.
+/// recording, so an `.unwrap()` here would abort the recorder at startup.
 fn unix_nanos(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
@@ -331,7 +329,10 @@ fn main() -> eyre::Result<()> {
 
     let (_node, mut events) = DoraNode::init_from_env()?;
 
+    // Wall-clock start for the header only; entry offsets use the monotonic
+    // clock (see `dora_recording::offset_nanos`).
     let start_nanos = unix_nanos(SystemTime::now());
+    let clock_start = Instant::now();
 
     let header = RecordingHeader {
         version: dora_recording::FORMAT_VERSION,
@@ -434,12 +435,13 @@ fn main() -> eyre::Result<()> {
                 };
                 let event_bytes = timestamped.serialize()?;
 
-                let now_nanos = unix_nanos(SystemTime::now());
-
                 let entry = RecordEntry {
                     node_id: source_node.to_string(),
                     output_id: source_output.to_string(),
-                    timestamp_offset_nanos: now_nanos.saturating_sub(start_nanos),
+                    timestamp_offset_nanos: dora_recording::offset_nanos(
+                        clock_start,
+                        Instant::now(),
+                    ),
                     event_bytes,
                 };
                 // A recorder attaches to a live dataflow whose direct

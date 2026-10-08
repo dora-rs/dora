@@ -1949,36 +1949,29 @@ fn run_multi_subscriber(
     )>,
     messages: &Arc<HashMap<String, HashMap<String, Message>>>,
 ) -> eyre::Result<()> {
-    let (tx, rx) = flume::bounded::<(String, ArrayData)>(10);
-
-    let mut handles = Vec::new();
-    for (output_id, sub) in subscribers {
-        let tx = tx.clone();
-        handles.push(std::thread::spawn(move || {
-            let stream = Box::pin(
-                sub.subscription
-                    .async_stream_seed(sub.deserializer)
-                    .filter_map(|result| async {
-                        match result {
-                            Ok((data, _info)) => Some(data),
-                            Err(e) => {
-                                tracing::warn!("ROS2 subscription error: {e:?}");
-                                None
-                            }
+    // Merge the subscriptions on this thread's executor, like
+    // `run_single_subscriber`. They used to run on one blocking thread each,
+    // joined after the loop: a thread on a quiet topic only noticed the
+    // closed channel on its next message, so `join()` hung the bridge on
+    // `Stop` until the daemon force-killed it.
+    let ros_streams = subscribers.iter().map(|(output_id, sub)| {
+        sub.subscription
+            .async_stream_seed(sub.deserializer.clone())
+            .filter_map(move |result| {
+                let output_id = output_id.clone();
+                async move {
+                    match result {
+                        Ok((data, _info)) => Some((output_id, data)),
+                        Err(e) => {
+                            tracing::warn!("ROS2 subscription error: {e:?}");
+                            None
                         }
-                    }),
-            );
-            for data in futures::executor::block_on_stream(stream) {
-                if tx.send((output_id.clone(), data)).is_err() {
-                    break;
+                    }
                 }
-            }
-        }));
-    }
-    drop(tx);
-
-    let rx_stream = rx.into_stream();
-    let merged = dora_events.merge_external(Box::pin(rx_stream));
+            })
+            .boxed_local()
+    });
+    let merged = dora_events.merge_external(futures::stream::select_all(ros_streams));
 
     for event in futures::executor::block_on_stream(merged) {
         match event {
@@ -2001,11 +1994,6 @@ fn run_multi_subscriber(
         }
     }
 
-    for handle in handles {
-        if let Err(e) = handle.join() {
-            tracing::warn!("subscriber thread panicked: {e:?}");
-        }
-    }
     Ok(())
 }
 
