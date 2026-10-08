@@ -54,6 +54,7 @@
 //! ```
 
 use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::time::Instant;
 
 use eyre::Context;
 use uuid::Uuid;
@@ -91,6 +92,29 @@ pub struct RecordingHeader {
     pub start_nanos: u64,
     pub dataflow_id: Uuid,
     pub descriptor_yaml: Vec<u8>,
+}
+
+/// The [`RecordEntry::timestamp_offset_nanos`] of an entry recorded now, for a
+/// capture that started at the monotonic instant `start`.
+///
+/// Offsets are measured on the monotonic clock, not as wall-clock now minus
+/// [`RecordingHeader::start_nanos`]: an NTP/GPS sync landing mid-capture steps
+/// the wall clock, which would make every later offset jump by up to decades
+/// (a board booting at 1970) or collapse to 0, and stall or scramble replay
+/// pacing. Saturates at `u64::MAX` (~584 years).
+///
+/// ```
+/// use std::time::{Duration, Instant};
+///
+/// let start = Instant::now();
+/// std::thread::sleep(Duration::from_millis(5));
+/// let offset = dora_recording::offset_since(start);
+/// assert!(offset >= 5_000_000);
+/// // Offsets never go backwards.
+/// assert!(dora_recording::offset_since(start) >= offset);
+/// ```
+pub fn offset_since(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// A single recorded message entry.
