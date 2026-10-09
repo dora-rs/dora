@@ -3,7 +3,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
+use dora_message::{
+    common::Timestamped,
+    daemon_to_daemon::InterDaemonEvent,
+    metadata::{MetadataParameters, strip_internal_parameters},
+};
 use dora_node_api::{
     DoraArray, DoraNode, Event, EventStream, IntoArrow, TryRecvError,
     arrow_utils::decode_arrow_ipc, arrow_v59::array::NullArray,
@@ -205,7 +209,7 @@ fn main() -> eyre::Result<()> {
                             continue;
                         }
                     };
-                    node.send_output(output_id, metadata.parameters, array)
+                    node.send_output(output_id, replay_parameters(metadata.parameters), array)
                         .wrap_err("failed to send replay output")?;
                     replayed += 1;
                 }
@@ -265,16 +269,41 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
+/// The metadata parameters to re-send for a recorded output.
+///
+/// Recordings made with `dora record --proxy` before the proxy learned to
+/// strip it carry the daemon's debug-only `_wire_size` stamp on every
+/// message. Drop internal keys here, so they never reach downstream nodes.
+fn replay_parameters(mut parameters: MetadataParameters) -> MetadataParameters {
+    strip_internal_parameters(&mut parameters);
+    parameters
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Replay, classify_event, decode_recorded_payload, pacing_gap, replay_emitted_nothing_usable,
+        replay_parameters,
     };
     use dora_node_api::DoraArray;
     use dora_node_api::arrow_utils::encode_arrow_ipc;
     use dora_node_api::arrow_v59::array::Int32Array;
     use dora_node_api::{Event, StopCause};
     use std::time::Duration;
+
+    #[test]
+    fn replay_drops_the_debug_wire_size_stamp() {
+        use dora_message::metadata::{MetadataParameters, Parameter, WIRE_SIZE};
+
+        let mut parameters = MetadataParameters::default();
+        parameters.insert(WIRE_SIZE.to_string(), Parameter::Integer(42));
+        parameters.insert("user_key".to_string(), Parameter::Integer(7));
+
+        let replayed = replay_parameters(parameters);
+
+        assert!(!replayed.contains_key(WIRE_SIZE));
+        assert!(replayed.contains_key("user_key"));
+    }
 
     #[test]
     fn stop_event_ends_the_replay() {
