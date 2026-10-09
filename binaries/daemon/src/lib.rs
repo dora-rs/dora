@@ -173,7 +173,8 @@ mod zenoh_bind;
 pub(crate) use debug_topic::{DebugSchemaCache, rebuild_debug_topic_stream, retain_debug_schema};
 pub(crate) use event_types::{
     CONTROL_EVENT_HEADROOM, DaemonNodeEvent, DoraEvent, Event, InterDaemonEvent,
-    NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound, send_with_timestamp,
+    NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound, send_timestamped,
+    send_with_timestamp,
 };
 pub(crate) use fault_tolerance::{CascadingErrorCauses, FaultToleranceStats};
 pub(crate) use local_delivery::{

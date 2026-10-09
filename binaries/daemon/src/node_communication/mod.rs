@@ -271,8 +271,9 @@ impl Listener {
                             Err(err) => tracing::error!("{err:?}"),
                         }
                         // The subscribe channel's receiver goes with this
-                        // listener: wake anyone waiting for room in it so
-                        // they see it closed.
+                        // listener: close it first, then wake anyone waiting
+                        // for room in it so they see it closed.
+                        drop(listener.subscribed_events.take());
                         listener.drained.notify.notify_waiters();
                     }
                     (Err(err), _) => {
@@ -793,7 +794,7 @@ impl Listener {
 /// waited for any longer: the event is dropped, loudly, and counted as lost,
 /// and the receiver is marked `gave_up` so that its producers are not held
 /// for it again until it drains.
-async fn deliver_when_room(
+pub(crate) async fn deliver_when_room(
     delivery: DeferredDelivery,
     last_activity: &AtomicU64,
     ft_stats: &FaultToleranceStats,
@@ -804,6 +805,9 @@ async fn deliver_when_room(
         pending,
         drained,
         mut event,
+        // Dropped on return, once the event is in or given up on: a close
+        // waiting for it goes out only then (dora-rs/dora#3619).
+        held: _held,
     } = delivery;
     let mut stalled = Duration::ZERO;
     loop {
@@ -976,6 +980,7 @@ mod tests {
             receiver: NodeId::from("sink".to_string()),
             channel: channel.clone(),
             pending: Some(pending.clone()),
+            held: drained.hold(&DataId::from("in".to_string())),
             drained: drained.clone(),
             event,
         };

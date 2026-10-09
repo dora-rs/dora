@@ -173,7 +173,9 @@ can discard the message before the per-input policy ever applies; the daemon
 path feeds the same channel with a blocking send, and when the receiver's
 per-node channel (1000 events) is full as well, the daemon holds the producer's
 send until there is room, so the producer's `send_output` blocks instead of the
-message being dropped. Two cases still drop, each logged and counted: a
+message being dropped.
+A producer that exits or closes the output while one of its messages is held does not lose it: the receiver's `InputClosed` for that input, and `AllInputsClosed`, wait until the held message is in, or dropped under the 60-second rule below. An `input_timeout` does not fire on an input while a message for it is held.
+Two cases still drop, each logged and counted: a
 producer on another machine cannot be held, so a message forwarded across
 daemons to a full receiver is dropped; and a receiver that frees no room at all
 for 60 seconds (wedged, or blocked on its own producer in a backpressure cycle)
