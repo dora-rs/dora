@@ -359,7 +359,7 @@ mod tests {
             ArrayRef, BinaryArray, BooleanArray, Int32Array, ListArray, StringArray, StructArray,
             UInt8Array,
         },
-        buffer::OffsetBuffer,
+        buffer::{NullBuffer, OffsetBuffer},
         datatypes::{DataType, Field},
     };
     use byteorder::LittleEndian;
@@ -853,6 +853,75 @@ mod tests {
         assert!(
             primitive_seq_serializes_ok(&messages, Arc::new(all_present), DataType::Boolean),
             "an all-present bool[] field must still serialize"
+        );
+    }
+
+    /// Like `primitive_seq_serializes_ok`, but for any column type and with a
+    /// nullable field, so a null row can reach the serializer.
+    fn nullable_column_serializes_ok(
+        messages: &Arc<HashMap<String, HashMap<String, Message>>>,
+        column: ArrayRef,
+    ) -> bool {
+        let value = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("values", column.data_type().clone(), true)),
+            column,
+        )])) as ArrayRef;
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed("PrimSeqMsg"),
+            messages: messages.clone(),
+        };
+        cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+            value: &value,
+            type_info: &type_info,
+        })
+        .is_ok()
+    }
+
+    /// A null `int32[]` row is "no sequence", which ROS2 cannot represent.
+    /// It used to go out as whatever its offsets spanned: here the masked
+    /// `[1, 2, 3]`, published as if the producer had sent it.
+    #[test]
+    fn null_sequence_row_is_rejected() {
+        let messages = primitive_seq_message(NestableType::BasicType(BasicType::I32));
+        let item = Arc::new(Field::new("item", DataType::Int32, true));
+        let list = |nulls| {
+            Arc::new(ListArray::new(
+                item.clone(),
+                OffsetBuffer::from_lengths([3usize]),
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                nulls,
+            )) as ArrayRef
+        };
+        assert!(
+            !nullable_column_serializes_ok(&messages, list(Some(NullBuffer::new_null(1)))),
+            "a null int32[] row must error, not publish its masked values"
+        );
+        assert!(
+            nullable_column_serializes_ok(&messages, list(None)),
+            "a valid int32[] row must still serialize"
+        );
+    }
+
+    /// Same for a `uint8[]` field given as a `Binary` column: a null row
+    /// used to go out as its (masked) bytes.
+    #[test]
+    fn null_binary_sequence_row_is_rejected() {
+        let messages = primitive_seq_message(NestableType::BasicType(BasicType::U8));
+        let binary = |nulls| {
+            Arc::new(BinaryArray::new(
+                OffsetBuffer::from_lengths([3usize]),
+                vec![1u8, 2, 3].into(),
+                nulls,
+            )) as ArrayRef
+        };
+        assert!(
+            !nullable_column_serializes_ok(&messages, binary(Some(NullBuffer::new_null(1)))),
+            "a null uint8[] row must error"
+        );
+        assert!(
+            nullable_column_serializes_ok(&messages, binary(None)),
+            "a valid uint8[] row must still serialize"
         );
     }
 }
