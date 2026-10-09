@@ -284,13 +284,14 @@ impl Coordinator {
     /// dataflow.
     ///
     /// The report only covers the daemon that sent it. Until the reported
-    /// node results cover every node the persisted record assigns, the
-    /// dataflow may still be running on a daemon that hasn't reported yet, so
-    /// the record is left `Recovering` for that daemon's `DaemonStatusReport`
-    /// to re-establish. The reports are parked in
-    /// [`Self::resent_finish_reports`] until then: `dataflow_results` is what
-    /// the rest of the coordinator reads as a finished dataflow, and a partial
-    /// report there would make `dora list` / `stop` / `clean` act on a
+    /// node results cover every node the persisted record assigns — counting a
+    /// `path: dynamic` node only once its own daemon has reported, since no
+    /// daemon ever reports a result for one — the dataflow may still be running
+    /// on a daemon that hasn't reported yet, so the record is left `Recovering`
+    /// for that daemon's `DaemonStatusReport` to re-establish. The reports are
+    /// parked in [`Self::resent_finish_reports`] until then: `dataflow_results`
+    /// is what the rest of the coordinator reads as a finished dataflow, and a
+    /// partial report there would make `dora list` / `stop` / `clean` act on a
     /// dataflow that is still recovering. Once the reports cover the record,
     /// nothing is left running and the status is settled from the results, as
     /// the normal finish path does. A duplicate report cannot settle it twice:
@@ -309,11 +310,12 @@ impl Coordinator {
             .insert(daemon_id, result);
 
         // The persisted descriptor is the record's authoritative node set.
-        // `node_to_daemon` cannot be used here: after an earlier recovery it
-        // holds only the reconnecting daemon's share
+        // `node_to_daemon` cannot decide coverage on its own: after an earlier
+        // recovery it holds only the reconnecting daemon's share
         // (`RunningDataflow::recovered`), so a partial report would look like
         // it covered the whole dataflow and settle one that another daemon is
-        // still running.
+        // still running. It is still the only per-node daemon assignment the
+        // record has, so it is what tells a `path: dynamic` node's owner apart.
         let Some(nodes) = resolve_record_nodes(&record) else {
             tracing::warn!(
                 "cannot check coverage of a resent finish report for recovered dataflow \
@@ -321,12 +323,43 @@ impl Coordinator {
             );
             return;
         };
+        // Which daemons have already reported. The record's `node_to_daemon`
+        // holds the ids from before the reclaim, and a reconnecting daemon
+        // registers under a fresh `DaemonId`, so a node's daemon is matched by
+        // machine id, the part that survives the reconnect.
+        let reported_daemons: BTreeSet<&DaemonId> = self
+            .dataflow_results
+            .get(&uuid)
+            .into_iter()
+            .chain(self.resent_finish_reports.get(&uuid))
+            .flat_map(|results| results.keys())
+            .collect();
         // A daemon never reports a result for a `path: dynamic` node — they
         // send no `SpawnedNodeResult` — so requiring one would keep the
-        // dataflow `Recovering` until the recovery timeout.
+        // dataflow `Recovering` until the recovery timeout. A dynamic node is
+        // therefore skipped, but only once the daemon it belongs to has
+        // reported: a daemon whose whole share is dynamic nodes never finishes
+        // on its own (`should_finish` in `binaries/daemon/src/node_events.rs`
+        // is only evaluated when a node stops, and it then still has its
+        // dynamic node running), so dropping its node early would settle a
+        // dataflow that daemon is still running. An unknown owner (missing from
+        // `node_to_daemon`) counts too, erring towards leaving it `Recovering`.
         let expected: BTreeSet<String> = nodes
             .values()
-            .filter(|node| !is_dynamic_node(node))
+            .filter(|node| {
+                if !is_dynamic_node(node) {
+                    return true;
+                }
+                !record
+                    .node_to_daemon
+                    .get(&node.id.to_string())
+                    .and_then(|daemon| DaemonId::from_display_str(daemon))
+                    .is_some_and(|assigned| {
+                        reported_daemons
+                            .iter()
+                            .any(|reported| reported.machine_id() == assigned.machine_id())
+                    })
+            })
             .map(|node| node.id.to_string())
             .collect();
         let reported: BTreeSet<String> = self

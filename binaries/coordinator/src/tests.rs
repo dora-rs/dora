@@ -5595,6 +5595,96 @@ async fn resent_finish_report_finalizes_a_dataflow_with_a_dynamic_node() {
     );
 }
 
+/// A daemon whose whole share of a dataflow is `path: dynamic` nodes never
+/// finishes on its own: `should_finish` (`binaries/daemon/src/node_events.rs`)
+/// is only evaluated when a node stops, and its dynamic node is still running.
+/// It keeps reporting the dataflow as running. Skipping every dynamic node in
+/// the coverage check would settle such a dataflow while that daemon still runs
+/// it, and the daemon's next status report would then be stopped as an orphan.
+/// Only a dynamic node whose own daemon has reported may be skipped.
+#[tokio::test]
+async fn resent_finish_report_waits_for_a_dynamic_only_daemon() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    // `saved_*` is what the reclaim persisted; the reports arrive from the
+    // fresh `DaemonId`s the daemons registered with after reconnecting. Only
+    // the machine id survives that, which is what the check has to match on.
+    let saved_a = DaemonId::new(Some("a".to_string()));
+    let saved_b = DaemonId::new(Some("b".to_string()));
+    let reconnected_a = DaemonId::new(Some("a".to_string()));
+    let reconnected_b = DaemonId::new(Some("b".to_string()));
+    let sender: NodeId = "sender".to_string().into();
+    let dynamic: NodeId = "viz".to_string().into();
+    store
+        .put_dataflow(&recovering_record_with_nodes(
+            dataflow_id,
+            BTreeMap::from([(sender.clone(), saved_a), (dynamic.clone(), saved_b)]),
+            vec![
+                serde_json::json!({"id": "sender", "path": "sender", "outputs": ["message"]}),
+                serde_json::json!({"id": "viz", "path": "dynamic", "outputs": ["message"]}),
+            ],
+        ))
+        .expect("seed recovering record");
+    let mut coordinator = coordinator_with_store(store.clone());
+    let clock = coordinator.clock.clone();
+
+    // `sender` finished on daemon A, but `viz` is still running on daemon B,
+    // which hasn't reported. The dataflow must stay `Recovering` so B's status
+    // report can re-establish it instead of it being archived and B stopped.
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id: reconnected_a,
+                result: finish_result(&clock, BTreeMap::from([(sender.clone(), Ok(()))])),
+            },
+        )
+        .await
+        .expect("handle daemon A's resent finish report");
+
+    let record = store
+        .get_dataflow(&dataflow_id)
+        .expect("store lookup")
+        .expect("record present");
+    assert!(
+        matches!(record.status, StoreDataflowStatus::Recovering),
+        "a dynamic node on a daemon that hasn't reported must keep the dataflow \
+         Recovering, got {:?}",
+        record.status
+    );
+    assert!(
+        !coordinator.dataflow_results.contains_key(&dataflow_id),
+        "the partial report must not look like a finished dataflow"
+    );
+
+    // Daemon B reports too. It has no node result to send — `viz` is dynamic —
+    // but its report covers the dataflow, so it now settles.
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id: reconnected_b,
+                result: finish_result(&clock, BTreeMap::new()),
+            },
+        )
+        .await
+        .expect("handle daemon B's resent finish report");
+
+    let record = store
+        .get_dataflow(&dataflow_id)
+        .expect("store lookup")
+        .expect("record present");
+    assert!(
+        matches!(record.status, StoreDataflowStatus::Succeeded),
+        "a report from the dynamic node's daemon must let the dataflow settle, got {:?}",
+        record.status
+    );
+    assert!(
+        coordinator.dataflow_results.contains_key(&dataflow_id),
+        "the settled dataflow keeps the per-daemon results"
+    );
+}
+
 /// After a dataflow has been recovered once, `node_to_daemon` holds only the
 /// reconnecting daemon's nodes (`RunningDataflow::recovered`). A report that
 /// covers those must not settle a dataflow whose descriptor still lists a node
