@@ -1233,11 +1233,16 @@ impl Coordinator {
                                                             // Update the stored descriptor
                                                             // and resolved nodes so
                                                             // `dora info` reflects the
-                                                            // new node.
-                                                            dataflow
-                                                                .descriptor
-                                                                .nodes
-                                                                .push(original_node);
+                                                            // new node. Upsert, not push:
+                                                            // the guard above only sees
+                                                            // running nodes, so an exited
+                                                            // node re-added after a
+                                                            // coordinator restart is still
+                                                            // in the descriptor (#3759).
+                                                            upsert_descriptor_node(
+                                                                &mut dataflow.descriptor.nodes,
+                                                                original_node,
+                                                            );
                                                             dataflow.nodes.insert(
                                                                 node_id.clone(),
                                                                 resolved_node,
@@ -1417,16 +1422,7 @@ impl Coordinator {
             // variant (#1682 contract).
             ensure_replace_node_applied(&reply_raw, &node_id)?;
             if let Some(dataflow) = self.running_dataflows.get_mut(&dataflow_id) {
-                if let Some(existing) = dataflow
-                    .descriptor
-                    .nodes
-                    .iter_mut()
-                    .find(|n| n.id == node_id)
-                {
-                    *existing = original_node;
-                } else {
-                    dataflow.descriptor.nodes.push(original_node);
-                }
+                upsert_descriptor_node(&mut dataflow.descriptor.nodes, original_node);
                 dataflow.nodes.insert(node_id.clone(), resolved_node);
                 // Clear stale lifecycle markers so the new
                 // incarnation's metrics are not suppressed
@@ -1553,5 +1549,15 @@ impl Coordinator {
         };
         let _ = reply_sender.send(result);
         Ok(())
+    }
+}
+
+/// Store `node` in the running descriptor, replacing the entry with the same
+/// id if there is one. The stored descriptor is re-resolved when a dataflow is
+/// re-established, and a duplicate id makes that fail (#3759).
+fn upsert_descriptor_node(nodes: &mut Vec<Node>, node: Node) {
+    match nodes.iter_mut().find(|n| n.id == node.id) {
+        Some(existing) => *existing = node,
+        None => nodes.push(node),
     }
 }
