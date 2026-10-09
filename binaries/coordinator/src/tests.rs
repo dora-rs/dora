@@ -1553,6 +1553,124 @@ fn resolve_param_target_errors_for_unknown_node() {
     assert!(err.to_string().contains("not found in dataflow"));
 }
 
+/// A forwarded `dora param set`/`delete` that the daemon applied must not
+/// stay in the state catch-up log: acks used to move only on reconnect, so on
+/// a healthy cluster the log grew to its hard cap and every reconnect
+/// replayed the whole history. A daemon that missed an entry for its own
+/// node keeps it until it is gone from the dataflow; one whose missed entries
+/// all target other daemons' nodes advances.
+#[tokio::test]
+async fn applied_param_changes_are_acked_and_pruned_from_the_state_log() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let owner = DaemonId::new(Some("owner".to_string()));
+    let peer = DaemonId::new(Some("peer".to_string()));
+    let lagging = DaemonId::new(Some("lagging".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+
+    // A daemon that answers every request with `Ok`.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let conn = crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    tokio::spawn(async move {
+        #[derive(serde::Deserialize)]
+        struct OutboundRaw {
+            id: String,
+            params: Timestamped<DaemonCoordinatorEvent>,
+        }
+        while let Some(outbound) = rx.recv().await {
+            let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            let reply = match outbound.params.inner {
+                DaemonCoordinatorEvent::SetParam { .. } => {
+                    DaemonCoordinatorReply::SetParamResult(Ok(()))
+                }
+                DaemonCoordinatorEvent::DeleteParam { .. } => {
+                    DaemonCoordinatorReply::DeleteParamResult(Ok(()))
+                }
+                other => panic!("unexpected event: {other:?}"),
+            };
+            let request_id = Uuid::parse_str(&outbound.id).unwrap();
+            if let Some(reply_tx) = pending_replies.lock().await.remove(&request_id) {
+                let _ = reply_tx.send(serde_json::to_string(&reply).unwrap());
+            }
+        }
+    });
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(owner.clone(), conn);
+
+    let lagging_node: NodeId = "lagging-node".to_string().into();
+    let mut df = test_running_dataflow(dataflow_id, owner.clone(), node_id.clone());
+    df.daemons.extend([peer.clone(), lagging.clone()]);
+    df.node_to_daemon
+        .insert(lagging_node.clone(), lagging.clone());
+    // An earlier entry for `lagging`'s node, which only `owner` has acked
+    // (`peer` has nothing to apply for it).
+    df.append_state_log(StateCatchUpOperation::DeleteParam {
+        node_id: lagging_node,
+        key: "old".to_string(),
+    });
+    df.daemon_ack_sequence = BTreeMap::from([(owner.clone(), 1)]);
+
+    let mut coordinator = Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows: HashMap::from([(dataflow_id, df)]),
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections,
+        clock: Arc::new(HLC::default()),
+        store: Arc::new(InMemoryStore::new()),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    };
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_set_param(
+            dataflow_id,
+            node_id.clone(),
+            "gain".to_string(),
+            serde_json::json!(2),
+            reply_tx,
+        )
+        .await
+        .unwrap();
+    reply_rx.await.unwrap().expect("set is applied");
+
+    let df = &coordinator.running_dataflows[&dataflow_id];
+    assert_eq!(df.state_log_sequence, 2);
+    assert_eq!(df.daemon_ack_sequence[&owner], 2);
+    assert_eq!(df.daemon_ack_sequence[&peer], 2);
+    assert_eq!(
+        df.daemon_ack_sequence.get(&lagging).copied().unwrap_or(0),
+        0,
+        "a daemon that missed entry 1 for its own node must not skip it"
+    );
+    assert_eq!(df.state_log.len(), 2, "kept for the lagging daemon");
+
+    // Once the lagging daemon is gone, the next applied change empties the log.
+    coordinator
+        .running_dataflows
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .daemons
+        .remove(&lagging);
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_delete_param(dataflow_id, node_id, "gain".to_string(), reply_tx)
+        .await
+        .unwrap();
+    reply_rx.await.unwrap().expect("delete is applied");
+
+    let df = &coordinator.running_dataflows[&dataflow_id];
+    assert_eq!(df.daemon_ack_sequence[&owner], 3);
+    assert_eq!(df.daemon_ack_sequence[&peer], 3);
+    assert!(df.state_log.is_empty(), "every live daemon applied it");
+}
+
 #[tokio::test]
 async fn replay_replays_persisted_param_to_daemon_connection() {
     #[derive(serde::Deserialize)]
