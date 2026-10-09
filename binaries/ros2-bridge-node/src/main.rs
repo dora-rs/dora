@@ -1224,27 +1224,40 @@ fn run_service_client(
             } => {
                 let array_data = data.as_array().to_data();
 
+                // A failed or unanswered call fails only this request, as on
+                // the Zenoh transport: one slow or absent ROS2 server must not
+                // tear down the whole bridge node.
                 // Serialize request (guard clears thread-local on drop)
                 let _guard = TypeInfoGuard::serialize(request_type_info.clone());
-                let req_id = client
-                    .send_request(BridgeMessage(Some(array_data)))
-                    .map_err(|e| eyre!("failed to send service request: {e:?}"))?;
+                let Some(req_id) = peer_value_or_warn(
+                    client
+                        .send_request(BridgeMessage(Some(array_data)))
+                        .map_err(|e| eyre!("{e:?}")),
+                    "failed to send ROS2 service request",
+                ) else {
+                    continue;
+                };
 
                 // Receive response with timeout
                 let _guard = TypeInfoGuard::deserialize(response_type_info.clone());
-                let response = futures::executor::block_on(async {
-                    let recv = client.async_receive_response(req_id);
-                    futures::pin_mut!(recv);
-                    let timeout = futures_timer::Delay::new(SERVICE_RESPONSE_TIMEOUT);
-                    match futures::future::select(recv, timeout).await {
-                        futures::future::Either::Left((result, _)) => {
-                            result.map_err(|e| eyre!("failed to receive service response: {e:?}"))
+                let Some(response) = peer_value_or_warn(
+                    futures::executor::block_on(async {
+                        let recv = client.async_receive_response(req_id);
+                        futures::pin_mut!(recv);
+                        let timeout = futures_timer::Delay::new(SERVICE_RESPONSE_TIMEOUT);
+                        match futures::future::select(recv, timeout).await {
+                            futures::future::Either::Left((result, _)) => {
+                                result.map_err(|e| eyre!("{e:?}"))
+                            }
+                            futures::future::Either::Right(_) => {
+                                eyre::bail!("timed out after {SERVICE_RESPONSE_TIMEOUT:?}")
+                            }
                         }
-                        futures::future::Either::Right(_) => {
-                            eyre::bail!("service response timed out")
-                        }
-                    }
-                })?;
+                    }),
+                    "ROS2 service call failed",
+                ) else {
+                    continue;
+                };
 
                 if let Some(resp_data) = response.0 {
                     node.send_output(
@@ -1307,10 +1320,13 @@ fn run_service_server(
                     if let Some((rmw_id, _)) = pending_requests.remove(rid) {
                         let array_data = data.as_array().to_data();
                         let _ser_guard = TypeInfoGuard::serialize(response_type_info.clone());
-                        futures::executor::block_on(
+                        // The client may have given up on this request; that
+                        // must not tear down the server bridge (Zenoh parity).
+                        if let Err(e) = futures::executor::block_on(
                             server.async_send_response(rmw_id, BridgeMessage(Some(array_data))),
-                        )
-                        .map_err(|e| eyre!("failed to send service response: {e:?}"))?;
+                        ) {
+                            tracing::warn!("failed to send ROS2 service response: {e:?}");
+                        }
                     } else {
                         tracing::warn!(
                             "response has request_id={rid} but no matching pending request"
