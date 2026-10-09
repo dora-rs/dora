@@ -644,6 +644,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         .collect();
 
     let mut msg_count: u64 = 0;
+    let mut oversized_count: u64 = 0;
     // Whether the stream ended on its own rather than because we asked it to.
     // The coordinator evicts a subscriber that has timed out 100 consecutive
     // times, and the CLI sees that as a bare `Disconnected` — indistinguishable
@@ -705,7 +706,17 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                     timestamp_offset_nanos: dora_recording::offset_since(start),
                     event_bytes,
                 };
-                writer.write_entry(&entry)?;
+                // Skip, rather than abort on, an entry too large for the
+                // recording format, as the record node does (#3698).
+                if let Some(len) = writer.write_entry_skip_oversized(&entry)? {
+                    tracing::warn!(
+                        "skipping oversized message from {}/{} ({len} bytes encoded)",
+                        entry.node_id,
+                        entry.output_id
+                    );
+                    oversized_count += 1;
+                    continue;
+                }
                 msg_count += 1;
 
                 if msg_count.is_multiple_of(100) {
@@ -749,6 +760,9 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         footer.total_messages,
         footer.total_bytes as f64 / 1_048_576.0
     );
+    if oversized_count > 0 {
+        eprintln!("Skipped {oversized_count} message(s) too large for the recording format.");
+    }
 
     Ok(())
 }

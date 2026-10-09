@@ -29,8 +29,6 @@ use std::{
 };
 use uuid::Uuid;
 
-const MAX_TOPIC_DEBUG_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
-
 // Resolve the dataflow name.
 pub(crate) fn resolve_name(
     name: String,
@@ -145,7 +143,7 @@ pub(crate) async fn send_topic_frames(
     subscription_ids: Vec<Uuid>,
     payload: Vec<u8>,
 ) -> Vec<(Uuid, TopicSubscriber)> {
-    if payload.len() > MAX_TOPIC_DEBUG_PAYLOAD_BYTES {
+    if payload.len() > dora_message::MAX_TOPIC_DATA_PAYLOAD_BYTES {
         tracing::warn!(
             "dropping oversized topic debug payload ({} bytes) for {} subscription(s)",
             payload.len(),
