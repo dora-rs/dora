@@ -96,6 +96,80 @@ fn format_response_json(id: Uuid, reply: &impl serde::Serialize) -> String {
     }
 }
 
+/// Push one log line to the CLI.
+async fn send_log_line(
+    ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
+    log_json: String,
+) -> Result<(), ()> {
+    ws_tx
+        .send(Message::Text(log_json.into()))
+        .await
+        .map_err(|_| ())
+}
+
+/// Push one topic data frame to the CLI as `subscription_id ++ payload`.
+async fn send_topic_frame(
+    ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
+    frame: crate::topic_subscriber::TopicFrame,
+) -> Result<(), ()> {
+    let mut data = Vec::with_capacity(16 + frame.payload.len());
+    data.extend_from_slice(&frame.subscription_id.into_bytes());
+    data.extend_from_slice(&frame.payload);
+    ws_tx
+        .send(Message::Binary(data.into()))
+        .await
+        .map_err(|_| ())
+}
+
+/// Wait for a control request's reply while still draining the connection's
+/// pushed log lines and topic frames to the CLI.
+///
+/// The coordinator event loop fills `log_rx`/`binary_rx` (64 slots each) and
+/// only this connection empties them. Awaiting the reply alone would leave
+/// them undrained for as long as the request takes, which for `WaitForBuild`
+/// or `Stop` is the whole build or shutdown: once full, every further log line
+/// costs the event loop a 100 ms send timeout and the subscriber is dropped
+/// after 100 of them, losing the rest of the log.
+///
+/// `Err` means the WebSocket send failed (the connection is gone).
+async fn await_reply_forwarding_pushes(
+    mut reply_rx: oneshot::Receiver<eyre::Result<ControlRequestReply>>,
+    ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
+    log_rx: &mut mpsc::Receiver<String>,
+    binary_rx: &mut mpsc::Receiver<crate::topic_subscriber::TopicFrame>,
+) -> Result<ControlRequestReply, ()> {
+    let reply = loop {
+        tokio::select! {
+            reply = &mut reply_rx => break reply,
+            Some(log_json) = log_rx.recv() => send_log_line(ws_tx, log_json).await?,
+            Some(frame) = binary_rx.recv() => send_topic_frame(ws_tx, frame).await?,
+        }
+    };
+    // Lines the event loop queued before answering belong ahead of the
+    // reply: a CLI that exits on it would lose them.
+    while let Ok(log_json) = log_rx.try_recv() {
+        send_log_line(ws_tx, log_json).await?;
+    }
+    while let Ok(frame) = binary_rx.try_recv() {
+        send_topic_frame(ws_tx, frame).await?;
+    }
+    Ok(match reply {
+        Ok(Ok(reply)) => reply,
+        Ok(Err(err)) => {
+            tracing::error!("control request failed: {err:?}");
+            // Send only the root error message to the client, not the
+            // full internal chain (which may leak implementation details).
+            let root = err.root_cause().to_string();
+            ControlRequestReply::Error(root)
+        }
+        Err(_) => ControlRequestReply::Error(
+            "coordinator dropped the request without a reply \
+             (it may have shut down or the dataflow exited unexpectedly)"
+                .to_string(),
+        ),
+    })
+}
+
 /// Handle a single CLI WebSocket connection on `/api/control`.
 ///
 /// For normal requests: deserialize ControlRequest from WsRequest.params,
@@ -409,20 +483,15 @@ pub(crate) async fn handle_control_ws(
                     break;
                 }
 
-                let reply = match reply_rx.await {
-                    Ok(Ok(reply)) => reply,
-                    Ok(Err(err)) => {
-                        tracing::error!("control request failed: {err:?}");
-                        // Send only the root error message to the client, not the
-                        // full internal chain (which may leak implementation details).
-                        let root = err.root_cause().to_string();
-                        ControlRequestReply::Error(root)
-                    }
-                    Err(_) => ControlRequestReply::Error(
-                        "coordinator dropped the request without a reply \
-                         (it may have shut down or the dataflow exited unexpectedly)"
-                            .to_string(),
-                    ),
+                // Keep forwarding pushed log lines and topic frames while the
+                // reply is pending: `WaitForBuild` and `Stop` only answer once
+                // the build or dataflow ends, and the logs they produce in the
+                // meantime are pushed through this same connection.
+                let Ok(reply) =
+                    await_reply_forwarding_pushes(reply_rx, &mut ws_tx, &mut log_rx, &mut binary_rx)
+                        .await
+                else {
+                    break;
                 };
 
                 let stop = matches!(reply, ControlRequestReply::CoordinatorStopped);
@@ -434,16 +503,13 @@ pub(crate) async fn handle_control_ws(
             }
             // Log events to push to CLI
             Some(log_json) = log_rx.recv() => {
-                if ws_tx.send(Message::Text(log_json.into())).await.is_err() {
+                if send_log_line(&mut ws_tx, log_json).await.is_err() {
                     break;
                 }
             }
             // Binary topic data to push to CLI
             Some(frame) = binary_rx.recv() => {
-                let mut data = Vec::with_capacity(16 + frame.payload.len());
-                data.extend_from_slice(&frame.subscription_id.into_bytes());
-                data.extend_from_slice(&frame.payload);
-                if ws_tx.send(Message::Binary(data.into())).await.is_err() {
+                if send_topic_frame(&mut ws_tx, frame).await.is_err() {
                     break;
                 }
             }
@@ -559,6 +625,114 @@ fn encode_topic_ipc(array: &arrow::array::UInt8Array) -> eyre::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A request whose reply is held back -- `WaitForBuild` is answered only
+    /// when the build ends -- must not stop the connection from forwarding
+    /// the log lines pushed to it meanwhile. Before the fix the WS loop sat in
+    /// `reply_rx.await`, so after 64 lines the coordinator's sends blocked
+    /// (and in production timed out, then dropped the subscriber).
+    #[tokio::test]
+    async fn logs_keep_flowing_while_a_reply_is_pending() {
+        use futures::{SinkExt as _, StreamExt as _};
+        use std::time::Duration;
+        use tokio_tungstenite::tungstenite::Message as ClientMessage;
+
+        const LINES: usize = 500;
+
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        let clock = Arc::new(dora_core::uhlc::HLC::default());
+        let app =
+            axum::Router::new().route(
+                "/",
+                axum::routing::any(move |ws: axum::extract::WebSocketUpgrade| {
+                    let event_tx = event_tx.clone();
+                    let clock = clock.clone();
+                    async move {
+                        ws.on_upgrade(move |socket| handle_control_ws(socket, event_tx, clock))
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await });
+
+        // Stand-in for the coordinator event loop: accept the log subscription,
+        // then push LINES log lines before answering the pending request.
+        let coordinator = tokio::spawn(async move {
+            let mut log_sender = None;
+            while let Some(event) = event_rx.recv().await {
+                match event {
+                    Event::Control(ControlEvent::BuildLogSubscribe {
+                        sender, found_tx, ..
+                    }) => {
+                        log_sender = Some(sender);
+                        let _ = found_tx.send(true);
+                    }
+                    Event::Control(ControlEvent::IncomingRequest { reply_sender, .. }) => {
+                        let sender = log_sender.take().expect("subscribed before the request");
+                        for i in 0..LINES {
+                            tokio::time::timeout(
+                                Duration::from_secs(5),
+                                sender.send(format!("{{\"line\":{i}}}")),
+                            )
+                            .await
+                            .expect("log channel not drained while the reply was pending")
+                            .expect("log channel closed");
+                        }
+                        let _ = reply_sender.send(Ok(ControlRequestReply::TopicPublished));
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/"))
+            .await
+            .unwrap();
+        let mut send = async |request: ControlRequest| {
+            let id = Uuid::new_v4();
+            let req = WsRequest {
+                id,
+                method: "control".into(),
+                params: serde_json::to_value(&request).unwrap(),
+            };
+            ws.send(ClientMessage::Text(
+                serde_json::to_string(&req).unwrap().into(),
+            ))
+            .await
+            .unwrap();
+            id
+        };
+        let build_id = dora_message::BuildId::generate();
+        send(ControlRequest::BuildLogSubscribe {
+            build_id,
+            level: log::LevelFilter::Info,
+        })
+        .await;
+        let wait_id = send(ControlRequest::WaitForBuild { build_id }).await;
+
+        let mut lines = 0;
+        loop {
+            let msg = tokio::time::timeout(Duration::from_secs(30), ws.next())
+                .await
+                .expect("timed out waiting for the connection")
+                .expect("connection closed")
+                .unwrap();
+            let ClientMessage::Text(text) = msg else {
+                continue;
+            };
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            if value.get("line").is_some() {
+                assert_eq!(value["line"], lines, "log lines must arrive in order");
+                lines += 1;
+            } else if value["id"] == serde_json::json!(wait_id) {
+                break;
+            }
+        }
+        assert_eq!(lines, LINES, "every log line must reach the CLI");
+        coordinator.await.unwrap();
+    }
 
     /// The rejection has to be actionable: an operator seeing it should know
     /// which side is old without reading the source. Both arms name our
