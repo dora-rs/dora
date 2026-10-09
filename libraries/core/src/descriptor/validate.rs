@@ -91,6 +91,7 @@ fn check_dataflow_static_resolved(
 ) -> eyre::Result<()> {
     for node in nodes.values() {
         check_node_timing(node)?;
+        check_runtime_operator_count(node)?;
     }
     // dataflow-level `health_check_interval` reaches `Duration::from_secs_f64`
     // in the same way (`binaries/daemon/src/lib.rs`). A zero interval must also
@@ -227,6 +228,25 @@ pub fn check_node_timing(node: &ResolvedNode) -> eyre::Result<()> {
         bail!(
             "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
             node.id
+        );
+    }
+    Ok(())
+}
+
+/// A runtime node must hold exactly one operator: the operator runtime
+/// (`dora_runtime_api::main`, shared by the shared-library and Python
+/// backends) refuses to start with zero or several. Without this check such a
+/// descriptor passes `dora validate`/`dora build` and only fails when the
+/// runtime process starts.
+fn check_runtime_operator_count(node: &ResolvedNode) -> eyre::Result<()> {
+    if let descriptor::CoreNodeKind::Runtime(runtime) = &node.kind
+        && runtime.operators.len() != 1
+    {
+        bail!(
+            "runtime node `{}` has {} operators, but a runtime node runs exactly one \
+             operator; split them into one node per operator",
+            node.id,
+            runtime.operators.len()
         );
     }
     Ok(())
@@ -1504,6 +1524,32 @@ operators:
 "#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn runtime_node_with_several_operators_is_rejected() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: op1
+      - id: op2
+        shared-library: op2
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("runtime-node") && err.contains("2 operators"),
+            "error should name the node and the operator count, got: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_node_with_one_operator_passes_the_operator_count_check() {
+        check_runtime_operator_count(&runtime_node()).unwrap();
     }
 
     fn custom_node() -> dora_message::descriptor::CustomNode {
