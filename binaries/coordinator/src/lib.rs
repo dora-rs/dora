@@ -145,8 +145,8 @@ pub(crate) use daemon_liveness::{
 };
 pub(crate) use params::{
     ensure_delete_param_forward_applied, ensure_set_param_forward_applied,
-    handle_pruned_state_catchup_fallback, replay_persisted_params_for_daemon,
-    schedule_param_replay_for_ready_dataflow,
+    finish_pruned_state_catchup_fallback, replay_persisted_params_for_daemon,
+    schedule_param_replay_for_ready_dataflow, start_pruned_state_catchup_fallback,
 };
 pub(crate) use ready_barrier::{
     broadcast_all_nodes_ready, nodes_on_daemon, replay_all_nodes_ready,
@@ -374,6 +374,8 @@ pub(crate) struct Coordinator {
     pub(crate) otel_metrics: otel_metrics::SharedMetrics,
     /// Aborts the event stream on `dora down` / Ctrl-C.
     pub(crate) abort_handle: futures::stream::AbortHandle,
+    /// Feeds events back into the event loop, for tasks it spawns.
+    pub(crate) internal_events: tokio::sync::mpsc::Sender<Event>,
 }
 
 impl Coordinator {
@@ -405,9 +407,13 @@ async fn start_inner(
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
             .map(|_| Event::DaemonHeartbeatInterval);
 
+    // results of work the event loop spawned off itself
+    let (internal_events_tx, internal_events_rx) = tokio::sync::mpsc::channel::<Event>(64);
+    let internal_events = ReceiverStream::new(internal_events_rx);
+
     // events that should be aborted on `dora down`
     let (abortable_events, abort_handle) =
-        futures::stream::abortable((events, daemon_heartbeat_interval).merge());
+        futures::stream::abortable((events, daemon_heartbeat_interval, internal_events).merge());
 
     let mut events = abortable_events;
 
@@ -479,6 +485,7 @@ async fn start_inner(
         #[cfg(feature = "metrics")]
         otel_metrics,
         abort_handle,
+        internal_events: internal_events_tx,
     };
 
     while let Some(event) = events.next().await {
@@ -586,6 +593,19 @@ async fn start_inner(
                     .handle_daemon_node_stopped(daemon_id, dataflow_id, node_id, clean_stop)
                     .await?
             }
+            Event::ParamFallbackReplayFinished {
+                dataflow_id,
+                daemon_id,
+                connection_id,
+                ack_sequence,
+                succeeded,
+            } => coordinator.handle_param_fallback_replay_finished(
+                dataflow_id,
+                daemon_id,
+                connection_id,
+                ack_sequence,
+                succeeded,
+            ),
         }
 
         // warn if event handling took too long -> the main loop should never be blocked for too long

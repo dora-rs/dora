@@ -420,6 +420,10 @@ pub(crate) struct RunningDataflow {
     /// Per-daemon timestamp of last full fallback param replay attempt
     /// (for state catch-up backoff on pruned logs).
     pub(crate) last_replay_attempt: BTreeMap<DaemonId, Instant>,
+    /// Fallback param replays in flight, by daemon, with the connection ID
+    /// each was sent on. A status report from the same connection does not
+    /// start a second one; one from a new connection does.
+    pub(crate) fallback_replay_in_flight: BTreeMap<DaemonId, Uuid>,
 
     /// Whether UV was used for this dataflow (needed for restart).
     pub(crate) uv: bool,
@@ -653,6 +657,7 @@ impl RunningDataflow {
             store_generation: record.generation,
             last_recovery_attempt: BTreeMap::new(),
             last_replay_attempt: BTreeMap::new(),
+            fallback_replay_in_flight: BTreeMap::new(),
             uv: record.uv,
             launch: LaunchContext::unknown(),
             state_log_sequence: 0,
