@@ -138,7 +138,21 @@ impl DoraArray {
     }
 
     /// A human-readable name for the payload's Arrow type, e.g. `"UInt8"` or
-    /// `"List(Field { name: \"item\", .. })"`.
+    /// `"Utf8"`.
+    ///
+    /// The name is the `Debug` rendering of the Arrow `DataType`, so nested
+    /// types spell out their child field, e.g.
+    /// `"List(Field { data_type: Int32, nullable: true })"`. That rendering
+    /// is Arrow's, not dora's, and may change between Arrow major versions:
+    /// match on it only for the primitive types.
+    ///
+    /// ```
+    /// use dora_arrow_convert::IntoArrow;
+    ///
+    /// assert_eq!(42_u8.into_arrow().type_name(), "UInt8");
+    /// assert_eq!(vec![1_i32, 2].into_arrow().type_name(), "Int32");
+    /// assert_eq!("hello".into_arrow().type_name(), "Utf8");
+    /// ```
     ///
     /// Returned as a `String` rather than an `arrow_schema::DataType` so that
     /// the ungated surface stays free of Arrow types. Use it for logging and
