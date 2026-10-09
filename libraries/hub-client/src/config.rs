@@ -205,6 +205,17 @@ pub(crate) fn validate_index_entry(index: &IndexConfig) -> eyre::Result<()> {
                 .collect::<String>()
         );
     }
+    // bindings match references exactly, and real namespaces are lowercase:
+    // a binding that can never match (`Acme`, `acme `) would silently leave
+    // its namespace resolving against the official index
+    for namespace in &index.namespaces {
+        if let Some(problem) = dora_core::manifest::validate::check_namespace(namespace) {
+            eyre::bail!(
+                "index `{}`: invalid namespace binding: {problem}",
+                index.alias
+            );
+        }
+    }
     match (&index.git, &index.path) {
         (None, None) => {
             eyre::bail!("index `{}` has neither `git` nor `path`", index.alias)
@@ -308,6 +319,24 @@ namespaces = ["dora-rs"]
         )
         .unwrap_err();
         assert!(format!("{err}").contains("official namespace"), "{err}");
+    }
+
+    /// Bindings match `PackageRef` namespaces exactly, and real namespaces
+    /// are lowercase. A binding that can never match (`Acme`, `acme `) would
+    /// silently leave `acme/...` resolving against the official index — the
+    /// dependency-confusion fallback bindings exist to rule out.
+    #[test]
+    fn malformed_namespace_binding_is_an_error() {
+        for ns in ["Acme", "acme ", "", "-acme", "ac/me"] {
+            let err = config(&format!(
+                "[[index]]\nalias = \"a\"\ngit = \"https://example.com/a\"\nnamespaces = [{ns:?}]\n"
+            ))
+            .expect_err(&format!("namespace binding {ns:?} must be rejected"));
+            assert!(
+                format!("{err}").contains("invalid namespace"),
+                "{ns:?}: {err}"
+            );
+        }
     }
 
     #[test]
