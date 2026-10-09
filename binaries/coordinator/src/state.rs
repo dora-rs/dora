@@ -420,6 +420,12 @@ pub(crate) struct RunningDataflow {
     /// Per-daemon timestamp of last full fallback param replay attempt
     /// (for state catch-up backoff on pruned logs).
     pub(crate) last_replay_attempt: BTreeMap<DaemonId, Instant>,
+    /// Serializes param writes to this dataflow's daemons: a `dora param
+    /// set`/`delete` holds it from persisting to forwarding, and a persisted
+    /// param replay holds it while it reads one param from the store and
+    /// sends it. Without it a replay that snapshotted the store before a
+    /// `set` could overwrite the newer value on the daemon (#3683).
+    pub(crate) param_write_lock: Arc<Mutex<()>>,
 
     /// Whether UV was used for this dataflow (needed for restart).
     pub(crate) uv: bool,
@@ -653,6 +659,7 @@ impl RunningDataflow {
             store_generation: record.generation,
             last_recovery_attempt: BTreeMap::new(),
             last_replay_attempt: BTreeMap::new(),
+            param_write_lock: Default::default(),
             uv: record.uv,
             launch: LaunchContext::unknown(),
             state_log_sequence: 0,

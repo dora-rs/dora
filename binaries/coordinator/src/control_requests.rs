@@ -1040,6 +1040,15 @@ impl Coordinator {
                                 )?;
                                 let bytes = serde_json::to_vec(&value)
                                     .map_err(|e| eyre!("failed to serialize param value: {e}"))?;
+                                // Held from persisting to forwarding, so a concurrent
+                                // persisted-param replay cannot land a stale value on the
+                                // daemon after this one (#3683).
+                                let param_write_lock =
+                                    param_write_lock(&self.running_dataflows, &dataflow_id);
+                                let _write_guard = match &param_write_lock {
+                                    Some(lock) => Some(lock.lock().await),
+                                    None => None,
+                                };
                                 // Persist first (source of truth), then attempt synchronous
                                 // runtime forwarding. If forwarding fails, caller gets Error(...)
                                 // but persisted value will be replayed on catch-up/reconnect.
@@ -1106,6 +1115,14 @@ impl Coordinator {
                                     &dataflow_id,
                                     &node_id,
                                 )?;
+                                // See `handle_set_param`: keeps a concurrent replay from
+                                // resurrecting the deleted param on the daemon (#3683).
+                                let param_write_lock =
+                                    param_write_lock(&self.running_dataflows, &dataflow_id);
+                                let _write_guard = match &param_write_lock {
+                                    Some(lock) => Some(lock.lock().await),
+                                    None => None,
+                                };
                                 // Persist first (source of truth), then attempt synchronous
                                 // runtime forwarding. If forwarding fails, caller gets Error(...)
                                 // but delete is still reflected in persisted state/catch-up log.
@@ -1554,4 +1571,16 @@ impl Coordinator {
         let _ = reply_sender.send(result);
         Ok(())
     }
+}
+
+/// The param write lock of a running dataflow (see
+/// `RunningDataflow::param_write_lock`). `None` when it is not running: then
+/// no replay can be in flight for it either.
+fn param_write_lock(
+    running_dataflows: &std::collections::HashMap<Uuid, RunningDataflow>,
+    dataflow_id: &Uuid,
+) -> Option<std::sync::Arc<tokio::sync::Mutex<()>>> {
+    running_dataflows
+        .get(dataflow_id)
+        .map(|df| df.param_write_lock.clone())
 }

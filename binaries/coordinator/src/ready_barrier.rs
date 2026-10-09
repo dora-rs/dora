@@ -139,6 +139,7 @@ pub(crate) async fn replay_all_nodes_ready(
     // default state instead of the parameters the operator set.
     let node_ids_on_daemon = nodes_on_daemon(dataflow, daemon_id);
     let store = store.clone();
+    let param_write_lock = dataflow.param_write_lock.clone();
     let clock = clock.clone();
     let daemon_id = daemon_id.clone();
     tokio::spawn(async move {
@@ -148,6 +149,7 @@ pub(crate) async fn replay_all_nodes_ready(
             node_ids_on_daemon,
             store,
             connection_for_params,
+            param_write_lock,
             clock,
         )
         .await;

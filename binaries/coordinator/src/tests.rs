@@ -314,6 +314,7 @@ fn test_running_dataflow(
         store_generation: 0,
         last_recovery_attempt: BTreeMap::new(),
         last_replay_attempt: BTreeMap::new(),
+        param_write_lock: Default::default(),
         uv: false,
         launch: crate::state::LaunchContext::unknown(),
         state_log_sequence: 0,
@@ -1618,6 +1619,7 @@ async fn replay_replays_persisted_param_to_daemon_connection() {
         vec![node_id],
         store,
         connection,
+        Default::default(),
         Arc::new(HLC::default()),
     )
     .await;
@@ -1630,6 +1632,151 @@ async fn replay_replays_persisted_param_to_daemon_connection() {
         .await
         .expect("daemon task did not receive the expected message")
         .unwrap();
+}
+
+/// Fake daemon for replay tests: answers every `SetParam` with `Ok`, after
+/// running `on_request` on it, and returns the `(key, value)` pairs it saw.
+fn spawn_set_param_acking_daemon(
+    mut rx: tokio::sync::mpsc::Receiver<String>,
+    pending_replies: Arc<tokio::sync::Mutex<HashMap<Uuid, tokio::sync::oneshot::Sender<String>>>>,
+    mut on_request: impl FnMut(&str) + Send + 'static,
+) -> tokio::task::JoinHandle<Vec<(String, serde_json::Value)>> {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        id: String,
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+    tokio::spawn(async move {
+        let mut seen = Vec::new();
+        while let Some(outbound) = rx.recv().await {
+            let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            let DaemonCoordinatorEvent::SetParam { key, value, .. } = outbound_raw.params.inner
+            else {
+                panic!("unexpected replay event");
+            };
+            on_request(&key);
+            seen.push((key, value));
+            let request_id = Uuid::parse_str(&outbound_raw.id).expect("valid request id");
+            let reply =
+                serde_json::to_string(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+            let reply_tx = pending_replies
+                .lock()
+                .await
+                .remove(&request_id)
+                .expect("pending reply sender should exist");
+            let _ = reply_tx.send(reply);
+        }
+        seen
+    })
+}
+
+#[tokio::test]
+async fn replay_sends_current_value_of_param_changed_after_snapshot() {
+    // #3683: a `dora param set`/`delete` that lands while the replay is
+    // sending earlier items must not be overwritten by the value the replay
+    // listed at its start, nor a deleted key be resurrected.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+    let one = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    for key in ["a", "b", "c"] {
+        store
+            .put_node_param(&dataflow_id, &node_id, key, &one)
+            .unwrap();
+    }
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+
+    let daemon_store = store.clone();
+    let daemon_node = node_id.clone();
+    let daemon_task = spawn_set_param_acking_daemon(rx, pending_replies, move |key| {
+        if key == "a" {
+            let two = serde_json::to_vec(&serde_json::json!(2)).unwrap();
+            daemon_store
+                .put_node_param(&dataflow_id, &daemon_node, "b", &two)
+                .unwrap();
+            daemon_store
+                .delete_node_param(&dataflow_id, &daemon_node, "c")
+                .unwrap();
+        }
+    });
+
+    let summary = replay_persisted_params_for_daemon(
+        dataflow_id,
+        daemon_id,
+        vec![node_id],
+        store,
+        connection,
+        Default::default(),
+        Arc::new(HLC::default()),
+    )
+    .await;
+    assert_eq!(summary.attempted, 2);
+    assert_eq!(summary.failed, 0);
+
+    let seen = tokio::time::timeout(Duration::from_secs(10), daemon_task)
+        .await
+        .expect("daemon task did not finish")
+        .unwrap();
+    assert_eq!(
+        seen,
+        vec![
+            ("a".to_string(), serde_json::json!(1)),
+            ("b".to_string(), serde_json::json!(2)),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn replay_holds_param_write_lock_while_a_param_is_in_flight() {
+    // #3683: `dora param set`/`delete` take this lock from persisting to
+    // forwarding, so holding it per item orders the replay against them.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+    let value = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &value)
+        .unwrap();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+
+    let lock: Arc<tokio::sync::Mutex<()>> = Default::default();
+    let daemon_lock = lock.clone();
+    let daemon_task = spawn_set_param_acking_daemon(rx, pending_replies, move |_| {
+        assert!(
+            daemon_lock.try_lock().is_err(),
+            "replay must hold the param write lock until the daemon answers"
+        );
+    });
+
+    let summary = replay_persisted_params_for_daemon(
+        dataflow_id,
+        daemon_id,
+        vec![node_id],
+        store,
+        connection,
+        lock.clone(),
+        Arc::new(HLC::default()),
+    )
+    .await;
+    assert_eq!(summary.attempted, 1);
+    assert_eq!(summary.failed, 0);
+    assert!(lock.try_lock().is_ok(), "lock released after the replay");
+
+    let seen = tokio::time::timeout(Duration::from_secs(10), daemon_task)
+        .await
+        .expect("daemon task did not finish")
+        .unwrap();
+    assert_eq!(seen.len(), 1);
 }
 
 #[tokio::test]
@@ -1649,6 +1796,7 @@ async fn replay_skips_when_no_persisted_params() {
         vec![node_id],
         store,
         connection,
+        Default::default(),
         Arc::new(HLC::default()),
     )
     .await;
@@ -1683,6 +1831,7 @@ async fn replay_reports_failure_when_params_cannot_be_loaded() {
         vec![node_id],
         store,
         connection,
+        Default::default(),
         Arc::new(HLC::default()),
     )
     .await;
@@ -1740,6 +1889,7 @@ async fn replay_reports_failure_when_daemon_rejects_param() {
         vec![node_id],
         store,
         connection,
+        Default::default(),
         Arc::new(HLC::default()),
     )
     .await;
