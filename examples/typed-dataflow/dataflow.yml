@@ -1,7 +1,7 @@
 # Typed dataflow example -- same as python-dataflow but with type annotations.
 #
 # Validate types:   dora validate dataflow.yml
-# Strict (for CI):  dora validate --strict dataflow.yml
+# Strict (for CI):  dora validate --strict-types dataflow.yml
 # Visualize:        dora graph dataflow.yml --open
 # Run:              dora run dataflow.yml --uv
 nodes:

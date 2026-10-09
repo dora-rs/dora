@@ -224,7 +224,7 @@ ZENOH_CONFIG=zenoh-config.json5 dora daemon
 
 ```bash
 # Pin benchmark to specific cores for reproducible results
-taskset -c 2,3 dora run examples/benchmark/dataflow.yml --release
+taskset -c 2,3 dora run examples/benchmark/dataflow.yml
 
 # Disable CPU frequency scaling before benchmarking
 echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
