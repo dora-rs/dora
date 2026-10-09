@@ -12,7 +12,7 @@ use dora_message::{
     coordinator_to_daemon::{DaemonCoordinatorEvent, Timestamped},
 };
 use eyre::WrapErr;
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 /// The `AllNodesReady` frame for a dataflow, as sent to a daemon.
 ///
@@ -204,6 +204,33 @@ pub(crate) async fn broadcast_all_nodes_ready(
         clock.clone(),
     );
     Ok(())
+}
+
+/// Release the start barrier of `uuid` if a daemon disconnect left it owed
+/// ([`RunningDataflow::ready_barrier_owed`]) and the spawn has now resolved
+/// as Ok. Called after every spawn result; a no-op otherwise (#3736).
+pub(crate) async fn release_owed_ready_barrier(
+    uuid: DataflowId,
+    running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    daemon_connections: &mut DaemonConnections,
+    store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
+    clock: &Arc<HLC>,
+) -> eyre::Result<()> {
+    let Some(dataflow) = running_dataflows.get_mut(&uuid) else {
+        return Ok(());
+    };
+    if !dataflow.ready_barrier_owed || !dataflow.spawn_result.is_cached_ok() {
+        return Ok(());
+    }
+    dataflow.ready_barrier_owed = false;
+    if dataflow.ready_barrier_released {
+        return Ok(());
+    }
+    tracing::info!(
+        dataflow = %uuid,
+        "releasing the start barrier left owed by a daemon disconnect during spawn"
+    );
+    broadcast_all_nodes_ready(uuid, dataflow, daemon_connections, store, clock).await
 }
 
 /// The nodes of `dataflow` assigned to `daemon_id`.

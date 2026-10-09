@@ -129,11 +129,6 @@ pub(crate) async fn send_heartbeat_with_timeout(
     (machine_id, disconnect)
 }
 
-/// Remove disconnected daemon ids from all in-memory dataflow membership sets.
-///
-/// This intentionally does not resolve `spawn_result`: the spawn timeout
-/// watchdog remains the single path that releases spawn waiters for
-/// disconnect-mid-spawn cases.
 /// Action the daemon-disconnect cleanup asks the (async) caller to perform for
 /// a dataflow that was already past spawn when a daemon it depended on vanished.
 /// See #2028.
@@ -166,6 +161,11 @@ pub(crate) fn cancel_pending_restart(
     }
 }
 
+/// Remove disconnected daemon ids from all in-memory dataflow membership sets.
+///
+/// This intentionally does not resolve `spawn_result`: the spawn timeout
+/// watchdog remains the single path that releases spawn waiters for
+/// disconnect-mid-spawn cases.
 pub(crate) fn cleanup_disconnected_daemons_from_running_dataflows(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     disconnected: &BTreeSet<DaemonId>,
@@ -198,10 +198,17 @@ pub(crate) fn cleanup_disconnected_daemons_from_running_dataflows(
             if spawned_ok {
                 actions.push(DisconnectAction::ReclaimOrphaned(df.uuid));
             }
-        } else if spawned_ok && pending_was_nonempty && df.pending_daemons.is_empty() {
+        } else if pending_was_nonempty && df.pending_daemons.is_empty() {
             // The last daemon we were waiting on for `ReadyOnDaemon` vanished
             // via disconnect; `AllNodesReady` would otherwise never fire.
-            actions.push(DisconnectAction::ReleaseReadyBarrier(df.uuid));
+            if spawned_ok {
+                actions.push(DisconnectAction::ReleaseReadyBarrier(df.uuid));
+            } else {
+                // Leave the spawn to the watchdog, but if a survivor's spawn
+                // result later resolves it as Ok, release the barrier then
+                // (#3736).
+                df.ready_barrier_owed = true;
+            }
         }
     }
     // Drain pending restarts for affected dataflows: the disconnected
