@@ -413,6 +413,33 @@ impl Listener {
         batch
     }
 
+    /// Waits for the next subscribed event and returns the `NextEvent` reply
+    /// carrying it. The event goes through the queue, so the same
+    /// [`Self::take_queued_events_within_budget`] that bounds a queued reply
+    /// drops one that can never be framed, and the wait goes on: replying with
+    /// it would fail, leaving the node blocked on a reply that never comes.
+    async fn wait_for_next_events(&mut self) -> DaemonReply {
+        loop {
+            let Some(events) = self.subscribed_events.as_mut() else {
+                return DaemonReply::Result(Err(
+                    "Ignoring event request because no subscribe message was sent yet".into(),
+                ));
+            };
+            let Some(event) = events.recv().await else {
+                return DaemonReply::NextEvents(vec![]);
+            };
+            if let Some(counter) = &self.pending_counter {
+                counter.fetch_sub(1, Ordering::Relaxed);
+            }
+            self.note_drained();
+            self.enqueue(event);
+            let batch = self.take_queued_events_within_budget();
+            if !batch.is_empty() {
+                return DaemonReply::NextEvents(batch);
+            }
+        }
+    }
+
     #[tracing::instrument(skip(self, connection), fields(%self.dataflow_id, %self.node_id), level = "trace")]
     async fn handle_message<C: Connection>(
         &mut self,
@@ -525,24 +552,7 @@ impl Listener {
                 // reply fits one frame (see `NEXT_EVENTS_REPLY_BUDGET`).
                 let queued_events = self.take_queued_events_within_budget();
                 let reply = if queued_events.is_empty() {
-                    match self.subscribed_events.as_mut() {
-                        // wait for next event
-                        Some(events) => match events.recv().await {
-                            Some(event) => {
-                                if let Some(counter) = &self.pending_counter {
-                                    counter.fetch_sub(1, Ordering::Relaxed);
-                                }
-                                self.note_drained();
-                                DaemonReply::NextEvents(vec![event])
-                            }
-                            None => DaemonReply::NextEvents(vec![]),
-                        },
-                        None => {
-                            DaemonReply::Result(Err("Ignoring event request because no subscribe \
-                                message was sent yet"
-                                .into()))
-                        }
-                    }
+                    self.wait_for_next_events().await
                 } else {
                     DaemonReply::NextEvents(queued_events)
                 };
@@ -1359,6 +1369,66 @@ mod tests {
         assert!(encoded_reply_len(batch) < MIB, "the small event went out");
         assert!(listener.queue.is_empty());
         assert_eq!(listener.queued_bytes, 0);
+    }
+
+    /// A connection that records every reply it is asked to send, failing
+    /// one that would not fit a frame as the TCP connection does.
+    #[derive(Default)]
+    struct RecordingReplies(Vec<DaemonReply>);
+
+    impl Connection for RecordingReplies {
+        async fn receive_message(&mut self) -> eyre::Result<Option<Timestamped<DaemonRequest>>> {
+            Ok(None)
+        }
+        async fn send_reply(&mut self, message: DaemonReply) -> eyre::Result<()> {
+            let len = dora_message::encode_presized(&message, message.encode_size_hint())?.len();
+            eyre::ensure!(
+                len <= dora_message::MAX_MESSAGE_BYTES,
+                "reply of {len} bytes exceeds the frame limit"
+            );
+            self.0.push(message);
+            Ok(())
+        }
+    }
+
+    /// The same undeliverable event, arriving while the node is already
+    /// waiting in `NextEvent` (the common case for an idle consumer), used to
+    /// be sent as-is: the oversized reply failed to frame, nothing was sent,
+    /// and the node blocked forever on its reply.
+    #[tokio::test]
+    async fn an_undeliverable_event_received_while_waiting_is_dropped() {
+        let (mut listener, tx) = listener();
+        let clock = listener.clock.clone();
+        tx.try_send(metadata_heavy_input(
+            &clock,
+            dora_message::MAX_MESSAGE_BYTES,
+        ))
+        .unwrap();
+        tx.try_send(input(&clock, 0)).unwrap();
+
+        let mut connection = RecordingReplies::default();
+        listener
+            .handle_message(
+                Timestamped {
+                    inner: DaemonRequest::NextEvent,
+                    timestamp: clock.new_timestamp(),
+                },
+                &mut connection,
+            )
+            .await
+            .expect("the NextEvent reply must be sent");
+
+        let [DaemonReply::NextEvents(events)] = connection.0.as_slice() else {
+            panic!(
+                "expected one NextEvents reply, got {} replies",
+                connection.0.len()
+            );
+        };
+        assert_eq!(events.len(), 1);
+        assert!(
+            encoded_reply_len(events.clone()) < MIB,
+            "the small event went out"
+        );
     }
 
     #[test]
