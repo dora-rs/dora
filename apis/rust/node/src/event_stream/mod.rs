@@ -984,7 +984,11 @@ impl EventStream {
             return self.pop_scheduled(true);
         }
         let event = if !self.use_scheduler {
-            self.receiver.recv().await.map(Self::convert_event_item)
+            self.receiver
+                .recv()
+                .await
+                .inspect(|item| self.record_or_poison(item))
+                .map(Self::convert_event_item)
         } else {
             // Block for the first event while the scheduler is empty, then drain
             // the rest non-blocking. The old code re-checked `is_empty()` on
@@ -1135,10 +1139,21 @@ impl EventStream {
     }
 
     fn add_event(&mut self, event: EventItem) {
+        self.record_or_poison(&event);
+        self.scheduler.add_event(event);
+        self.scheduler_maybe_nonempty = true;
+    }
+
+    /// Record `event` to the optional `write_events_to` log. Every event taken
+    /// off `receiver` must pass through here exactly once, whichever receive
+    /// path takes it: `add_event` for the scheduler paths, directly for the
+    /// ones that bypass the scheduler (`poll_next`, the non-scheduler branch
+    /// of `recv_from_stream`).
+    fn record_or_poison(&mut self, event: &EventItem) {
         // Event recording is observability-only (writes to the optional
         // `write_events_to` log). A write failure must not panic the event
         // loop — drop the log line and continue scheduling.
-        if let Err(err) = self.record_event(&event) {
+        if let Err(err) = self.record_event(event) {
             tracing::warn!(
                 node = %self.node_id,
                 "failed to record event to write_events_to log: {err:?}"
@@ -1155,8 +1170,6 @@ impl EventStream {
                 write_events_to.mark_poisoned(&err, time_offset_secs);
             }
         }
-        self.scheduler.add_event(event);
-        self.scheduler_maybe_nonempty = true;
     }
 
     fn record_event(&mut self, event: &EventItem) -> eyre::Result<()> {
@@ -2038,10 +2051,14 @@ impl Stream for EventStream {
             self.scheduler_maybe_nonempty = false;
         }
 
-        let poll = self
-            .receiver
-            .poll_recv(cx)
-            .map(|item| item.map(Self::convert_event_item));
+        let poll = self.receiver.poll_recv(cx);
+        // This path bypasses `add_event`, so record the event here — otherwise
+        // a node reading with `StreamExt::next()` writes an empty `events`
+        // array that is still marked `clean`.
+        if let std::task::Poll::Ready(Some(item)) = &poll {
+            self.record_or_poison(item);
+        }
+        let poll = poll.map(|item| item.map(Self::convert_event_item));
 
         // Mirror recv_async(): run the first-message type check and stop
         // tracking on the Stream path too, via the shared helper so the two
@@ -2925,6 +2942,29 @@ mod tests {
             !events.input_type_checks.contains_key(&id),
             "the first non-Null message must consume the one-shot type check"
         );
+    }
+
+    /// `poll_next` takes events straight off the receiver, bypassing the
+    /// scheduler's `add_event` — the only place events used to be recorded —
+    /// so a node reading with `StreamExt::next()` wrote a `clean` recording
+    /// with no events in it.
+    #[test]
+    fn stream_path_records_events() {
+        use futures::StreamExt;
+
+        let (_node, mut events) = test_event_stream();
+        let (w, path) = write_events_to_with_tempfile();
+        events.write_events_to = Some(w);
+
+        let event = futures::executor::block_on(events.next());
+        assert!(matches!(event, Some(Event::Stop(_))), "got {event:?}");
+        drop(events);
+
+        let v = read_back(&path);
+        assert_eq!(v["recording_status"]["state"], "clean");
+        let recorded = v["events"].as_array().unwrap();
+        assert_eq!(recorded.len(), 1, "the Stop must be recorded: {v}");
+        assert_eq!(recorded[0]["type"], "Stop");
     }
 
     #[test]
