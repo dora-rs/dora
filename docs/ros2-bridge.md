@@ -1057,12 +1057,26 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 
 This applies to **all** bridge surfaces (YAML and native code APIs).
 
-- **Built for ROS 2 Humble**: The bridge enables `ros2-client`'s `humble`
-  distro feature, which selects the **24-byte `Gid`** used by
-  `rmw_dds_common` graph discovery. ROS 2 changed `Gid` from 24 to 16 bytes
-  between Humble and Iron, so graph *discovery* against an Iron-or-newer stack
-  will not match. Topic, service, and action **payloads are unaffected** --
-  those are ordinary CDR and interoperate across distros regardless.
+- **The default build is Humble**: The `ros2-humble` feature, on by default, enables `ros2-client`'s `humble` distro feature, which selects the **24-byte `Gid`** used by `rmw_dds_common` graph discovery. ROS 2 changed `Gid` from 24 to 16 bytes between Humble and Iron, so graph *discovery* against an Iron-or-newer stack will not match. Topic, service, and action **payloads are unaffected** -- those are ordinary CDR and interoperate across distros regardless.
+- **Other distros are a feature**: `dora-ros2-bridge`, `dora-ros2-bridge-arrow`, the YAML bridge node, and the Python bridge each expose `ros2-iron`, `ros2-jazzy`, and `ros2-kilted`, mapping to the matching `ros2-client` feature. `ros2-client`'s distro features form a chain (a newer distro enables the older ones), so requesting a newer one wins without turning the default off.
+
+### Building for your ROS distro
+
+Published artifacts are Humble builds. To target another distro, build from a checkout with the matching feature. A mismatch is what produces `ROS_DISTRO='jazzy' but ros2-client was built for 'humble'`.
+
+**YAML bridge.** The `dora-ros2-bridge-node` binary isn't distributed, so build it and put it on `PATH` (the descriptor resolver spawns it by name):
+
+```bash
+cargo install --git https://github.com/dora-rs/dora dora-ros2-bridge-node --features ros2-jazzy
+```
+
+**In-process Python.** The `dora-rs` wheel links `dora-ros2-bridge-python` unconditionally, so `from dora import Ros2Context` only changes distro with a rebuild:
+
+```bash
+maturin build -m apis/python/node/Cargo.toml --features ros2-jazzy
+```
+
+The standalone bridge module used by the Zenoh interop harness builds the same way, with `--manifest-path libraries/extensions/ros2-bridge/python/Cargo.toml`.
 
 ---
 

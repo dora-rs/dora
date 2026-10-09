@@ -143,13 +143,20 @@ dora-mavlink2-bridge = { version = "=1.1.0", path = "libraries/extensions/mavlin
 dora-tensor-pool = { version = "=1.1.0", path = "libraries/extensions/tensor-pool" }
 dora-tensor-pool-python = { version = "=1.1.0", path = "libraries/extensions/tensor-pool/python" }
 dora-message = { version = "=1.1.0", path = "libraries/message" }
-# Declared here so `dora-ros2-bridge` and `dora-ros2-bridge-arrow` cannot drift
-# apart on the ROS distro. `humble` selects the 24-byte `Gid` layout used by
-# `rmw_dds_common` graph discovery (see `ros2-client`'s `src/gid.rs`), matching
-# the distro our ROS2 harness runs (`scripts/ros2dev.sh`). Distro selection
-# became an explicit Cargo feature in 0.10 (default `jazzy`, i.e. 16-byte Gid);
-# 0.8 only had a `pre-iron-gid` opt-out. Changing this changes graph-discovery
-# wire compatibility.
+# Version plus a Humble floor; the ROS distro is also a feature of every dora
+# crate that links `ros2-client` (`dora-ros2-bridge`, `dora-ros2-bridge-arrow`),
+# so a build can target another distro without patching this manifest. The floor
+# is what a `default-features = false` build resolves to — a crates.io consumer,
+# or `cargo check -p dora-ros2-bridge --no-default-features` in the nightly job.
+# Without it `ros2-client` gets no distro feature and falls back to Galactic,
+# which logs `ROS_DISTRO='humble' but ros2-client was built for 'galactic'` at
+# startup. Humble selects the 24-byte `Gid` layout used by `rmw_dds_common`
+# graph discovery (see `ros2-client`'s `src/gid.rs`), matching the distro our
+# ROS2 harness runs (`scripts/ros2dev.sh`). Distro selection became an explicit
+# Cargo feature in 0.10 (default `jazzy`, i.e. 16-byte Gid); 0.8 only had a
+# `pre-iron-gid` opt-out. The features form a chain, so `ros2-jazzy` and
+# `ros2-kilted` still win over the floor. Changing the selected distro changes
+# graph-discovery wire compatibility.
 ros2-client = { version = "0.10.1", default-features = false, features = ["humble"] }
 # Kept in step with the `cdr-encoding` that `rustdds` depends on, so the
 # workspace resolves a single copy.
