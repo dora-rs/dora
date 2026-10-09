@@ -236,6 +236,13 @@ pub(crate) const NODE_EVENT_CHANNEL_CAPACITY: usize = 1000;
 /// Headroom reserved for control events (Stop, InputClosed, etc.).
 pub(crate) const CONTROL_EVENT_HEADROOM: usize = 50;
 
+/// Free slots a receiver must have again before the daemon holds its
+/// backpressure producers for it after giving up on it (dora-rs/dora#3630).
+/// Well above [`CONTROL_EVENT_HEADROOM`]: data never takes that headroom, so a
+/// receiver marked `gave_up` has it free already and one take would clear the
+/// mark and re-arm the hold that just ran into the stall limit.
+pub(crate) const GAVE_UP_RECOVERY_ROOM: usize = NODE_EVENT_CHANNEL_CAPACITY / 2;
+
 /// Send a node event with timestamp. Returns Ok(true) if delivered,
 /// Ok(false) if dropped (channel full/headroom), Err if channel closed.
 #[allow(clippy::result_large_err)]

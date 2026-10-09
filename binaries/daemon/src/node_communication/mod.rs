@@ -1,5 +1,5 @@
 use crate::{
-    CONTROL_EVENT_HEADROOM, DaemonNodeEvent, Event, FaultToleranceStats,
+    CONTROL_EVENT_HEADROOM, DaemonNodeEvent, Event, FaultToleranceStats, GAVE_UP_RECOVERY_ROOM,
     NODE_EVENT_CHANNEL_CAPACITY,
     local_delivery::{DeferredDelivery, DrainSignal},
 };
@@ -720,12 +720,16 @@ impl Listener {
             return;
         };
         let room = events.capacity();
-        // Hold producers for this node again only once it has made the room
-        // a held delivery waits for. Clearing on any single take would re-arm
-        // the hold while the channel is still full, so a receiver that frees
-        // a few slots per read (large payloads) would stall its producer for
-        // another full stall limit after every read (dora-rs/dora#3601).
-        if room >= CONTROL_EVENT_HEADROOM && self.drained.gave_up.load(Ordering::Relaxed) {
+        // Hold producers for this node again only once it has drained a
+        // substantial part of its channel. The headroom a held delivery waits
+        // for is not enough: data never takes the last `CONTROL_EVENT_HEADROOM`
+        // slots, so a receiver that ran into the stall limit was given up on
+        // with 49 free, and one take would clear the mark and re-arm the hold
+        // that just stalled (dora-rs/dora#3630). Clearing on any single take
+        // would do the same while the channel is still full, so a receiver
+        // that frees a few slots per read would stall its producer for another
+        // full stall limit after every read (dora-rs/dora#3601).
+        if room >= GAVE_UP_RECOVERY_ROOM && self.drained.gave_up.load(Ordering::Relaxed) {
             self.drained.gave_up.store(false, Ordering::Release);
             tracing::info!(
                 node = %self.node_id,
@@ -1192,15 +1196,20 @@ mod tests {
     /// A receiver that frees no room for the stall limit is given up on
     /// once: the held message is dropped and counted, the receiver is marked
     /// `gave_up` so later deliveries to it are not held for another stall
-    /// limit each, and the mark goes away as soon as it takes an event
-    /// again (dora-rs/dora#3601).
+    /// limit each, and the mark goes away only once the receiver has drained
+    /// a substantial part of its channel again (dora-rs/dora#3601,
+    /// dora-rs/dora#3630).
     #[tokio::test(start_paused = true)]
     async fn stall_limit_marks_the_receiver_until_it_drains() {
         let (mut listener, _tx) = listener();
         let clock = listener.clock.clone();
         // The receiver's listener shares its drain signal with the delivery.
         let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
-        for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
+        // Fill to the state real traffic leaves the channel in: data never
+        // takes the last `CONTROL_EVENT_HEADROOM` slots, so a receiver that
+        // ran into the stall limit was given up on with those still free, not
+        // with a full channel.
+        for _ in 0..NODE_EVENT_CHANNEL_CAPACITY - (CONTROL_EVENT_HEADROOM - 1) {
             tx.try_send(input(&clock, 0)).unwrap();
         }
         listener.subscribed_events = Some(rx);
@@ -1216,14 +1225,14 @@ mod tests {
         assert!(started.elapsed() >= BACKPRESSURE_STALL_LIMIT);
         assert_eq!(pending.load(Ordering::Relaxed), 0);
         assert!(listener.drained.gave_up.load(Ordering::Relaxed));
-        let lost = || {
+        let lost = |listener: &Listener| {
             listener
                 .backpressure
                 .ft_stats
                 .lost_backpressure_messages
                 .load(Ordering::Relaxed)
         };
-        assert_eq!(lost(), 1);
+        assert_eq!(lost(&listener), 1);
 
         // A delivery that was already waiting when the receiver was given up
         // on stops at its next tick instead of serving a stall limit of its own.
@@ -1236,23 +1245,47 @@ mod tests {
         )
         .await;
         assert!(started.elapsed() <= BACKPRESSURE_STALL_TICK);
-        assert_eq!(lost(), 2);
+        assert_eq!(lost(&listener), 2);
 
-        // One take frees one slot, which is not the room a held delivery
-        // waits for: holding a producer now would stall it for another full
-        // stall limit, so the mark stays.
-        listener
-            .subscribed_events
-            .as_mut()
-            .unwrap()
-            .try_recv()
-            .expect("a queued event");
-        listener.note_drained();
+        let room = |listener: &Listener| listener.subscribed_events.as_ref().unwrap().capacity();
+        let take = |listener: &mut Listener| {
+            listener
+                .subscribed_events
+                .as_mut()
+                .unwrap()
+                .try_recv()
+                .expect("a queued event");
+            listener.note_drained();
+        };
+
+        // One take clears the received slot only, leaving the channel as full
+        // as the hold that just stalled found it. Clearing the mark here would
+        // re-arm that hold for the producer's next message, so it has to stay.
+        take(&mut listener);
+        assert_eq!(room(&listener), CONTROL_EVENT_HEADROOM);
         assert!(listener.drained.gave_up.load(Ordering::Relaxed));
 
-        // The receiver drains up to the headroom: hold for it again.
-        listener.handle_events().await.unwrap();
+        // Still short of the room a receiver has to make to be held for again.
+        while room(&listener) < GAVE_UP_RECOVERY_ROOM - 1 {
+            take(&mut listener);
+        }
+        assert!(listener.drained.gave_up.load(Ordering::Relaxed));
+
+        // The take that leaves the channel more empty than full clears it.
+        take(&mut listener);
+        assert_eq!(room(&listener), GAVE_UP_RECOVERY_ROOM);
         assert!(!listener.drained.gave_up.load(Ordering::Relaxed));
+
+        // A recovered receiver takes deliveries again instead of dropping them.
+        let (delivery, pending) = deferred(&tx, &listener.drained, input(&clock, 0));
+        deliver_when_room(
+            delivery,
+            &listener.last_activity,
+            &listener.backpressure.ft_stats,
+        )
+        .await;
+        assert_eq!(pending.load(Ordering::Relaxed), 1);
+        assert_eq!(lost(&listener), 2);
     }
 
     /// A stalled receiver's backlog used to come back in ONE reply; past the
