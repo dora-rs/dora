@@ -153,3 +153,83 @@ fn result_can_arrive_before_request_and_server_loss_releases_long_lived_waiters(
         ResultAvailability::ServerLost
     ));
 }
+
+/// `get_result` waits for a long-running goal, so it must not be capped by
+/// Zenoh's `queries_default_timeout` (10 s by default) the way every action
+/// call was before #3742.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_result_outlives_the_session_default_query_timeout() {
+    use dora_ros2_bridge::transport::{
+        Ros2Qos,
+        action::{
+            ActionEndpoint,
+            zenoh::{ActionClient, ActionKeys, ActionServer, ActionTokens},
+        },
+        zenoh::{Context, ContextOptions, keyexpr::TopicToken},
+    };
+    use std::time::Duration;
+
+    let config = std::env::temp_dir().join(format!(
+        "dora-rmw-zenoh-short-query-timeout-{}.json5",
+        std::process::id()
+    ));
+    std::fs::write(&config, "{ queries_default_timeout: 100 }").unwrap();
+    let context = Context::open(ContextOptions {
+        domain_id: 43,
+        config_uri: Some(config.to_string_lossy().into_owned()),
+    })
+    .await;
+    let _ = std::fs::remove_file(&config);
+    let context = context.unwrap();
+    let node = context
+        .create_node("zid", "nid", "/", "/", "node")
+        .await
+        .unwrap();
+
+    let endpoints = ActionEndpoints::new("/fibonacci", "example_interfaces", "Fibonacci");
+    let key =
+        |endpoint: &ActionEndpoint| format!("43{}/{}/hash", endpoint.name, endpoint.type_name);
+    let token = |endpoint: &ActionEndpoint| TopicToken {
+        name: endpoint.name.clone(),
+        type_name: endpoint.type_name.clone(),
+        type_hash: "hash".into(),
+        qos: "2::,1:,:,:,,,".into(),
+    };
+    let keys = ActionKeys {
+        send_goal: key(&endpoints.send_goal),
+        get_result: key(&endpoints.get_result),
+        cancel_goal: key(&endpoints.cancel_goal),
+        feedback: key(&endpoints.feedback),
+        status: key(&endpoints.status),
+    };
+    let tokens = ActionTokens {
+        send_goal: token(&endpoints.send_goal),
+        get_result: token(&endpoints.get_result),
+        cancel_goal: token(&endpoints.cancel_goal),
+        feedback: token(&endpoints.feedback),
+        status: token(&endpoints.status),
+    };
+    let qos = Ros2Qos::default();
+    let server = ActionServer::declare(&node, &keys, tokens.clone(), &qos)
+        .await
+        .unwrap();
+    let client = ActionClient::declare(&node, &keys, tokens, &qos, 1024)
+        .await
+        .unwrap();
+
+    let worker = tokio::spawn(async move {
+        let request = server.get_result.recv().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        server
+            .get_result
+            .reply(request.id, &request.payload)
+            .await
+            .unwrap();
+    });
+    let result = client
+        .get_result
+        .call(vec![0, 1, 0, 0, 5], Duration::from_secs(2))
+        .await;
+    assert_eq!(result.unwrap(), vec![0, 1, 0, 0, 5]);
+    worker.await.unwrap();
+}
