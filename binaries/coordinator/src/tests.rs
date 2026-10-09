@@ -5328,6 +5328,33 @@ async fn node_topology_changes_are_persisted() {
         [("sender".to_string(), Some("sender".to_string()))]
     );
 
+    // A dataflow rebuilt after a coordinator restart only maps the nodes the
+    // daemon still runs (`RunningDataflow::recovered`), so an exited `sender`
+    // is in the descriptor but not in `node_to_daemon`. Re-adding it must
+    // replace the stored entry, not duplicate it: a duplicate id makes the
+    // next re-establish fail to resolve the stored descriptor (#3759).
+    coordinator
+        .running_dataflows
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .node_to_daemon
+        .clear();
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_add_node(dataflow_id, node("sender", "sender-v2"), reply_tx)
+        .await
+        .unwrap();
+    reply_rx.await.unwrap().expect("re-add should succeed");
+    assert_eq!(
+        stored_nodes(),
+        [("sender".to_string(), Some("sender-v2".to_string()))]
+    );
+    let record = store.get_dataflow(&dataflow_id).unwrap().expect("record");
+    let descriptor: Descriptor = serde_json::from_str(&record.descriptor_json).unwrap();
+    descriptor
+        .resolve_aliases_and_set_defaults()
+        .expect("stored descriptor must still resolve");
+
     drop(coordinator);
     daemon_task.await.unwrap();
 }
