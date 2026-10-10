@@ -2001,6 +2001,11 @@ jobs:
         run: cargo check -p dora-ros2-bridge --no-default-features
       - name: Test ROS2 message generator
         run: cargo test -p dora-ros2-bridge-msg-gen
+      # Compiles the generated C++ bindings against a fixture package (nothing
+      # else in CI does, since no ROS messages are installed) and runs a C++
+      # service round trip over native Zenoh.
+      - name: Generated C++ services over Zenoh
+        run: scripts/ros2-cxx-zenoh-roundtrip.sh
       - name: Test ROS2 Python bridge basics
         run: cargo test -p dora-ros2-bridge-python
 
