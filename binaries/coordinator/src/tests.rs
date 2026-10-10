@@ -1553,6 +1553,139 @@ fn resolve_param_target_errors_for_unknown_node() {
     assert!(err.to_string().contains("not found in dataflow"));
 }
 
+/// A `WaitForSpawn` that lands after a failed spawn already tore the
+/// dataflow down must report the failure. It used to get "unknown
+/// dataflow", which `dora start` reads as "started and finished", so a
+/// dataflow that never started was reported as a success.
+#[tokio::test]
+async fn wait_for_spawn_after_a_failed_spawn_reports_the_failure() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+    df.pending_spawn_results.insert(daemon_id.clone());
+
+    let mut coordinator = Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows: HashMap::from([(dataflow_id, df)]),
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections: DaemonConnections::default(),
+        clock: Arc::new(HLC::default()),
+        store: Arc::new(InMemoryStore::new()),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    };
+    coordinator
+        .handle_spawn_result(dataflow_id, daemon_id, Err(eyre!("no such binary")))
+        .await
+        .unwrap();
+    assert!(!coordinator.running_dataflows.contains_key(&dataflow_id));
+
+    let wait_for_spawn = |dataflow_id| {
+        let (reply_sender, reply) = tokio::sync::oneshot::channel();
+        let event = ControlEvent::IncomingRequest {
+            request: Box::new(
+                dora_message::cli_to_coordinator::ControlRequest::WaitForSpawn { dataflow_id },
+            ),
+            reply_sender,
+        };
+        (event, reply)
+    };
+
+    let (event, reply) = wait_for_spawn(dataflow_id);
+    coordinator.handle_control_event(event).await.unwrap();
+    let err = format!("{:?}", reply.await.unwrap().expect_err("spawn failed"));
+    assert!(err.contains("no such binary"), "got: {err}");
+    assert!(
+        !error_reads_as_finished(&err),
+        "must not read as a dataflow that ran to completion: {err}"
+    );
+
+    // A dataflow the coordinator never knew still answers "unknown".
+    let (event, reply) = wait_for_spawn(DataflowId::from(Uuid::new_v4()));
+    coordinator.handle_control_event(event).await.unwrap();
+    let err = format!("{:?}", reply.await.unwrap().expect_err("unknown"));
+    assert!(err.contains("unknown dataflow"), "got: {err}");
+}
+
+/// The same late `WaitForSpawn`, for a dataflow whose node crashed before
+/// the spawn completed: the coordinator archives it from
+/// `DataflowFinishedOnDaemon` and the request must still see the failure.
+#[tokio::test]
+async fn wait_for_spawn_after_an_early_node_exit_reports_the_failure() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+    let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+    df.pending_spawn_results.insert(daemon_id.clone());
+
+    let mut coordinator = Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows: HashMap::from([(dataflow_id, df)]),
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections: DaemonConnections::default(),
+        clock: Arc::new(HLC::default()),
+        store: Arc::new(InMemoryStore::new()),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    };
+    let timestamp = coordinator.clock.new_timestamp();
+    let result = DataflowDaemonResult {
+        timestamp,
+        node_results: BTreeMap::from([(
+            node_id,
+            Err(NodeError {
+                timestamp,
+                cause: NodeErrorCause::Other {
+                    stderr: "segfault at startup".to_string(),
+                },
+                exit_status: NodeExitStatus::ExitCode(139),
+            }),
+        )]),
+    };
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result },
+        )
+        .await
+        .unwrap();
+    assert!(!coordinator.running_dataflows.contains_key(&dataflow_id));
+
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_control_event(ControlEvent::IncomingRequest {
+            request: Box::new(
+                dora_message::cli_to_coordinator::ControlRequest::WaitForSpawn { dataflow_id },
+            ),
+            reply_sender,
+        })
+        .await
+        .unwrap();
+    let err = format!("{:?}", reply.await.unwrap().expect_err("spawn failed"));
+    assert!(err.contains("failed to start"), "got: {err}");
+    assert!(
+        !error_reads_as_finished(&err),
+        "must not read as a dataflow that ran to completion: {err}"
+    );
+}
+
+/// Mirrors the CLI's `error_indicates_dataflow_finished`.
+fn error_reads_as_finished(msg: &str) -> bool {
+    msg.contains("no running dataflow with id") || msg.contains("unknown dataflow")
+}
+
 #[tokio::test]
 async fn replay_replays_persisted_param_to_daemon_connection() {
     #[derive(serde::Deserialize)]
@@ -4385,6 +4518,7 @@ fn archived_dataflows_predicate_distinguishes_watchdog_failed_from_unknown() {
         ArchivedDataflow {
             name: Some("flagged".to_string()),
             nodes: BTreeMap::new(),
+            spawn_error: None,
         },
     );
 

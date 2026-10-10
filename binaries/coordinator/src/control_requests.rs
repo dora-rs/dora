@@ -112,6 +112,16 @@ impl Coordinator {
                     ControlRequest::WaitForSpawn { dataflow_id } => {
                         if let Some(dataflow) = self.running_dataflows.get_mut(&dataflow_id) {
                             dataflow.spawn_result.register(reply_sender);
+                        } else if let Some(spawn_error) = self
+                            .archived_dataflows
+                            .get(&dataflow_id)
+                            .and_then(|archived| archived.spawn_error.as_ref())
+                        {
+                            // Failed and archived before this request landed. Not
+                            // "unknown dataflow": the CLI reads that as "ran to
+                            // completion" and would report a successful start.
+                            // Same text a waiter registered in time got.
+                            let _ = reply_sender.send(Err(eyre!("{spawn_error}")));
                         } else {
                             let _ = reply_sender.send(Err(eyre!("unknown dataflow {dataflow_id}")));
                         }

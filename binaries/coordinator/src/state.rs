@@ -810,13 +810,24 @@ impl CachedResult {
 pub(crate) struct ArchivedDataflow {
     pub(crate) name: Option<String>,
     pub(crate) nodes: BTreeMap<NodeId, ResolvedNode>,
+    /// Why the dataflow failed to start, if it did, as the spawn waiters were
+    /// told. A `WaitForSpawn` that arrives after the failed dataflow was
+    /// archived answers with this.
+    pub(crate) spawn_error: Option<String>,
 }
 
 impl From<&RunningDataflow> for ArchivedDataflow {
     fn from(dataflow: &RunningDataflow) -> ArchivedDataflow {
+        let spawn_error = match &dataflow.spawn_result {
+            CachedResult::Cached { result } => {
+                result.as_ref().as_ref().err().map(|e| format!("{e:?}"))
+            }
+            CachedResult::Pending { .. } => None,
+        };
         ArchivedDataflow {
             name: dataflow.name.clone(),
             nodes: dataflow.nodes.clone(),
+            spawn_error,
         }
     }
 }
