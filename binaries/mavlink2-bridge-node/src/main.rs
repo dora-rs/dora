@@ -73,7 +73,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -423,27 +423,12 @@ fn decode_input<T: MavlinkArrow>(data: &ArrayRef, input: &str) -> Result<T> {
     T::from_record_batch(&batch).with_context(|| format!("decoding {input} from incoming Arrow"))
 }
 
-/// Build the header for the next outbound frame, stamping it with the next
-/// MAVLink sequence number.
-///
-/// The sequence field must increment per transmitted frame (wrapping at 255)
-/// so receivers can detect dropped packets (e.g. radio-link statistics /
-/// `SYS_STATUS.drop_rate_comm`). A constant `0` — as every send used before —
-/// makes loss detection impossible and is non-conformant with the protocol.
-fn next_header(base: &MavHeader, sequence: &AtomicU8) -> MavHeader {
-    MavHeader {
-        sequence: sequence.fetch_add(1, Ordering::Relaxed),
-        ..*base
-    }
-}
-
 /// Forward one incoming dora `Event::Input` as a MAVLink frame on
 /// `conn`. Unknown input ids are silently ignored — the bridge does
 /// not abort the whole node on misrouted inputs.
 fn handle_input(
     conn: &(dyn MavConnection<MavMessage> + Send + Sync),
     header: &MavHeader,
-    sequence: &AtomicU8,
     id: &DataId,
     data: &ArrayRef,
 ) -> Result<()> {
@@ -478,7 +463,7 @@ fn handle_input(
         _ => return Ok(()), // unknown input id, ignore
     };
     let sent = conn
-        .send(&next_header(header, sequence), &outgoing)
+        .send(header, &outgoing)
         .map_err(|e| eyre!("mavlink send: {e}"))?;
     if sent == 0 {
         // UDP server mode (`udpin:`) reports a successful 0-byte send until a
@@ -504,7 +489,6 @@ fn handle_input(
 fn attempt_data_stream_request(
     conn: &(dyn MavConnection<MavMessage> + Send + Sync),
     header: &MavHeader,
-    sequence: &AtomicU8,
 ) -> bool {
     let req = mavlink::dialects::common::REQUEST_DATA_STREAM_DATA {
         req_message_rate: 5,
@@ -513,10 +497,7 @@ fn attempt_data_stream_request(
         req_stream_id: 0, // MAV_DATA_STREAM_ALL
         start_stop: 1,
     };
-    match conn.send(
-        &next_header(header, sequence),
-        &MavMessage::REQUEST_DATA_STREAM(req),
-    ) {
+    match conn.send(header, &MavMessage::REQUEST_DATA_STREAM(req)) {
         Ok(0) => false, // no UDP peer yet — retry once one connects
         Ok(_) => {
             tracing::info!("requested all data streams at 5 Hz");
@@ -565,15 +546,13 @@ fn main() -> Result<()> {
     let conn_box = connect_with_retry(&url)?;
     let conn: Arc<dyn MavConnection<MavMessage> + Send + Sync> = Arc::from(conn_box);
 
+    // `sequence` is a placeholder: every mavlink-core transport stamps each
+    // outbound frame with its own per-connection counter, ignoring this one.
     let header = MavHeader {
         system_id: cfg.system_id,
         component_id: cfg.component_id,
         sequence: 0,
     };
-    // Per-frame MAVLink sequence counter. `next_header` stamps each outbound
-    // frame with the next value (wrapping at 255) so receivers can detect
-    // dropped packets; a constant sequence would make that impossible.
-    let sequence = AtomicU8::new(0);
 
     // Request all data streams from the autopilot at 5 Hz so HEARTBEAT,
     // GLOBAL_POSITION_INT, GPS_RAW_INT, COMMAND_ACK, etc. start flowing
@@ -581,7 +560,7 @@ fn main() -> Result<()> {
     // until a GCS asks. In UDP server mode this first attempt is dropped
     // (no client yet), so it is retried in the event loop below until a peer
     // connects (dora-rs/dora#2027).
-    let mut data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header, &sequence);
+    let mut data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header);
 
     let (mut node, mut events) =
         DoraNode::init_from_env().map_err(|e| eyre!("DoraNode init: {e}"))?;
@@ -638,7 +617,7 @@ fn main() -> Result<()> {
         // connected; once the reader receives a packet the shared connection
         // learns the peer and this send goes out (dora-rs/dora#2027).
         if !data_stream_requested {
-            data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header, &sequence);
+            data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header);
         }
 
         let event = match wait_for_event_or_frame(events.recv_async_timeout(POLL_INTERVAL), &rx) {
@@ -658,7 +637,7 @@ fn main() -> Result<()> {
         match event {
             Event::Input { id, data, .. } => {
                 let array_ref: ArrayRef = data.into();
-                if let Err(e) = handle_input(conn.as_ref(), &header, &sequence, &id, &array_ref) {
+                if let Err(e) = handle_input(conn.as_ref(), &header, &id, &array_ref) {
                     // Writer errors mean the dora node's command did NOT reach the
                     // autopilot. Surface at error level so users debugging missions see
                     // it in default log filters rather than treating it as routine noise.
@@ -861,30 +840,56 @@ mod tests {
         handle.join().expect("panic").expect("err");
     }
 
-    /// Every outbound frame must carry a monotonically increasing sequence
-    /// number (wrapping at 255), not a constant 0, so receivers can detect
-    /// dropped packets. The system/component id are preserved.
+    /// Every outbound frame must carry an increasing sequence number, not a
+    /// constant 0, so receivers can detect dropped packets. The bridge sends
+    /// one fixed header and relies on mavlink-core stamping the sequence per
+    /// connection; this pins that, so a mavlink bump that stops doing it fails
+    /// here. The system/component id are preserved.
     #[test]
-    fn next_header_increments_and_wraps_sequence() {
-        let base = MavHeader {
+    fn transport_stamps_increasing_sequence_over_fixed_header() {
+        use mavlink::dialects::common::{
+            HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType,
+        };
+
+        let peer = UdpSocket::bind("127.0.0.1:0").expect("bind peer");
+        peer.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout");
+        let port = peer.local_addr().expect("local_addr").port();
+        let conn = mavlink::connect::<MavMessage>(&format!("udpout:127.0.0.1:{port}"))
+            .expect("udpout connect");
+
+        let header = MavHeader {
             system_id: 42,
             component_id: 7,
             sequence: 0,
         };
-        let seq = AtomicU8::new(0);
+        let hb = MavMessage::HEARTBEAT(HEARTBEAT_DATA {
+            custom_mode: 0,
+            mavtype: MavType::MAV_TYPE_GENERIC,
+            autopilot: MavAutopilot::MAV_AUTOPILOT_GENERIC,
+            base_mode: MavModeFlag::empty(),
+            system_status: MavState::MAV_STATE_UNINIT,
+            mavlink_version: 3,
+        });
 
-        let h0 = next_header(&base, &seq);
-        let h1 = next_header(&base, &seq);
-        let h2 = next_header(&base, &seq);
-        assert_eq!((h0.sequence, h1.sequence, h2.sequence), (0, 1, 2));
-        // Base identity fields are carried through unchanged.
-        assert_eq!(h0.system_id, 42);
-        assert_eq!(h0.component_id, 7);
+        let mut received = Vec::new();
+        for _ in 0..3 {
+            conn.send(&header, &hb).expect("send");
+            let mut buf = [0u8; 512];
+            let (n, _) = peer.recv_from(&mut buf).expect("recv");
+            let mut reader = mavlink::peek_reader::PeekReader::new(&buf[..n]);
+            let (h, _): (MavHeader, MavMessage) =
+                mavlink::read_v2_msg(&mut reader).expect("decode");
+            received.push(h);
+        }
 
-        // Wraps at 255 -> 0 rather than panicking on overflow.
-        let seq = AtomicU8::new(255);
-        assert_eq!(next_header(&base, &seq).sequence, 255);
-        assert_eq!(next_header(&base, &seq).sequence, 0);
+        let sequences: Vec<u8> = received.iter().map(|h| h.sequence).collect();
+        assert_eq!(sequences, [0, 1, 2]);
+        assert!(
+            received
+                .iter()
+                .all(|h| (h.system_id, h.component_id) == (42, 7))
+        );
     }
 
     // ---- #2034: recv-error classification ----------------------------
@@ -1069,9 +1074,8 @@ mod tests {
             sequence: 0,
         };
 
-        let sequence = AtomicU8::new(0);
         assert!(
-            !attempt_data_stream_request(conn.as_ref(), &header, &sequence),
+            !attempt_data_stream_request(conn.as_ref(), &header),
             "with no UDP peer connected the request is dropped (0 bytes) and must be retried"
         );
     }
