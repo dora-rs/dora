@@ -153,3 +153,83 @@ fn result_can_arrive_before_request_and_server_loss_releases_long_lived_waiters(
         ResultAvailability::ServerLost
     ));
 }
+
+/// Like `service_server_is_available` in rmw_zenoh, action readiness must not
+/// require the server's endpoints to advertise the client's exact QoS.
+#[tokio::test]
+async fn wait_for_server_ignores_qos_like_rmw_zenoh() {
+    use dora_ros2_bridge::transport::{
+        action::zenoh::{ActionTokens, wait_for_server},
+        zenoh::{
+            graph::GraphCache,
+            keyexpr::{EntityKind, LivelinessKey, TopicToken},
+        },
+    };
+    use std::time::{Duration, Instant};
+
+    let endpoints = ActionEndpoints::new("/fibonacci", "example_interfaces", "Fibonacci");
+    let token =
+        |endpoint: &dora_ros2_bridge::transport::action::ActionEndpoint, qos: &str| TopicToken {
+            name: endpoint.name.clone(),
+            type_name: endpoint.type_name.clone(),
+            type_hash: "RIHS01_hash".into(),
+            qos: qos.into(),
+        };
+    let tokens = |qos: &str| ActionTokens {
+        send_goal: token(&endpoints.send_goal, qos),
+        get_result: token(&endpoints.get_result, qos),
+        cancel_goal: token(&endpoints.cancel_goal, qos),
+        feedback: token(&endpoints.feedback, qos),
+        status: token(&endpoints.status, qos),
+    };
+
+    // The server side, as an rclpy action server advertises it.
+    let server = tokens("::,10:,:,:,,");
+    let graph = GraphCache::new(7);
+    for (index, (kind, topic)) in [
+        (EntityKind::Service, &server.send_goal),
+        (EntityKind::Service, &server.get_result),
+        (EntityKind::Service, &server.cancel_goal),
+        (EntityKind::Publisher, &server.feedback),
+        (EntityKind::Publisher, &server.status),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let key = LivelinessKey::endpoint(
+            7,
+            "zid",
+            "nid",
+            &index.to_string(),
+            kind,
+            "/",
+            "/",
+            "node",
+            topic.clone(),
+        )
+        .unwrap();
+        graph.apply_put(key.as_str()).unwrap();
+    }
+
+    // A dora client asking with its own (different) QoS still finds it.
+    wait_for_server(
+        &graph,
+        &tokens("2::,1:,:,:,,"),
+        Instant::now() + Duration::from_millis(200),
+    )
+    .await
+    .unwrap();
+
+    // A different type identity is still a different action.
+    let mut other_type = tokens("2::,1:,:,:,,");
+    other_type.get_result.type_hash = "RIHS01_other".into();
+    assert!(matches!(
+        wait_for_server(
+            &graph,
+            &other_type,
+            Instant::now() + Duration::from_millis(100)
+        )
+        .await,
+        Err(dora_ros2_bridge::transport::action::zenoh::ActionTransportError::Timeout)
+    ));
+}
