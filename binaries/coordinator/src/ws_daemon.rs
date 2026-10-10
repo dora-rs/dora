@@ -8,7 +8,10 @@ use dora_core::uhlc::HLC;
 use dora_message::{
     common::DaemonId,
     coordinator_to_daemon::ResolveMachineReply,
-    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped},
+    daemon_to_coordinator::{
+        CoordinatorRequest, DaemonEvent, MAX_TOPIC_DEBUG_FRAME_BYTES, Timestamped,
+        TopicDebugFrameAssembler, decode_topic_debug_frame,
+    },
     ws_protocol::WsResponse,
 };
 use futures::{SinkExt, StreamExt};
@@ -16,7 +19,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
 };
-use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use uuid::Uuid;
 
 /// Handle a single daemon WebSocket connection on `/api/daemon`.
@@ -26,7 +29,7 @@ use uuid::Uuid;
 pub(crate) async fn handle_daemon_ws(
     socket: WebSocket,
     event_tx: mpsc::Sender<Event>,
-    topic_debug_tx: mpsc::Sender<Event>,
+    topic_debug_tx: TopicDebugSender,
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
     peer: crate::ws_server::PeerInfo,
@@ -52,6 +55,8 @@ pub(crate) async fn handle_daemon_ws(
     // those replies, which deadlocks the two until the reply times out
     // (dora-rs/dora#3983).
     let mut backlog = EventBacklog::default();
+    // The binary topic debug frame whose chunks are arriving, if any.
+    let mut incoming_debug_frame = IncomingDebugFrame::default();
 
     loop {
         tokio::select! {
@@ -62,6 +67,18 @@ pub(crate) async fn handle_daemon_ws(
                 let Some(msg) = msg else { break };
                 let text = match msg {
                     Ok(Message::Text(text)) => text,
+                    Ok(Message::Binary(data)) => {
+                        if !handle_daemon_binary_frame(
+                            &data,
+                            &mut incoming_debug_frame,
+                            &topic_debug_tx,
+                            tracked_daemon_id.as_ref(),
+                            &mut dropped_debug_frames,
+                        ) {
+                            break;
+                        }
+                        continue;
+                    }
                     Ok(Message::Close(_)) => break,
                     Ok(Message::Ping(data)) => {
                         let _ = ws_tx.send(Message::Pong(data)).await;
@@ -165,26 +182,34 @@ pub(crate) async fn handle_daemon_ws(
 /// if the connection should close, on the channel it belongs on closing.
 ///
 /// A topic debug frame goes on its own channel and is dropped if that is full
-/// (dora-rs/dora#3535). Every other event goes straight to the main loop's
-/// channel when it has room and nothing is queued ahead of it, and otherwise
-/// joins the connection's backlog, which `handle_daemon_ws` drains in order.
+/// or its bytes don't fit the topic debug budget (dora-rs/dora#3535). This is
+/// the JSON shape, from a daemon that did not negotiate binary frames;
+/// `handle_daemon_binary_frame` is the other. Every other event goes straight
+/// to the main loop's channel when it has room and nothing is queued ahead of
+/// it, and otherwise joins the connection's backlog, which `handle_daemon_ws`
+/// drains in order.
 fn queue_daemon_event(
     event: Event,
     size: usize,
     event_tx: &mpsc::Sender<Event>,
     backlog: &mut EventBacklog,
-    topic_debug_tx: &mpsc::Sender<Event>,
+    topic_debug_tx: &TopicDebugSender,
     dropped_debug_frames: &mut DroppedEvents,
 ) -> bool {
     match event {
-        Event::TopicDebugData { .. } => match topic_debug_tx.try_send(event) {
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                dropped_debug_frames
-                    .record("topic debug frame(s): the coordinator's topic debug queue is full");
-                true
+        Event::TopicDebugData { ref payload, .. } => {
+            match topic_debug_tx.try_reserve(payload.len()) {
+                Ok(slot) => {
+                    slot.send(event);
+                    true
+                }
+                Err(mpsc::error::TrySendError::Full(())) => {
+                    dropped_debug_frames.record(DROPPED_DEBUG_FRAMES);
+                    true
+                }
+                Err(mpsc::error::TrySendError::Closed(())) => false,
             }
-            result => result.is_ok(),
-        },
+        }
         event if backlog.is_empty() => match event_tx.try_send(event) {
             Err(mpsc::error::TrySendError::Full(event)) => {
                 backlog.push(event, size);
@@ -199,6 +224,10 @@ fn queue_daemon_event(
     }
 }
 
+/// What a dropped topic debug frame is reported as, by [`DroppedEvents`].
+const DROPPED_DEBUG_FRAMES: &str =
+    "topic debug frame(s): the coordinator's topic debug queue or byte budget is full";
+
 /// Past this many queued bytes, a connection drops the daemon's log lines
 /// rather than queue more: they are the one high-volume event nothing waits
 /// on. Control events are still queued, up to [`MAX_BACKLOG_BYTES`].
@@ -210,6 +239,217 @@ const MAX_BACKLOG_BYTES_BEFORE_DROPPING_LOGS: usize = 8 * 1024 * 1024;
 /// growing coordinator memory. Far above anything a healthy daemon queues
 /// while the main loop waits on one of its replies.
 const MAX_BACKLOG_BYTES: usize = 32 * 1024 * 1024;
+
+/// Capacity of the main loop's topic debug channel, in frames.
+///
+/// Debug frames reach the main loop on this channel rather than the shared
+/// event one, and the main loop takes one only when no control event is ready
+/// (`select_with_strategy` in `start_inner`). Small frames are bounded by this
+/// count; camera-sized ones by [`TOPIC_DEBUG_INGRESS_BYTES`].
+pub(crate) const TOPIC_DEBUG_CHANNEL_CAPACITY: usize = 64;
+
+/// Topic debug data the coordinator may hold in total, across all daemons:
+/// frames still being reassembled from their chunks, and frames on the channel.
+///
+/// A binary frame takes one permit per byte as each of its chunks arrives and
+/// keeps them — inside its `Event::TopicDebugData` once complete — until the
+/// main loop has handled it. So what camera-sized frames can pin is two of the
+/// largest frames, however many daemons are sending them, rather than
+/// [`TOPIC_DEBUG_CHANNEL_CAPACITY`] of them plus a partial frame per daemon
+/// connection.
+///
+/// The budget is first come, first served, and a frame holds its bytes from
+/// its first chunk until it has been handled. Frames still arriving over slow
+/// links can therefore hold all of it for as long as their chunks take — a
+/// 15 MiB frame at 1 Mbit/s takes about two minutes — and meanwhile every
+/// other frame is dropped for lack of budget, however small. Debug frames are
+/// droppable, so this costs `dora topic` output, never the connection or
+/// control traffic.
+pub(crate) const TOPIC_DEBUG_INGRESS_BYTES: usize = 2 * MAX_TOPIC_DEBUG_FRAME_BYTES;
+
+/// The sending side of the main loop's topic debug channel: the channel plus
+/// its [`TOPIC_DEBUG_INGRESS_BYTES`] budget, shared by every daemon connection.
+#[derive(Clone)]
+pub(crate) struct TopicDebugSender {
+    tx: mpsc::Sender<Event>,
+    budget: Arc<Semaphore>,
+}
+
+/// Room for one frame on the topic debug channel: a slot and the frame's
+/// bytes. Dropping it unused gives both back.
+struct TopicDebugReservation<'a> {
+    slot: mpsc::Permit<'a, Event>,
+    budget: Option<OwnedSemaphorePermit>,
+}
+
+impl TopicDebugSender {
+    /// Reserve room for a frame of `bytes`, never waiting for it: a full
+    /// channel or a spent budget are both `Full`, and the frame is dropped.
+    fn try_reserve(
+        &self,
+        bytes: usize,
+    ) -> Result<TopicDebugReservation<'_>, mpsc::error::TrySendError<()>> {
+        let slot = self.tx.try_reserve()?;
+        let budget = self
+            .try_reserve_bytes(bytes)
+            .ok_or(mpsc::error::TrySendError::Full(()))?;
+        Ok(TopicDebugReservation {
+            slot,
+            budget: Some(budget),
+        })
+    }
+
+    /// Reserve a slot for a frame whose bytes were already reserved, chunk by
+    /// chunk, while it was reassembled.
+    fn try_reserve_slot(
+        &self,
+        budget: Option<OwnedSemaphorePermit>,
+    ) -> Result<TopicDebugReservation<'_>, mpsc::error::TrySendError<()>> {
+        let slot = self.tx.try_reserve()?;
+        Ok(TopicDebugReservation { slot, budget })
+    }
+
+    fn try_reserve_bytes(&self, bytes: usize) -> Option<OwnedSemaphorePermit> {
+        let bytes = u32::try_from(bytes).ok()?;
+        Arc::clone(&self.budget).try_acquire_many_owned(bytes).ok()
+    }
+}
+
+impl TopicDebugReservation<'_> {
+    /// Send `event`, which carries the reserved bytes until it is handled.
+    fn send(self, mut event: Event) {
+        if let Event::TopicDebugData { budget, .. } = &mut event {
+            *budget = self.budget;
+        }
+        self.slot.send(event);
+    }
+}
+
+/// The binary topic debug frame whose chunks are arriving on one daemon
+/// connection, and the [`TOPIC_DEBUG_INGRESS_BYTES`] reserved for it so far.
+///
+/// Reserving per chunk keeps a partial frame inside the shared budget. Were
+/// the bytes reserved only once the frame is complete, every daemon connection
+/// could buffer up to [`MAX_TOPIC_DEBUG_FRAME_BYTES`] outside it — a frame
+/// trickling in over a slow link, or one whose last chunk never comes
+/// (dora-rs/dora#3636 review).
+///
+/// While the connection's event backlog is at its hard cap, `handle_daemon_ws`
+/// stops reading the socket (dora-rs/dora#3983), so a frame half reassembled
+/// at that moment keeps its share of the shared budget until reads resume, and
+/// other daemons' debug frames may be dropped meanwhile. That needs a 32 MiB
+/// backlog first, and only costs `dora topic` output.
+#[derive(Default)]
+struct IncomingDebugFrame {
+    assembler: TopicDebugFrameAssembler,
+    budget: Option<OwnedSemaphorePermit>,
+}
+
+/// The channel topic debug frames reach the main loop on, in either encoding.
+pub(crate) fn topic_debug_channel() -> (TopicDebugSender, mpsc::Receiver<Event>) {
+    topic_debug_channel_sized(TOPIC_DEBUG_CHANNEL_CAPACITY, TOPIC_DEBUG_INGRESS_BYTES)
+}
+
+fn topic_debug_channel_sized(
+    capacity: usize,
+    bytes: usize,
+) -> (TopicDebugSender, mpsc::Receiver<Event>) {
+    let (tx, rx) = mpsc::channel(capacity);
+    let budget = Arc::new(Semaphore::new(bytes));
+    (TopicDebugSender { tx, budget }, rx)
+}
+
+/// Handle a daemon WS binary message: a chunk of a topic debug frame, sent in
+/// place of JSON `DaemonEvent::TopicDebugData` because this coordinator offered
+/// `RegisterResult::Ok::binary_debug_frames` (dora-rs/dora#3535).
+///
+/// Chunks are collected in `incoming` until the frame's last one arrives;
+/// only then is the frame handed on. Each chunk's bytes are reserved before
+/// it is buffered; a chunk that does not fit drops the frame, and the rest of
+/// its chunks are skipped. A frame is sent as chunks so that the
+/// daemon's control messages — which this loop reads between them — never
+/// wait on the whole of a large frame, on either end of the socket.
+///
+/// Returns false if the connection should close: on the topic debug channel
+/// closing, or on a frame from a daemon that has not registered, matching how
+/// `handle_daemon_request` treats an unregistered daemon's events. A frame
+/// that fails to decode is dropped with a warning; losing one debug frame is
+/// not worth a daemon's connection.
+///
+/// The hand-off is a reservation, never an await: waiting for room would stop
+/// this connection from reading the socket at all — including the daemon's
+/// next stop reply — whenever the main loop falls behind (it can spend up to
+/// 100 ms per subscriber per frame in `send_topic_frames`), which is the same
+/// head-of-line block on the ingress side that the daemon's writer avoids on
+/// egress. Debug frames are droppable, so a full channel drops the frame.
+///
+/// The slot is reserved before the frame is decoded, so a frame that will be
+/// dropped is not copied again to build its event.
+fn handle_daemon_binary_frame(
+    data: &[u8],
+    incoming: &mut IncomingDebugFrame,
+    topic_debug_tx: &TopicDebugSender,
+    tracked_daemon_id: Option<&DaemonId>,
+    dropped: &mut DroppedEvents,
+) -> bool {
+    if tracked_daemon_id.is_none() {
+        tracing::warn!("daemon sent binary frame before registering — closing connection");
+        return false;
+    }
+    let mut refused = false;
+    let pushed = incoming.assembler.push_reserving(data, |bytes| {
+        let Some(permit) = topic_debug_tx.try_reserve_bytes(bytes) else {
+            refused = true;
+            return false;
+        };
+        match &mut incoming.budget {
+            Some(budget) => budget.merge(permit),
+            None => incoming.budget = Some(permit),
+        }
+        true
+    });
+    let frame = match pushed {
+        Ok(Some(frame)) => frame,
+        Ok(None) => {
+            if refused {
+                incoming.budget = None;
+                dropped.record(DROPPED_DEBUG_FRAMES);
+            }
+            return true;
+        }
+        Err(err) => {
+            incoming.budget = None;
+            tracing::warn!("dropping malformed topic debug frame from daemon: {err}");
+            return true;
+        }
+    };
+    let slot = match topic_debug_tx.try_reserve_slot(incoming.budget.take()) {
+        Ok(slot) => slot,
+        Err(mpsc::error::TrySendError::Full(())) => {
+            dropped.record(DROPPED_DEBUG_FRAMES);
+            return true;
+        }
+        Err(mpsc::error::TrySendError::Closed(())) => return false,
+    };
+    match decode_daemon_binary_frame(&frame) {
+        Ok(event) => {
+            slot.send(event);
+            true
+        }
+        // Dropping `slot` here returns the slot and bytes it held.
+        Err(err) => {
+            tracing::warn!("dropping malformed topic debug frame from daemon: {err}");
+            true
+        }
+    }
+}
+
+/// Shortest gap between warnings about dropped events: topic debug frames here
+/// and in `topic_subscriber`, and daemon log lines a full backlog sheds. A
+/// backlog produces drops at the source's rate, so each connection reports at
+/// most one line per interval, with the count since the last one.
+pub(crate) const TOPIC_DEBUG_DROP_LOG_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(5);
 
 /// Daemon events read off one connection and not yet taken by the main loop,
 /// each with the size of the message it arrived in.
@@ -270,13 +510,26 @@ impl DroppedEvents {
         let now = std::time::Instant::now();
         if self
             .last_log
-            .is_none_or(|last| now - last >= std::time::Duration::from_secs(5))
+            .is_none_or(|last| now - last >= TOPIC_DEBUG_DROP_LOG_INTERVAL)
         {
             tracing::warn!("dropped {} {what}", self.count);
             self.count = 0;
             self.last_log = Some(now);
         }
     }
+}
+
+/// Decode a reassembled binary topic debug frame into the same
+/// [`Event::TopicDebugData`] the JSON `DaemonEvent::TopicDebugData` translates
+/// to.
+fn decode_daemon_binary_frame(data: &[u8]) -> eyre::Result<Event> {
+    let frame = decode_topic_debug_frame(data)?;
+    Ok(Event::TopicDebugData {
+        dataflow_id: frame.dataflow_id,
+        subscription_ids: frame.subscription_ids,
+        payload: frame.payload.to_vec(),
+        budget: None,
+    })
 }
 
 /// A helper struct to deserialize `Timestamped<CoordinatorRequest>` directly
@@ -301,7 +554,7 @@ async fn handle_daemon_request(
     raw_text: &str,
     event_tx: &mpsc::Sender<Event>,
     backlog: &mut EventBacklog,
-    topic_debug_tx: &mpsc::Sender<Event>,
+    topic_debug_tx: &TopicDebugSender,
     dropped_debug_frames: &mut DroppedEvents,
     clock: &HLC,
     cmd_tx: &mpsc::Sender<String>,
@@ -585,6 +838,7 @@ fn translate_daemon_event(
             dataflow_id,
             subscription_ids,
             payload,
+            budget: None,
         }),
         DaemonEvent::BuildResult { build_id, result } => Some(Event::DataflowBuildResult {
             build_id,
@@ -675,7 +929,7 @@ mod topic_debug_tests {
     #[test]
     fn a_full_topic_debug_channel_does_not_hold_up_control_events() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
-        let (topic_debug_tx, mut topic_debug_rx) = mpsc::channel(1);
+        let (topic_debug_tx, mut topic_debug_rx) = topic_debug_channel_sized(1, 1024);
         let mut backlog = EventBacklog::default();
         let mut dropped = DroppedEvents::default();
         let mut queue = |event, backlog: &mut EventBacklog| {
@@ -685,6 +939,7 @@ mod topic_debug_tests {
             dataflow_id: Uuid::new_v4(),
             subscription_ids: Vec::new(),
             payload: Vec::new(),
+            budget: None,
         };
 
         assert!(queue(debug_frame(), &mut backlog));
@@ -779,7 +1034,7 @@ mod reply_routing_tests {
                 let event_tx = event_tx.clone();
                 async move {
                     ws.on_upgrade(move |socket: WebSocket| async move {
-                        let (topic_debug_tx, _topic_debug_rx) = mpsc::channel(1);
+                        let (topic_debug_tx, _topic_debug_rx) = topic_debug_channel_sized(1, 1024);
                         handle_daemon_ws(
                             socket,
                             event_tx,
@@ -895,6 +1150,473 @@ mod reply_routing_tests {
                 Some(Event::DaemonHeartbeat { .. })
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod topic_debug_frame_tests {
+    use super::*;
+    use dora_message::daemon_to_coordinator::{
+        TOPIC_DEBUG_CHUNK_BYTES, encode_topic_debug_chunks, topic_debug_frame_len,
+    };
+
+    /// A small frame as the single binary message a daemon sends it in.
+    fn one_chunk(dataflow_id: Uuid, subscription_ids: &[Uuid], payload: &[u8]) -> Vec<u8> {
+        let [chunk] = <[_; 1]>::try_from(
+            encode_topic_debug_chunks(dataflow_id, subscription_ids, payload).unwrap(),
+        )
+        .expect("a small frame fits one chunk");
+        chunk
+    }
+
+    fn topic_debug_data(event: Option<Event>) -> (Uuid, Vec<Uuid>, Vec<u8>) {
+        match event {
+            Some(Event::TopicDebugData {
+                dataflow_id,
+                subscription_ids,
+                payload,
+                ..
+            }) => (dataflow_id, subscription_ids, payload),
+            other => panic!("expected a TopicDebugData event, got {other:?}"),
+        }
+    }
+
+    /// The JSON path: `queue_daemon_event` with a topic debug event, which
+    /// goes to the debug channel or is dropped, never into the backlog.
+    fn try_send_topic_debug(
+        event: Event,
+        topic_debug_tx: &TopicDebugSender,
+        dropped: &mut DroppedEvents,
+    ) -> bool {
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let mut backlog = EventBacklog::default();
+        let sent = queue_daemon_event(event, 0, &event_tx, &mut backlog, topic_debug_tx, dropped);
+        assert!(
+            backlog.is_empty(),
+            "a topic debug frame never joins the backlog"
+        );
+        sent
+    }
+
+    /// The channel the main loop takes debug frames off, at the capacity the
+    /// coordinator really runs with.
+    fn debug_channel() -> (TopicDebugSender, mpsc::Receiver<Event>) {
+        topic_debug_channel()
+    }
+
+    /// Both shapes a daemon may send — JSON from a daemon that did not get (or
+    /// does not know) the flag, binary from one that did — must reach the
+    /// coordinator as the same event.
+    #[test]
+    fn json_and_binary_frames_decode_to_the_same_event() {
+        let dataflow_id = Uuid::new_v4();
+        let subscription_ids = vec![Uuid::new_v4(), Uuid::new_v4()];
+        let payload = vec![0, 1, 2, 254, 255];
+
+        let from_json = topic_debug_data(translate_daemon_event(
+            DaemonId::new(Some("A".to_string())),
+            DaemonEvent::TopicDebugData {
+                dataflow_id,
+                subscription_ids: subscription_ids.clone(),
+                payload: payload.clone(),
+            },
+            Uuid::new_v4(),
+        ));
+        let binary = TopicDebugFrameAssembler::default()
+            .push(&one_chunk(dataflow_id, &subscription_ids, &payload))
+            .unwrap()
+            .expect("a one-chunk frame is complete");
+        let from_binary = topic_debug_data(decode_daemon_binary_frame(&binary).ok());
+
+        assert_eq!(from_json, (dataflow_id, subscription_ids, payload));
+        assert_eq!(from_binary, from_json);
+    }
+
+    #[test]
+    fn a_binary_frame_is_forwarded_once_the_daemon_is_registered() {
+        let (topic_debug_tx, mut topic_debug_rx) = debug_channel();
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let dataflow_id = Uuid::new_v4();
+        let frame = one_chunk(dataflow_id, &[Uuid::new_v4()], b"data");
+
+        assert!(handle_daemon_binary_frame(
+            &frame,
+            &mut IncomingDebugFrame::default(),
+            &topic_debug_tx,
+            Some(&daemon_id),
+            &mut DroppedEvents::default()
+        ));
+        let (forwarded_dataflow, _, payload) = topic_debug_data(topic_debug_rx.try_recv().ok());
+        assert_eq!(forwarded_dataflow, dataflow_id);
+        assert_eq!(payload, b"data");
+    }
+
+    /// A frame larger than a chunk reaches the main loop whole, and only once
+    /// its last chunk is in — nothing of it is handed on part-way.
+    #[test]
+    fn a_chunked_frame_is_forwarded_once_its_last_chunk_arrives() {
+        let (topic_debug_tx, mut topic_debug_rx) = debug_channel();
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let mut incoming = IncomingDebugFrame::default();
+        let dataflow_id = Uuid::new_v4();
+        let payload: Vec<u8> = (0..2 * TOPIC_DEBUG_CHUNK_BYTES + 3)
+            .map(|i| i as u8)
+            .collect();
+        let chunks = encode_topic_debug_chunks(dataflow_id, &[Uuid::new_v4()], &payload).unwrap();
+        assert_eq!(chunks.len(), 3);
+
+        for chunk in &chunks {
+            assert!(
+                topic_debug_rx.try_recv().is_err(),
+                "a partial frame must not be forwarded"
+            );
+            assert!(handle_daemon_binary_frame(
+                chunk,
+                &mut incoming,
+                &topic_debug_tx,
+                Some(&daemon_id),
+                &mut DroppedEvents::default()
+            ));
+        }
+        let (forwarded_dataflow, _, forwarded) = topic_debug_data(topic_debug_rx.try_recv().ok());
+        assert_eq!(forwarded_dataflow, dataflow_id);
+        assert_eq!(forwarded, payload);
+    }
+
+    #[test]
+    fn a_binary_frame_before_registration_closes_the_connection() {
+        let (topic_debug_tx, mut topic_debug_rx) = debug_channel();
+        let frame = one_chunk(Uuid::new_v4(), &[], b"data");
+
+        assert!(!handle_daemon_binary_frame(
+            &frame,
+            &mut IncomingDebugFrame::default(),
+            &topic_debug_tx,
+            None,
+            &mut DroppedEvents::default()
+        ));
+        assert!(topic_debug_rx.try_recv().is_err());
+    }
+
+    /// A frame is decoded only once it has a slot, so a malformed one has to
+    /// give that slot back — otherwise a daemon sending garbage would keep the
+    /// channel occupied against every other daemon.
+    #[test]
+    fn a_malformed_binary_frame_is_dropped_without_closing_or_holding_a_slot() {
+        let (topic_debug_tx, mut topic_debug_rx) = debug_channel();
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+
+        assert!(handle_daemon_binary_frame(
+            &[0, 1, 2, 3],
+            &mut IncomingDebugFrame::default(),
+            &topic_debug_tx,
+            Some(&daemon_id),
+            &mut DroppedEvents::default()
+        ));
+        assert!(topic_debug_rx.try_recv().is_err());
+
+        let frame = one_chunk(Uuid::new_v4(), &[], b"data");
+        assert!(handle_daemon_binary_frame(
+            &frame,
+            &mut IncomingDebugFrame::default(),
+            &topic_debug_tx,
+            Some(&daemon_id),
+            &mut DroppedEvents::default()
+        ));
+        assert!(
+            topic_debug_rx.try_recv().is_ok(),
+            "the malformed frame must not have consumed the channel slot"
+        );
+    }
+
+    /// With the channel full, the next frame is dropped and the connection
+    /// stays open: the alternative is waiting for room while the daemon's
+    /// control traffic — a stop reply among it — goes unread.
+    #[test]
+    fn a_binary_frame_is_dropped_rather_than_awaited_when_the_channel_is_full() {
+        let (topic_debug_tx, mut topic_debug_rx) = debug_channel();
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let frame = one_chunk(Uuid::new_v4(), &[Uuid::new_v4()], b"data");
+        let mut dropped = DroppedEvents::default();
+
+        for _ in 0..TOPIC_DEBUG_CHANNEL_CAPACITY + 2 {
+            assert!(handle_daemon_binary_frame(
+                &frame,
+                &mut IncomingDebugFrame::default(),
+                &topic_debug_tx,
+                Some(&daemon_id),
+                &mut dropped
+            ));
+        }
+
+        for _ in 0..TOPIC_DEBUG_CHANNEL_CAPACITY {
+            assert!(topic_debug_rx.try_recv().is_ok());
+        }
+        assert!(
+            topic_debug_rx.try_recv().is_err(),
+            "frames past the channel capacity are dropped, not queued"
+        );
+
+        // Room returns as soon as the loop has taken one off.
+        assert!(handle_daemon_binary_frame(
+            &frame,
+            &mut IncomingDebugFrame::default(),
+            &topic_debug_tx,
+            Some(&daemon_id),
+            &mut dropped
+        ));
+        assert!(topic_debug_rx.try_recv().is_ok());
+    }
+
+    /// Frames that arrive back to back while the main loop is busy with
+    /// something else are queued, not dropped: a one-slot channel lost about a
+    /// third of a 100 Hz topic this way (dora-rs/dora#3536 review).
+    #[test]
+    fn back_to_back_frames_are_queued_while_the_loop_is_busy() {
+        let (topic_debug_tx, mut topic_debug_rx) = debug_channel();
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let mut dropped = DroppedEvents::default();
+
+        let frames = 16;
+        for i in 0..frames {
+            let frame = one_chunk(Uuid::new_v4(), &[Uuid::new_v4()], &[i as u8; 64]);
+            assert!(handle_daemon_binary_frame(
+                &frame,
+                &mut IncomingDebugFrame::default(),
+                &topic_debug_tx,
+                Some(&daemon_id),
+                &mut dropped
+            ));
+        }
+
+        for i in 0..frames {
+            let (_, _, payload) = topic_debug_data(topic_debug_rx.try_recv().ok());
+            assert_eq!(payload, vec![i as u8; 64], "frame {i} must not be dropped");
+        }
+        assert_eq!(dropped.count, 0);
+    }
+
+    /// Depth does not cost memory: large frames are bounded by the byte
+    /// budget well before the frame capacity, in both encodings, and a frame
+    /// gives its bytes back once the main loop is done with it.
+    #[tokio::test]
+    async fn the_byte_budget_bounds_large_frames_until_they_are_handled() {
+        let payload = vec![0u8; 1000];
+        let frame_bytes = topic_debug_frame_len(1, payload.len());
+        // Room for two binary frames, not three.
+        let (topic_debug_tx, mut topic_debug_rx) =
+            topic_debug_channel_sized(TOPIC_DEBUG_CHANNEL_CAPACITY, 2 * frame_bytes + 10);
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let mut dropped = DroppedEvents::default();
+        let mut send_binary = || {
+            let chunks =
+                encode_topic_debug_chunks(Uuid::new_v4(), &[Uuid::new_v4()], &payload).unwrap();
+            handle_daemon_binary_frame(
+                &chunks[0],
+                &mut IncomingDebugFrame::default(),
+                &topic_debug_tx,
+                Some(&daemon_id),
+                &mut dropped,
+            )
+        };
+
+        assert!(send_binary());
+        assert!(send_binary());
+        assert!(
+            send_binary(),
+            "a spent budget drops the frame, not the connection"
+        );
+        let first = topic_debug_rx.try_recv().expect("first frame");
+        let _second = topic_debug_rx.try_recv().expect("second frame");
+        assert!(
+            topic_debug_rx.try_recv().is_err(),
+            "a frame past the byte budget must be dropped"
+        );
+
+        // Taking a frame off the channel is not enough: its bytes stay spent
+        // until the event itself — i.e. the main loop's handling — is done.
+        let json_event = || {
+            translate_daemon_event(
+                daemon_id.clone(),
+                DaemonEvent::TopicDebugData {
+                    dataflow_id: Uuid::new_v4(),
+                    subscription_ids: vec![Uuid::new_v4()],
+                    payload: payload.clone(),
+                },
+                Uuid::new_v4(),
+            )
+            .unwrap()
+        };
+        assert!(try_send_topic_debug(
+            json_event(),
+            &topic_debug_tx,
+            &mut dropped
+        ));
+        assert!(
+            topic_debug_rx.try_recv().is_err(),
+            "the JSON shape is budgeted too"
+        );
+
+        drop(first);
+        assert!(try_send_topic_debug(
+            json_event(),
+            &topic_debug_tx,
+            &mut dropped
+        ));
+        assert!(
+            topic_debug_rx.try_recv().is_ok(),
+            "a handled frame gives its bytes back"
+        );
+    }
+
+    /// Frames still arriving hold their bytes in the shared ingress budget,
+    /// chunk by chunk, so partial frames on several daemon connections cannot
+    /// add up past it. A chunk that does not fit drops its frame part-way,
+    /// which gives the frame's bytes back (dora-rs/dora#3636 review).
+    #[test]
+    fn frames_still_arriving_are_held_to_the_shared_ingress_budget() {
+        let payload = vec![7u8; 2 * TOPIC_DEBUG_CHUNK_BYTES];
+        let chunks =
+            encode_topic_debug_chunks(Uuid::new_v4(), &[Uuid::new_v4()], &payload).unwrap();
+        assert_eq!(chunks.len(), 3);
+        // Room for one whole frame and one chunk more.
+        let budget = topic_debug_frame_len(1, payload.len()) + TOPIC_DEBUG_CHUNK_BYTES;
+        let (topic_debug_tx, mut topic_debug_rx) =
+            topic_debug_channel_sized(TOPIC_DEBUG_CHANNEL_CAPACITY, budget);
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let mut dropped = DroppedEvents::default();
+        let (mut a, mut b) = (IncomingDebugFrame::default(), IncomingDebugFrame::default());
+        let mut push = |incoming: &mut IncomingDebugFrame, chunk: &[u8]| {
+            assert!(handle_daemon_binary_frame(
+                chunk,
+                incoming,
+                &topic_debug_tx,
+                Some(&daemon_id),
+                &mut dropped
+            ));
+        };
+        let available = || topic_debug_tx.budget.available_permits();
+
+        push(&mut a, &chunks[0]);
+        push(&mut a, &chunks[1]);
+        push(&mut b, &chunks[0]);
+        assert_eq!(
+            available(),
+            budget - 3 * TOPIC_DEBUG_CHUNK_BYTES,
+            "partial frames hold their bytes"
+        );
+
+        push(&mut b, &chunks[1]);
+        assert_eq!(
+            available(),
+            budget - 2 * TOPIC_DEBUG_CHUNK_BYTES,
+            "the frame that does not fit is dropped and gives back what it held"
+        );
+        push(&mut b, &chunks[2]);
+        assert_eq!(
+            available(),
+            budget - 2 * TOPIC_DEBUG_CHUNK_BYTES,
+            "the rest of a dropped frame reserves nothing"
+        );
+
+        push(&mut a, &chunks[2]);
+        let event = topic_debug_rx.try_recv().expect("a's frame completes");
+        assert!(
+            topic_debug_rx.try_recv().is_err(),
+            "nothing of b's dropped frame is forwarded"
+        );
+        assert_eq!(
+            available(),
+            TOPIC_DEBUG_CHUNK_BYTES,
+            "a's event holds exactly its frame's bytes"
+        );
+
+        drop(event);
+        assert_eq!(available(), budget);
+        for chunk in &chunks {
+            push(&mut b, chunk);
+        }
+        let (_, _, forwarded) = topic_debug_data(topic_debug_rx.try_recv().ok());
+        assert_eq!(forwarded, payload, "b's next frame reassembles normally");
+    }
+
+    /// A closed channel means the coordinator is gone: close the socket
+    /// instead of dropping frames into it forever.
+    #[test]
+    fn a_binary_frame_on_a_closed_channel_closes_the_connection() {
+        let (topic_debug_tx, topic_debug_rx) = debug_channel();
+        drop(topic_debug_rx);
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let frame = one_chunk(Uuid::new_v4(), &[], b"data");
+
+        assert!(!handle_daemon_binary_frame(
+            &frame,
+            &mut IncomingDebugFrame::default(),
+            &topic_debug_tx,
+            Some(&daemon_id),
+            &mut DroppedEvents::default()
+        ));
+    }
+
+    /// The JSON shape reaches the main loop the same way, so a daemon that did
+    /// not negotiate binary frames cannot put debug data on the shared event
+    /// channel — where it would sit ahead of the control events behind it.
+    #[tokio::test]
+    async fn a_json_topic_debug_event_takes_the_debug_channel_too() {
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let dataflow_id = Uuid::new_v4();
+        let clock = HLC::default();
+        let request = Timestamped {
+            inner: CoordinatorRequest::Event {
+                daemon_id: daemon_id.clone(),
+                event: DaemonEvent::TopicDebugData {
+                    dataflow_id,
+                    subscription_ids: vec![Uuid::new_v4()],
+                    payload: vec![1, 2, 3],
+                },
+            },
+            timestamp: clock.new_timestamp(),
+        };
+        let raw = format!(
+            r#"{{"id":"{}","method":"daemon_event","params":{}}}"#,
+            Uuid::new_v4(),
+            serde_json::to_string(&request).unwrap()
+        );
+
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let (topic_debug_tx, mut topic_debug_rx) = debug_channel();
+        let (cmd_tx, _cmd_rx) = mpsc::channel(8);
+        let store: Arc<dyn CoordinatorStore> = Arc::new(crate::InMemoryStore::new());
+
+        assert!(
+            handle_daemon_request(
+                &raw,
+                &event_tx,
+                &mut EventBacklog::default(),
+                &topic_debug_tx,
+                &mut DroppedEvents::default(),
+                &clock,
+                &cmd_tx,
+                &Arc::new(Mutex::new(HashMap::new())),
+                &store,
+                &mut Some(daemon_id),
+                &mut Some(Uuid::new_v4()),
+                crate::ws_server::PeerInfo {
+                    remote: "127.0.0.1:1234".parse().unwrap(),
+                    local: None,
+                },
+                Arc::new(std::sync::RwLock::new(HashMap::new())),
+            )
+            .await
+        );
+
+        assert!(
+            event_rx.try_recv().is_err(),
+            "topic debug data must not take the shared event channel"
+        );
+        let (forwarded_dataflow, _, payload) = topic_debug_data(topic_debug_rx.try_recv().ok());
+        assert_eq!(forwarded_dataflow, dataflow_id);
+        assert_eq!(payload, vec![1, 2, 3]);
     }
 }
 
