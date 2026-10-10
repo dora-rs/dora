@@ -1,0 +1,23 @@
+[package]
+name = "large-output-source-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: sends a `DORA_TEST_OUTPUT_BYTES`-sized `frame` output on
+# every `tick` input, for a camera-sized stream without a camera. Used by
+# tests/topic-debug-backpressure-e2e.rs to prove that a `dora topic`
+# subscription on a large output cannot delay control messages between the
+# daemon and the coordinator (dora-rs/dora#3535).
+
+[[bin]]
+name = "large-output-source-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }
