@@ -81,9 +81,13 @@ const MIN_SUPPORTED_FORMAT_VERSION: u16 = 2;
 /// A bump that leaves the writers stamping a version below the reader's floor
 /// would make every freshly written recording unreadable by the same build.
 const _: () = assert!(FORMAT_VERSION >= MIN_SUPPORTED_FORMAT_VERSION);
-/// Maximum size for a single record or YAML descriptor in a `.drec` file.
-/// Guards against OOM from crafted files with `u32::MAX` length fields.
-const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024; // 64 MB
+/// Maximum size for a single record body (see [`RecordEntry::encoded_len`]) or
+/// YAML descriptor in a `.drec` file.
+///
+/// The writer refuses anything larger and the reader rejects a length prefix
+/// above it, which guards against OOM from crafted files with `u32::MAX`
+/// length fields.
+pub const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024; // 64 MB
 
 /// Header written at the start of a `.drec` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
