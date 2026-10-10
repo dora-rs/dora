@@ -427,7 +427,10 @@
         },
         "inputs": {
           "description": "Input data connections from other nodes.\n\nDefines the inputs that this node is subscribing to.\n\nThe `inputs` field should be a key-value map of the following format:\n\n`input_id: source_node_id/source_node_output_id`\n\nThe components are defined as follows:\n\n  - `input_id` is the local identifier that should be used for this input.\n\n    This will map to the `id` field of\n    [`Event::Input`](https://docs.rs/dora-node-api/latest/dora_node_api/enum.Event.html#variant.Input)\n    events sent to the node event loop.\n  - `source_node_id` should be the `id` field of the node that sends the output that we want\n    to subscribe to\n  - `source_node_output_id` should be the identifier of the output that that we want\n    to subscribe to\n\n## Example\n\n```yaml\nnodes:\n  - id: example-node\n    outputs:\n      - one\n      - two\n  - id: receiver\n    inputs:\n        my_input: example-node/two\n```",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "$ref": "#/$defs/Input"
           },
@@ -534,7 +537,10 @@
         },
         "outputs": {
           "description": "Output data identifiers produced by this node.\n\nList of output identifiers that the node sends.\nMust contain all `output_id` values that the node uses when sending output, e.g. through the\n[`send_output`](https://docs.rs/dora-node-api/latest/dora_node_api/struct.DoraNode.html#method.send_output)\nfunction.\n\n## Example\n\n```yaml\nnodes:\n  - id: example-node\n    outputs:\n      - processed_image\n      - metadata\n```",
-          "type": "array",
+          "type": [
+            "array",
+            "null"
+          ],
           "default": [],
           "items": {
             "$ref": "#/$defs/DataId"
@@ -688,7 +694,10 @@
         },
         "inputs": {
           "description": "Input data connections",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "$ref": "#/$defs/Input"
           },
@@ -751,7 +760,10 @@
         },
         "outputs": {
           "description": "Output data identifiers",
-          "type": "array",
+          "type": [
+            "array",
+            "null"
+          ],
           "default": [],
           "items": {
             "$ref": "#/$defs/DataId"
@@ -1226,7 +1238,10 @@
         },
         "inputs": {
           "description": "Input data connections",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "$ref": "#/$defs/Input"
           },
@@ -1289,7 +1304,10 @@
         },
         "outputs": {
           "description": "Output data identifiers",
-          "type": "array",
+          "type": [
+            "array",
+            "null"
+          ],
           "default": [],
           "items": {
             "$ref": "#/$defs/DataId"

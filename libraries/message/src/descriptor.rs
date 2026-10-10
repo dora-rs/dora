@@ -546,6 +546,8 @@ pub struct Node {
     ///       - metadata
     /// ```
     #[serde(default)]
+    // An empty `outputs:` is YAML `null`, which deserializes to an empty set.
+    #[schemars(with = "Option<BTreeSet<DataId>>")]
     pub outputs: BTreeSet<DataId>,
 
     /// Optional type annotations for outputs.
@@ -595,6 +597,8 @@ pub struct Node {
     ///         my_input: example-node/two
     /// ```
     #[serde(default)]
+    // Like `outputs`: an empty `inputs:` is `null`, which deserializes to an empty map.
+    #[schemars(with = "Option<BTreeMap<DataId, Input>>")]
     pub inputs: BTreeMap<DataId, Input>,
 
     /// Optional type annotations for inputs.
@@ -1232,9 +1236,11 @@ pub struct OperatorConfig {
 
     /// Input data connections
     #[serde(default)]
+    #[schemars(with = "Option<BTreeMap<DataId, Input>>")]
     pub inputs: BTreeMap<DataId, Input>,
     /// Output data identifiers
     #[serde(default)]
+    #[schemars(with = "Option<BTreeSet<DataId>>")]
     pub outputs: BTreeSet<DataId>,
     /// Optional type annotations for outputs
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -2183,6 +2189,27 @@ debug:
             let serialized = serde_yaml::to_string(&cfg).unwrap();
             let reparsed: OperatorConfig = serde_yaml::from_str(&serialized).unwrap();
             assert_eq!(cfg.source.runtime_name(), reparsed.source.runtime_name());
+        }
+    }
+
+    /// An empty `inputs:` or `outputs:` key is YAML `null`, which deserializes
+    /// to an empty collection, so the schema has to accept `null` there too.
+    #[test]
+    fn empty_inputs_and_outputs_are_accepted_by_parser_and_schema() {
+        let yaml = "nodes:\n  - id: a\n    path: x\n    inputs:\n    outputs:\n";
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        assert!(descriptor.nodes[0].inputs.is_empty());
+        assert!(descriptor.nodes[0].outputs.is_empty());
+
+        let schema = serde_json::to_value(schemars::schema_for!(Descriptor)).unwrap();
+        for definition in ["Node", "OperatorDefinition", "SingleOperatorDefinition"] {
+            for key in ["inputs", "outputs"] {
+                let types = &schema["$defs"][definition]["properties"][key]["type"];
+                assert!(
+                    types.as_array().is_some_and(|t| t.contains(&"null".into())),
+                    "{definition}.{key} should accept null, got {types}"
+                );
+            }
         }
     }
 }
