@@ -142,7 +142,7 @@ pub(crate) async fn start_topic_debug_stream(
     daemon_connections: &mut DaemonConnections,
     dataflow_id: DataflowId,
     topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
-    sender: tokio::sync::mpsc::Sender<crate::topic_subscriber::TopicFrame>,
+    sender: crate::topic_subscriber::TopicFrameSender,
     clock: &HLC,
 ) -> eyre::Result<Uuid> {
     let outputs_by_daemon = topic_outputs_by_daemon(running_dataflows, dataflow_id, &topics)?;
