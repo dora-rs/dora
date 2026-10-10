@@ -98,6 +98,7 @@ impl Service {
         let req_type_raw = format_ident!("{package_name}__{}_Request", self.name);
         let res_type_raw = format_ident!("{package_name}__{}_Response", self.name);
         let res_type_raw_str = res_type_raw.to_string();
+        let client_backend = format_ident!("ClientBackend__{package_name}__{}", self.name);
 
         let matches = format_ident!("matches__{package_name}__{}", self.name);
         let cxx_matches = format_ident!("matches");
@@ -135,129 +136,209 @@ impl Service {
             pub fn #create_client(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#client_name>> {
                 use futures::StreamExt as _;
 
-                let client = node.dds_node_mut()?.create_client::< service :: #self_name >(
-                    crate::ros2_client::ServiceMapping:: #ros_service_mapping,
-                    &crate::ros2_client::Name::new(name_space, base_name)
-                        .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?,
-                    &crate::ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
-                    qos.clone().into(),
-                    qos.into(),
-                ).map_err(|e| eyre::eyre!("{e:?}"))?;
-                let client = std::sync::Arc::new(client);
-                // Request ids this client has sent and not yet matched to a
-                // response. `receive_response` can hand back responses for *other*
-                // clients sharing the service topic (see its rustdoc), so the pump
-                // forwards only responses whose id is in this set.
-                let pending: std::sync::Arc<std::sync::Mutex<Vec<crate::ros2_client::service::RmwRequestId>>> =
-                    std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-                let (response_tx, response_rx) = flume::bounded(1);
-                let stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                let id = events.events.merge(Box::pin(stream));
+                let name = crate::ros2_client::Name::new(name_space, base_name)
+                    .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?;
+                let (response_tx, response_rx) = flume::bounded::<eyre::Result<ffi::#res_type_raw>>(1);
 
-                // Single response pump per client. ros2-client's
-                // `async_receive_response(id)` discards samples whose id does not
-                // match, so spawning one receiver per request makes concurrent
-                // receivers steal and drop each other's responses (the C++ client
-                // then never sees any) — see dora-rs/dora#1970. A single consumer
-                // that forwards each response to the request it belongs to avoids
-                // that while still honoring the request/response id contract.
-                {
-                    let client = client.clone();
-                    let pending = pending.clone();
-                    std::thread::spawn(move || {
-                        loop {
-                            if response_tx.is_disconnected() {
-                                break;
-                            }
-                            match client.receive_response() {
-                                Ok(Some((req_id, response))) => {
-                                    // Drop responses we have no matching request for:
-                                    // they belong to another client and are delivered
-                                    // to that client's own pump too.
-                                    let is_ours = match pending.lock() {
-                                        Ok(mut pending) => match pending.iter().position(|pid| *pid == req_id) {
-                                            Some(pos) => {
-                                                pending.remove(pos);
-                                                true
-                                            }
-                                            None => false,
-                                        },
-                                        Err(_) => false,
-                                    };
-                                    if is_ours && response_tx.send(Ok(response)).is_err() {
+                let backend = match &mut node.node {
+                    GeneratedNode::Dds(dds_node) => {
+                        let client = dds_node.create_client::< service :: #self_name >(
+                            crate::ros2_client::ServiceMapping:: #ros_service_mapping,
+                            &name,
+                            &crate::ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
+                            qos.clone().into(),
+                            qos.into(),
+                        ).map_err(|e| eyre::eyre!("{e:?}"))?;
+                        let client = std::sync::Arc::new(client);
+                        // Request ids this client has sent and not yet matched to a
+                        // response. `receive_response` can hand back responses for *other*
+                        // clients sharing the service topic (see its rustdoc), so the pump
+                        // forwards only responses whose id is in this set.
+                        let pending: std::sync::Arc<std::sync::Mutex<Vec<crate::ros2_client::service::RmwRequestId>>> =
+                            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+                        // Single response pump per client. ros2-client's
+                        // `async_receive_response(id)` discards samples whose id does not
+                        // match, so spawning one receiver per request makes concurrent
+                        // receivers steal and drop each other's responses (the C++ client
+                        // then never sees any) — see dora-rs/dora#1970. A single consumer
+                        // that forwards each response to the request it belongs to avoids
+                        // that while still honoring the request/response id contract.
+                        {
+                            let client = client.clone();
+                            let pending = pending.clone();
+                            std::thread::spawn(move || {
+                                loop {
+                                    if response_tx.is_disconnected() {
                                         break;
                                     }
+                                    match client.receive_response() {
+                                        Ok(Some((req_id, response))) => {
+                                            // Drop responses we have no matching request for:
+                                            // they belong to another client and are delivered
+                                            // to that client's own pump too.
+                                            let is_ours = match pending.lock() {
+                                                Ok(mut pending) => match pending.iter().position(|pid| *pid == req_id) {
+                                                    Some(pos) => {
+                                                        pending.remove(pos);
+                                                        true
+                                                    }
+                                                    None => false,
+                                                },
+                                                Err(_) => false,
+                                            };
+                                            if is_ours && response_tx.send(Ok(response)).is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            std::thread::sleep(std::time::Duration::from_millis(2));
+                                        }
+                                        Err(e) => {
+                                            let _ = response_tx
+                                                .send(Err(eyre::eyre!("failed to receive service response: {e:?}")));
+                                            std::thread::sleep(std::time::Duration::from_millis(2));
+                                        }
+                                    }
                                 }
-                                Ok(None) => {
-                                    std::thread::sleep(std::time::Duration::from_millis(2));
-                                }
-                                Err(e) => {
-                                    let _ = response_tx
-                                        .send(Err(eyre::eyre!("failed to receive service response: {e:?}")));
-                                    std::thread::sleep(std::time::Duration::from_millis(2));
-                                }
-                            }
+                            });
                         }
-                    });
-                }
+                        #client_backend::Dds { client, pending }
+                    }
+                    #[cfg(feature = "rmw-zenoh")]
+                    GeneratedNode::Zenoh { node: zenoh_node, compatibility } => {
+                        let (key, token) = zenoh_service_endpoint(
+                            zenoh_node, *compatibility, #package_name, #self_name_str, name.to_string(), &qos,
+                        )?;
+                        let client = futures::executor::block_on(
+                            dora_ros2_bridge::transport::zenoh::service::NodeServiceClient::declare(zenoh_node, key.as_str(), token.clone(), MAX_PENDING_REQUESTS)
+                        )?;
+                        #client_backend::Zenoh {
+                            client: std::sync::Arc::new(client),
+                            token,
+                            response_tx,
+                            executor: node.executor.clone(),
+                        }
+                    }
+                };
 
+                let stream = response_rx.into_stream().map(|v| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let id = events.events.merge(Box::pin(stream));
                 Ok(Box::new(#client_name {
-                    client,
-                    pending,
+                    backend,
                     stream_id: id,
                 }))
             }
 
             #[allow(non_camel_case_types)]
             pub struct #client_name {
-                client: std::sync::Arc<crate::ros2_client::service::Client< service :: #self_name >>,
-                pending: std::sync::Arc<std::sync::Mutex<Vec<crate::ros2_client::service::RmwRequestId>>>,
+                backend: #client_backend,
                 stream_id: u32,
+            }
+
+            #[allow(non_camel_case_types)]
+            enum #client_backend {
+                Dds {
+                    client: std::sync::Arc<crate::ros2_client::service::Client< service :: #self_name >>,
+                    pending: std::sync::Arc<std::sync::Mutex<Vec<crate::ros2_client::service::RmwRequestId>>>,
+                },
+                #[cfg(feature = "rmw-zenoh")]
+                Zenoh {
+                    client: std::sync::Arc<dora_ros2_bridge::transport::zenoh::service::NodeServiceClient>,
+                    token: dora_ros2_bridge::transport::zenoh::keyexpr::TopicToken,
+                    // Each request runs as its own task on the node's executor and
+                    // sends its response (or error) here, into the merged stream.
+                    response_tx: flume::Sender<eyre::Result<ffi::#res_type_raw>>,
+                    executor: std::sync::Arc<futures::executor::ThreadPool>,
+                },
             }
 
             impl #client_name {
                 #[allow(non_snake_case)]
                 fn #wait_for_service(self: &mut #client_name, node: &Box<Ros2Node>) -> eyre::Result<()> {
-                    let service_ready = async {
-                        for _ in 0..30 {
-                            let ready = self.client.wait_for_service(node.dds_node()?);
-                            futures::pin_mut!(ready);
-                            let timeout = futures_timer::Delay::new(std::time::Duration::from_secs(2));
-                            match futures::future::select(ready, timeout).await {
-                                futures::future::Either::Left(((), _)) => {
-                                    return Ok(());
+                    match &self.backend {
+                        #client_backend::Dds { client, .. } => {
+                            let service_ready = async {
+                                for _ in 0..30 {
+                                    let ready = client.wait_for_service(node.dds_node()?);
+                                    futures::pin_mut!(ready);
+                                    let timeout = futures_timer::Delay::new(std::time::Duration::from_secs(2));
+                                    match futures::future::select(ready, timeout).await {
+                                        futures::future::Either::Left(((), _)) => {
+                                            return Ok(());
+                                        }
+                                        futures::future::Either::Right(_) => {
+                                            eprintln!("timeout while waiting for service, retrying");
+                                        }
+                                    }
                                 }
-                                futures::future::Either::Right(_) => {
-                                    eprintln!("timeout while waiting for service, retrying");
-                                }
-                            }
+                                eyre::bail!("service not available");
+                            };
+                            futures::executor::block_on(service_ready)?;
+                            Ok(())
                         }
-                        eyre::bail!("service not available");
-                    };
-                    futures::executor::block_on(service_ready)?;
-                    Ok(())
+                        #[cfg(feature = "rmw-zenoh")]
+                        #client_backend::Zenoh { token, .. } => {
+                            let GeneratedNode::Zenoh { node: zenoh_node, .. } = &node.node else {
+                                eyre::bail!("service client belongs to a different ROS2 transport");
+                            };
+                            // Same 60 s budget as the DDS loop above (30 x 2 s).
+                            futures::executor::block_on(dora_ros2_bridge::transport::zenoh::service::wait_for_service(
+                                zenoh_node.graph(),
+                                &token.name,
+                                &token.type_name,
+                                &token.type_hash,
+                                &token.qos,
+                                std::time::Instant::now() + std::time::Duration::from_secs(60),
+                            ))
+                            .map_err(|e| eyre::eyre!("service not available: {e}"))
+                        }
+                    }
                 }
 
                 #[allow(non_snake_case)]
                 fn #send_request(&mut self, request: ffi::#req_type_raw) -> eyre::Result<()> {
                     use eyre::WrapErr;
 
-                    // Register the request id *before* the response pump can act on
-                    // any reply. The id is only known once `async_send_request`
-                    // returns, so hold the `pending` lock across the send: the pump
-                    // must take the same lock to match (or drop) a response, so a
-                    // service that replies before the send call returns cannot have
-                    // its response dropped as "not ours" during the registration
-                    // window. See dora-rs/dora#1970.
-                    let mut pending = self
-                        .pending
-                        .lock()
-                        .map_err(|_| eyre::eyre!("service client response state poisoned"))?;
-                    let req_id = futures::executor::block_on(self.client.async_send_request(request.clone()))
-                        .context("failed to send request")
-                        .map_err(|e| eyre::eyre!("{e:?}"))?;
-                    pending.push(req_id);
-                    Ok(())
+                    match &self.backend {
+                        #client_backend::Dds { client, pending } => {
+                            // Register the request id *before* the response pump can act on
+                            // any reply. The id is only known once `async_send_request`
+                            // returns, so hold the `pending` lock across the send: the pump
+                            // must take the same lock to match (or drop) a response, so a
+                            // service that replies before the send call returns cannot have
+                            // its response dropped as "not ours" during the registration
+                            // window. See dora-rs/dora#1970.
+                            let mut pending = pending
+                                .lock()
+                                .map_err(|_| eyre::eyre!("service client response state poisoned"))?;
+                            let req_id = futures::executor::block_on(client.async_send_request(request.clone()))
+                                .context("failed to send request")
+                                .map_err(|e| eyre::eyre!("{e:?}"))?;
+                            pending.push(req_id);
+                            Ok(())
+                        }
+                        #[cfg(feature = "rmw-zenoh")]
+                        #client_backend::Zenoh { client, response_tx, executor, .. } => {
+                            use futures::task::SpawnExt as _;
+
+                            // Same bound as the server-side request expiry, so an
+                            // unanswered request surfaces as an error event instead of hanging.
+                            let payload = dora_ros2_bridge::transport::zenoh::serialize_cdr(&request)?;
+                            let client = client.clone();
+                            let response_tx = response_tx.clone();
+                            executor.spawn(async move {
+                                let response = match client.call(payload, SERVICE_RESPONSE_TIMEOUT).await {
+                                    Ok(bytes) => dora_ros2_bridge::transport::zenoh::deserialize_cdr::<ffi::#res_type_raw>(&bytes)
+                                        .map_err(|e| eyre::eyre!("failed to decode {} response: {e}", #self_name_str)),
+                                    Err(e) => Err(eyre::eyre!("{} service call failed: {e}", #self_name_str)),
+                                };
+                                let _ = response_tx.send_async(response).await;
+                            })
+                            .context("failed to spawn service request")?;
+                            Ok(())
+                        }
+                    }
                 }
 
                 #[allow(non_snake_case)]
@@ -319,6 +400,7 @@ impl Service {
         let req_type_raw = format_ident!("{package_name}__{}_Request", self.name);
         let res_type_raw = format_ident!("{package_name}__{}_Response", self.name);
         let req_type_raw_str = req_type_raw.to_string();
+        let server_backend = format_ident!("ServerBackend__{package_name}__{}", self.name);
 
         let ros_service_mapping = crate::detect_ros_service_mapping_ident();
 
@@ -353,80 +435,125 @@ impl Service {
             pub fn #create_server(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#server_name>> {
                 use futures::StreamExt as _;
 
-                let server = node.dds_node_mut()?.create_server::< service :: #self_name >(
-                    crate::ros2_client::ServiceMapping:: #ros_service_mapping,
-                    &crate::ros2_client::Name::new(name_space, base_name)
-                        .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?,
-                    &crate::ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
-                    qos.clone().into(),
-                    qos.into(),
-                ).map_err(|e| eyre::eyre!("{e:?}"))?;
-                let server = std::sync::Arc::new(server);
-                // Token -> (ros2-client request id, receive time). The C++ side
+                let name = crate::ros2_client::Name::new(name_space, base_name)
+                    .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?;
+                // Token -> (transport request id, receive time). The C++ side
                 // gets the opaque `u64` token with each request and passes it back
-                // to `send_response`, so `RmwRequestId` never crosses the FFI. The
-                // receive time bounds the map: an entry whose C++ handler never
-                // calls `send_response` (crash, early return, dropped request) is
-                // evicted, so a misbehaving server cannot leak unboundedly. Mirrors
-                // the daemon's SERVICE_RESPONSE_TIMEOUT / MAX_PENDING_REQUESTS.
-                let requests: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, (crate::ros2_client::service::RmwRequestId, std::time::Instant)>>> =
+                // to `send_response`, so the transport's request id never crosses
+                // the FFI. `record_request` bounds the map.
+                let requests: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, (PendingRequestId, std::time::Instant)>>> =
                     std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
                 let next_id = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-                let (request_tx, request_rx) = flume::bounded(64);
-                let stream = request_rx.into_stream().map(|v: eyre::Result<(u64, ffi::#req_type_raw)>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                let id = events.events.merge(Box::pin(stream));
+                let (request_tx, request_rx) = flume::bounded::<eyre::Result<(u64, ffi::#req_type_raw)>>(MAX_PENDING_REQUESTS);
 
-                // Single request pump per server: poll for requests, tag each with
-                // a token, record its `RmwRequestId`, and forward it to the merged
-                // stream. Mirrors the per-client response pump.
-                {
-                    // Cap unanswered requests so a server that never replies cannot
-                    // grow the map forever (matches the daemon's eviction policy).
-                    const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-                    const MAX_PENDING_REQUESTS: usize = 64;
-                    let server = server.clone();
-                    let requests = requests.clone();
-                    let next_id = next_id.clone();
-                    std::thread::spawn(move || {
-                        loop {
-                            if request_tx.is_disconnected() {
-                                break;
-                            }
-                            match server.receive_request() {
-                                Ok(Some((rmw_id, request))) => {
-                                    let token = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    if let Ok(mut map) = requests.lock() {
-                                        let now = std::time::Instant::now();
-                                        // Evict entries whose response never came.
-                                        map.retain(|_, (_, t)| now.duration_since(*t) < REQUEST_TIMEOUT);
-                                        // If still at capacity, drop the oldest
-                                        // (smallest token) to make room.
-                                        if map.len() >= MAX_PENDING_REQUESTS {
-                                            if let Some(&oldest) = map.keys().min() {
-                                                map.remove(&oldest);
+                let backend = match &mut node.node {
+                    GeneratedNode::Dds(dds_node) => {
+                        let server = dds_node.create_server::< service :: #self_name >(
+                            crate::ros2_client::ServiceMapping:: #ros_service_mapping,
+                            &name,
+                            &crate::ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
+                            qos.clone().into(),
+                            qos.into(),
+                        ).map_err(|e| eyre::eyre!("{e:?}"))?;
+                        let server = std::sync::Arc::new(server);
+
+                        // Single request pump per server: poll for requests, tag each with
+                        // a token, record its `RmwRequestId`, and forward it to the merged
+                        // stream. Mirrors the per-client response pump.
+                        {
+                            let server = server.clone();
+                            let requests = requests.clone();
+                            let next_id = next_id.clone();
+                            std::thread::spawn(move || {
+                                loop {
+                                    if request_tx.is_disconnected() {
+                                        break;
+                                    }
+                                    match server.receive_request() {
+                                        Ok(Some((rmw_id, request))) => {
+                                            let token = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                            record_request(&requests, token, PendingRequestId::Dds(rmw_id));
+                                            if request_tx.send(Ok((token, request))).is_err() {
+                                                break;
                                             }
                                         }
-                                        map.insert(token, (rmw_id, now));
+                                        Ok(None) => {
+                                            std::thread::sleep(std::time::Duration::from_millis(2));
+                                        }
+                                        Err(e) => {
+                                            let _ = request_tx
+                                                .send(Err(eyre::eyre!("failed to receive service request: {e:?}")));
+                                            std::thread::sleep(std::time::Duration::from_millis(2));
+                                        }
                                     }
-                                    if request_tx.send(Ok((token, request))).is_err() {
+                                }
+                            });
+                        }
+                        #server_backend::Dds(server)
+                    }
+                    #[cfg(feature = "rmw-zenoh")]
+                    GeneratedNode::Zenoh { node: zenoh_node, compatibility } => {
+                        use futures::task::SpawnExt as _;
+                        use eyre::WrapErr as _;
+
+                        let (key, token) = zenoh_service_endpoint(
+                            zenoh_node, *compatibility, #package_name, #self_name_str, name.to_string(), &qos,
+                        )?;
+                        let server = std::sync::Arc::new(futures::executor::block_on(
+                            dora_ros2_bridge::transport::zenoh::service::NodeServiceServer::declare(
+                                zenoh_node,
+                                key.as_str(),
+                                token,
+                                MAX_PENDING_REQUESTS,
+                                SERVICE_RESPONSE_TIMEOUT,
+                            )
+                        )?);
+
+                        // Request pump: same token scheme as the DDS pump above. It
+                        // stops when the server object is dropped (its `shutdown`
+                        // sender closes), so the service leaves the ROS graph.
+                        let (shutdown, shutdown_rx) = flume::bounded::<()>(1);
+                        let pump = {
+                            let server = server.clone();
+                            let requests = requests.clone();
+                            let next_id = next_id.clone();
+                            async move {
+                                let stopped = shutdown_rx.recv_async();
+                                futures::pin_mut!(stopped);
+                                loop {
+                                    let received = server.recv();
+                                    futures::pin_mut!(received);
+                                    // `recv` only fails once the transport is closed.
+                                    let request = match futures::future::select(received, stopped.as_mut()).await {
+                                        futures::future::Either::Left((Ok(request), _)) => request,
+                                        _ => break,
+                                    };
+                                    let decoded = match dora_ros2_bridge::transport::zenoh::deserialize_cdr::<ffi::#req_type_raw>(&request.payload) {
+                                        Ok(decoded) => decoded,
+                                        Err(e) => {
+                                            // Tell the caller rather than leave it waiting
+                                            // for a reply that will never come.
+                                            let _ = server.reject(request.id, &format!("invalid {} request: {e}", #self_name_str)).await;
+                                            continue;
+                                        }
+                                    };
+                                    let token = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    record_request(&requests, token, PendingRequestId::Zenoh(request.id));
+                                    if request_tx.send_async(Ok((token, decoded))).await.is_err() {
                                         break;
                                     }
                                 }
-                                Ok(None) => {
-                                    std::thread::sleep(std::time::Duration::from_millis(2));
-                                }
-                                Err(e) => {
-                                    let _ = request_tx
-                                        .send(Err(eyre::eyre!("failed to receive service request: {e:?}")));
-                                    std::thread::sleep(std::time::Duration::from_millis(2));
-                                }
                             }
-                        }
-                    });
-                }
+                        };
+                        node.executor.spawn(pump).context("failed to spawn service request pump")?;
+                        #server_backend::Zenoh { server, _shutdown: shutdown }
+                    }
+                };
 
+                let stream = request_rx.into_stream().map(|v| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let id = events.events.merge(Box::pin(stream));
                 Ok(Box::new(#server_name {
-                    server,
+                    backend,
                     requests,
                     stream_id: id,
                 }))
@@ -434,9 +561,20 @@ impl Service {
 
             #[allow(non_camel_case_types)]
             pub struct #server_name {
-                server: std::sync::Arc<crate::ros2_client::service::Server< service :: #self_name >>,
-                requests: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, (crate::ros2_client::service::RmwRequestId, std::time::Instant)>>>,
+                backend: #server_backend,
+                requests: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, (PendingRequestId, std::time::Instant)>>>,
                 stream_id: u32,
+            }
+
+            #[allow(non_camel_case_types)]
+            enum #server_backend {
+                Dds(std::sync::Arc<crate::ros2_client::service::Server< service :: #self_name >>),
+                #[cfg(feature = "rmw-zenoh")]
+                Zenoh {
+                    server: std::sync::Arc<dora_ros2_bridge::transport::zenoh::service::NodeServiceServer>,
+                    // Dropping this stops the request pump.
+                    _shutdown: flume::Sender<()>,
+                },
             }
 
             #[allow(non_camel_case_types)]
@@ -480,14 +618,26 @@ impl Service {
 
                 #[allow(non_snake_case)]
                 fn #send_response(&mut self, id: u64, response: ffi::#res_type_raw) -> eyre::Result<()> {
-                    let (rmw_id, _received_at) = self
+                    let (pending_id, _received_at) = self
                         .requests
                         .lock()
                         .map_err(|_| eyre::eyre!("service server request state poisoned"))?
                         .remove(&id)
                         .ok_or_else(|| eyre::eyre!("no pending request with id {id} (it may have timed out)"))?;
-                    futures::executor::block_on(self.server.async_send_response(rmw_id, response))
-                        .map_err(|e| eyre::eyre!("failed to send service response: {e:?}"))?;
+                    match (&self.backend, pending_id) {
+                        (#server_backend::Dds(server), PendingRequestId::Dds(rmw_id)) => {
+                            futures::executor::block_on(server.async_send_response(rmw_id, response))
+                                .map_err(|e| eyre::eyre!("failed to send service response: {e:?}"))?;
+                        }
+                        #[cfg(feature = "rmw-zenoh")]
+                        (#server_backend::Zenoh { server, .. }, PendingRequestId::Zenoh(request_id)) => {
+                            let payload = dora_ros2_bridge::transport::zenoh::serialize_cdr(&response)?;
+                            futures::executor::block_on(server.reply(request_id, &payload))
+                                .map_err(|e| eyre::eyre!("failed to send service response: {e}"))?;
+                        }
+                        #[allow(unreachable_patterns)]
+                        _ => eyre::bail!("request id belongs to a different ROS2 transport"),
+                    }
                     Ok(())
                 }
             }
@@ -509,6 +659,15 @@ mod codegen_tests {
         }
     }
 
+    fn add_two_ints() -> Service {
+        Service {
+            package: "test_pkg".to_string(),
+            name: "AddTwoInts".to_string(),
+            request: empty_msg("AddTwoInts_Request"),
+            response: empty_msg("AddTwoInts_Response"),
+        }
+    }
+
     fn format_valid_rust(tokens: impl ToTokens) -> String {
         crate::format_token_stream(tokens.into_token_stream())
     }
@@ -519,16 +678,32 @@ mod codegen_tests {
     // and (b) routes the `Name::new` error through `map_err` rather than panic.
     #[test]
     fn service_creation_functions_propagate_name_errors() {
-        let svc = Service {
-            package: "test_pkg".to_string(),
-            name: "AddTwoInts".to_string(),
-            request: empty_msg("AddTwoInts_Request"),
-            response: empty_msg("AddTwoInts_Response"),
-        };
+        let svc = add_two_ints();
         let needle = "invalid ROS2 name/namespace"; // must propagate via `?`, not panic
         let (_decl, imp) = svc.cxx_service_creation_functions("test_pkg");
         assert!(format_valid_rust(imp).contains(needle), "client create fn");
         let (_decl, imp) = svc.cxx_service_server_creation_functions("test_pkg");
         assert!(format_valid_rust(imp).contains(needle), "server create fn");
+    }
+
+    // #3764: on rmw_zenoh the generated C++ service client/server used to
+    // bail with "entity requires the DDS transport".
+    #[test]
+    fn service_creation_functions_support_rmw_zenoh() {
+        let svc = add_two_ints();
+        let (_decl, imp) = svc.cxx_service_creation_functions("test_pkg");
+        let client = format_valid_rust(imp);
+        assert!(client.contains("GeneratedNode::Zenoh"), "client create fn");
+        assert!(
+            client.contains("NodeServiceClient::declare"),
+            "client create fn"
+        );
+        let (_decl, imp) = svc.cxx_service_server_creation_functions("test_pkg");
+        let server = format_valid_rust(imp);
+        assert!(server.contains("GeneratedNode::Zenoh"), "server create fn");
+        assert!(
+            server.contains("NodeServiceServer::declare"),
+            "server create fn"
+        );
     }
 }

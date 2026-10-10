@@ -536,6 +536,42 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             }
         }
 
+        /// Bounds on unanswered service requests, shared by the generated service
+        /// clients and servers. Mirror the daemon's SERVICE_RESPONSE_TIMEOUT /
+        /// MAX_PENDING_REQUESTS.
+        pub const SERVICE_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+        pub const MAX_PENDING_REQUESTS: usize = 64;
+
+        /// The transport's id for a request a generated service server handed to
+        /// C++ under an opaque `u64` token.
+        pub enum PendingRequestId {
+            Dds(ros2_client::service::RmwRequestId),
+            #[cfg(feature = "rmw-zenoh")]
+            Zenoh(dora_ros2_bridge::transport::RequestId),
+        }
+
+        /// Records `id` under `token`, bounding the map: an entry whose C++
+        /// handler never calls `send_response` (crash, early return, dropped
+        /// request) is evicted, so a misbehaving server cannot leak unboundedly.
+        pub fn record_request(
+            requests: &std::sync::Mutex<std::collections::HashMap<u64, (PendingRequestId, std::time::Instant)>>,
+            token: u64,
+            id: PendingRequestId,
+        ) {
+            if let Ok(mut map) = requests.lock() {
+                let now = std::time::Instant::now();
+                // Evict entries whose response never came.
+                map.retain(|_, (_, t)| now.duration_since(*t) < SERVICE_RESPONSE_TIMEOUT);
+                // If still at capacity, drop the oldest (smallest token) to make room.
+                if map.len() >= MAX_PENDING_REQUESTS
+                    && let Some(&oldest) = map.keys().min()
+                {
+                    map.remove(&oldest);
+                }
+                map.insert(token, (id, now));
+            }
+        }
+
         #[cfg(feature = "rmw-zenoh")]
         pub fn neutral_qos(value: &ffi::Ros2QosPolicies) -> eyre::Result<dora_ros2_bridge::transport::Ros2Qos> {
             use dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
@@ -559,6 +595,34 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
                 history: if value.keep_all { History::KeepAll } else { History::KeepLast { depth: value.keep_last } },
                 liveliness,
             })
+        }
+
+        /// Data key and graph token for a service endpoint on native Zenoh,
+        /// shared by the generated service clients and servers.
+        #[cfg(feature = "rmw-zenoh")]
+        pub fn zenoh_service_endpoint(
+            node: &dora_ros2_bridge::transport::zenoh::Node,
+            compatibility: dora_ros2_bridge::dora_message::descriptor::RmwZenohCompatibility,
+            package: &str,
+            service: &str,
+            name: String,
+            qos: &ffi::Ros2QosPolicies,
+        ) -> eyre::Result<(dora_ros2_bridge::transport::zenoh::keyexpr::DataKey, dora_ros2_bridge::transport::zenoh::keyexpr::TopicToken)> {
+            let identity = dora_ros2_bridge::transport::zenoh::compatibility::resolve_service(
+                compatibility,
+                package,
+                service,
+                &dora_ros2_bridge::transport::zenoh::compatibility::TypeDescriptionResolver::from_ament_prefix_path(),
+            )?;
+            let neutral = neutral_qos(qos)?;
+            let key = dora_ros2_bridge::transport::zenoh::keyexpr::DataKey::new(node.domain(), &name, &identity)?;
+            let token = dora_ros2_bridge::transport::zenoh::keyexpr::TopicToken {
+                name,
+                type_name: identity.dds_name.clone(),
+                type_hash: identity.key_hash_component(),
+                qos: dora_ros2_bridge::transport::zenoh::qos::ZenohQosMapping::from_ros_qos(&neutral).to_string(),
+            };
+            Ok((key, token))
         }
 
         impl From<ffi::Ros2QosPolicies> for rustdds::QosPolicies {
@@ -737,10 +801,16 @@ fn generate_package_rust_imports_for_cxx() -> proc_macro2::TokenStream {
     quote! {
         #common
         #[allow(unused_imports)]
-        use crate::ros2::default_impl::GeneratedNode;
+        use crate::ros2::default_impl::{
+            GeneratedNode, MAX_PENDING_REQUESTS, PendingRequestId, SERVICE_RESPONSE_TIMEOUT,
+            record_request,
+        };
         #[cfg(feature = "rmw-zenoh")]
         #[allow(unused_imports)]
         use crate::ros2::default_impl::neutral_qos;
+        #[cfg(feature = "rmw-zenoh")]
+        #[allow(unused_imports)]
+        use crate::ros2::default_impl::zenoh_service_endpoint;
     }
 }
 

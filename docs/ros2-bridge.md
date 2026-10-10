@@ -1021,6 +1021,11 @@ if (server->matches(event)) {
 
 See `examples/ros2-bridge/c++/{turtle,service-server,action-client,action-server}/`.
 
+On native Zenoh (`init_ros2_context_with_transport` with `ZenohHumble` or
+`ZenohRep2016`), C++ topics and services work; actions still require DDS.
+A Zenoh service request that gets no response within 30 s arrives as an
+error from `downcast`.
+
 ### Discovery & RMW notes (native servers)
 
 - **A Dora-hosted *server* is not discoverable by a real `rcl`/`rclcpp`/`rclpy`
