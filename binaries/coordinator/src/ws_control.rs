@@ -197,7 +197,7 @@ pub(crate) async fn handle_control_ws(
     // cap are dropped and reported to the reader.
     let (log_tx, mut log_rx) = crate::log_subscriber::log_queue();
     // Channel for binary topic data frames
-    let (binary_tx, mut binary_rx) = mpsc::channel::<crate::topic_subscriber::TopicFrame>(64);
+    let (binary_tx, mut binary_rx) = crate::topic_subscriber::topic_frame_channel();
     let mut topic_subscriptions: Vec<Uuid> = Vec::new();
     let mut publish_session: Option<zenoh::Session> = None;
 
