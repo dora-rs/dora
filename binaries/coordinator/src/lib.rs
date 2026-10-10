@@ -271,9 +271,10 @@ async fn start_with_events(
     // Setup WS event channel (used by axum WS handlers)
     let (ws_event_tx, ws_event_rx) = tokio::sync::mpsc::channel::<Event>(64);
     let ws_events = ReceiverStream::new(ws_event_rx);
-    // Topic debug frames get their own channel. Like the events above, each
-    // is capped by the daemon socket's 1 MiB message limit.
-    let (topic_debug_tx, topic_debug_rx) = tokio::sync::mpsc::channel::<Event>(64);
+    // Topic debug frames get their own channel, bounded in frames and in
+    // bytes: a binary frame reassembled from chunks can be far larger than the
+    // daemon socket's 1 MiB message limit. See `ws_daemon::topic_debug_channel`.
+    let (topic_debug_tx, topic_debug_rx) = ws_daemon::topic_debug_channel();
 
     // Start WS server
     #[cfg(feature = "metrics")]
@@ -519,6 +520,8 @@ async fn start_inner(
                 dataflow_id,
                 subscription_ids,
                 payload,
+                // Held until the frame has been handed to its subscribers.
+                budget: _budget,
             } => {
                 coordinator
                     .handle_topic_debug_data(dataflow_id, subscription_ids, payload)
