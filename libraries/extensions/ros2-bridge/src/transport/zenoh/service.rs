@@ -346,13 +346,17 @@ impl NodeServiceServer {
     }
 }
 
+/// Waits until a server for `name` with this type identity is in the graph.
+///
+/// `_qos` is not compared (see [`GraphCache::matching_services`]); it stays in
+/// the signature so existing callers don't change.
 #[allow(clippy::too_many_arguments)]
 pub async fn wait_for_service(
     graph: &GraphCache,
     name: &str,
     type_name: &str,
     type_hash: &str,
-    qos: &str,
+    _qos: &str,
     deadline: Instant,
 ) -> Result<(), ServiceError> {
     loop {
@@ -361,7 +365,7 @@ pub async fn wait_for_service(
             return Err(ServiceError::TransportClosed);
         }
         if !graph
-            .matching_services(name, type_name, type_hash, qos)
+            .matching_services(name, type_name, type_hash)
             .is_empty()
         {
             return Ok(());

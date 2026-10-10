@@ -200,3 +200,42 @@ async fn multiple_complete_servers_remote_errors_and_disappearance_are_observabl
         Err(ServiceError::Timeout)
     ));
 }
+
+/// rmw_zenoh's `service_server_is_available` matches a server by name and type
+/// only; the client's QoS is never compared. A dora client using its default
+/// QoS (best effort, depth 1) must still find an rclpy server advertised with
+/// the services default (reliable, depth 10).
+#[tokio::test]
+async fn wait_for_service_ignores_qos_like_rmw_zenoh() {
+    use dora_ros2_bridge::transport::zenoh::keyexpr::{EntityKind, LivelinessKey, TopicToken};
+
+    let graph = GraphCache::new(7);
+    let server = LivelinessKey::endpoint(
+        7,
+        "zid",
+        "nid",
+        "eid",
+        EntityKind::Service,
+        "/",
+        "/",
+        "node",
+        TopicToken {
+            name: "/add".into(),
+            type_name: "example_interfaces::srv::dds_::AddTwoInts_".into(),
+            type_hash: "RIHS01_hash".into(),
+            qos: "::,10:,:,:,,".into(),
+        },
+    )
+    .unwrap();
+    graph.apply_put(server.as_str()).unwrap();
+    wait_for_service(
+        &graph,
+        "/add",
+        "example_interfaces::srv::dds_::AddTwoInts_",
+        "RIHS01_hash",
+        "2::,1:,:,:,,",
+        Instant::now() + Duration::from_millis(200),
+    )
+    .await
+    .unwrap();
+}
