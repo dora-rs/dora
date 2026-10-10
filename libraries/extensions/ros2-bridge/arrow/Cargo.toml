@@ -29,5 +29,7 @@ cdr-encoding = { workspace = true }
 byteorder = "1"
 
 [dev-dependencies]
+# Token-level serde format, as used by the Python bridge's typed round-trip test.
+serde_assert = "0.8.0"
 # CDR codec used by ros2-client 0.10 on the wire; used in tests to verify the
 # real CDR byte layout (length prefixes, alignment) rather than just serde shape.

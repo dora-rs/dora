@@ -31,10 +31,57 @@ impl<'de> serde::de::DeserializeSeed<'de> for SequenceDeserializer<'_> {
     where
         D: serde::Deserializer<'de>,
     {
+        if let NestableType::BasicType(BasicType::U8 | BasicType::Char | BasicType::Byte) =
+            self.item_type
+        {
+            // A CDR byte sequence is a length prefix followed by the raw bytes,
+            // which is exactly what `deserialize_bytes` reads: copy them in one
+            // go instead of one `next_element` call per byte (images, point
+            // clouds and other large payloads are byte sequences).
+            return deserializer.deserialize_bytes(ByteSequenceVisitor);
+        }
         deserializer.deserialize_seq(SequenceVisitor {
             item_type: self.item_type,
             type_info: self.type_info,
         })
+    }
+}
+
+struct ByteSequenceVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ByteSequenceVisitor {
+    type Value = ArrayData;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "a byte sequence")
+    }
+
+    fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        if bytes.len() > MAX_SEQUENCE_ELEMENTS {
+            return Err(error(format!(
+                "sequence exceeds maximum of {MAX_SEQUENCE_ELEMENTS} elements"
+            )));
+        }
+        let values = arrow::array::UInt8Array::from(bytes.to_vec());
+        // wrap array into list of length 1
+        let list = ListArray::new(
+            Arc::new(Field::new_list_field(values.data_type().clone(), true)),
+            OffsetBuffer::from_lengths([values.len()]),
+            Arc::new(values),
+            None,
+        );
+        Ok(list.to_data())
+    }
+
+    // Formats that encode bytes as a plain sequence of `u8`.
+    fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        deserialize_primitive_seq::<_, datatypes::UInt8Type>(seq)
     }
 }
 

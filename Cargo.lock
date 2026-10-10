@@ -2687,6 +2687,7 @@ dependencies = [
  "eyre",
  "ros2-client",
  "serde",
+ "serde_assert",
 ]
 
 [[package]]
