@@ -499,8 +499,8 @@ pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
 const MAX_STATE_LOG_ENTRIES: usize = 10_000;
 
 impl RunningDataflow {
-    /// Append a state mutation to the replication log.
-    pub(crate) fn append_state_log(&mut self, operation: StateCatchUpOperation) {
+    /// Append a state mutation to the replication log, returning its sequence.
+    pub(crate) fn append_state_log(&mut self, operation: StateCatchUpOperation) -> u64 {
         self.state_log_sequence += 1;
         self.state_log.push(StateCatchUpEntry {
             sequence: self.state_log_sequence,
@@ -515,6 +515,7 @@ impl RunningDataflow {
             );
             self.state_log.drain(..drain_count);
         }
+        self.state_log_sequence
     }
 
     /// Prune log entries that all daemons have acknowledged.
@@ -535,6 +536,41 @@ impl RunningDataflow {
             .min()
             .unwrap_or(0);
         self.state_log.retain(|entry| entry.sequence > min_ack);
+    }
+
+    /// Record that `owner` applied log entry `sequence`, then prune the log.
+    ///
+    /// Every live daemon that now has nothing left to apply advances its ack
+    /// to `sequence`: `owner` if entry `sequence` is all it was missing, any
+    /// other daemon if none of the entries after its ack target its nodes
+    /// (the rule `state_log_delta_for_daemon` and the reconnect catch-up use).
+    /// A daemon still missing an entry, such as one whose forward failed or
+    /// whose catch-up is in flight, keeps its ack and gets it on catch-up.
+    ///
+    /// Without this the acks only moved on a daemon reconnect, so a healthy
+    /// cluster kept every `dora param set` in the log up to the hard cap and
+    /// replayed the whole history on the next reconnect.
+    pub(crate) fn ack_applied_state_log_entry(&mut self, sequence: u64, owner: &DaemonId) {
+        let caught_up: Vec<DaemonId> = self
+            .daemons
+            .iter()
+            .filter(|daemon| {
+                let ack = self.daemon_ack_sequence.get(*daemon).copied().unwrap_or(0);
+                ack < sequence
+                    && self
+                        .state_log_delta_for_daemon(ack, daemon)
+                        .is_some_and(|missed| {
+                            missed.is_empty()
+                                || (*daemon == owner
+                                    && missed.iter().all(|entry| entry.sequence == sequence))
+                        })
+            })
+            .cloned()
+            .collect();
+        for daemon in caught_up {
+            self.daemon_ack_sequence.insert(daemon, sequence);
+        }
+        self.prune_state_log();
     }
 
     /// Return the entries a daemon has missed since `last_ack`.
@@ -658,6 +694,30 @@ impl RunningDataflow {
             state_log_sequence: 0,
             state_log: Vec::new(),
             daemon_ack_sequence: daemons.iter().map(|d| (d.clone(), 0)).collect(),
+        }
+    }
+
+    /// Re-persist this dataflow after a runtime topology change
+    /// (`dora node add/remove/replace`), keeping the stored status.
+    ///
+    /// A coordinator restarted on a persistent store rebuilds the dataflow's
+    /// nodes from the stored descriptor, so a change that never reaches the
+    /// store is lost (an added node) or undone (a removed one) by a restart.
+    pub(crate) fn persist_topology_change(&mut self, store: &dyn CoordinatorStore) {
+        let status = match store.get_dataflow(&self.uuid) {
+            Ok(Some(record)) => record.status,
+            // Nothing stored to keep in step.
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!(dataflow = %self.uuid, "failed to read dataflow record: {e}");
+                return;
+            }
+        };
+        if let Err(e) = self
+            .make_record(status)
+            .and_then(|r| store.put_dataflow(&r))
+        {
+            tracing::warn!(dataflow = %self.uuid, "failed to persist node topology change: {e}");
         }
     }
 
@@ -786,13 +846,24 @@ impl CachedResult {
 pub(crate) struct ArchivedDataflow {
     pub(crate) name: Option<String>,
     pub(crate) nodes: BTreeMap<NodeId, ResolvedNode>,
+    /// Why the dataflow failed to start, if it did, as the spawn waiters were
+    /// told. A `WaitForSpawn` that arrives after the failed dataflow was
+    /// archived answers with this.
+    pub(crate) spawn_error: Option<String>,
 }
 
 impl From<&RunningDataflow> for ArchivedDataflow {
     fn from(dataflow: &RunningDataflow) -> ArchivedDataflow {
+        let spawn_error = match &dataflow.spawn_result {
+            CachedResult::Cached { result } => {
+                result.as_ref().as_ref().err().map(|e| format!("{e:?}"))
+            }
+            CachedResult::Pending { .. } => None,
+        };
         ArchivedDataflow {
             name: dataflow.name.clone(),
             nodes: dataflow.nodes.clone(),
+            spawn_error,
         }
     }
 }

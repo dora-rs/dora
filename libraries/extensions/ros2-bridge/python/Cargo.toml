@@ -10,8 +10,14 @@ name = "dora_ros2_bridge_python"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["rmw-zenoh"]
+default = ["rmw-zenoh", "ros2-humble"]
 rmw-zenoh = ["dora-ros2-bridge/rmw-zenoh"]
+# ROS distro, forwarded to the crates that link `ros2-client`. See
+# `dora-ros2-bridge`'s manifest for the chain semantics.
+ros2-humble = ["dora-ros2-bridge/ros2-humble", "dora-ros2-bridge-arrow/ros2-humble"]
+ros2-iron = ["dora-ros2-bridge/ros2-iron", "dora-ros2-bridge-arrow/ros2-iron"]
+ros2-jazzy = ["dora-ros2-bridge/ros2-jazzy", "dora-ros2-bridge-arrow/ros2-jazzy"]
+ros2-kilted = ["dora-ros2-bridge/ros2-kilted", "dora-ros2-bridge-arrow/ros2-kilted"]
 
 [dependencies]
 dora-ros2-bridge = { path = "..", default-features = false }

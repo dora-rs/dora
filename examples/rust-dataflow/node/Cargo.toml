@@ -10,7 +10,6 @@ publish = false
 [dependencies]
 dora-node-api = { workspace = true, features = ["arrow-v59", "tracing", "metrics"] }
 eyre = { workspace = true }
-futures = { workspace = true }
 fastrand = "2.4.1"
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros"] }
 tracing = { workspace = true }
