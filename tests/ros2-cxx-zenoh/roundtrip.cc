@@ -28,8 +28,11 @@ int main(int argc, char **argv)
     auto client = create_client_example_interfaces_AddTwoInts(*node, "/", "add_two_ints", qos, events);
     client->wait_for_service(node);
 
-    // Several requests in flight at once, answered out of the merged event stream.
-    const int requests = 5;
+    // Many requests in flight at once. They must reach the server in the
+    // order C++ sent them, and since the server answers in order, the
+    // responses must come back in that order too: `downcast` carries no
+    // request id, so order is how a C++ client matches them up.
+    const int requests = 50;
     for (int i = 0; i < requests; i++)
     {
         example_interfaces::AddTwoInts_Request request{};
@@ -38,6 +41,7 @@ int main(int argc, char **argv)
         client->send_request(request);
     }
 
+    int served = 0;
     int answered = 0;
     while (answered < requests)
     {
@@ -46,16 +50,22 @@ int main(int argc, char **argv)
         {
             auto request_event = server->downcast(std::move(event));
             const auto &request = request_event->get_request();
+            if (request.a != served)
+            {
+                std::cerr << "server got request " << request.a << ", expected " << served << std::endl;
+                return 1;
+            }
             example_interfaces::AddTwoInts_Response response{};
             response.sum = request.a + request.b;
             server->send_response(request_event->get_id(), response);
+            served++;
         }
         else if (client->matches(event))
         {
             auto response = client->downcast(std::move(event));
-            if (response.sum < 100 || response.sum >= 100 + requests)
+            if (response.sum != 100 + answered)
             {
-                std::cerr << "unexpected response " << response.sum << std::endl;
+                std::cerr << "response " << answered << " has sum " << response.sum << ", expected " << 100 + answered << std::endl;
                 return 1;
             }
             answered++;

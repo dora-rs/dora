@@ -11,10 +11,19 @@ source "$ROOT/scripts/cargo-target-dir.sh"
 TARGET_DIR="$(cargo_target_dir "$ROOT")"
 FIXTURE="$ROOT/tests/ros2-cxx-zenoh"
 
+OUT=$(mktemp -d)
+trap 'rm -rf "$OUT"' EXIT
+
+# Install the generated headers into a scratch dir rather than the usual
+# `target/cxxbridge/dora-node-api-cxx/install`, so a developer's own C++ build
+# pointing there isn't left with the fixture's bindings. (The static library
+# is rebuilt for the fixture too; the next build with the real
+# AMENT_PREFIX_PATH regenerates it, as build.rs reruns when that changes.)
 export AMENT_PREFIX_PATH="$FIXTURE/ament"
+export DORA_NODE_API_CXX_INSTALL="$OUT/install"
 cargo build --manifest-path "$ROOT/Cargo.toml" -p dora-node-api-cxx --features ros2-bridge
 
-BRIDGE="$TARGET_DIR/cxxbridge/dora-node-api-cxx/install"
+BRIDGE="$DORA_NODE_API_CXX_INSTALL"
 case "$(uname -s)" in
   Darwin)
     SYSTEM_LIBS=(-framework CoreServices -framework Security -framework SystemConfiguration
@@ -26,8 +35,6 @@ case "$(uname -s)" in
     ;;
 esac
 
-OUT=$(mktemp -d)
-trap 'rm -rf "$OUT"' EXIT
 clang++ -std=c++17 \
   "$FIXTURE/roundtrip.cc" \
   "$BRIDGE/dora-node-api.cc" \
