@@ -1613,11 +1613,12 @@ async fn wait_for_spawn_after_a_failed_spawn_reports_the_failure() {
     assert!(err.contains("unknown dataflow"), "got: {err}");
 }
 
-/// The same late `WaitForSpawn`, for a dataflow whose node crashed before
-/// the spawn completed: the coordinator archives it from
-/// `DataflowFinishedOnDaemon` and the request must still see the failure.
-#[tokio::test]
-async fn wait_for_spawn_after_an_early_node_exit_reports_the_failure() {
+/// Runs a dataflow whose only node exits with `node_result` before its spawn
+/// result is recorded, then sends the `WaitForSpawn` that `dora start` sends
+/// once the coordinator has archived it, and returns the reply.
+async fn wait_for_spawn_after_an_early_node_exit(
+    node_result: Result<(), NodeError>,
+) -> eyre::Result<ControlRequestReply> {
     let dataflow_id = DataflowId::from(Uuid::new_v4());
     let daemon_id = DaemonId::new(Some("m1".to_string()));
     let node_id: NodeId = "sender".to_string().into();
@@ -1640,19 +1641,9 @@ async fn wait_for_spawn_after_an_early_node_exit_reports_the_failure() {
         otel_metrics: crate::otel_metrics::new_shared(),
         abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
     };
-    let timestamp = coordinator.clock.new_timestamp();
     let result = DataflowDaemonResult {
-        timestamp,
-        node_results: BTreeMap::from([(
-            node_id,
-            Err(NodeError {
-                timestamp,
-                cause: NodeErrorCause::Other {
-                    stderr: "segfault at startup".to_string(),
-                },
-                exit_status: NodeExitStatus::ExitCode(139),
-            }),
-        )]),
+        timestamp: coordinator.clock.new_timestamp(),
+        node_results: BTreeMap::from([(node_id, node_result)]),
     };
     coordinator
         .handle_dataflow_event(
@@ -1673,11 +1664,43 @@ async fn wait_for_spawn_after_an_early_node_exit_reports_the_failure() {
         })
         .await
         .unwrap();
-    let err = format!("{:?}", reply.await.unwrap().expect_err("spawn failed"));
+    reply.await.unwrap()
+}
+
+/// The same late `WaitForSpawn`, for a dataflow whose node crashed before
+/// the spawn completed: the coordinator archives it from
+/// `DataflowFinishedOnDaemon` and the request must still see the failure.
+#[tokio::test]
+async fn wait_for_spawn_after_an_early_node_exit_reports_the_failure() {
+    let err = wait_for_spawn_after_an_early_node_exit(Err(NodeError {
+        timestamp: HLC::default().new_timestamp(),
+        cause: NodeErrorCause::Other {
+            stderr: "segfault at startup".to_string(),
+        },
+        exit_status: NodeExitStatus::ExitCode(139),
+    }))
+    .await
+    .expect_err("spawn failed");
+    let err = format!("{err:?}");
     assert!(err.contains("failed to start"), "got: {err}");
     assert!(
         !error_reads_as_finished(&err),
         "must not read as a dataflow that ran to completion: {err}"
+    );
+}
+
+/// A dataflow whose nodes all exited cleanly before the spawn result came in
+/// did start: a late `WaitForSpawn` must keep reading as "started and
+/// finished", as it does for any other finished dataflow.
+#[tokio::test]
+async fn wait_for_spawn_after_a_clean_early_exit_reads_as_finished() {
+    let err = wait_for_spawn_after_an_early_node_exit(Ok(()))
+        .await
+        .expect_err("the dataflow is no longer running");
+    let err = format!("{err:?}");
+    assert!(
+        error_reads_as_finished(&err),
+        "must read as a dataflow that ran to completion: {err}"
     );
 }
 
