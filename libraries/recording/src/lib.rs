@@ -54,6 +54,7 @@
 //! ```
 
 use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::ops::Range;
 use std::time::Instant;
 
 use eyre::Context;
@@ -143,20 +144,26 @@ impl RecordEntry {
         2 + self.node_id.len() + 2 + self.output_id.len() + 8 + 4 + self.event_bytes.len()
     }
 
-    /// Assemble an owned entry from the borrowed fields produced by
-    /// `parse_record`, copying the ids and payload out of the record buffer.
-    fn owned(
-        node_id: &str,
-        output_id: &str,
-        timestamp_offset_nanos: u64,
-        event_bytes: &[u8],
-    ) -> Self {
-        Self {
-            node_id: node_id.to_string(),
-            output_id: output_id.to_string(),
-            timestamp_offset_nanos,
-            event_bytes: event_bytes.to_vec(),
+    /// Parse a record body into an owned entry, or `None` when `only_node` is
+    /// set and the record belongs to another node (nothing is allocated for
+    /// it). The payload keeps the record's own allocation (its bytes are
+    /// shifted to the front) instead of being copied into a fresh one, which
+    /// for a multi-megabyte payload costs far more than the move.
+    fn from_record(mut record_buf: Vec<u8>, only_node: Option<&str>) -> eyre::Result<Option<Self>> {
+        let (node_id, output_id, timestamp_offset_nanos, payload) = parse_record(&record_buf)?;
+        if only_node.is_some_and(|node| node != node_id) {
+            return Ok(None);
         }
+        let node_id = node_id.to_string();
+        let output_id = output_id.to_string();
+        record_buf.truncate(payload.end);
+        record_buf.drain(..payload.start);
+        Ok(Some(Self {
+            node_id,
+            output_id,
+            timestamp_offset_nanos,
+            event_bytes: record_buf,
+        }))
     }
 }
 
@@ -313,28 +320,22 @@ impl<R: Read> RecordingReader<R> {
         let Some(record_buf) = self.read_next_record()? else {
             return Ok(None);
         };
-        let (node_id, output_id, timestamp_offset_nanos, event_bytes) = parse_record(&record_buf)?;
-        Ok(Some(RecordEntry::owned(
-            node_id,
-            output_id,
-            timestamp_offset_nanos,
-            event_bytes,
-        )))
+        RecordEntry::from_record(record_buf, None)
     }
 
-    /// Read the next entry's metadata, *without* copying its event payload out
-    /// of the record buffer. Returns `None` at EOF or footer.
+    /// Read the next entry's metadata, *without* its event payload. Returns
+    /// `None` at EOF or footer.
     ///
     /// Every length field is still bounds-checked and both ids are still
     /// validated as UTF-8, so a corrupt record is rejected exactly as by
-    /// [`next_entry`](Self::next_entry); only the payload `.to_vec()` is
-    /// skipped. Use this when the caller needs the entry's ids or timing but
+    /// [`next_entry`](Self::next_entry); only the payload is dropped instead
+    /// of returned. Use this when the caller needs the entry's ids or timing but
     /// not the payload — e.g. counting how many messages each output recorded.
     pub fn next_entry_header(&mut self) -> eyre::Result<Option<RecordEntryHeader>> {
         let Some(record_buf) = self.read_next_record()? else {
             return Ok(None);
         };
-        let (node_id, output_id, timestamp_offset_nanos, _event_bytes) = parse_record(&record_buf)?;
+        let (node_id, output_id, timestamp_offset_nanos, _payload) = parse_record(&record_buf)?;
         Ok(Some(RecordEntryHeader {
             node_id: node_id.to_string(),
             output_id: output_id.to_string(),
@@ -351,26 +352,16 @@ impl<R: Read> RecordingReader<R> {
     /// (potentially multi-megabyte) event payload nor the ids. `dora replay`
     /// spawns one replay process per node, each scanning the whole recording
     /// and keeping only its own node's entries; using
-    /// [`next_entry`](Self::next_entry) there makes every process heap-copy
-    /// every *other* node's payloads just to discard them.
+    /// [`next_entry`](Self::next_entry) there makes every process build an
+    /// entry for every *other* node's payload just to discard it.
     pub fn next_entry_for_node(&mut self, node: &str) -> eyre::Result<Option<RecordEntry>> {
         loop {
             let Some(record_buf) = self.read_next_record()? else {
                 return Ok(None);
             };
-            let (node_id, output_id, timestamp_offset_nanos, event_bytes) =
-                parse_record(&record_buf)?;
-            if node_id != node {
-                // Validated above; skip without allocating the ids or copying
-                // the payload (all borrowed from `record_buf`).
-                continue;
+            if let Some(entry) = RecordEntry::from_record(record_buf, Some(node))? {
+                return Ok(Some(entry));
             }
-            return Ok(Some(RecordEntry::owned(
-                node_id,
-                output_id,
-                timestamp_offset_nanos,
-                event_bytes,
-            )));
         }
     }
 
@@ -422,12 +413,13 @@ impl<R: Read> RecordingReader<R> {
 }
 
 /// Parse a record body into its `(node_id, output_id, timestamp_offset_nanos,
-/// event_bytes)` fields, all **borrowed** from `record_buf`. Callers copy out
-/// only the fields they keep — [`RecordingReader::next_entry_for_node`] compares
-/// the borrowed node id and skips foreign records without allocating anything.
+/// payload)` fields: the ids **borrowed** from `record_buf`, the payload as its
+/// byte range there. Callers copy out only the fields they keep —
+/// [`RecordEntry::from_record`] compares the borrowed node id and skips a
+/// foreign record without allocating anything.
 /// Every length field is bounds-checked via [`read_array`] / [`read_slice`], so
 /// a corrupt or crafted record fails gracefully rather than panicking.
-fn parse_record(record_buf: &[u8]) -> eyre::Result<(&str, &str, u64, &[u8])> {
+fn parse_record(record_buf: &[u8]) -> eyre::Result<(&str, &str, u64, Range<usize>)> {
     let mut pos = 0;
 
     let node_id_len = u16::from_le_bytes(read_array(record_buf, &mut pos)?) as usize;
@@ -440,7 +432,8 @@ fn parse_record(record_buf: &[u8]) -> eyre::Result<(&str, &str, u64, &[u8])> {
 
     let timestamp_offset_nanos = u64::from_le_bytes(read_array(record_buf, &mut pos)?);
     let event_bytes_len = u32::from_le_bytes(read_array(record_buf, &mut pos)?) as usize;
-    let event_bytes = read_slice(record_buf, &mut pos, event_bytes_len)?;
+    let payload_start = pos;
+    read_slice(record_buf, &mut pos, event_bytes_len)?;
 
     // The fields fully determine the body length, so a length prefix that
     // claims more is corrupt. Accepting it would swallow the start of the
@@ -452,7 +445,12 @@ fn parse_record(record_buf: &[u8]) -> eyre::Result<(&str, &str, u64, &[u8])> {
         );
     }
 
-    Ok((node_id, output_id, timestamp_offset_nanos, event_bytes))
+    Ok((
+        node_id,
+        output_id,
+        timestamp_offset_nanos,
+        payload_start..pos,
+    ))
 }
 
 fn read_array<const N: usize>(buf: &[u8], pos: &mut usize) -> eyre::Result<[u8; N]> {

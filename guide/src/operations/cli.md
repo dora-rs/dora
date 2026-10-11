@@ -1544,14 +1544,14 @@ class Operator:
 ### Setup
 
 ```bash
-# Machine A (coordinator + daemon)
-dora up
+# Machine A (coordinator + daemon, listening on the LAN address so B and C can reach it)
+dora up --interface 192.168.1.10
 
-# Machine B (daemon only, pointing to coordinator on Machine A)
-dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id B
+# Machine B (daemon only; runs the `robot` nodes — camera + actuator)
+dora daemon --coordinator-addr 192.168.1.10 --machine-id robot
 
-# Machine C (same)
-dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id C
+# Machine C (daemon only; runs the `gpu-server` node — inference)
+dora daemon --coordinator-addr 192.168.1.10 --machine-id gpu-server
 ```
 
 ### Dataflow with Machine Assignment
@@ -1585,6 +1585,10 @@ nodes:
 ### Build and Start
 
 ```bash
+# Point the CLI at the coordinator (otherwise it connects to 127.0.0.1 and
+# fails once the coordinator is bound to the LAN address with --interface)
+export DORA_COORDINATOR_ADDR=192.168.1.10
+
 # From any machine with coordinator access
 dora build dataflow.yml       # distributed build on target machines
 dora start dataflow.yml --name my-robot --attach
