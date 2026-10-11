@@ -220,7 +220,8 @@ nodes:
       outputs:
         - bbox
 
-  # Multiple operators sharing a runtime
+  # List form with an explicit operator id (a runtime node holds exactly
+  # one operator; outputs are referenced as runtime-node/preprocessor/<output>)
   - id: runtime-node
     operators:
       - id: preprocessor
@@ -229,12 +230,6 @@ nodes:
           raw: sensor/data
         outputs:
           - processed
-      - id: analyzer
-        shared-library: ../../target/debug/libanalyze
-        inputs:
-          data: runtime-node/preprocessor/processed
-        outputs:
-          - result
 ```
 
 ### Distributed Deployment

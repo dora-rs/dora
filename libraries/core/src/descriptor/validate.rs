@@ -91,7 +91,6 @@ fn check_dataflow_static_resolved(
 ) -> eyre::Result<()> {
     for node in nodes.values() {
         check_node_timing(node)?;
-        check_runtime_operator_count(node)?;
     }
     // dataflow-level `health_check_interval` reaches `Duration::from_secs_f64`
     // in the same way (`binaries/daemon/src/lib.rs`). A zero interval must also
@@ -236,9 +235,12 @@ pub fn check_node_timing(node: &ResolvedNode) -> eyre::Result<()> {
 /// A runtime node must hold exactly one operator: the operator runtime
 /// (`dora_runtime_api::main`, shared by the shared-library and Python
 /// backends) refuses to start with zero or several. Without this check such a
-/// descriptor passes `dora validate`/`dora build` and only fails when the
-/// runtime process starts.
-fn check_runtime_operator_count(node: &ResolvedNode) -> eyre::Result<()> {
+/// descriptor passes validation and only fails when the runtime process
+/// starts.
+///
+/// Like [`check_operator_ids`], descriptor resolution runs this for every
+/// node, so `dora start`, `dora node add/replace` and recovery are covered.
+pub fn check_runtime_operator_count(node: &ResolvedNode) -> eyre::Result<()> {
     if let descriptor::CoreNodeKind::Runtime(runtime) = &node.kind
         && runtime.operators.len() != 1
     {
@@ -1545,6 +1547,47 @@ nodes:
             err.contains("runtime-node") && err.contains("2 operators"),
             "error should name the node and the operator count, got: {err}"
         );
+    }
+
+    #[test]
+    fn runtime_node_with_no_operators_is_rejected() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators: []
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("runtime-node") && err.contains("0 operators"),
+            "error should name the node and the operator count, got: {err}"
+        );
+    }
+
+    /// `dora start`, `dora node add/replace` and recovery resolve the
+    /// descriptor without running `check_dataflow_static`, so the count must
+    /// be enforced by resolution itself.
+    #[test]
+    fn resolution_rejects_a_runtime_node_with_several_operators() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: op1
+      - id: op2
+        shared-library: op2
+"#,
+        )
+        .unwrap();
+        let err = descriptor
+            .resolve_aliases_and_set_defaults()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("2 operators"), "got: {err}");
     }
 
     #[test]

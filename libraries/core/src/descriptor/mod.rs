@@ -322,6 +322,7 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
         // paths resolve without validating, and an invalid operator id makes
         // `DataId::from` panic in the coordinator and the daemon.
         validate::check_operator_ids(&resolved_node)?;
+        validate::check_runtime_operator_count(&resolved_node)?;
         // Merge the dataflow-level `env` into the per-node `env`. Per-node keys
         // win on conflict so a node can override a shared default (e.g. global
         // `RUST_LOG=info` with one verbose node setting `RUST_LOG=debug`).
@@ -1795,12 +1796,6 @@ nodes:
           tick: dora/timer/millis/100
         outputs:
           - bbox
-      - id: track
-        python: track.py
-        inputs:
-          bbox: camera.front/detect/bbox
-        outputs:
-          - tracks
 "#;
         let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
         let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
