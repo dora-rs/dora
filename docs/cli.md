@@ -545,9 +545,11 @@ dora recording export <RECORDING> [OPTIONS]
 | `<RECORDING>` | required | Path to `.drec` recording |
 | `-o, --output <PATH>` | `<RECORDING>` with the extension replaced (`capture.drec` → `capture.mcap`) | Output MCAP file path |
 | `--topics <TOPICS>` | all | Comma-separated `node/output` topics to export |
+| `--schema <SCHEMA>` | `arrow` | `arrow` copies payloads verbatim; `foxglove` writes image outputs in Foxglove's own schemas so Foxglove can display them |
 
-Payloads are remuxed verbatim, never decoded and re-encoded. Two limits worth
-knowing before you point a consumer at the output:
+With the default `--schema arrow`, payloads are remuxed verbatim, never decoded
+and re-encoded. Two limits worth knowing before you point a consumer at the
+output:
 
 - `metadata.parameters` is **not** exported. That is where image outputs carry
   `width`/`height`/`encoding`, and where services and actions carry
@@ -555,6 +557,23 @@ knowing before you point a consumer at the output:
   own.
 - Chunks are uncompressed, because `mcap` is built with
   `default-features = false`. Compress the `.mcap` afterwards if size matters.
+
+`--schema foxglove` re-encodes image outputs as JSON `foxglove.RawImage` or
+`foxglove.CompressedImage` messages, which Foxglove renders. Everything else is
+exported as with `arrow`. An output counts as an image when:
+
+- the dataflow declares it in `output_types` as `std/media/v1/Image` (a struct
+  of `width`, `height`, `encoding`, `data`) or `std/media/v1/CompressedImage`.
+  The compressed format comes from `[format=jpeg]` on the type, a `format`
+  metadata parameter, or the data's file signature (JPEG, PNG, WebP, AVIF);
+- or, undeclared, its messages carry `width`, `height` and `encoding` metadata
+  parameters next to a flat `uint8` payload, the convention the camera
+  examples use.
+
+A `frame_id` metadata parameter becomes the image's `frame_id`. Image data is
+base64 in JSON, so these channels are about a third larger than the raw bytes.
+A message on an image topic that cannot be converted, for example pixel data
+that is not a whole number of rows, is dropped and reported at the end.
 
 The output is written to a temporary file next to the destination and renamed
 into place only once the export completes, so a failed export never leaves a
