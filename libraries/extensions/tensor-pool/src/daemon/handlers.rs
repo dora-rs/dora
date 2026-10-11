@@ -58,22 +58,23 @@ impl PoolState {
                 // Cross-machine path: pool mirrored here — write the data
                 // straight into the DORADMA data region under the seqlock
                 // protocol (receiver reads its local pool zero-copy).
-                // Pools without a cross-machine entry (local pools, or a
-                // daemon that is not this pool's mirror) drop the frame at
-                // debug level: the write path publishes unconditionally, so
-                // a non-mirror daemon sees every frame of every pool. A
-                // genuinely missing mirror still warns inside
+                // Pools without a cross-machine entry drop the frame at
+                // debug level. The origin addresses the frame to the
+                // pool's mirror (#3689), so this only happens for a frame
+                // that raced a free or the dataflow finishing, or one an
+                // older daemon still broadcast. A genuinely
+                // missing mirror segment still warns inside
                 // `write_cross_pool_data`.
-                let is_cross = self
+                let Some(origin_machine) = self
                     .tensor_pool
-                    .is_cross(&dataflow_id.to_string(), &shared_memory_id);
-                if !is_cross {
+                    .cross_peer(&dataflow_id.to_string(), &shared_memory_id)
+                else {
                     tracing::debug!(
                         pool = %shared_memory_id,
                         "memory pool: dropping write for a pool without a cross-machine entry"
                     );
                     return Ok(());
-                }
+                };
                 // The mirror write is a synchronous 61.44MB memcpy
                 // (10-30ms) — off the event loop or it would stall
                 // heartbeats, node replies and output delivery.
@@ -97,7 +98,7 @@ impl PoolState {
                         &session,
                         &clock,
                         &dataflow_id,
-                        None,
+                        Some(&origin_machine),
                         &PeerMessage::WriteAck {
                             shared_memory_id,
                             seq,
@@ -306,7 +307,7 @@ impl PoolState {
                         tensor_pool.register_cross_pool(
                             dataflow_id.to_string(),
                             shared_memory_id.clone(),
-                            origin_machine_id,
+                            origin_machine_id.clone(),
                             mirror_shmem_name.clone(),
                         );
                         // The dataflow may have finished while this task
@@ -343,7 +344,7 @@ impl PoolState {
                         &session,
                         &clock,
                         &dataflow_id,
-                        None,
+                        Some(&origin_machine_id),
                         &PeerMessage::RegisterAck {
                             shared_memory_id,
                             ok,
@@ -566,6 +567,12 @@ impl PoolState {
                     .get(&(dataflow_id, shared_memory_id.clone()))
                     .copied();
                 let cross_data_conns = self.cross_data_conns.clone();
+                // The pool's mirror: the relayed frame is addressed to it
+                // alone, so zenoh does not ship the payload to every other
+                // daemon in the dataflow (#3689).
+                let mirror_machine = self
+                    .tensor_pool
+                    .cross_peer(&dataflow_id.to_string(), &shared_memory_id);
                 tokio::spawn(async move {
                     // The segment read (a full-size allocation plus copy)
                     // runs here, off the event loop.
@@ -685,7 +692,7 @@ impl PoolState {
                         &session,
                         &clock,
                         &dataflow_id,
-                        None,
+                        mirror_machine.as_deref(),
                         &message,
                         shm_provider.as_deref(),
                     )
@@ -1194,23 +1201,39 @@ impl PoolState {
         // hangs on its daemon reply forever. Skipped entirely when the
         // cross-machine data plane is not enabled.
         if cross_machine_enabled() {
-            let mp_topic = dataflow_extension_topic(&dataflow_id, NAMESPACE);
+            // Two keys: the dataflow-wide broadcast key, and this
+            // daemon's own machine key that relayed bulk `Write`s
+            // addressed to it are published on (#3689).
+            let broadcast_topic = pool_message_topic(&dataflow_id, None);
+            let machine_topic =
+                pool_message_topic(&dataflow_id, Some(&svc.machine_id().unwrap_or_default()));
             let mp_session = svc.zenoh_session();
             let sink = svc.peer_message_sink();
             let subscriber = tokio::spawn(async move {
-                let Ok(subscriber) = mp_session.declare_subscriber(&mp_topic).await else {
+                let (Ok(broadcast), Ok(targeted)) = (
+                    mp_session.declare_subscriber(&broadcast_topic).await,
+                    mp_session.declare_subscriber(&machine_topic).await,
+                ) else {
                     tracing::warn!(
-                        "memory pool: declare_subscriber({mp_topic}) failed; \
-                         cross-machine pool reads will not see remote writes"
+                        "memory pool: declare_subscriber({broadcast_topic} / {machine_topic}) \
+                         failed; cross-machine pool reads will not see remote writes"
                     );
                     return;
                 };
-                while let Ok(sample) = subscriber.recv_async().await {
+                loop {
+                    let sample = tokio::select! {
+                        sample = broadcast.recv_async() => sample,
+                        sample = targeted.recv_async() => sample,
+                    };
+                    let Ok(sample) = sample else { break };
                     let bytes = sample.payload().to_bytes();
                     if let Ok(event) =
                         Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(&bytes)
                     {
-                        tracing::info!("memory pool: received inter-daemon event on {mp_topic}");
+                        tracing::info!(
+                            "memory pool: received inter-daemon event on {}",
+                            sample.key_expr()
+                        );
                         sink(event).await;
                     }
                 }
