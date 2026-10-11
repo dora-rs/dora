@@ -37,7 +37,10 @@ impl<'de> serde::de::DeserializeSeed<'de> for SequenceDeserializer<'_> {
             // A CDR byte sequence is a length prefix followed by the raw bytes,
             // which is exactly what `deserialize_bytes` reads: copy them in one
             // go instead of one `next_element` call per byte (images, point
-            // clouds and other large payloads are byte sequences).
+            // clouds and other large payloads are byte sequences). This
+            // relies on cdr-encoding >= 0.11, whose `serialize_bytes` /
+            // `deserialize_bytes` carry the u32 length prefix (0.10 did not);
+            // `byte_sequences_keep_the_cdr_wire_layout` pins the layout.
             return deserializer.deserialize_bytes(ByteSequenceVisitor);
         }
         deserializer.deserialize_seq(SequenceVisitor {
