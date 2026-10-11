@@ -329,11 +329,22 @@ fn build_record_inputs(topic_map: &BTreeMap<&str, &str>, queue_size: u64) -> ser
 /// expansion cannot touch it (valid UTF-8 without `$`), because `dora record`
 /// reuses whatever `dora-record-node` it finds, and one from before the
 /// encoded variable reads only the raw one.
-fn descriptor_env(yaml: &[u8]) -> Vec<(String, String)> {
-    let mut env = vec![(
-        dora_recording::DESCRIPTOR_ENV.to_string(),
-        BASE64_STANDARD.encode(yaml),
-    )];
+fn descriptor_env(yaml: &[u8]) -> eyre::Result<Vec<(String, String)>> {
+    let encoded = BASE64_STANDARD.encode(yaml);
+    // `NAME=value` plus its NUL must fit Linux's `MAX_ARG_STRLEN`, or the
+    // daemon's spawn of the record node fails with a bare `E2BIG`.
+    let entry_len = dora_recording::DESCRIPTOR_ENV.len() + 1 + encoded.len() + 1;
+    if cfg!(target_os = "linux") && entry_len > MAX_ENV_ENTRY_LEN {
+        eyre::bail!(
+            "the dataflow file is too large for `dora record`: its descriptor \
+             travels to the record node in an environment variable, base64-encoded \
+             to {} bytes, over Linux's {MAX_ENV_ENTRY_LEN}-byte limit per variable \
+             (about {} bytes of YAML)",
+            encoded.len(),
+            MAX_DESCRIPTOR_LEN,
+        );
+    }
+    let mut env = vec![(dora_recording::DESCRIPTOR_ENV.to_string(), encoded)];
     if let Ok(text) = std::str::from_utf8(yaml)
         && !text.contains('$')
     {
@@ -342,8 +353,15 @@ fn descriptor_env(yaml: &[u8]) -> Vec<(String, String)> {
             text.to_string(),
         ));
     }
-    env
+    Ok(env)
 }
+
+/// Linux's `MAX_ARG_STRLEN`: the longest single `NAME=value` env entry.
+const MAX_ENV_ENTRY_LEN: usize = 128 * 1024;
+/// The largest descriptor whose [`dora_recording::DESCRIPTOR_ENV`] entry fits
+/// [`MAX_ENV_ENTRY_LEN`].
+const MAX_DESCRIPTOR_LEN: usize =
+    (MAX_ENV_ENTRY_LEN - dora_recording::DESCRIPTOR_ENV.len() - 2) / 4 * 3;
 
 fn run_record(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
@@ -416,7 +434,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
         serde_yaml::Value::String("DORA_RECORD_TOPICS".to_string()),
         serde_yaml::Value::String(topics_json),
     );
-    for (key, value) in descriptor_env(&yaml_bytes) {
+    for (key, value) in descriptor_env(&yaml_bytes)? {
         env_mapping.insert(
             serde_yaml::Value::String(key),
             serde_yaml::Value::String(value),
@@ -936,6 +954,7 @@ mod tests {
     fn expanded_descriptor_env(yaml: &[u8]) -> BTreeMap<String, String> {
         let env = serde_yaml::Mapping::from_iter(
             descriptor_env(yaml)
+                .unwrap()
                 .into_iter()
                 .map(|(k, v)| (serde_yaml::Value::String(k), serde_yaml::Value::String(v))),
         );
@@ -982,6 +1001,17 @@ mod tests {
                 .expect("valid base64"),
             yaml
         );
+    }
+
+    /// A descriptor whose encoded entry would not fit one Linux env variable
+    /// is refused with a clear error, not left to fail the record node's
+    /// spawn with `E2BIG`; one just under the limit is still passed.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn descriptor_too_large_for_one_env_variable_is_refused() {
+        assert!(descriptor_env(&vec![b'a'; MAX_DESCRIPTOR_LEN]).is_ok());
+        let err = descriptor_env(&vec![b'a'; MAX_DESCRIPTOR_LEN + 3]).unwrap_err();
+        assert!(format!("{err}").contains("too large"), "{err}");
     }
 
     #[test]
