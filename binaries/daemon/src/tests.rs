@@ -507,6 +507,36 @@ async fn log_subscriber_receives_logs_again_after_restart() {
     );
 }
 
+/// `AddNode` re-registers a node's `dora/logs` inputs. An entry left by an
+/// earlier incarnation (kept across a crash, see the test above) must be
+/// replaced, not duplicated, or every log line reaches the node twice.
+#[test]
+fn unsubscribe_node_from_logs_drops_only_that_nodes_entries() {
+    let subscriber = |node: &str, input: &str| crate::running_dataflow::LogSubscriber {
+        node_id: NodeId::from(node.to_string()),
+        input_id: DataId::from(input.to_string()),
+        filter: dora_message::config::LogSubscriptionFilter {
+            min_level: None,
+            node_filter: None,
+        },
+    };
+    let mut dataflow = test_dataflow();
+    dataflow.log_subscribers = vec![
+        subscriber("monitor", "logs"),
+        subscriber("monitor", "old_logs"),
+        subscriber("other", "logs"),
+    ];
+
+    dataflow.unsubscribe_node_from_logs(&NodeId::from("monitor".to_string()));
+
+    let remaining: Vec<_> = dataflow
+        .log_subscribers
+        .iter()
+        .map(|sub| (sub.node_id.to_string(), sub.input_id.to_string()))
+        .collect();
+    assert_eq!(remaining, [("other".to_string(), "logs".to_string())]);
+}
+
 /// The coordinator sends `Logs` with `send_and_receive`, and the WS layer
 /// drops a `None` reply, so a `Logs` request for a dataflow this daemon does
 /// not know must still get an explicit error reply instead of leaving the
