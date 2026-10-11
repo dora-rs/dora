@@ -13,7 +13,8 @@ const META: TableDefinition<&str, u32> = TableDefinition::new("meta");
 const DAEMONS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("daemons");
 const DATAFLOWS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("dataflows");
 const BUILDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("builds");
-/// Node params table. Key: "{uuid}/{node_id}/{param_key}", Value: JSON bytes.
+/// Node params table. Key: `"{uuid}\0{node_id}\0{param_key}"` (see
+/// [`make_param_key`]), Value: the caller's opaque param bytes.
 const NODE_PARAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("node_params");
 
 /// Bump this when the serialization format of any stored record changes.
