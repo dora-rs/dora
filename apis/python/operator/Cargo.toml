@@ -22,8 +22,6 @@ publish = false  # PyO3 glue, not a crates.io API -- see below
 dora-node-api = { workspace = true , features = ["arrow-v59"] }
 pyo3 = { workspace = true, features = ["eyre", "abi3-py311"] }
 eyre = { workspace = true }
-serde_yaml = { workspace = true }
-flume = { workspace = true }
 arrow = { workspace = true, features = ["pyarrow"] }
 arrow-schema = { workspace = true }
 aligned-vec = "0.6.4"

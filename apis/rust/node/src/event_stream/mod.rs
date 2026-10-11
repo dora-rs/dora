@@ -21,7 +21,7 @@ use futures::{
     future::{Either, select},
 };
 use futures_timer::Delay;
-use scheduler::{NON_INPUT_EVENT, NON_INPUT_EVENT_QUEUE_SIZE, Scheduler};
+use scheduler::{NON_INPUT_EVENT_QUEUE_SIZE, Scheduler};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
@@ -354,7 +354,7 @@ impl EventStream {
         let close_channel =
             connect_daemon_channel(daemon_communication, node_id, "event close channel")?;
 
-        let mut queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config
+        let queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config
             .iter()
             .map(|(input, config)| {
                 (
@@ -369,10 +369,12 @@ impl EventStream {
             })
             .collect();
 
-        queue_size_limit.insert(
-            DataId::from(NON_INPUT_EVENT.to_string()),
-            (NON_INPUT_EVENT_QUEUE_SIZE, VecDeque::new()),
-        );
+        // Control events (`Stop`, `InputClosed`, ...) live in a queue of their
+        // own inside the scheduler, so this map holds input ids only. Registering
+        // a `NON_INPUT_EVENT` entry here used to overwrite the `queue_size` of a
+        // user input with that exact id — `dora.non_input_event` is a valid
+        // `DataId` — and merged its data events with the control events
+        // (dora-rs/dora#3632).
 
         let queue_policies: HashMap<DataId, dora_message::config::QueuePolicy> = input_config
             .iter()
@@ -899,7 +901,12 @@ impl EventStream {
     /// # Ok::<(), eyre::Report>(())
     /// ```
     pub fn recv(&mut self) -> Option<Event> {
-        futures::executor::block_on(self.recv_async())
+        // A synchronous receive can't yield to tokio, so it must not spend the
+        // calling task's coop budget: inside a task that never yields, the
+        // receiver reports `Pending` after 128 receives with events still
+        // queued, and this `block_on` spins forever. Same for `recv_timeout`
+        // and `try_recv`.
+        futures::executor::block_on(tokio::task::unconstrained(self.recv_async()))
     }
 
     /// Receives the next incoming [`Event`] synchronously with a timeout.
@@ -921,7 +928,7 @@ impl EventStream {
     /// asynchronous [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
     pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
-        futures::executor::block_on(self.recv_async_timeout(dur))
+        futures::executor::block_on(tokio::task::unconstrained(self.recv_async_timeout(dur)))
     }
 
     /// Receives the next incoming [`Event`] asynchronously, using an [`EventScheduler`] for fairness.
@@ -1249,7 +1256,7 @@ impl EventStream {
     /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
     pub fn try_recv(&mut self) -> Result<Event, TryRecvError> {
-        match self.recv_async().now_or_never() {
+        match tokio::task::unconstrained(self.recv_async()).now_or_never() {
             Some(Some(event)) => Ok(event),
             Some(None) => Err(TryRecvError::Closed),
             None => Err(TryRecvError::Empty),
@@ -2744,10 +2751,17 @@ mod tests {
 
     /// Create a minimal EventStream via the testing path.
     fn test_event_stream() -> (crate::DoraNode, EventStream) {
-        let events = vec![TimedIncomingEvent {
+        test_event_stream_with(Vec::new())
+    }
+
+    /// An EventStream over the testing path that delivers `events`, then `Stop`.
+    fn test_event_stream_with(
+        mut events: Vec<TimedIncomingEvent>,
+    ) -> (crate::DoraNode, EventStream) {
+        events.push(TimedIncomingEvent {
             time_offset_secs: 0.0,
             event: IncomingEvent::Stop,
-        }];
+        });
         let inputs = TestingInput::Input(IntegrationTestInput::new(
             "test-node".parse().unwrap(),
             events,
@@ -2758,6 +2772,81 @@ mod tests {
             skip_output_time_offsets: true,
         };
         crate::DoraNode::init_testing(inputs, outputs, options).unwrap()
+    }
+
+    /// `EventStream::init` must not register the control-event id in the
+    /// per-input queue map. `dora.non_input_event` is a valid `DataId`, so a
+    /// dataflow can declare an input with that name, and the old
+    /// `queue_size_limit.insert(NON_INPUT_EVENT, ...)` overwrote that input's
+    /// configured `queue_size` with the control cap of 1000 (dora-rs/dora#3632).
+    ///
+    /// The scheduler-level tests build `Scheduler::with_policies` directly, so
+    /// none of them reaches the map `init` builds; this one goes through `init`
+    /// and asserts the cap the scheduler would actually enforce.
+    #[test]
+    fn init_keeps_configured_queue_size_for_reserved_named_input() {
+        use dora_core::config::InputMapping;
+
+        let reserved = DataId::from(super::scheduler::NON_INPUT_EVENT.to_string());
+        let input_config = BTreeMap::from([(
+            reserved.clone(),
+            Input {
+                mapping: InputMapping::Timer {
+                    interval: Duration::from_secs(1),
+                },
+                queue_size: Some(1),
+                input_timeout: None,
+                queue_policy: None,
+            },
+        )]);
+
+        // Minimal in-process daemon: answer the register/subscribe handshake,
+        // and end the event-stream loop on its first `NextEvent` poll.
+        let (channel, mut requests) = tokio::sync::mpsc::channel::<(
+            Timestamped<DaemonRequest>,
+            tokio::sync::oneshot::Sender<DaemonReply>,
+        )>(16);
+        let responder = std::thread::spawn(move || {
+            while let Some((request, reply)) = requests.blocking_recv() {
+                let reply_value = match request.inner {
+                    DaemonRequest::NextEvent => DaemonReply::NextEvents(Vec::new()),
+                    _ => DaemonReply::Result(Ok(())),
+                };
+                if reply.send(reply_value).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let daemon_communication = DaemonCommunicationWrapper::Testing {
+            channel,
+            shutdown: Arc::new(AtomicBool::new(false)),
+        };
+        let events = EventStream::init(
+            DataflowId::new_v4(),
+            &"test-node".parse().unwrap(),
+            &daemon_communication,
+            input_config,
+            &BTreeMap::new(),
+            Arc::new(uhlc::HLC::default()),
+            None,
+            None,
+        )
+        .expect("EventStream::init should succeed against the in-process daemon");
+
+        assert_eq!(
+            events.scheduler.effective_cap_for(&reserved),
+            1,
+            "an input named `{}` must keep its configured queue_size through `init`",
+            super::scheduler::NON_INPUT_EVENT
+        );
+
+        // Both holders of a sender clone must go before the responder can see
+        // the channel close: `daemon_communication` owns the original sender,
+        // `events` owns `close_channel`.
+        drop(daemon_communication);
+        drop(events);
+        let _ = responder.join();
     }
 
     /// #2956: outputs sent through `TestingOutput::ToChannel` must reach the
@@ -3081,7 +3170,7 @@ mod tests {
         assert_eq!(
             events
                 .drain_drop_counts()
-                .get(&DataId::from(NON_INPUT_EVENT.to_string())),
+                .get(&DataId::from(super::scheduler::NON_INPUT_EVENT.to_string())),
             Some(&expected_drops),
             "control-event overflow must be accounted under the non-input key"
         );
@@ -3811,5 +3900,69 @@ mod tests {
             events.drain_drop_counts().is_empty(),
             "drain must reset both sources"
         );
+    }
+
+    // ---- tokio coop budget: synchronous receives inside a tokio task ----
+
+    /// More inputs than tokio's per-task coop budget (128).
+    const COOP_TEST_INPUTS: usize = 400;
+
+    /// Drain a stream of `COOP_TEST_INPUTS` inputs with `next`, from inside a
+    /// tokio task that never yields to the runtime: the shape of a plain
+    /// event loop in `#[tokio::main]`. Returns how many inputs were seen, and
+    /// fails instead of hanging.
+    fn inputs_seen_in_tokio_task(next: fn(&mut EventStream) -> Option<Event>) -> usize {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let inputs = (0..COOP_TEST_INPUTS)
+                .map(|_| TimedIncomingEvent {
+                    time_offset_secs: 0.0,
+                    event: IncomingEvent::Input {
+                        id: "tick".parse().unwrap(),
+                        metadata: None,
+                        data: None,
+                    },
+                })
+                .collect();
+            let (_node, mut events) = test_event_stream_with(inputs);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let seen = rt.block_on(async {
+                let mut seen = 0;
+                while let Some(Event::Input { .. }) = next(&mut events) {
+                    seen += 1;
+                }
+                seen
+            });
+            let _ = tx.send(seen);
+        });
+        rx.recv_timeout(Duration::from_secs(20))
+            .expect("the receive loop hung inside the tokio task")
+    }
+
+    #[test]
+    fn recv_inside_a_tokio_task_sees_every_event() {
+        assert_eq!(inputs_seen_in_tokio_task(|e| e.recv()), COOP_TEST_INPUTS);
+    }
+
+    #[test]
+    fn recv_timeout_inside_a_tokio_task_sees_every_event() {
+        let seen = inputs_seen_in_tokio_task(|e| e.recv_timeout(Duration::from_secs(1)));
+        assert_eq!(seen, COOP_TEST_INPUTS);
+    }
+
+    #[test]
+    fn try_recv_inside_a_tokio_task_sees_every_event() {
+        let seen = inputs_seen_in_tokio_task(|e| {
+            loop {
+                match e.try_recv() {
+                    Ok(event) => return Some(event),
+                    Err(TryRecvError::Closed) => return None,
+                    Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(1)),
+                }
+            }
+        });
+        assert_eq!(seen, COOP_TEST_INPUTS);
     }
 }

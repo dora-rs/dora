@@ -621,6 +621,7 @@ impl Daemon {
                     // a bad value would panic `Duration::from_secs_f64`, so an
                     // older coordinator cannot crash this daemon.
                     dora_core::descriptor::validate::check_node_timing(&node)?;
+                    dora_core::descriptor::validate::check_operator_ids(&node)?;
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -1021,6 +1022,7 @@ impl Daemon {
                 let result: eyre::Result<()> = async {
                     // See the matching check in `AddNode`.
                     dora_core::descriptor::validate::check_node_timing(&node)?;
+                    dora_core::descriptor::validate::check_operator_ids(&node)?;
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -1446,10 +1448,7 @@ impl Daemon {
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     for (node_id, data_id) in outputs {
                         dataflow
-                            .debug_topic_watchers
-                            .entry(OutputId(node_id, data_id))
-                            .or_default()
-                            .insert(subscription_id);
+                            .add_debug_topic_watcher(OutputId(node_id, data_id), subscription_id);
                     }
                     Ok(())
                 } else {
@@ -1465,15 +1464,7 @@ impl Daemon {
                 subscription_id,
             } => {
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    // Scan watchers rather than maintain an inverse map. Unsubscribe
-                    // is rare; scan is bounded by the count of outputs with active
-                    // subscribers. retain() drops empty entries in one pass.
-                    dataflow
-                        .debug_topic_watchers
-                        .retain(|_output_id, watchers| {
-                            watchers.remove(&subscription_id);
-                            !watchers.is_empty()
-                        });
+                    dataflow.remove_debug_topic_subscription(subscription_id);
                     Ok(())
                 } else {
                     Err(format!("no running dataflow with ID `{dataflow_id}`"))
