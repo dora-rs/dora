@@ -1651,7 +1651,9 @@ async fn applied_param_changes_are_acked_and_pruned_from_the_state_log() {
     );
     assert_eq!(df.state_log.len(), 2, "kept for the lagging daemon");
 
-    // Once the lagging daemon is gone, the next applied change empties the log.
+    // The lagging daemon disconnects. Its pending delete must survive the
+    // next applied change: the fallback replay after a pruned log only
+    // re-sends stored keys, so a pruned delete would never reach it.
     coordinator
         .running_dataflows
         .get_mut(&dataflow_id)
@@ -1665,10 +1667,21 @@ async fn applied_param_changes_are_acked_and_pruned_from_the_state_log() {
         .unwrap();
     reply_rx.await.unwrap().expect("delete is applied");
 
-    let df = &coordinator.running_dataflows[&dataflow_id];
+    let df = coordinator.running_dataflows.get_mut(&dataflow_id).unwrap();
     assert_eq!(df.daemon_ack_sequence[&owner], 3);
     assert_eq!(df.daemon_ack_sequence[&peer], 3);
-    assert!(df.state_log.is_empty(), "every live daemon applied it");
+    assert_eq!(
+        df.state_log_delta_for_daemon(0, &lagging)
+            .expect("the disconnected daemon can still catch up from the log")
+            .len(),
+        1,
+        "its pending delete is kept"
+    );
+
+    // Once its node is gone, nothing pins the log and it empties.
+    df.node_to_daemon.retain(|_, daemon| *daemon != lagging);
+    df.prune_state_log();
+    assert!(df.state_log.is_empty(), "every remaining daemon applied it");
 }
 
 #[tokio::test]

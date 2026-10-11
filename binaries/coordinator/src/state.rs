@@ -529,13 +529,40 @@ impl RunningDataflow {
         // full param replay for *every* daemon (including healthy ones). If a
         // disconnected daemon reconnects after its missed entries were pruned,
         // `state_log_delta` already falls back to a full replay for it.
+        //
+        // That fallback only re-sends the keys still in the store, so it
+        // cannot express a deletion. A disconnected daemon that still owes a
+        // `DeleteParam` for one of its nodes therefore keeps its ack in the
+        // minimum, so the delete reaches it through catch-up on reconnect.
+        let ack_of = |daemon: &DaemonId| self.daemon_ack_sequence.get(daemon).copied().unwrap_or(0);
+        let disconnected_owing_delete = self
+            .node_to_daemon
+            .values()
+            .filter(|daemon| !self.daemons.contains(*daemon))
+            .map(|daemon| (daemon, ack_of(daemon)))
+            .filter(|(daemon, ack)| self.owes_param_delete(daemon, *ack))
+            .map(|(_, ack)| ack);
         let min_ack = self
             .daemons
             .iter()
-            .map(|daemon| self.daemon_ack_sequence.get(daemon).copied().unwrap_or(0))
+            .map(ack_of)
+            .chain(disconnected_owing_delete)
             .min()
             .unwrap_or(0);
         self.state_log.retain(|entry| entry.sequence > min_ack);
+    }
+
+    /// Whether the log holds a `DeleteParam` after `ack` for a node `daemon`
+    /// runs.
+    fn owes_param_delete(&self, daemon: &DaemonId, ack: u64) -> bool {
+        self.state_log.iter().any(|entry| {
+            entry.sequence > ack
+                && matches!(
+                    &entry.operation,
+                    StateCatchUpOperation::DeleteParam { node_id, .. }
+                        if self.node_to_daemon.get(node_id) == Some(daemon)
+                )
+        })
     }
 
     /// Record that `owner` applied log entry `sequence`, then prune the log.
