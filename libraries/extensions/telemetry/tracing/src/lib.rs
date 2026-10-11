@@ -62,31 +62,32 @@ fn with_noisy_crates_off(mut filter: EnvFilter) -> EnvFilter {
     filter
 }
 
-/// Whether `RUST_LOG` already carries a directive targeting `target` (the exact
-/// crate/module, or a submodule of it), so the user's directive for it must
-/// override the hard-coded default (see [`with_target_default`]).
+/// Whether `RUST_LOG` carries a directive that a hard-coded default for
+/// `target` also covers, so the user's directive must be layered over that
+/// default (see [`with_target_default`]).
 ///
-/// `RUST_LOG` is a comma-separated list of `[target[=level]]` directives. Match
-/// the directive's target on a name boundary — exactly `target`, or a
-/// `target::…` submodule — rather than with a bare substring, so an unrelated
-/// directive that merely contains the letters (e.g. `zenoh_transport=trace` or
-/// `my_dora_daemon=info`) is not applied to the wrong target.
+/// `RUST_LOG` is a comma-separated list of `[target[=level]]` directives.
+/// `tracing-subscriber` applies a directive to every event whose target
+/// *starts with* the directive's target, so the default `zenoh=warn` also
+/// governs `zenoh_transport`, `zenoh_link_tcp`, … Match the same way: a
+/// `zenoh_transport=error` directive must be forwarded too, or the default
+/// keeps letting `zenoh_transport` warnings through. An unrelated target that
+/// merely contains the name elsewhere (e.g. `my_dora_daemon=info`) does not
+/// match.
 fn env_configures_target(env_log: &str, target: &str) -> bool {
     env_log.split(',').any(|directive| {
         // The bare target name is everything up to the first `=` (level) or `[`
         // (span filter); trim surrounding whitespace so we compare the crate/
         // module path itself.
         let name = directive.split(['=', '[']).next().unwrap_or("").trim();
-        name == target
-            || name
-                .strip_prefix(target)
-                .is_some_and(|rest| rest.starts_with("::"))
+        name.starts_with(target)
     })
 }
 
 /// Add the hard-coded `default` directive for `target` to `filter`, followed
-/// by any `RUST_LOG` directives for that target (or a submodule of it), which
-/// take precedence over the default.
+/// by any `RUST_LOG` directives the default also covers (`target`, a submodule
+/// of it, or a sibling crate like `zenoh_transport`), which take precedence
+/// over the default.
 ///
 /// Just leaving the default out when `RUST_LOG` names the target is not
 /// enough: the stdout filters are `EnvFilter::from_default_env().or(filter)`,
@@ -444,6 +445,17 @@ mod tests {
             "zenoh::net",
             Level::WARN
         ));
+        // So does one for a zenoh sibling crate, which `zenoh=warn` covers.
+        assert!(!stdout_enabled!(
+            "zenoh_transport=error",
+            "zenoh_transport",
+            Level::WARN
+        ));
+        assert!(stdout_enabled!(
+            "zenoh_transport=error",
+            "zenoh",
+            Level::WARN
+        ));
         // Raising verbosity still works.
         assert!(stdout_enabled!("zenoh=debug", "zenoh", Level::DEBUG));
         assert!(stdout_enabled!(
@@ -493,10 +505,18 @@ mod tests {
     }
 
     #[test]
+    fn sibling_crate_covered_by_the_default_is_configured() {
+        // `tracing-subscriber` applies `zenoh=warn` to every target starting
+        // with `zenoh`, so a directive for one of those crates must be layered
+        // over the default too.
+        assert!(env_configures_target("zenoh_transport=trace", "zenoh"));
+        assert!(env_configures_target("zenoh_link_tcp=error", "zenoh"));
+    }
+
+    #[test]
     fn unrelated_substring_is_not_configured() {
         // the bug this replaced: a bare `contains` matched these and silently
         // dropped the intended default for the real target.
-        assert!(!env_configures_target("zenoh_transport=trace", "zenoh"));
         assert!(!env_configures_target(
             "my_dora_daemon_helper=info",
             "dora_daemon"
