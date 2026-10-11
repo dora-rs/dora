@@ -1146,20 +1146,22 @@ fn stop_debug_stream_scan_cleans_up_watchers() {
     let sub_b = uuid::Uuid::new_v4();
 
     // Two subs, both watching out_1; only sub_a watches out_2.
-    df.debug_topic_watchers
-        .entry(OutputId(node_a.clone(), out_1.clone()))
-        .or_default()
-        .extend([sub_a, sub_b]);
-    df.debug_topic_watchers
-        .entry(OutputId(node_a.clone(), out_2.clone()))
-        .or_default()
-        .insert(sub_a);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_1.clone()), sub_a);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_1.clone()), sub_b);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_2.clone()), sub_a);
 
-    // Mirror the production stop path exactly.
-    df.debug_topic_watchers.retain(|_output_id, watchers| {
-        watchers.remove(&sub_a);
-        !watchers.is_empty()
-    });
+    df.remove_debug_topic_subscription(sub_a);
+
+    // The set shared with the debug subscriber tasks mirrors the map's keys,
+    // so out_2 samples are dropped before they are copied (dora-rs/dora#3781).
+    assert!(
+        df.debug_watched_outputs
+            .contains(&OutputId(node_a.clone(), out_1.clone()))
+    );
+    assert!(
+        !df.debug_watched_outputs
+            .contains(&OutputId(node_a.clone(), out_2.clone()))
+    );
 
     // out_1 still has sub_b → entry retained with just sub_b.
     let out_1_watchers = df

@@ -1017,11 +1017,10 @@ mod tests {
             // rejects it after the first message is already in the temp file.
             let mut full = fs::read(&recording_path).expect("read recording");
             let at = full.len() - 24; // start of the 8-byte magic + two u64s
-            // `MAX_RECORD_BYTES` is 64 MB and private to the recording crate, so
-            // name the number the reader compares against: anything over it is
-            // rejected, and 4 GB also happens to start with the footer magic's
-            // first four bytes, so pick a value clear of that.
-            let over_cap = 0x1000_0000u32;
+            // Anything over the cap is rejected; one byte past it also stays
+            // clear of the footer magic's first four bytes, which the reader
+            // would take as a clean end of the recording instead.
+            let over_cap = (dora_recording::MAX_RECORD_BYTES + 1) as u32;
             full.splice(at..at, over_cap.to_le_bytes());
             fs::write(&recording_path, &full).expect("write oversized record prefix");
         }
