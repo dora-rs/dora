@@ -318,19 +318,16 @@ fn record_entry<W: Write>(
     }
 }
 
-/// The header of a recording of dataflow `dataflow_id`.
+/// The header of the recording `node` makes.
 ///
-/// It carries the id of the dataflow being recorded, as `dora record --proxy`
-/// does, so `dora recording info`/`export` name a dataflow `dora list` knows.
-fn recording_header(
-    dataflow_id: uuid::Uuid,
-    start_nanos: u64,
-    descriptor_yaml: String,
-) -> RecordingHeader {
+/// It carries the id of the dataflow `node` runs in, which is the one being
+/// recorded, as `dora record --proxy` does, so `dora recording export` names
+/// a dataflow `dora list` knows.
+fn recording_header(node: &DoraNode, start_nanos: u64, descriptor_yaml: String) -> RecordingHeader {
     RecordingHeader {
         version: dora_recording::FORMAT_VERSION,
         start_nanos,
-        dataflow_id,
+        dataflow_id: *node.dataflow_id(),
         descriptor_yaml: descriptor_yaml.into_bytes(),
     }
 }
@@ -353,7 +350,7 @@ fn main() -> eyre::Result<()> {
     let start_nanos = unix_nanos(SystemTime::now());
     let start = Instant::now();
 
-    let header = recording_header(*node.dataflow_id(), start_nanos, descriptor_yaml);
+    let header = recording_header(&node, start_nanos, descriptor_yaml);
 
     let file =
         File::create(&output_file).wrap_err_with(|| format!("failed to create {output_file}"))?;
@@ -536,8 +533,21 @@ mod tests {
 
     #[test]
     fn recording_header_carries_the_recorded_dataflow_id() {
-        let dataflow_id = uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
-        let header = recording_header(dataflow_id, 42, "nodes: []".to_string());
+        use dora_node_api::integration_testing::{
+            IntegrationTestInput, TestingInput, TestingOptions, TestingOutput, output_channel,
+        };
+        let (output, _outputs) = output_channel();
+        let (node, _events) = DoraNode::init_testing(
+            TestingInput::Input(IntegrationTestInput::new(
+                "record".parse().unwrap(),
+                Vec::new(),
+            )),
+            TestingOutput::ToChannel(output),
+            TestingOptions::default(),
+        )
+        .unwrap();
+        let dataflow_id = *node.dataflow_id();
+        let header = recording_header(&node, 42, "nodes: []".to_string());
 
         let mut buf = Vec::new();
         RecordingWriter::new(&mut buf, &header).unwrap();
