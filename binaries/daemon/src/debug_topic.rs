@@ -55,7 +55,7 @@ pub(crate) fn rebuild_debug_topic_stream(
     parameters: &dora_message::metadata::MetadataParameters,
     payload: &[u8],
 ) -> Option<Vec<u8>> {
-    use dora_message::metadata::{SCHEMA_HASH, carries_pattern_correlation, get_integer_param};
+    use dora_message::metadata::{SCHEMA_HASH, get_integer_param};
 
     match get_integer_param(parameters, SCHEMA_HASH) {
         Some(hash) => {
@@ -69,24 +69,74 @@ pub(crate) fn rebuild_debug_topic_stream(
             Some(full)
         }
         None => {
-            // In-band priming, mirroring the node receive path: a full
-            // self-describing stream carries the same schema block the producer
-            // publishes on `@schema`, so retain it here — then the schema-less
-            // batches that follow rebuild even if the `@schema` subscription
-            // missed the (single) schema emission. The producer guarantees such
-            // a full stream for the first message of every output and
-            // periodically thereafter (`DoraNode::publish_schema_once`).
-            // Service/action messages (pattern correlation) are excluded from
-            // schema-once; don't let their per-request schemas churn the cache.
-            if !carries_pattern_correlation(parameters)
-                && let Some((hash, schema)) =
-                    dora_node_api::arrow_utils::ipc_encode::schema_block_and_hash(payload)
-            {
-                retain_debug_schema(cache, hash, schema);
-            }
+            prime_debug_schema(cache, parameters, payload);
             Some(payload.to_vec())
         }
     }
+}
+
+/// In-band schema priming for a full self-describing payload (no
+/// `SCHEMA_HASH`), mirroring the node receive path: such a stream carries the
+/// same schema block the producer publishes on `@schema`, so retain it here —
+/// then the schema-less batches that follow rebuild even if the `@schema`
+/// subscription missed the (single) schema emission. The producer guarantees
+/// such a full stream for the first message of every output and periodically
+/// thereafter (`DoraNode::publish_schema_once`). No-op for a schema-once batch.
+fn prime_debug_schema(
+    cache: &mut Vec<(u64, Vec<u8>)>,
+    parameters: &dora_message::metadata::MetadataParameters,
+    payload: &[u8],
+) {
+    use dora_message::metadata::{SCHEMA_HASH, carries_pattern_correlation, get_integer_param};
+
+    // Service/action messages (pattern correlation) are excluded from
+    // schema-once; don't let their per-request schemas churn the cache.
+    if get_integer_param(parameters, SCHEMA_HASH).is_none()
+        && !carries_pattern_correlation(parameters)
+        && let Some((hash, schema)) =
+            dora_node_api::arrow_utils::ipc_encode::schema_block_and_hash(payload)
+    {
+        retain_debug_schema(cache, hash, schema);
+    }
+}
+
+/// Turn one sample observed by the daemon's debug subscriber into the
+/// `(metadata, data)` of an `Event::DebugTopicData`, or `None` to drop it.
+///
+/// When no `dora topic` watcher is attached to the output (`watched ==
+/// false`), the sample is dropped *before* the payload is copied, so an idle
+/// debug-enabled dataflow does not memcpy every output into the daemon's main
+/// event loop (dora-rs/dora#3781). Schema priming still runs, so a watcher
+/// that attaches later can rebuild schema-once batches right away.
+pub(crate) fn prepare_debug_topic_frame(
+    cache: &mut Vec<(u64, Vec<u8>)>,
+    watched: bool,
+    mut metadata: dora_message::metadata::Metadata,
+    payload: &[u8],
+) -> Option<(dora_message::metadata::Metadata, Vec<u8>)> {
+    if !watched {
+        prime_debug_schema(cache, &metadata.parameters, payload);
+        return None;
+    }
+    // `None`: a schema-once batch whose schema hasn't been cached yet — drop
+    // this inspection frame (transient, recovers once `@schema` or the
+    // producer's next full-stream refresh arrives).
+    let data = rebuild_debug_topic_stream(cache, &metadata.parameters, payload)?;
+    // `data` is now always a full self-describing stream, so drop the internal
+    // wire keys — a `_schema_hash` here would contradict the rebuilt payload
+    // for any consumer applying the wire rule "hash present => schema-less
+    // batch".
+    dora_message::metadata::strip_internal_parameters(&mut metadata.parameters);
+    // Record the true on-wire size so `dora topic info` measures the
+    // schema-less batch that actually travelled, not the rebuilt stream (which
+    // prepends the schema to every frame even though it ships once). For a
+    // full self-describing frame this equals `data.len()`; for a schema-once
+    // batch it excludes the prepended schema block (dora-rs/dora#2584).
+    metadata.parameters.insert(
+        dora_message::metadata::WIRE_SIZE.to_string(),
+        dora_message::metadata::Parameter::Integer(payload.len() as i64),
+    );
+    Some((metadata, data))
 }
 
 impl Daemon {
@@ -135,7 +185,7 @@ impl Daemon {
 
 #[cfg(test)]
 mod debug_topic_tests {
-    use super::rebuild_debug_topic_stream;
+    use super::{prepare_debug_topic_frame, rebuild_debug_topic_stream};
     use dora_message::metadata::{
         MetadataParameters, Parameter, SCHEMA_HASH, WIRE_SIZE, debug_frame_wire_size, fnv1a,
         get_integer_param, strip_internal_parameters,
@@ -330,6 +380,76 @@ mod debug_topic_tests {
             cache,
             vec![(hash, schema_block)],
             "a service reply must not churn the schema-once cache"
+        );
+    }
+
+    fn metadata_with(parameters: MetadataParameters) -> dora_message::metadata::Metadata {
+        dora_message::metadata::Metadata::from_parameters(
+            dora_message::uhlc::HLC::default().new_timestamp(),
+            parameters,
+        )
+    }
+
+    /// With no `dora topic` watcher attached, a sample must not produce a
+    /// debug frame — no payload copy, nothing queued on the daemon's main
+    /// event channel (dora-rs/dora#3781).
+    #[test]
+    fn unwatched_sample_produces_no_frame() {
+        let mut full = framed(b"SCHEMA-FLATBUFFER");
+        full.extend_from_slice(&framed(b"BATCH-FLATBUFFER"));
+        let frame = prepare_debug_topic_frame(
+            &mut Vec::new(),
+            false,
+            metadata_with(MetadataParameters::default()),
+            &full,
+        );
+        assert!(frame.is_none());
+
+        let schema = b"SCHEMA-BLOCK".to_vec();
+        let hash = fnv1a(&schema);
+        let mut cache = vec![(hash, schema)];
+        let frame = prepare_debug_topic_frame(
+            &mut cache,
+            false,
+            metadata_with(params_with_schema_hash(hash)),
+            b"schema-less-batch",
+        );
+        assert!(frame.is_none());
+    }
+
+    /// Skipping unwatched samples must keep in-band schema priming going, so a
+    /// watcher that attaches later can rebuild schema-once batches at once.
+    #[test]
+    fn unwatched_full_stream_still_primes_schema_for_a_later_watcher() {
+        let schema_block = framed(b"SCHEMA-FLATBUFFER");
+        let hash = fnv1a(&schema_block);
+        let batch = framed(b"BATCH-FLATBUFFER");
+        let mut full = schema_block.clone();
+        full.extend_from_slice(&batch);
+
+        let mut cache = Vec::new();
+        let frame = prepare_debug_topic_frame(
+            &mut cache,
+            false,
+            metadata_with(MetadataParameters::default()),
+            &full,
+        );
+        assert!(frame.is_none());
+        assert_eq!(cache, vec![(hash, schema_block)]);
+
+        // A watcher attaches; the next schema-once batch rebuilds.
+        let (metadata, data) = prepare_debug_topic_frame(
+            &mut cache,
+            true,
+            metadata_with(params_with_schema_hash(hash)),
+            &batch,
+        )
+        .expect("watched schema-once batch with a primed schema is forwarded");
+        assert_eq!(data, full);
+        assert!(get_integer_param(&metadata.parameters, SCHEMA_HASH).is_none());
+        assert_eq!(
+            get_integer_param(&metadata.parameters, WIRE_SIZE),
+            Some(batch.len() as i64)
         );
     }
 }
