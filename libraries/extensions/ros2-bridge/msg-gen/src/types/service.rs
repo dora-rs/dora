@@ -210,15 +210,47 @@ impl Service {
                         let (key, token) = zenoh_service_endpoint(
                             zenoh_node, *compatibility, #package_name, #self_name_str, name.to_string(), &qos,
                         )?;
+                        use futures::task::SpawnExt as _;
+                        use eyre::WrapErr as _;
+
                         let client = futures::executor::block_on(
                             dora_ros2_bridge::transport::zenoh::service::NodeServiceClient::declare(zenoh_node, key.as_str(), token.clone(), MAX_PENDING_REQUESTS)
                         )?;
-                        #client_backend::Zenoh {
-                            client: std::sync::Arc::new(client),
-                            token,
-                            response_tx,
-                            executor: node.executor.clone(),
-                        }
+                        // One pump per client keeps requests in the order C++
+                        // sent them, and responses in that order too: `downcast`
+                        // carries no request id, so order is how a C++ client
+                        // matches them (as on DDS). Each call starts when the
+                        // pump first polls it, in push order, and
+                        // `FuturesOrdered` yields the results in that order.
+                        // Dropping the client closes `request_tx`, which ends
+                        // the pump and its in-flight calls.
+                        let (request_tx, request_rx) = flume::bounded::<Vec<u8>>(MAX_PENDING_REQUESTS);
+                        let pump = async move {
+                            use futures::StreamExt as _;
+                            let mut requests = request_rx.into_stream().fuse();
+                            let mut in_flight = futures::stream::FuturesOrdered::new();
+                            loop {
+                                futures::select! {
+                                    payload = requests.next() => match payload {
+                                        Some(payload) => in_flight.push_back(client.call(payload, SERVICE_RESPONSE_TIMEOUT)),
+                                        None => break,
+                                    },
+                                    response = in_flight.select_next_some() => {
+                                        let response = response
+                                            .map_err(|e| eyre::eyre!("{} service call failed: {e}", #self_name_str))
+                                            .and_then(|bytes| {
+                                                dora_ros2_bridge::transport::zenoh::deserialize_cdr::<ffi::#res_type_raw>(&bytes)
+                                                    .map_err(|e| eyre::eyre!("failed to decode {} response: {e}", #self_name_str))
+                                            });
+                                        if response_tx.send_async(response).await.is_err() {
+                                            break;
+                                        }
+                                    },
+                                }
+                            }
+                        };
+                        node.executor.spawn(pump).context("failed to spawn service client pump")?;
+                        #client_backend::Zenoh { token, request_tx }
                     }
                 };
 
@@ -244,12 +276,9 @@ impl Service {
                 },
                 #[cfg(feature = "rmw-zenoh")]
                 Zenoh {
-                    client: std::sync::Arc<dora_ros2_bridge::transport::zenoh::service::NodeServiceClient>,
                     token: dora_ros2_bridge::transport::zenoh::keyexpr::TopicToken,
-                    // Each request runs as its own task on the node's executor and
-                    // sends its response (or error) here, into the merged stream.
-                    response_tx: flume::Sender<eyre::Result<ffi::#res_type_raw>>,
-                    executor: std::sync::Arc<futures::executor::ThreadPool>,
+                    // CDR-encoded requests for the client's pump, in send order.
+                    request_tx: flume::Sender<Vec<u8>>,
                 },
             }
 
@@ -319,24 +348,16 @@ impl Service {
                             Ok(())
                         }
                         #[cfg(feature = "rmw-zenoh")]
-                        #client_backend::Zenoh { client, response_tx, executor, .. } => {
-                            use futures::task::SpawnExt as _;
-
-                            // Same bound as the server-side request expiry, so an
-                            // unanswered request surfaces as an error event instead of hanging.
+                        #client_backend::Zenoh { request_tx, .. } => {
                             let payload = dora_ros2_bridge::transport::zenoh::serialize_cdr(&request)?;
-                            let client = client.clone();
-                            let response_tx = response_tx.clone();
-                            executor.spawn(async move {
-                                let response = match client.call(payload, SERVICE_RESPONSE_TIMEOUT).await {
-                                    Ok(bytes) => dora_ros2_bridge::transport::zenoh::deserialize_cdr::<ffi::#res_type_raw>(&bytes)
-                                        .map_err(|e| eyre::eyre!("failed to decode {} response: {e}", #self_name_str)),
-                                    Err(e) => Err(eyre::eyre!("{} service call failed: {e}", #self_name_str)),
-                                };
-                                let _ = response_tx.send_async(response).await;
+                            request_tx.try_send(payload).map_err(|err| match err {
+                                flume::TrySendError::Full(_) => eyre::eyre!(
+                                    "{} service client has {MAX_PENDING_REQUESTS} requests in flight", #self_name_str
+                                ),
+                                flume::TrySendError::Disconnected(_) => {
+                                    eyre::eyre!("{} service client stopped", #self_name_str)
+                                }
                             })
-                            .context("failed to spawn service request")?;
-                            Ok(())
                         }
                     }
                 }
@@ -539,8 +560,14 @@ impl Service {
                                     };
                                     let token = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                     record_request(&requests, token, PendingRequestId::Zenoh(request.id));
-                                    if request_tx.send_async(Ok((token, decoded))).await.is_err() {
-                                        break;
+                                    // Also stop while waiting for room in the
+                                    // event stream: C++ may have dropped the
+                                    // server without reading its events.
+                                    let send = request_tx.send_async(Ok((token, decoded)));
+                                    futures::pin_mut!(send);
+                                    match futures::future::select(send, stopped.as_mut()).await {
+                                        futures::future::Either::Left((Ok(()), _)) => {}
+                                        _ => break,
                                     }
                                 }
                             }
