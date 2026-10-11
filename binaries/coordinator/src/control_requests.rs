@@ -1053,7 +1053,7 @@ impl Coordinator {
                                             )
                                         },
                                     )?;
-                                    df.append_state_log(StateCatchUpOperation::SetParam {
+                                    let sequence = df.append_state_log(StateCatchUpOperation::SetParam {
                                         node_id: node_id.clone(),
                                         key: key.clone(),
                                         value: value.clone(),
@@ -1084,6 +1084,9 @@ impl Coordinator {
                                         )
                                     })?;
                                     ensure_set_param_forward_applied(&reply_raw, &node_id)?;
+                                    if let Some(df) = self.running_dataflows.get_mut(&dataflow_id) {
+                                        df.ack_applied_state_log_entry(sequence, &daemon_id);
+                                    }
                                 }
                                 Ok(ControlRequestReply::ParamSet)
                             }
@@ -1119,7 +1122,7 @@ impl Coordinator {
                                             )
                                         },
                                     )?;
-                                    df.append_state_log(StateCatchUpOperation::DeleteParam {
+                                    let sequence = df.append_state_log(StateCatchUpOperation::DeleteParam {
                                         node_id: node_id.clone(),
                                         key: key.clone(),
                                     });
@@ -1150,6 +1153,9 @@ impl Coordinator {
                                         )
                                     })?;
                                     ensure_delete_param_forward_applied(&reply_raw, &node_id)?;
+                                    if let Some(df) = self.running_dataflows.get_mut(&dataflow_id) {
+                                        df.ack_applied_state_log_entry(sequence, &daemon_id);
+                                    }
                                 }
                                 Ok(ControlRequestReply::ParamDeleted)
                             }

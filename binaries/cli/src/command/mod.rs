@@ -319,6 +319,24 @@ mod tests {
         }
     }
 
+    /// The example printed in `dora node connect/disconnect --help` must be a
+    /// command line that actually parses.
+    #[test]
+    fn node_connect_help_examples_parse() {
+        for sub in ["connect", "disconnect"] {
+            let help = Args::try_parse_from(["dora", "node", sub, "--help"])
+                .expect_err("--help should stop parsing")
+                .to_string();
+            let prefix = format!("dora node {sub} ");
+            let example = help
+                .lines()
+                .map(str::trim)
+                .find(|line| line.starts_with(&prefix))
+                .unwrap_or_else(|| panic!("no example in help for `{sub}`:\n{help}"));
+            parse_ok(&example.split_whitespace().collect::<Vec<_>>());
+        }
+    }
+
     fn parse_err(args: &[&str]) {
         assert!(
             Args::try_parse_from(args).is_err(),

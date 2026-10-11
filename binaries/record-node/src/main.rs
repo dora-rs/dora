@@ -589,9 +589,8 @@ mod tests {
         assert!(DropTally::default().report(&camera_lidar_map()).is_none());
     }
 
-    // Per-record size limit; kept in sync with `dora_recording`'s private
-    // `MAX_RECORD_BYTES` (64 MiB). A frame one byte past it must be skipped.
-    const OVER_LIMIT_PAYLOAD: usize = 64 * 1024 * 1024 + 1;
+    // A frame one byte past the per-record size limit must be skipped.
+    const OVER_LIMIT_PAYLOAD: usize = dora_recording::MAX_RECORD_BYTES + 1;
 
     fn writer_over_vec() -> RecordingWriter<Vec<u8>> {
         let header = RecordingHeader {

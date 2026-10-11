@@ -1,68 +1,23 @@
 import datetime
+import enum
 import typing
 
 import pyarrow
 
 import dora
 
-@typing.final
-class Enum:
-    """Create a collection of name/value pairs.
+class DoraStatus(enum.Enum):
+    """Dora status to indicate if operator `on_input` loop should be stopped.
 
-    Example enumeration:
+    Args:
+        Enum (u8): Status signaling to dora operator to
+        stop or continue the operator.
 
-    >>> class Color(Enum):
-    ...     RED = 1
-    ...     BLUE = 2
-    ...     GREEN = 3
+    """
 
-    Access them by:
-
-    - attribute access:
-
-    >>> Color.RED
-    <Color.RED: 1>
-
-    - value lookup:
-
-    >>> Color(1)
-    <Color.RED: 1>
-
-    - name lookup:
-
-    >>> Color['RED']
-    <Color.RED: 1>
-
-    Enumerations can be iterated over, and know how many members they have:
-
-    >>> len(Color)
-    3
-
-    >>> list(Color)
-    [<Color.RED: 1>, <Color.BLUE: 2>, <Color.GREEN: 3>]
-
-    Methods can be added to enumerations, and members can have their own
-    attributes -- see the documentation for details."""
-
-    @staticmethod
-    def __contains__(value: typing.Any) -> bool:
-        """Return True if `value` is in `cls`.
-
-        `value` is in `cls` if:
-        1) `value` is a member of `cls`, or
-        2) `value` is the value of one of the `cls`'s members."""
-
-    @staticmethod
-    def __getitem__(name: typing.Any) -> typing.Any:
-        """Return the member matching `name`."""
-
-    @staticmethod
-    def __iter__() -> typing.Any:
-        """Return members in definition order."""
-
-    @staticmethod
-    def __len__() -> int:
-        """Return the number of members (no aliases)"""
+    CONTINUE = 0
+    STOP = 1
+    STOP_ALL = 2
 
 @typing.final
 class Node:
@@ -209,6 +164,28 @@ class Node:
 
         You can also iterate over the event stream with a loop"""
 
+    def drain(self) -> list[dict]:
+        """`.drain()` gives you all available inputs that the node has received.
+        It does not block until the next event becomes available.
+
+        ```python
+        events = node.drain()
+        for event in events:
+            print(event)
+        ```"""
+
+    def try_recv(self) -> typing.Optional[dict]:
+        """`.try_recv()` gives you the next input in the queue that the node has received.
+        It does not block until the next event becomes available, and returns
+        `None` when the queue is empty.
+
+        ```python
+        event = node.try_recv()
+        ```"""
+
+    def is_empty(self) -> bool:
+        """Check if there are any buffered events in the event stream."""
+
     def send_output(
         self, output_id: str, data: pyarrow.Array, metadata: dict = None
     ) -> None:
@@ -226,6 +203,42 @@ class Node:
         ```python
         node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
         ```"""
+
+    def send_output_raw(
+        self, output_id: str, data_length: int, metadata: dict = None
+    ) -> "SampleHandler":
+        """`send_output_raw` send data from the node via a writable buffer (zero-copy).
+
+        Returns a :class:`SampleHandler` that pre-allocates `data_length` bytes.
+        Fill the buffer via Python's buffer protocol (`memoryview`,
+        `numpy.frombuffer`, `struct`, ...) and then call ``.send()`` — or use
+        the context-manager form, which sends on ``__exit__``.
+
+        Requires Python >= 3.11.
+
+        ```python
+        with node.send_output_raw("rgb_image", 1920 * 1080 * 3, {"width": 1920}) as buf:
+            numpy.frombuffer(buf, numpy.uint8).reshape(1080, 1920, 3)[:] = frame
+        ```"""
+
+    def send_service_request(
+        self,
+        output_id: str,
+        data: typing.Union[pyarrow.Array, bytes],
+        metadata: dict = None,
+    ) -> str:
+        """Send a service request, automatically injecting a ``request_id`` into
+        the metadata. Returns the generated request ID (UUID v7).
+
+        This is a convenience wrapper around :meth:`send_output` for the
+        request/reply pattern."""
+
+    def send_service_response(
+        self, output_id: str, data: typing.Union[pyarrow.Array, bytes], metadata: dict
+    ) -> None:
+        """Send a service response. Convenience wrapper around :meth:`send_output`
+        that passes through the ``request_id`` from the incoming request metadata,
+        which `metadata` must include."""
 
     def register_tensor_pool(
         self, tensor_info: dict, device: str = "cpu"
@@ -297,6 +310,45 @@ class Node:
 
     def __str__(self) -> str:
         """Return str(self)."""
+
+# Not importable from `dora`: only obtained from :meth:`Node.send_output_raw`.
+@typing.final
+@typing.type_check_only
+class SampleHandler:
+    """Returned by :meth:`Node.send_output_raw`.
+
+    Holds a pre-allocated output sample. Write into it through
+    :meth:`as_buffer` or :meth:`as_memoryview`, then call :meth:`send`, or
+    use it as a context manager, which sends on a clean exit."""
+
+    def send(self) -> None:
+        """Manually send the sample (alternative to the context manager).
+
+        Raises if any buffer views are still open — release all `memoryview` /
+        numpy references first."""
+
+    def as_buffer(self) -> "SampleBuffer":
+        """Return a `SampleBuffer` exposing the pre-allocated memory via Python's
+        buffer protocol (writable, zero-copy). The same instance is returned on
+        every call."""
+
+    def as_memoryview(self) -> memoryview:
+        """Return a fresh writable `memoryview` over the pre-allocated memory
+        (zero-copy). Release it before calling :meth:`send`."""
+
+    def __enter__(self) -> "SampleBuffer": ...
+    def __exit__(
+        self, exc_type: typing.Any, exc_value: typing.Any, traceback: typing.Any
+    ) -> bool: ...
+
+# Not importable from `dora`: only obtained from :class:`SampleHandler`.
+@typing.final
+@typing.type_check_only
+class SampleBuffer:
+    """The pre-allocated memory of a :class:`SampleHandler`, exposed via the
+    buffer protocol (`memoryview(buf)`, `numpy.frombuffer(buf)`, ...)."""
+
+    def __buffer__(self, flags: int, /) -> memoryview: ...
 
 @typing.final
 class Ros2Context:

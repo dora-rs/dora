@@ -901,7 +901,12 @@ impl EventStream {
     /// # Ok::<(), eyre::Report>(())
     /// ```
     pub fn recv(&mut self) -> Option<Event> {
-        futures::executor::block_on(self.recv_async())
+        // A synchronous receive can't yield to tokio, so it must not spend the
+        // calling task's coop budget: inside a task that never yields, the
+        // receiver reports `Pending` after 128 receives with events still
+        // queued, and this `block_on` spins forever. Same for `recv_timeout`
+        // and `try_recv`.
+        futures::executor::block_on(tokio::task::unconstrained(self.recv_async()))
     }
 
     /// Receives the next incoming [`Event`] synchronously with a timeout.
@@ -923,7 +928,7 @@ impl EventStream {
     /// asynchronous [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
     pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
-        futures::executor::block_on(self.recv_async_timeout(dur))
+        futures::executor::block_on(tokio::task::unconstrained(self.recv_async_timeout(dur)))
     }
 
     /// Receives the next incoming [`Event`] asynchronously, using an [`EventScheduler`] for fairness.
@@ -1251,7 +1256,7 @@ impl EventStream {
     /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
     pub fn try_recv(&mut self) -> Result<Event, TryRecvError> {
-        match self.recv_async().now_or_never() {
+        match tokio::task::unconstrained(self.recv_async()).now_or_never() {
             Some(Some(event)) => Ok(event),
             Some(None) => Err(TryRecvError::Closed),
             None => Err(TryRecvError::Empty),
@@ -2746,10 +2751,17 @@ mod tests {
 
     /// Create a minimal EventStream via the testing path.
     fn test_event_stream() -> (crate::DoraNode, EventStream) {
-        let events = vec![TimedIncomingEvent {
+        test_event_stream_with(Vec::new())
+    }
+
+    /// An EventStream over the testing path that delivers `events`, then `Stop`.
+    fn test_event_stream_with(
+        mut events: Vec<TimedIncomingEvent>,
+    ) -> (crate::DoraNode, EventStream) {
+        events.push(TimedIncomingEvent {
             time_offset_secs: 0.0,
             event: IncomingEvent::Stop,
-        }];
+        });
         let inputs = TestingInput::Input(IntegrationTestInput::new(
             "test-node".parse().unwrap(),
             events,
@@ -3888,5 +3900,69 @@ mod tests {
             events.drain_drop_counts().is_empty(),
             "drain must reset both sources"
         );
+    }
+
+    // ---- tokio coop budget: synchronous receives inside a tokio task ----
+
+    /// More inputs than tokio's per-task coop budget (128).
+    const COOP_TEST_INPUTS: usize = 400;
+
+    /// Drain a stream of `COOP_TEST_INPUTS` inputs with `next`, from inside a
+    /// tokio task that never yields to the runtime: the shape of a plain
+    /// event loop in `#[tokio::main]`. Returns how many inputs were seen, and
+    /// fails instead of hanging.
+    fn inputs_seen_in_tokio_task(next: fn(&mut EventStream) -> Option<Event>) -> usize {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let inputs = (0..COOP_TEST_INPUTS)
+                .map(|_| TimedIncomingEvent {
+                    time_offset_secs: 0.0,
+                    event: IncomingEvent::Input {
+                        id: "tick".parse().unwrap(),
+                        metadata: None,
+                        data: None,
+                    },
+                })
+                .collect();
+            let (_node, mut events) = test_event_stream_with(inputs);
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let seen = rt.block_on(async {
+                let mut seen = 0;
+                while let Some(Event::Input { .. }) = next(&mut events) {
+                    seen += 1;
+                }
+                seen
+            });
+            let _ = tx.send(seen);
+        });
+        rx.recv_timeout(Duration::from_secs(20))
+            .expect("the receive loop hung inside the tokio task")
+    }
+
+    #[test]
+    fn recv_inside_a_tokio_task_sees_every_event() {
+        assert_eq!(inputs_seen_in_tokio_task(|e| e.recv()), COOP_TEST_INPUTS);
+    }
+
+    #[test]
+    fn recv_timeout_inside_a_tokio_task_sees_every_event() {
+        let seen = inputs_seen_in_tokio_task(|e| e.recv_timeout(Duration::from_secs(1)));
+        assert_eq!(seen, COOP_TEST_INPUTS);
+    }
+
+    #[test]
+    fn try_recv_inside_a_tokio_task_sees_every_event() {
+        let seen = inputs_seen_in_tokio_task(|e| {
+            loop {
+                match e.try_recv() {
+                    Ok(event) => return Some(event),
+                    Err(TryRecvError::Closed) => return None,
+                    Err(TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(1)),
+                }
+            }
+        });
+        assert_eq!(seen, COOP_TEST_INPUTS);
     }
 }
