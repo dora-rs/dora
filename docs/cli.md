@@ -565,7 +565,9 @@ exported as with `arrow`. An output counts as an image when:
 - the dataflow declares it in `output_types` (of a node, its `operator`, or one
   of its `operators`) as `std/media/v1/Image` or
   `std/media/v1/CompressedImage`. An `Image` may be sent as the `width`,
-  `height`, `encoding`, `data` struct or with the camera metadata below. A
+  `height`, `encoding`, `data` struct or with the camera metadata below; a
+  compressed encoding (`std/media/v1/Image[encoding=jpeg]`, or `jpeg`/`png`
+  in the struct or metadata) makes it a `CompressedImage`. A
   `CompressedImage`'s format comes from `[format=jpeg]` on the type, a
   `format` or `encoding` metadata parameter, or the data's file signature
   (JPEG, PNG, WebP, AVIF);

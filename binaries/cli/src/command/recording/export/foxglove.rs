@@ -74,8 +74,13 @@ pub(super) enum Recognition {
 }
 
 enum Declared {
-    Image,
-    CompressedImage { format: Option<String> },
+    /// `std/media/v1/Image`, with its `encoding` parameter if given.
+    Image {
+        encoding: Option<String>,
+    },
+    CompressedImage {
+        format: Option<String>,
+    },
 }
 
 /// Which outputs are images, from the dataflow descriptor in the recording.
@@ -133,19 +138,22 @@ impl Mapper {
             .get(node_id)
             .and_then(|outputs| outputs.get(output_id));
         match declared {
-            Some(Declared::Image) => {
-                // Declared images come either as the `Image` struct or, like
-                // the README's camera, as a flat array with camera metadata.
+            Some(Declared::Image { encoding }) => {
+                // Declared images come as the `Image` struct, or like the
+                // README's camera as a flat array with camera metadata, or as
+                // plain bytes when the type says `[encoding=jpeg]`.
                 let result = match decode(data) {
-                    Ok(array) if array.as_struct_opt().is_some() => {
-                        image_struct(metadata, &array).map(|json| (Kind::RawImage, json))
-                    }
-                    _ => camera_frame(metadata, data).unwrap_or_else(|| {
-                        Err(
-                            "expected an `Image` struct, or width/height/encoding metadata"
-                                .to_string(),
-                        )
-                    }),
+                    Ok(array) if array.as_struct_opt().is_some() => image_struct(metadata, &array),
+                    _ => match camera_frame(metadata, data) {
+                        Some(result) => result,
+                        None => match encoding.as_deref().and_then(compressed_format) {
+                            Some(format) => compressed_bytes(metadata, data, format),
+                            None => Err(
+                                "expected an `Image` struct, or width/height/encoding metadata"
+                                    .to_string(),
+                            ),
+                        },
+                    },
                 };
                 match result {
                     Ok((kind, json)) => Recognition::Converted(kind, json),
@@ -187,7 +195,9 @@ fn add_declared(
         // Full URNs only: `dora validate` does not resolve short names in
         // `output_types` either.
         let image = match urn.base.as_str() {
-            "std/media/v1/Image" => Declared::Image,
+            "std/media/v1/Image" => Declared::Image {
+                encoding: urn.params.get("encoding").cloned(),
+            },
             "std/media/v1/CompressedImage" => Declared::CompressedImage {
                 format: urn.params.get("format").cloned(),
             },
@@ -202,8 +212,9 @@ fn add_declared(
 }
 
 /// A declared `std/media/v1/Image` struct: one row of `width`, `height`,
-/// `encoding`, `data`.
-fn image_struct(metadata: &Metadata, array: &ArrayRef) -> Result<Vec<u8>, String> {
+/// `encoding`, `data`. A compressed `encoding` (jpeg, png, ...) makes it a
+/// `CompressedImage`.
+fn image_struct(metadata: &Metadata, array: &ArrayRef) -> Result<(Kind, Vec<u8>), String> {
     let image = array
         .as_struct_opt()
         .ok_or_else(|| format!("expected a struct, got {}", array.data_type()))?;
@@ -228,7 +239,31 @@ fn image_struct(metadata: &Metadata, array: &ArrayRef) -> Result<Vec<u8>, String
     };
     let pixels = bytes(field("data")?.as_ref())
         .ok_or_else(|| "`data` must be binary or a flat numeric array".to_string())?;
-    raw_image(metadata, width, height, encoding, pixels)
+    if let Some(format) = compressed_format(encoding) {
+        return Ok((
+            Kind::CompressedImage,
+            compressed_json(metadata, pixels, format)?,
+        ));
+    }
+    Ok((
+        Kind::RawImage,
+        raw_image(metadata, width, height, encoding, pixels)?,
+    ))
+}
+
+/// Plain compressed-image bytes (binary or flat `uint8`) in a known format.
+fn compressed_bytes(
+    metadata: &Metadata,
+    data: Option<&[u8]>,
+    format: &str,
+) -> Result<(Kind, Vec<u8>), String> {
+    let array = decode(data)?;
+    let encoded = bytes(array.as_ref())
+        .ok_or_else(|| format!("expected binary image data, got {}", array.data_type()))?;
+    Ok((
+        Kind::CompressedImage,
+        compressed_json(metadata, encoded, format)?,
+    ))
 }
 
 /// The camera convention (dora-hub's `opencv-video-capture`,
