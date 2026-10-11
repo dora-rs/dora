@@ -1345,6 +1345,11 @@ impl EventStream {
     ///   returned to the caller's next `recv()`.
     /// - `StreamError` — an upstream error event surfaced during the wait.
     ///
+    /// A response that was already queued when the dataflow began stopping is
+    /// still returned as `Ok`. The wait may have read the `Stop` while looking
+    /// for it, so after an `Ok` too, the caller's next `recv()` can return
+    /// `Stop`; check it before sending another request.
+    ///
     /// # Example
     ///
     /// ```no_run
@@ -1601,6 +1606,11 @@ impl EventStream {
             // `recv_from_stream`'s docs).
             let event = match select(Delay::new(remaining), pin!(self.recv_from_stream())).await {
                 Either::Left((_elapsed, _)) => return Err(PatternError::Timeout),
+                // A `Stop` does not end the wait by itself: the scheduler hands
+                // it out ahead of any input queued with it, so the reply may
+                // still be waiting behind it. Once `Stop` is read,
+                // `recv_from_stream` drains only the inputs already queued and
+                // then returns `None`, which ends the wait here.
                 Either::Right((None, _)) => return Err(PatternError::StreamEnded),
                 Either::Right((Some(e), _)) => e,
             };
@@ -1610,10 +1620,6 @@ impl EventStream {
                 CorrelationOutcome::ServerRestarted => {
                     self.buffer_passthrough(event);
                     return Err(PatternError::ServerRestarted(expected_server.to_string()));
-                }
-                CorrelationOutcome::StreamEnded => {
-                    self.buffer_passthrough(event);
-                    return Err(PatternError::StreamEnded);
                 }
                 CorrelationOutcome::StreamError => {
                     if let Event::Error(err) = event {
@@ -1691,11 +1697,10 @@ enum CorrelationOutcome {
     Match,
     /// `Event::NodeRestarted { id }` where `id == expected_server`.
     ServerRestarted,
-    /// `Event::Stop(_)` — the dataflow is shutting down.
-    StreamEnded,
     /// `Event::Error(_)` — the stream surfaced an error.
     StreamError,
-    /// Unrelated event — buffer it and keep waiting.
+    /// Unrelated event, or a `Stop` (see `wait_for_correlation`) — buffer it
+    /// and keep waiting.
     Passthrough,
 }
 
@@ -1712,7 +1717,6 @@ where
     }
     match event {
         Event::NodeRestarted { id } if id == expected_server => CorrelationOutcome::ServerRestarted,
-        Event::Stop(_) => CorrelationOutcome::StreamEnded,
         Event::Error(_) => CorrelationOutcome::StreamError,
         _ => CorrelationOutcome::Passthrough,
     }
@@ -2253,10 +2257,21 @@ impl EventStream {
     /// prioritizing `Stop`. Used to verify `recv_async` drains buffered inputs
     /// after `Stop` instead of dropping them (dora-rs/dora#2027).
     fn push_scheduler_input_for_testing(&mut self, id: &str) {
+        self.push_scheduler_input_with_params_for_testing(id, Default::default());
+    }
+
+    /// Test-only: like [`Self::push_scheduler_input_for_testing`], with the
+    /// given metadata parameters.
+    fn push_scheduler_input_with_params_for_testing(
+        &mut self,
+        id: &str,
+        parameters: dora_message::metadata::MetadataParameters,
+    ) {
         use crate::event_stream::thread::EventItem;
         use dora_message::{daemon_to_node::NodeEvent, metadata::Metadata};
         self.use_scheduler = true;
-        let meta = Metadata::new(dora_core::uhlc::HLC::default().new_timestamp());
+        let meta =
+            Metadata::from_parameters(dora_core::uhlc::HLC::default().new_timestamp(), parameters);
         self.add_event(EventItem::NodeEvent {
             event: NodeEvent::Input {
                 id: id.into(),
@@ -2674,12 +2689,12 @@ mod tests {
     }
 
     #[test]
-    fn classify_stop_returns_stream_ended() {
+    fn classify_stop_is_passthrough() {
         let server = NodeId::from("calc".to_string());
         let event = Event::Stop(StopCause::Manual);
         assert_eq!(
             classify_correlation_event(&event, &server, is_request_match("req-42")),
-            CorrelationOutcome::StreamEnded
+            CorrelationOutcome::Passthrough
         );
     }
 
@@ -3386,6 +3401,62 @@ mod tests {
             Ok(event) => assert_eq!(request_id_of(event).as_deref(), Some("req-2")),
             other => panic!("expected the buffered req-2 response, got {other:?}"),
         }
+    }
+
+    /// Regression: a pattern-aware wait must return a reply that was queued
+    /// together with a `Stop`.
+    ///
+    /// The scheduler hands out control events before inputs, so when the
+    /// server's reply and a `Stop` (e.g. the `AllInputsClosed` a one-shot
+    /// server's exit triggers, or a `dora stop`) are queued at the same time,
+    /// the wait sees the `Stop` first. It used to return `StreamEnded` right
+    /// there, reporting an answered request as unanswered while the reply sat
+    /// in the scheduler. The `Stop` must still reach the caller's own loop.
+    #[test]
+    fn recv_service_response_finds_reply_queued_behind_stop() {
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_input_with_params_for_testing("response", request_id_params("req-1"));
+        events.push_scheduler_stop_for_testing();
+
+        let server = NodeId::from("calc".to_string());
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &server,
+            Duration::from_secs(5),
+        ));
+        match response {
+            Ok(Event::Input { id, .. }) => assert_eq!(id.as_str(), "response"),
+            other => panic!("expected the reply queued behind Stop, got {other:?}"),
+        }
+
+        // The `Stop` the wait read first is replayed to the caller's loop.
+        assert!(matches!(events.recv(), Some(Event::Stop(_))));
+        assert!(events.recv().is_none(), "nothing may follow the Stop");
+    }
+
+    /// With no reply queued, a wait that reads `Stop` still ends with
+    /// `StreamEnded` instead of waiting out its timeout.
+    #[test]
+    fn recv_service_response_after_stop_without_reply_is_stream_ended() {
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_input_for_testing("sensor");
+        events.push_scheduler_stop_for_testing();
+
+        let server = NodeId::from("calc".to_string());
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &server,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(response, Err(PatternError::StreamEnded)),
+            "expected StreamEnded, got {response:?}"
+        );
+
+        // Both events the wait buffered reach the caller, `Stop` first.
+        assert!(matches!(events.recv(), Some(Event::Stop(_))));
+        assert!(matches!(&events.recv(), Some(Event::Input { id, .. }) if id.as_str() == "sensor"));
+        assert!(events.recv().is_none());
     }
 
     /// After a `Stop` event is delivered, subsequent `recv` calls must
