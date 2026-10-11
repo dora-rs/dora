@@ -318,6 +318,20 @@ fn record_entry<W: Write>(
     }
 }
 
+/// The header of the recording `node` makes.
+///
+/// It carries the id of the dataflow `node` runs in, which is the one being
+/// recorded, as `dora record --proxy` does, so `dora recording export` names
+/// a dataflow `dora list` knows.
+fn recording_header(node: &DoraNode, start_nanos: u64, descriptor_yaml: String) -> RecordingHeader {
+    RecordingHeader {
+        version: dora_recording::FORMAT_VERSION,
+        start_nanos,
+        dataflow_id: *node.dataflow_id(),
+        descriptor_yaml: descriptor_yaml.into_bytes(),
+    }
+}
+
 fn main() -> eyre::Result<()> {
     let output_file =
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
@@ -328,7 +342,7 @@ fn main() -> eyre::Result<()> {
     // Build reverse map: input_id -> (source_node_id, source_output_id).
     let reverse_map = build_reverse_map(&topics_json)?;
 
-    let (_node, mut events) = DoraNode::init_from_env()?;
+    let (node, mut events) = DoraNode::init_from_env()?;
 
     // The header keeps the wall-clock start (it says *when* the capture
     // began); entry offsets use this monotonic base instead (see
@@ -336,12 +350,7 @@ fn main() -> eyre::Result<()> {
     let start_nanos = unix_nanos(SystemTime::now());
     let start = Instant::now();
 
-    let header = RecordingHeader {
-        version: dora_recording::FORMAT_VERSION,
-        start_nanos,
-        dataflow_id: uuid::Uuid::new_v4(),
-        descriptor_yaml: descriptor_yaml.into_bytes(),
-    };
+    let header = recording_header(&node, start_nanos, descriptor_yaml);
 
     let file =
         File::create(&output_file).wrap_err_with(|| format!("failed to create {output_file}"))?;
@@ -521,6 +530,33 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[test]
+    fn recording_header_carries_the_recorded_dataflow_id() {
+        use dora_node_api::integration_testing::{
+            IntegrationTestInput, TestingInput, TestingOptions, TestingOutput, output_channel,
+        };
+        let (output, _outputs) = output_channel();
+        let (node, _events) = DoraNode::init_testing(
+            TestingInput::Input(IntegrationTestInput::new(
+                "record".parse().unwrap(),
+                Vec::new(),
+            )),
+            TestingOutput::ToChannel(output),
+            TestingOptions::default(),
+        )
+        .unwrap();
+        let dataflow_id = *node.dataflow_id();
+        let header = recording_header(&node, 42, "nodes: []".to_string());
+
+        let mut buf = Vec::new();
+        RecordingWriter::new(&mut buf, &header).unwrap();
+        let reader = dora_recording::RecordingReader::open(std::io::Cursor::new(buf)).unwrap();
+
+        assert_eq!(reader.header().dataflow_id, dataflow_id);
+        assert_eq!(reader.header().start_nanos, 42);
+        assert_eq!(reader.header().descriptor_yaml, b"nodes: []");
+    }
 
     // ---- #3282: an incomplete recording must say so ----
 
