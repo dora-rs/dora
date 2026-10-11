@@ -357,7 +357,7 @@ fn cached_source_differs(clone_dir: &Path, git_url: &str, catalog_subpath: &str)
     let expected = source_record(git_url, catalog_subpath);
     match std::fs::read_to_string(marker_path(clone_dir, SOURCE_MARKER)) {
         Ok(recorded) => recorded != expected,
-        Err(_) => !migrate_legacy_markers(clone_dir, &expected),
+        Err(_) => !migrate_legacy_markers(clone_dir, git_url, &expected),
     }
 }
 
@@ -366,20 +366,47 @@ fn cached_source_differs(clone_dir: &Path, git_url: &str, catalog_subpath: &str)
 /// like it is for a different source (fatal under `--offline`, #3735).
 /// Returns whether the legacy source marker records `expected`.
 ///
-/// A legacy marker counts only if it is a regular file (never followed
-/// through a symlink, see [`marker_path`]); anything else is left for the
-/// re-clone path. Can be dropped once caches from 1.0.x no longer matter.
-fn migrate_legacy_markers(clone_dir: &Path, expected: &str) -> bool {
-    let is_regular_file =
-        |path: &Path| std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file());
-    let legacy_source = clone_dir.join(LEGACY_SOURCE_MARKER);
-    if !is_regular_file(&legacy_source)
-        || std::fs::read_to_string(&legacy_source).ok().as_deref() != Some(expected)
+/// The work tree is not trustworthy: the index repo can track a file under
+/// either legacy name, and 1.0.x let `git reset --hard` restore its content
+/// over the marker. So a legacy marker counts only if
+/// - it is a regular file (never followed through a symlink, see
+///   [`marker_path`]),
+/// - the index repo does not track that name, and
+/// - for the source marker, the clone's `origin` is `git_url`, which lives in
+///   `.git/config` and so cannot come from the index repo.
+///
+/// Anything else is left for the re-clone path. Can be dropped once caches
+/// from 1.0.x no longer matter.
+fn migrate_legacy_markers(clone_dir: &Path, git_url: &str, expected: &str) -> bool {
+    let tracked = git(
+        Some(clone_dir),
+        &[
+            "ls-files",
+            "--",
+            LEGACY_SOURCE_MARKER,
+            LEGACY_CLONE_COMPLETE_MARKER,
+        ],
+    );
+    let Ok(tracked) = tracked else {
+        return false;
+    };
+    let usable = |name: &str| {
+        let path = clone_dir.join(name);
+        let regular = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file());
+        (regular && !tracked.lines().any(|line| line == name)).then_some(path)
+    };
+    let Some(legacy_source) = usable(LEGACY_SOURCE_MARKER) else {
+        return false;
+    };
+    if std::fs::read_to_string(&legacy_source).ok().as_deref() != Some(expected)
+        || git(Some(clone_dir), &["config", "--get", "remote.origin.url"])
+            .ok()
+            .as_deref()
+            != Some(git_url)
     {
         return false;
     }
-    let legacy_complete = clone_dir.join(LEGACY_CLONE_COMPLETE_MARKER);
-    if is_regular_file(&legacy_complete)
+    if let Some(legacy_complete) = usable(LEGACY_CLONE_COMPLETE_MARKER)
         && std::fs::write(marker_path(clone_dir, CLONE_COMPLETE_MARKER), b"").is_ok()
     {
         let _ = std::fs::remove_file(legacy_complete);
@@ -597,6 +624,63 @@ source:
             "https://example.invalid/other.git\nindex",
         )
         .unwrap();
+        assert_not_migrated(cache_dir.path(), &index, &clone_dir);
+    }
+
+    /// A legacy marker the index repo tracks is never trusted, even when it
+    /// names the configured source: 1.0.x let a refresh restore the repo's
+    /// content over the marker, so it may vouch for a clone of another repo.
+    #[test]
+    fn tracked_legacy_marker_is_not_migrated() {
+        let (remote_a, cache_dir, index_a, clone_dir) = legacy_cache();
+        let remote_b = tempfile::tempdir().unwrap();
+        make_remote(remote_b.path());
+        let index_b = IndexConfig {
+            alias: index_a.alias.clone(),
+            ..remote_index(remote_b.path())
+        };
+        let forged = source_record(index_b.git.as_deref().unwrap(), "node-index");
+        // index repo A tracks a marker that claims to be a clone of B
+        std::fs::write(remote_a.path().join(LEGACY_SOURCE_MARKER), &forged).unwrap();
+        commit_all(remote_a.path(), "forge marker");
+        run_git(&clone_dir, &["fetch", "--quiet", "origin"]);
+        run_git(&clone_dir, &["reset", "--hard", "--quiet", "origin/HEAD"]);
+        assert_eq!(
+            std::fs::read_to_string(clone_dir.join(LEGACY_SOURCE_MARKER)).unwrap(),
+            forged
+        );
+
+        // the user re-points the alias at B
+        assert_not_migrated(cache_dir.path(), &index_b, &clone_dir);
+    }
+
+    /// A tracked legacy marker is not trusted even when the origin matches:
+    /// its content is the index repo's, not dora's.
+    #[test]
+    fn tracked_legacy_marker_with_matching_origin_is_not_migrated() {
+        let (remote_dir, cache_dir, index, clone_dir) = legacy_cache();
+        let record = std::fs::read_to_string(clone_dir.join(LEGACY_SOURCE_MARKER)).unwrap();
+        std::fs::write(remote_dir.path().join(LEGACY_SOURCE_MARKER), &record).unwrap();
+        commit_all(remote_dir.path(), "track marker");
+        run_git(&clone_dir, &["fetch", "--quiet", "origin"]);
+        run_git(&clone_dir, &["reset", "--hard", "--quiet", "origin/HEAD"]);
+        assert_not_migrated(cache_dir.path(), &index, &clone_dir);
+    }
+
+    /// Even an untracked legacy marker is not trusted if the clone's origin
+    /// is not the configured URL.
+    #[test]
+    fn legacy_marker_with_other_origin_is_not_migrated() {
+        let (_remote_dir, cache_dir, index, clone_dir) = legacy_cache();
+        run_git(
+            &clone_dir,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://example.invalid/other.git",
+            ],
+        );
         assert_not_migrated(cache_dir.path(), &index, &clone_dir);
     }
 
