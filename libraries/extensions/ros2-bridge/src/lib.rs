@@ -41,12 +41,25 @@ mod ros2_distro {
         } else if cfg!(feature = "ros2-iron") {
             RosDistro::Iron
         } else {
-            // `ros2-humble`, and the `--no-default-features` case: the root
-            // `Cargo.toml` keeps Humble as a floor on `ros2-client`, so a
-            // build with none of the dora `ros2-*` features resolves to
-            // Humble rather than to `ros2-client`'s Galactic fallback.
             RosDistro::Humble
         };
-        assert_eq!(COMPILED_ROS_DISTRO, expected);
+        if expected == RosDistro::Humble {
+            // Only `ros2-humble`, or none of the dora `ros2-*` features at all,
+            // so nothing in dora asked for a newer distro and `ros2-client`
+            // must be Humble exactly. This is what catches the workspace
+            // `ros2-client` line losing `default-features = false`: its own
+            // default is `jazzy`, which would silently switch every default
+            // build, including the published crates, to the 16-byte `Gid`.
+            assert_eq!(COMPILED_ROS_DISTRO, expected);
+        } else {
+            // A non-default distro was asked for. Cargo unifies `ros2-client`
+            // features across the build, so a newer one enabled elsewhere can
+            // win; this crate's feature is then a floor rather than an exact
+            // expectation.
+            assert!(
+                COMPILED_ROS_DISTRO >= expected,
+                "dora selected at least {expected} but ros2-client was built for {COMPILED_ROS_DISTRO}"
+            );
+        }
     }
 }
