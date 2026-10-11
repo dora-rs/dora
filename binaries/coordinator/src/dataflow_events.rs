@@ -69,6 +69,35 @@ impl Coordinator {
                             .insert(daemon_id, result);
 
                         if dataflow.daemons.is_empty() {
+                            // If WaitForSpawn waiters are still pending, notify them
+                            // that the dataflow finished before spawn completed (e.g.,
+                            // a node crashed at startup or the build failed). A node
+                            // failure is set before archiving, so the archive keeps it
+                            // for a `WaitForSpawn` arriving later; a clean exit is set
+                            // after, so that late request still reads as a dataflow
+                            // that started and finished.
+                            let mut clean_exit_before_spawn = None;
+                            if !matches!(dataflow.spawn_result, CachedResult::Cached { .. }) {
+                                let node_errors: Vec<String> = self
+                                    .dataflow_results
+                                    .get(&uuid)
+                                    .into_iter()
+                                    .flat_map(|r| r.values())
+                                    .flat_map(|dr| dr.node_results.iter())
+                                    .filter_map(|(node_id, r)| {
+                                        r.as_ref().err().map(|e| format!("{node_id}: {e}"))
+                                    })
+                                    .collect();
+                                if node_errors.is_empty() {
+                                    clean_exit_before_spawn =
+                                        Some("dataflow exited before spawn completed");
+                                } else {
+                                    dataflow.spawn_result.set_result(Err(eyre!(
+                                        "dataflow failed to start:\n  {}",
+                                        node_errors.join("\n  ")
+                                    )));
+                                }
+                            }
                             // Archive finished dataflow (cap at 200 to prevent unbounded growth)
                             self.archived_dataflows
                                 .entry(uuid)
@@ -77,6 +106,9 @@ impl Coordinator {
                                 self.archived_dataflows.shift_remove_index(0);
                             }
                             let mut finished_dataflow = entry.remove();
+                            if let Some(msg) = clean_exit_before_spawn {
+                                finished_dataflow.spawn_result.set_result(Err(eyre!(msg)));
+                            }
 
                             // Complete any pending restart on this dataflow.
                             // The restart was deferred in `initiate_restart` so that
@@ -202,33 +234,6 @@ impl Coordinator {
 
                             for sender in finished_dataflow.stop_reply_senders {
                                 let _ = sender.send(Ok(reply.clone()));
-                            }
-                            // If WaitForSpawn waiters are still pending, notify them
-                            // that the dataflow finished before spawn completed (e.g.,
-                            // a node crashed at startup or the build failed).
-                            if !matches!(
-                                finished_dataflow.spawn_result,
-                                CachedResult::Cached { .. }
-                            ) {
-                                let node_errors: Vec<String> = self
-                                    .dataflow_results
-                                    .get(&uuid)
-                                    .into_iter()
-                                    .flat_map(|r| r.values())
-                                    .flat_map(|dr| dr.node_results.iter())
-                                    .filter_map(|(node_id, r)| {
-                                        r.as_ref().err().map(|e| format!("{node_id}: {e}"))
-                                    })
-                                    .collect();
-                                let msg = if node_errors.is_empty() {
-                                    "dataflow exited before spawn completed".to_string()
-                                } else {
-                                    format!(
-                                        "dataflow failed to start:\n  {}",
-                                        node_errors.join("\n  ")
-                                    )
-                                };
-                                finished_dataflow.spawn_result.set_result(Err(eyre!(msg)));
                             }
                         }
                     }

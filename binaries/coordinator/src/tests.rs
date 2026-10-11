@@ -1671,6 +1671,162 @@ async fn applied_param_changes_are_acked_and_pruned_from_the_state_log() {
     assert!(df.state_log.is_empty(), "every live daemon applied it");
 }
 
+/// A `WaitForSpawn` that lands after a failed spawn already tore the
+/// dataflow down must report the failure. It used to get "unknown
+/// dataflow", which `dora start` reads as "started and finished", so a
+/// dataflow that never started was reported as a success.
+#[tokio::test]
+async fn wait_for_spawn_after_a_failed_spawn_reports_the_failure() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+    df.pending_spawn_results.insert(daemon_id.clone());
+
+    let mut coordinator = Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows: HashMap::from([(dataflow_id, df)]),
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections: DaemonConnections::default(),
+        clock: Arc::new(HLC::default()),
+        store: Arc::new(InMemoryStore::new()),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    };
+    coordinator
+        .handle_spawn_result(dataflow_id, daemon_id, Err(eyre!("no such binary")))
+        .await
+        .unwrap();
+    assert!(!coordinator.running_dataflows.contains_key(&dataflow_id));
+
+    let wait_for_spawn = |dataflow_id| {
+        let (reply_sender, reply) = tokio::sync::oneshot::channel();
+        let event = ControlEvent::IncomingRequest {
+            request: Box::new(
+                dora_message::cli_to_coordinator::ControlRequest::WaitForSpawn { dataflow_id },
+            ),
+            reply_sender,
+        };
+        (event, reply)
+    };
+
+    let (event, reply) = wait_for_spawn(dataflow_id);
+    coordinator.handle_control_event(event).await.unwrap();
+    let err = format!("{:?}", reply.await.unwrap().expect_err("spawn failed"));
+    assert!(err.contains("no such binary"), "got: {err}");
+    assert!(
+        !error_reads_as_finished(&err),
+        "must not read as a dataflow that ran to completion: {err}"
+    );
+
+    // A dataflow the coordinator never knew still answers "unknown".
+    let (event, reply) = wait_for_spawn(DataflowId::from(Uuid::new_v4()));
+    coordinator.handle_control_event(event).await.unwrap();
+    let err = format!("{:?}", reply.await.unwrap().expect_err("unknown"));
+    assert!(err.contains("unknown dataflow"), "got: {err}");
+}
+
+/// Runs a dataflow whose only node exits with `node_result` before its spawn
+/// result is recorded, then sends the `WaitForSpawn` that `dora start` sends
+/// once the coordinator has archived it, and returns the reply.
+async fn wait_for_spawn_after_an_early_node_exit(
+    node_result: Result<(), NodeError>,
+) -> eyre::Result<ControlRequestReply> {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+    let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+    df.pending_spawn_results.insert(daemon_id.clone());
+
+    let mut coordinator = Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows: HashMap::from([(dataflow_id, df)]),
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections: DaemonConnections::default(),
+        clock: Arc::new(HLC::default()),
+        store: Arc::new(InMemoryStore::new()),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    };
+    let result = DataflowDaemonResult {
+        timestamp: coordinator.clock.new_timestamp(),
+        node_results: BTreeMap::from([(node_id, node_result)]),
+    };
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result },
+        )
+        .await
+        .unwrap();
+    assert!(!coordinator.running_dataflows.contains_key(&dataflow_id));
+
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_control_event(ControlEvent::IncomingRequest {
+            request: Box::new(
+                dora_message::cli_to_coordinator::ControlRequest::WaitForSpawn { dataflow_id },
+            ),
+            reply_sender,
+        })
+        .await
+        .unwrap();
+    reply.await.unwrap()
+}
+
+/// The same late `WaitForSpawn`, for a dataflow whose node crashed before
+/// the spawn completed: the coordinator archives it from
+/// `DataflowFinishedOnDaemon` and the request must still see the failure.
+#[tokio::test]
+async fn wait_for_spawn_after_an_early_node_exit_reports_the_failure() {
+    let err = wait_for_spawn_after_an_early_node_exit(Err(NodeError {
+        timestamp: HLC::default().new_timestamp(),
+        cause: NodeErrorCause::Other {
+            stderr: "segfault at startup".to_string(),
+        },
+        exit_status: NodeExitStatus::ExitCode(139),
+    }))
+    .await
+    .expect_err("spawn failed");
+    let err = format!("{err:?}");
+    assert!(err.contains("failed to start"), "got: {err}");
+    assert!(
+        !error_reads_as_finished(&err),
+        "must not read as a dataflow that ran to completion: {err}"
+    );
+}
+
+/// A dataflow whose nodes all exited cleanly before the spawn result came in
+/// did start: a late `WaitForSpawn` must keep reading as "started and
+/// finished", as it does for any other finished dataflow.
+#[tokio::test]
+async fn wait_for_spawn_after_a_clean_early_exit_reads_as_finished() {
+    let err = wait_for_spawn_after_an_early_node_exit(Ok(()))
+        .await
+        .expect_err("the dataflow is no longer running");
+    let err = format!("{err:?}");
+    assert!(
+        error_reads_as_finished(&err),
+        "must read as a dataflow that ran to completion: {err}"
+    );
+}
+
+/// Mirrors the CLI's `error_indicates_dataflow_finished`.
+fn error_reads_as_finished(msg: &str) -> bool {
+    msg.contains("no running dataflow with id") || msg.contains("unknown dataflow")
+}
+
 #[tokio::test]
 async fn replay_replays_persisted_param_to_daemon_connection() {
     #[derive(serde::Deserialize)]
@@ -4503,6 +4659,7 @@ fn archived_dataflows_predicate_distinguishes_watchdog_failed_from_unknown() {
         ArchivedDataflow {
             name: Some("flagged".to_string()),
             nodes: BTreeMap::new(),
+            spawn_error: None,
         },
     );
 
