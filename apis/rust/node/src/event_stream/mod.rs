@@ -2890,6 +2890,27 @@ mod tests {
         assert_eq!(recorded[0]["type"], "Stop");
     }
 
+    /// Twin of `stream_path_records_events` for the other recording site:
+    /// the `!use_scheduler` branch of `recv_from_stream`, which
+    /// `recv` / `recv_async` take for an integration-test channel (the mode
+    /// `test_event_stream` builds).
+    #[test]
+    fn recv_path_records_events() {
+        let (_node, mut events) = test_event_stream();
+        let (w, path) = write_events_to_with_tempfile();
+        events.write_events_to = Some(w);
+
+        let event = events.recv();
+        assert!(matches!(event, Some(Event::Stop(_))), "got {event:?}");
+        drop(events);
+
+        let v = read_back(&path);
+        assert_eq!(v["recording_status"]["state"], "clean");
+        let recorded = v["events"].as_array().unwrap();
+        assert_eq!(recorded.len(), 1, "the Stop must be recorded: {v}");
+        assert_eq!(recorded[0]["type"], "Stop");
+    }
+
     #[test]
     fn is_empty_reflects_pending_passthrough() {
         let (_node, mut events) = test_event_stream();
