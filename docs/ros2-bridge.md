@@ -1057,8 +1057,11 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 
 This applies to **all** bridge surfaces (YAML and native code APIs).
 
-- **The default build is Humble**: The `ros2-humble` feature, on by default, enables `ros2-client`'s `humble` distro feature, which selects the **24-byte `Gid`** used by `rmw_dds_common` graph discovery. ROS 2 changed `Gid` from 24 to 16 bytes between Humble and Iron, so graph *discovery* against an Iron-or-newer stack will not match. Topic, service, and action **payloads are unaffected** -- those are ordinary CDR and interoperate across distros regardless.
-- **Other distros are a feature**: `dora-ros2-bridge`, `dora-ros2-bridge-arrow`, the YAML bridge node, and the Python bridge each expose `ros2-iron`, `ros2-jazzy`, and `ros2-kilted`, mapping to the matching `ros2-client` feature. `ros2-client`'s distro features form a chain (a newer distro enables the older ones), so requesting a newer one wins without turning the default off.
+- **Pick one distro for the whole build.** `ros2-client`'s distro features form a chain (`kilted` -> `jazzy` -> `iron` -> `humble` -> `galactic`) and it compiles for the *newest* one it sees. `dora-ros2-bridge`, `dora-ros2-bridge-arrow`, the YAML bridge node, and the Python bridge each expose `ros2-humble` (default), `ros2-iron`, `ros2-jazzy`, and `ros2-kilted`, mapped 1:1 onto that chain. They are a selector, not an additive set: `ros2-jazzy` doesn't add Jazzy support next to Humble, it replaces Humble's `Gid` layout for the entire build, and no dora feature turns that back off.
+- **Humble is a floor, not a lock.** The workspace keeps `features = ["humble"]` on its `ros2-client` line, so `ros2-humble` is on by default and a `--no-default-features` build still resolves to Humble instead of `ros2-client`'s Galactic fallback. A newer distro enabled anywhere in the build wins over it; there is no way to force "exactly Humble".
+- **The `Gid` width is what changes.** Humble and Galactic use the **24-byte `Gid`**, Iron and newer the **16-byte** one, and that is the `rmw_dds_common` graph-discovery wire format. ROS 2 changed it between Humble and Iron, so graph *discovery* against an Iron-or-newer stack will not match a Humble build. Topic, service, and action **payloads are unaffected** -- those are ordinary CDR and interoperate across distros regardless.
+- **Feature unification can switch the distro from outside dora.** Cargo compiles one `ros2-client` per build with the union of every enabled feature. If any other crate in the dependency graph enables a newer distro, the bridge becomes that distro too, with nothing in dora to stop it. Depending on `ros2-client` with its default features does exactly that, because its default is `jazzy`. Match the whole build, not just the bridge's own features.
+- **Nothing warns at build time.** The only signal is `ros2-client`'s runtime check on the first `Context`: it logs an error when `ROS_DISTRO` is set and doesn't match the build, and a warning when it is unset. Check that startup log line.
 
 ### Building for your ROS distro
 
@@ -1077,6 +1080,8 @@ maturin build -m apis/python/node/Cargo.toml --features ros2-jazzy
 ```
 
 The standalone bridge module used by the Zenoh interop harness builds the same way, with `--manifest-path libraries/extensions/ros2-bridge/python/Cargo.toml`.
+
+**C++ nodes.** `dora-node-api-cxx` has no `ros2-*` features of its own, so a C++ build gets the Humble default. Select another distro through the bridge directly, with `--features dora-ros2-bridge/ros2-jazzy` (the `ros2-bridge` feature has to be on).
 
 ---
 

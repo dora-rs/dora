@@ -158,6 +158,8 @@ Your user nodes never link against ROS2 -- all ROS2 communication is isolated in
 
 Published bridge builds target Humble. On another distro, build with the matching feature before running a dataflow, or the bridge logs `ROS_DISTRO='jazzy' but ros2-client was built for 'humble'`.
 
+The `ros2-humble` (default), `ros2-iron`, `ros2-jazzy`, and `ros2-kilted` features are a single choice for the whole build, not an additive set. `ros2-client` compiles for the newest distro feature it sees, so `ros2-jazzy` replaces Humble's 24-byte `Gid` with Jazzy's 16-byte one rather than adding Jazzy support alongside Humble, and no dora feature turns that back off. Because Cargo unifies `ros2-client`'s features across the whole build, enabling a newer distro in any other crate switches the bridge too -- including a crate that depends on `ros2-client` with its default features, since its own default is `jazzy`. Humble is only the floor the workspace pins, so there is no way to force exactly Humble. Nothing warns at build time; check the startup `ROS_DISTRO` log, which `ros2-client` logs as an error on a mismatch and as a warning when `ROS_DISTRO` is unset.
+
 - **YAML bridge**: `dora-ros2-bridge-node` isn't shipped with the CLI, so install it for your distro and keep it on `PATH` (the resolver spawns it by name):
 
   ```bash
@@ -170,7 +172,7 @@ Published bridge builds target Humble. On another distro, build with the matchin
   maturin build -m apis/python/node/Cargo.toml --features ros2-jazzy
   ```
 
-`ros2-iron`, `ros2-jazzy`, and `ros2-kilted` are accepted; they map to `ros2-client`'s matching feature, and a newer distro enables the older ones, so the Humble default doesn't need to be turned off.
+- **C++ nodes**: `dora-node-api-cxx` has no `ros2-*` features of its own and gets the Humble default, so enable `dora-ros2-bridge/ros2-jazzy` directly to target another distro.
 
 ---
 

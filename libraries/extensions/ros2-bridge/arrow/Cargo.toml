@@ -9,9 +9,11 @@ repository.workspace = true
 
 [features]
 default = ["ros2-humble"]
-# Same distro chain as `dora-ros2-bridge`; `ros2-client` picks the `Gid`
-# layout from the newest enabled distro feature, so the two crates stay in
-# step even when only one of them is asked for a specific distro.
+# Same distro chain as `dora-ros2-bridge`, and equivalent to it rather than
+# additive: both crates compile the same `ros2-client`, so enabling a distro
+# on either one selects it for both. Kept so a standalone build of this
+# published crate can still pick a distro; within the workspace the feature on
+# `dora-ros2-bridge` is enough.
 ros2-humble = ["ros2-client/humble"]
 ros2-iron = ["ros2-client/iron"]
 ros2-jazzy = ["ros2-client/jazzy"]
