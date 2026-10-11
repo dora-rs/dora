@@ -319,18 +319,16 @@ fn record_entry<W: Write>(
     }
 }
 
-/// The original descriptor YAML. `dora record` passes it base64-encoded in
-/// `DORA_RECORD_DESCRIPTOR_BASE64`, because `env:` values are
-/// `$VAR`-expanded on the way here; the raw `DORA_RECORD_DESCRIPTOR` of an
-/// older CLI is still accepted.
-fn descriptor_from_env() -> eyre::Result<Vec<u8>> {
-    const ENCODED: &str = "DORA_RECORD_DESCRIPTOR_BASE64";
-    const LEGACY_RAW: &str = "DORA_RECORD_DESCRIPTOR";
-    match std::env::var(ENCODED) {
-        Ok(encoded) => BASE64_STANDARD
+/// The original descriptor YAML, from [`dora_recording::DESCRIPTOR_ENV`]
+/// (base64, because `env:` values are `$VAR`-expanded on the way here) or,
+/// from an older CLI, the raw [`dora_recording::LEGACY_DESCRIPTOR_ENV`].
+fn descriptor_from_env(var: impl Fn(&str) -> Option<String>) -> eyre::Result<Vec<u8>> {
+    use dora_recording::{DESCRIPTOR_ENV, LEGACY_DESCRIPTOR_ENV};
+    match var(DESCRIPTOR_ENV) {
+        Some(encoded) => BASE64_STANDARD
             .decode(encoded)
-            .wrap_err_with(|| format!("{ENCODED} is not valid base64")),
-        Err(_) => Ok(std::env::var(LEGACY_RAW).unwrap_or_default().into_bytes()),
+            .wrap_err_with(|| format!("{DESCRIPTOR_ENV} is not valid base64")),
+        None => Ok(var(LEGACY_DESCRIPTOR_ENV).unwrap_or_default().into_bytes()),
     }
 }
 
@@ -353,7 +351,7 @@ fn main() -> eyre::Result<()> {
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
     let topics_json =
         std::env::var("DORA_RECORD_TOPICS").wrap_err("DORA_RECORD_TOPICS env var not set")?;
-    let descriptor_yaml = descriptor_from_env()?;
+    let descriptor_yaml = descriptor_from_env(|name| std::env::var(name).ok())?;
 
     // Build reverse map: input_id -> (source_node_id, source_output_id).
     let reverse_map = build_reverse_map(&topics_json)?;
@@ -1016,6 +1014,46 @@ mod tests {
         assert!(
             sink.flushed_len() > 0,
             "count bound must flush every {FLUSH_EVERY_N_RECORDS} records"
+        );
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let pairs: BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name| pairs.get(name).cloned()
+    }
+
+    #[test]
+    fn descriptor_prefers_the_encoded_variable() {
+        let encoded = BASE64_STANDARD.encode("a: $X");
+        let descriptor = descriptor_from_env(vars(&[
+            (dora_recording::DESCRIPTOR_ENV, &encoded),
+            (dora_recording::LEGACY_DESCRIPTOR_ENV, "stale"),
+        ]))
+        .unwrap();
+        assert_eq!(descriptor, b"a: $X");
+    }
+
+    #[test]
+    fn descriptor_falls_back_to_the_raw_variable_of_an_older_cli() {
+        let descriptor = descriptor_from_env(vars(&[(
+            dora_recording::LEGACY_DESCRIPTOR_ENV,
+            "nodes: []",
+        )]))
+        .unwrap();
+        assert_eq!(descriptor, b"nodes: []");
+        assert!(descriptor_from_env(vars(&[])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_base64_descriptor_is_an_error() {
+        let err = descriptor_from_env(vars(&[(dora_recording::DESCRIPTOR_ENV, "not base64!")]))
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains(dora_recording::DESCRIPTOR_ENV),
+            "{err:#}"
         );
     }
 }

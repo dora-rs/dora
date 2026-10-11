@@ -71,6 +71,16 @@ const FOOTER_MAGIC: &[u8; 8] = b"DORAEND\x00";
 /// Writers must stamp [`RecordingHeader::version`] with this rather than a
 /// literal, or they produce files their own reader rejects.
 pub const FORMAT_VERSION: u16 = 2;
+/// Env var through which `dora record` hands the recorded dataflow's
+/// descriptor YAML to the record node, base64-encoded.
+///
+/// Every `env:` value is `$VAR`-expanded each time the descriptor is parsed,
+/// so the raw YAML cannot travel as one; the base64 alphabet has no `$`.
+pub const DESCRIPTOR_ENV: &str = "DORA_RECORD_DESCRIPTOR_BASE64";
+/// The raw descriptor env var that record nodes before
+/// [`DESCRIPTOR_ENV`] read. `dora record` still sets it when that is safe,
+/// so an older record node keeps writing the descriptor.
+pub const LEGACY_DESCRIPTOR_ENV: &str = "DORA_RECORD_DESCRIPTOR";
 /// Oldest `.drec` version this build can read.
 ///
 /// The entry payloads are opaque to the container, so a version that only the

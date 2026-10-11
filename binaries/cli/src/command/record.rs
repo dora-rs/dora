@@ -315,15 +315,35 @@ fn build_record_inputs(topic_map: &BTreeMap<&str, &str>, queue_size: u64) -> ser
     inputs
 }
 
-/// The record node's env var carrying the original descriptor, base64-encoded.
+/// The record node's `env:` entries that carry the original descriptor.
 ///
 /// Every `env:` value goes through `$VAR` expansion each time the
 /// descriptor is parsed (by the CLI, then again by the daemon), so the raw
 /// YAML must not travel as one: a `$NAME` anywhere in it, even in a
 /// comment, failed `dora record` when unset, and was substituted otherwise,
 /// writing e.g. the value of an `${API_TOKEN}` reference into the
-/// recording's header. The base64 alphabet has no `$`.
-const DESCRIPTOR_ENV: &str = "DORA_RECORD_DESCRIPTOR_BASE64";
+/// recording's header. [`dora_recording::DESCRIPTOR_ENV`] carries it
+/// base64-encoded instead.
+///
+/// The raw [`dora_recording::LEGACY_DESCRIPTOR_ENV`] is set as well when
+/// expansion cannot touch it (valid UTF-8 without `$`), because `dora record`
+/// reuses whatever `dora-record-node` it finds, and one from before the
+/// encoded variable reads only the raw one.
+fn descriptor_env(yaml: &[u8]) -> Vec<(String, String)> {
+    let mut env = vec![(
+        dora_recording::DESCRIPTOR_ENV.to_string(),
+        BASE64_STANDARD.encode(yaml),
+    )];
+    if let Ok(text) = std::str::from_utf8(yaml)
+        && !text.contains('$')
+    {
+        env.push((
+            dora_recording::LEGACY_DESCRIPTOR_ENV.to_string(),
+            text.to_string(),
+        ));
+    }
+    env
+}
 
 fn run_record(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
@@ -396,10 +416,12 @@ fn run_record(args: Record) -> eyre::Result<()> {
         serde_yaml::Value::String("DORA_RECORD_TOPICS".to_string()),
         serde_yaml::Value::String(topics_json),
     );
-    env_mapping.insert(
-        serde_yaml::Value::String(DESCRIPTOR_ENV.to_string()),
-        serde_yaml::Value::String(BASE64_STANDARD.encode(&yaml_bytes)),
-    );
+    for (key, value) in descriptor_env(&yaml_bytes) {
+        env_mapping.insert(
+            serde_yaml::Value::String(key),
+            serde_yaml::Value::String(value),
+        );
+    }
 
     // Build the record node YAML entry
     let mut record_node = serde_yaml::Mapping::new();
@@ -909,23 +931,57 @@ mod tests {
             .collect()
     }
 
-    /// The descriptor reaches the record node through an `env:` value, which
-    /// is `$VAR`-expanded on every parse. Its encoding must survive that
-    /// unchanged, whatever `$` references the YAML contains.
+    /// Parse `descriptor_env`'s entries the way the daemon does, `$VAR`
+    /// expansion included.
+    fn expanded_descriptor_env(yaml: &[u8]) -> BTreeMap<String, String> {
+        let env = serde_yaml::Mapping::from_iter(
+            descriptor_env(yaml)
+                .into_iter()
+                .map(|(k, v)| (serde_yaml::Value::String(k), serde_yaml::Value::String(v))),
+        );
+        let parsed: BTreeMap<String, dora_message::descriptor::EnvValue> =
+            serde_yaml::from_value(serde_yaml::Value::Mapping(env))
+                .expect("the descriptor env entries must parse as env values");
+        parsed
+            .into_iter()
+            .map(|(k, v)| (k, v.to_string()))
+            .collect()
+    }
+
+    /// The descriptor reaches the record node through `env:` values, which
+    /// are `$VAR`-expanded on every parse. The encoded one must survive that
+    /// unchanged, whatever `$` references the YAML contains, and the raw one
+    /// must then be left out.
     #[test]
     fn descriptor_env_value_survives_env_expansion() {
         let yaml = b"# set $DORA_TEST_SURELY_UNSET_VAR first\nnodes:\n- id: a\n  env:\n    TOKEN: ${HOME}\n";
-        let env = serde_yaml::Mapping::from_iter([(
-            serde_yaml::Value::String(DESCRIPTOR_ENV.to_string()),
-            serde_yaml::Value::String(BASE64_STANDARD.encode(yaml)),
-        )]);
-        let parsed: BTreeMap<String, dora_message::descriptor::EnvValue> =
-            serde_yaml::from_value(serde_yaml::Value::Mapping(env))
-                .expect("the encoded descriptor must parse as an env value");
+        let env = expanded_descriptor_env(yaml);
         let decoded = BASE64_STANDARD
-            .decode(parsed[DESCRIPTOR_ENV].to_string())
+            .decode(&env[dora_recording::DESCRIPTOR_ENV])
             .expect("valid base64");
         assert_eq!(decoded, yaml);
+        assert!(
+            !env.contains_key(dora_recording::LEGACY_DESCRIPTOR_ENV),
+            "a raw descriptor containing `$` must not be passed: {env:?}"
+        );
+    }
+
+    /// Without `$`, the raw descriptor is passed too, unchanged, so a record
+    /// node that predates the encoded variable still records it.
+    #[test]
+    fn descriptor_env_keeps_the_raw_value_for_older_record_nodes() {
+        let yaml = b"nodes:\n- id: a\n  path: ./a\n";
+        let env = expanded_descriptor_env(yaml);
+        assert_eq!(
+            env[dora_recording::LEGACY_DESCRIPTOR_ENV].as_bytes(),
+            yaml.as_slice()
+        );
+        assert_eq!(
+            BASE64_STANDARD
+                .decode(&env[dora_recording::DESCRIPTOR_ENV])
+                .expect("valid base64"),
+            yaml
+        );
     }
 
     #[test]
