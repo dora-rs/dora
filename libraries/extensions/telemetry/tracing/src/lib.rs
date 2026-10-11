@@ -507,6 +507,11 @@ mod tests {
     /// errors on the terminal (Rust nodes already keep stdout alongside OTLP).
     #[test]
     fn otlp_export_keeps_the_stdout_layer() {
+        // `init_tracing` may replace the global propagator; don't race the
+        // telemetry tests that set it.
+        let _lock = crate::telemetry::PROPAGATOR_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // The exporters connect lazily, so nothing has to listen here.
         let endpoint = Some("http://127.0.0.1:4317");
         let rt = tokio::runtime::Builder::new_current_thread()
