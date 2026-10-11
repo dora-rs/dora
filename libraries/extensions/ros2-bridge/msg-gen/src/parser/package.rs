@@ -108,20 +108,10 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
     }
 
     // flatten the dependencies
-    let dependencies = {
-        let mut flattened_dependencies = HashMap::<String, BTreeSet<String>>::new();
-        let mut unfinished_set: BTreeSet<String> = dependencies.keys().cloned().collect();
-        // recursively flatten the dependencies
-        while let Some(first) = unfinished_set.first().cloned() {
-            flatten_dependencies(
-                &first,
-                &dependencies,
-                &mut flattened_dependencies,
-                &mut unfinished_set,
-            );
-        }
-        flattened_dependencies
-    };
+    let dependencies: HashMap<String, BTreeSet<String>> = dependencies
+        .keys()
+        .map(|name| (name.clone(), transitive_dependencies(name, &dependencies)))
+        .collect();
 
     for package in &mut packages {
         package.dependencies = dependencies
@@ -135,36 +125,34 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
     Ok(packages)
 }
 
-/// Flatten the dependencies of packages recursively.
-/// The name is the name of the package to expand.
-/// The dependencies is the dependency trees of the packages with its direct dependencies.
-/// flattened_dependencies records the flattened dependencies of the packages.
-/// finished_set is the set of names of packages that have been finished.
-fn flatten_dependencies(
+/// Every package `name` depends on, directly or indirectly, given each
+/// package's direct dependencies. Walks the graph with a visited set, so a
+/// dependency cycle (legal for `exec_depend`) terminates, and a package is
+/// never its own dependency.
+fn transitive_dependencies(
     name: &str,
     dependencies: &HashMap<String, BTreeSet<String>>,
-    flattened_dependencies: &mut HashMap<String, BTreeSet<String>>,
-    unfinished_set: &mut BTreeSet<String>,
 ) -> BTreeSet<String> {
-    if let Some(add_deps) = flattened_dependencies.get(name) {
-        return add_deps.clone();
-    }
-
-    let mut add_deps = BTreeSet::new();
-    let direct_deps: BTreeSet<String> = dependencies.get(name).unwrap().iter().cloned().collect();
-    for dep_name in &direct_deps {
-        let indirect_deps = flatten_dependencies(
-            dep_name,
-            dependencies,
-            flattened_dependencies,
-            unfinished_set,
+    let mut found = BTreeSet::new();
+    let mut pending: Vec<&str> = dependencies
+        .get(name)
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    while let Some(dep) = pending.pop() {
+        if dep == name || !found.insert(dep.to_owned()) {
+            continue;
+        }
+        pending.extend(
+            dependencies
+                .get(dep)
+                .into_iter()
+                .flatten()
+                .map(String::as_str),
         );
-        add_deps.extend(indirect_deps);
     }
-    add_deps.extend(direct_deps);
-    flattened_dependencies.insert(name.to_string(), add_deps.clone());
-    unfinished_set.remove(name);
-    add_deps
+    found
 }
 
 pub fn get_packages<P>(paths: &[P]) -> Result<Vec<Package>>
@@ -225,4 +213,73 @@ fn parse_dependencies(path: PathBuf) -> Result<BTreeSet<String>> {
         buf.clear(); // Clear the buffer for the next event
     }
     Ok(deps)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::get_ros_msgs_each_package;
+
+    /// An ament prefix with one message per package and the given
+    /// `<depend>`s, under a fresh temp directory.
+    fn prefix(test: &str, packages: &[(&str, &[&str])]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("dora-msg-gen-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (name, deps) in packages {
+            let package = root.join("share").join(name);
+            std::fs::create_dir_all(package.join("msg")).unwrap();
+            std::fs::write(package.join("msg").join("Value.msg"), "int32 value\n").unwrap();
+            let deps: String = deps
+                .iter()
+                .map(|dep| format!("<depend>{dep}</depend>"))
+                .collect();
+            std::fs::write(
+                package.join("package.xml"),
+                format!("<package format=\"3\"><name>{name}</name>{deps}</package>"),
+            )
+            .unwrap();
+        }
+        root
+    }
+
+    fn dependencies_of(packages: &[crate::types::Package], name: &str) -> Vec<String> {
+        let package = packages.iter().find(|p| p.name == name).unwrap();
+        let mut deps: Vec<_> = package
+            .dependencies
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        deps.sort();
+        deps
+    }
+
+    #[test]
+    fn dependencies_are_transitive() {
+        let root = prefix("chain", &[("a", &["b"]), ("b", &["c"]), ("c", &[])]);
+        let packages = get_ros_msgs_each_package(&[&root]).unwrap();
+        assert_eq!(dependencies_of(&packages, "a"), ["b", "c"]);
+        assert_eq!(dependencies_of(&packages, "b"), ["c"]);
+        assert!(dependencies_of(&packages, "c").is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `exec_depend` cycles are legal in ROS (only build dependencies must be
+    /// acyclic); they used to recurse until the stack overflowed.
+    #[test]
+    fn a_dependency_cycle_does_not_overflow_the_stack() {
+        let root = prefix("cycle", &[("a", &["b"]), ("b", &["a"])]);
+        let packages = get_ros_msgs_each_package(&[&root]).unwrap();
+        assert_eq!(dependencies_of(&packages, "a"), ["b"]);
+        assert_eq!(dependencies_of(&packages, "b"), ["a"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_package_depending_on_itself_is_not_its_own_dependency() {
+        let root = prefix("self", &[("a", &["a"])]);
+        let packages = get_ros_msgs_each_package(&[&root]).unwrap();
+        assert!(dependencies_of(&packages, "a").is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
