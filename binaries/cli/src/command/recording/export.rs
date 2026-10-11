@@ -1893,4 +1893,70 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].2.as_deref(), Some("foxglove.RawImage"));
     }
+
+    /// `std/media/v1/Image[encoding=jpeg]` (the example in dora-core's type
+    /// docs) and an `Image` struct whose `encoding` is a compressed format are
+    /// compressed images, not raw ones.
+    #[test]
+    fn foxglove_image_with_a_compressed_encoding_is_a_compressed_image() {
+        use arrow::array::{LargeBinaryArray, StringArray, StructArray, UInt32Array};
+        use arrow_schema::{DataType, Field};
+        let descriptor = "nodes:
+  - id: camera
+    output_types:
+      jpeg: std/media/v1/Image[encoding=jpeg]
+      image: std/media/v1/Image
+";
+        let jpeg = vec![0xFFu8, 0xD8, 0xFF, 0xE0, 1, 2];
+        let png = [0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 9];
+        let png_struct: arrow::array::ArrayRef = std::sync::Arc::new(StructArray::from(vec![
+            (
+                std::sync::Arc::new(Field::new("width", DataType::UInt32, false)),
+                std::sync::Arc::new(UInt32Array::from(vec![640])) as arrow::array::ArrayRef,
+            ),
+            (
+                std::sync::Arc::new(Field::new("height", DataType::UInt32, false)),
+                std::sync::Arc::new(UInt32Array::from(vec![480])) as arrow::array::ArrayRef,
+            ),
+            (
+                std::sync::Arc::new(Field::new("encoding", DataType::Utf8, false)),
+                std::sync::Arc::new(StringArray::from(vec!["png"])) as arrow::array::ArrayRef,
+            ),
+            (
+                std::sync::Arc::new(Field::new("data", DataType::LargeBinary, false)),
+                std::sync::Arc::new(LargeBinaryArray::from(vec![&png[..]]))
+                    as arrow::array::ArrayRef,
+            ),
+        ]));
+        let messages = export_messages(
+            descriptor,
+            vec![
+                (
+                    "camera",
+                    "jpeg",
+                    output_event_bytes(
+                        "camera",
+                        "jpeg",
+                        &ipc_bytes(std::sync::Arc::new(arrow::array::UInt8Array::from(jpeg))),
+                    ),
+                ),
+                (
+                    "camera",
+                    "image",
+                    output_event_bytes("camera", "image", &ipc_bytes(png_struct)),
+                ),
+            ],
+        );
+        assert_eq!(messages.len(), 2);
+        for (message, format) in messages.iter().zip(["jpeg", "png"]) {
+            assert_eq!(
+                message.2.as_deref(),
+                Some("foxglove.CompressedImage"),
+                "{}",
+                message.0
+            );
+            let json: serde_json::Value = serde_json::from_slice(&message.3).unwrap();
+            assert_eq!(json["format"], format);
+        }
+    }
 }
