@@ -451,13 +451,14 @@ The `id` field is optional for single operators (defaults to the node `id`):
       - bbox
 ```
 
-### Multiple Operators
+### The `operators` List
 
-Each operator in `operators` **requires** a unique `id`:
+`operators` is the list form of `operator`. Its entry **requires** an `id`, which becomes part of every reference to its outputs (`<node>/<operator>/<output>`).
 
+A runtime node holds exactly one operator: the operator runtime refuses to start with zero or several, so validation rejects such a node. To run several operators, give each one its own node:
 
 ```yaml
-- id: runtime-node
+- id: preprocess
   operators:
     - id: preprocessor
       shared-library: ../../target/debug/libpreprocess
@@ -465,10 +466,12 @@ Each operator in `operators` **requires** a unique `id`:
         raw: sensor/data
       outputs:
         - processed
+- id: analyze
+  operators:
     - id: analyzer
       shared-library: ../../target/debug/libanalyze
       inputs:
-        data: runtime-node/preprocessor/processed
+        data: preprocess/preprocessor/processed
       outputs:
         - result
 ```
