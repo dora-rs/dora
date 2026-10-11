@@ -1684,6 +1684,51 @@ async fn applied_param_changes_are_acked_and_pruned_from_the_state_log() {
     assert!(df.state_log.is_empty(), "every remaining daemon applied it");
 }
 
+/// A `DeleteParam` queued for a disconnected daemon's node must reach it
+/// through catch-up even when other changes were applied and pruned while it
+/// was gone: the fallback replay after a gap in the log cannot express a
+/// delete.
+#[test]
+fn a_delete_for_a_disconnected_daemon_survives_earlier_pruned_changes() {
+    let owner = DaemonId::new(Some("owner".to_string()));
+    let gone = DaemonId::new(Some("gone".to_string()));
+    let owner_node: NodeId = "sender".to_string().into();
+    let gone_node: NodeId = "receiver".to_string().into();
+    let mut df = test_running_dataflow(
+        DataflowId::from(Uuid::new_v4()),
+        owner.clone(),
+        owner_node.clone(),
+    );
+    // `gone` runs `gone_node` but has disconnected, caught up so far.
+    df.node_to_daemon.insert(gone_node.clone(), gone.clone());
+    df.daemon_ack_sequence = BTreeMap::from([(owner.clone(), 0), (gone.clone(), 0)]);
+
+    let set = df.append_state_log(StateCatchUpOperation::SetParam {
+        node_id: owner_node,
+        key: "gain".to_string(),
+        value: serde_json::json!(1),
+    });
+    df.ack_applied_state_log_entry(set, &owner);
+    assert!(df.state_log.is_empty(), "nobody owes the applied set");
+
+    df.append_state_log(StateCatchUpOperation::DeleteParam {
+        node_id: gone_node,
+        key: "gain".to_string(),
+    });
+    df.prune_state_log();
+
+    let missed = df
+        .state_log_delta_for_daemon(df.daemon_ack_sequence[&gone], &gone)
+        .expect("catches up from the log, not the fallback replay");
+    assert!(
+        matches!(
+            missed.as_slice(),
+            [entry] if matches!(entry.operation, StateCatchUpOperation::DeleteParam { .. })
+        ),
+        "got: {missed:?}"
+    );
+}
+
 #[tokio::test]
 async fn replay_replays_persisted_param_to_daemon_connection() {
     #[derive(serde::Deserialize)]

@@ -531,38 +531,45 @@ impl RunningDataflow {
         // `state_log_delta` already falls back to a full replay for it.
         //
         // That fallback only re-sends the keys still in the store, so it
-        // cannot express a deletion. A disconnected daemon that still owes a
-        // `DeleteParam` for one of its nodes therefore keeps its ack in the
-        // minimum, so the delete reaches it through catch-up on reconnect.
-        let ack_of = |daemon: &DaemonId| self.daemon_ack_sequence.get(daemon).copied().unwrap_or(0);
-        let disconnected_owing_delete = self
+        // cannot express a deletion. A disconnected daemon that still runs
+        // nodes (`node_to_daemon`) therefore must catch up from the log, which
+        // needs the log to stay contiguous from its ack. Its ack advances past
+        // the entries it has nothing to apply for, as a live daemon's does,
+        // and while it owes an entry for one of its nodes that ack stays in
+        // the minimum. A log already pruned past its ack is left alone: it
+        // gets the fallback either way.
+        let absent: BTreeSet<DaemonId> = self
             .node_to_daemon
             .values()
             .filter(|daemon| !self.daemons.contains(*daemon))
-            .map(|daemon| (daemon, ack_of(daemon)))
-            .filter(|(daemon, ack)| self.owes_param_delete(daemon, *ack))
-            .map(|(_, ack)| ack);
+            .cloned()
+            .collect();
+        let mut pinned = Vec::new();
+        for daemon in absent {
+            let ack = self.daemon_ack_sequence.get(&daemon).copied().unwrap_or(0);
+            let Some(missed) = self.state_log_delta_for_daemon(ack, &daemon) else {
+                continue;
+            };
+            match missed.first() {
+                Some(first_owed) => {
+                    let ack = first_owed.sequence - 1;
+                    self.daemon_ack_sequence.insert(daemon, ack);
+                    pinned.push(ack);
+                }
+                None => {
+                    self.daemon_ack_sequence
+                        .insert(daemon, self.state_log_sequence);
+                }
+            }
+        }
         let min_ack = self
             .daemons
             .iter()
-            .map(ack_of)
-            .chain(disconnected_owing_delete)
+            .map(|daemon| self.daemon_ack_sequence.get(daemon).copied().unwrap_or(0))
+            .chain(pinned)
             .min()
             .unwrap_or(0);
         self.state_log.retain(|entry| entry.sequence > min_ack);
-    }
-
-    /// Whether the log holds a `DeleteParam` after `ack` for a node `daemon`
-    /// runs.
-    fn owes_param_delete(&self, daemon: &DaemonId, ack: u64) -> bool {
-        self.state_log.iter().any(|entry| {
-            entry.sequence > ack
-                && matches!(
-                    &entry.operation,
-                    StateCatchUpOperation::DeleteParam { node_id, .. }
-                        if self.node_to_daemon.get(node_id) == Some(daemon)
-                )
-        })
     }
 
     /// Record that `owner` applied log entry `sequence`, then prune the log.
