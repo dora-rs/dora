@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- **A synchronous event loop inside a tokio task no longer stalls after 128 events** ([#3673](https://github.com/dora-rs/dora/issues/3673)). `EventStream::recv`, `recv_timeout` and `try_recv` drive tokio's channel receiver from synchronous code, so they spent the calling task's coop budget without ever yielding to refill it. In a task that never yields, for example a plain `while let Some(event) = events.recv()` loop in `#[tokio::main]`, the receiver reported nothing ready after 128 receives with events still queued: `recv` spun forever, `recv_timeout` timed out and `try_recv` returned `Empty`. The three methods now run the receive outside the budget. Async receives (`recv_async`, the `Stream` impl) still take part in it.
+
 ## v1.1.0 (2026-10-07)
 
 ### Breaking
