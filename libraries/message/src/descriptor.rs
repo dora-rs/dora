@@ -1577,18 +1577,70 @@ pub enum GitRepoRev {
     Rev(String),
 }
 
+// The value of an `env:` entry. (A plain comment, not a doc comment:
+// schemars would publish a doc comment as the `EnvValue` description in
+// `dora-schema.json`.)
+//
+// A native YAML/JSON bool or number keeps its type. A string has its
+// `$VAR` / `${VAR}` references expanded and is then typed as a bool or
+// number only when that is lossless, i.e. when the typed value prints
+// back as exactly the same text. `"8080"` and `${PORT}` (= 8080) still
+// become `Integer(8080)`, as in every 1.x release, but `"1.10"`, `"007"`
+// and `"1e3"` stay strings instead of reaching the node as `1.1`, `7` and
+// `1000`.
 #[allow(missing_docs)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum EnvValue {
-    #[serde(deserialize_with = "with_expand_envs")]
     Bool(bool),
-    #[serde(deserialize_with = "with_expand_envs")]
     Integer(i64),
-    #[serde(deserialize_with = "with_expand_envs")]
     Float(f64),
-    #[serde(deserialize_with = "with_expand_envs")]
     String(String),
+}
+
+impl<'de> Deserialize<'de> for EnvValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Integer(i64),
+            Float(f64),
+            #[serde(deserialize_with = "with_expand_envs")]
+            String(String),
+        }
+        Ok(match Raw::deserialize(deserializer)? {
+            Raw::Bool(b) => EnvValue::Bool(b),
+            Raw::Integer(i) => EnvValue::Integer(i),
+            Raw::Float(f) => EnvValue::Float(f),
+            Raw::String(s) => EnvValue::from_string_lossless(s),
+        })
+    }
+}
+
+impl EnvValue {
+    /// Type `s` as a bool or number if that prints back as exactly `s`,
+    /// and keep it a string otherwise. `inf` and `NaN` stay strings: JSON
+    /// has no encoding for a non-finite float (serde_json writes `null`),
+    /// so the descriptor would not survive the coordinator -> daemon hop.
+    fn from_string_lossless(s: String) -> Self {
+        let typed = if let Ok(b) = s.parse() {
+            EnvValue::Bool(b)
+        } else if let Ok(i) = s.parse() {
+            EnvValue::Integer(i)
+        } else if let Ok(f) = s.parse::<f64>()
+            && f.is_finite()
+        {
+            EnvValue::Float(f)
+        } else {
+            return EnvValue::String(s);
+        };
+        if typed.to_string() == s {
+            typed
+        } else {
+            EnvValue::String(s)
+        }
+    }
 }
 
 impl fmt::Display for EnvValue {
@@ -1888,6 +1940,77 @@ pub struct Ros2QosConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A quoted `env:` value must reach the node verbatim. The derived
+    /// untagged enum parsed strings into the first matching variant, so
+    /// `"1.10"` became `1.1` and `"007"` became `7`.
+    #[test]
+    fn env_value_keeps_quoted_strings_verbatim() {
+        for quoted in [
+            "1.10",
+            "007",
+            "+5",
+            "1e3",
+            "1.0",
+            "12345678901234567890",
+            "inf",
+            "-inf",
+            "NaN",
+        ] {
+            let yaml = format!("\"{quoted}\"");
+            let value: EnvValue = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(value, EnvValue::String(quoted.into()), "yaml {yaml}");
+
+            // ...and survives the JSON hops CLI -> coordinator -> daemon.
+            let json = serde_json::to_string(&value).unwrap();
+            let value: EnvValue = serde_json::from_str(&json).unwrap();
+            assert_eq!(value.to_string(), quoted, "json {json}");
+        }
+    }
+
+    /// Strings that type losslessly keep the bool/number type every 1.x
+    /// release gave them, so `dataflow_descriptor()` consumers see no change.
+    #[test]
+    fn env_value_types_lossless_strings() {
+        let parse = |yaml: &str| serde_yaml::from_str::<EnvValue>(yaml).unwrap();
+        assert_eq!(parse("\"true\""), EnvValue::Bool(true));
+        assert_eq!(parse("\"8080\""), EnvValue::Integer(8080));
+        assert_eq!(parse("\"-3\""), EnvValue::Integer(-3));
+        assert_eq!(parse("\"1.5\""), EnvValue::Float(1.5));
+    }
+
+    #[test]
+    fn env_value_keeps_native_types() {
+        let parse = |yaml: &str| serde_yaml::from_str::<EnvValue>(yaml).unwrap();
+        assert_eq!(parse("true"), EnvValue::Bool(true));
+        assert_eq!(parse("8080"), EnvValue::Integer(8080));
+        assert_eq!(parse("-3"), EnvValue::Integer(-3));
+        assert_eq!(parse("1.5"), EnvValue::Float(1.5));
+        assert_eq!(parse("hello"), EnvValue::String("hello".into()));
+    }
+
+    /// Strings still expand `$VAR` references, quoted or not, and the result
+    /// is typed by the same lossless rule.
+    #[test]
+    fn env_value_expands_variables_in_strings() {
+        let parse = |yaml: &str| serde_yaml::from_str::<EnvValue>(yaml).unwrap();
+        for unquoted in [false, true] {
+            let q = if unquoted { "" } else { "\"" };
+            let parse_ref = |default: &str| {
+                parse(&format!(
+                    "{q}${{DORA_TEST_ENV_VALUE_UNSET_VAR:-{default}}}{q}"
+                ))
+            };
+            assert_eq!(parse_ref("1.10"), EnvValue::String("1.10".into()));
+            assert_eq!(parse_ref("8080"), EnvValue::Integer(8080));
+            assert_eq!(parse_ref("true"), EnvValue::Bool(true));
+        }
+        assert_eq!(
+            parse("\"v${DORA_TEST_ENV_VALUE_UNSET_VAR:-2}\""),
+            EnvValue::String("v2".into())
+        );
+        assert!(serde_yaml::from_str::<EnvValue>("\"$DORA_TEST_ENV_VALUE_UNSET_VAR\"").is_err());
+    }
 
     /// Assert that `constructed` serializes to exactly what `yaml`
     /// deserializes to — that a hand-written constructor agrees with the
