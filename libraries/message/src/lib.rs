@@ -192,6 +192,7 @@ pub mod cli_to_coordinator;
 pub mod coordinator_to_cli;
 
 pub mod ws_protocol;
+pub mod zenoh;
 
 pub mod integration_testing_format;
 

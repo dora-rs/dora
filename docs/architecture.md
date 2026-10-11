@@ -522,21 +522,15 @@ nodes:
       outputs:
         - detection
 
-  # Multi-operator runtime
+  # Operator list form (one operator per runtime node)
   - id: pipeline
     operators:
       - id: stage1
-        python: stage1.py
+        shared-library: target/release/libstage1.so
         inputs:
           data: source/output
         outputs:
           - intermediate
-      - id: stage2
-        shared-library: target/release/libstage2.so
-        inputs:
-          data: stage1/intermediate
-        outputs:
-          - final
 
   # ROS2 bridge
   - id: ros-input
