@@ -30,7 +30,21 @@ pub fn datetime_module<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyModul
 
 /// Dora Event
 pub struct PyEvent {
-    pub event: MergedEvent<Py<PyAny>>,
+    pub event: MergedEvent<ExternalEvent>,
+}
+
+/// An event from an external source that was merged into a node's event loop
+/// (e.g. a ROS2 subscription via `Node.merge_external_events`).
+///
+/// Several external sources can be merged into the same node, so each event
+/// carries the `id` its source was merged under. It is surfaced to Python as
+/// the event dict's `"id"` key (dora-rs/dora#2801).
+pub struct ExternalEvent {
+    /// Identifies the merged source the event came from.
+    pub id: Arc<str>,
+    /// The external payload (e.g. a `pyarrow` array), or the exception object
+    /// if reading the external message failed.
+    pub value: Py<PyAny>,
 }
 
 /// Keeps the dora node alive until all event objects have been dropped.
@@ -152,7 +166,8 @@ impl PyEvent {
                 }
             }
             MergedEvent::External(event) => {
-                pydict.insert("value", event.clone_ref(py));
+                pydict.insert("id", PyString::new(py, &event.id).into_any().unbind());
+                pydict.insert("value", event.value.clone_ref(py));
             }
         }
 

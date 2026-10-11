@@ -628,25 +628,28 @@ impl Daemon {
         let subscription_ids: Vec<_> = subscription_ids.iter().copied().collect();
         let subscription_count = subscription_ids.len();
 
-        let message = serde_json::to_vec(&Timestamped {
-            inner: CoordinatorRequest::Event {
-                daemon_id: self.daemon_id.clone(),
-                event: DaemonEvent::TopicDebugData {
-                    dataflow_id,
-                    subscription_ids,
-                    payload: serialized_event,
-                },
-            },
-            timestamp: self.clock.new_timestamp(),
-        })?;
-        match sender.try_send_event(&message) {
+        match sender.try_send_topic_debug_frame(
+            &self.daemon_id,
+            &self.clock,
+            dataflow_id,
+            subscription_ids,
+            serialized_event,
+        ) {
             Ok(()) => {}
             Err(crate::coordinator::TrySendEventError::Full) => {
                 tracing::warn!(
                     %dataflow_id,
                     output = %format!("{}/{}", output_id.0, output_id.1),
                     subscriptions = subscription_count,
-                    "dropping topic debug frame because coordinator WS send channel is full"
+                    "dropping topic debug frame because the topic debug queue is full"
+                );
+            }
+            Err(err @ crate::coordinator::TrySendEventError::TooLarge { .. }) => {
+                tracing::warn!(
+                    %dataflow_id,
+                    output = %format!("{}/{}", output_id.0, output_id.1),
+                    subscriptions = subscription_count,
+                    "dropping topic debug frame: {err}"
                 );
             }
             Err(crate::coordinator::TrySendEventError::Closed) => {
@@ -657,7 +660,10 @@ impl Daemon {
                     "dropping topic debug frame because coordinator WS send channel is closed"
                 );
             }
-            Err(crate::coordinator::TrySendEventError::InvalidUtf8(err)) => {
+            Err(
+                err @ (crate::coordinator::TrySendEventError::InvalidUtf8(_)
+                | crate::coordinator::TrySendEventError::Encode(_)),
+            ) => {
                 return Err(eyre!(
                     "failed to encode topic debug frame for coordinator: {err}"
                 ));
@@ -870,16 +876,22 @@ impl Daemon {
         let result = self
             .handle_node_stop_inner(dataflow_id, node_id, dynamic_node, exit_clean)
             .await;
-        let _ = self
-            .events_tx
-            .send(Timestamped {
-                inner: Event::NodeStopped {
-                    dataflow_id,
-                    node_id: node_id.clone(),
-                },
-                timestamp: self.clock.new_timestamp(),
-            })
-            .await;
+        let event = Timestamped {
+            inner: Event::NodeStopped {
+                dataflow_id,
+                node_id: node_id.clone(),
+            },
+            timestamp: self.clock.new_timestamp(),
+        };
+        // This runs on the main loop, the only reader of `events_tx`, so
+        // awaiting a free slot in a full channel would wait forever. Hand
+        // the send to a task instead when the channel is full.
+        if let Err(mpsc::error::TrySendError::Full(event)) = self.events_tx.try_send(event) {
+            let events_tx = self.events_tx.clone();
+            tokio::spawn(async move {
+                let _ = events_tx.send(event).await;
+            });
+        }
         result
     }
 
