@@ -214,7 +214,7 @@ static NEXT_NODE_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// the currently registered incarnation.
 pub(crate) fn next_node_generation() -> u64 {
     NEXT_NODE_GENERATION
-        .fetch_update(
+        .try_update(
             atomic::Ordering::Relaxed,
             atomic::Ordering::Relaxed,
             |generation| generation.checked_add(1),
@@ -412,6 +412,12 @@ pub struct RunningDataflow {
     /// compared to dispatch, and the scan is bounded by the count of outputs
     /// that currently have at least one subscriber.
     pub(crate) debug_topic_watchers: BTreeMap<OutputId, BTreeSet<uuid::Uuid>>,
+    /// The key set of `debug_topic_watchers`, shared with the per-output
+    /// debug-inspection subscriber tasks so they can drop a sample before
+    /// copying it into the daemon event loop when nobody watches its output
+    /// (dora-rs/dora#3781). Only change it through the `*_debug_topic_*`
+    /// methods below, which keep it in sync with the map.
+    pub(crate) debug_watched_outputs: Arc<crossbeam_skiplist::SkipSet<OutputId>>,
     pub(crate) finished_tx: broadcast::Sender<()>,
     /// Shutdown signal for listener loops — send `true` when dataflow finishes.
     pub(crate) listener_shutdown_tx: tokio::sync::watch::Sender<bool>,
@@ -436,6 +442,42 @@ pub enum FinishDataflowWhen {
 }
 
 impl RunningDataflow {
+    /// Register `subscription_id` as a `dora topic` watcher of `output_id`.
+    pub(crate) fn add_debug_topic_watcher(
+        &mut self,
+        output_id: OutputId,
+        subscription_id: uuid::Uuid,
+    ) {
+        self.debug_watched_outputs.insert(output_id.clone());
+        self.debug_topic_watchers
+            .entry(output_id)
+            .or_default()
+            .insert(subscription_id);
+    }
+
+    /// Drop `subscription_id` from every output it watches.
+    ///
+    /// Scans watchers rather than maintaining an inverse map. Unsubscribe is
+    /// rare; the scan is bounded by the count of outputs with active
+    /// subscribers. `retain` drops empty entries in one pass.
+    pub(crate) fn remove_debug_topic_subscription(&mut self, subscription_id: uuid::Uuid) {
+        let watched = &self.debug_watched_outputs;
+        self.debug_topic_watchers.retain(|output_id, watchers| {
+            watchers.remove(&subscription_id);
+            let keep = !watchers.is_empty();
+            if !keep {
+                watched.remove(output_id);
+            }
+            keep
+        });
+    }
+
+    /// Drop every `dora topic` watcher of this dataflow.
+    pub(crate) fn clear_debug_topic_watchers(&mut self) {
+        self.debug_topic_watchers.clear();
+        self.debug_watched_outputs.clear();
+    }
+
     pub(crate) fn new(
         dataflow_id: uuid::Uuid,
         daemon_id: DaemonId,
@@ -479,6 +521,7 @@ impl RunningDataflow {
             node_stderr_most_recent: BTreeMap::new(),
             publishers: Default::default(),
             debug_topic_watchers: Default::default(),
+            debug_watched_outputs: Default::default(),
             finished_tx,
             listener_shutdown_tx,
             listener_shutdown_rx,
@@ -707,6 +750,18 @@ impl RunningDataflow {
         self.dataflow_started = true;
 
         Ok(())
+    }
+
+    /// Drop every `dora/logs` subscription `node_id` holds.
+    ///
+    /// A subscriber's entry outlives its channel: it is the node's logs edge,
+    /// kept while the node is down so a restarted incarnation keeps receiving
+    /// logs. So `RemoveNode` must drop it explicitly, and `AddNode` must drop
+    /// any stale entry before registering the node's inputs again — otherwise a
+    /// re-added id gets every log line once per entry, and keeps receiving on
+    /// an input id its new incarnation no longer declares.
+    pub(crate) fn unsubscribe_node_from_logs(&mut self, node_id: &NodeId) {
+        self.log_subscribers.retain(|sub| &sub.node_id != node_id);
     }
 
     /// Drop `node_id` from every timer subscriber set, and for any interval it

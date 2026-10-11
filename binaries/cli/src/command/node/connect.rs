@@ -9,8 +9,9 @@ use eyre::bail;
 /// Connect two nodes in a running dataflow (add a mapping).
 ///
 /// Example:
-///   dora node connect demo sender/value filter/input
+///   dora node connect -d demo sender/value filter/input
 #[derive(Debug, clap::Args)]
+#[clap(verbatim_doc_comment)]
 pub struct Connect {
     #[clap(flatten)]
     coordinator: CoordinatorOptions,

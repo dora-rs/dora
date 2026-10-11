@@ -188,7 +188,7 @@ fn needs_uv(yaml_path: &Path) -> bool {
 ///
 /// 1. `dora up` -- start coordinator + daemon
 /// 2. `dora start <yaml> --detach` -- launch the dataflow
-/// 3. Poll `dora list --json` until "Running" disappears or timeout
+/// 3. Poll `dora list --format json` until "Running" disappears or timeout
 /// 4. `dora stop --all` + `dora down` -- clean up
 fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
     ensure_cli_built();
@@ -251,7 +251,7 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
 
         // Check if any dataflows are still running
         let list_result = Command::new(&dora)
-            .args(["list", "--json"])
+            .args(["list", "--format", "json"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()

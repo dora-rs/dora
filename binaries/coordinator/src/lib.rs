@@ -271,6 +271,9 @@ async fn start_with_events(
     // Setup WS event channel (used by axum WS handlers)
     let (ws_event_tx, ws_event_rx) = tokio::sync::mpsc::channel::<Event>(64);
     let ws_events = ReceiverStream::new(ws_event_rx);
+    // Topic debug frames get their own channel. Like the events above, each
+    // is capped by the daemon socket's 1 MiB message limit.
+    let (topic_debug_tx, topic_debug_rx) = tokio::sync::mpsc::channel::<Event>(64);
 
     // Start WS server
     #[cfg(feature = "metrics")]
@@ -296,6 +299,7 @@ async fn start_with_events(
     let (port, ws_shutdown, ws_future) = ws_server::serve(
         bind,
         ws_event_tx.clone(),
+        topic_debug_tx,
         clock.clone(),
         auth_token,
         artifact_store,
@@ -311,7 +315,15 @@ async fn start_with_events(
         }
     }));
 
-    let events = (external_events, extra_events, ws_events).merge();
+    // A topic debug frame is only taken when no control event is ready, so a
+    // backlog of frames cannot delay a `dora stop` (dora-rs/dora#3535). A
+    // dataflow's finish can therefore overtake its last frames, which then
+    // find no running dataflow and are dropped, as `dora topic` is lossy anyway.
+    let events = futures::stream::select_with_strategy(
+        (external_events, extra_events, ws_events).merge(),
+        ReceiverStream::new(topic_debug_rx),
+        |_: &mut ()| futures::stream::PollNext::Left,
+    );
 
     let future = async move {
         start_inner(

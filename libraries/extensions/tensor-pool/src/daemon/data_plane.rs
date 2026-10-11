@@ -389,6 +389,26 @@ pub(crate) async fn handle_cross_data_frame(
     Ok(Some((dataflow_id, shared_memory_id, seq)))
 }
 
+/// Whether a pooled direct-TCP data connection can still carry a frame.
+///
+/// The mirror never writes on a data connection after the auth handshake,
+/// so a socket that has become readable means the peer closed (EOF) or
+/// reset it: typically the mirror's `CROSS_DATA_READ_TIMEOUT` firing on a
+/// connection that sat idle between writes, or a mirror daemon restart.
+/// Writing a frame that fits in the send buffer into such a half-closed
+/// socket still succeeds locally, so reusing it loses the frame without an
+/// error, nothing falls back to the relay, and the node's write waits out
+/// the whole ack timeout.
+fn pooled_conn_is_open(stream: &tokio::net::TcpStream) -> bool {
+    let mut probe = [0u8; 1];
+    // `WouldBlock` is the only answer from a live, quiet connection: `Ok(0)`
+    // is EOF, `Ok(_)` is bytes the protocol never sends, `Err(_)` is a reset.
+    matches!(
+        stream.try_read(&mut probe),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+    )
+}
+
 /// Send one direct-TCP data frame to a peer's data listener (origin side).
 /// Reuses a persistent connection per endpoint; a dead connection is
 /// dropped and re-established lazily. The connection is taken out of the
@@ -413,7 +433,8 @@ pub(crate) async fn send_cross_data_frame(
         let existing = conns
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&endpoint);
+            .remove(&endpoint)
+            .filter(pooled_conn_is_open);
         match existing {
             Some(stream) => stream,
             None => {
