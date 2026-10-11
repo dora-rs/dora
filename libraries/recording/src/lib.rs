@@ -82,9 +82,13 @@ const MIN_SUPPORTED_FORMAT_VERSION: u16 = 2;
 /// A bump that leaves the writers stamping a version below the reader's floor
 /// would make every freshly written recording unreadable by the same build.
 const _: () = assert!(FORMAT_VERSION >= MIN_SUPPORTED_FORMAT_VERSION);
-/// Maximum size for a single record or YAML descriptor in a `.drec` file.
-/// Guards against OOM from crafted files with `u32::MAX` length fields.
-const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024; // 64 MB
+/// Maximum size for a single record body (see [`RecordEntry::encoded_len`]) or
+/// YAML descriptor in a `.drec` file.
+///
+/// The writer refuses anything larger and the reader rejects a length prefix
+/// above it, which guards against OOM from crafted files with `u32::MAX`
+/// length fields.
+pub const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024; // 64 MB
 
 /// Header written at the start of a `.drec` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -431,6 +435,16 @@ fn parse_record(record_buf: &[u8]) -> eyre::Result<(&str, &str, u64, Range<usize
     let payload_start = pos;
     read_slice(record_buf, &mut pos, event_bytes_len)?;
 
+    // The fields fully determine the body length, so a length prefix that
+    // claims more is corrupt. Accepting it would swallow the start of the
+    // records that follow as unread trailing bytes, dropping them silently.
+    if pos != record_buf.len() {
+        eyre::bail!(
+            "record length {} disagrees with its fields ({pos} bytes)",
+            record_buf.len()
+        );
+    }
+
     Ok((
         node_id,
         output_id,
@@ -728,6 +742,38 @@ mod tests {
         assert!(
             result.is_err(),
             "corrupt event_bytes_len must return Err, got: {result:?}"
+        );
+    }
+
+    /// A length prefix larger than its record's fields must return `Err`, not
+    /// read on into the next record and silently drop it as trailing bytes.
+    #[test]
+    fn overlong_record_len_returns_err_not_dropped_records() {
+        let header = sample_header();
+        let entries = [
+            sample_entry("n", "o", 0, b"first"),
+            sample_entry("n", "o", 1, b"second"),
+            sample_entry("n", "o", 2, b"third"),
+        ];
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        for e in &entries {
+            writer.write_entry(e).unwrap();
+        }
+        writer.finish().unwrap();
+
+        // Stretch the first record's prefix to cover the whole second record.
+        let mut header_bytes = Vec::new();
+        write_header(&mut header_bytes, &header).unwrap();
+        let prefix = header_bytes.len();
+        let stretched = (entries[0].encoded_len() + 4 + entries[1].encoded_len()) as u32;
+        buf[prefix..prefix + 4].copy_from_slice(&stretched.to_le_bytes());
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        let result = reader.next_entry();
+        assert!(
+            result.is_err(),
+            "overlong record length must return Err, got: {result:?}"
         );
     }
 
