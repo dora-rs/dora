@@ -537,6 +537,34 @@ dora replay <FILE> [OPTIONS]
 | `--replace <NODE_IDS>` | all recorded | Comma-separated nodes to replace |
 | `--output-yaml <PATH>` | | Write modified YAML without running (dry run) |
 
+#### `dora recording export`
+
+Convert a recorded `.drec` file to MCAP (Apache Arrow IPC encoding). Sinks like Foxglove display plain arrow-ipc channels but do not render them natively.
+
+```
+dora recording export <RECORDING> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<RECORDING>` | required | Path to `.drec` recording |
+| `-o, --output <PATH>` | `<RECORDING>` with the extension replaced (`capture.drec` → `capture.mcap`) | Output MCAP file path |
+| `--topics <TOPICS>` | all | Comma-separated `node/output` topics to export |
+
+Payloads are remuxed verbatim, never decoded and re-encoded. Two limits worth
+knowing before you point a consumer at the output:
+
+- `metadata.parameters` is **not** exported. That is where image outputs carry
+  `width`/`height`/`encoding`, and where services and actions carry
+  `request_id`/`goal_id`, so an exported image topic cannot be decoded on its
+  own.
+- Chunks are uncompressed, because `mcap` is built with
+  `default-features = false`. Compress the `.mcap` afterwards if size matters.
+
+The output is written to a temporary file next to the destination and renamed
+into place only once the export completes, so a failed export never leaves a
+truncated file where a readable one used to be.
+
 ---
 
 ### Monitoring Commands

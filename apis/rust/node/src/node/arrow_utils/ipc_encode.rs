@@ -331,6 +331,18 @@ fn build_schema_message(data_type: &DataType) -> eyre::Result<Vec<u8>> {
     Ok(encoded.ipc_message)
 }
 
+/// The schema message of a `UInt8` array, which every `UInt8` fast-path send
+/// (`send_output_raw`, `send_output_bytes`, the Python buffer-protocol send)
+/// emits unchanged. Built once instead of once per message.
+fn uint8_schema_message() -> eyre::Result<&'static [u8]> {
+    static MESSAGE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    if let Some(message) = MESSAGE.get() {
+        return Ok(message);
+    }
+    let message = build_schema_message(&DataType::UInt8)?;
+    Ok(MESSAGE.get_or_init(|| message))
+}
+
 /// Hand-build the RecordBatch IPC message flatbuffer (header only — no body),
 /// mirroring arrow's `record_batch_to_bytes`.
 fn build_record_batch_message(
@@ -651,7 +663,7 @@ pub fn encode_ipc_to_vec(array: &DoraArray) -> eyre::Result<Vec<u8>> {
 /// offsets and message blocks, computed directly without materializing the
 /// data buffer (so it is cheap for a large image/tensor).
 struct Uint8Layout {
-    schema_message: Vec<u8>,
+    schema_message: &'static [u8],
     record_batch_message: Vec<u8>,
     validity_len: usize,
     validity_padded: usize,
@@ -682,7 +694,7 @@ fn uint8_layout(data_len: usize) -> eyre::Result<Uint8Layout> {
         IpcBuffer::new(validity_padded as i64, data_len as i64),
     ];
     let record_batch_message = build_record_batch_message(data_len, &nodes, &buffers, body_len);
-    let schema_message = build_schema_message(&DataType::UInt8)?;
+    let schema_message = uint8_schema_message()?;
     let schema_block = round_up(PREFIX_LEN + schema_message.len(), ALIGN);
     let record_batch_block = round_up(PREFIX_LEN + record_batch_message.len(), ALIGN);
     let total = schema_block + record_batch_block + body_len + PREFIX_LEN;
@@ -788,7 +800,7 @@ fn encode_uint8_prepared_into(
         );
     }
     let mut at = 0;
-    at += write_framed_message(dst, at, &layout.schema_message);
+    at += write_framed_message(dst, at, layout.schema_message);
     at += write_framed_message(dst, at, &layout.record_batch_message);
     let body_start = at;
 

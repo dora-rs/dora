@@ -18,6 +18,3 @@ serde_yaml = { workspace = true }
 eyre = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3"
-
-[dev-dependencies]
-tempfile = { workspace = true }
