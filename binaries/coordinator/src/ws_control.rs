@@ -146,11 +146,19 @@ async fn await_reply_forwarding_pushes(
         }
     };
     // Lines the event loop queued before answering belong ahead of the
-    // reply: a CLI that exits on it would lose them.
-    while let Ok(log_json) = log_rx.try_recv() {
+    // reply: a CLI that exits on it would lose them. Flush only what is queued
+    // now, though: draining until empty would let a producer that outpaces the
+    // socket hold the reply back for as long as its burst lasts.
+    for _ in 0..log_rx.len() {
+        let Ok(log_json) = log_rx.try_recv() else {
+            break;
+        };
         send_log_line(ws_tx, log_json).await?;
     }
-    while let Ok(frame) = binary_rx.try_recv() {
+    for _ in 0..binary_rx.len() {
+        let Ok(frame) = binary_rx.try_recv() else {
+            break;
+        };
         send_topic_frame(ws_tx, frame).await?;
     }
     Ok(match reply {
