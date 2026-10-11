@@ -725,6 +725,11 @@ impl Daemon {
                         .get_mut(&dataflow_id)
                         .ok_or_else(|| eyre!("dataflow disappeared during spawn"))?;
 
+                    // A re-added id may still hold the `dora/logs` entries of
+                    // an earlier incarnation that exited without `RemoveNode`
+                    // (they are kept across a crash for its restart).
+                    dataflow.unsubscribe_node_from_logs(&node_id);
+
                     // Register inputs (open_inputs, mappings, timers, deadlines)
                     for (input_id, input) in &inputs {
                         dataflow
@@ -889,9 +894,7 @@ impl Daemon {
                     // Cancels the timer task of any interval left with no
                     // subscribers (#2585); see the method for details.
                     dataflow.unsubscribe_node_from_timers(&node_id);
-                    dataflow
-                        .log_subscribers
-                        .retain(|sub| sub.node_id != node_id);
+                    dataflow.unsubscribe_node_from_logs(&node_id);
 
                     // Clean up remaining state for this node.
                     if dataflow

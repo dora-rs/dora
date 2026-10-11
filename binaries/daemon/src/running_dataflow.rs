@@ -752,6 +752,18 @@ impl RunningDataflow {
         Ok(())
     }
 
+    /// Drop every `dora/logs` subscription `node_id` holds.
+    ///
+    /// A subscriber's entry outlives its channel: it is the node's logs edge,
+    /// kept while the node is down so a restarted incarnation keeps receiving
+    /// logs. So `RemoveNode` must drop it explicitly, and `AddNode` must drop
+    /// any stale entry before registering the node's inputs again — otherwise a
+    /// re-added id gets every log line once per entry, and keeps receiving on
+    /// an input id its new incarnation no longer declares.
+    pub(crate) fn unsubscribe_node_from_logs(&mut self, node_id: &NodeId) {
+        self.log_subscribers.retain(|sub| &sub.node_id != node_id);
+    }
+
     /// Drop `node_id` from every timer subscriber set, and for any interval it
     /// was the *last* subscriber of, cancel that interval's timer task and
     /// forget the now-empty entry.
