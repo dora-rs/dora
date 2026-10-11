@@ -63,6 +63,14 @@ impl serde::Serialize for TypedValue<'_> {
                 input.len()
             )))?;
         }
+        // A null message, e.g. a null element of an `Inner[]` sequence, would
+        // otherwise go out as its masked child values.
+        if !input.is_empty() && input.is_null(0) {
+            Err(error(format!(
+                "a {} message is null, but ROS2 messages cannot represent null",
+                self.type_info.message_name
+            )))?;
+        }
         let mut s = serializer.serialize_tuple_struct(DUMMY_STRUCT_NAME, message.members.len())?;
         for field in message.members.iter() {
             let column: Cow<_> = match input.column_by_name(&field.name) {
@@ -475,5 +483,91 @@ mod tests {
             err.contains("inner is null"),
             "expected a null-rejection error, got: {err}"
         );
+    }
+
+    /// A null element of a sequence or array of messages must error too: its
+    /// child columns still hold values (here `x = 0`).
+    #[test]
+    fn null_nested_message_element_is_rejected() {
+        use arrow::array::ListArray;
+        use arrow::buffer::OffsetBuffer;
+        use dora_ros2_bridge_msg_gen::types::primitives::NamedType;
+        use dora_ros2_bridge_msg_gen::types::sequences::{Array, Sequence};
+
+        let inner_type = || NestableType::NamedType(NamedType("Inner".to_string()));
+        let inner_fields = vec![Arc::new(Field::new("x", DataType::Int32, true))];
+        let items = |nulls| {
+            let inner = StructArray::new(
+                inner_fields.clone().into(),
+                vec![Arc::new(Int32Array::from(vec![1, 0])) as ArrayRef],
+                nulls,
+            );
+            let item_field = Arc::new(Field::new(
+                "item",
+                DataType::Struct(inner_fields.clone().into()),
+                true,
+            ));
+            let list = ListArray::new(
+                item_field.clone(),
+                OffsetBuffer::from_lengths([2]),
+                Arc::new(inner),
+                None,
+            );
+            struct_of("items", DataType::List(item_field), Arc::new(list))
+        };
+
+        for member_type in [
+            MemberType::Sequence(Sequence {
+                value_type: inner_type(),
+            }),
+            MemberType::Array(Array {
+                value_type: inner_type(),
+                size: 2,
+            }),
+        ] {
+            let messages = Arc::new(HashMap::from([(
+                "test_msgs".to_string(),
+                HashMap::from([
+                    (
+                        "OneField".to_string(),
+                        Message {
+                            package: "test_msgs".to_string(),
+                            name: "OneField".to_string(),
+                            members: vec![Member {
+                                name: "items".to_string(),
+                                r#type: member_type.clone(),
+                                default: None,
+                            }],
+                            constants: vec![],
+                        },
+                    ),
+                    (
+                        "Inner".to_string(),
+                        Message {
+                            package: "test_msgs".to_string(),
+                            name: "Inner".to_string(),
+                            members: vec![Member {
+                                name: "x".to_string(),
+                                r#type: MemberType::NestableType(NestableType::BasicType(
+                                    BasicType::I32,
+                                )),
+                                default: None,
+                            }],
+                            constants: vec![],
+                        },
+                    ),
+                ]),
+            )]));
+            assert!(
+                serialize(&messages, &items(None)).is_ok(),
+                "{member_type:?} without nulls must serialize"
+            );
+            let err = serialize(&messages, &items(Some(NullBuffer::from(vec![true, false]))))
+                .unwrap_err();
+            assert!(
+                err.contains("Inner message is null"),
+                "{member_type:?}: expected a null-rejection error, got: {err}"
+            );
+        }
     }
 }
