@@ -2110,6 +2110,7 @@ async fn start_topic_debug_stream_rollback_reaches_every_started_daemon() {
     #[derive(Clone, Copy, PartialEq)]
     enum Behavior {
         RejectStart,
+        DropStartReply,
         DropStopReply,
         Accept,
     }
@@ -2120,16 +2121,18 @@ async fn start_topic_debug_stream_rollback_reaches_every_started_daemon() {
         tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
 
     // Daemons are visited in `DaemonId` order, so `daemon-b` (whose stop
-    // fails) comes before `daemon-c` (which must still get one).
+    // fails) comes before `daemon-c` (which must still get one). `daemon-d`
+    // may have started streaming although its start reply got lost.
     let daemons = [
         ("daemon-a", "sender", Behavior::RejectStart),
         ("daemon-b", "relay", Behavior::DropStopReply),
         ("daemon-c", "sink", Behavior::Accept),
+        ("daemon-d", "logger", Behavior::DropStartReply),
     ];
 
     let mut daemon_connections = DaemonConnections::default();
     let mut daemon_tasks = Vec::new();
-    let stop_seen_by_c = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped_daemons = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
     let mut node_daemons = Vec::new();
     for (name, node, behavior) in daemons {
         let daemon_id = DaemonId::new(Some(name.to_string()));
@@ -2143,7 +2146,7 @@ async fn start_topic_debug_stream_rollback_reaches_every_started_daemon() {
             crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
         daemon_connections.add(daemon_id, connection);
 
-        let stop_seen_by_c = stop_seen_by_c.clone();
+        let stopped_daemons = stopped_daemons.clone();
         daemon_tasks.push(tokio::spawn(async move {
             while let Some(outbound) = rx.recv().await {
                 let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
@@ -2155,6 +2158,9 @@ async fn start_topic_debug_stream_rollback_reaches_every_started_daemon() {
                     .expect("pending reply sender should exist");
                 let reply = match outbound_raw.params.inner {
                     DaemonCoordinatorEvent::StartTopicDebugStream { .. } => {
+                        if behavior == Behavior::DropStartReply {
+                            continue;
+                        }
                         DaemonCoordinatorReply::StartTopicDebugStreamResult(
                             if behavior == Behavior::RejectStart {
                                 Err("daemon rejected debug stream".to_string())
@@ -2168,8 +2174,8 @@ async fn start_topic_debug_stream_rollback_reaches_every_started_daemon() {
                             // Dropping the reply sender fails the coordinator's
                             // `send_and_receive` like a closed connection does.
                             Behavior::DropStopReply => continue,
-                            Behavior::Accept => {
-                                stop_seen_by_c.store(true, std::sync::atomic::Ordering::SeqCst)
+                            Behavior::Accept | Behavior::DropStartReply => {
+                                stopped_daemons.lock().unwrap().insert(name);
                             }
                             Behavior::RejectStart => {
                                 panic!("a daemon that rejected the start must not be stopped")
@@ -2229,15 +2235,18 @@ async fn start_topic_debug_stream_rollback_reaches_every_started_daemon() {
         "the daemon's rejection must be returned, got: {err:#}"
     );
     // The rollback stops are sent from a spawned task.
+    let expected = BTreeSet::from(["daemon-c", "daemon-d"]);
     let stopped = timeout(TokioDuration::from_secs(10), async {
-        while !stop_seen_by_c.load(std::sync::atomic::Ordering::SeqCst) {
+        while *stopped_daemons.lock().unwrap() != expected {
             tokio::time::sleep(TokioDuration::from_millis(5)).await;
         }
     })
     .await;
     assert!(
         stopped.is_ok(),
-        "daemon-c must be stopped even though daemon-b's stop failed"
+        "daemon-c must be stopped even though daemon-b's stop failed, and \
+         daemon-d although its start reply got lost; stopped: {:?}",
+        stopped_daemons.lock().unwrap()
     );
     assert!(running_dataflows[&dataflow_id].topic_subscribers.is_empty());
 
