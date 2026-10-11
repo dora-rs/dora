@@ -562,18 +562,25 @@ output:
 `foxglove.CompressedImage` messages, which Foxglove renders. Everything else is
 exported as with `arrow`. An output counts as an image when:
 
-- the dataflow declares it in `output_types` as `std/media/v1/Image` (a struct
-  of `width`, `height`, `encoding`, `data`) or `std/media/v1/CompressedImage`.
-  The compressed format comes from `[format=jpeg]` on the type, a `format`
-  metadata parameter, or the data's file signature (JPEG, PNG, WebP, AVIF);
+- the dataflow declares it in `output_types` (of a node, its `operator`, or one
+  of its `operators`) as `std/media/v1/Image` or
+  `std/media/v1/CompressedImage`. An `Image` may be sent as the `width`,
+  `height`, `encoding`, `data` struct or with the camera metadata below. A
+  `CompressedImage`'s format comes from `[format=jpeg]` on the type, a
+  `format` or `encoding` metadata parameter, or the data's file signature
+  (JPEG, PNG, WebP, AVIF);
 - or, undeclared, its messages carry `width`, `height` and `encoding` metadata
-  parameters next to a flat `uint8` payload, the convention the camera
-  examples use.
+  parameters next to a flat array, the convention of the dora-hub camera nodes.
+  `jpeg`/`png`/`webp`/`avif` frames become `CompressedImage`; the raw encodings
+  Foxglove lists (`rgb8`, `bgr8`, `mono8`, `mono16`, `nv12`, ...) become
+  `RawImage`, with `uint8`, `uint16`, `int16` or `float32` pixel data.
 
-A `frame_id` metadata parameter becomes the image's `frame_id`. Image data is
-base64 in JSON, so these channels are about a third larger than the raw bytes.
-A message on an image topic that cannot be converted, for example pixel data
-that is not a whole number of rows, is dropped and reported at the end.
+An undeclared output that isn't one of these (or doesn't match its metadata)
+stays Arrow. A message on a declared image output that can't be converted, for
+example pixel data that doesn't fit `width` x `height`, is dropped and
+reported at the end. A `frame_id` metadata parameter becomes the image's
+`frame_id`. Image data is base64 in JSON, so these channels are about a third
+larger than the raw bytes.
 
 The output is written to a temporary file next to the destination and renamed
 into place only once the export completes, so a failed export never leaves a

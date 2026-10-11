@@ -80,14 +80,16 @@ enum Declared {
 
 /// Which outputs are images, from the dataflow descriptor in the recording.
 pub(super) struct Mapper {
-    /// node id -> output id -> declared image type
+    /// node id -> output id -> declared image type. Operator outputs are
+    /// keyed `<operator id>/<output id>`, the way they are recorded.
     declared: HashMap<String, HashMap<String, Declared>>,
 }
 
 impl Mapper {
-    /// Reads `nodes[].output_types` from the recorded descriptor. A descriptor
-    /// that does not parse just declares nothing: export still works, using
-    /// the metadata convention only.
+    /// Reads the `output_types` of each node and of its operators from the
+    /// recorded descriptor (the user's YAML). A descriptor that does not parse
+    /// just declares nothing: export still works, using the camera metadata
+    /// convention only.
     pub(super) fn from_descriptor_yaml(yaml: &str) -> Self {
         let mut declared: HashMap<String, HashMap<String, Declared>> = HashMap::new();
         let Ok(descriptor) = serde_yaml::from_str::<serde_yaml::Value>(yaml) else {
@@ -100,27 +102,20 @@ impl Mapper {
             let Some(node_id) = node.get("id").and_then(|id| id.as_str()) else {
                 continue;
             };
-            let types = node.get("output_types").and_then(|t| t.as_mapping());
-            for (output_id, urn) in types.into_iter().flatten() {
-                let (Some(output_id), Some(urn)) = (output_id.as_str(), urn.as_str()) else {
-                    continue;
-                };
-                let Some(urn) = dora_core::types::parse_urn(urn) else {
-                    continue;
-                };
-                let image = match urn.base.as_str() {
-                    "std/media/v1/Image" | "Image" => Declared::Image,
-                    "std/media/v1/CompressedImage" | "CompressedImage" => {
-                        Declared::CompressedImage {
-                            format: urn.params.get("format").cloned(),
-                        }
-                    }
-                    _ => continue,
-                };
-                declared
-                    .entry(node_id.to_owned())
-                    .or_default()
-                    .insert(output_id.to_owned(), image);
+            let outputs = declared.entry(node_id.to_owned()).or_default();
+            add_declared(outputs, node, None);
+            if let Some(operator) = node.get("operator") {
+                let operator_id = operator
+                    .get("id")
+                    .and_then(|id| id.as_str())
+                    .unwrap_or(dora_core::descriptor::SINGLE_OPERATOR_DEFAULT_ID);
+                add_declared(outputs, operator, Some(operator_id));
+            }
+            let operators = node.get("operators").and_then(|ops| ops.as_sequence());
+            for operator in operators.into_iter().flatten() {
+                if let Some(operator_id) = operator.get("id").and_then(|id| id.as_str()) {
+                    add_declared(outputs, operator, Some(operator_id));
+                }
             }
         }
         Self { declared }
@@ -137,28 +132,78 @@ impl Mapper {
             .declared
             .get(node_id)
             .and_then(|outputs| outputs.get(output_id));
-        let (kind, json) = match declared {
-            Some(Declared::Image) => (Kind::RawImage, image_struct(metadata, data)),
-            Some(Declared::CompressedImage { format }) => (
-                Kind::CompressedImage,
-                compressed_image(metadata, data, format.as_deref()),
-            ),
+        match declared {
+            Some(Declared::Image) => {
+                // Declared images come either as the `Image` struct or, like
+                // the README's camera, as a flat array with camera metadata.
+                let result = match decode(data) {
+                    Ok(array) if array.as_struct_opt().is_some() => {
+                        image_struct(metadata, &array).map(|json| (Kind::RawImage, json))
+                    }
+                    _ => camera_frame(metadata, data).unwrap_or_else(|| {
+                        Err(
+                            "expected an `Image` struct, or width/height/encoding metadata"
+                                .to_string(),
+                        )
+                    }),
+                };
+                match result {
+                    Ok((kind, json)) => Recognition::Converted(kind, json),
+                    Err(reason) => Recognition::Failed(Kind::RawImage, reason),
+                }
+            }
+            Some(Declared::CompressedImage { format }) => {
+                match compressed_image(metadata, data, format.as_deref()) {
+                    Ok(json) => Recognition::Converted(Kind::CompressedImage, json),
+                    Err(reason) => Recognition::Failed(Kind::CompressedImage, reason),
+                }
+            }
+            // Not declared: only an image if it converts cleanly. Anything
+            // else (no camera metadata, an encoding Foxglove can't show, a
+            // payload that doesn't match) stays Arrow instead of being dropped.
             None => match camera_frame(metadata, data) {
-                Some(json) => (Kind::RawImage, json),
-                None => return Recognition::NotRecognised,
+                Some(Ok((kind, json))) => Recognition::Converted(kind, json),
+                _ => Recognition::NotRecognised,
             },
-        };
-        match json {
-            Ok(json) => Recognition::Converted(kind, json),
-            Err(reason) => Recognition::Failed(kind, reason),
         }
     }
 }
 
-/// A declared `std/media/v1/Image`: a one-row struct of
-/// `width`, `height`, `encoding`, `data`.
-fn image_struct(metadata: &Metadata, data: Option<&[u8]>) -> Result<Vec<u8>, String> {
-    let array = decode(data)?;
+/// Records the image types in `entry`'s `output_types`, keyed by output id,
+/// prefixed with `operator_id/` for an operator.
+fn add_declared(
+    outputs: &mut HashMap<String, Declared>,
+    entry: &serde_yaml::Value,
+    operator_id: Option<&str>,
+) {
+    let types = entry.get("output_types").and_then(|t| t.as_mapping());
+    for (output_id, urn) in types.into_iter().flatten() {
+        let (Some(output_id), Some(urn)) = (output_id.as_str(), urn.as_str()) else {
+            continue;
+        };
+        let Some(urn) = dora_core::types::parse_urn(urn) else {
+            continue;
+        };
+        // Full URNs only: `dora validate` does not resolve short names in
+        // `output_types` either.
+        let image = match urn.base.as_str() {
+            "std/media/v1/Image" => Declared::Image,
+            "std/media/v1/CompressedImage" => Declared::CompressedImage {
+                format: urn.params.get("format").cloned(),
+            },
+            _ => continue,
+        };
+        let key = match operator_id {
+            Some(operator_id) => format!("{operator_id}/{output_id}"),
+            None => output_id.to_owned(),
+        };
+        outputs.insert(key, image);
+    }
+}
+
+/// A declared `std/media/v1/Image` struct: one row of `width`, `height`,
+/// `encoding`, `data`.
+fn image_struct(metadata: &Metadata, array: &ArrayRef) -> Result<Vec<u8>, String> {
     let image = array
         .as_struct_opt()
         .ok_or_else(|| format!("expected a struct, got {}", array.data_type()))?;
@@ -182,14 +227,19 @@ fn image_struct(metadata: &Metadata, data: Option<&[u8]>) -> Result<Vec<u8>, Str
         other => return Err(format!("`encoding` must be a string, got {other}")),
     };
     let pixels = bytes(field("data")?.as_ref())
-        .ok_or_else(|| "`data` must be binary or uint8".to_string())?;
+        .ok_or_else(|| "`data` must be binary or a flat numeric array".to_string())?;
     raw_image(metadata, width, height, encoding, pixels)
 }
 
-/// The camera convention: a flat `uint8` payload with `width`, `height` and
-/// `encoding` in the metadata. `None` when the metadata does not describe an
-/// image, so the output is exported as Arrow.
-fn camera_frame(metadata: &Metadata, data: Option<&[u8]>) -> Option<Result<Vec<u8>, String>> {
+/// The camera convention (dora-hub's `opencv-video-capture`,
+/// `dora-pyrealsense`, the examples): a flat array with `width`, `height` and
+/// `encoding` metadata. JPEG/PNG/WebP/AVIF become `CompressedImage`, the raw
+/// encodings Foxglove lists become `RawImage`. `None` when the metadata does
+/// not describe an image.
+fn camera_frame(
+    metadata: &Metadata,
+    data: Option<&[u8]>,
+) -> Option<Result<(Kind, Vec<u8>), String>> {
     let params = &metadata.parameters;
     let (
         Some(Parameter::Integer(width)),
@@ -204,12 +254,21 @@ fn camera_frame(metadata: &Metadata, data: Option<&[u8]>) -> Option<Result<Vec<u
         return None;
     };
     Some((|| {
-        let width = u64::try_from(*width).map_err(|_| format!("negative width {width}"))?;
-        let height = u64::try_from(*height).map_err(|_| format!("negative height {height}"))?;
         let array = decode(data)?;
         let pixels = bytes(array.as_ref())
-            .ok_or_else(|| format!("expected uint8 pixels, got {}", array.data_type()))?;
-        raw_image(metadata, width, height, encoding, pixels)
+            .ok_or_else(|| format!("expected a flat image array, got {}", array.data_type()))?;
+        if let Some(format) = compressed_format(encoding) {
+            return Ok((
+                Kind::CompressedImage,
+                compressed_json(metadata, pixels, format)?,
+            ));
+        }
+        let width = u64::try_from(*width).map_err(|_| format!("negative width {width}"))?;
+        let height = u64::try_from(*height).map_err(|_| format!("negative height {height}"))?;
+        Ok((
+            Kind::RawImage,
+            raw_image(metadata, width, height, encoding, pixels)?,
+        ))
     })())
 }
 
@@ -220,17 +279,24 @@ fn raw_image(
     encoding: &str,
     pixels: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let rows = usize::try_from(height).map_err(|_| format!("height {height} is too large"))?;
+    let bytes_per_pixel = raw_bytes_per_pixel(encoding)
+        .ok_or_else(|| format!("`{encoding}` is not an encoding Foxglove can display"))?;
+    // NV12 is a full-height Y plane followed by a half-height UV plane, so
+    // its data holds 1.5 x `height` rows of `step` bytes.
+    let rows = if encoding == "nv12" {
+        height.saturating_add(height / 2)
+    } else {
+        height
+    };
+    let rows = usize::try_from(rows).map_err(|_| format!("height {height} is too large"))?;
     if rows == 0 || !pixels.len().is_multiple_of(rows) {
         return Err(format!(
-            "{} bytes of pixel data are not {height} equal rows",
+            "{} bytes of `{encoding}` data are not whole rows of a {width}x{height} image",
             pixels.len()
         ));
     }
     let step = pixels.len() / rows;
-    if let Some(bytes_per_pixel) = bytes_per_pixel(encoding)
-        && (step as u64) < width.saturating_mul(bytes_per_pixel)
-    {
+    if (step as u64) < width.saturating_mul(bytes_per_pixel) {
         return Err(format!(
             "rows of {step} bytes cannot hold {width} `{encoding}` pixels"
         ));
@@ -247,22 +313,33 @@ fn raw_image(
     serde_json::to_vec(&json).map_err(|err| err.to_string())
 }
 
-/// Bytes per pixel of the packed encodings Foxglove lists for `RawImage`;
-/// `None` for the subsampled YUV ones and anything unknown, which are not
-/// checked.
-fn bytes_per_pixel(encoding: &str) -> Option<u64> {
+/// Bytes per pixel (of the first plane) for the raw encodings Foxglove's
+/// `RawImage` lists; `None` for anything it can't display.
+fn raw_bytes_per_pixel(encoding: &str) -> Option<u64> {
     match encoding {
-        "mono8" | "8UC1" | "bayer_rggb8" | "bayer_bggr8" | "bayer_gbrg8" | "bayer_grbg8" => Some(1),
-        "mono16" | "16UC1" => Some(2),
+        "mono8" | "8UC1" | "nv12" | "bayer_rggb8" | "bayer_bggr8" | "bayer_gbrg8"
+        | "bayer_grbg8" => Some(1),
+        "mono16" | "16UC1" | "yuv422" | "uyvy" | "yuv422_yuy2" | "yuyv" => Some(2),
         "rgb8" | "bgr8" | "8UC3" => Some(3),
         "rgba8" | "bgra8" | "32FC1" => Some(4),
         _ => None,
     }
 }
 
+/// The `foxglove.CompressedImage` format for an encoding name, if it is one.
+fn compressed_format(encoding: &str) -> Option<&'static str> {
+    match encoding.to_ascii_lowercase().as_str() {
+        "jpeg" | "jpg" | "jpe" => Some("jpeg"),
+        "png" => Some("png"),
+        "webp" => Some("webp"),
+        "avif" => Some("avif"),
+        _ => None,
+    }
+}
+
 /// A declared `std/media/v1/CompressedImage`: one binary value. The format is
-/// the URN's `format` parameter, else a `format` metadata parameter, else
-/// detected from the file signature.
+/// the URN's `format` parameter, else a `format` or `encoding` metadata
+/// parameter, else detected from the file signature.
 fn compressed_image(
     metadata: &Metadata,
     data: Option<&[u8]>,
@@ -271,16 +348,26 @@ fn compressed_image(
     let array = decode(data)?;
     let encoded = bytes(array.as_ref())
         .ok_or_else(|| format!("expected binary image data, got {}", array.data_type()))?;
-    let format = match (declared_format, metadata.parameters.get("format")) {
-        (Some(format), _) => format,
-        (None, Some(Parameter::String(format))) => format.as_str(),
-        _ => detect_format(encoded)
-            .ok_or_else(|| "unknown compressed image format; declare it as `std/media/v1/CompressedImage[format=jpeg]`".to_string())?,
+    let named = declared_format.or_else(|| {
+        ["format", "encoding"]
+            .iter()
+            .find_map(|key| match metadata.parameters.get(*key) {
+                Some(Parameter::String(value)) => Some(value.as_str()),
+                _ => None,
+            })
+    });
+    let format = match named {
+        Some(name) => compressed_format(name)
+            .ok_or_else(|| format!("`{name}` is not a format Foxglove can display"))?,
+        None => detect_format(encoded).ok_or_else(|| {
+            "unknown compressed image format; declare it as `std/media/v1/CompressedImage[format=jpeg]`"
+                .to_string()
+        })?,
     };
-    let format = match format.to_ascii_lowercase().as_str() {
-        "jpg" => "jpeg".to_owned(),
-        other => other.to_owned(),
-    };
+    compressed_json(metadata, encoded, format)
+}
+
+fn compressed_json(metadata: &Metadata, encoded: &[u8], format: &str) -> Result<Vec<u8>, String> {
     let json = serde_json::json!({
         "timestamp": timestamp(metadata),
         "frame_id": frame_id(metadata),
@@ -324,14 +411,46 @@ fn decode(data: Option<&[u8]>) -> Result<ArrayRef, String> {
     Ok(batch.column(0).clone())
 }
 
-/// The bytes of a one-value binary array or of a flat `uint8` array.
+/// The bytes of a one-value binary array, or the value buffer of a flat
+/// array without nulls: `uint8` pixels, `uint16` / `int16` (e.g. `mono16`
+/// depth) or `float32` (`32FC1`). Arrow buffers are little-endian on every
+/// platform dora ships for, matching what Foxglove expects.
 fn bytes(array: &dyn Array) -> Option<&[u8]> {
+    use arrow::datatypes::{Float32Type, Int16Type, UInt16Type};
+    if array.null_count() != 0 {
+        return None;
+    }
     match array.data_type() {
         DataType::Binary if array.len() == 1 => Some(array.as_binary::<i32>().value(0)),
         DataType::LargeBinary if array.len() == 1 => Some(array.as_binary::<i64>().value(0)),
-        DataType::UInt8 if array.null_count() == 0 => {
-            Some(array.as_primitive::<UInt8Type>().values())
-        }
+        DataType::UInt8 => Some(
+            array
+                .as_primitive::<UInt8Type>()
+                .values()
+                .inner()
+                .as_slice(),
+        ),
+        DataType::UInt16 => Some(
+            array
+                .as_primitive::<UInt16Type>()
+                .values()
+                .inner()
+                .as_slice(),
+        ),
+        DataType::Int16 => Some(
+            array
+                .as_primitive::<Int16Type>()
+                .values()
+                .inner()
+                .as_slice(),
+        ),
+        DataType::Float32 => Some(
+            array
+                .as_primitive::<Float32Type>()
+                .values()
+                .inner()
+                .as_slice(),
+        ),
         _ => None,
     }
 }
