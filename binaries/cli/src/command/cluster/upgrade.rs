@@ -11,7 +11,7 @@ use crate::{
 };
 
 use super::config::ClusterConfig;
-use super::{query_connected_daemons, run_ssh, ssh_target};
+use super::{query_connected_daemons, run_ssh, scp_target, ssh_target};
 
 /// Rolling upgrade: SCP the local dora binary to each machine and restart daemons.
 ///
@@ -58,7 +58,10 @@ impl Executable for Upgrade {
                 // scp uses `-P` (capital) for the port; `-p` means "preserve mtimes"
                 scp.args(["-P", &p.to_string()]);
             }
-            scp.args([local_binary_str, &format!("{target}:/usr/local/bin/dora")]);
+            scp.args([
+                local_binary_str,
+                &scp_target(machine, "/usr/local/bin/dora"),
+            ]);
             let scp_status = scp.status();
 
             match scp_status {

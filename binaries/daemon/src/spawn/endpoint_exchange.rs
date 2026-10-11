@@ -542,7 +542,10 @@ async fn probe_link(
                          daemon of this dataflow has spawned: this daemon has no zenoh link \
                          to it (yet). Without the link nothing its nodes send can reach the \
                          nodes here — not even over the daemon path — and the dataflow \
-                         cannot finish. Probing again for up to {LINK_PROBE_DEADLINE:?}",
+                         cannot finish. Probing again for up to {LINK_PROBE_DEADLINE:?}. \
+                         For same-host daemons with a 1.0.x coordinator, automatic \
+                         loopback discovery still needs multicast; if multicast is unavailable, \
+                         upgrade the coordinator to 1.1.0 or newer",
                         list(&missing)
                     ),
                 )
@@ -555,8 +558,11 @@ async fn probe_link(
                     format!(
                         "still no zenoh link to {} after {:?}: this dataflow's inputs from \
                          its nodes will never arrive and it will not finish. Daemons on one \
-                         host link through the coordinator as long as both reach it over \
-                         loopback; daemons on different hosts need the coordinator on a \
+                         host discover each other automatically through a 1.1.0 or newer \
+                         coordinator as long as both reach it over loopback; with a 1.0.x \
+                         coordinator automatic loopback discovery still needs multicast, so upgrade \
+                         the coordinator if multicast is unavailable. \
+                         Daemons on different hosts need the coordinator on a \
                          routable address (`dora up --interface`), \
                          `--zenoh-peer`/`--zenoh-listen`, or working multicast — see \
                          docs/multi-machine.md. (A daemon from a dora release before this \
@@ -1062,19 +1068,29 @@ mod tests {
             "the declare must finish after its waiter gave up: {answered:?}"
         );
 
-        drop(handle);
-        let (_, answered) = collect(
-            &b,
-            dataflow,
-            &Wanted::new(),
-            &on_machine("A"),
-            Duration::from_millis(500),
-        )
-        .await;
-        assert!(
-            answered.is_empty(),
-            "dropping the handle undeclares the queryable: {answered:?}"
-        );
+        // Aborting only requests cancellation, and the undeclare then has to
+        // reach `b`: wait for the task to end, then for `b` to stop seeing
+        // the queryable, instead of assuming both happen within one query.
+        handle.abort();
+        let _ = handle.await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let (_, answered) = collect(
+                &b,
+                dataflow,
+                &Wanted::new(),
+                &on_machine("A"),
+                Duration::from_millis(500),
+            )
+            .await;
+            if answered.is_empty() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "dropping the handle undeclares the queryable: {answered:?}"
+            );
+        }
     }
 
     /// The probe that runs after an unanswered exchange returns as soon as the

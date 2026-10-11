@@ -9,8 +9,9 @@ use eyre::bail;
 /// Disconnect two nodes in a running dataflow (remove a mapping).
 ///
 /// Example:
-///   dora node disconnect demo sender/value filter/input
+///   dora node disconnect -d demo sender/value filter/input
 #[derive(Debug, clap::Args)]
+#[clap(verbatim_doc_comment)]
 pub struct Disconnect {
     #[clap(flatten)]
     coordinator: CoordinatorOptions,

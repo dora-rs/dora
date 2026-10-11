@@ -259,7 +259,13 @@ impl TracingBuilder {
             &env_log,
             "dora_daemon",
             "dora_daemon=debug",
-        );
+        )
+        // Keep zenoh's trace-level logs out of the OTLP export: they carry each
+        // message Debug-formatted, payload included, and formatting every payload
+        // on the hot path is prohibitive for large messages. Unconditional:
+        // unlike `dora_daemon` above, a `RUST_LOG` zenoh directive is
+        // deliberately not honoured on this layer.
+        .add_directive(directive("zenoh=warn"));
         self.layers.push(
             OpenTelemetryLayer::new(tracer)
                 .with_filter(filter_otel)

@@ -200,3 +200,61 @@ async fn multiple_complete_servers_remote_errors_and_disappearance_are_observabl
         Err(ServiceError::Timeout)
     ));
 }
+
+/// A session whose Zenoh-level query timeout is shorter than the per-call
+/// timeouts below, standing in for the 10 s `queries_default_timeout` that
+/// capped every rmw_zenoh service and action call (#3742).
+async fn session_with_short_default_query_timeout() -> zenoh::Session {
+    let mut config = zenoh::Config::default();
+    config
+        .insert_json5("queries_default_timeout", "100")
+        .unwrap();
+    zenoh::open(config).await.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn call_timeout_is_not_capped_by_the_session_default_query_timeout() {
+    use dora_ros2_bridge::transport::zenoh::service::{RawServiceClient, RawServiceServer};
+
+    let session = session_with_short_default_query_timeout().await;
+    let server = RawServiceServer::declare(&session, "dora/test/slow", 64, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let client = RawServiceClient::declare(&session, "dora/test/slow", [7; 16], 64)
+        .await
+        .unwrap();
+
+    let worker = tokio::spawn(async move {
+        let request = server.recv().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        server.reply(request.id, &request.payload).await.unwrap();
+    });
+    let reply = client
+        .call(vec![0, 1, 0, 0, 3], Duration::from_secs(2))
+        .await;
+    assert_eq!(reply.unwrap(), vec![0, 1, 0, 0, 3]);
+    worker.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unanswered_call_reports_timeout_at_the_callers_deadline() {
+    use dora_ros2_bridge::transport::zenoh::service::{RawServiceClient, RawServiceServer};
+
+    let session = session_with_short_default_query_timeout().await;
+    // Declared but never answers.
+    let _server =
+        RawServiceServer::declare(&session, "dora/test/silent", 64, Duration::from_secs(30))
+            .await
+            .unwrap();
+    let client = RawServiceClient::declare(&session, "dora/test/silent", [8; 16], 64)
+        .await
+        .unwrap();
+
+    let start = Instant::now();
+    let result = client.call(vec![1], Duration::from_millis(300)).await;
+    assert!(
+        matches!(result, Err(ServiceError::Timeout)),
+        "expected ServiceError::Timeout, got {result:?}"
+    );
+    assert!(start.elapsed() >= Duration::from_millis(300));
+}

@@ -1,14 +1,17 @@
 use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 
 use clap::Args;
-use dora_core::descriptor::Descriptor;
+use dora_core::descriptor::{Descriptor, Node};
 use dora_message::{
-    common::Timestamped, coordinator_to_cli::DataflowIdAndName, daemon_to_daemon::InterDaemonEvent,
-    id::NodeId,
+    common::Timestamped,
+    coordinator_to_cli::DataflowIdAndName,
+    daemon_to_daemon::InterDaemonEvent,
+    id::{DataId, NodeId},
+    metadata::strip_internal_parameters,
 };
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::{Context, bail};
@@ -17,8 +20,8 @@ use crate::command::{Executable, Run, default_tracing, topic::selector::public_t
 
 /// Wall-clock nanoseconds since the Unix epoch, falling back to `0` when the
 /// clock is set before 1970 (e.g. an embedded target booting with an unset RTC
-/// before NTP sync) rather than panicking. Using the same fallback for both the
-/// recording base and each entry keeps `timestamp_offset_nanos` consistent.
+/// before NTP sync) rather than panicking. Only the header's `start_nanos`
+/// uses it; entry offsets are measured on the monotonic clock instead.
 fn epoch_nanos() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -130,6 +133,25 @@ impl Executable for Record {
             run_record(self)
         }
     }
+}
+
+/// Parse the `(node, output)` pairs discovered by the untyped YAML walk into
+/// typed ids for the WS topic subscription.
+///
+/// The walk accepts any string, so both ids go through the fallible
+/// `parse` -- `DataId`'s `From<String>` panics on an invalid id.
+fn parse_ws_topics(topics: &[(String, String)]) -> eyre::Result<Vec<(NodeId, DataId)>> {
+    topics
+        .iter()
+        .map(|(n, o)| {
+            Ok((
+                n.parse::<NodeId>()
+                    .map_err(|e| eyre::eyre!("invalid node ID in topic: {e}"))?,
+                o.parse::<DataId>()
+                    .map_err(|e| eyre::eyre!("invalid output ID in topic: {e}"))?,
+            ))
+        })
+        .collect()
 }
 
 /// Discover all `(node_id, output_id)` pairs from a parsed descriptor YAML.
@@ -555,22 +577,15 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     };
 
     // Subscribe to topics via WS
-    let ws_topics: Vec<_> = topics
-        .iter()
-        .map(|(n, o)| -> eyre::Result<_> {
-            Ok((
-                n.parse::<NodeId>()
-                    .map_err(|e| eyre::eyre!("invalid node ID in topic: {e}"))?,
-                o.clone().into(),
-            ))
-        })
-        .collect::<eyre::Result<Vec<_>>>()?;
+    let ws_topics = parse_ws_topics(&topics)?;
     let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
     // Set up recording writer. `duration_since(UNIX_EPOCH)` errors when the
     // wall clock is set before 1970; `epoch_nanos` falls back to a zero base
     // rather than panicking the recorder (see its doc).
     let start_nanos = epoch_nanos();
+    // Monotonic base for entry offsets (see `dora_recording::offset_since`).
+    let start = Instant::now();
 
     let header = RecordingHeader {
         version: dora_recording::FORMAT_VERSION,
@@ -650,28 +665,12 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                     Err(_) => continue,
                 };
 
-                // The daemon reports the *wire* output id, which for a single
-                // `operator:` node is `op/image` where the descriptor (and
-                // `replay_node_outputs`) call it `image`. Rewrite it to the
-                // public id in both the entry index and the embedded event, so
-                // a `--proxy` recording is shaped exactly like one from the
-                // record node -- which stores the bare `source_output` in both
-                // places. Left as-is, replay declares `outputs: [image]` and
-                // then calls `send_output("op/image", ..)`; `validate_output`
-                // rejects it, `send_output` still returns `Ok(())`, and every
-                // message is dropped with a single warning (dora-rs/dora#2893).
-                let (node_id, output_id) = match &mut event.inner {
-                    InterDaemonEvent::Output {
-                        node_id, output_id, ..
-                    } => {
-                        if let Some(node) = nodes.get(node_id) {
-                            *output_id = public_topic_output_id(node, output_id);
-                        }
-                        (node_id.to_string(), output_id.to_string())
-                    }
-                    InterDaemonEvent::OutputClosed { .. } => continue,
-                    // `InterDaemonEvent` is `#[non_exhaustive]`: skip events this build predates.
-                    _ => continue,
+                // Rewrite the event in place so a `--proxy` recording is
+                // shaped exactly like one from the record node, which stores
+                // the bare `source_output` in both the entry and the event.
+                let Some((node_id, output_id)) = prepare_proxy_event(&mut event.inner, &nodes)
+                else {
+                    continue;
                 };
 
                 // Re-serialize rather than storing `payload`: the id inside the
@@ -685,12 +684,10 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                     }
                 };
 
-                let now_nanos = epoch_nanos();
-
                 let entry = RecordEntry {
                     node_id,
                     output_id,
-                    timestamp_offset_nanos: now_nanos.saturating_sub(start_nanos),
+                    timestamp_offset_nanos: dora_recording::offset_since(start),
                     event_bytes,
                 };
                 writer.write_entry(&entry)?;
@@ -802,6 +799,42 @@ fn select_dataflow(
     })
 }
 
+/// Shape a debug-topic frame received by `dora record --proxy` like an event
+/// recorded by the record node, returning its `(node_id, output_id)` entry key,
+/// or `None` for an event that isn't an output.
+///
+/// - The daemon reports the *wire* output id, which for a single `operator:`
+///   node is `op/image` where the descriptor (and `replay_node_outputs`) call it
+///   `image`. Rewrite it to the public id, so replay declares and sends the same
+///   id. Left as-is, `send_output("op/image", ..)` is rejected by
+///   `validate_output` and every message is dropped (dora-rs/dora#2893).
+/// - Drop internal parameters, notably the daemon's `_wire_size` stamp. It
+///   exists only for `dora topic info`'s bandwidth accounting on the debug
+///   path; stored in the recording, replay would forward it into every
+///   downstream node's input metadata.
+fn prepare_proxy_event(
+    event: &mut InterDaemonEvent,
+    nodes: &HashMap<NodeId, &Node>,
+) -> Option<(String, String)> {
+    match event {
+        InterDaemonEvent::Output {
+            node_id,
+            output_id,
+            metadata,
+            ..
+        } => {
+            if let Some(node) = nodes.get(node_id) {
+                *output_id = public_topic_output_id(node, output_id);
+            }
+            strip_internal_parameters(&mut metadata.parameters);
+            Some((node_id.to_string(), output_id.to_string()))
+        }
+        // `OutputClosed`, and (`InterDaemonEvent` is `#[non_exhaustive]`)
+        // events this build predates.
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -812,6 +845,48 @@ mod tests {
             uuid: Uuid::new_v4(),
             name: name.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn invalid_output_id_in_proxy_topics_is_an_error_not_a_panic() {
+        let topics = |n: &str, o: &str| vec![(n.to_string(), o.to_string())];
+        assert!(parse_ws_topics(&topics("n", "bad id")).is_err());
+        assert!(parse_ws_topics(&topics("n", "a//b")).is_err());
+        assert!(parse_ws_topics(&topics("n", "/out")).is_err());
+        let parsed = parse_ws_topics(&topics("n", "op/out")).unwrap();
+        assert_eq!(parsed[0].0.to_string(), "n");
+        assert_eq!(parsed[0].1.to_string(), "op/out");
+    }
+
+    #[test]
+    fn proxy_event_drops_the_debug_wire_size_stamp() {
+        use dora_message::metadata::{Metadata, MetadataParameters, Parameter, WIRE_SIZE};
+
+        // The daemon stamps `_wire_size` on every debug frame for `dora topic
+        // info`. A proxy recording must not keep it: replay would forward it
+        // into every downstream node's input metadata.
+        let mut parameters = MetadataParameters::default();
+        parameters.insert(WIRE_SIZE.to_string(), Parameter::Integer(42));
+        parameters.insert("user_key".to_string(), Parameter::Integer(7));
+        let mut event = InterDaemonEvent::Output {
+            dataflow_id: Uuid::new_v4(),
+            node_id: "camera".parse().unwrap(),
+            output_id: "image".parse().unwrap(),
+            metadata: Metadata::from_parameters(
+                dora_message::uhlc::HLC::default().new_timestamp(),
+                parameters,
+            ),
+            data: None,
+        };
+
+        let key = prepare_proxy_event(&mut event, &HashMap::new());
+
+        assert_eq!(key, Some(("camera".to_string(), "image".to_string())));
+        let InterDaemonEvent::Output { metadata, .. } = event else {
+            unreachable!()
+        };
+        assert!(!metadata.parameters.contains_key(WIRE_SIZE));
+        assert!(metadata.parameters.contains_key("user_key"));
     }
 
     fn discovered_topics(yaml: &str) -> Vec<String> {
