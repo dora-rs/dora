@@ -341,6 +341,37 @@ fn check_seconds_field(
     Ok(())
 }
 
+/// Reject a runtime operator id that cannot prefix a `DataId`.
+///
+/// The daemon and the operator runtime expose each operator input/output as
+/// the `DataId` `{operator_id}/{id}`, built with `DataId::from`, which panics
+/// on an invalid id. `OperatorId` itself accepts any string (its `FromStr` is
+/// infallible), so an id such as `my op` or `""` would otherwise pass
+/// validation and crash the daemon when it spawns the node. The id must also
+/// be a single path segment, or the `{operator_id}/{id}` split is ambiguous.
+///
+/// Descriptor resolution (`resolve_aliases_and_set_defaults`) runs this for
+/// every node, so every coordinator path is covered. The daemon also calls it
+/// on the nodes it is asked to spawn, so an older coordinator cannot crash it.
+pub fn check_operator_ids(node: &ResolvedNode) -> eyre::Result<()> {
+    let CoreNodeKind::Runtime(runtime) = &node.kind else {
+        return Ok(());
+    };
+    for operator in &runtime.operators {
+        let id: &str = operator.id.as_ref();
+        if id.contains('/') {
+            bail!(
+                "node `{}`: invalid operator id `{id}`: must not contain `/`",
+                node.id
+            );
+        }
+        if let Err(err) = id.parse::<DataId>() {
+            bail!("node `{}`: invalid operator id `{id}`: {err}", node.id);
+        }
+    }
+    Ok(())
+}
+
 /// All `(input_id, input)` pairs declared on a resolved node: a custom node's
 /// own inputs, or the merged inputs of every operator of a runtime node.
 fn node_inputs(node: &ResolvedNode) -> Vec<(&DataId, &Input)> {
@@ -1514,6 +1545,48 @@ operators:
             err.contains("startup_timeout") && err.contains("non-negative"),
             "error should name the field and the constraint, got: {err}"
         );
+    }
+
+    /// The daemon and the runtime join each operator id with its input and
+    /// output ids into `DataId`s (`{operator}/{id}`), and `DataId::from`
+    /// panics on an invalid one. An operator id that is not itself a valid,
+    /// slash-free `DataId` must therefore be rejected up front, not crash the
+    /// daemon at spawn.
+    #[test]
+    fn invalid_operator_id_is_rejected() {
+        for (form, id) in [
+            ("operators", "my op"),
+            ("operators", "a/b"),
+            ("operators", "\"\""),
+            ("operator", "my op"),
+        ] {
+            let yaml = if form == "operators" {
+                format!(
+                    "nodes:\n  - id: rt\n    operators:\n      - id: {id}\n        \
+                     python: op.py\n        outputs:\n          - out\n"
+                )
+            } else {
+                format!(
+                    "nodes:\n  - id: rt\n    operator:\n      id: {id}\n      \
+                     python: op.py\n      outputs:\n        - out\n"
+                )
+            };
+            let descriptor: Descriptor = serde_yaml::from_str(&yaml).unwrap();
+            let err = check_dataflow_static(&descriptor)
+                .expect_err(&format!("operator id {id:?} ({form}) must be rejected"))
+                .to_string();
+            assert!(
+                err.contains("invalid operator id"),
+                "error should name the operator id problem, got: {err}"
+            );
+        }
+
+        let ok: Descriptor = serde_yaml::from_str(
+            "nodes:\n  - id: rt\n    operators:\n      - id: my-op.v2\n        \
+             python: op.py\n        outputs:\n          - out\n",
+        )
+        .unwrap();
+        check_dataflow_static(&ok).unwrap();
     }
 
     #[test]

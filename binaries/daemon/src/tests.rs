@@ -5,8 +5,9 @@ use crate::coordinator_events::{
 use crate::node_exit::{DEFAULT_FINISH_DRAIN_GRACE, parse_finish_drain_grace};
 use crate::pending::DataflowStatus;
 use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
+use crate::test_tracing::LevelCapture;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
-use std::sync::{Arc, Mutex};
 
 use aligned_vec::AVec;
 use crossbeam::queue::ArrayQueue;
@@ -304,6 +305,50 @@ async fn spawn_rejects_invalid_timing_fields() {
     assert!(!daemon.running.contains_key(&dataflow_id));
 }
 
+/// Same for an operator id that is not a valid `DataId` segment: the daemon
+/// would panic in `DataId::from` building the runtime node's input/output ids.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn spawn_rejects_invalid_operator_id() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let descriptor: Descriptor = serde_json::from_str(
+        r#"{ "nodes": [ { "id": "rt", "operators": [
+            { "id": "op", "python": "op.py", "outputs": ["out"] }
+        ] } ] }"#,
+    )
+    .unwrap();
+    // Current resolution rejects the bad id, so plant it after resolving, as
+    // an older coordinator's `Spawn` could carry it.
+    let mut nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+    for node in nodes.values_mut() {
+        if let dora_core::descriptor::CoreNodeKind::Runtime(runtime) = &mut node.kind {
+            runtime.operators[0].id = "my op".to_string().into();
+        }
+    }
+    let spawn_nodes = nodes.keys().cloned().collect();
+    let dataflow_id = Uuid::new_v4();
+    let err = daemon
+        .spawn_dataflow(
+            None,
+            dataflow_id,
+            std::env::temp_dir(),
+            nodes,
+            descriptor,
+            spawn_nodes,
+            false,
+            None,
+        )
+        .await
+        .err()
+        .expect("spawn must reject an invalid operator id");
+    assert!(
+        format!("{err:#}").contains("invalid operator id"),
+        "{err:#}"
+    );
+    assert!(!daemon.running.contains_key(&dataflow_id));
+}
+
 /// A daemon whose coordinator connection is `coordinator_sender`. The one
 /// place these tests call `build_daemon`, so a signature change touches only
 /// this.
@@ -311,7 +356,16 @@ async fn daemon_reporting_to(
     coordinator_sender: coordinator::CoordinatorSender,
     clock: Arc<HLC>,
 ) -> Daemon {
-    let (daemon, _events_rx) = Daemon::build_daemon(
+    daemon_and_events_rx(coordinator_sender, clock).await.0
+}
+
+/// Like [`daemon_reporting_to`], but also returns the receiver half of the
+/// daemon's internal event channel (`events_tx`), which `run_inner` drains.
+async fn daemon_and_events_rx(
+    coordinator_sender: coordinator::CoordinatorSender,
+    clock: Arc<HLC>,
+) -> (Daemon, mpsc::Receiver<Timestamped<Event>>) {
+    Daemon::build_daemon(
         None,
         Some(coordinator_sender),
         DaemonId::new(None),
@@ -329,8 +383,58 @@ async fn daemon_reporting_to(
         false,
     )
     .await
-    .expect("daemon should build");
-    daemon
+    .expect("daemon should build")
+}
+
+/// `handle_node_stop` runs on the daemon's main loop, which is the only
+/// reader of `events_tx`. If that channel is full (e.g. chatty nodes filling
+/// it with `LogBroadcast` events while the loop was busy), awaiting a send of
+/// `NodeStopped` into it would wait forever for a slot only the waiting task
+/// can free, hanging the whole daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn node_stop_does_not_block_on_a_full_event_channel() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let (mut daemon, mut events_rx) = daemon_and_events_rx(coordinator_sender, clock.clone()).await;
+
+    let filler = || Timestamped {
+        inner: Event::NodeStopped {
+            dataflow_id: Uuid::new_v4(),
+            node_id: NodeId::from("filler".to_string()),
+        },
+        timestamp: clock.new_timestamp(),
+    };
+    let mut queued = 0;
+    while daemon.events_tx.try_send(filler()).is_ok() {
+        queued += 1;
+    }
+
+    let dataflow_id = Uuid::new_v4();
+    let node_id = NodeId::from("node".to_string());
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        daemon.handle_node_stop(dataflow_id, &node_id, false, true),
+    )
+    .await
+    .expect("handle_node_stop must not wait for the main loop to drain its own channel")
+    .expect("an unknown dataflow is benign");
+
+    // The `NodeStopped` notification is still delivered once the loop drains.
+    for _ in 0..queued {
+        events_rx.recv().await.expect("filler event");
+    }
+    let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+        .await
+        .expect("NodeStopped must still be delivered")
+        .expect("channel open");
+    assert!(
+        matches!(
+            event.inner,
+            Event::NodeStopped { dataflow_id: id, node_id: ref n } if id == dataflow_id && *n == node_id
+        ),
+        "unexpected event: {}",
+        event.inner.kind()
+    );
 }
 
 /// The coordinator sends `Logs` with `send_and_receive`, and the WS layer
@@ -1042,20 +1146,22 @@ fn stop_debug_stream_scan_cleans_up_watchers() {
     let sub_b = uuid::Uuid::new_v4();
 
     // Two subs, both watching out_1; only sub_a watches out_2.
-    df.debug_topic_watchers
-        .entry(OutputId(node_a.clone(), out_1.clone()))
-        .or_default()
-        .extend([sub_a, sub_b]);
-    df.debug_topic_watchers
-        .entry(OutputId(node_a.clone(), out_2.clone()))
-        .or_default()
-        .insert(sub_a);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_1.clone()), sub_a);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_1.clone()), sub_b);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_2.clone()), sub_a);
 
-    // Mirror the production stop path exactly.
-    df.debug_topic_watchers.retain(|_output_id, watchers| {
-        watchers.remove(&sub_a);
-        !watchers.is_empty()
-    });
+    df.remove_debug_topic_subscription(sub_a);
+
+    // The set shared with the debug subscriber tasks mirrors the map's keys,
+    // so out_2 samples are dropped before they are copied (dora-rs/dora#3781).
+    assert!(
+        df.debug_watched_outputs
+            .contains(&OutputId(node_a.clone(), out_1.clone()))
+    );
+    assert!(
+        !df.debug_watched_outputs
+            .contains(&OutputId(node_a.clone(), out_2.clone()))
+    );
 
     // out_1 still has sub_b → entry retained with just sub_b.
     let out_1_watchers = df
@@ -1339,7 +1445,7 @@ async fn restart_clears_connected_marker() {
 /// covers both a `restart_policy` respawn and `dora node restart`.
 #[test]
 fn restart_exit_reset_clears_dropped_event_stream_marker() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2089,29 +2195,6 @@ async fn data_bytes_returned_with_and_without_local_receivers() {
 // -- Regression tests for dora-rs/dora#3201: a receiver whose event
 //    stream is gone must not be silently starved. --
 
-/// Minimal `tracing::Subscriber` that records the level of every event it
-/// receives, so a test can assert whether (and how often) a warning fires.
-#[derive(Clone, Default)]
-struct LevelCapture {
-    levels: Arc<Mutex<Vec<tracing::Level>>>,
-}
-
-impl tracing::Subscriber for LevelCapture {
-    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-        true
-    }
-    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-    fn event(&self, event: &tracing::Event<'_>) {
-        self.levels.lock().unwrap().push(*event.metadata().level());
-    }
-    fn enter(&self, _span: &tracing::span::Id) {}
-    fn exit(&self, _span: &tracing::span::Id) {}
-}
-
 /// With the receiver's event channel full, a `backpressure` input's message
 /// is handed back for the producer's listener to deliver once there is room,
 /// while a `drop_oldest` input's is dropped, warned about and counted — and
@@ -2120,7 +2203,7 @@ impl tracing::Subscriber for LevelCapture {
 #[test]
 fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
     use dora_message::config::QueuePolicy;
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2248,11 +2331,7 @@ fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
 #[test]
 fn full_channel_of_a_given_up_receiver_is_a_counted_drop() {
     use dora_message::config::QueuePolicy;
-    // Run under a scoped subscriber like the other tests that reach
-    // `send_output_to_local_receivers`: a first hit of its log callsites on a
-    // thread with none caches their interest as `never`, and a concurrently
-    // running test's `LevelCapture` then sees none of their events.
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2473,7 +2552,7 @@ fn closed_event_channel_drop_is_counted() {
 /// of silently starving the consumer (dora-rs/dora#3201).
 #[test]
 fn receiver_missing_channel_is_skipped_with_once_per_edge_warning() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2531,7 +2610,7 @@ fn receiver_missing_channel_is_skipped_with_once_per_edge_warning() {
 /// one is warned about exactly once.
 #[test]
 fn healthy_receiver_still_receives_when_peer_channel_is_missing() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2594,7 +2673,7 @@ fn healthy_receiver_still_receives_when_peer_channel_is_missing() {
 /// is an expected dead edge, not #3201 symptomatology — it must NOT WARN.
 #[test]
 fn finished_receiver_does_not_warn() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -2646,7 +2725,7 @@ fn finished_receiver_does_not_warn() {
 /// still-running window (dora-rs/dora#3556).
 #[test]
 fn finished_but_still_running_receiver_does_not_warn() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
