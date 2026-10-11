@@ -54,6 +54,73 @@ fn peer_value_or_warn<T, E: std::fmt::Display>(result: Result<T, E>, operation: 
     }
 }
 
+/// Why one DDS service or action call failed.
+#[derive(Debug)]
+enum DdsCallFailure {
+    Write(rustdds::dds::result::WriteError<()>),
+    Read(rustdds::dds::result::ReadError),
+    TimedOut(Duration),
+}
+
+impl From<ros2_client::service::CallServiceError<()>> for DdsCallFailure {
+    fn from(e: ros2_client::service::CallServiceError<()>) -> Self {
+        match e {
+            ros2_client::service::CallServiceError::WriteError(e) => Self::Write(e),
+            ros2_client::service::CallServiceError::ReadError(e) => Self::Read(e),
+        }
+    }
+}
+
+impl std::fmt::Display for DdsCallFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Write(e) => write!(f, "{e}"),
+            Self::Read(e) => write!(f, "{e}"),
+            Self::TimedOut(after) => write!(f, "timed out after {after:?}"),
+        }
+    }
+}
+
+impl DdsCallFailure {
+    /// Whether this failure ends the bridge node rather than only the call.
+    ///
+    /// Serialization runs inside the DDS write, so `Serialization` means the
+    /// dora side sent data that does not match the configured ROS2 type: a
+    /// local bug that would fail every call, kept fatal as on the Zenoh path.
+    /// `Poisoned` and `Internal` mean the DDS participant itself is broken,
+    /// which rustdds documents as not recoverable. A timeout, an I/O error, a
+    /// blocked writer or an undecodable peer response only fail this call.
+    fn is_fatal(&self) -> bool {
+        use rustdds::dds::result::{ReadError, WriteError};
+        match self {
+            Self::Write(e) => matches!(
+                e,
+                WriteError::Serialization { .. }
+                    | WriteError::Poisoned { .. }
+                    | WriteError::Internal { .. }
+            ),
+            Self::Read(e) => matches!(e, ReadError::Poisoned { .. } | ReadError::Internal { .. }),
+            Self::TimedOut(_) => false,
+        }
+    }
+}
+
+/// Warn about a recoverable DDS call failure, or return a fatal one as an
+/// error that ends the bridge node.
+fn dds_call_or_warn<T>(
+    result: Result<T, DdsCallFailure>,
+    operation: &str,
+) -> eyre::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(failure) if failure.is_fatal() => Err(eyre!("{operation}: {failure}")),
+        Err(failure) => {
+            tracing::warn!("{operation}: {failure}");
+            Ok(None)
+        }
+    }
+}
+
 use dora_message::metadata::{
     GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED, GOAL_STATUS_SUCCEEDED,
     REQUEST_ID,
@@ -1229,33 +1296,35 @@ fn run_service_client(
                 // tear down the whole bridge node.
                 // Serialize request (guard clears thread-local on drop)
                 let _guard = TypeInfoGuard::serialize(request_type_info.clone());
-                let Some(req_id) = peer_value_or_warn(
+                let Some(req_id) = dds_call_or_warn(
                     client
                         .send_request(BridgeMessage(Some(array_data)))
-                        .map_err(|e| eyre!("{e:?}")),
+                        .map_err(DdsCallFailure::Write),
                     "failed to send ROS2 service request",
-                ) else {
+                )?
+                else {
                     continue;
                 };
 
                 // Receive response with timeout
                 let _guard = TypeInfoGuard::deserialize(response_type_info.clone());
-                let Some(response) = peer_value_or_warn(
+                let Some(response) = dds_call_or_warn(
                     futures::executor::block_on(async {
                         let recv = client.async_receive_response(req_id);
                         futures::pin_mut!(recv);
                         let timeout = futures_timer::Delay::new(SERVICE_RESPONSE_TIMEOUT);
                         match futures::future::select(recv, timeout).await {
                             futures::future::Either::Left((result, _)) => {
-                                result.map_err(|e| eyre!("{e:?}"))
+                                result.map_err(DdsCallFailure::Read)
                             }
                             futures::future::Either::Right(_) => {
-                                eyre::bail!("timed out after {SERVICE_RESPONSE_TIMEOUT:?}")
+                                Err(DdsCallFailure::TimedOut(SERVICE_RESPONSE_TIMEOUT))
                             }
                         }
                     }),
                     "ROS2 service call failed",
-                ) else {
+                )?
+                else {
                     continue;
                 };
 
@@ -1320,13 +1389,13 @@ fn run_service_server(
                     if let Some((rmw_id, _)) = pending_requests.remove(rid) {
                         let array_data = data.as_array().to_data();
                         let _ser_guard = TypeInfoGuard::serialize(response_type_info.clone());
-                        // The client may have given up on this request; that
-                        // must not tear down the server bridge (Zenoh parity).
-                        if let Err(e) = futures::executor::block_on(
-                            server.async_send_response(rmw_id, BridgeMessage(Some(array_data))),
-                        ) {
-                            tracing::warn!("failed to send ROS2 service response: {e:?}");
-                        }
+                        dds_call_or_warn(
+                            futures::executor::block_on(
+                                server.async_send_response(rmw_id, BridgeMessage(Some(array_data))),
+                            )
+                            .map_err(DdsCallFailure::Write),
+                            "failed to send ROS2 service response",
+                        )?;
                     } else {
                         tracing::warn!(
                             "response has request_id={rid} but no matching pending request"
@@ -1509,19 +1578,27 @@ fn run_action_client(
 
                 // Send goal with timeout (guard clears thread-local on drop)
                 let _guard = TypeInfoGuard::serialize(goal_type_info.clone());
-                let (goal_id, send_goal_response) = futures::executor::block_on(async {
-                    let send = client.async_send_goal(BridgeMessage(Some(array_data)));
-                    futures::pin_mut!(send);
-                    let timeout = futures_timer::Delay::new(ACTION_GOAL_TIMEOUT);
-                    match futures::future::select(send, timeout).await {
-                        futures::future::Either::Left((result, _)) => {
-                            result.map_err(|e| eyre!("failed to send action goal: {e:?}"))
+                // As for service calls, a goal the server does not answer in
+                // time fails only that goal, not the whole action bridge.
+                let Some((goal_id, send_goal_response)) = dds_call_or_warn(
+                    futures::executor::block_on(async {
+                        let send = client.async_send_goal(BridgeMessage(Some(array_data)));
+                        futures::pin_mut!(send);
+                        let timeout = futures_timer::Delay::new(ACTION_GOAL_TIMEOUT);
+                        match futures::future::select(send, timeout).await {
+                            futures::future::Either::Left((result, _)) => {
+                                result.map_err(DdsCallFailure::from)
+                            }
+                            futures::future::Either::Right(_) => {
+                                Err(DdsCallFailure::TimedOut(ACTION_GOAL_TIMEOUT))
+                            }
                         }
-                        futures::future::Either::Right(_) => {
-                            eyre::bail!("action goal send timed out")
-                        }
-                    }
-                })?;
+                    }),
+                    "failed to send ROS2 action goal",
+                )?
+                else {
+                    continue;
+                };
 
                 if !send_goal_response.accepted {
                     tracing::warn!("action goal was rejected by server");
@@ -2241,6 +2318,61 @@ impl ToNeutralQos for Ros2QosConfig {
                 _ => Liveliness::Automatic { lease_duration },
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod dds_call_failure_tests {
+    use super::{DdsCallFailure, dds_call_or_warn};
+    use dora_ros2_bridge::rustdds::dds::result::{ReadError, WriteError};
+    use std::time::Duration;
+
+    #[test]
+    fn a_slow_or_unreachable_peer_fails_only_the_call() {
+        let recoverable = [
+            DdsCallFailure::TimedOut(Duration::from_secs(30)),
+            DdsCallFailure::Write(WriteError::WouldBlock { data: () }),
+            DdsCallFailure::Write(WriteError::Io(std::io::Error::other("unreachable"))),
+            DdsCallFailure::Read(ReadError::Deserialization {
+                reason: "bad response".into(),
+            }),
+        ];
+        for failure in recoverable {
+            assert!(!failure.is_fatal(), "{failure:?} must fail only the call");
+            assert!(matches!(
+                dds_call_or_warn::<()>(Err(failure), "test"),
+                Ok(None)
+            ));
+        }
+    }
+
+    #[test]
+    fn a_local_type_mismatch_or_broken_participant_ends_the_bridge() {
+        let fatal = [
+            DdsCallFailure::Write(WriteError::Serialization {
+                reason: "arrow data does not match the ROS2 type".into(),
+                data: (),
+            }),
+            DdsCallFailure::Write(WriteError::Poisoned {
+                reason: "rtps thread panicked".into(),
+                data: (),
+            }),
+            DdsCallFailure::Write(WriteError::Internal {
+                reason: "bug".into(),
+            }),
+            DdsCallFailure::Read(ReadError::Poisoned {
+                reason: "rtps thread panicked".into(),
+            }),
+        ];
+        for failure in fatal {
+            assert!(failure.is_fatal(), "{failure:?} must end the bridge");
+            assert!(dds_call_or_warn::<()>(Err(failure), "test").is_err());
+        }
+    }
+
+    #[test]
+    fn a_successful_call_passes_its_value_through() {
+        assert_eq!(dds_call_or_warn(Ok(7), "test").unwrap(), Some(7));
     }
 }
 
