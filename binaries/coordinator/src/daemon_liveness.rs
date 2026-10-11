@@ -130,13 +130,13 @@ pub(crate) async fn send_heartbeat_with_timeout(
 }
 
 /// Action the daemon-disconnect cleanup asks the (async) caller to perform for
-/// a dataflow that was already past spawn when a daemon it depended on vanished.
-/// See #2028.
+/// a dataflow when a daemon it depended on vanished. See #2028.
 pub(crate) enum DisconnectAction {
     /// The last daemon we were awaiting `ReadyOnDaemon` from disconnected, but
     /// survivors remain — release the start barrier so they don't block forever.
+    /// Emitted even while the spawn is still pending (#3736).
     ReleaseReadyBarrier(DataflowId),
-    /// Every daemon running the dataflow disconnected — begin a reclaim window
+    /// Every daemon running a spawned dataflow disconnected — begin a reclaim window
     /// rather than failing terminally. The daemon may have only transiently lost
     /// the coordinator (a heartbeat blip, a coordinator restart) while its node
     /// processes keep running (dora-rs/dora#2029); marking the dataflow
@@ -185,7 +185,7 @@ pub(crate) fn cleanup_disconnected_daemons_from_running_dataflows(
             continue;
         }
         affected_uuids.push(df.uuid);
-        // Only act on dataflows that already spawned successfully. While
+        // Only reclaim dataflows that already spawned successfully. While
         // `spawn_result` is still pending, the spawn-timeout watchdog
         // (`check_spawn_timeouts`) owns the disconnect-mid-spawn case, so we
         // must not race it here.
@@ -201,14 +201,13 @@ pub(crate) fn cleanup_disconnected_daemons_from_running_dataflows(
         } else if pending_was_nonempty && df.pending_daemons.is_empty() {
             // The last daemon we were waiting on for `ReadyOnDaemon` vanished
             // via disconnect; `AllNodesReady` would otherwise never fire.
-            if spawned_ok {
-                actions.push(DisconnectAction::ReleaseReadyBarrier(df.uuid));
-            } else {
-                // Leave the spawn to the watchdog, but if a survivor's spawn
-                // result later resolves it as Ok, release the barrier then
-                // (#3736).
-                df.ready_barrier_owed = true;
-            }
+            // Released whether or not the spawn has resolved yet, exactly as
+            // the `ReadyOnDaemon` handler does: the survivors already reported
+            // ready and no further `ReadyOnDaemon` will come, so waiting for
+            // their spawn result would leave the barrier closed for good
+            // (#3736). The broadcast does not touch `spawn_result`, so the
+            // watchdog still owns resolving or failing a pending spawn.
+            actions.push(DisconnectAction::ReleaseReadyBarrier(df.uuid));
         }
     }
     // Drain pending restarts for affected dataflows: the disconnected

@@ -297,7 +297,6 @@ fn test_running_dataflow(
         pending_daemons: BTreeSet::new(),
         exited_before_subscribe: vec![],
         ready_barrier_released: false,
-        ready_barrier_owed: false,
         nodes,
         node_to_daemon,
         node_metrics: BTreeMap::new(),
@@ -1379,11 +1378,11 @@ fn disconnect_releases_ready_barrier_when_last_pending_daemon_drops() {
 }
 
 // #3736: survivor B sent `ReadyOnDaemon` before its spawn result, then A
-// disconnected mid-spawn. The cleanup empties `pending_daemons` but must not
-// act while the spawn is pending; once B's Ok resolves the spawn, the start
-// barrier must still be released, since no further `ReadyOnDaemon` will come.
+// disconnected mid-spawn. No further `ReadyOnDaemon` will come, so the
+// cleanup must release the barrier even though the spawn is still pending,
+// and B's later Ok must still resolve the spawn.
 #[tokio::test]
-async fn disconnect_mid_spawn_releases_ready_barrier_once_spawn_resolves_ok() {
+async fn disconnect_mid_spawn_releases_ready_barrier_for_survivors() {
     #[derive(serde::Deserialize)]
     struct OutboundRaw {
         params: Timestamped<DaemonCoordinatorEvent>,
@@ -1421,8 +1420,35 @@ async fn disconnect_mid_spawn_releases_ready_barrier_once_spawn_resolves_ok() {
         &mut HashMap::new(),
     );
     assert!(
-        actions.is_empty(),
-        "spawn-pending dataflows stay with the watchdog"
+        matches!(actions.as_slice(), [DisconnectAction::ReleaseReadyBarrier(id)] if *id == dataflow_id),
+        "must release the ready barrier while the spawn is pending, got {} action(s)",
+        actions.len()
+    );
+    apply_disconnect_actions(
+        actions,
+        &mut running_dataflows,
+        &mut daemon_connections,
+        &store,
+        &clock,
+    )
+    .await
+    .expect("apply_disconnect_actions");
+
+    let df = &running_dataflows[&dataflow_id];
+    assert!(df.ready_barrier_released, "barrier must be released");
+    assert!(
+        df.spawn_result.is_pending(),
+        "releasing the barrier must leave spawn_result to the watchdog"
+    );
+    let outbound = rx_b.try_recv().expect("B must be sent AllNodesReady");
+    let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+    assert!(
+        matches!(
+            outbound.params.inner,
+            DaemonCoordinatorEvent::AllNodesReady { dataflow_id: id, .. } if id == dataflow_id
+        ),
+        "unexpected event: {:?}",
+        outbound.params.inner
     );
 
     handle_dataflow_spawn_result(
@@ -1438,71 +1464,7 @@ async fn disconnect_mid_spawn_releases_ready_barrier_once_spawn_resolves_ok() {
         store.as_ref(),
     )
     .await;
-    release_owed_ready_barrier(
-        dataflow_id,
-        &mut running_dataflows,
-        &mut daemon_connections,
-        &store,
-        &clock,
-    )
-    .await
-    .expect("release");
-
-    let df = &running_dataflows[&dataflow_id];
-    assert!(df.spawn_result.is_cached_ok());
-    assert!(df.ready_barrier_released, "barrier must be released");
-    assert!(!df.ready_barrier_owed);
-    let outbound = rx_b.try_recv().expect("B must be sent AllNodesReady");
-    let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
-    assert!(
-        matches!(
-            outbound.params.inner,
-            DaemonCoordinatorEvent::AllNodesReady { dataflow_id: id, .. } if id == dataflow_id
-        ),
-        "unexpected event: {:?}",
-        outbound.params.inner
-    );
-}
-
-// A single-daemon dataflow never populates `pending_daemons`; its Ok spawn
-// result must not release the barrier before the daemon's `ReadyOnDaemon`.
-#[tokio::test]
-async fn ok_spawn_result_does_not_release_a_barrier_that_is_not_owed() {
-    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
-    let clock = Arc::new(HLC::default());
-    let dataflow_id = DataflowId::from(Uuid::new_v4());
-    let daemon_id = DaemonId::new(Some("m1".to_string()));
-    let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
-    df.pending_spawn_results.insert(daemon_id.clone());
-    let mut running_dataflows = HashMap::from([(dataflow_id, df)]);
-    let mut daemon_connections = DaemonConnections::default();
-
-    handle_dataflow_spawn_result(
-        dataflow_id,
-        daemon_id,
-        Ok(()),
-        &mut running_dataflows,
-        &mut IndexMap::new(),
-        &mut IndexMap::new(),
-        &mut daemon_connections,
-        &mut HashMap::new(),
-        &clock,
-        store.as_ref(),
-    )
-    .await;
-    release_owed_ready_barrier(
-        dataflow_id,
-        &mut running_dataflows,
-        &mut daemon_connections,
-        &store,
-        &clock,
-    )
-    .await
-    .expect("release");
-
-    let df = &running_dataflows[&dataflow_id];
-    assert!(df.spawn_result.is_cached_ok());
-    assert!(!df.ready_barrier_released);
+    assert!(running_dataflows[&dataflow_id].spawn_result.is_cached_ok());
 }
 
 // #2028 deadlocks #2 + #3 + #2029 reclaim: the sole daemon of a running
