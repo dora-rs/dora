@@ -185,12 +185,14 @@ impl GraphCache {
         }
     }
 
+    /// Services advertised under `name` with this type identity. QoS is not
+    /// part of the match, as in rmw_zenoh's `service_server_is_available`:
+    /// a client finds a server whatever QoS either side declared.
     pub fn matching_services(
         &self,
         name: &str,
         type_name: &str,
         type_hash: &str,
-        qos: &str,
     ) -> Vec<GraphEntity> {
         // Filter while holding the lock and clone only the matches. Going
         // through `snapshot()` would first deep-clone every entry in the
@@ -207,7 +209,6 @@ impl GraphCache {
                         topic.name == name
                             && topic.type_name == type_name
                             && topic.type_hash == type_hash
-                            && topic.qos == qos
                     })
             })
             .map(|(key, entry)| GraphEntity::from_entry(key, entry))
