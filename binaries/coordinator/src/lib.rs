@@ -35,8 +35,6 @@ use std::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 
-const FALLBACK_REPLAY_BACKOFF: Duration = Duration::from_secs(5);
-
 /// Cap on the in-memory archived-dataflow history. Mirrors the local constant
 /// used by the `DataflowFinishedOnDaemon` teardown path; lifted to module
 /// scope so the spawn-timeout watchdog can use the same cap for archived
@@ -144,9 +142,8 @@ pub(crate) use daemon_liveness::{
     stop_orphaned_dataflow_on_daemon,
 };
 pub(crate) use params::{
-    ensure_delete_param_forward_applied, ensure_set_param_forward_applied,
-    handle_pruned_state_catchup_fallback, replay_persisted_params_for_daemon,
-    schedule_param_replay_for_ready_dataflow,
+    catch_up_daemon_behind_pruned_log, ensure_delete_param_forward_applied,
+    ensure_set_param_forward_applied, schedule_param_replay_for_ready_dataflow,
 };
 pub(crate) use ready_barrier::{
     broadcast_all_nodes_ready, nodes_on_daemon, replay_all_nodes_ready,

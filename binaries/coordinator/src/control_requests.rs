@@ -1040,15 +1040,12 @@ impl Coordinator {
                                 )?;
                                 let bytes = serde_json::to_vec(&value)
                                     .map_err(|e| eyre!("failed to serialize param value: {e}"))?;
-                                // Held from persisting to forwarding, so a concurrent
-                                // persisted-param replay cannot land a stale value on the
-                                // daemon after this one (#3683).
-                                let param_write_lock =
-                                    param_write_lock(&self.running_dataflows, &dataflow_id);
-                                let _write_guard = match &param_write_lock {
-                                    Some(lock) => Some(lock.lock().await),
-                                    None => None,
-                                };
+                                // Held from persisting until the forward is queued, so a
+                                // concurrent persisted-param replay to this daemon cannot
+                                // queue a value it read before this change after it (#3683).
+                                // Released before waiting for the daemon's reply.
+                                let write_guard =
+                                    lock_param_target(&target, &self.daemon_connections).await;
                                 // Persist first (source of truth), then attempt synchronous
                                 // runtime forwarding. If forwarding fails, caller gets Error(...)
                                 // but persisted value will be replayed on catch-up/reconnect.
@@ -1081,17 +1078,19 @@ impl Coordinator {
                                         eyre!("failed to serialize SetParam event for node `{node_id}`: {e}")
                                     })?;
 
-                                    let conn =
-                                        self.daemon_connections.get_mut(&daemon_id).ok_or_else(|| {
-                                            eyre!(
-                                                "param persisted in store but daemon `{daemon_id}` is not connected"
-                                            )
-                                        })?;
-                                    let reply_raw = conn.send_and_receive(&msg).await.map_err(|e| {
+                                    let conn = self.daemon_connections.get(&daemon_id).ok_or_else(|| {
+                                        eyre!(
+                                            "param persisted in store but daemon `{daemon_id}` is not connected"
+                                        )
+                                    })?;
+                                    let forward_error = |e: eyre::Report| {
                                         eyre!(
                                             "failed to forward SetParam to daemon `{daemon_id}` for node `{node_id}`: {e}"
                                         )
-                                    })?;
+                                    };
+                                    let pending = conn.send_request(&msg).await.map_err(forward_error)?;
+                                    drop(write_guard);
+                                    let reply_raw = pending.wait().await.map_err(forward_error)?;
                                     ensure_set_param_forward_applied(&reply_raw, &node_id)?;
                                     if let Some(df) = self.running_dataflows.get_mut(&dataflow_id) {
                                         df.ack_applied_state_log_entry(sequence, &daemon_id);
@@ -1118,14 +1117,12 @@ impl Coordinator {
                                     &dataflow_id,
                                     &node_id,
                                 )?;
-                                // See `handle_set_param`: keeps a concurrent replay from
-                                // resurrecting the deleted param on the daemon (#3683).
-                                let param_write_lock =
-                                    param_write_lock(&self.running_dataflows, &dataflow_id);
-                                let _write_guard = match &param_write_lock {
-                                    Some(lock) => Some(lock.lock().await),
-                                    None => None,
-                                };
+                                // Held from persisting until the forward is queued, so a
+                                // concurrent persisted-param replay to this daemon cannot
+                                // queue a value it read before this change after it (#3683).
+                                // Released before waiting for the daemon's reply.
+                                let write_guard =
+                                    lock_param_target(&target, &self.daemon_connections).await;
                                 // Persist first (source of truth), then attempt synchronous
                                 // runtime forwarding. If forwarding fails, caller gets Error(...)
                                 // but delete is still reflected in persisted state/catch-up log.
@@ -1158,17 +1155,19 @@ impl Coordinator {
                                         )
                                     })?;
 
-                                    let conn =
-                                        self.daemon_connections.get_mut(&daemon_id).ok_or_else(|| {
-                                            eyre!(
-                                                "param deleted in store but daemon `{daemon_id}` is not connected"
-                                            )
-                                        })?;
-                                    let reply_raw = conn.send_and_receive(&msg).await.map_err(|e| {
+                                    let conn = self.daemon_connections.get(&daemon_id).ok_or_else(|| {
+                                        eyre!(
+                                            "param deleted in store but daemon `{daemon_id}` is not connected"
+                                        )
+                                    })?;
+                                    let forward_error = |e: eyre::Report| {
                                         eyre!(
                                             "failed to forward DeleteParam to daemon `{daemon_id}` for node `{node_id}`: {e}"
                                         )
-                                    })?;
+                                    };
+                                    let pending = conn.send_request(&msg).await.map_err(forward_error)?;
+                                    drop(write_guard);
+                                    let reply_raw = pending.wait().await.map_err(forward_error)?;
                                     ensure_delete_param_forward_applied(&reply_raw, &node_id)?;
                                     if let Some(df) = self.running_dataflows.get_mut(&dataflow_id) {
                                         df.ack_applied_state_log_entry(sequence, &daemon_id);
@@ -1579,14 +1578,16 @@ impl Coordinator {
     }
 }
 
-/// The param write lock of a running dataflow (see
-/// `RunningDataflow::param_write_lock`). `None` when it is not running: then
-/// no replay can be in flight for it either.
-fn param_write_lock(
-    running_dataflows: &std::collections::HashMap<Uuid, RunningDataflow>,
-    dataflow_id: &Uuid,
-) -> Option<std::sync::Arc<tokio::sync::Mutex<()>>> {
-    running_dataflows
-        .get(dataflow_id)
-        .map(|df| df.param_write_lock.clone())
+/// Take the param write lock of the connection a change to `target` is
+/// forwarded on (`DaemonConnection::param_write_lock`). `None` when it is not
+/// forwarded: the dataflow is not running, or its daemon is not connected.
+async fn lock_param_target(
+    target: &ParamTarget,
+    daemon_connections: &crate::state::DaemonConnections,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    let ParamTarget::Running { daemon_id } = target else {
+        return None;
+    };
+    let lock = daemon_connections.get(daemon_id)?.param_write_lock.clone();
+    Some(lock.lock_owned().await)
 }

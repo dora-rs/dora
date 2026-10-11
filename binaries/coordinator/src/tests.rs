@@ -5,6 +5,7 @@ use crate::{
         DisconnectAction, HeartbeatSendOutcome, MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS,
         heartbeat_disconnect_decision,
     },
+    params::replay_persisted_params_for_daemon,
     ready_barrier::{
         all_nodes_ready_message, persist_ready_barrier_release, release_barrier_message,
     },
@@ -313,8 +314,6 @@ fn test_running_dataflow(
         created_at: 0,
         store_generation: 0,
         last_recovery_attempt: BTreeMap::new(),
-        last_replay_attempt: BTreeMap::new(),
-        param_write_lock: Default::default(),
         uv: false,
         launch: crate::state::LaunchContext::unknown(),
         state_log_sequence: 0,
@@ -997,7 +996,7 @@ async fn replaying_the_barrier_sends_it_and_the_params_to_that_daemon() {
         dataflow_id,
         &dataflow,
         &daemon_id,
-        &mut daemon_connections,
+        &daemon_connections,
         &store,
         &Arc::new(HLC::default()),
     )
@@ -1737,7 +1736,6 @@ async fn replay_replays_persisted_param_to_daemon_connection() {
         vec![node_id],
         store,
         connection,
-        Default::default(),
         Arc::new(HLC::default()),
     )
     .await;
@@ -1829,7 +1827,6 @@ async fn replay_sends_current_value_of_param_changed_after_snapshot() {
         vec![node_id],
         store,
         connection,
-        Default::default(),
         Arc::new(HLC::default()),
     )
     .await;
@@ -1850,9 +1847,10 @@ async fn replay_sends_current_value_of_param_changed_after_snapshot() {
 }
 
 #[tokio::test]
-async fn replay_holds_param_write_lock_while_a_param_is_in_flight() {
-    // #3683: `dora param set`/`delete` take this lock from persisting to
-    // forwarding, so holding it per item orders the replay against them.
+async fn replay_releases_param_write_lock_while_waiting_for_the_daemon() {
+    // The replay holds the connection's lock only up to queuing each param
+    // (#3683). Held while waiting for the reply, a slow daemon would stall
+    // every `dora param set` to it, on the coordinator's event loop.
     let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
     let dataflow_id = DataflowId::from(Uuid::new_v4());
     let daemon_id = DaemonId::new(Some("m1".to_string()));
@@ -1862,39 +1860,123 @@ async fn replay_holds_param_write_lock_while_a_param_is_in_flight() {
         .put_node_param(&dataflow_id, &node_id, "gain", &value)
         .unwrap();
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
     let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    let connection =
-        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    let connection = crate::state::DaemonConnection::new(tx, pending_replies, BTreeMap::new());
+    let lock = connection.param_write_lock.clone();
 
-    let lock: Arc<tokio::sync::Mutex<()>> = Default::default();
-    let daemon_lock = lock.clone();
-    let daemon_task = spawn_set_param_acking_daemon(rx, pending_replies, move |_| {
-        assert!(
-            daemon_lock.try_lock().is_err(),
-            "replay must hold the param write lock until the daemon answers"
-        );
-    });
-
-    let summary = replay_persisted_params_for_daemon(
+    let replay = tokio::spawn(replay_persisted_params_for_daemon(
         dataflow_id,
         daemon_id,
         vec![node_id],
         store,
         connection,
-        lock.clone(),
         Arc::new(HLC::default()),
-    )
-    .await;
-    assert_eq!(summary.attempted, 1);
-    assert_eq!(summary.failed, 0);
-    assert!(lock.try_lock().is_ok(), "lock released after the replay");
+    ));
 
+    // The daemon receives the param but never answers it.
+    tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("replay did not send the param")
+        .expect("connection closed");
+    let _released = tokio::time::timeout(Duration::from_secs(10), lock.lock())
+        .await
+        .expect("replay must release the lock before waiting for the reply");
+    assert!(
+        !replay.is_finished(),
+        "replay is still waiting for the reply"
+    );
+    replay.abort();
+}
+
+/// A `Coordinator` around the given state, with everything else empty.
+fn test_coordinator(
+    running_dataflows: HashMap<DataflowId, RunningDataflow>,
+    daemon_connections: DaemonConnections,
+    store: Arc<dyn CoordinatorStore>,
+) -> Coordinator {
+    Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows,
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections,
+        clock: Arc::new(HLC::default()),
+        store,
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    }
+}
+
+#[tokio::test]
+async fn param_set_waits_for_a_replay_queuing_to_the_same_daemon() {
+    // #3683, handler side: a `set` takes the connection's lock before it
+    // persists. A replay holding it has read a param from the store and is
+    // queuing it; the `set` must neither persist nor forward until then, or
+    // the replay could queue the old value after the new one.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    let lock = connection.param_write_lock.clone();
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), connection);
+    let daemon_task = spawn_set_param_acking_daemon(rx, pending_replies, |_| {});
+
+    let df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        daemon_connections,
+        store.clone(),
+    );
+
+    let replay_guard = lock.lock().await;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let set = tokio::spawn(async move {
+        coordinator
+            .handle_set_param(
+                dataflow_id,
+                node_id,
+                "gain".to_string(),
+                serde_json::json!(2),
+                reply_tx,
+            )
+            .await
+            .unwrap();
+        coordinator
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!set.is_finished(), "set must wait for the replay's lock");
+    assert_eq!(
+        store
+            .get_node_param(&dataflow_id, &"sender".to_string().into(), "gain")
+            .unwrap(),
+        None,
+        "set must not persist while a replay is queuing"
+    );
+
+    drop(replay_guard);
+    let coordinator = tokio::time::timeout(Duration::from_secs(10), set)
+        .await
+        .expect("set did not finish")
+        .unwrap();
+    reply_rx.await.unwrap().expect("set is applied");
+    drop(coordinator);
     let seen = tokio::time::timeout(Duration::from_secs(10), daemon_task)
         .await
         .expect("daemon task did not finish")
         .unwrap();
-    assert_eq!(seen.len(), 1);
+    assert_eq!(seen, vec![("gain".to_string(), serde_json::json!(2))]);
 }
 
 #[tokio::test]
@@ -1914,7 +1996,6 @@ async fn replay_skips_when_no_persisted_params() {
         vec![node_id],
         store,
         connection,
-        Default::default(),
         Arc::new(HLC::default()),
     )
     .await;
@@ -1949,7 +2030,6 @@ async fn replay_reports_failure_when_params_cannot_be_loaded() {
         vec![node_id],
         store,
         connection,
-        Default::default(),
         Arc::new(HLC::default()),
     )
     .await;
@@ -2007,7 +2087,6 @@ async fn replay_reports_failure_when_daemon_rejects_param() {
         vec![node_id],
         store,
         connection,
-        Default::default(),
         Arc::new(HLC::default()),
     )
     .await;
@@ -2023,66 +2102,181 @@ async fn replay_reports_failure_when_daemon_rejects_param() {
         .unwrap();
 }
 
-#[tokio::test]
-async fn fallback_replay_keeps_ack_unchanged_when_daemon_is_disconnected() {
-    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
-    let dataflow_id = DataflowId::from(Uuid::new_v4());
-    let daemon_id = DaemonId::new(Some("m1".to_string()));
-    let node_id: dora_core::config::NodeId = "camera".to_string().into();
-
-    let value_bytes = serde_json::to_vec(&serde_json::json!(1)).unwrap();
-    store
-        .put_node_param(&dataflow_id, &node_id, "threshold", &value_bytes)
-        .unwrap();
-
-    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
+/// A dataflow whose state log was pruned past `daemon_id`'s ack of 3.
+fn dataflow_with_pruned_log(
+    dataflow_id: DataflowId,
+    daemon_id: &DaemonId,
+    node_id: &NodeId,
+) -> RunningDataflow {
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+    dataflow.ready_barrier_released = true;
     dataflow.state_log_sequence = 10;
     dataflow.daemon_ack_sequence.insert(daemon_id.clone(), 3);
-
-    let mut daemon_connections = DaemonConnections::default();
-    handle_pruned_state_catchup_fallback(
-        dataflow_id,
-        &mut dataflow,
-        &daemon_id,
-        store,
-        &mut daemon_connections,
-        Arc::new(HLC::default()),
-        Instant::now(),
-    )
-    .await;
-
-    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&3));
-    assert!(!dataflow.last_replay_attempt.contains_key(&daemon_id));
+    assert!(dataflow.state_log_delta_for_daemon(3, daemon_id).is_none());
+    dataflow
 }
 
-#[tokio::test]
-async fn fallback_replay_respects_backoff_window() {
+#[test]
+fn pruned_catch_up_keeps_ack_when_daemon_is_disconnected() {
     let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
     let dataflow_id = DataflowId::from(Uuid::new_v4());
     let daemon_id = DaemonId::new(Some("m1".to_string()));
-    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+    let node_id: NodeId = "camera".to_string().into();
+    let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
 
-    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
-    dataflow.state_log_sequence = 8;
-    dataflow.daemon_ack_sequence.insert(daemon_id.clone(), 2);
-    dataflow
-        .last_replay_attempt
-        .insert(daemon_id.clone(), Instant::now());
-
-    let mut daemon_connections = DaemonConnections::default();
-    handle_pruned_state_catchup_fallback(
+    catch_up_daemon_behind_pruned_log(
         dataflow_id,
         &mut dataflow,
         &daemon_id,
-        store,
-        &mut daemon_connections,
-        Arc::new(HLC::default()),
-        Instant::now(),
-    )
-    .await;
+        false,
+        &DaemonConnections::default(),
+        &store,
+        &Arc::new(HLC::default()),
+    );
 
-    // No replay attempted while backoff is active, so ack remains unchanged.
-    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&2));
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&3));
+}
+
+/// #3684: the ready-barrier replay of the same status report already sends
+/// every persisted param, so the pruned-log catch-up must not send them a
+/// second time, and must not wait for that replay on the event loop.
+#[tokio::test]
+async fn pruned_catch_up_reuses_the_ready_barrier_replay() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "camera".to_string().into();
+    let value = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &value)
+        .unwrap();
+    let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(
+        daemon_id.clone(),
+        crate::state::DaemonConnection::new(tx, pending_replies, BTreeMap::new()),
+    );
+
+    catch_up_daemon_behind_pruned_log(
+        dataflow_id,
+        &mut dataflow,
+        &daemon_id,
+        true,
+        &daemon_connections,
+        &store,
+        &Arc::new(HLC::default()),
+    );
+
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&10));
+    tokio::task::yield_now().await;
+    assert!(rx.try_recv().is_err(), "no second replay");
+}
+
+#[test]
+fn pruned_catch_up_before_barrier_release_leaves_the_replay_to_the_release() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "camera".to_string().into();
+    let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
+    dataflow.ready_barrier_released = false;
+
+    catch_up_daemon_behind_pruned_log(
+        dataflow_id,
+        &mut dataflow,
+        &daemon_id,
+        false,
+        &DaemonConnections::default(),
+        &store,
+        &Arc::new(HLC::default()),
+    );
+
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&10));
+}
+
+/// #3684: when nothing else replays the params to the daemon, the catch-up
+/// starts a replay itself, in the background: an unresponsive daemon must not
+/// stall the coordinator's event loop.
+#[tokio::test]
+async fn pruned_catch_up_replays_in_the_background_when_nothing_else_does() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "camera".to_string().into();
+    let value = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &value)
+        .unwrap();
+    let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
+
+    // The daemon never answers.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(
+        daemon_id.clone(),
+        crate::state::DaemonConnection::new(tx, pending_replies, BTreeMap::new()),
+    );
+
+    catch_up_daemon_behind_pruned_log(
+        dataflow_id,
+        &mut dataflow,
+        &daemon_id,
+        false,
+        &daemon_connections,
+        &store,
+        &Arc::new(HLC::default()),
+    );
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&10));
+
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+    let outbound = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("replay did not send the param")
+        .expect("connection closed");
+    let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+    assert!(matches!(
+        outbound.params.inner,
+        DaemonCoordinatorEvent::SetParam { key, .. } if key == "gain"
+    ));
+}
+
+/// After the pruned-log catch-up, a `dora param set` that the daemon applies
+/// advances its ack like on any other daemon, so it neither stays behind nor
+/// holds back log pruning for the dataflow. Acking only when a background
+/// replay finished would leave a set applied meanwhile unacked forever.
+#[test]
+fn param_set_after_pruned_catch_up_is_acked_and_pruned() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "camera".to_string().into();
+    let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
+
+    catch_up_daemon_behind_pruned_log(
+        dataflow_id,
+        &mut dataflow,
+        &daemon_id,
+        true,
+        &DaemonConnections::default(),
+        &store,
+        &Arc::new(HLC::default()),
+    );
+    let sequence = dataflow.append_state_log(StateCatchUpOperation::SetParam {
+        node_id,
+        key: "gain".to_string(),
+        value: serde_json::json!(2),
+    });
+    dataflow.ack_applied_state_log_entry(sequence, &daemon_id);
+
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&11));
+    assert!(dataflow.state_log.is_empty());
 }
 
 #[tokio::test]
@@ -2148,7 +2342,7 @@ async fn ready_boundary_schedules_replay_for_daemon_nodes() {
     schedule_param_replay_for_ready_dataflow(
         dataflow_id,
         &running_dataflow,
-        &mut daemon_connections,
+        &daemon_connections,
         store,
         Arc::new(HLC::default()),
     );

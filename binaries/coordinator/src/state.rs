@@ -70,6 +70,10 @@ impl DaemonConnections {
         }
     }
 
+    pub(crate) fn get(&self, id: &DaemonId) -> Option<&DaemonConnection> {
+        self.daemons.get(id)
+    }
+
     pub(crate) fn get_mut(&mut self, id: &DaemonId) -> Option<&mut DaemonConnection> {
         self.daemons.get_mut(id)
     }
@@ -213,6 +217,55 @@ pub(crate) struct DaemonConnection {
     /// backpressure; a persistent one escalates to a disconnect (see
     /// `MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS`).
     pub(crate) consecutive_heartbeat_send_timeouts: u32,
+    /// Orders param writes queued to this daemon (#3683). `dora param
+    /// set`/`delete` holds it from persisting the change to queuing its
+    /// forward, and a persisted-param replay holds it from reading one param
+    /// from the store to queuing it. The daemon applies commands in the
+    /// order they are queued, so a replay can never land a value on the
+    /// daemon after a newer one from a `set`, nor bring back a deleted param.
+    ///
+    /// Held only until the message is queued, never while waiting for the
+    /// reply (see [`Self::send_request`]). The event loop takes it for every
+    /// `set`/`delete`, so this keeps a `set` from also waiting out the
+    /// replies to a concurrent replay. Per connection, so writes to different
+    /// daemons never wait on each other.
+    pub(crate) param_write_lock: Arc<Mutex<()>>,
+}
+
+/// A request queued to a daemon by [`DaemonConnection::send_request`] whose
+/// reply has not been awaited yet.
+pub(crate) struct PendingDaemonReply {
+    id: Uuid,
+    reply_rx: oneshot::Receiver<String>,
+    pending_replies: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
+}
+
+impl PendingDaemonReply {
+    /// Wait for the daemon's reply, for at most `TCP_READ_TIMEOUT`.
+    pub(crate) async fn wait(self) -> eyre::Result<Vec<u8>> {
+        let response_json =
+            match tokio::time::timeout(dora_message::TCP_READ_TIMEOUT, self.reply_rx).await {
+                Ok(result) => result.map_err(|_| eyre!("daemon WS reply channel dropped"))?,
+                Err(_) => {
+                    self.pending_replies.lock().await.remove(&self.id);
+                    return Err(eyre!("timeout waiting for daemon WS reply"));
+                }
+            };
+
+        // A WS-level failure on the daemon side arrives as a `{"ws_error": ...}`
+        // envelope (see `handle_daemon_response` in `ws_daemon.rs`). It matches
+        // no `DaemonCoordinatorReply` variant, so returning it verbatim would
+        // make every caller fail with an opaque "failed to deserialize ... reply"
+        // and drop the daemon's real error text (it would survive only in a log
+        // line). Surface it as an `Err` carrying that text instead.
+        if let Ok(WsErrorEnvelope { ws_error }) =
+            serde_json::from_str::<WsErrorEnvelope>(&response_json)
+        {
+            return Err(eyre!("daemon returned error: {ws_error}"));
+        }
+
+        Ok(response_json.into_bytes())
+    }
 }
 
 /// The envelope `handle_daemon_response` (see `ws_daemon.rs`) produces when a
@@ -243,6 +296,7 @@ impl DaemonConnection {
             connection_id: Uuid::new_v4(),
             zenoh_listen_endpoint: None,
             consecutive_heartbeat_send_timeouts: 0,
+            param_write_lock: Default::default(),
         }
     }
 
@@ -258,6 +312,13 @@ impl DaemonConnection {
     /// `message` is already-serialized JSON, so it is embedded into the envelope
     /// verbatim rather than re-parsed into a `serde_json::Value` first.
     pub(crate) async fn send_and_receive(&self, message: &[u8]) -> eyre::Result<Vec<u8>> {
+        self.send_request(message).await?.wait().await
+    }
+
+    /// Queue a request to the daemon, returning once it is queued. Its reply
+    /// is awaited separately through the returned [`PendingDaemonReply`], so
+    /// a caller can release a lock that orders its sends before waiting.
+    pub(crate) async fn send_request(&self, message: &[u8]) -> eyre::Result<PendingDaemonReply> {
         let id = Uuid::new_v4();
         let params_str =
             std::str::from_utf8(message).map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
@@ -279,34 +340,17 @@ impl DaemonConnection {
             // The send failed, so no reply will ever arrive for `id`. Remove the
             // pending entry we just inserted; otherwise it lingers in the map
             // until the connection is dropped, needlessly consuming one of the
-            // `MAX_PENDING_REPLIES` slots. Mirrors the cleanup in the timeout
-            // arm below.
+            // `MAX_PENDING_REPLIES` slots. Mirrors the cleanup on timeout in
+            // `PendingDaemonReply::wait`.
             self.pending_replies.lock().await.remove(&id);
             return Err(eyre!("WS daemon send channel closed"));
         }
 
-        let response_json =
-            match tokio::time::timeout(dora_message::TCP_READ_TIMEOUT, reply_rx).await {
-                Ok(result) => result.map_err(|_| eyre!("daemon WS reply channel dropped"))?,
-                Err(_) => {
-                    self.pending_replies.lock().await.remove(&id);
-                    return Err(eyre!("timeout waiting for daemon WS reply"));
-                }
-            };
-
-        // A WS-level failure on the daemon side arrives as a `{"ws_error": ...}`
-        // envelope (see `handle_daemon_response` in `ws_daemon.rs`). It matches
-        // no `DaemonCoordinatorReply` variant, so returning it verbatim would
-        // make every caller fail with an opaque "failed to deserialize ... reply"
-        // and drop the daemon's real error text (it would survive only in a log
-        // line). Surface it as an `Err` carrying that text instead.
-        if let Ok(WsErrorEnvelope { ws_error }) =
-            serde_json::from_str::<WsErrorEnvelope>(&response_json)
-        {
-            return Err(eyre!("daemon returned error: {ws_error}"));
-        }
-
-        Ok(response_json.into_bytes())
+        Ok(PendingDaemonReply {
+            id,
+            reply_rx,
+            pending_replies: self.pending_replies.clone(),
+        })
     }
 
     /// Send a message to the daemon without waiting for a reply (fire-and-forget).
@@ -417,15 +461,6 @@ pub(crate) struct RunningDataflow {
 
     /// Per-daemon timestamp of last auto-recovery attempt (for backoff).
     pub(crate) last_recovery_attempt: BTreeMap<DaemonId, Instant>,
-    /// Per-daemon timestamp of last full fallback param replay attempt
-    /// (for state catch-up backoff on pruned logs).
-    pub(crate) last_replay_attempt: BTreeMap<DaemonId, Instant>,
-    /// Serializes param writes to this dataflow's daemons: a `dora param
-    /// set`/`delete` holds it from persisting to forwarding, and a persisted
-    /// param replay holds it while it reads one param from the store and
-    /// sends it. Without it a replay that snapshotted the store before a
-    /// `set` could overwrite the newer value on the daemon (#3683).
-    pub(crate) param_write_lock: Arc<Mutex<()>>,
 
     /// Whether UV was used for this dataflow (needed for restart).
     pub(crate) uv: bool,
@@ -522,6 +557,14 @@ impl RunningDataflow {
             self.state_log.drain(..drain_count);
         }
         self.state_log_sequence
+    }
+
+    /// Record that `daemon` has applied every state log entry so far, then
+    /// prune the log.
+    pub(crate) fn mark_daemon_caught_up(&mut self, daemon: &DaemonId) {
+        self.daemon_ack_sequence
+            .insert(daemon.clone(), self.state_log_sequence);
+        self.prune_state_log();
     }
 
     /// Prune log entries that all daemons have acknowledged.
@@ -694,8 +737,6 @@ impl RunningDataflow {
             created_at: record.created_at,
             store_generation: record.generation,
             last_recovery_attempt: BTreeMap::new(),
-            last_replay_attempt: BTreeMap::new(),
-            param_write_lock: Default::default(),
             uv: record.uv,
             launch: LaunchContext::unknown(),
             state_log_sequence: 0,
