@@ -6,7 +6,7 @@ ultralytics
 gitpython
 ipython  # interactive notebook
 matplotlib>=3.2.2
-numpy<2.0.0
+numpy>=2.0.0  # pyarrow>=26 refuses to import against NumPy 1.x (#3761)
 opencv-python>=4.1.1
 Pillow>=7.1.2
 psutil  # system resources

@@ -54,6 +54,7 @@
 //! ```
 
 use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::time::Instant;
 
 use eyre::Context;
 use uuid::Uuid;
@@ -80,9 +81,13 @@ const MIN_SUPPORTED_FORMAT_VERSION: u16 = 2;
 /// A bump that leaves the writers stamping a version below the reader's floor
 /// would make every freshly written recording unreadable by the same build.
 const _: () = assert!(FORMAT_VERSION >= MIN_SUPPORTED_FORMAT_VERSION);
-/// Maximum size for a single record or YAML descriptor in a `.drec` file.
-/// Guards against OOM from crafted files with `u32::MAX` length fields.
-const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024; // 64 MB
+/// Maximum size for a single record body (see [`RecordEntry::encoded_len`]) or
+/// YAML descriptor in a `.drec` file.
+///
+/// The writer refuses anything larger and the reader rejects a length prefix
+/// above it, which guards against OOM from crafted files with `u32::MAX`
+/// length fields.
+pub const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024; // 64 MB
 
 /// Header written at the start of a `.drec` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +96,29 @@ pub struct RecordingHeader {
     pub start_nanos: u64,
     pub dataflow_id: Uuid,
     pub descriptor_yaml: Vec<u8>,
+}
+
+/// The [`RecordEntry::timestamp_offset_nanos`] of an entry recorded now, for a
+/// capture that started at the monotonic instant `start`.
+///
+/// Offsets are measured on the monotonic clock, not as wall-clock now minus
+/// [`RecordingHeader::start_nanos`]: an NTP/GPS sync landing mid-capture steps
+/// the wall clock, which would make every later offset jump by up to decades
+/// (a board booting at 1970) or collapse to 0, and stall or scramble replay
+/// pacing. Saturates at `u64::MAX` (~584 years).
+///
+/// ```
+/// use std::time::{Duration, Instant};
+///
+/// let start = Instant::now();
+/// std::thread::sleep(Duration::from_millis(5));
+/// let offset = dora_recording::offset_since(start);
+/// assert!(offset >= 5_000_000);
+/// // Offsets never go backwards.
+/// assert!(dora_recording::offset_since(start) >= offset);
+/// ```
+pub fn offset_since(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// A single recorded message entry.
@@ -414,6 +442,16 @@ fn parse_record(record_buf: &[u8]) -> eyre::Result<(&str, &str, u64, &[u8])> {
     let event_bytes_len = u32::from_le_bytes(read_array(record_buf, &mut pos)?) as usize;
     let event_bytes = read_slice(record_buf, &mut pos, event_bytes_len)?;
 
+    // The fields fully determine the body length, so a length prefix that
+    // claims more is corrupt. Accepting it would swallow the start of the
+    // records that follow as unread trailing bytes, dropping them silently.
+    if pos != record_buf.len() {
+        eyre::bail!(
+            "record length {} disagrees with its fields ({pos} bytes)",
+            record_buf.len()
+        );
+    }
+
     Ok((node_id, output_id, timestamp_offset_nanos, event_bytes))
 }
 
@@ -706,6 +744,38 @@ mod tests {
         assert!(
             result.is_err(),
             "corrupt event_bytes_len must return Err, got: {result:?}"
+        );
+    }
+
+    /// A length prefix larger than its record's fields must return `Err`, not
+    /// read on into the next record and silently drop it as trailing bytes.
+    #[test]
+    fn overlong_record_len_returns_err_not_dropped_records() {
+        let header = sample_header();
+        let entries = [
+            sample_entry("n", "o", 0, b"first"),
+            sample_entry("n", "o", 1, b"second"),
+            sample_entry("n", "o", 2, b"third"),
+        ];
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        for e in &entries {
+            writer.write_entry(e).unwrap();
+        }
+        writer.finish().unwrap();
+
+        // Stretch the first record's prefix to cover the whole second record.
+        let mut header_bytes = Vec::new();
+        write_header(&mut header_bytes, &header).unwrap();
+        let prefix = header_bytes.len();
+        let stretched = (entries[0].encoded_len() + 4 + entries[1].encoded_len()) as u32;
+        buf[prefix..prefix + 4].copy_from_slice(&stretched.to_le_bytes());
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        let result = reader.next_entry();
+        assert!(
+            result.is_err(),
+            "overlong record length must return Err, got: {result:?}"
         );
     }
 

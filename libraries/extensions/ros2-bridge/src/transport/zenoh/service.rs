@@ -12,7 +12,8 @@ use thiserror::Error;
 use zenoh::{
     Wait,
     bytes::ZBytes,
-    query::{ConsolidationMode, Querier, Query, QueryTarget, Queryable},
+    key_expr::KeyExpr,
+    query::{ConsolidationMode, Query, QueryTarget, Queryable},
 };
 
 use super::{
@@ -209,8 +210,26 @@ impl RawServiceServer {
     }
 }
 
+/// Extra time Zenoh keeps a query open past the caller's own deadline, so the
+/// caller's timer always fires first and reports [`ServiceError::Timeout`]
+/// rather than Zenoh's synthetic `"Timeout"` error reply.
+const ZENOH_QUERY_TIMEOUT_GRACE: Duration = Duration::from_secs(1);
+
+/// Upper bound on the timeout handed to Zenoh, which puts it on the wire as
+/// `as_millis() as u64`: anything near that limit would wrap to a short value.
+const MAX_ZENOH_QUERY_TIMEOUT: Duration = Duration::from_secs(u32::MAX as u64);
+
+/// Whether `error` is the reply Zenoh synthesizes itself when a query's
+/// timeout expires, as opposed to an error sent by the service server.
+fn is_zenoh_query_timeout(error: &zenoh::query::ReplyError) -> bool {
+    *error.encoding() == zenoh::bytes::Encoding::ZENOH_STRING
+        && error.payload().to_bytes().as_ref() == b"Timeout"
+}
+
 pub struct RawServiceClient {
-    querier: Querier<'static>,
+    // `Session::get` rather than a `Querier`, whose timeout is fixed at declaration.
+    session: zenoh::Session,
+    key: KeyExpr<'static>,
     gid: [u8; 16],
     sequence: AtomicI64,
     outstanding: AtomicUsize,
@@ -224,14 +243,13 @@ impl RawServiceClient {
         gid: [u8; 16],
         limit: usize,
     ) -> Result<Self, ServiceError> {
-        let querier = session
-            .declare_querier(key.to_owned())
-            .target(QueryTarget::AllComplete)
-            .consolidation(ConsolidationMode::None)
+        let key = session
+            .declare_keyexpr(key.to_owned())
             .await
             .map_err(|error| ServiceError::Zenoh(error.to_string()))?;
         Ok(Self {
-            querier,
+            session: session.clone(),
+            key,
             gid,
             sequence: AtomicI64::new(1),
             outstanding: AtomicUsize::new(0),
@@ -269,8 +287,15 @@ impl RawServiceClient {
         .encode()
         .map_err(|_| ServiceError::MalformedAttachment)?;
         let replies = self
-            .querier
-            .get()
+            .session
+            .get(&self.key)
+            .target(QueryTarget::AllComplete)
+            .consolidation(ConsolidationMode::None)
+            .timeout(
+                timeout
+                    .saturating_add(ZENOH_QUERY_TIMEOUT_GRACE)
+                    .min(MAX_ZENOH_QUERY_TIMEOUT),
+            )
             .payload(ZBytes::from(payload))
             .attachment(ZBytes::from(attachment))
             .await
@@ -288,6 +313,7 @@ impl RawServiceClient {
                             let Ok(actual) = request_id_from_attachment(sample.attachment().map(|value| value.to_bytes()).as_deref()) else { continue; };
                             if actual == expected { return Ok(sample.payload().to_bytes().into_owned()); }
                         }
+                        Err(error) if is_zenoh_query_timeout(&error) => return Err(ServiceError::Timeout),
                         Err(error) => return Err(ServiceError::Remote(String::from_utf8_lossy(&error.payload().to_bytes()).into_owned())),
                     },
                     Err(_) => return Err(ServiceError::Timeout),
@@ -376,5 +402,50 @@ pub async fn wait_for_service(
             result = changed => match result { Ok(_) => {}, Err(GraphError::Closed) => return Err(ServiceError::TransportClosed), Err(error) => return Err(ServiceError::Zenoh(error.to_string())) },
             _ = timer => return Err(ServiceError::Timeout),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins `is_zenoh_query_timeout` to the error reply this Zenoh version
+    /// actually synthesizes, so a change to that reply fails here rather than
+    /// turning timeouts back into `ServiceError::Remote`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn classifies_zenoh_timeout_but_not_a_server_error_with_the_same_text() {
+        let session = zenoh::open(zenoh::Config::default()).await.unwrap();
+        let queryable = session
+            .declare_queryable("dora/test/classify/**")
+            .await
+            .unwrap();
+
+        // Hold the query unanswered so Zenoh's own timeout fires.
+        let replies = session
+            .get("dora/test/classify/silent")
+            .timeout(Duration::from_millis(100))
+            .await
+            .unwrap();
+        let _held = queryable.recv_async().await.unwrap();
+        let error = replies
+            .recv_async()
+            .await
+            .unwrap()
+            .into_result()
+            .unwrap_err();
+        assert!(is_zenoh_query_timeout(&error));
+
+        // A server that literally replies "Timeout" is still a remote error.
+        let replies = session.get("dora/test/classify/server").await.unwrap();
+        let query = queryable.recv_async().await.unwrap();
+        query.reply_err("Timeout").await.unwrap();
+        drop(query);
+        let error = replies
+            .recv_async()
+            .await
+            .unwrap()
+            .into_result()
+            .unwrap_err();
+        assert!(!is_zenoh_query_timeout(&error));
     }
 }

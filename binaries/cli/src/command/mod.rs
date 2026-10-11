@@ -17,6 +17,7 @@ mod node;
 mod node_binary;
 mod param;
 mod record;
+mod recording;
 mod replay;
 mod restart;
 mod run;
@@ -53,6 +54,7 @@ use new::NewArgs;
 use node::Node;
 use param::Param;
 use record::Record;
+use recording::Recording;
 use replay::Replay;
 use restart::Restart;
 use runtime::Runtime;
@@ -122,34 +124,37 @@ pub enum Command {
     /// Replay a recorded dataflow from a `.drec` file
     #[clap(display_order = 17)]
     Replay(Replay),
-    /// View coordinator tracing spans
+    /// Manage dataflow recordings
     #[clap(subcommand, display_order = 18)]
+    Recording(Recording),
+    /// View coordinator tracing spans
+    #[clap(subcommand, display_order = 19)]
     Trace(Trace),
 
     // -- Setup --
     /// Check system health
-    #[clap(alias = "check", display_order = 20)]
+    #[clap(alias = "check", display_order = 21)]
     Status(system::status::Status),
     /// Run comprehensive system diagnostics
-    #[clap(display_order = 19)]
+    #[clap(display_order = 20)]
     Doctor(Doctor),
     /// Generate a new project or node
-    #[clap(display_order = 21)]
+    #[clap(display_order = 22)]
     New(NewArgs),
     /// Visualize a dataflow as a graph
-    #[clap(display_order = 22)]
+    #[clap(display_order = 23)]
     Graph(Graph),
     /// Expand module references and print the flat dataflow YAML
-    #[clap(display_order = 23)]
+    #[clap(display_order = 24)]
     Expand(Expand),
     /// Validate a dataflow YAML file and check type annotations
-    #[clap(display_order = 24)]
+    #[clap(display_order = 25)]
     Validate(Validate),
     /// System management commands
-    #[clap(subcommand, display_order = 25)]
+    #[clap(subcommand, display_order = 26)]
     System(System),
     /// Package, discover, and use dora nodes (unstable)
-    #[clap(subcommand, display_order = 26)]
+    #[clap(subcommand, display_order = 27)]
     Hub(Hub),
 
     // -- Utility --
@@ -212,6 +217,7 @@ impl Executable for Command {
             Command::Param(args) => args.execute(),
             Command::Record(args) => args.execute(),
             Command::Replay(args) => args.execute(),
+            Command::Recording(args) => args.execute(),
             Command::Trace(args) => args.execute(),
             Command::Status(args) => args.execute(),
             Command::Doctor(args) => args.execute(),
@@ -310,6 +316,24 @@ mod tests {
                 help.contains(expected),
                 "help for {args:?} must contain {expected:?}, got:\n{help}"
             );
+        }
+    }
+
+    /// The example printed in `dora node connect/disconnect --help` must be a
+    /// command line that actually parses.
+    #[test]
+    fn node_connect_help_examples_parse() {
+        for sub in ["connect", "disconnect"] {
+            let help = Args::try_parse_from(["dora", "node", sub, "--help"])
+                .expect_err("--help should stop parsing")
+                .to_string();
+            let prefix = format!("dora node {sub} ");
+            let example = help
+                .lines()
+                .map(str::trim)
+                .find(|line| line.starts_with(&prefix))
+                .unwrap_or_else(|| panic!("no example in help for `{sub}`:\n{help}"));
+            parse_ok(&example.split_whitespace().collect::<Vec<_>>());
         }
     }
 

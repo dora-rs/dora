@@ -8,4 +8,3 @@ publish = false
 [dependencies]
 dora-node-api = { workspace = true , features = ["arrow-v59"] }
 eyre = { workspace = true }
-arrow = { workspace = true }

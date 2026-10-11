@@ -11,6 +11,12 @@ repository.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# docs.rs builds with default features only, and every Arrow-major feature is
+# off by default, so without this the feature-gated accessors (and the crate
+# docs' links to them) would be missing from the published documentation.
+[package.metadata.docs.rs]
+features = ["arrow-v58", "arrow-v59"]
+
 [features]
 # Passthrough for `dora-arrow-convert`'s Arrow-major features, mirroring the
 # pair `dora-node-api` exposes. Operators receive `Event::Input { data:
