@@ -154,6 +154,26 @@ Your user nodes never link against ROS2 -- all ROS2 communication is isolated in
 - **For action client**: A ROS2 action server must be running *before* starting the dataflow (no `wait_for_action_server` mechanism)
 - **For action server**: A ROS2 action client sends goals to the bridge (e.g., `ros2 action send_goal`)
 
+### Building for your ROS distro
+
+Published bridge builds target Humble. On another distro, build with the matching feature before running a dataflow, or the bridge logs `ROS_DISTRO='jazzy' but ros2-client was built for 'humble'`.
+
+The `ros2-humble` (default), `ros2-iron`, `ros2-jazzy`, and `ros2-kilted` features are a single choice for the whole build, not an additive set. `ros2-client` compiles for the newest distro feature it sees, so `ros2-jazzy` replaces Humble's 24-byte `Gid` with Jazzy's 16-byte one rather than adding Jazzy support alongside Humble, and no dora feature turns that back off. Because Cargo unifies `ros2-client`'s features across the whole build, enabling a newer distro in any other crate switches the bridge too -- including a crate that depends on `ros2-client` with its default features, since its own default is `jazzy`. Humble is only the floor the workspace pins, so there is no way to force exactly Humble. Nothing warns at build time; check the startup `ROS_DISTRO` log, which `ros2-client` logs as an error on a mismatch and as a warning when `ROS_DISTRO` is unset.
+
+- **YAML bridge**: `dora-ros2-bridge-node` isn't shipped with the CLI, so install it for your distro and keep it on `PATH` (the resolver spawns it by name):
+
+  ```bash
+  cargo install --git https://github.com/dora-rs/dora dora-ros2-bridge-node --features ros2-jazzy
+  ```
+
+- **In-process Python (`from dora import Ros2Context`)**: the `dora-rs` wheel links the bridge, so rebuild it with maturin:
+
+  ```bash
+  maturin build -m apis/python/node/Cargo.toml --features ros2-jazzy
+  ```
+
+- **C++ nodes**: `dora-node-api-cxx` has no `ros2-*` features of its own and gets the Humble default, so enable `dora-ros2-bridge/ros2-jazzy` directly to target another distro.
+
 ---
 
 ## Topic Bridge

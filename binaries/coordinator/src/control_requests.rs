@@ -7,14 +7,14 @@ use crate::{
     ensure_remove_node_applied, ensure_replace_node_applied, ensure_set_param_forward_applied,
     handle_get_trace_spans, handle_get_traces,
     handlers::{
-        build_dataflow, dataflow_result, handle_destroy, parse_logs_node_id, reload_dataflow,
-        resolve_name, restart_node, retrieve_logs, send_log_message, start_dataflow, stop_dataflow,
+        attach_log_subscriber, build_dataflow, dataflow_result, handle_destroy, parse_logs_node_id,
+        reload_dataflow, resolve_name, restart_node, retrieve_logs, start_dataflow, stop_dataflow,
         stop_node,
     },
     initiate_restart,
     log_subscriber::LogSubscriber,
     resolve_param_target, resolve_single_node, start_topic_debug_stream,
-    state::{ParamTarget, RunningDataflow},
+    state::{LaunchContext, ParamTarget, RunningDataflow},
     stop_topic_debug_stream, topic_debug_enabled, topic_outputs_by_daemon,
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
@@ -112,6 +112,16 @@ impl Coordinator {
                     ControlRequest::WaitForSpawn { dataflow_id } => {
                         if let Some(dataflow) = self.running_dataflows.get_mut(&dataflow_id) {
                             dataflow.spawn_result.register(reply_sender);
+                        } else if let Some(spawn_error) = self
+                            .archived_dataflows
+                            .get(&dataflow_id)
+                            .and_then(|archived| archived.spawn_error.as_ref())
+                        {
+                            // Failed and archived before this request landed. Not
+                            // "unknown dataflow": the CLI reads that as "ran to
+                            // completion" and would report a successful start.
+                            // Same text a waiter registered in time got.
+                            let _ = reply_sender.send(Err(eyre!("{spawn_error}")));
                         } else {
                             let _ = reply_sender.send(Err(eyre!("unknown dataflow {dataflow_id}")));
                         }
@@ -514,14 +524,13 @@ impl Coordinator {
                 found_tx,
             } => {
                 if let Some(dataflow) = self.running_dataflows.get_mut(&dataflow_id) {
-                    dataflow
-                        .log_subscribers
-                        .push(LogSubscriber::new(level, sender));
-                    let buffered = std::mem::take(&mut dataflow.buffered_log_messages);
-                    for message in buffered {
-                        send_log_message(&mut dataflow.log_subscribers, &message).await;
-                    }
-                    let _ = found_tx.send(true);
+                    attach_log_subscriber(
+                        &mut dataflow.log_subscribers,
+                        &mut dataflow.buffered_log_messages,
+                        LogSubscriber::new(level, sender),
+                        found_tx,
+                    )
+                    .await;
                 } else if self.archived_dataflows.contains_key(&dataflow_id) {
                     // Dataflow already finished before the CLI could subscribe.
                     // Acknowledge the subscription so the CLI doesn't error, then
@@ -538,14 +547,13 @@ impl Coordinator {
                 found_tx,
             } => {
                 if let Some(build) = self.running_builds.get_mut(&build_id) {
-                    build
-                        .log_subscribers
-                        .push(LogSubscriber::new(level, sender));
-                    let buffered = std::mem::take(&mut build.buffered_log_messages);
-                    for message in buffered {
-                        send_log_message(&mut build.log_subscribers, &message).await;
-                    }
-                    let _ = found_tx.send(true);
+                    attach_log_subscriber(
+                        &mut build.log_subscribers,
+                        &mut build.buffered_log_messages,
+                        LogSubscriber::new(level, sender),
+                        found_tx,
+                    )
+                    .await;
                 } else {
                     let _ = found_tx.send(false);
                 }
@@ -587,9 +595,7 @@ impl Coordinator {
                     &mut self.daemon_connections,
                     subscription_id,
                     &self.clock,
-                )
-                .await
-                {
+                ) {
                     tracing::warn!("failed to unsubscribe topic debug stream: {err:?}");
                 }
                 let _ = done_tx.send(());
@@ -623,16 +629,19 @@ impl Coordinator {
                     bail!("there is already a running dataflow with name `{name}`");
                 }
             }
-            let dataflow = start_dataflow(
+            let launch = LaunchContext {
                 build_id,
                 session_id,
-                dataflow,
                 local_working_dir,
+                write_events_to,
+            };
+            let dataflow = start_dataflow(
+                dataflow,
+                launch,
                 name,
                 &mut self.daemon_connections,
                 &self.clock,
                 uv,
-                write_events_to,
             )
             .await?;
             Ok(dataflow)
@@ -741,63 +750,14 @@ impl Coordinator {
     ) -> eyre::Result<()> {
         match resolve_name(name, &self.running_dataflows, &self.archived_dataflows) {
             Ok(dataflow_uuid) => {
-                // Same pending-restart cancellation as `Stop`
-                // — see the comment there for why.
-                cancel_pending_restart(
-                    &mut self.pending_restarts,
-                    dataflow_uuid,
-                    format!(
-                        "dataflow `{dataflow_uuid}` was stopped before the restart could complete"
-                    ),
-                );
-
-                // Same partial-completion guard as `Stop`: a
-                // still-running multi-daemon dataflow has a
-                // partial `dataflow_results` entry, but must
-                // still be stopped rather than reported done.
-                if !self.running_dataflows.contains_key(&dataflow_uuid)
-                    && let Some(result) = self.dataflow_results.get(&dataflow_uuid)
-                {
-                    let reply = ControlRequestReply::DataflowStopped {
-                        uuid: dataflow_uuid,
-                        result: dataflow_result(result, dataflow_uuid, &self.clock),
-                    };
-                    let _ = reply_sender.send(Ok(reply));
-
-                    return Ok(());
-                }
-
-                let dataflow = stop_dataflow(
-                    &mut self.running_dataflows,
-                    dataflow_uuid,
-                    &mut self.daemon_connections,
-                    self.clock.new_timestamp(),
-                    grace_duration,
-                    force,
-                )
-                .await;
-
-                match dataflow {
-                    Ok(dataflow) => {
-                        // Persist: dataflow stopping
-                        if let Err(e) = dataflow
-                            .make_record(StoreDataflowStatus::Stopping)
-                            .and_then(|r| self.store.put_dataflow(&r))
-                        {
-                            tracing::warn!("failed to persist dataflow stopping: {e}");
-                        }
-                        dataflow.stop_reply_senders.push(reply_sender);
-                    }
-                    Err(err) => {
-                        let _ = reply_sender.send(Err(err));
-                    }
-                }
+                self.handle_stop(dataflow_uuid, grace_duration, force, reply_sender)
+                    .await
             }
             Err(err) => {
                 let _ = reply_sender.send(Err(err));
+                Ok(())
             }
         }
-        Ok(())
     }
 
     pub(crate) async fn handle_logs(
@@ -1103,7 +1063,7 @@ impl Coordinator {
                                             )
                                         },
                                     )?;
-                                    df.append_state_log(StateCatchUpOperation::SetParam {
+                                    let sequence = df.append_state_log(StateCatchUpOperation::SetParam {
                                         node_id: node_id.clone(),
                                         key: key.clone(),
                                         value: value.clone(),
@@ -1134,6 +1094,9 @@ impl Coordinator {
                                         )
                                     })?;
                                     ensure_set_param_forward_applied(&reply_raw, &node_id)?;
+                                    if let Some(df) = self.running_dataflows.get_mut(&dataflow_id) {
+                                        df.ack_applied_state_log_entry(sequence, &daemon_id);
+                                    }
                                 }
                                 Ok(ControlRequestReply::ParamSet)
                             }
@@ -1169,7 +1132,7 @@ impl Coordinator {
                                             )
                                         },
                                     )?;
-                                    df.append_state_log(StateCatchUpOperation::DeleteParam {
+                                    let sequence = df.append_state_log(StateCatchUpOperation::DeleteParam {
                                         node_id: node_id.clone(),
                                         key: key.clone(),
                                     });
@@ -1200,6 +1163,9 @@ impl Coordinator {
                                         )
                                     })?;
                                     ensure_delete_param_forward_applied(&reply_raw, &node_id)?;
+                                    if let Some(df) = self.running_dataflows.get_mut(&dataflow_id) {
+                                        df.ack_applied_state_log_entry(sequence, &daemon_id);
+                                    }
                                 }
                                 Ok(ControlRequestReply::ParamDeleted)
                             }
@@ -1306,6 +1272,9 @@ impl Coordinator {
                                                                 .node_finalized
                                                                 .remove(&node_id);
                                                             dataflow.node_metrics.remove(&node_id);
+                                                            dataflow.persist_topology_change(
+                                                                &*self.store,
+                                                            );
                                                             Ok(ControlRequestReply::NodeAdded {
                                                                 dataflow_id,
                                                                 node_id,
@@ -1373,6 +1342,7 @@ impl Coordinator {
                                                         .nodes
                                                         .retain(|n| n.id != node_id);
                                                     dataflow.nodes.remove(&node_id);
+                                                    dataflow.persist_topology_change(&*self.store);
                                                 }
                                                 Ok(ControlRequestReply::NodeRemoved {
                                                     dataflow_id,
@@ -1480,6 +1450,7 @@ impl Coordinator {
                 dataflow.node_stopped_at.remove(&node_id);
                 dataflow.node_finalized.remove(&node_id);
                 dataflow.node_metrics.remove(&node_id);
+                dataflow.persist_topology_change(&*self.store);
             }
             Ok(ControlRequestReply::NodeReplaced {
                 dataflow_id,

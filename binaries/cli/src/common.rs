@@ -19,6 +19,17 @@ use std::{
 use tokio::runtime::Builder;
 use uuid::Uuid;
 
+/// Whether `key` should leave one of the CLI's TUIs: `q`, `Esc`, or Ctrl-C.
+///
+/// Raw mode turns off the terminal's signal generation, so Ctrl-C arrives as
+/// a `'c'` key event with the CONTROL modifier rather than as SIGINT. Check
+/// this before any plain `'c'` binding, which would otherwise swallow it.
+pub(crate) fn is_quit_key(key: &crossterm::event::KeyEvent) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+        || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
+}
+
 /// Monomorphic wrapper around `duration_str::parse` for use as a clap
 /// `value_parser` (the generic signature of `parse` in duration-str 0.21+
 /// cannot be used as a parser function directly).

@@ -11,6 +11,3 @@ repository.workspace = true
 [dependencies]
 uuid = { workspace = true }
 eyre = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }

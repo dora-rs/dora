@@ -105,7 +105,7 @@ edition = "2024"
 # harnesses (#3090). Bump that one only against Kani's rustc.
 rust-version = "1.95.0"
 # Python packages derive version from CARGO_PKG_VERSION automatically.
-version = "1.0.1"
+version = "1.1.0"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
 documentation = "https://dora-rs.ai"
 readme = "./README.md"
@@ -113,43 +113,50 @@ license = "Apache-2.0"
 repository = "https://github.com/dora-rs/dora/"
 
 [workspace.dependencies]
-dora-node-api = { version = "=1.0.1", path = "apis/rust/node", default-features = false }
-dora-node-api-python = { version = "=1.0.1", path = "apis/python/node", default-features = false }
-dora-operator-api = { version = "=1.0.1", path = "apis/rust/operator", default-features = false }
-dora-operator-api-macros = { version = "=1.0.1", path = "apis/rust/operator/macros" }
-dora-operator-api-types = { version = "=1.0.1", path = "apis/rust/operator/types" }
-dora-operator-api-python = { version = "=1.0.1", path = "apis/python/operator" }
-dora-operator-api-c = { version = "=1.0.1", path = "apis/c/operator" }
-dora-node-api-c = { version = "=1.0.1", path = "apis/c/node" }
-dora-core = { version = "=1.0.1", path = "libraries/core" }
-dora-hub-client = { version = "=1.0.1", path = "libraries/hub-client" }
-dora-recording = { version = "=1.0.1", path = "libraries/recording" }
-dora-arrow-convert = { version = "=1.0.1", path = "libraries/arrow-convert" }
-dora-tracing = { version = "=1.0.1", path = "libraries/extensions/telemetry/tracing" }
-dora-metrics = { version = "=1.0.1", path = "libraries/extensions/telemetry/metrics" }
-dora-download = { version = "=1.0.1", path = "libraries/extensions/download" }
-dora-log-utils = { version = "=1.0.1", path = "libraries/log-utils" }
-dora-coordinator-store = { version = "=1.0.1", path = "libraries/coordinator-store" }
-dora-cli = { version = "=1.0.1", path = "binaries/cli" }
-dora-runtime-api = { version = "=1.0.1", path = "binaries/runtime-api" }
-dora-runtime-shared-lib = { version = "=1.0.1", path = "binaries/runtime-shared-lib" }
-dora-runtime-python = { version = "=1.0.1", path = "binaries/runtime-python" }
-dora-daemon = { version = "=1.0.1", path = "binaries/daemon" }
-dora-coordinator = { version = "=1.0.1", path = "binaries/coordinator" }
-dora-ros2-bridge = { version = "=1.0.1", path = "libraries/extensions/ros2-bridge" }
-dora-ros2-bridge-msg-gen = { version = "=1.0.1", path = "libraries/extensions/ros2-bridge/msg-gen" }
+dora-node-api = { version = "=1.1.0", path = "apis/rust/node", default-features = false }
+dora-node-api-python = { version = "=1.1.0", path = "apis/python/node", default-features = false }
+dora-operator-api = { version = "=1.1.0", path = "apis/rust/operator", default-features = false }
+dora-operator-api-macros = { version = "=1.1.0", path = "apis/rust/operator/macros" }
+dora-operator-api-types = { version = "=1.1.0", path = "apis/rust/operator/types" }
+dora-operator-api-python = { version = "=1.1.0", path = "apis/python/operator" }
+dora-operator-api-c = { version = "=1.1.0", path = "apis/c/operator" }
+dora-node-api-c = { version = "=1.1.0", path = "apis/c/node" }
+dora-core = { version = "=1.1.0", path = "libraries/core" }
+dora-hub-client = { version = "=1.1.0", path = "libraries/hub-client" }
+dora-recording = { version = "=1.1.0", path = "libraries/recording" }
+dora-arrow-convert = { version = "=1.1.0", path = "libraries/arrow-convert" }
+dora-tracing = { version = "=1.1.0", path = "libraries/extensions/telemetry/tracing" }
+dora-metrics = { version = "=1.1.0", path = "libraries/extensions/telemetry/metrics" }
+dora-download = { version = "=1.1.0", path = "libraries/extensions/download" }
+dora-log-utils = { version = "=1.1.0", path = "libraries/log-utils" }
+dora-coordinator-store = { version = "=1.1.0", path = "libraries/coordinator-store" }
+dora-cli = { version = "=1.1.0", path = "binaries/cli" }
+dora-runtime-api = { version = "=1.1.0", path = "binaries/runtime-api" }
+dora-runtime-shared-lib = { version = "=1.1.0", path = "binaries/runtime-shared-lib" }
+dora-runtime-python = { version = "=1.1.0", path = "binaries/runtime-python" }
+dora-daemon = { version = "=1.1.0", path = "binaries/daemon" }
+dora-coordinator = { version = "=1.1.0", path = "binaries/coordinator" }
+dora-ros2-bridge = { version = "=1.1.0", path = "libraries/extensions/ros2-bridge" }
+dora-ros2-bridge-msg-gen = { version = "=1.1.0", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
-dora-mavlink2-bridge = { version = "=1.0.1", path = "libraries/extensions/mavlink2-bridge" }
-dora-tensor-pool = { version = "=1.0.1", path = "libraries/extensions/tensor-pool" }
-dora-tensor-pool-python = { version = "=1.0.1", path = "libraries/extensions/tensor-pool/python" }
-dora-message = { version = "=1.0.1", path = "libraries/message" }
-# Declared here so `dora-ros2-bridge` and `dora-ros2-bridge-arrow` cannot drift
-# apart on the ROS distro. `humble` selects the 24-byte `Gid` layout used by
-# `rmw_dds_common` graph discovery (see `ros2-client`'s `src/gid.rs`), matching
-# the distro our ROS2 harness runs (`scripts/ros2dev.sh`). Distro selection
-# became an explicit Cargo feature in 0.10 (default `jazzy`, i.e. 16-byte Gid);
-# 0.8 only had a `pre-iron-gid` opt-out. Changing this changes graph-discovery
-# wire compatibility.
+dora-mavlink2-bridge = { version = "=1.1.0", path = "libraries/extensions/mavlink2-bridge" }
+dora-tensor-pool = { version = "=1.1.0", path = "libraries/extensions/tensor-pool" }
+dora-tensor-pool-python = { version = "=1.1.0", path = "libraries/extensions/tensor-pool/python" }
+dora-message = { version = "=1.1.0", path = "libraries/message" }
+# Version plus a Humble floor; the ROS distro is also a feature of every dora
+# crate that links `ros2-client` (`dora-ros2-bridge`, `dora-ros2-bridge-arrow`),
+# so a build can target another distro without patching this manifest. The floor
+# is what a `default-features = false` build resolves to — a crates.io consumer,
+# or `cargo check -p dora-ros2-bridge --no-default-features` in the nightly job.
+# Without it `ros2-client` gets no distro feature and falls back to Galactic,
+# which logs `ROS_DISTRO='humble' but ros2-client was built for 'galactic'` at
+# startup. Humble selects the 24-byte `Gid` layout used by `rmw_dds_common`
+# graph discovery (see `ros2-client`'s `src/gid.rs`), matching the distro our
+# ROS2 harness runs (`scripts/ros2dev.sh`). Distro selection became an explicit
+# Cargo feature in 0.10 (default `jazzy`, i.e. 16-byte Gid); 0.8 only had a
+# `pre-iron-gid` opt-out. The features form a chain, so `ros2-jazzy` and
+# `ros2-kilted` still win over the floor. Changing the selected distro changes
+# graph-discovery wire compatibility.
 ros2-client = { version = "0.10.1", default-features = false, features = ["humble"] }
 # Kept in step with the `cdr-encoding` that `rustdds` depends on, so the
 # workspace resolves a single copy.
@@ -181,6 +188,9 @@ pyo3-build-config = "0.29"
 git2 = { version = "0.21", features = ["vendored-openssl", "https", "ssh"] }
 serde_yaml = "0.9.34"
 zenoh = { version = "~1.10", default-features = false, features = ["shared-memory", "unstable", "transport_tcp", "transport_udp", "transport_unixsock-stream"] }
+# Endpoint grammar shared by the control-plane senders and receivers. Use the
+# protocol crate so dora-message does not pull in the Zenoh runtime/transports.
+zenoh-protocol = { version = "~1.10" }
 # Advanced pub/sub (schema-cache subtopic): retain the last schema sample so a
 # late-joining subscriber fetches it via a history query. `unstable` gates the
 # AdvancedPublisher/AdvancedSubscriber API and forwards zenoh's `unstable`.
