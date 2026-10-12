@@ -124,6 +124,12 @@ fn deliver_log_message(
     log_subscribers.retain(|s| !s.is_closed());
 }
 
+/// How long a subscriber's frames may all be dropped for a spent connection
+/// budget, with none queued, before it is closed as stalled. The same order as
+/// the send-timeout eviction below (100 timeouts of 100 ms), so a CLI that
+/// stops reading is evicted after about as long either way.
+const MAX_TOPIC_SUBSCRIBER_DROP_STALL: Duration = Duration::from_secs(10);
+
 /// Forward a topic debug frame to its subscribers, then remove every closed
 /// subscriber and return them.
 ///
@@ -166,8 +172,21 @@ pub(crate) async fn send_topic_frames(
                     subscriber.reset_timeout_streak();
                 }
                 // The frame wasn't waited for, so this is neither a delivery
-                // nor a timeout.
-                Ok(Ok(FrameSent::Dropped)) => {}
+                // nor a timeout. A CLI that has stopped reading never frees
+                // its budget, though, so without this it would never be
+                // evicted, and the daemons would keep streaming to it.
+                Ok(Ok(FrameSent::Dropped)) => {
+                    if subscriber
+                        .dropping_for()
+                        .is_some_and(|stalled| stalled >= MAX_TOPIC_SUBSCRIBER_DROP_STALL)
+                    {
+                        tracing::warn!(
+                            %subscription_id,
+                            "closing topic debug subscriber whose frames have all been dropped for {MAX_TOPIC_SUBSCRIBER_DROP_STALL:?}"
+                        );
+                        subscriber.close();
+                    }
+                }
                 Ok(Err(_)) => {
                     subscriber.close();
                 }
@@ -1075,8 +1094,9 @@ mod tests {
 
     /// A CLI reading more slowly than the stream keeps its connection's byte
     /// budget spent. Its frames are dropped without the event loop waiting on
-    /// it, and the drops are not timeouts, so they don't evict it either
-    /// (dora-rs/dora#3636 review).
+    /// it, and the drops are not timeouts, so a burst of them doesn't evict it
+    /// (dora-rs/dora#3636 review). Only a stall does: see
+    /// `send_topic_frames_closes_a_subscriber_whose_frames_are_all_dropped`.
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn send_topic_frames_does_not_wait_on_a_spent_connection_budget() {
         let subscription_id = Uuid::new_v4();
@@ -1100,6 +1120,66 @@ mod tests {
         assert!(subscribers.contains_key(&subscription_id));
         assert!(rx.try_recv().is_ok(), "the frame that fit was queued");
         assert!(rx.try_recv().is_err(), "the rest were dropped");
+    }
+
+    /// A CLI that has stopped reading never frees its connection's budget, so
+    /// every frame is dropped. It is closed once that has lasted
+    /// `MAX_TOPIC_SUBSCRIBER_DROP_STALL`, as a send-timeout streak would close
+    /// it (dora-rs/dora#3636 review).
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn send_topic_frames_closes_a_subscriber_whose_frames_are_all_dropped() {
+        let subscription_id = Uuid::new_v4();
+        let (sender, _rx_never_read) = crate::topic_subscriber::topic_frame_channel_sized(64, 10);
+        let mut subscribers = BTreeMap::new();
+        subscribers.insert(
+            subscription_id,
+            TopicSubscriber::new(BTreeMap::new(), sender),
+        );
+
+        // Fills the budget; the CLI never takes it, so it is never freed.
+        send_topic_frames(&mut subscribers, vec![subscription_id], vec![0; 10]).await;
+        let step = Duration::from_millis(500);
+        let mut waited = Duration::ZERO;
+        while waited + step < MAX_TOPIC_SUBSCRIBER_DROP_STALL {
+            let removed =
+                send_topic_frames(&mut subscribers, vec![subscription_id], vec![0; 10]).await;
+            assert!(
+                removed.is_empty(),
+                "still within the stall bound at {waited:?}"
+            );
+            tokio::time::advance(step).await;
+            waited += step;
+        }
+        tokio::time::advance(step).await;
+        let removed = send_topic_frames(&mut subscribers, vec![subscription_id], vec![0; 10]).await;
+        assert_eq!(removed.len(), 1, "a stalled subscriber is closed");
+        assert!(!subscribers.contains_key(&subscription_id));
+    }
+
+    /// A CLI that still drains now and then gets a frame queued, which ends
+    /// the run of drops, so a slow reader is not mistaken for a stalled one.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn a_queued_frame_resets_the_drop_stall() {
+        let subscription_id = Uuid::new_v4();
+        let (sender, mut rx) = crate::topic_subscriber::topic_frame_channel_sized(64, 10);
+        let mut subscribers = BTreeMap::new();
+        subscribers.insert(
+            subscription_id,
+            TopicSubscriber::new(BTreeMap::new(), sender),
+        );
+
+        for _ in 0..3 {
+            // Fill the budget, then drop for most of the stall bound.
+            send_topic_frames(&mut subscribers, vec![subscription_id], vec![0; 10]).await;
+            send_topic_frames(&mut subscribers, vec![subscription_id], vec![0; 10]).await;
+            tokio::time::advance(MAX_TOPIC_SUBSCRIBER_DROP_STALL - Duration::from_secs(1)).await;
+            let removed =
+                send_topic_frames(&mut subscribers, vec![subscription_id], vec![0; 10]).await;
+            assert!(removed.is_empty());
+            // The CLI finally writes the frame, freeing the budget.
+            drop(rx.try_recv().expect("the queued frame"));
+        }
+        assert!(subscribers.contains_key(&subscription_id));
     }
 
     #[tokio::test(flavor = "current_thread", start_paused = true)]
