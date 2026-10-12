@@ -82,8 +82,12 @@ jobs:
     # slower and cold-cache cargo compiles add 5-10 min of overhead.
     # 30 min was marginal and triggered "cancelled" on the 2026-04-19,
     # 04-20, 04-21 nightly runs -- the suite was still making progress
-    # when the timeout fired. 60 min gives margin without being wasteful.
-    timeout-minutes: 60
+    # when the timeout fired. 60 min gave margin until #3664 fixed the
+    # harness's `dora list` poll flag: `run_smoke_test` now really waits
+    # for each dataflow, and the 2026-10-11/12 runs (#3784) hit the 60 min
+    # cap still making progress (~62 min projected). 90 min restores margin
+    # for per-run variance (single tests swing by ~50 s between runs).
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
