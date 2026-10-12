@@ -1894,6 +1894,47 @@ mod tests {
         assert_eq!(messages[0].2.as_deref(), Some("foxglove.RawImage"));
     }
 
+    /// A single `operator:` node's outputs are recorded under the bare output
+    /// id, by `dora record` and by `--proxy` alike, whatever the operator's id.
+    #[test]
+    fn foxglove_reads_single_operator_output_types() {
+        let descriptor = "nodes:
+  - id: node
+    operator:
+      python: cam.py
+      outputs: [image]
+      output_types:
+        image: std/media/v1/Image
+  - id: named
+    operator:
+      id: cam
+      python: cam.py
+      outputs: [image]
+      output_types:
+        image: std/media/v1/Image
+";
+        let image = || ipc_bytes(rgb_image_struct(2, 2, &[0; 12]));
+        let messages = export_messages(
+            descriptor,
+            vec![
+                (
+                    "node",
+                    "image",
+                    output_event_bytes("node", "image", &image()),
+                ),
+                (
+                    "named",
+                    "image",
+                    output_event_bytes("named", "image", &image()),
+                ),
+            ],
+        );
+        assert_eq!(messages.len(), 2);
+        for message in &messages {
+            assert_eq!(message.2.as_deref(), Some("foxglove.RawImage"));
+        }
+    }
+
     /// `std/media/v1/Image[encoding=jpeg]` (the example in dora-core's type
     /// docs) and an `Image` struct whose `encoding` is a compressed format are
     /// compressed images, not raw ones.

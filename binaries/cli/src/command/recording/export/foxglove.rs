@@ -85,8 +85,9 @@ enum Declared {
 
 /// Which outputs are images, from the dataflow descriptor in the recording.
 pub(super) struct Mapper {
-    /// node id -> output id -> declared image type. Operator outputs are
-    /// keyed `<operator id>/<output id>`, the way they are recorded.
+    /// node id -> output id -> declared image type, keyed the way outputs are
+    /// recorded: a single `operator:` node's outputs by their bare id, the
+    /// outputs of an `operators:` list as `<operator id>/<output id>`.
     declared: HashMap<String, HashMap<String, Declared>>,
 }
 
@@ -109,12 +110,11 @@ impl Mapper {
             };
             let outputs = declared.entry(node_id.to_owned()).or_default();
             add_declared(outputs, node, None);
+            // `dora record` and `--proxy` both record a single operator's
+            // outputs without the operator id (`record.rs`
+            // `discover_descriptor_outputs`, `public_topic_output_id`).
             if let Some(operator) = node.get("operator") {
-                let operator_id = operator
-                    .get("id")
-                    .and_then(|id| id.as_str())
-                    .unwrap_or(dora_core::descriptor::SINGLE_OPERATOR_DEFAULT_ID);
-                add_declared(outputs, operator, Some(operator_id));
+                add_declared(outputs, operator, None);
             }
             let operators = node.get("operators").and_then(|ops| ops.as_sequence());
             for operator in operators.into_iter().flatten() {
