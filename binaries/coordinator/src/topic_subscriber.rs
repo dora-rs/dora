@@ -85,6 +85,9 @@ pub(crate) struct TopicSubscriber {
     sender: Option<TopicFrameSender>,
     timeouts: crate::timeout_streak::TimeoutStreak,
     dropped: DroppedTopicFrames,
+    /// When the current run of budget-dropped frames began; `None` once a
+    /// frame is queued again. See [`Self::dropping_for`].
+    dropping_since: Option<tokio::time::Instant>,
 }
 
 impl TopicSubscriber {
@@ -100,6 +103,7 @@ impl TopicSubscriber {
             sender: Some(sender.into()),
             timeouts: crate::timeout_streak::TimeoutStreak::default(),
             dropped: DroppedTopicFrames::default(),
+            dropping_since: None,
         }
     }
 
@@ -133,6 +137,8 @@ impl TopicSubscriber {
             Ok(budget) => frame.budget = Some(budget),
             Err(TryAcquireError::NoPermits) => {
                 self.dropped.record(frame.subscription_id);
+                self.dropping_since
+                    .get_or_insert_with(tokio::time::Instant::now);
                 return Ok(FrameSent::Dropped);
             }
             Err(TryAcquireError::Closed) => eyre::bail!("topic frame budget closed"),
@@ -142,7 +148,16 @@ impl TopicSubscriber {
             .send(frame)
             .await
             .map_err(|_| eyre::eyre!("WS topic subscriber channel closed"))?;
+        self.dropping_since = None;
         Ok(FrameSent::Queued)
+    }
+
+    /// How long every frame for this subscriber has been dropped for a spent
+    /// budget, with none queued in between. A CLI that has stopped reading
+    /// never frees its budget, so this keeps growing; one that still drains
+    /// now and then gets a frame queued, which resets it.
+    pub(crate) fn dropping_for(&self) -> Option<std::time::Duration> {
+        self.dropping_since.map(|since| since.elapsed())
     }
 
     pub(crate) fn reset_timeout_streak(&mut self) {
