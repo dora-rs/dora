@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
-    io::Write,
+    io::{Read, Write},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -320,14 +320,22 @@ fn record_entry<W: Write>(
 }
 
 /// The original descriptor YAML, from [`dora_recording::DESCRIPTOR_ENV`]
-/// (base64, because `env:` values are `$VAR`-expanded on the way here) or,
-/// from an older CLI, the raw [`dora_recording::LEGACY_DESCRIPTOR_ENV`].
+/// (compressed and base64-encoded, because `env:` values are `$VAR`-expanded
+/// on the way here) or, from an older CLI, the raw
+/// [`dora_recording::LEGACY_DESCRIPTOR_ENV`].
 fn descriptor_from_env(var: impl Fn(&str) -> Option<String>) -> eyre::Result<Vec<u8>> {
     use dora_recording::{DESCRIPTOR_ENV, LEGACY_DESCRIPTOR_ENV};
     match var(DESCRIPTOR_ENV) {
-        Some(encoded) => BASE64_STANDARD
-            .decode(encoded)
-            .wrap_err_with(|| format!("{DESCRIPTOR_ENV} is not valid base64")),
+        Some(encoded) => {
+            let compressed = BASE64_STANDARD
+                .decode(encoded)
+                .wrap_err_with(|| format!("{DESCRIPTOR_ENV} is not valid base64"))?;
+            let mut yaml = Vec::new();
+            flate2::read::DeflateDecoder::new(compressed.as_slice())
+                .read_to_end(&mut yaml)
+                .wrap_err_with(|| format!("{DESCRIPTOR_ENV} is not a valid deflate stream"))?;
+            Ok(yaml)
+        }
         None => Ok(var(LEGACY_DESCRIPTOR_ENV).unwrap_or_default().into_bytes()),
     }
 }
@@ -337,7 +345,11 @@ fn descriptor_from_env(var: impl Fn(&str) -> Option<String>) -> eyre::Result<Vec
 /// It carries the id of the dataflow `node` runs in, which is the one being
 /// recorded, as `dora record --proxy` does, so `dora recording export` names
 /// a dataflow `dora list` knows.
-fn recording_header(node: &DoraNode, start_nanos: u64, descriptor_yaml: Vec<u8>) -> RecordingHeader {
+fn recording_header(
+    node: &DoraNode,
+    start_nanos: u64,
+    descriptor_yaml: Vec<u8>,
+) -> RecordingHeader {
     RecordingHeader {
         version: dora_recording::FORMAT_VERSION,
         start_nanos,
@@ -1027,7 +1039,9 @@ mod tests {
 
     #[test]
     fn descriptor_prefers_the_encoded_variable() {
-        let encoded = BASE64_STANDARD.encode("a: $X");
+        let mut deflate = flate2::write::DeflateEncoder::new(Vec::new(), Default::default());
+        deflate.write_all(b"a: $X").unwrap();
+        let encoded = BASE64_STANDARD.encode(deflate.finish().unwrap());
         let descriptor = descriptor_from_env(vars(&[
             (dora_recording::DESCRIPTOR_ENV, &encoded),
             (dora_recording::LEGACY_DESCRIPTOR_ENV, "stale"),

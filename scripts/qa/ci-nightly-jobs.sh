@@ -1024,7 +1024,7 @@ EOF
 #      tests/sample-inputs/expected-outputs-rust-status-node.jsonl.
 #
 # The descriptor embedded in the .drec (passed to the record node as
-# DORA_RECORD_DESCRIPTOR_BASE64) is the
+# DORA_RECORD_DESCRIPTOR_DEFLATE_BASE64) is the
 # deploy-free `plain.yml`, because local `dora run`/`dora replay` reject
 # `deploy`; the cluster-started descriptor is that same plain.yml
 # with `deploy.machine` injected per node. The record node is

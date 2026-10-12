@@ -2160,6 +2160,7 @@ dependencies = [
  "duration-str",
  "env_logger",
  "eyre",
+ "flate2",
  "fs2",
  "futures",
  "git2",
@@ -2625,6 +2626,7 @@ dependencies = [
  "dora-node-api",
  "dora-recording",
  "eyre",
+ "flate2",
  "serde_json",
  "uuid",
 ]
