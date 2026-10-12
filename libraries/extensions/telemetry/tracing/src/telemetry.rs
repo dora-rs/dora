@@ -142,16 +142,18 @@ pub fn deserialize_to_hashmap(string_context: &str) -> HashMap<&str, &str> {
     map
 }
 
+/// Serializes the tests that touch the process-global text-map propagator
+/// (`set_text_map_propagator` sets a single shared global with no restore),
+/// so they don't race when the test binary runs them on separate threads.
+/// [`init_tracing`] reads and may replace that global, so every test that
+/// reaches it must hold this lock too.
+#[cfg(test)]
+pub(crate) static PROPAGATOR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
-    use super::service_resource;
+    use super::{PROPAGATOR_LOCK, service_resource};
     use opentelemetry::Key;
-    use std::sync::Mutex;
-
-    /// Serializes the tests that mutate the process-global text-map propagator
-    /// (`set_text_map_propagator` sets a single shared global with no restore),
-    /// so they don't race when the test binary runs them on separate threads.
-    static PROPAGATOR_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn service_resource_sets_service_name() {

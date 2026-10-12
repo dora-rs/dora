@@ -231,15 +231,19 @@ impl TracingBuilder {
     /// If not set, falls back to `DORA_JAEGER_TRACING` for backward compatibility.
     ///
     /// The endpoint should be in the format: "http://localhost:4317"
-    pub fn with_otlp_tracing(mut self) -> eyre::Result<Self> {
-        let endpoint = std::env::var("DORA_OTLP_ENDPOINT")
-            .or_else(|_| std::env::var("DORA_JAEGER_TRACING"))
-            .wrap_err("DORA_OTLP_ENDPOINT or DORA_JAEGER_TRACING environment variable not set")?;
+    pub fn with_otlp_tracing(self) -> eyre::Result<Self> {
+        let endpoint = otlp_endpoint_from_env().ok_or_else(|| {
+            eyre::eyre!("DORA_OTLP_ENDPOINT or DORA_JAEGER_TRACING environment variable not set")
+        })?;
+        self.with_otlp_tracing_to(&endpoint)
+    }
 
+    /// [`with_otlp_tracing`](Self::with_otlp_tracing) with an explicit endpoint.
+    fn with_otlp_tracing_to(mut self, endpoint: &str) -> eyre::Result<Self> {
         // Initialize OTLP tracing - this returns a tracer and sets the global provider
-        let sdk_tracer_provider = crate::telemetry::init_tracing(&self.name, &endpoint)
+        let sdk_tracer_provider = crate::telemetry::init_tracing(&self.name, endpoint)
             .wrap_err("failed to initialize OTLP tracing exporter")?;
-        let meter_provider = metrics::init_meter_provider(&self.name, &endpoint)
+        let meter_provider = metrics::init_meter_provider(&self.name, endpoint)
             .wrap_err("failed to initialize OTLP metrics exporter")?;
 
         // TODO: Maybe this needs to be removed in favor of application level global.
@@ -328,7 +332,7 @@ impl Drop for OtelGuard {
     }
 }
 
-/// Initialize tracing with OTLP (if configured) or stdout/file logging.
+/// Initialize tracing with OTLP export (if configured) plus stdout/file logging.
 ///
 /// This function should be called after creating a tokio runtime and calling `runtime.enter()`.
 ///
@@ -362,31 +366,61 @@ pub fn init_tracing_subscriber(
     file_name: Option<&str>,
     file_filter: LevelFilter,
 ) -> eyre::Result<Option<OtelGuard>> {
-    let mut builder = TracingBuilder::new(name);
-
-    let guard: Option<OtelGuard> = if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
-        || std::env::var("DORA_JAEGER_TRACING").is_ok()
-    {
-        builder = builder
-            .with_otlp_tracing()
-            .wrap_err("failed to set up OTLP tracing")?;
-        builder.guard.take()
-    } else {
-        if let Some(filter) = stdout_filter {
-            builder = builder.with_stdout(filter, false);
-        }
-        None
-    };
-
-    if let Some(filename) = file_name {
-        builder = builder.with_file(filename, file_filter)?;
-    }
-
+    let otlp_endpoint = otlp_endpoint_from_env();
+    let (builder, guard) = subscriber_builder(
+        name,
+        otlp_endpoint.as_deref(),
+        stdout_filter,
+        file_name,
+        file_filter,
+    )?;
     builder
         .build()
         .wrap_err("failed to set up tracing subscriber")?;
 
     Ok(guard)
+}
+
+/// The OTLP endpoint from `DORA_OTLP_ENDPOINT`, falling back to the legacy
+/// `DORA_JAEGER_TRACING`.
+fn otlp_endpoint_from_env() -> Option<String> {
+    std::env::var("DORA_OTLP_ENDPOINT")
+        .or_else(|_| std::env::var("DORA_JAEGER_TRACING"))
+        .ok()
+}
+
+/// The layers [`init_tracing_subscriber`] installs, before they are made the
+/// global subscriber.
+fn subscriber_builder(
+    name: &str,
+    otlp_endpoint: Option<&str>,
+    stdout_filter: Option<&str>,
+    file_name: Option<&str>,
+    file_filter: LevelFilter,
+) -> eyre::Result<(TracingBuilder, Option<OtelGuard>)> {
+    let mut builder = TracingBuilder::new(name);
+
+    let guard: Option<OtelGuard> = if let Some(endpoint) = otlp_endpoint {
+        builder = builder
+            .with_otlp_tracing_to(endpoint)
+            .wrap_err("failed to set up OTLP tracing")?;
+        builder.guard.take()
+    } else {
+        None
+    };
+
+    // Console output is independent of OTLP export: exporting spans must not
+    // silence the daemon's and CLI's own warnings and errors. Callers opt out
+    // by passing `None` (e.g. `--quiet`).
+    if let Some(filter) = stdout_filter {
+        builder = builder.with_stdout(filter, false);
+    }
+
+    if let Some(filename) = file_name {
+        builder = builder.with_file(filename, file_filter)?;
+    }
+
+    Ok((builder, guard))
 }
 
 /// `<out_dir>/<file_name>.txt`.
@@ -402,9 +436,12 @@ fn log_file_path(out_dir: &Path, file_name: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{EnvFilter, Layer, env_configures_target, log_file_path, stdout_filter};
+    use super::{
+        EnvFilter, Layer, env_configures_target, log_file_path, stdout_filter, subscriber_builder,
+    };
     use std::path::Path;
     use tracing::Level;
+    use tracing::level_filters::LevelFilter;
     use tracing_subscriber::{filter::FilterExt, layer::SubscriberExt};
 
     /// Whether `target` at `level` passes `with_stdout("info", _)`'s filter
@@ -463,6 +500,36 @@ mod tests {
             "zenoh::net",
             Level::INFO
         ));
+    }
+
+    /// Enabling OTLP export must not drop the console layer: `dora daemon`
+    /// and `dora run` pass a stdout filter and still need their warnings and
+    /// errors on the terminal (Rust nodes already keep stdout alongside OTLP).
+    #[test]
+    fn otlp_export_keeps_the_stdout_layer() {
+        // `init_tracing` may replace the global propagator; don't race the
+        // telemetry tests that set it.
+        let _lock = crate::telemetry::PROPAGATOR_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // The exporters connect lazily, so nothing has to listen here.
+        let endpoint = Some("http://127.0.0.1:4317");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let _enter = rt.enter();
+
+        let (without_stdout, _guard_a) =
+            subscriber_builder("test", endpoint, None, None, LevelFilter::INFO).unwrap();
+        let (with_stdout, guard_b) =
+            subscriber_builder("test", endpoint, Some("info"), None, LevelFilter::INFO).unwrap();
+
+        assert!(guard_b.is_some(), "OTLP export should be set up");
+        assert_eq!(
+            with_stdout.layers.len(),
+            without_stdout.layers.len() + 1,
+            "the stdout filter must add a console layer next to the OTLP layers"
+        );
     }
 
     #[test]
