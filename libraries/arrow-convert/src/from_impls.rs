@@ -27,6 +27,20 @@ impl TryFrom<&DoraArray> for bool {
     }
 }
 
+/// Any length, no nulls: the reverse of `IntoArrow for Vec<bool>`.
+impl TryFrom<&DoraArray> for Vec<bool> {
+    type Error = eyre::Report;
+    fn try_from(value: &DoraArray) -> Result<Self, Self::Error> {
+        let bool_array = array_ref(value)
+            .as_boolean_opt()
+            .context("not a bool array")?;
+        if bool_array.null_count() != 0 {
+            eyre::bail!("bool array has nulls");
+        }
+        Ok(bool_array.values().iter().collect())
+    }
+}
+
 macro_rules! impl_try_from_arrow_data {
     ($($t:ty => $arrow_type:ident),*) => {
         $(
@@ -84,25 +98,34 @@ impl_try_from_arrow_data!(
     f64 => Float64Type
 );
 
-impl<'a> TryFrom<&'a DoraArray> for &'a str {
-    type Error = eyre::Report;
-    /// Accepts all three Arrow string encodings: `Utf8`, `LargeUtf8` and
-    /// `Utf8View`. Senders outside Rust (Polars, pyarrow) commonly produce
-    /// the latter two, and this crate's own `IntoArrow` builds them too.
-    fn try_from(value: &'a DoraArray) -> Result<Self, Self::Error> {
-        let array = array_ref(value);
+/// Apply the generic `$read` function to `$value` as whichever of the three
+/// Arrow string encodings it holds: `Utf8`, `LargeUtf8` or `Utf8View`.
+/// Senders outside Rust (Polars, pyarrow) commonly produce the latter two, and
+/// this crate's own `IntoArrow` builds them too.
+macro_rules! read_any_string_array {
+    ($value:expr, $read:ident) => {{
+        let array = array_ref($value);
         if let Some(array) = array.as_string_opt::<i32>() {
-            single_string(array)
+            $read(array)
         } else if let Some(array) = array.as_string_opt::<i64>() {
-            single_string(array)
+            $read(array)
         } else if let Some(array) = array.as_string_view_opt() {
-            single_string(array)
+            $read(array)
         } else {
             eyre::bail!(
                 "not a string array (expected Utf8, LargeUtf8 or Utf8View, got {})",
                 array.data_type()
             )
         }
+    }};
+}
+
+impl<'a> TryFrom<&'a DoraArray> for &'a str {
+    type Error = eyre::Report;
+    /// Accepts all three Arrow string encodings: `Utf8`, `LargeUtf8` and
+    /// `Utf8View`.
+    fn try_from(value: &'a DoraArray) -> Result<Self, Self::Error> {
+        read_any_string_array!(value, single_string)
     }
 }
 
@@ -121,6 +144,28 @@ where
         eyre::bail!("array has nulls");
     }
     Ok(array.value(0))
+}
+
+/// Any length, no nulls: the reverse of `IntoArrow for Vec<String>`. Like
+/// the `&str` impl, accepts `Utf8`, `LargeUtf8` and `Utf8View`.
+impl TryFrom<&DoraArray> for Vec<String> {
+    type Error = eyre::Report;
+    fn try_from(value: &DoraArray) -> Result<Self, Self::Error> {
+        read_any_string_array!(value, all_strings)
+    }
+}
+
+fn all_strings<'a, A>(array: &'a A) -> eyre::Result<Vec<String>>
+where
+    A: Array,
+    &'a A: ArrayAccessor<Item = &'a str>,
+{
+    if array.null_count() != 0 {
+        eyre::bail!("array has nulls");
+    }
+    Ok((0..array.len())
+        .map(|i| array.value(i).to_owned())
+        .collect())
 }
 
 impl TryFrom<&DoraArray> for String {
