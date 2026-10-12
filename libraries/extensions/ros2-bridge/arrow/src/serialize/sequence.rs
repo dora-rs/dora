@@ -280,6 +280,12 @@ impl serde::Serialize for ByteSequence<'_> {
             serialize_binary(serializer, binary)
         } else if let Some(binary) = self.value.as_binary_opt::<i64>() {
             serialize_binary(serializer, binary)
+        } else if let Some(bytes) = self.value.as_primitive_opt::<UInt8Type>()
+            && bytes.null_count() == 0
+        {
+            // Same wire bytes as a per-element `u8` sequence (length prefix,
+            // then the raw bytes), written in one call.
+            serializer.serialize_bytes(bytes.values())
         } else {
             BasicSequence {
                 value: self.value,
@@ -313,13 +319,7 @@ where
         binary.value(0)
     };
 
-    let mut seq = serializer.serialize_seq(Some(bytes.len()))?;
-
-    for b in bytes {
-        seq.serialize_element(b)?;
-    }
-
-    seq.end()
+    serializer.serialize_bytes(bytes)
 }
 
 struct BoolArray<'a> {
