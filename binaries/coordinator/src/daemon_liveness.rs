@@ -399,8 +399,7 @@ pub(crate) async fn begin_orphaned_dataflow_reclaim(
             timestamp: clock.new_timestamp().get_time().to_system_time().into(),
             fields: None,
         },
-    )
-    .await;
+    );
 
     close_topic_subscribers_on_finish(&mut df);
 
