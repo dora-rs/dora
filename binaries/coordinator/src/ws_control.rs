@@ -194,8 +194,10 @@ pub(crate) async fn handle_control_ws(
     clock: Arc<dora_core::uhlc::HLC>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-    // Channel for log events to push back on same WS connection
-    let (log_tx, mut log_rx) = mpsc::channel::<String>(64);
+    // Channel for log events to push back on same WS connection. Live log
+    // lines are dropped, not awaited, when it is full (#3794), so it is sized
+    // to absorb a burst of node output while the writer catches up.
+    let (log_tx, mut log_rx) = mpsc::channel::<String>(1024);
     // Channel for binary topic data frames
     let (binary_tx, mut binary_rx) = mpsc::channel::<crate::topic_subscriber::TopicFrame>(64);
     let mut topic_subscriptions: Vec<ActiveTopicSubscription> = Vec::new();

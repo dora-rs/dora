@@ -188,8 +188,7 @@ impl Coordinator {
                                         .into(),
                                     fields: None,
                                 },
-                            )
-                            .await;
+                            );
 
                             let reply = ControlRequestReply::DataflowStopped {
                                 uuid,
@@ -287,7 +286,7 @@ impl Coordinator {
                         );
                     }
                 } else {
-                    send_log_message(&mut dataflow.log_subscribers, &message).await;
+                    send_log_message(&mut dataflow.log_subscribers, &message);
                 }
             }
         } else if let Some(build_id) = message.build_id
@@ -302,7 +301,7 @@ impl Coordinator {
                     );
                 }
             } else {
-                send_log_message(&mut build.log_subscribers, &message).await;
+                send_log_message(&mut build.log_subscribers, &message);
             }
         }
         Ok(())

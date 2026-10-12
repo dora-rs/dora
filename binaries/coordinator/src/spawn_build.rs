@@ -571,8 +571,7 @@ pub(crate) async fn teardown_failed_spawn(
             timestamp: clock.new_timestamp().get_time().to_system_time().into(),
             fields: None,
         },
-    )
-    .await;
+    );
 
     // Close topic subscribers so attached clients see a clean end-of-
     // stream rather than hanging.
@@ -735,8 +734,7 @@ pub(crate) async fn check_build_timeouts(
                 timestamp: clock.new_timestamp().get_time().to_system_time().into(),
                 fields: None,
             },
-        )
-        .await;
+        );
 
         // Insert into finished_builds so a `wait_for_build` registered
         // AFTER the watchdog fired also receives the cached error
