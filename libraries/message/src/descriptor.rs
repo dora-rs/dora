@@ -1235,12 +1235,13 @@ pub struct OperatorConfig {
     pub description: Option<String>,
 
     /// Input data connections
+    // Unlike on `Node`, an empty key here is rejected: `OperatorConfig` is
+    // `#[serde(flatten)]`ed, and flattened fields don't turn `null` into an
+    // empty collection. So the schema keeps requiring an object/array.
     #[serde(default)]
-    #[schemars(with = "Option<BTreeMap<DataId, Input>>")]
     pub inputs: BTreeMap<DataId, Input>,
     /// Output data identifiers
     #[serde(default)]
-    #[schemars(with = "Option<BTreeSet<DataId>>")]
     pub outputs: BTreeSet<DataId>,
     /// Optional type annotations for outputs
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -2192,23 +2193,33 @@ debug:
         }
     }
 
-    /// An empty `inputs:` or `outputs:` key is YAML `null`, which deserializes
-    /// to an empty collection, so the schema has to accept `null` there too.
+    /// The schema must agree with the parser on empty `inputs:`/`outputs:`
+    /// keys. On a node they are YAML `null`, which deserializes to an empty
+    /// collection. On an operator they are rejected, because `OperatorConfig`
+    /// is flattened and flattened fields don't map `null` to a default.
     #[test]
-    fn empty_inputs_and_outputs_are_accepted_by_parser_and_schema() {
-        let yaml = "nodes:\n  - id: a\n    path: x\n    inputs:\n    outputs:\n";
-        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+    fn empty_inputs_and_outputs_schema_matches_parser() {
+        let node = "nodes:\n  - id: a\n    path: x\n    inputs:\n    outputs:\n";
+        let descriptor: Descriptor = serde_yaml::from_str(node).unwrap();
         assert!(descriptor.nodes[0].inputs.is_empty());
         assert!(descriptor.nodes[0].outputs.is_empty());
 
+        let operators = "nodes:\n  - id: a\n    operators:\n      - id: op\n        python: x.py\n        inputs:\n";
+        let operator = "nodes:\n  - id: a\n    operator:\n      python: x.py\n      outputs:\n";
+        for yaml in [operators, operator] {
+            assert!(serde_yaml::from_str::<Descriptor>(yaml).is_err(), "{yaml}");
+        }
+
         let schema = serde_json::to_value(schemars::schema_for!(Descriptor)).unwrap();
-        for definition in ["Node", "OperatorDefinition", "SingleOperatorDefinition"] {
+        for (definition, nullable) in [
+            ("Node", true),
+            ("OperatorDefinition", false),
+            ("SingleOperatorDefinition", false),
+        ] {
             for key in ["inputs", "outputs"] {
                 let types = &schema["$defs"][definition]["properties"][key]["type"];
-                assert!(
-                    types.as_array().is_some_and(|t| t.contains(&"null".into())),
-                    "{definition}.{key} should accept null, got {types}"
-                );
+                let accepts_null = types.as_array().is_some_and(|t| t.contains(&"null".into()));
+                assert_eq!(accepts_null, nullable, "{definition}.{key}: {types}");
             }
         }
     }

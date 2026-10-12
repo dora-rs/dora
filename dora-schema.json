@@ -694,10 +694,7 @@
         },
         "inputs": {
           "description": "Input data connections",
-          "type": [
-            "object",
-            "null"
-          ],
+          "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/Input"
           },
@@ -760,10 +757,7 @@
         },
         "outputs": {
           "description": "Output data identifiers",
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": "array",
           "default": [],
           "items": {
             "$ref": "#/$defs/DataId"
@@ -1238,10 +1232,7 @@
         },
         "inputs": {
           "description": "Input data connections",
-          "type": [
-            "object",
-            "null"
-          ],
+          "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/Input"
           },
@@ -1304,10 +1295,7 @@
         },
         "outputs": {
           "description": "Output data identifiers",
-          "type": [
-            "array",
-            "null"
-          ],
+          "type": "array",
           "default": [],
           "items": {
             "$ref": "#/$defs/DataId"
