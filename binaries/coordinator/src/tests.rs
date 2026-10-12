@@ -1889,6 +1889,59 @@ async fn replay_releases_param_write_lock_while_waiting_for_the_daemon() {
     replay.abort();
 }
 
+#[tokio::test]
+async fn replay_takes_param_write_lock_before_reading_the_param() {
+    // #3683, replay side: a `set` holding the connection's lock may be
+    // between persisting its value and queuing it. The replay must wait for
+    // it before re-reading the store, or it could queue the old value after
+    // the `set`'s new one.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+    let one = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &one)
+        .unwrap();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    let lock = connection.param_write_lock.clone();
+    let daemon_task = spawn_set_param_acking_daemon(rx, pending_replies, |_| {});
+
+    let set_guard = lock.lock().await;
+    let replay = tokio::spawn(replay_persisted_params_for_daemon(
+        dataflow_id,
+        daemon_id,
+        vec![node_id.clone()],
+        store.clone(),
+        connection,
+        Arc::new(HLC::default()),
+    ));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!replay.is_finished(), "replay must wait for the set's lock");
+    // The `set` persists its value while it holds the lock.
+    let two = serde_json::to_vec(&serde_json::json!(2)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &two)
+        .unwrap();
+    drop(set_guard);
+
+    let summary = tokio::time::timeout(Duration::from_secs(10), replay)
+        .await
+        .expect("replay did not finish")
+        .unwrap();
+    assert_eq!(summary.attempted, 1);
+    assert_eq!(summary.failed, 0);
+    let seen = tokio::time::timeout(Duration::from_secs(10), daemon_task)
+        .await
+        .expect("daemon task did not finish")
+        .unwrap();
+    assert_eq!(seen, vec![("gain".to_string(), serde_json::json!(2))]);
+}
+
 /// A `Coordinator` around the given state, with everything else empty.
 fn test_coordinator(
     running_dataflows: HashMap<DataflowId, RunningDataflow>,
@@ -1977,6 +2030,78 @@ async fn param_set_waits_for_a_replay_queuing_to_the_same_daemon() {
         .expect("daemon task did not finish")
         .unwrap();
     assert_eq!(seen, vec![("gain".to_string(), serde_json::json!(2))]);
+}
+
+/// Runs a `dora param set` (or `delete`) against a daemon that never
+/// answers, and checks that the handler frees the connection's lock once the
+/// forward is queued. Held while waiting for the reply, a slow daemon would
+/// stall every replay to it, and the `set` itself runs on the event loop.
+async fn assert_param_write_releases_lock_while_waiting(delete: bool) {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+    let one = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &one)
+        .unwrap();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection = crate::state::DaemonConnection::new(tx, pending_replies, BTreeMap::new());
+    let lock = connection.param_write_lock.clone();
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), connection);
+
+    let df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        daemon_connections,
+        store,
+    );
+
+    let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+    let write = tokio::spawn(async move {
+        if delete {
+            coordinator
+                .handle_delete_param(dataflow_id, node_id, "gain".to_string(), reply_tx)
+                .await
+        } else {
+            coordinator
+                .handle_set_param(
+                    dataflow_id,
+                    node_id,
+                    "gain".to_string(),
+                    serde_json::json!(2),
+                    reply_tx,
+                )
+                .await
+        }
+    });
+
+    // The daemon receives the forward but never answers it.
+    tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("handler did not forward the change")
+        .expect("connection closed");
+    let _replay_guard = tokio::time::timeout(Duration::from_secs(10), lock.lock())
+        .await
+        .expect("handler must release the lock before waiting for the reply");
+    assert!(
+        !write.is_finished(),
+        "handler is still waiting for the reply"
+    );
+    write.abort();
+}
+
+#[tokio::test]
+async fn param_set_releases_param_write_lock_while_waiting_for_the_daemon() {
+    assert_param_write_releases_lock_while_waiting(false).await;
+}
+
+#[tokio::test]
+async fn param_delete_releases_param_write_lock_while_waiting_for_the_daemon() {
+    assert_param_write_releases_lock_while_waiting(true).await;
 }
 
 #[tokio::test]
