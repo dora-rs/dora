@@ -44,7 +44,10 @@ use futures::{StreamExt, task::SpawnExt};
 /// Maximum pending service requests before dropping new ones.
 const MAX_PENDING_REQUESTS: usize = 64;
 
-fn peer_value_or_warn<T, E: std::fmt::Display>(result: Result<T, E>, operation: &str) -> Option<T> {
+/// Warn and return `None` for a failure that ends only this message or call:
+/// a peer that misbehaves, or one message whose values cannot be encoded
+/// (such as a null nested-message or sequence row).
+fn value_or_warn<T, E: std::fmt::Display>(result: Result<T, E>, operation: &str) -> Option<T> {
     match result {
         Ok(value) => Some(value),
         Err(error) => {
@@ -84,21 +87,19 @@ impl std::fmt::Display for DdsCallFailure {
 impl DdsCallFailure {
     /// Whether this failure ends the bridge node rather than only the call.
     ///
-    /// Serialization runs inside the DDS write, so `Serialization` means the
-    /// dora side sent data that does not match the configured ROS2 type: a
-    /// local bug that would fail every call, kept fatal as on the Zenoh path.
     /// `Poisoned` and `Internal` mean the DDS participant itself is broken,
-    /// which rustdds documents as not recoverable. A timeout, an I/O error, a
-    /// blocked writer or an undecodable peer response only fail this call.
+    /// which rustdds documents as not recoverable. Everything else only fails
+    /// this call: a timeout, an I/O error, a blocked writer, an undecodable
+    /// peer response, and a `Serialization` error. Serialization runs inside
+    /// the DDS write and rejects the values of one message (such as a null
+    /// nested-message or sequence row, #3678), so the next message of the
+    /// same type may go out fine; it is dropped like on the Zenoh path.
     fn is_fatal(&self) -> bool {
         use rustdds::dds::result::{ReadError, WriteError};
         match self {
-            Self::Write(e) => matches!(
-                e,
-                WriteError::Serialization { .. }
-                    | WriteError::Poisoned { .. }
-                    | WriteError::Internal { .. }
-            ),
+            Self::Write(e) => {
+                matches!(e, WriteError::Poisoned { .. } | WriteError::Internal { .. })
+            }
             Self::Read(e) => matches!(e, ReadError::Poisoned { .. } | ReadError::Internal { .. }),
             Self::TimedOut(_) => false,
         }
@@ -294,7 +295,12 @@ fn run_zenoh_topic_mode(
                             value: data.as_array(),
                             type_info: &publisher.type_info,
                         };
-                        let cdr = serialize_raw_cdr(&value)?;
+                        let Some(cdr) = value_or_warn(
+                            serialize_raw_cdr(&value),
+                            "dropping ROS2 message that cannot be serialized",
+                        ) else {
+                            continue;
+                        };
                         futures::executor::block_on(publisher.publisher.publish(&cdr))?;
                     }
                 }
@@ -364,11 +370,16 @@ fn run_zenoh_service_mode(
             for event in futures::executor::block_on_stream(events) {
                 match event {
                     Event::Input { data, .. } => {
-                        let request = serialize_raw_cdr(&TypedValue {
-                            value: data.as_array(),
-                            type_info: &request_info,
-                        })?;
-                        let Some(response) = peer_value_or_warn(
+                        let Some(request) = value_or_warn(
+                            serialize_raw_cdr(&TypedValue {
+                                value: data.as_array(),
+                                type_info: &request_info,
+                            }),
+                            "dropping Zenoh service request that cannot be serialized",
+                        ) else {
+                            continue;
+                        };
+                        let Some(response) = value_or_warn(
                             futures::executor::block_on(
                                 client.call(request, SERVICE_RESPONSE_TIMEOUT),
                             ),
@@ -376,7 +387,7 @@ fn run_zenoh_service_mode(
                         ) else {
                             continue;
                         };
-                        let Some(data) = peer_value_or_warn(
+                        let Some(data) = value_or_warn(
                             deserialize_raw_cdr(&response, response_info.clone(), 64 * 1024 * 1024),
                             "invalid Zenoh service response",
                         ) else {
@@ -427,7 +438,7 @@ fn run_zenoh_service_mode(
                             request.id.sequence_number,
                             hex_gid(&request.id.client_gid)
                         );
-                        let Some(data) = peer_value_or_warn(
+                        let Some(data) = value_or_warn(
                             deserialize_raw_cdr(
                                 &request.payload,
                                 request_info.clone(),
@@ -477,10 +488,22 @@ fn run_zenoh_service_mode(
                         if let Some(key) = get_string_param(&metadata.parameters, REQUEST_ID)
                             && let Some((id, _)) = pending.remove(key)
                         {
-                            let response = serialize_raw_cdr(&TypedValue {
-                                value: data.as_array(),
-                                type_info: &response_info,
-                            })?;
+                            let Some(response) = value_or_warn(
+                                serialize_raw_cdr(&TypedValue {
+                                    value: data.as_array(),
+                                    type_info: &response_info,
+                                }),
+                                "Zenoh service response cannot be serialized",
+                            ) else {
+                                if let Err(error) = futures::executor::block_on(
+                                    server.reject(id, "invalid response payload"),
+                                ) {
+                                    tracing::warn!(
+                                        "failed to reject Zenoh service request: {error}"
+                                    );
+                                }
+                                continue;
+                            };
                             // A slow local handler can let the request expire before we
                             // reply; a RequestExpired/RequestAbsent here must not tear
                             // down the whole service bridge.
@@ -679,9 +702,15 @@ fn run_zenoh_action_client(
                     serialize_cdr(&SendGoalRequest {
                         goal_id,
                         goal: BridgeMessage(Some(data.as_array().to_data())),
-                    })?
+                    })
                 };
-                let Some(response) = peer_value_or_warn(
+                let Some(request) = value_or_warn(
+                    request,
+                    "dropping Zenoh action goal that cannot be serialized",
+                ) else {
+                    continue;
+                };
+                let Some(response) = value_or_warn(
                     futures::executor::block_on(
                         client.send_goal.call(request, ACTION_GOAL_TIMEOUT),
                     ),
@@ -689,7 +718,7 @@ fn run_zenoh_action_client(
                 ) else {
                     continue;
                 };
-                let Some(response): Option<SendGoalResponse> = peer_value_or_warn(
+                let Some(response): Option<SendGoalResponse> = value_or_warn(
                     deserialize_cdr(&response),
                     "invalid Zenoh action send-goal response",
                 ) else {
@@ -991,7 +1020,7 @@ fn run_zenoh_action_server(
                 }
             }
             MergedEvent::External(ZenohActionServerEvent::ResultRequest(request)) => {
-                let Some(decoded): Option<GetResultRequest> = peer_value_or_warn(
+                let Some(decoded): Option<GetResultRequest> = value_or_warn(
                     deserialize_cdr(&request.payload),
                     "invalid Zenoh action get-result request",
                 ) else {
@@ -1041,7 +1070,7 @@ fn run_zenoh_action_server(
                 }
             }
             MergedEvent::External(ZenohActionServerEvent::Cancel(request)) => {
-                let Some(decoded): Option<CancelGoalRequestWire> = peer_value_or_warn(
+                let Some(decoded): Option<CancelGoalRequestWire> = value_or_warn(
                     deserialize_cdr(&request.payload),
                     "invalid Zenoh action cancel-goal request",
                 ) else {
@@ -1098,7 +1127,13 @@ fn run_zenoh_action_server(
                             serialize_cdr(&FeedbackMessage {
                                 goal_id: goal.id,
                                 feedback: BridgeMessage(Some(data.as_array().to_data())),
-                            })?
+                            })
+                        };
+                        let Some(payload) = value_or_warn(
+                            payload,
+                            "dropping Zenoh action feedback that cannot be serialized",
+                        ) else {
+                            continue;
                         };
                         futures::executor::block_on(server.feedback.publish(&payload))?;
                     }
@@ -1110,7 +1145,24 @@ fn run_zenoh_action_server(
                             serialize_cdr(&GetResultResponse {
                                 status: goal.status,
                                 result: BridgeMessage(Some(data.as_array().to_data())),
-                            })?
+                            })
+                        };
+                        // A result the handler sent but that cannot be encoded
+                        // still ends the goal, as Aborted with a default result,
+                        // so the client is not left waiting for one.
+                        let response = match value_or_warn(
+                            response,
+                            "Zenoh action result cannot be serialized, aborting the goal",
+                        ) {
+                            Some(response) => response,
+                            None => {
+                                goal.status = GoalStatusEnum::Aborted;
+                                let _guard = TypeInfoGuard::serialize(result_type_info.clone());
+                                serialize_cdr(&GetResultResponse {
+                                    status: goal.status,
+                                    result: default_result_message(),
+                                })?
+                            }
                         };
                         let waiting = goal.take_result_requests();
                         let delivered = if waiting.is_empty() {
@@ -2180,9 +2232,12 @@ fn handle_publish_input(
                 value: data,
                 type_info,
             };
-            publisher
-                .publish(typed_value)
-                .map_err(|e| eyre!("failed to publish to ROS2: {e:?}"))?;
+            dds_call_or_warn(
+                publisher
+                    .publish(typed_value)
+                    .map_err(|e| DdsCallFailure::Write(e.forget_data())),
+                "failed to publish to ROS2",
+            )?;
         }
     }
     Ok(())
@@ -2398,6 +2453,12 @@ mod dds_call_failure_tests {
             DdsCallFailure::Read(ReadError::Deserialization {
                 reason: "bad response".into(),
             }),
+            // One message whose values cannot be encoded (#3795), e.g. a
+            // null nested-message row; the next message may be fine.
+            DdsCallFailure::Write(WriteError::Serialization {
+                reason: "null nested-message row".into(),
+                data: (),
+            }),
         ];
         for failure in recoverable {
             assert!(!failure.is_fatal(), "{failure:?} must fail only the call");
@@ -2409,12 +2470,8 @@ mod dds_call_failure_tests {
     }
 
     #[test]
-    fn a_local_type_mismatch_or_broken_participant_ends_the_bridge() {
+    fn a_broken_participant_ends_the_bridge() {
         let fatal = [
-            DdsCallFailure::Write(WriteError::Serialization {
-                reason: "arrow data does not match the ROS2 type".into(),
-                data: (),
-            }),
             DdsCallFailure::Write(WriteError::Poisoned {
                 reason: "rtps thread panicked".into(),
                 data: (),
@@ -2440,14 +2497,14 @@ mod dds_call_failure_tests {
 
 #[cfg(test)]
 mod peer_failure_tests {
-    use super::peer_value_or_warn;
+    use super::value_or_warn;
 
     #[test]
     fn malformed_peer_value_is_dropped_without_poisoning_the_next_value() {
         let malformed: eyre::Result<u32> = Err(eyre::eyre!("malformed"));
-        assert!(peer_value_or_warn(malformed, "test").is_none());
+        assert!(value_or_warn(malformed, "test").is_none());
         let valid: eyre::Result<u32> = Ok(42);
-        assert_eq!(peer_value_or_warn(valid, "test"), Some(42));
+        assert_eq!(value_or_warn(valid, "test"), Some(42));
     }
 }
 
