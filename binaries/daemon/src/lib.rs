@@ -170,7 +170,7 @@ mod test_tracing;
 mod tests;
 mod zenoh_bind;
 
-pub(crate) use debug_topic::{DebugSchemaCache, rebuild_debug_topic_stream, retain_debug_schema};
+pub(crate) use debug_topic::{DebugSchemaCache, prepare_debug_topic_frame, retain_debug_schema};
 pub(crate) use event_types::{
     CONTROL_EVENT_HEADROOM, DaemonNodeEvent, DoraEvent, Event, InterDaemonEvent,
     NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound, send_with_timestamp,
@@ -1550,7 +1550,7 @@ impl Daemon {
         // and let the coordinator's `restore_topic_debug_streams_for_daemon`
         // re-install the still-active subscriptions.
         for dataflow in self.running.values_mut() {
-            dataflow.debug_topic_watchers.clear();
+            dataflow.clear_debug_topic_watchers();
         }
 
         let watchdog_clock = self.clock.clone();

@@ -358,7 +358,7 @@ mod tests {
             ArrayRef, BinaryArray, BooleanArray, Int32Array, ListArray, StringArray, StructArray,
             UInt8Array,
         },
-        buffer::OffsetBuffer,
+        buffer::{NullBuffer, OffsetBuffer},
         datatypes::{DataType, Field},
     };
     use byteorder::LittleEndian;
@@ -724,6 +724,55 @@ mod tests {
         assert!(
             serializes_primitive_array(&all_present, NestableType::BasicType(BasicType::Bool)),
             "an all-present bool[3] field must still serialize"
+        );
+    }
+
+    /// A null row of a fixed `uint8[3]` field — as a `List` or as a
+    /// `Binary` column — must error. Both used to publish the row's masked
+    /// values as real data.
+    #[test]
+    fn null_fixed_array_row_is_rejected() {
+        let messages = fixed_array_message(NestableType::BasicType(BasicType::U8));
+        let serializes_ok = |column: ArrayRef| {
+            let value = Arc::new(StructArray::from(vec![(
+                Arc::new(Field::new("names", column.data_type().clone(), true)),
+                column,
+            )])) as ArrayRef;
+            let type_info = TypeInfo {
+                package_name: Cow::Borrowed("test_msgs"),
+                message_name: Cow::Borrowed("ArrMsg"),
+                messages: messages.clone(),
+            };
+            cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+                value: &value,
+                type_info: &type_info,
+            })
+            .is_ok()
+        };
+        let list = |nulls| {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("item", DataType::UInt8, true)),
+                OffsetBuffer::from_lengths([3usize]),
+                Arc::new(UInt8Array::from(vec![1, 2, 3])),
+                nulls,
+            )) as ArrayRef
+        };
+        let binary = |nulls| {
+            Arc::new(BinaryArray::new(
+                OffsetBuffer::from_lengths([3usize]),
+                vec![1u8, 2, 3].into(),
+                nulls,
+            )) as ArrayRef
+        };
+        assert!(!serializes_ok(list(Some(NullBuffer::new_null(1)))));
+        assert!(!serializes_ok(binary(Some(NullBuffer::new_null(1)))));
+        assert!(
+            serializes_ok(list(None)),
+            "a valid row must still serialize"
+        );
+        assert!(
+            serializes_ok(binary(None)),
+            "a valid row must still serialize"
         );
     }
 }

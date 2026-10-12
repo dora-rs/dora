@@ -495,7 +495,7 @@ DoraOnInputResult on_input_parse_error(Operator& op, rust::Str id, rust::Str err
 ```
 
 - `new_operator()` -- called once at startup; returns the operator instance.
-- `on_input()` -- called for every input event; process data and optionally send outputs.
+- `on_input()` -- called for every input event; process data and optionally send outputs. `data` is empty for metadata-only inputs such as `dora/timer/...` ticks or outputs sent as `()`, so check `data.empty()` / `data.size()` before indexing it.
 - `on_input_closed()` -- called when an upstream input stream closes (the daemon delivers `Event::InputClosed { id }`). Operator can log, flush per-input state, or `send_output(output_sender, ...)` to emit a final/status message in response. Set `result.stop = true` to request shutdown.
 - `on_stop()` -- called on graceful shutdown (the daemon delivers `Event::Stop`). Operator can drain output queues, persist final state, or `send_output(output_sender, ...)` to flush buffered data before returning.
 - `on_input_parse_error()` -- called when an input's Arrow data fails to deserialize (`Event::InputParseError { id, error }`). `id` identifies the affected input; `error` is the deserialization error string. Operator can log the error, surface it as health state, or request shutdown. Previously these events were silently dropped.

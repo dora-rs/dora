@@ -305,6 +305,50 @@ async fn spawn_rejects_invalid_timing_fields() {
     assert!(!daemon.running.contains_key(&dataflow_id));
 }
 
+/// Same for an operator id that is not a valid `DataId` segment: the daemon
+/// would panic in `DataId::from` building the runtime node's input/output ids.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn spawn_rejects_invalid_operator_id() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let descriptor: Descriptor = serde_json::from_str(
+        r#"{ "nodes": [ { "id": "rt", "operators": [
+            { "id": "op", "python": "op.py", "outputs": ["out"] }
+        ] } ] }"#,
+    )
+    .unwrap();
+    // Current resolution rejects the bad id, so plant it after resolving, as
+    // an older coordinator's `Spawn` could carry it.
+    let mut nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+    for node in nodes.values_mut() {
+        if let dora_core::descriptor::CoreNodeKind::Runtime(runtime) = &mut node.kind {
+            runtime.operators[0].id = "my op".to_string().into();
+        }
+    }
+    let spawn_nodes = nodes.keys().cloned().collect();
+    let dataflow_id = Uuid::new_v4();
+    let err = daemon
+        .spawn_dataflow(
+            None,
+            dataflow_id,
+            std::env::temp_dir(),
+            nodes,
+            descriptor,
+            spawn_nodes,
+            false,
+            None,
+        )
+        .await
+        .err()
+        .expect("spawn must reject an invalid operator id");
+    assert!(
+        format!("{err:#}").contains("invalid operator id"),
+        "{err:#}"
+    );
+    assert!(!daemon.running.contains_key(&dataflow_id));
+}
+
 /// A daemon whose coordinator connection is `coordinator_sender`. The one
 /// place these tests call `build_daemon`, so a signature change touches only
 /// this.
@@ -392,6 +436,106 @@ async fn node_stop_does_not_block_on_a_full_event_channel() {
         "unexpected event: {}",
         event.inner.kind()
     );
+}
+
+/// A `dora/logs` subscriber whose channel closed (its node crashed) must keep
+/// its subscription: once the restarted node re-subscribes it has to receive
+/// log inputs again. The broadcast used to prune the subscriber entry along
+/// with the dead channel, and nothing ever re-added it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn log_subscriber_receives_logs_again_after_restart() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let mut dataflow = test_dataflow();
+    let dataflow_id = dataflow.id;
+    let monitor = NodeId::from("monitor".to_string());
+    dataflow
+        .log_subscribers
+        .push(crate::running_dataflow::LogSubscriber {
+            node_id: monitor.clone(),
+            input_id: DataId::from("logs".to_string()),
+            filter: dora_message::config::LogSubscriptionFilter {
+                min_level: None,
+                node_filter: None,
+            },
+        });
+    // The crashed incarnation's listener is gone, but its sender is still
+    // registered until the restarted node subscribes again.
+    let (dead_tx, dead_rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    drop(dead_rx);
+    dataflow.subscribe_channels.insert(monitor.clone(), dead_tx);
+    daemon.running.insert(dataflow_id, dataflow);
+
+    let log_message = || dora_message::common::LogMessage {
+        build_id: None,
+        dataflow_id: Some(dataflow_id),
+        node_id: Some(NodeId::from("other".to_string())),
+        daemon_id: None,
+        level: dora_core::build::LogLevelOrStdout::LogLevel(LogLevel::Info),
+        target: None,
+        module_path: None,
+        file: None,
+        line: None,
+        message: "hello".into(),
+        timestamp: chrono::Utc::now(),
+        fields: None,
+    };
+    daemon
+        .handle_dora_event(DoraEvent::LogBroadcast {
+            dataflow_id,
+            log_message: log_message(),
+        })
+        .await
+        .unwrap();
+
+    // The restarted incarnation re-subscribes.
+    let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    let dataflow = daemon.running.get_mut(&dataflow_id).unwrap();
+    Daemon::subscribe(dataflow, monitor.clone(), tx, &clock).await;
+    daemon
+        .handle_dora_event(DoraEvent::LogBroadcast {
+            dataflow_id,
+            log_message: log_message(),
+        })
+        .await
+        .unwrap();
+
+    let event = rx.try_recv().map(|event| event.inner);
+    assert!(
+        matches!(event, Ok(NodeEvent::Input { .. })),
+        "restarted log subscriber received {event:?}"
+    );
+}
+
+/// `AddNode` re-registers a node's `dora/logs` inputs. An entry left by an
+/// earlier incarnation (kept across a crash, see the test above) must be
+/// replaced, not duplicated, or every log line reaches the node twice.
+#[test]
+fn unsubscribe_node_from_logs_drops_only_that_nodes_entries() {
+    let subscriber = |node: &str, input: &str| crate::running_dataflow::LogSubscriber {
+        node_id: NodeId::from(node.to_string()),
+        input_id: DataId::from(input.to_string()),
+        filter: dora_message::config::LogSubscriptionFilter {
+            min_level: None,
+            node_filter: None,
+        },
+    };
+    let mut dataflow = test_dataflow();
+    dataflow.log_subscribers = vec![
+        subscriber("monitor", "logs"),
+        subscriber("monitor", "old_logs"),
+        subscriber("other", "logs"),
+    ];
+
+    dataflow.unsubscribe_node_from_logs(&NodeId::from("monitor".to_string()));
+
+    let remaining: Vec<_> = dataflow
+        .log_subscribers
+        .iter()
+        .map(|sub| (sub.node_id.to_string(), sub.input_id.to_string()))
+        .collect();
+    assert_eq!(remaining, [("other".to_string(), "logs".to_string())]);
 }
 
 /// The coordinator sends `Logs` with `send_and_receive`, and the WS layer
@@ -1167,20 +1311,22 @@ fn stop_debug_stream_scan_cleans_up_watchers() {
     let sub_b = uuid::Uuid::new_v4();
 
     // Two subs, both watching out_1; only sub_a watches out_2.
-    df.debug_topic_watchers
-        .entry(OutputId(node_a.clone(), out_1.clone()))
-        .or_default()
-        .extend([sub_a, sub_b]);
-    df.debug_topic_watchers
-        .entry(OutputId(node_a.clone(), out_2.clone()))
-        .or_default()
-        .insert(sub_a);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_1.clone()), sub_a);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_1.clone()), sub_b);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_2.clone()), sub_a);
 
-    // Mirror the production stop path exactly.
-    df.debug_topic_watchers.retain(|_output_id, watchers| {
-        watchers.remove(&sub_a);
-        !watchers.is_empty()
-    });
+    df.remove_debug_topic_subscription(sub_a);
+
+    // The set shared with the debug subscriber tasks mirrors the map's keys,
+    // so out_2 samples are dropped before they are copied (dora-rs/dora#3781).
+    assert!(
+        df.debug_watched_outputs
+            .contains(&OutputId(node_a.clone(), out_1.clone()))
+    );
+    assert!(
+        !df.debug_watched_outputs
+            .contains(&OutputId(node_a.clone(), out_2.clone()))
+    );
 
     // out_1 still has sub_b → entry retained with just sub_b.
     let out_1_watchers = df

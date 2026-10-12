@@ -1,19 +1,16 @@
 name: Publish C/C++ Libraries
 
-# `workflow_call` is how release.yml builds these on a tag push. The
-# `release: published` trigger is kept for a manually-cut release, but it
-# cannot be relied on: a release created by GITHUB_TOKEN raises no event,
-# so none of these archives reached the v1.0.0-rc.3 or v1.0.0-rc.4
-# releases. When called, `publish-to-release` below is skipped (its `if`
-# tests the caller's event) and release.yml attaches the artifacts itself.
+# `release.yml` calls this on a tag push and attaches the archives to the
+# GitHub Release itself. There is deliberately no `release: published`
+# trigger: a release created by GITHUB_TOKEN raises no event, so that path
+# never ran (none of these archives reached v1.0.0-rc.3 or rc.4).
+# `workflow_dispatch` builds the archives as run artifacts only.
 on:
   workflow_call:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-c-cpp-libraries:
@@ -133,25 +130,3 @@ jobs:
         with:
           name: dora-cpp-libraries-${{ matrix.target }}
           path: dora-cpp-libraries-${{ matrix.target }}.*
-
-  publish-to-release:
-    name: Publish to GitHub Release
-    needs: build-c-cpp-libraries
-    runs-on: ubuntu-latest
-    if: github.event_name == 'release'
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - name: Upload to GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          REPO: ${{ github.repository }}
-        run: |
-          echo "Artifacts to upload:"
-          ls -la artifacts/
-          gh release upload "$RELEASE_TAG" artifacts/* --clobber --repo "$REPO"

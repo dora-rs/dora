@@ -417,7 +417,14 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                     Ok(other) => {
                         tracing::trace!("ignoring unexpected WS message type: {other:?}");
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        if is_connection_drop(&e) {
+                            tracing::debug!("coordinator WebSocket session ended: {e}");
+                        } else {
+                            tracing::warn!("coordinator WebSocket session ended: {e}");
+                        }
+                        break;
+                    }
                 }
             }
         }
@@ -432,6 +439,28 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
     }
     for (_, (ack, _)) in pending_topic_subscribes.drain() {
         let _ = ack.send(Err(eyre!("WS connection closed")));
+    }
+}
+
+/// Whether a WebSocket read error is the connection simply going away.
+///
+/// The coordinator exits after `dora down` without a closing handshake, so a
+/// reset is the normal end of that session and must not print a warning.
+/// Anything else (a capacity limit, a protocol violation) is worth a warning.
+fn is_connection_drop(e: &tokio_tungstenite::tungstenite::Error) -> bool {
+    use tokio_tungstenite::tungstenite::error::{Error, ProtocolError};
+    match e {
+        Error::ConnectionClosed
+        | Error::AlreadyClosed
+        | Error::Protocol(ProtocolError::ResetWithoutClosingHandshake) => true,
+        Error::Io(io) => matches!(
+            io.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::UnexpectedEof
+        ),
+        _ => false,
     }
 }
 
@@ -765,6 +794,26 @@ mod tests {
             ),
             Ok(_) => panic!("expected error from async context"),
         }
+    }
+
+    #[test]
+    fn connection_drop_is_not_a_warning() {
+        use tokio_tungstenite::tungstenite::error::{CapacityError, Error, ProtocolError};
+        // `dora down`: the coordinator exits without a closing handshake.
+        assert!(is_connection_drop(&Error::Protocol(
+            ProtocolError::ResetWithoutClosingHandshake
+        )));
+        assert!(is_connection_drop(&Error::ConnectionClosed));
+        assert!(is_connection_drop(&Error::Io(std::io::Error::from(
+            std::io::ErrorKind::ConnectionReset
+        ))));
+        // A real failure still warns.
+        assert!(!is_connection_drop(&Error::Capacity(
+            CapacityError::MessageTooLong {
+                size: 17 << 20,
+                max_size: 16 << 20,
+            }
+        )));
     }
 
     #[tokio::test]

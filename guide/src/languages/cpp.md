@@ -350,7 +350,7 @@ DoraOnInputResult on_stop(Operator& op, OutputSender& output_sender);
 ```
 
 - `new_operator()` -- called once at startup; returns the operator instance.
-- `on_input()` -- called for every input event; process data and optionally send outputs.
+- `on_input()` -- called for every input event; process data and optionally send outputs. `data` is empty for metadata-only inputs such as `dora/timer/...` ticks or outputs sent as `()`, so check `data.empty()` / `data.size()` before indexing it.
 - `on_input_closed()` -- called when an upstream input stream closes (the daemon delivers `Event::InputClosed { id }`). Operator can log, flush per-input state, or `send_output(output_sender, ...)` to emit a final/status message in response. Set `result.stop = true` to request shutdown.
 - `on_stop()` -- called on graceful shutdown (the daemon delivers `Event::Stop`). Operator can drain output queues, persist final state, or `send_output(output_sender, ...)` to flush buffered data before returning.
 
