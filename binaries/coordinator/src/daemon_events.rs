@@ -168,6 +168,7 @@ impl Coordinator {
             apply_disconnect_actions(
                 disconnect_actions,
                 &mut self.running_dataflows,
+                &mut self.reclaimed_launches,
                 &mut self.daemon_connections,
                 &self.store,
                 &self.clock,
@@ -230,6 +231,13 @@ impl Coordinator {
         let now_ms = state::now_millis();
         match self.store.list_dataflows() {
             Ok(records) => {
+                // A launch context is only worth keeping while a daemon may
+                // still reclaim its dataflow.
+                self.reclaimed_launches.retain(|uuid, _| {
+                    records
+                        .iter()
+                        .any(|r| r.uuid == *uuid && r.status == StoreDataflowStatus::Recovering)
+                });
                 for mut record in records {
                     if record.status == StoreDataflowStatus::Recovering {
                         let age_ms = now_ms.saturating_sub(record.updated_at);
@@ -337,6 +345,7 @@ impl Coordinator {
             apply_disconnect_actions(
                 disconnect_actions,
                 &mut self.running_dataflows,
+                &mut self.reclaimed_launches,
                 &mut self.daemon_connections,
                 &self.store,
                 &self.clock,
@@ -522,6 +531,7 @@ impl Coordinator {
                         // `dora list` / `stop` / `logs`.
                         if reestablish_running_dataflow(
                             &mut self.running_dataflows,
+                            &mut self.reclaimed_launches,
                             &record,
                             &daemon_id,
                             &entry.running_nodes,
@@ -559,6 +569,7 @@ impl Coordinator {
                         // but not the in-memory entry). Idempotent.
                         if reestablish_running_dataflow(
                             &mut self.running_dataflows,
+                            &mut self.reclaimed_launches,
                             &record,
                             &daemon_id,
                             &entry.running_nodes,
