@@ -1,11 +1,12 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
-    io::Write,
+    io::{Read, Write},
     time::{Duration, Instant, SystemTime},
 };
 
 use aligned_vec::{AVec, ConstAlign};
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dora_message::{
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
@@ -318,17 +319,42 @@ fn record_entry<W: Write>(
     }
 }
 
+/// The original descriptor YAML, from [`dora_recording::DESCRIPTOR_ENV`]
+/// (compressed and base64-encoded, because `env:` values are `$VAR`-expanded
+/// on the way here) or, from an older CLI, the raw
+/// [`dora_recording::LEGACY_DESCRIPTOR_ENV`].
+fn descriptor_from_env(var: impl Fn(&str) -> Option<String>) -> eyre::Result<Vec<u8>> {
+    use dora_recording::{DESCRIPTOR_ENV, LEGACY_DESCRIPTOR_ENV};
+    match var(DESCRIPTOR_ENV) {
+        Some(encoded) => {
+            let compressed = BASE64_STANDARD
+                .decode(encoded)
+                .wrap_err_with(|| format!("{DESCRIPTOR_ENV} is not valid base64"))?;
+            let mut yaml = Vec::new();
+            flate2::read::DeflateDecoder::new(compressed.as_slice())
+                .read_to_end(&mut yaml)
+                .wrap_err_with(|| format!("{DESCRIPTOR_ENV} is not a valid deflate stream"))?;
+            Ok(yaml)
+        }
+        None => Ok(var(LEGACY_DESCRIPTOR_ENV).unwrap_or_default().into_bytes()),
+    }
+}
+
 /// The header of the recording `node` makes.
 ///
 /// It carries the id of the dataflow `node` runs in, which is the one being
 /// recorded, as `dora record --proxy` does, so `dora recording export` names
 /// a dataflow `dora list` knows.
-fn recording_header(node: &DoraNode, start_nanos: u64, descriptor_yaml: String) -> RecordingHeader {
+fn recording_header(
+    node: &DoraNode,
+    start_nanos: u64,
+    descriptor_yaml: Vec<u8>,
+) -> RecordingHeader {
     RecordingHeader {
         version: dora_recording::FORMAT_VERSION,
         start_nanos,
         dataflow_id: *node.dataflow_id(),
-        descriptor_yaml: descriptor_yaml.into_bytes(),
+        descriptor_yaml,
     }
 }
 
@@ -337,7 +363,7 @@ fn main() -> eyre::Result<()> {
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
     let topics_json =
         std::env::var("DORA_RECORD_TOPICS").wrap_err("DORA_RECORD_TOPICS env var not set")?;
-    let descriptor_yaml = std::env::var("DORA_RECORD_DESCRIPTOR").unwrap_or_default();
+    let descriptor_yaml = descriptor_from_env(|name| std::env::var(name).ok())?;
 
     // Build reverse map: input_id -> (source_node_id, source_output_id).
     let reverse_map = build_reverse_map(&topics_json)?;
@@ -547,7 +573,7 @@ mod tests {
         )
         .unwrap();
         let dataflow_id = *node.dataflow_id();
-        let header = recording_header(&node, 42, "nodes: []".to_string());
+        let header = recording_header(&node, 42, b"nodes: []".to_vec());
 
         let mut buf = Vec::new();
         RecordingWriter::new(&mut buf, &header).unwrap();
@@ -1000,6 +1026,48 @@ mod tests {
         assert!(
             sink.flushed_len() > 0,
             "count bound must flush every {FLUSH_EVERY_N_RECORDS} records"
+        );
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let pairs: BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name| pairs.get(name).cloned()
+    }
+
+    #[test]
+    fn descriptor_prefers_the_encoded_variable() {
+        let mut deflate = flate2::write::DeflateEncoder::new(Vec::new(), Default::default());
+        deflate.write_all(b"a: $X").unwrap();
+        let encoded = BASE64_STANDARD.encode(deflate.finish().unwrap());
+        let descriptor = descriptor_from_env(vars(&[
+            (dora_recording::DESCRIPTOR_ENV, &encoded),
+            (dora_recording::LEGACY_DESCRIPTOR_ENV, "stale"),
+        ]))
+        .unwrap();
+        assert_eq!(descriptor, b"a: $X");
+    }
+
+    #[test]
+    fn descriptor_falls_back_to_the_raw_variable_of_an_older_cli() {
+        let descriptor = descriptor_from_env(vars(&[(
+            dora_recording::LEGACY_DESCRIPTOR_ENV,
+            "nodes: []",
+        )]))
+        .unwrap();
+        assert_eq!(descriptor, b"nodes: []");
+        assert!(descriptor_from_env(vars(&[])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_base64_descriptor_is_an_error() {
+        let err = descriptor_from_env(vars(&[(dora_recording::DESCRIPTOR_ENV, "not base64!")]))
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains(dora_recording::DESCRIPTOR_ENV),
+            "{err:#}"
         );
     }
 }
