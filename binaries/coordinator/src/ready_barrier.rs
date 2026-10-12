@@ -2,8 +2,9 @@
 //! its nodes subscribed, and replaying that release to a daemon that
 //! reconnects afterwards.
 
+use crate::params::spawn_param_replay_to_daemon;
+use crate::schedule_param_replay_for_ready_dataflow;
 use crate::state::{DaemonConnections, RunningDataflow};
-use crate::{replay_persisted_params_for_daemon, schedule_param_replay_for_ready_dataflow};
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
 use dora_core::uhlc::HLC;
 use dora_message::{
@@ -111,24 +112,26 @@ pub(crate) fn persist_ready_barrier_release(
 /// The daemon latches the release and answers every later subscribe from it
 /// (dora-rs/dora#2938); without this it never learns the barrier is down and
 /// each of its nodes parks in `init_from_env()` for the life of the dataflow.
+///
+/// Returns whether it started the persisted-param replay that goes with the
+/// release: `false` when the daemon is not connected.
 pub(crate) async fn replay_all_nodes_ready(
     uuid: DataflowId,
     dataflow: &RunningDataflow,
     daemon_id: &DaemonId,
-    daemon_connections: &mut DaemonConnections,
+    daemon_connections: &DaemonConnections,
     store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
     clock: &Arc<HLC>,
-) -> eyre::Result<()> {
+) -> eyre::Result<bool> {
     let message = all_nodes_ready_message(uuid, dataflow, clock)?;
-    let Some(connection) = daemon_connections.get_mut(daemon_id) else {
+    let Some(connection) = daemon_connections.get(daemon_id) else {
         tracing::warn!("no daemon connection found for machine `{daemon_id}` to replay barrier");
-        return Ok(());
+        return Ok(false);
     };
     tracing::info!(
         "replaying AllNodesReady({uuid}) to reconnected daemon `{daemon_id}` \
          (barrier released while it was disconnected)"
     );
-    let connection_for_params = connection.clone();
     connection.send(&message).await.wrap_err_with(|| {
         format!("failed to replay AllNodesReady({uuid}) to machine {daemon_id}")
     })?;
@@ -137,22 +140,14 @@ pub(crate) async fn replay_all_nodes_ready(
     // replay (`schedule_param_replay_for_ready_dataflow`). This daemon missed
     // both halves, so replaying only the barrier would release its nodes with
     // default state instead of the parameters the operator set.
-    let node_ids_on_daemon = nodes_on_daemon(dataflow, daemon_id);
-    let store = store.clone();
-    let clock = clock.clone();
-    let daemon_id = daemon_id.clone();
-    tokio::spawn(async move {
-        replay_persisted_params_for_daemon(
-            uuid,
-            daemon_id,
-            node_ids_on_daemon,
-            store,
-            connection_for_params,
-            clock,
-        )
-        .await;
-    });
-    Ok(())
+    Ok(spawn_param_replay_to_daemon(
+        uuid,
+        dataflow,
+        daemon_id,
+        daemon_connections,
+        store,
+        clock,
+    ))
 }
 
 /// Broadcast `AllNodesReady` to every daemon running part of `dataflow` and
