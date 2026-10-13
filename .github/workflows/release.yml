@@ -225,17 +225,25 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: Build CLI for ${{ matrix.target }}
-        run: cargo build -p dora-cli --release --target ${{ matrix.target }}
+        # The recording nodes ship with the CLI. They are `publish = false`
+        # (delivered through the CLI rather than crates.io — see their
+        # manifests and the CRATES list above), so this archive is the only
+        # place a normal install can get them from. `dora record` and
+        # `dora replay` look for them next to the `dora` executable first
+        # (`binaries/cli/src/command/node_binary.rs`).
+        run: cargo build -p dora-cli -p dora-record-node -p dora-replay-node --release --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       - name: Package binary (unix)
         if: runner.os != 'Windows'
         # Asset name and nested layout must match what install.sh expects
-        # (dora-cli-<target>.tar.gz containing dora-cli-<target>/dora), which
-        # is also the layout of previously published releases.
+        # (dora-cli-<target>.tar.gz containing dora-cli-<target>/ plus the
+        # binaries), which is also the layout of previously published releases.
         run: |
           mkdir -p artifacts/dora-cli-${{ matrix.target }}
           cp target/${{ matrix.target }}/release/dora artifacts/dora-cli-${{ matrix.target }}/dora
+          cp target/${{ matrix.target }}/release/dora-record-node artifacts/dora-cli-${{ matrix.target }}/dora-record-node
+          cp target/${{ matrix.target }}/release/dora-replay-node artifacts/dora-cli-${{ matrix.target }}/dora-replay-node
           tar czf artifacts/dora-cli-${{ matrix.target }}.tar.gz -C artifacts dora-cli-${{ matrix.target }}
       - name: Package binary (windows)
         if: runner.os == 'Windows'
@@ -243,9 +251,12 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path artifacts
           Copy-Item "target/${{ matrix.target }}/release/dora.exe" "artifacts/dora.exe"
-          # Flat zip (dora.exe at archive root) named dora-cli-<target>.zip,
-          # matching install.ps1 and previously published releases.
-          Compress-Archive -Path "artifacts/dora.exe" -DestinationPath "artifacts/dora-cli-${{ matrix.target }}.zip"
+          Copy-Item "target/${{ matrix.target }}/release/dora-record-node.exe" "artifacts/dora-record-node.exe"
+          Copy-Item "target/${{ matrix.target }}/release/dora-replay-node.exe" "artifacts/dora-replay-node.exe"
+          # Flat zip (all three .exe at the archive root) named
+          # dora-cli-<target>.zip, matching install.ps1 and previously
+          # published releases.
+          Compress-Archive -Path "artifacts/dora.exe", "artifacts/dora-record-node.exe", "artifacts/dora-replay-node.exe" -DestinationPath "artifacts/dora-cli-${{ matrix.target }}.zip"
       - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.target }}
