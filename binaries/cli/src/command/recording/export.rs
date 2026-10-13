@@ -1606,32 +1606,33 @@ mod tests {
       b: std/media/v1/CompressedImage[format=JPG]
       c: std/media/v1/CompressedImage
       d: std/media/v1/CompressedImage
+      e: std/media/v1/CompressedImage[format=jpeg]
 ";
         let webp = [
             b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'E', b'B', b'P', 1,
         ];
         let unknown = [1, 2, 3, 4];
+        let jpeg = [0xFF, 0xD8, 0xFF, 0xE0, 1, 2];
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1];
         let payload =
             |bytes: &[u8]| ipc_bytes(std::sync::Arc::new(LargeBinaryArray::from(vec![bytes])));
         let mcap_bytes = export_foxglove(
             descriptor,
             vec![
                 ("cam", "a", output_event_bytes("cam", "a", &payload(&webp))),
-                (
-                    "cam",
-                    "b",
-                    output_event_bytes("cam", "b", &payload(&unknown)),
-                ),
+                ("cam", "b", output_event_bytes("cam", "b", &payload(&jpeg))),
                 (
                     "cam",
                     "c",
                     output_event_bytes_with_params(
                         "cam",
                         "c",
-                        &payload(&unknown),
+                        &payload(&png),
                         &[("format", Parameter::String("png".into()))],
                     ),
                 ),
+                // Declared JPEG, but the data is a PNG.
+                ("cam", "e", output_event_bytes("cam", "e", &payload(&png))),
                 // No declared format, no metadata, no known signature.
                 (
                     "cam",
@@ -1655,7 +1656,7 @@ mod tests {
                 ("cam/b".to_string(), serde_json::json!("jpeg")),
                 ("cam/c".to_string(), serde_json::json!("png")),
             ],
-            "the unknown format on cam/d is dropped"
+            "cam/d (no known format) and cam/e (not the declared format) are dropped"
         );
     }
 
@@ -1916,6 +1917,160 @@ mod tests {
         assert_eq!(messages.len(), 1, "the float32 frame is dropped");
         let json: serde_json::Value = serde_json::from_slice(&messages[0].3).unwrap();
         assert_eq!(json["step"], 8, "declared rows may be padded");
+    }
+
+    fn jpeg_bytes() -> Vec<u8> {
+        let mut jpeg = vec![0xFFu8, 0xD8, 0xFF, 0xE0];
+        jpeg.extend([7u8; 60]);
+        jpeg
+    }
+
+    /// The declared type decides: `Image[encoding=jpeg]` stays a JPEG even if
+    /// the node also forwards raw camera metadata, a `CompressedImage` with a
+    /// raw `encoding` in its metadata uses the file signature, and an output
+    /// declared as something other than an image is never guessed at.
+    #[test]
+    fn foxglove_declared_type_wins_over_forwarded_metadata() {
+        use arrow::array::{Float32Array, LargeBinaryArray, UInt8Array};
+        let descriptor = "nodes:
+  - id: enc
+    output_types:
+      jpeg: std/media/v1/Image[encoding=jpeg]
+      cjpeg: std/media/v1/CompressedImage
+      classes: std/core/v1/UInt8
+      conf: std/core/v1/Float32
+";
+        let classes = ipc_bytes(std::sync::Arc::new(UInt8Array::from(vec![1u8; 8])));
+        let conf = ipc_bytes(std::sync::Arc::new(Float32Array::from(vec![0.5f32; 8])));
+        let event =
+            |output: &str, payload: &[u8], params: &[(&str, dora_message::metadata::Parameter)]| {
+                (
+                    "enc",
+                    output.to_owned(),
+                    output_event_bytes_with_params("enc", output, payload, params),
+                )
+            };
+        let events = [
+            event(
+                "jpeg",
+                &ipc_bytes(std::sync::Arc::new(UInt8Array::from(jpeg_bytes()))),
+                &camera_params(640, 480, "bgr8"),
+            ),
+            event(
+                "cjpeg",
+                &ipc_bytes(std::sync::Arc::new(LargeBinaryArray::from(vec![
+                    jpeg_bytes().as_slice(),
+                ]))),
+                &camera_params(640, 480, "bgr8"),
+            ),
+            event("classes", &classes, &camera_params(4, 2, "mono8")),
+            event("conf", &conf, &camera_params(4, 2, "32FC1")),
+        ];
+        let messages = export_messages(
+            descriptor,
+            events
+                .iter()
+                .map(|(node, output, bytes)| (*node, output.as_str(), bytes.clone()))
+                .collect(),
+        );
+        let schema = |topic: &str| {
+            messages
+                .iter()
+                .find(|message| message.0 == topic)
+                .unwrap_or_else(|| panic!("{topic} was dropped"))
+                .2
+                .clone()
+        };
+        assert_eq!(
+            schema("enc/jpeg").as_deref(),
+            Some("foxglove.CompressedImage")
+        );
+        assert_eq!(
+            schema("enc/cjpeg").as_deref(),
+            Some("foxglove.CompressedImage")
+        );
+        assert_eq!(schema("enc/classes"), None);
+        assert_eq!(schema("enc/conf"), None);
+    }
+
+    /// Frames Foxglove can't display, or that can't be an image, are not
+    /// exported as images: zero width, odd sizes where NV12 / YUV 4:2:2 need
+    /// even ones, and compressed data that isn't the format it claims.
+    #[test]
+    fn foxglove_rejects_frames_foxglove_cannot_show() {
+        use arrow::array::UInt8Array;
+        let bytes = |n: usize| ipc_bytes(std::sync::Arc::new(UInt8Array::from(vec![9u8; n])));
+        let undeclared =
+            |output: &str,
+             n: usize,
+             params: Vec<(&'static str, dora_message::metadata::Parameter)>| {
+                (
+                    output.to_owned(),
+                    output_event_bytes_with_params("cam", output, &bytes(n), &params),
+                )
+            };
+        let events = [
+            undeclared("zero_width", 0, camera_params(0, 1, "rgb8")),
+            undeclared("odd_nv12", 15, camera_params(3, 3, "nv12")),
+            undeclared("odd_uyvy", 12, camera_params(3, 2, "uyvy")),
+            undeclared("even_nv12", 12, camera_params(4, 2, "nv12")),
+        ];
+        let messages = export_messages(
+            "nodes: []",
+            events
+                .iter()
+                .map(|(output, bytes)| ("cam", output.as_str(), bytes.clone()))
+                .collect(),
+        );
+        let schema = |topic: &str| {
+            messages
+                .iter()
+                .find(|message| message.0 == topic)
+                .unwrap_or_else(|| panic!("{topic} was dropped"))
+                .2
+                .clone()
+        };
+        assert_eq!(schema("cam/zero_width"), None);
+        assert_eq!(schema("cam/odd_nv12"), None);
+        assert_eq!(schema("cam/odd_uyvy"), None);
+        assert_eq!(
+            schema("cam/even_nv12").as_deref(),
+            Some("foxglove.RawImage")
+        );
+
+        // Declared: raw bytes claimed as JPEG (by the type) or PNG (by the
+        // metadata), and a zero-width frame, are dropped.
+        let declared = export_messages(
+            CAMERA_DESCRIPTOR,
+            vec![
+                (
+                    "camera",
+                    "jpeg",
+                    output_event_bytes("camera", "jpeg", &bytes(12)),
+                ),
+                (
+                    "camera",
+                    "image",
+                    output_event_bytes_with_params(
+                        "camera",
+                        "image",
+                        &bytes(12),
+                        &camera_params(2, 2, "png"),
+                    ),
+                ),
+                (
+                    "camera",
+                    "image",
+                    output_event_bytes_with_params(
+                        "camera",
+                        "image",
+                        &bytes(12),
+                        &camera_params(0, 2, "rgb8"),
+                    ),
+                ),
+            ],
+        );
+        assert!(declared.is_empty(), "exported {declared:?}");
     }
 
     /// Once an undeclared topic's first frame converted, the channel is a
