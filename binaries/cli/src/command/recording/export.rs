@@ -265,7 +265,7 @@ fn write_mcap<W: Write + Seek>(
                 &metadata,
                 publish_data.as_deref(),
             ),
-            _ => foxglove::Recognition::NotRecognised,
+            _ => foxglove::Recognition::NotRecognised(None),
         };
         let json = match converted {
             foxglove::Recognition::Converted(kind, json) => match existing {
@@ -285,9 +285,12 @@ fn write_mcap<W: Write + Seek>(
                 drop_message(&mut dropped, &topic, reason);
                 continue;
             }
-            foxglove::Recognition::NotRecognised => match existing {
+            foxglove::Recognition::NotRecognised(why) => match existing {
                 Some(Some(channel_kind)) => {
-                    let reason = format!("message is not a {}", channel_kind.schema_name());
+                    let reason = match why {
+                        Some(why) => format!("not a {}: {why}", channel_kind.schema_name()),
+                        None => format!("message is not a {}", channel_kind.schema_name()),
+                    };
                     drop_message(&mut dropped, &topic, reason);
                     continue;
                 }
@@ -2071,6 +2074,149 @@ mod tests {
             ],
         );
         assert!(declared.is_empty(), "exported {declared:?}");
+    }
+
+    /// `dora-pyorbbecksdk` sends JPEGs with only `encoding: jpeg`: no width or
+    /// height, which a compressed image doesn't need.
+    #[test]
+    fn foxglove_compressed_frames_need_only_their_encoding() {
+        use arrow::array::UInt8Array;
+        use dora_message::metadata::Parameter;
+        let jpeg = ipc_bytes(std::sync::Arc::new(UInt8Array::from(jpeg_bytes())));
+        let encoding = [("encoding", Parameter::String("jpeg".into()))];
+        let undeclared = export_messages(
+            "nodes: []",
+            vec![(
+                "orbbec",
+                "image",
+                output_event_bytes_with_params("orbbec", "image", &jpeg, &encoding),
+            )],
+        );
+        assert_eq!(undeclared.len(), 1);
+        assert_eq!(undeclared[0].2.as_deref(), Some("foxglove.CompressedImage"));
+        let declared = export_messages(
+            CAMERA_DESCRIPTOR,
+            vec![(
+                "camera",
+                "image",
+                output_event_bytes_with_params("camera", "image", &jpeg, &encoding),
+            )],
+        );
+        assert_eq!(declared.len(), 1);
+        assert_eq!(declared[0].2.as_deref(), Some("foxglove.CompressedImage"));
+    }
+
+    /// A raw encoding on the declared type is used like `[encoding=jpeg]`: it
+    /// wins over the metadata, and the metadata then only needs the size.
+    #[test]
+    fn foxglove_declared_raw_encoding_wins_over_metadata() {
+        use arrow::array::UInt8Array;
+        use dora_message::metadata::Parameter;
+        let descriptor = "nodes:
+  - id: cam
+    output_types:
+      image: std/media/v1/Image[encoding=rgb8]
+";
+        let frame = ipc_bytes(std::sync::Arc::new(UInt8Array::from(vec![5u8; 12])));
+        let size = [
+            ("width", Parameter::Integer(2)),
+            ("height", Parameter::Integer(2)),
+        ];
+        let messages = export_messages(
+            descriptor,
+            vec![
+                (
+                    "cam",
+                    "image",
+                    output_event_bytes_with_params("cam", "image", &frame, &size),
+                ),
+                (
+                    "cam",
+                    "image",
+                    output_event_bytes_with_params(
+                        "cam",
+                        "image",
+                        &frame,
+                        &camera_params(2, 2, "bgr8"),
+                    ),
+                ),
+            ],
+        );
+        assert_eq!(messages.len(), 2);
+        for message in &messages {
+            let json: serde_json::Value = serde_json::from_slice(&message.3).unwrap();
+            assert_eq!(json["encoding"], "rgb8");
+        }
+    }
+
+    /// What dora's ROS 2 bridge produces for `sensor_msgs/Image`: a struct
+    /// with `step`, `is_bigendian` and `data` as a list of uint8.
+    #[test]
+    fn foxglove_declared_ros_image_struct_converts() {
+        use arrow::array::{
+            Array, ArrayRef, ListArray, StringArray, StructArray, UInt8Array, UInt32Array,
+        };
+        use arrow_schema::{DataType, Field};
+        use std::sync::Arc;
+        let ros_image = |encoding: &str, step: u32, bigendian: u8, data: Vec<u8>| -> ArrayRef {
+            let list =
+                ListArray::from_iter_primitive::<arrow::datatypes::UInt8Type, _, _>(vec![Some(
+                    data.into_iter().map(Some).collect::<Vec<_>>(),
+                )]);
+            Arc::new(StructArray::from(vec![
+                (
+                    Arc::new(Field::new("height", DataType::UInt32, false)),
+                    Arc::new(UInt32Array::from(vec![2])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("width", DataType::UInt32, false)),
+                    Arc::new(UInt32Array::from(vec![2])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("encoding", DataType::Utf8, false)),
+                    Arc::new(StringArray::from(vec![encoding])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("is_bigendian", DataType::UInt8, false)),
+                    Arc::new(UInt8Array::from(vec![bigendian])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("step", DataType::UInt32, false)),
+                    Arc::new(UInt32Array::from(vec![step])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("data", list.data_type().clone(), false)),
+                    Arc::new(list) as ArrayRef,
+                ),
+            ]))
+        };
+        let descriptor = "nodes:
+  - id: ros
+    output_types:
+      image: std/media/v1/Image
+";
+        let event = |image: ArrayRef| {
+            (
+                "ros",
+                "image",
+                output_event_bytes("ros", "image", &ipc_bytes(image)),
+            )
+        };
+        let messages = export_messages(
+            descriptor,
+            vec![
+                event(ros_image("rgb8", 6, 0, vec![1; 12])),
+                // `step` doesn't match the data: dropped.
+                event(ros_image("rgb8", 8, 0, vec![1; 12])),
+                // Big-endian 16-bit data: dropped.
+                event(ros_image("mono16", 4, 1, vec![1; 8])),
+            ],
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].2.as_deref(), Some("foxglove.RawImage"));
+        let json: serde_json::Value = serde_json::from_slice(&messages[0].3).unwrap();
+        assert_eq!(json["step"], 6);
+        assert_eq!(json["encoding"], "rgb8");
     }
 
     /// Once an undeclared topic's first frame converted, the channel is a
