@@ -1764,6 +1764,91 @@ mod tests {
         assert_eq!(json["format"], "jpeg");
     }
 
+    /// Python nodes often forward their input's metadata
+    /// (`node.send_output(id, arr, event["metadata"])`), so a node behind a
+    /// `jpeg` camera sends non-image outputs with `width`/`height`/
+    /// `encoding=jpeg` too. Undeclared, such an output must stay Arrow unless
+    /// its bytes really are a JPEG.
+    #[test]
+    fn foxglove_forwarded_camera_metadata_does_not_make_an_image() {
+        let scores = ipc_bytes(std::sync::Arc::new(arrow::array::Float32Array::from(vec![
+            0.5f32, 0.25, 0.125,
+        ])));
+        let not_jpeg = ipc_bytes(std::sync::Arc::new(arrow::array::UInt8Array::from(vec![
+            1u8, 2, 3, 4,
+        ])));
+        let messages = export_messages(
+            "nodes: []",
+            vec![
+                (
+                    "detector",
+                    "scores",
+                    output_event_bytes_with_params(
+                        "detector",
+                        "scores",
+                        &scores,
+                        &camera_params(640, 480, "jpeg"),
+                    ),
+                ),
+                (
+                    "detector",
+                    "labels",
+                    output_event_bytes_with_params(
+                        "detector",
+                        "labels",
+                        &not_jpeg,
+                        &camera_params(640, 480, "jpeg"),
+                    ),
+                ),
+            ],
+        );
+        assert_eq!(messages.len(), 2);
+        for (topic, encoding, schema, data) in &messages {
+            assert_eq!(encoding, "arrow-ipc", "{topic}");
+            assert_eq!(schema, &None, "{topic}");
+            let expected = if topic == "detector/scores" {
+                &scores
+            } else {
+                &not_jpeg
+            };
+            assert_eq!(data, expected, "{topic} must be exported unchanged");
+        }
+    }
+
+    /// Once an undeclared topic's first frame converted, the channel is a
+    /// Foxglove image channel, so a later frame that doesn't convert can't go
+    /// on it as Arrow: it is dropped (and reported), not written.
+    #[test]
+    fn foxglove_drops_a_later_bad_frame_on_an_undeclared_image_topic() {
+        let jpeg = || {
+            ipc_bytes(std::sync::Arc::new(arrow::array::UInt8Array::from(vec![
+                0xFFu8, 0xD8, 0xFF, 0xE0, 1, 2,
+            ])))
+        };
+        let messages = export_messages(
+            "nodes: []",
+            vec![
+                (
+                    "camera",
+                    "image",
+                    output_event_bytes_with_params(
+                        "camera",
+                        "image",
+                        &jpeg(),
+                        &camera_params(640, 480, "jpeg"),
+                    ),
+                ),
+                (
+                    "camera",
+                    "image",
+                    output_event_bytes("camera", "image", &jpeg()),
+                ),
+            ],
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].2.as_deref(), Some("foxglove.CompressedImage"));
+    }
+
     /// `dora-pyrealsense` depth: a uint16 array with `encoding: mono16`.
     #[test]
     fn foxglove_mono16_depth_frames_become_raw_images() {

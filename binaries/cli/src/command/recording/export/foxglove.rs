@@ -6,9 +6,12 @@
 //!
 //! An output is an image when the dataflow says so: `output_types` in the
 //! descriptor stored in the recording header declares `std/media/v1/Image` or
-//! `std/media/v1/CompressedImage`. An undeclared output whose messages carry
-//! `width` / `height` / `encoding` metadata next to a flat `uint8` payload (the
-//! camera convention in the examples) is treated as a raw image too.
+//! `std/media/v1/CompressedImage`. An undeclared output is an image when its
+//! messages follow the camera convention of the dora-hub nodes: a flat array
+//! with `width` / `height` / `encoding` metadata, in an encoding Foxglove can
+//! display. Undeclared compressed frames must also be bytes in the format the
+//! metadata names, because nodes often forward a camera's metadata onto
+//! outputs that are not images.
 use std::collections::HashMap;
 use std::io::Cursor;
 
@@ -142,26 +145,33 @@ impl Mapper {
                 // Declared images come as the `Image` struct, or like the
                 // README's camera as a flat array with camera metadata, or as
                 // plain bytes when the type says `[encoding=jpeg]`.
-                let result = match decode(data) {
-                    Ok(array) if array.as_struct_opt().is_some() => image_struct(metadata, &array),
-                    _ => match camera_frame(metadata, data) {
-                        Some(result) => result,
-                        None => match encoding.as_deref().and_then(compressed_format) {
-                            Some(format) => compressed_bytes(metadata, data, format),
-                            None => Err(
-                                "expected an `Image` struct, or width/height/encoding metadata"
-                                    .to_string(),
-                            ),
-                        },
-                    },
+                let declared_format = encoding.as_deref().and_then(compressed_format);
+                let result = decode(data).and_then(|array| {
+                    if array.as_struct_opt().is_some() {
+                        return image_struct(metadata, &array);
+                    }
+                    match (camera_metadata(metadata), declared_format) {
+                        (Some(camera), _) => camera_frame(metadata, camera, &array, false),
+                        (None, Some(format)) => compressed_bytes(metadata, &array, format),
+                        (None, None) => Err(
+                            "expected an `Image` struct, or width/height/encoding metadata"
+                                .to_string(),
+                        ),
+                    }
+                });
+                let expected = match declared_format {
+                    Some(_) => Kind::CompressedImage,
+                    None => Kind::RawImage,
                 };
                 match result {
                     Ok((kind, json)) => Recognition::Converted(kind, json),
-                    Err(reason) => Recognition::Failed(Kind::RawImage, reason),
+                    Err(reason) => Recognition::Failed(expected, reason),
                 }
             }
             Some(Declared::CompressedImage { format }) => {
-                match compressed_image(metadata, data, format.as_deref()) {
+                match decode(data)
+                    .and_then(|array| compressed_image(metadata, &array, format.as_deref()))
+                {
                     Ok(json) => Recognition::Converted(Kind::CompressedImage, json),
                     Err(reason) => Recognition::Failed(Kind::CompressedImage, reason),
                 }
@@ -169,10 +179,17 @@ impl Mapper {
             // Not declared: only an image if it converts cleanly. Anything
             // else (no camera metadata, an encoding Foxglove can't show, a
             // payload that doesn't match) stays Arrow instead of being dropped.
-            None => match camera_frame(metadata, data) {
-                Some(Ok((kind, json))) => Recognition::Converted(kind, json),
-                _ => Recognition::NotRecognised,
-            },
+            // The metadata is checked first, so other outputs aren't decoded.
+            None => {
+                let converted = camera_metadata(metadata).and_then(|camera| {
+                    let array = decode(data).ok()?;
+                    camera_frame(metadata, camera, &array, true).ok()
+                });
+                match converted {
+                    Some((kind, json)) => Recognition::Converted(kind, json),
+                    None => Recognition::NotRecognised,
+                }
+            }
         }
     }
 }
@@ -254,11 +271,10 @@ fn image_struct(metadata: &Metadata, array: &ArrayRef) -> Result<(Kind, Vec<u8>)
 /// Plain compressed-image bytes (binary or flat `uint8`) in a known format.
 fn compressed_bytes(
     metadata: &Metadata,
-    data: Option<&[u8]>,
+    array: &ArrayRef,
     format: &str,
 ) -> Result<(Kind, Vec<u8>), String> {
-    let array = decode(data)?;
-    let encoded = bytes(array.as_ref())
+    let encoded = encoded_bytes(array.as_ref())
         .ok_or_else(|| format!("expected binary image data, got {}", array.data_type()))?;
     Ok((
         Kind::CompressedImage,
@@ -266,45 +282,72 @@ fn compressed_bytes(
     ))
 }
 
-/// The camera convention (dora-hub's `opencv-video-capture`,
-/// `dora-pyrealsense`, the examples): a flat array with `width`, `height` and
-/// `encoding` metadata. JPEG/PNG/WebP/AVIF become `CompressedImage`, the raw
-/// encodings Foxglove lists become `RawImage`. `None` when the metadata does
-/// not describe an image.
-fn camera_frame(
-    metadata: &Metadata,
-    data: Option<&[u8]>,
-) -> Option<Result<(Kind, Vec<u8>), String>> {
+/// The `width`, `height` and `encoding` metadata of the camera convention.
+struct CameraMetadata<'a> {
+    width: i64,
+    height: i64,
+    encoding: &'a str,
+}
+
+fn camera_metadata(metadata: &Metadata) -> Option<CameraMetadata<'_>> {
     let params = &metadata.parameters;
-    let (
-        Some(Parameter::Integer(width)),
-        Some(Parameter::Integer(height)),
-        Some(Parameter::String(encoding)),
-    ) = (
+    match (
         params.get("width"),
         params.get("height"),
         params.get("encoding"),
-    )
-    else {
-        return None;
-    };
-    Some((|| {
-        let array = decode(data)?;
-        let pixels = bytes(array.as_ref())
-            .ok_or_else(|| format!("expected a flat image array, got {}", array.data_type()))?;
-        if let Some(format) = compressed_format(encoding) {
-            return Ok((
-                Kind::CompressedImage,
-                compressed_json(metadata, pixels, format)?,
-            ));
+    ) {
+        (
+            Some(Parameter::Integer(width)),
+            Some(Parameter::Integer(height)),
+            Some(Parameter::String(encoding)),
+        ) => Some(CameraMetadata {
+            width: *width,
+            height: *height,
+            encoding,
+        }),
+        _ => None,
+    }
+}
+
+/// The camera convention (dora-hub's `opencv-video-capture`,
+/// `dora-pyrealsense`, the examples): a flat array with `width`, `height` and
+/// `encoding` metadata. JPEG/PNG/WebP/AVIF become `CompressedImage`, the raw
+/// encodings Foxglove lists become `RawImage`. With `check_signature`, a
+/// compressed frame must start with the signature of the format it claims.
+fn camera_frame(
+    metadata: &Metadata,
+    camera: CameraMetadata<'_>,
+    array: &ArrayRef,
+    check_signature: bool,
+) -> Result<(Kind, Vec<u8>), String> {
+    let CameraMetadata {
+        width,
+        height,
+        encoding,
+    } = camera;
+    if let Some(format) = compressed_format(encoding) {
+        let encoded = encoded_bytes(array.as_ref()).ok_or_else(|| {
+            format!(
+                "expected binary `{encoding}` data, got {}",
+                array.data_type()
+            )
+        })?;
+        if check_signature && detect_format(encoded) != Some(format) {
+            return Err(format!("data is not a {format} file"));
         }
-        let width = u64::try_from(*width).map_err(|_| format!("negative width {width}"))?;
-        let height = u64::try_from(*height).map_err(|_| format!("negative height {height}"))?;
-        Ok((
-            Kind::RawImage,
-            raw_image(metadata, width, height, encoding, pixels)?,
-        ))
-    })())
+        return Ok((
+            Kind::CompressedImage,
+            compressed_json(metadata, encoded, format)?,
+        ));
+    }
+    let pixels = bytes(array.as_ref())
+        .ok_or_else(|| format!("expected a flat image array, got {}", array.data_type()))?;
+    let width = u64::try_from(width).map_err(|_| format!("negative width {width}"))?;
+    let height = u64::try_from(height).map_err(|_| format!("negative height {height}"))?;
+    Ok((
+        Kind::RawImage,
+        raw_image(metadata, width, height, encoding, pixels)?,
+    ))
 }
 
 fn raw_image(
@@ -316,10 +359,11 @@ fn raw_image(
 ) -> Result<Vec<u8>, String> {
     let bytes_per_pixel = raw_bytes_per_pixel(encoding)
         .ok_or_else(|| format!("`{encoding}` is not an encoding Foxglove can display"))?;
-    // NV12 is a full-height Y plane followed by a half-height UV plane, so
-    // its data holds 1.5 x `height` rows of `step` bytes.
+    // NV12 is a full-height Y plane followed by a half-height UV plane
+    // (rounded up for an odd height), so its data holds about 1.5 x `height`
+    // rows of `step` bytes.
     let rows = if encoding == "nv12" {
-        height.saturating_add(height / 2)
+        height.saturating_add(height.div_ceil(2))
     } else {
         height
     };
@@ -377,11 +421,10 @@ fn compressed_format(encoding: &str) -> Option<&'static str> {
 /// parameter, else detected from the file signature.
 fn compressed_image(
     metadata: &Metadata,
-    data: Option<&[u8]>,
+    array: &ArrayRef,
     declared_format: Option<&str>,
 ) -> Result<Vec<u8>, String> {
-    let array = decode(data)?;
-    let encoded = bytes(array.as_ref())
+    let encoded = encoded_bytes(array.as_ref())
         .ok_or_else(|| format!("expected binary image data, got {}", array.data_type()))?;
     let named = declared_format.or_else(|| {
         ["format", "encoding"]
@@ -486,6 +529,15 @@ fn bytes(array: &dyn Array) -> Option<&[u8]> {
                 .inner()
                 .as_slice(),
         ),
+        _ => None,
+    }
+}
+
+/// The bytes of a compressed image: one binary value or a flat `uint8` array.
+/// Wider numeric arrays can't hold a JPEG/PNG/WebP/AVIF file.
+fn encoded_bytes(array: &dyn Array) -> Option<&[u8]> {
+    match array.data_type() {
+        DataType::Binary | DataType::LargeBinary | DataType::UInt8 => bytes(array),
         _ => None,
     }
 }

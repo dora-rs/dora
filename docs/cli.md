@@ -573,14 +573,16 @@ exported as with `arrow`. An output counts as an image when:
   (JPEG, PNG, WebP, AVIF);
 - or, undeclared, its messages carry `width`, `height` and `encoding` metadata
   parameters next to a flat array, the convention of the dora-hub camera nodes.
-  `jpeg`/`png`/`webp`/`avif` frames become `CompressedImage`; the raw encodings
-  Foxglove lists (`rgb8`, `bgr8`, `mono8`, `mono16`, `nv12`, ...) become
-  `RawImage`, with `uint8`, `uint16`, `int16` or `float32` pixel data.
+  `jpeg`/`png`/`webp`/`avif` frames become `CompressedImage` when their bytes
+  really are that format (nodes often forward a camera's metadata onto
+  outputs that aren't images); the raw encodings Foxglove lists (`rgb8`,
+  `bgr8`, `mono8`, `mono16`, `nv12`, ...) become `RawImage`, with `uint8`,
+  `uint16`, `int16` or `float32` pixel data.
 
-An undeclared output that isn't one of these (or doesn't match its metadata)
-stays Arrow. A message on a declared image output that can't be converted, for
-example pixel data that doesn't fit `width` x `height`, is dropped and
-reported at the end. A `frame_id` metadata parameter becomes the image's
+A topic's first message decides its channel. An undeclared output whose first
+message isn't one of these stays Arrow. On an image channel, a message that
+can't be converted, for example pixel data that doesn't fit `width` x
+`height`, is dropped and reported at the end. A `frame_id` metadata parameter becomes the image's
 `frame_id`. Image data is base64 in JSON, so these channels are about a third
 larger than the raw bytes.
 
