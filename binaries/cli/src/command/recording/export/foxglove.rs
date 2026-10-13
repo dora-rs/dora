@@ -84,6 +84,8 @@ enum Declared {
     CompressedImage {
         format: Option<String>,
     },
+    /// Any other declared type: not an image, never guessed at.
+    Other,
 }
 
 /// Which outputs are images, from the dataflow descriptor in the recording.
@@ -144,15 +146,16 @@ impl Mapper {
             Some(Declared::Image { encoding }) => {
                 // Declared images come as the `Image` struct, or like the
                 // README's camera as a flat array with camera metadata, or as
-                // plain bytes when the type says `[encoding=jpeg]`.
+                // plain bytes when the type says `[encoding=jpeg]` (which wins
+                // over any `encoding` the node forwarded in its metadata).
                 let declared_format = encoding.as_deref().and_then(compressed_format);
                 let result = decode(data).and_then(|array| {
                     if array.as_struct_opt().is_some() {
                         return image_struct(metadata, &array);
                     }
-                    match (camera_metadata(metadata), declared_format) {
-                        (Some(camera), _) => camera_frame(metadata, camera, &array, false),
-                        (None, Some(format)) => compressed_bytes(metadata, &array, format),
+                    match (declared_format, camera_metadata(metadata)) {
+                        (Some(format), _) => compressed_bytes(metadata, &array, format),
+                        (None, Some(camera)) => camera_frame(metadata, camera, &array, false),
                         (None, None) => Err(
                             "expected an `Image` struct, or width/height/encoding metadata"
                                 .to_string(),
@@ -176,6 +179,7 @@ impl Mapper {
                     Err(reason) => Recognition::Failed(Kind::CompressedImage, reason),
                 }
             }
+            Some(Declared::Other) => Recognition::NotRecognised,
             // Not declared: only an image if it converts cleanly. Anything
             // else (no camera metadata, an encoding Foxglove can't show, a
             // payload that doesn't match) stays Arrow instead of being dropped.
@@ -218,7 +222,7 @@ fn add_declared(
             "std/media/v1/CompressedImage" => Declared::CompressedImage {
                 format: urn.params.get("format").cloned(),
             },
-            _ => continue,
+            _ => Declared::Other,
         };
         let key = match operator_id {
             Some(operator_id) => format!("{operator_id}/{output_id}"),
@@ -256,8 +260,7 @@ fn image_struct(metadata: &Metadata, array: &ArrayRef) -> Result<(Kind, Vec<u8>)
     };
     let data = field("data")?;
     if let Some(format) = compressed_format(encoding) {
-        let encoded = encoded_bytes(data.as_ref())
-            .ok_or_else(|| format!("`data` must be binary, got {}", data.data_type()))?;
+        let encoded = compressed_data(data.as_ref(), format)?;
         return Ok((
             Kind::CompressedImage,
             compressed_json(metadata, encoded, format)?,
@@ -276,8 +279,7 @@ fn compressed_bytes(
     array: &ArrayRef,
     format: &str,
 ) -> Result<(Kind, Vec<u8>), String> {
-    let encoded = encoded_bytes(array.as_ref())
-        .ok_or_else(|| format!("expected binary image data, got {}", array.data_type()))?;
+    let encoded = compressed_data(array.as_ref(), format)?;
     Ok((
         Kind::CompressedImage,
         compressed_json(metadata, encoded, format)?,
@@ -317,9 +319,9 @@ fn camera_metadata(metadata: &Metadata) -> Option<CameraMetadata<'_>> {
 /// encodings Foxglove lists become `RawImage`.
 ///
 /// `strict` is for undeclared outputs, where the metadata may just have been
-/// forwarded from a camera onto data that isn't an image: a compressed frame
-/// must start with the signature of its format, and a raw frame must be
-/// exactly `width` pixels per row, without padding.
+/// forwarded from a camera onto data that isn't an image: a raw frame must be
+/// exactly `width` pixels per row, without padding. (A compressed frame must
+/// always start with the signature of its format.)
 fn camera_frame(
     metadata: &Metadata,
     camera: CameraMetadata<'_>,
@@ -332,15 +334,7 @@ fn camera_frame(
         encoding,
     } = camera;
     if let Some(format) = compressed_format(encoding) {
-        let encoded = encoded_bytes(array.as_ref()).ok_or_else(|| {
-            format!(
-                "expected binary `{encoding}` data, got {}",
-                array.data_type()
-            )
-        })?;
-        if strict && detect_format(encoded) != Some(format) {
-            return Err(format!("data is not a {format} file"));
-        }
+        let encoded = compressed_data(array.as_ref(), format)?;
         return Ok((
             Kind::CompressedImage,
             compressed_json(metadata, encoded, format)?,
@@ -366,11 +360,24 @@ fn raw_image(
 ) -> Result<Vec<u8>, String> {
     let bytes_per_pixel = raw_bytes_per_pixel(encoding)
         .ok_or_else(|| format!("`{encoding}` is not an encoding Foxglove can display"))?;
-    // NV12 is a full-height Y plane followed by a half-height UV plane
-    // (rounded up for an odd height), so its data holds about 1.5 x `height`
-    // rows of `step` bytes.
+    // Foxglove's RawImage has uint32 sizes; NV12 needs an even width and
+    // height, and the YUV 4:2:2 encodings store pixels in pairs.
+    if width == 0 || height == 0 || width > u64::from(u32::MAX) || height > u64::from(u32::MAX) {
+        return Err(format!("a {width}x{height} image can't be displayed"));
+    }
+    let pairs = matches!(
+        encoding,
+        "nv12" | "yuv422" | "uyvy" | "yuv422_yuy2" | "yuyv"
+    );
+    if pairs && (!width.is_multiple_of(2) || (encoding == "nv12" && !height.is_multiple_of(2))) {
+        return Err(format!(
+            "`{encoding}` needs even dimensions, got {width}x{height}"
+        ));
+    }
+    // NV12 is a full-height Y plane followed by a half-height UV plane, so
+    // its data holds 1.5 x `height` rows of `step` bytes.
     let rows = if encoding == "nv12" {
-        height.saturating_add(height.div_ceil(2))
+        height + height / 2
     } else {
         height
     };
@@ -437,25 +444,32 @@ fn compressed_image(
     array: &ArrayRef,
     declared_format: Option<&str>,
 ) -> Result<Vec<u8>, String> {
-    let encoded = encoded_bytes(array.as_ref())
-        .ok_or_else(|| format!("expected binary image data, got {}", array.data_type()))?;
-    let named = declared_format.or_else(|| {
-        ["format", "encoding"]
+    // A metadata `format`/`encoding` only counts if it names a compressed
+    // format: a node may forward a camera's raw `encoding` (`bgr8`, ...).
+    let named = match declared_format {
+        Some(name) => Some(
+            compressed_format(name)
+                .ok_or_else(|| format!("`{name}` is not a format Foxglove can display"))?,
+        ),
+        None => ["format", "encoding"]
             .iter()
             .find_map(|key| match metadata.parameters.get(*key) {
-                Some(Parameter::String(value)) => Some(value.as_str()),
+                Some(Parameter::String(value)) => compressed_format(value),
                 _ => None,
-            })
-    });
-    let format = match named {
-        Some(name) => compressed_format(name)
-            .ok_or_else(|| format!("`{name}` is not a format Foxglove can display"))?,
-        None => detect_format(encoded).ok_or_else(|| {
-            "unknown compressed image format; declare it as `std/media/v1/CompressedImage[format=jpeg]`"
-                .to_string()
-        })?,
+            }),
     };
-    compressed_json(metadata, encoded, format)
+    let format = match named {
+        Some(format) => format,
+        None => {
+            let encoded = encoded_bytes(array.as_ref())
+                .ok_or_else(|| format!("expected binary image data, got {}", array.data_type()))?;
+            detect_format(encoded).ok_or_else(|| {
+                "unknown compressed image format; declare it as `std/media/v1/CompressedImage[format=jpeg]`"
+                    .to_string()
+            })?
+        }
+    };
+    compressed_json(metadata, compressed_data(array.as_ref(), format)?, format)
 }
 
 fn compressed_json(metadata: &Metadata, encoded: &[u8], format: &str) -> Result<Vec<u8>, String> {
@@ -468,6 +482,17 @@ fn compressed_json(metadata: &Metadata, encoded: &[u8], format: &str) -> Result<
     serde_json::to_vec(&json).map_err(|err| err.to_string())
 }
 
+/// Compressed image bytes (binary or flat `uint8`) that really are `format`,
+/// checked by file signature: anything else isn't exported as an image.
+fn compressed_data<'a>(array: &'a dyn Array, format: &str) -> Result<&'a [u8], String> {
+    let encoded = encoded_bytes(array)
+        .ok_or_else(|| format!("expected binary `{format}` data, got {}", array.data_type()))?;
+    match detect_format(encoded) {
+        Some(detected) if detected == format => Ok(encoded),
+        _ => Err(format!("data is not a {format} file")),
+    }
+}
+
 /// The formats Foxglove's `CompressedImage` accepts, by file signature.
 fn detect_format(data: &[u8]) -> Option<&'static str> {
     if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
@@ -476,11 +501,25 @@ fn detect_format(data: &[u8]) -> Option<&'static str> {
         Some("png")
     } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
         Some("webp")
-    } else if data.len() >= 12 && &data[4..12] == b"ftypavif" {
+    } else if is_avif(data) {
         Some("avif")
     } else {
         None
     }
+}
+
+/// An ISO-BMFF file whose `ftyp` box lists the `avif` (still) or `avis`
+/// (sequence) brand, as major or compatible brand.
+fn is_avif(data: &[u8]) -> bool {
+    if data.len() < 12 || &data[4..8] != b"ftyp" {
+        return false;
+    }
+    let size = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    let end = size.min(data.len()).max(16.min(data.len()));
+    // Major brand at 8..12, minor version at 12..16, compatible brands after.
+    std::iter::once(&data[8..12])
+        .chain(data.get(16..end).unwrap_or_default().chunks_exact(4))
+        .any(|brand| brand == b"avif" || brand == b"avis")
 }
 
 /// The single array a dora output carries: column 0 of the one record batch
@@ -577,6 +616,9 @@ fn encoded_bytes(array: &dyn Array) -> Option<&[u8]> {
 
 fn unsigned(array: &dyn Array, name: &str) -> Result<u64, String> {
     use arrow::datatypes::{Int32Type, Int64Type, UInt32Type, UInt64Type};
+    if array.is_empty() || array.is_null(0) {
+        return Err(format!("`{name}` is null"));
+    }
     let value = match array.data_type() {
         DataType::UInt32 => u64::from(array.as_primitive::<UInt32Type>().value(0)),
         DataType::UInt64 => array.as_primitive::<UInt64Type>().value(0),
@@ -631,5 +673,13 @@ mod tests {
             Some("avif")
         );
         assert_eq!(detect_format(b"GIF89a"), None);
+        // `mif1` major brand with `avif` among the compatible brands.
+        let mut mif1 = vec![0, 0, 0, 0x18];
+        mif1.extend(b"ftypmif1\0\0\0\0mif1avif");
+        assert_eq!(detect_format(&mif1), Some("avif"));
+        // HEIC is ISO-BMFF too, but not a format Foxglove's CompressedImage takes.
+        let mut heic = vec![0, 0, 0, 0x18];
+        heic.extend(b"ftypheic\0\0\0\0mif1heic");
+        assert_eq!(detect_format(&heic), None);
     }
 }

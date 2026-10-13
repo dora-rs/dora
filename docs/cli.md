@@ -569,20 +569,27 @@ exported as with `arrow`. An output counts as an image when:
   compressed encoding (`std/media/v1/Image[encoding=jpeg]`, or `jpeg`/`png`
   in the struct or metadata) makes it a `CompressedImage`. A
   `CompressedImage`'s format comes from `[format=jpeg]` on the type, a
-  `format` or `encoding` metadata parameter, or the data's file signature
-  (JPEG, PNG, WebP, AVIF);
-- or, undeclared, its messages carry `width`, `height` and `encoding` metadata
+  `format` or `encoding` metadata parameter that names one, or the data's file
+  signature (JPEG, PNG, WebP, AVIF); either way the data must be that format;
+- or, undeclared (an output declared as any other type is never treated as
+  an image), its messages carry `width`, `height` and `encoding` metadata
   parameters next to a flat array, the convention of the dora-hub camera nodes.
-  `jpeg`/`png`/`webp`/`avif` frames become `CompressedImage` when their bytes
-  really are that format (nodes often forward a camera's metadata onto
-  outputs that aren't images); the raw encodings Foxglove lists (`rgb8`,
-  `bgr8`, `mono8`, `mono16`, `nv12`, ...) become `RawImage`, with `uint8`,
-  `uint16`, `int16` or `float32` pixel data.
+  Because nodes often forward a camera's metadata onto outputs that aren't
+  images, the data has to match: `jpeg`/`png`/`webp`/`avif` frames become
+  `CompressedImage` only if their bytes are that format, and the raw encodings
+  Foxglove lists (`rgb8`, `bgr8`, `mono8`, `mono16`, `nv12`, ...) become
+  `RawImage` only if each row is exactly `width` pixels and the element type
+  fits the encoding: bytes (`uint8`) for any encoding, `uint16`/`int16` for
+  `mono16`/`16UC1`, `float32` for `32FC1`. A node whose frames have padded
+  rows (a decoder such as `dora-dav1d`) needs `output_types` to be exported
+  as images.
 
 A topic's first message decides its channel. An undeclared output whose first
 message isn't one of these stays Arrow. On an image channel, a message that
 can't be converted, for example pixel data that doesn't fit `width` x
-`height`, is dropped and reported at the end. A `frame_id` metadata parameter becomes the image's
+`height` or the encoding, or an odd size where `nv12` / YUV 4:2:2 need even
+ones, is dropped and reported at the end. A declared image's rows may be
+padded. A `frame_id` metadata parameter becomes the image's
 `frame_id`. Image data is base64 in JSON, so these channels are about a third
 larger than the raw bytes.
 
