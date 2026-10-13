@@ -2370,6 +2370,93 @@ mod tests {
         assert_eq!(json["format"], "jpeg");
     }
 
+    /// YAML numbers are ids too: dora records `1:` as output `1`, so its
+    /// declaration must count.
+    #[test]
+    fn foxglove_reads_numeric_ids_in_the_descriptor() {
+        use arrow::array::UInt8Array;
+        use dora_message::metadata::Parameter;
+        let descriptor = "nodes:
+  - id: 7
+    outputs: [1]
+    output_types:
+      1: std/core/v1/Bytes
+";
+        let jpeg = ipc_bytes(std::sync::Arc::new(UInt8Array::from(jpeg_bytes())));
+        let messages = export_messages(
+            descriptor,
+            vec![(
+                "7",
+                "1",
+                output_event_bytes_with_params(
+                    "7",
+                    "1",
+                    &jpeg,
+                    &[("encoding", Parameter::String("jpeg".into()))],
+                ),
+            )],
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].1, "arrow-ipc", "declared as Bytes");
+    }
+
+    /// Foxglove lists `8UC3`/`bgr8`, `8UC1`/`mono8`, `16UC1`/`mono16`,
+    /// `uyvy`/`yuv422` and `yuyv`/`yuv422_yuy2` as the same encodings.
+    #[test]
+    fn foxglove_encoding_aliases_are_not_contradictions() {
+        use arrow::array::{ArrayRef, LargeBinaryArray, StringArray, StructArray, UInt32Array};
+        use arrow_schema::{DataType, Field};
+        use std::sync::Arc;
+        let image = |encoding: &str, bytes: usize| -> ArrayRef {
+            Arc::new(StructArray::from(vec![
+                (
+                    Arc::new(Field::new("width", DataType::UInt32, false)),
+                    Arc::new(UInt32Array::from(vec![2])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("height", DataType::UInt32, false)),
+                    Arc::new(UInt32Array::from(vec![2])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("encoding", DataType::Utf8, false)),
+                    Arc::new(StringArray::from(vec![encoding])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("data", DataType::LargeBinary, false)),
+                    Arc::new(LargeBinaryArray::from(vec![vec![1u8; bytes].as_slice()])) as ArrayRef,
+                ),
+            ]))
+        };
+        let descriptor = "nodes:
+  - id: cam
+    output_types:
+      a: std/media/v1/Image[encoding=8UC3]
+      b: std/media/v1/Image[encoding=uyvy]
+      c: std/media/v1/Image[encoding=16UC1]
+";
+        let messages = export_messages(
+            descriptor,
+            vec![
+                (
+                    "cam",
+                    "a",
+                    output_event_bytes("cam", "a", &ipc_bytes(image("bgr8", 12))),
+                ),
+                (
+                    "cam",
+                    "b",
+                    output_event_bytes("cam", "b", &ipc_bytes(image("yuv422", 8))),
+                ),
+                (
+                    "cam",
+                    "c",
+                    output_event_bytes("cam", "c", &ipc_bytes(image("mono16", 8))),
+                ),
+            ],
+        );
+        assert_eq!(messages.len(), 3, "aliases must not be dropped");
+    }
+
     /// Once an undeclared topic's first frame converted, the channel is a
     /// Foxglove image channel, so a later frame that doesn't convert can't go
     /// on it as Arrow: it is dropped (and reported), not written.
