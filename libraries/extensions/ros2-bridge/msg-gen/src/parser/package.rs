@@ -28,7 +28,6 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
                 + ros_format
                 + "/*."
                 + ros_format;
-            let mut visited_files = vec![];
             for entry in glob(&pattern).context("Failed to read glob pattern")? {
                 let path = entry.context("Could not glob given path")?;
                 let file_name = path
@@ -54,20 +53,26 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
                 // Hack
                 if file_name == "libstatistics_collector" {
                     continue;
-                } else if visited_files.contains(&(package.clone(), file_name.clone())) {
+                }
+                // Each `Package` keeps the directory it was first found in.
+                // AMENT_PREFIX_PATH lists overlays before underlays, so the
+                // first copy of a package shadows every later one, as it does
+                // in ROS itself. Without this, a package rebuilt in an overlay
+                // and also installed in `/opt/ros/<distro>` was parsed from
+                // both prefixes into one `Package`, holding each message
+                // twice, and the generated bindings defined every struct twice.
+                let p = map.entry(package.clone()).or_insert_with(|| {
+                    let mut p = Package::new(package.clone());
+                    p.path = package_path.to_owned();
+                    p
+                });
+                if p.path != package_path {
                     println!(
                         "cargo::warning=found two versions of package: {:?}, message: {:?}. will skip the one in: {:#?}",
                         package, file_name, path
                     );
                     continue;
-                } else {
-                    visited_files.push((package.clone(), file_name.clone()));
                 }
-
-                let p = map
-                    .entry(package.clone())
-                    .or_insert_with(|| Package::new(package.clone()));
-                p.path = PathBuf::from(package_path);
 
                 match *ros_format {
                     "msg" => {
@@ -273,6 +278,21 @@ mod tests {
         assert_eq!(dependencies_of(&packages, "a"), ["b"]);
         assert_eq!(dependencies_of(&packages, "b"), ["a"]);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// An overlay that rebuilds a package also installed in an underlay must
+    /// shadow it, not be merged with it: each message is parsed once, from the
+    /// first prefix on the path.
+    #[test]
+    fn a_package_in_two_prefixes_is_taken_from_the_first() {
+        let overlay = prefix("overlay", &[("a", &[])]);
+        let underlay = prefix("underlay", &[("a", &[])]);
+        let packages = get_ros_msgs_each_package(&[&overlay, &underlay]).unwrap();
+        let a = packages.iter().find(|p| p.name == "a").unwrap();
+        assert_eq!(a.messages.len(), 1);
+        assert!(a.path.starts_with(&overlay), "path: {}", a.path.display());
+        std::fs::remove_dir_all(overlay).unwrap();
+        std::fs::remove_dir_all(underlay).unwrap();
     }
 
     #[test]
