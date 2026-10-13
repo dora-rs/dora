@@ -537,8 +537,8 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
         }
 
         /// Bounds on unanswered service requests, shared by the generated service
-        /// clients and servers. Mirror the daemon's SERVICE_RESPONSE_TIMEOUT /
-        /// MAX_PENDING_REQUESTS.
+        /// clients and servers. The same values as the Python bridge and the
+        /// YAML bridge (`binaries/ros2-bridge-node`) use.
         pub const SERVICE_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         pub const MAX_PENDING_REQUESTS: usize = 64;
 
