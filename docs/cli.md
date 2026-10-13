@@ -565,15 +565,19 @@ exported as with `arrow`. An output counts as an image when:
 - the dataflow declares it in `output_types` (of a node, its `operator`, or one
   of its `operators`) as `std/media/v1/Image` or
   `std/media/v1/CompressedImage`. An `Image` may be sent as the `width`,
-  `height`, `encoding`, `data` struct or with the camera metadata below; a
-  compressed encoding (`std/media/v1/Image[encoding=jpeg]`, or `jpeg`/`png`
-  in the struct or metadata) makes it a `CompressedImage`. A
+  `height`, `encoding`, `data` struct (a ROS `sensor_msgs/Image` from the ROS 2
+  bridge works too: its `step` must match the data, and 16-bit or float data
+  must be little-endian) or as a flat array with the camera metadata below; an
+  encoding on the type (`std/media/v1/Image[encoding=rgb8]`) wins over the
+  metadata's. A compressed encoding (`[encoding=jpeg]`, or `jpeg`/`png` in the
+  struct or metadata) makes it a `CompressedImage`. A
   `CompressedImage`'s format comes from `[format=jpeg]` on the type, a
   `format` or `encoding` metadata parameter that names one, or the data's file
   signature (JPEG, PNG, WebP, AVIF); either way the data must be that format;
 - or, undeclared (an output declared as any other type is never treated as
-  an image), its messages carry `width`, `height` and `encoding` metadata
-  parameters next to a flat array, the convention of the dora-hub camera nodes.
+  an image), its messages are a flat array with an `encoding` metadata
+  parameter (and `width` and `height` for raw encodings), the convention of the
+  dora-hub camera nodes.
   Because nodes often forward a camera's metadata onto outputs that aren't
   images, the data has to match: `jpeg`/`png`/`webp`/`avif` frames become
   `CompressedImage` only if their bytes are that format, and the raw encodings

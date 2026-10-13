@@ -68,8 +68,10 @@ const COMPRESSED_IMAGE_SCHEMA: &str = concat!(
 
 /// What the mapper made of one recorded message.
 pub(super) enum Recognition {
-    /// Not an image output: export it as Arrow like the default schema does.
-    NotRecognised,
+    /// Not an image: export it as Arrow like the default schema does. For an
+    /// undeclared message that looked like a camera frame but didn't convert,
+    /// the reason, for the report when its topic is already an image channel.
+    NotRecognised(Option<String>),
     /// The JSON message for this Foxglove schema.
     Converted(Kind, Vec<u8>),
     /// An image output, but this message could not be converted.
@@ -144,25 +146,21 @@ impl Mapper {
             .and_then(|outputs| outputs.get(output_id));
         match declared {
             Some(Declared::Image { encoding }) => {
-                // Declared images come as the `Image` struct, or like the
-                // README's camera as a flat array with camera metadata, or as
-                // plain bytes when the type says `[encoding=jpeg]` (which wins
-                // over any `encoding` the node forwarded in its metadata).
-                let declared_format = encoding.as_deref().and_then(compressed_format);
+                // Declared images come as the `Image` struct, or as a flat
+                // array: compressed bytes, or pixels with width/height
+                // metadata. An encoding on the type (`Image[encoding=jpeg]`)
+                // wins over one the node forwarded in its metadata.
+                let encoding = encoding.as_deref();
                 let result = decode(data).and_then(|array| {
                     if array.as_struct_opt().is_some() {
                         return image_struct(metadata, &array);
                     }
-                    match (declared_format, camera_metadata(metadata)) {
-                        (Some(format), _) => compressed_bytes(metadata, &array, format),
-                        (None, Some(camera)) => camera_frame(metadata, camera, &array, false),
-                        (None, None) => Err(
-                            "expected an `Image` struct, or width/height/encoding metadata"
-                                .to_string(),
-                        ),
-                    }
+                    frame(metadata, encoding, &array, false)
                 });
-                let expected = match declared_format {
+                let expected = match encoding
+                    .or_else(|| metadata_str(metadata, "encoding"))
+                    .and_then(compressed_format)
+                {
                     Some(_) => Kind::CompressedImage,
                     None => Kind::RawImage,
                 };
@@ -179,19 +177,19 @@ impl Mapper {
                     Err(reason) => Recognition::Failed(Kind::CompressedImage, reason),
                 }
             }
-            Some(Declared::Other) => Recognition::NotRecognised,
+            Some(Declared::Other) => Recognition::NotRecognised(None),
             // Not declared: only an image if it converts cleanly. Anything
-            // else (no camera metadata, an encoding Foxglove can't show, a
-            // payload that doesn't match) stays Arrow instead of being dropped.
-            // The metadata is checked first, so other outputs aren't decoded.
+            // else (no `encoding` metadata, an encoding Foxglove can't show,
+            // a payload that doesn't match) stays Arrow instead of being
+            // dropped. The metadata is checked first, so other outputs aren't
+            // decoded.
             None => {
-                let converted = camera_metadata(metadata).and_then(|camera| {
-                    let array = decode(data).ok()?;
-                    camera_frame(metadata, camera, &array, true).ok()
-                });
-                match converted {
-                    Some((kind, json)) => Recognition::Converted(kind, json),
-                    None => Recognition::NotRecognised,
+                if metadata_str(metadata, "encoding").is_none() {
+                    return Recognition::NotRecognised(None);
+                }
+                match decode(data).and_then(|array| frame(metadata, None, &array, true)) {
+                    Ok((kind, json)) => Recognition::Converted(kind, json),
+                    Err(reason) => Recognition::NotRecognised(Some(reason)),
                 }
             }
         }
@@ -267,6 +265,26 @@ fn image_struct(metadata: &Metadata, array: &ArrayRef) -> Result<(Kind, Vec<u8>)
         ));
     }
     let pixels = pixel_bytes(data.as_ref(), encoding)?;
+    // The extra fields of a ROS `sensor_msgs/Image` (what dora's ROS 2 bridge
+    // produces), when present.
+    if let Some(step) = image.column_by_name("step") {
+        let step = unsigned(step.as_ref(), "step")?;
+        if step.checked_mul(rows(encoding, height)) != Some(pixels.len() as u64) {
+            return Err(format!(
+                "`step` {step} doesn't match {} bytes of {height} rows",
+                pixels.len()
+            ));
+        }
+    }
+    if let Some(big_endian) = image.column_by_name("is_bigendian") {
+        let big_endian = match big_endian.data_type() {
+            DataType::Boolean => big_endian.as_boolean().value(0),
+            _ => unsigned(big_endian.as_ref(), "is_bigendian")? != 0,
+        };
+        if big_endian && matches!(encoding, "mono16" | "16UC1" | "32FC1") {
+            return Err(format!("big-endian `{encoding}` data isn't supported"));
+        }
+    }
     Ok((
         Kind::RawImage,
         raw_image(metadata, width, height, encoding, pixels, false)?,
@@ -286,60 +304,50 @@ fn compressed_bytes(
     ))
 }
 
-/// The `width`, `height` and `encoding` metadata of the camera convention.
-struct CameraMetadata<'a> {
-    width: i64,
-    height: i64,
-    encoding: &'a str,
-}
-
-fn camera_metadata(metadata: &Metadata) -> Option<CameraMetadata<'_>> {
-    let params = &metadata.parameters;
-    match (
-        params.get("width"),
-        params.get("height"),
-        params.get("encoding"),
-    ) {
-        (
-            Some(Parameter::Integer(width)),
-            Some(Parameter::Integer(height)),
-            Some(Parameter::String(encoding)),
-        ) => Some(CameraMetadata {
-            width: *width,
-            height: *height,
-            encoding,
-        }),
+fn metadata_str<'a>(metadata: &'a Metadata, key: &str) -> Option<&'a str> {
+    match metadata.parameters.get(key) {
+        Some(Parameter::String(value)) => Some(value),
         _ => None,
     }
 }
 
-/// The camera convention (dora-hub's `opencv-video-capture`,
-/// `dora-pyrealsense`, the examples): a flat array with `width`, `height` and
-/// `encoding` metadata. JPEG/PNG/WebP/AVIF become `CompressedImage`, the raw
-/// encodings Foxglove lists become `RawImage`.
+fn metadata_int(metadata: &Metadata, key: &str) -> Option<i64> {
+    match metadata.parameters.get(key) {
+        Some(Parameter::Integer(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+/// A frame sent as a flat array, the camera convention of the dora-hub nodes
+/// (`opencv-video-capture`, `dora-pyrealsense`, `dora-pyorbbecksdk`, the
+/// examples): compressed bytes when the encoding names JPEG/PNG/WebP/AVIF, or
+/// raw pixels in one of the encodings Foxglove lists, with `width` and
+/// `height` metadata. `encoding` overrides the `encoding` metadata.
 ///
 /// `strict` is for undeclared outputs, where the metadata may just have been
 /// forwarded from a camera onto data that isn't an image: a raw frame must be
 /// exactly `width` pixels per row, without padding. (A compressed frame must
 /// always start with the signature of its format.)
-fn camera_frame(
+fn frame(
     metadata: &Metadata,
-    camera: CameraMetadata<'_>,
+    encoding: Option<&str>,
     array: &ArrayRef,
     strict: bool,
 ) -> Result<(Kind, Vec<u8>), String> {
-    let CameraMetadata {
-        width,
-        height,
-        encoding,
-    } = camera;
+    let encoding = encoding
+        .or_else(|| metadata_str(metadata, "encoding"))
+        .ok_or_else(|| "expected an `Image` struct, or `encoding` metadata".to_string())?;
     if let Some(format) = compressed_format(encoding) {
-        let encoded = compressed_data(array.as_ref(), format)?;
-        return Ok((
-            Kind::CompressedImage,
-            compressed_json(metadata, encoded, format)?,
-        ));
+        return compressed_bytes(metadata, array, format);
     }
+    let (Some(width), Some(height)) = (
+        metadata_int(metadata, "width"),
+        metadata_int(metadata, "height"),
+    ) else {
+        return Err(format!(
+            "a raw `{encoding}` frame needs integer `width` and `height` metadata"
+        ));
+    };
     let pixels = pixel_bytes(array.as_ref(), encoding)?;
     let width = u64::try_from(width).map_err(|_| format!("negative width {width}"))?;
     let height = u64::try_from(height).map_err(|_| format!("negative height {height}"))?;
@@ -347,6 +355,16 @@ fn camera_frame(
         Kind::RawImage,
         raw_image(metadata, width, height, encoding, pixels, strict)?,
     ))
+}
+
+/// Rows of `step` bytes in a frame: NV12 is a full-height Y plane followed by
+/// a half-height UV plane.
+fn rows(encoding: &str, height: u64) -> u64 {
+    if encoding == "nv12" {
+        height.saturating_add(height / 2)
+    } else {
+        height
+    }
 }
 
 /// With `exact_rows`, rows must hold exactly `width` pixels (no padding).
@@ -374,14 +392,8 @@ fn raw_image(
             "`{encoding}` needs even dimensions, got {width}x{height}"
         ));
     }
-    // NV12 is a full-height Y plane followed by a half-height UV plane, so
-    // its data holds 1.5 x `height` rows of `step` bytes.
-    let rows = if encoding == "nv12" {
-        height + height / 2
-    } else {
-        height
-    };
-    let rows = usize::try_from(rows).map_err(|_| format!("height {height} is too large"))?;
+    let rows = usize::try_from(rows(encoding, height))
+        .map_err(|_| format!("height {height} is too large"))?;
     if rows == 0 || !pixels.len().is_multiple_of(rows) {
         return Err(format!(
             "{} bytes of `{encoding}` data are not whole rows of a {width}x{height} image",
@@ -551,6 +563,24 @@ fn bytes(array: &dyn Array) -> Option<&[u8]> {
         return None;
     }
     match array.data_type() {
+        DataType::List(item) | DataType::LargeList(item)
+            if array.len() == 1 && item.data_type() == &DataType::UInt8 =>
+        {
+            let (values, start, end) = match array.data_type() {
+                DataType::List(_) => {
+                    let list = array.as_list::<i32>();
+                    let offsets = list.value_offsets();
+                    (list.values(), offsets[0] as usize, offsets[1] as usize)
+                }
+                _ => {
+                    let list = array.as_list::<i64>();
+                    let offsets = list.value_offsets();
+                    (list.values(), offsets[0] as usize, offsets[1] as usize)
+                }
+            };
+            let values = values.as_primitive::<UInt8Type>();
+            (values.null_count() == 0).then(|| &values.values()[start..end])
+        }
         DataType::Binary if array.len() == 1 => Some(array.as_binary::<i32>().value(0)),
         DataType::LargeBinary if array.len() == 1 => Some(array.as_binary::<i64>().value(0)),
         DataType::UInt8 => Some(
@@ -592,6 +622,7 @@ fn bytes(array: &dyn Array) -> Option<&[u8]> {
 fn pixel_bytes<'a>(array: &'a dyn Array, encoding: &str) -> Result<&'a [u8], String> {
     let fits = match array.data_type() {
         DataType::Binary | DataType::LargeBinary | DataType::UInt8 => true,
+        DataType::List(item) | DataType::LargeList(item) => item.data_type() == &DataType::UInt8,
         DataType::UInt16 | DataType::Int16 => matches!(encoding, "mono16" | "16UC1"),
         DataType::Float32 => encoding == "32FC1",
         _ => false,
@@ -610,25 +641,34 @@ fn pixel_bytes<'a>(array: &'a dyn Array, encoding: &str) -> Result<&'a [u8], Str
 fn encoded_bytes(array: &dyn Array) -> Option<&[u8]> {
     match array.data_type() {
         DataType::Binary | DataType::LargeBinary | DataType::UInt8 => bytes(array),
+        DataType::List(item) | DataType::LargeList(item)
+            if item.data_type() == &DataType::UInt8 =>
+        {
+            bytes(array)
+        }
         _ => None,
     }
 }
 
 fn unsigned(array: &dyn Array, name: &str) -> Result<u64, String> {
-    use arrow::datatypes::{Int32Type, Int64Type, UInt32Type, UInt64Type};
+    use arrow::datatypes::{
+        Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+    };
     if array.is_empty() || array.is_null(0) {
         return Err(format!("`{name}` is null"));
     }
-    let value = match array.data_type() {
-        DataType::UInt32 => u64::from(array.as_primitive::<UInt32Type>().value(0)),
-        DataType::UInt64 => array.as_primitive::<UInt64Type>().value(0),
-        DataType::Int32 => u64::try_from(array.as_primitive::<Int32Type>().value(0))
-            .map_err(|_| format!("negative `{name}`"))?,
-        DataType::Int64 => u64::try_from(array.as_primitive::<Int64Type>().value(0))
-            .map_err(|_| format!("negative `{name}`"))?,
-        other => return Err(format!("`{name}` must be an integer, got {other}")),
-    };
-    Ok(value)
+    let signed = |value: i64| u64::try_from(value).map_err(|_| format!("negative `{name}`"));
+    match array.data_type() {
+        DataType::UInt8 => Ok(u64::from(array.as_primitive::<UInt8Type>().value(0))),
+        DataType::UInt16 => Ok(u64::from(array.as_primitive::<UInt16Type>().value(0))),
+        DataType::UInt32 => Ok(u64::from(array.as_primitive::<UInt32Type>().value(0))),
+        DataType::UInt64 => Ok(array.as_primitive::<UInt64Type>().value(0)),
+        DataType::Int8 => signed(i64::from(array.as_primitive::<Int8Type>().value(0))),
+        DataType::Int16 => signed(i64::from(array.as_primitive::<Int16Type>().value(0))),
+        DataType::Int32 => signed(i64::from(array.as_primitive::<Int32Type>().value(0))),
+        DataType::Int64 => signed(array.as_primitive::<Int64Type>().value(0)),
+        other => Err(format!("`{name}` must be an integer, got {other}")),
+    }
 }
 
 /// The producer's HLC stamp, the same time the export uses as `publish_time`.
@@ -647,7 +687,7 @@ fn frame_id(metadata: &Metadata) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, detect_format};
+    use super::{Kind, Mapper, Recognition, detect_format};
 
     #[test]
     fn schemas_are_json_named_after_the_foxglove_type() {
@@ -660,6 +700,39 @@ mod tests {
                 "{kind:?}"
             );
             assert!(schema["properties"]["timestamp"]["properties"]["nsec"].is_object());
+        }
+    }
+
+    /// An undeclared frame that has camera metadata but doesn't convert says
+    /// why, so the warning for a topic that is already an image channel names
+    /// the real problem.
+    #[test]
+    fn an_undeclared_frame_that_fails_keeps_its_reason() {
+        use arrow::array::UInt8Array;
+        use dora_message::metadata::{Metadata, Parameter};
+        let png = UInt8Array::from(vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1]);
+        let mut payload = Vec::new();
+        {
+            let batch = arrow::record_batch::RecordBatch::try_from_iter([(
+                "c",
+                std::sync::Arc::new(png) as arrow::array::ArrayRef,
+            )])
+            .unwrap();
+            let mut writer =
+                arrow::ipc::writer::StreamWriter::try_new(&mut payload, &batch.schema()).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        let mut metadata = Metadata::new(dora_message::uhlc::HLC::default().new_timestamp());
+        metadata
+            .parameters
+            .insert("encoding".into(), Parameter::String("jpeg".into()));
+        let mapper = Mapper::from_descriptor_yaml("nodes: []");
+        match mapper.convert("cam", "image", &metadata, Some(&payload)) {
+            Recognition::NotRecognised(Some(reason)) => {
+                assert!(reason.contains("not a jpeg file"), "{reason}")
+            }
+            _ => panic!("expected NotRecognised with a reason"),
         }
     }
 
