@@ -215,7 +215,7 @@ fn add_declared(
 ) {
     let types = entry.get("output_types").and_then(|t| t.as_mapping());
     for (output_id, urn) in types.into_iter().flatten() {
-        let (Some(output_id), Some(urn)) = (yaml_id(output_id), urn.as_str()) else {
+        let Some(output_id) = yaml_id(output_id) else {
             continue;
         };
         let key = match operator_id {
@@ -225,7 +225,7 @@ fn add_declared(
         // Full URNs only: `dora validate` does not resolve short names in
         // `output_types` either. Anything else, a malformed type included,
         // still declares the output as not an image.
-        let image = match dora_core::types::parse_urn(urn) {
+        let image = match urn.as_str().and_then(dora_core::types::parse_urn) {
             Some(urn) if urn.base == "std/media/v1/Image" => Declared::Image {
                 encoding: urn.params.get("encoding").cloned(),
             },
