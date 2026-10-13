@@ -153,7 +153,7 @@ impl Mapper {
                 let encoding = encoding.as_deref();
                 let result = decode(data).and_then(|array| {
                     if array.as_struct_opt().is_some() {
-                        return image_struct(metadata, &array);
+                        return image_struct(metadata, &array, encoding);
                     }
                     frame(metadata, encoding, &array, false)
                 });
@@ -208,23 +208,21 @@ fn add_declared(
         let (Some(output_id), Some(urn)) = (output_id.as_str(), urn.as_str()) else {
             continue;
         };
-        let Some(urn) = dora_core::types::parse_urn(urn) else {
-            continue;
-        };
-        // Full URNs only: `dora validate` does not resolve short names in
-        // `output_types` either.
-        let image = match urn.base.as_str() {
-            "std/media/v1/Image" => Declared::Image {
-                encoding: urn.params.get("encoding").cloned(),
-            },
-            "std/media/v1/CompressedImage" => Declared::CompressedImage {
-                format: urn.params.get("format").cloned(),
-            },
-            _ => Declared::Other,
-        };
         let key = match operator_id {
             Some(operator_id) => format!("{operator_id}/{output_id}"),
             None => output_id.to_owned(),
+        };
+        // Full URNs only: `dora validate` does not resolve short names in
+        // `output_types` either. Anything else, a malformed type included,
+        // still declares the output as not an image.
+        let image = match dora_core::types::parse_urn(urn) {
+            Some(urn) if urn.base == "std/media/v1/Image" => Declared::Image {
+                encoding: urn.params.get("encoding").cloned(),
+            },
+            Some(urn) if urn.base == "std/media/v1/CompressedImage" => Declared::CompressedImage {
+                format: urn.params.get("format").cloned(),
+            },
+            _ => Declared::Other,
         };
         outputs.insert(key, image);
     }
@@ -233,7 +231,11 @@ fn add_declared(
 /// A declared `std/media/v1/Image` struct: one row of `width`, `height`,
 /// `encoding`, `data`. A compressed `encoding` (jpeg, png, ...) makes it a
 /// `CompressedImage`.
-fn image_struct(metadata: &Metadata, array: &ArrayRef) -> Result<(Kind, Vec<u8>), String> {
+fn image_struct(
+    metadata: &Metadata,
+    array: &ArrayRef,
+    declared_encoding: Option<&str>,
+) -> Result<(Kind, Vec<u8>), String> {
     let image = array
         .as_struct_opt()
         .ok_or_else(|| format!("expected a struct, got {}", array.data_type()))?;
@@ -242,6 +244,9 @@ fn image_struct(metadata: &Metadata, array: &ArrayRef) -> Result<(Kind, Vec<u8>)
             "expected one image per message, got {}",
             image.len()
         ));
+    }
+    if image.is_null(0) {
+        return Err("the image is null".to_string());
     }
     let field = |name: &str| {
         image
@@ -256,6 +261,15 @@ fn image_struct(metadata: &Metadata, array: &ArrayRef) -> Result<(Kind, Vec<u8>)
         DataType::LargeUtf8 => encoding_column.as_string::<i64>().value(0),
         other => return Err(format!("`encoding` must be a string, got {other}")),
     };
+    if let Some(declared) = declared_encoding {
+        let same = declared == encoding
+            || compressed_format(declared).is_some_and(|f| compressed_format(encoding) == Some(f));
+        if !same {
+            return Err(format!(
+                "the image's encoding `{encoding}` isn't the declared `{declared}`"
+            ));
+        }
+    }
     let data = field("data")?;
     if let Some(format) = compressed_format(encoding) {
         let encoded = compressed_data(data.as_ref(), format)?;
@@ -278,6 +292,9 @@ fn image_struct(metadata: &Metadata, array: &ArrayRef) -> Result<(Kind, Vec<u8>)
     }
     if let Some(big_endian) = image.column_by_name("is_bigendian") {
         let big_endian = match big_endian.data_type() {
+            DataType::Boolean if big_endian.is_null(0) => {
+                return Err("`is_bigendian` is null".to_string());
+            }
             DataType::Boolean => big_endian.as_boolean().value(0),
             _ => unsigned(big_endian.as_ref(), "is_bigendian")? != 0,
         };
@@ -334,10 +351,21 @@ fn frame(
     array: &ArrayRef,
     strict: bool,
 ) -> Result<(Kind, Vec<u8>), String> {
+    let declared = encoding.is_some();
     let encoding = encoding
         .or_else(|| metadata_str(metadata, "encoding"))
         .ok_or_else(|| "expected an `Image` struct, or `encoding` metadata".to_string())?;
-    if let Some(format) = compressed_format(encoding) {
+    if let Some(named) = compressed_format(encoding) {
+        // A format on the declared type must match. One in the metadata (maybe
+        // forwarded from another camera) only says the frame is compressed;
+        // the file signature says which format.
+        let format = if declared {
+            named
+        } else {
+            encoded_bytes(array.as_ref())
+                .and_then(detect_format)
+                .ok_or_else(|| format!("data is not a {named} file"))?
+        };
         return compressed_bytes(metadata, array, format);
     }
     let (Some(width), Some(height)) = (
@@ -448,40 +476,41 @@ fn compressed_format(encoding: &str) -> Option<&'static str> {
     }
 }
 
-/// A declared `std/media/v1/CompressedImage`: one binary value. The format is
-/// the URN's `format` parameter, else a `format` or `encoding` metadata
-/// parameter, else detected from the file signature.
+/// A declared `std/media/v1/CompressedImage`: one binary value, or a struct
+/// with a `data` field like ROS `sensor_msgs/CompressedImage`. The format is
+/// the type's `format` parameter (the data must be that format), else the
+/// data's file signature.
 fn compressed_image(
     metadata: &Metadata,
     array: &ArrayRef,
     declared_format: Option<&str>,
 ) -> Result<Vec<u8>, String> {
-    // A metadata `format`/`encoding` only counts if it names a compressed
-    // format: a node may forward a camera's raw `encoding` (`bgr8`, ...).
-    let named = match declared_format {
-        Some(name) => Some(
-            compressed_format(name)
-                .ok_or_else(|| format!("`{name}` is not a format Foxglove can display"))?,
-        ),
-        None => ["format", "encoding"]
-            .iter()
-            .find_map(|key| match metadata.parameters.get(*key) {
-                Some(Parameter::String(value)) => compressed_format(value),
-                _ => None,
-            }),
+    let data = match array.as_struct_opt() {
+        Some(image) => {
+            if image.len() != 1 || image.is_null(0) {
+                return Err(format!(
+                    "expected one image per message, got {}",
+                    image.len()
+                ));
+            }
+            image
+                .column_by_name("data")
+                .ok_or_else(|| "image struct has no `data` field".to_string())?
+                .clone()
+        }
+        None => array.clone(),
     };
-    let format = match named {
-        Some(format) => format,
-        None => {
-            let encoded = encoded_bytes(array.as_ref())
-                .ok_or_else(|| format!("expected binary image data, got {}", array.data_type()))?;
-            detect_format(encoded).ok_or_else(|| {
+    let format = match declared_format {
+        Some(name) => compressed_format(name)
+            .ok_or_else(|| format!("`{name}` is not a format Foxglove can display"))?,
+        None => encoded_bytes(data.as_ref())
+            .and_then(detect_format)
+            .ok_or_else(|| {
                 "unknown compressed image format; declare it as `std/media/v1/CompressedImage[format=jpeg]`"
                     .to_string()
-            })?
-        }
+            })?,
     };
-    compressed_json(metadata, compressed_data(array.as_ref(), format)?, format)
+    compressed_json(metadata, compressed_data(data.as_ref(), format)?, format)
 }
 
 fn compressed_json(metadata: &Metadata, encoded: &[u8], format: &str) -> Result<Vec<u8>, String> {
@@ -710,7 +739,8 @@ mod tests {
     fn an_undeclared_frame_that_fails_keeps_its_reason() {
         use arrow::array::UInt8Array;
         use dora_message::metadata::{Metadata, Parameter};
-        let png = UInt8Array::from(vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1]);
+        // Claimed to be a JPEG, but not any image at all.
+        let png = UInt8Array::from(vec![1u8, 2, 3, 4, 5]);
         let mut payload = Vec::new();
         {
             let batch = arrow::record_batch::RecordBatch::try_from_iter([(

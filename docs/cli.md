@@ -570,17 +570,20 @@ exported as with `arrow`. An output counts as an image when:
   must be little-endian) or as a flat array with the camera metadata below; an
   encoding on the type (`std/media/v1/Image[encoding=rgb8]`) wins over the
   metadata's. A compressed encoding (`[encoding=jpeg]`, or `jpeg`/`png` in the
-  struct or metadata) makes it a `CompressedImage`. A
-  `CompressedImage`'s format comes from `[format=jpeg]` on the type, a
-  `format` or `encoding` metadata parameter that names one, or the data's file
-  signature (JPEG, PNG, WebP, AVIF); either way the data must be that format;
+  struct or metadata) makes it a `CompressedImage`; a struct whose encoding
+  contradicts the type's is dropped. A `CompressedImage` is one binary value
+  or a struct with a `data` field (ROS `sensor_msgs/CompressedImage`). Its
+  format is `[format=jpeg]` on the type, and the data must be that format;
+  otherwise the data's file signature (JPEG, PNG, WebP, AVIF) decides. A
+  compressed name in the metadata only says the data is compressed;
 - or, undeclared (an output declared as any other type is never treated as
   an image), its messages are a flat array with an `encoding` metadata
   parameter (and `width` and `height` for raw encodings), the convention of the
   dora-hub camera nodes.
   Because nodes often forward a camera's metadata onto outputs that aren't
   images, the data has to match: `jpeg`/`png`/`webp`/`avif` frames become
-  `CompressedImage` only if their bytes are that format, and the raw encodings
+  `CompressedImage` only if their bytes are a JPEG, PNG, WebP or AVIF file
+  (the file signature decides which), and the raw encodings
   Foxglove lists (`rgb8`, `bgr8`, `mono8`, `mono16`, `nv12`, ...) become
   `RawImage` only if each row is exactly `width` pixels and the element type
   fits the encoding: bytes (`uint8`) for any encoding, `uint16`/`int16` for
