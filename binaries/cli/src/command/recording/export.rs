@@ -2370,6 +2370,33 @@ mod tests {
         assert_eq!(json["format"], "jpeg");
     }
 
+    /// dora reads an `output_types` value that isn't a string (`scores:` with
+    /// nothing, `~`, `5`, `true`) as a malformed type: the output is declared,
+    /// so it is never guessed to be an image.
+    #[test]
+    fn foxglove_non_string_type_still_declares_the_output() {
+        use arrow::array::UInt8Array;
+        let frame = ipc_bytes(std::sync::Arc::new(UInt8Array::from(vec![1u8; 12])));
+        for value in ["", "~", "null", "5", "true", "1.5"] {
+            let descriptor =
+                format!("nodes:\n  - id: n\n    output_types:\n      scores: {value}\n");
+            let messages = export_messages(
+                &descriptor,
+                vec![(
+                    "n",
+                    "scores",
+                    output_event_bytes_with_params(
+                        "n",
+                        "scores",
+                        &frame,
+                        &camera_params(2, 2, "rgb8"),
+                    ),
+                )],
+            );
+            assert_eq!(messages[0].1, "arrow-ipc", "`scores: {value}`");
+        }
+    }
+
     /// YAML numbers are ids too: dora records `1:` as output `1`, so its
     /// declaration must count.
     #[test]
