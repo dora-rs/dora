@@ -143,53 +143,84 @@ impl Mapper {
             .declared
             .get(node_id)
             .and_then(|outputs| outputs.get(output_id));
-        match declared {
-            Some(Declared::Image { encoding }) => {
-                // Declared images come as the `Image` struct, or as a flat
-                // array: compressed bytes, or pixels with width/height
-                // metadata. An encoding on the type (`Image[encoding=jpeg]`)
-                // wins over one the node forwarded in its metadata.
-                let encoding = encoding.as_deref();
-                let result = decode(data).and_then(|array| {
-                    if array.as_struct_opt().is_some() {
-                        return image_struct(metadata, &array, encoding);
-                    }
-                    frame(metadata, encoding, &array, false)
-                });
-                let expected = match encoding
-                    .or_else(|| metadata_str(metadata, "encoding"))
-                    .and_then(compressed_format)
-                {
-                    Some(_) => Kind::CompressedImage,
-                    None => Kind::RawImage,
-                };
-                match result {
-                    Ok((kind, json)) => Recognition::Converted(kind, json),
-                    Err(reason) => Recognition::Failed(expected, reason),
+        // Recordings have no checksum, and arrow-ipc panics on many kinds of
+        // damaged payload (bad schema bits, impossible lengths, offsets out
+        // of range). A damaged message is then one that can't be converted,
+        // like any other; `--schema arrow` copies it without decoding.
+        let converted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            convert_unguarded(declared, metadata, data)
+        }));
+        converted.unwrap_or_else(|_| {
+            let reason = "the payload is damaged (not a valid Arrow IPC stream)".to_string();
+            match declared {
+                Some(Declared::Image { encoding }) => Recognition::Failed(
+                    match encoding.as_deref().and_then(compressed_format) {
+                        Some(_) => Kind::CompressedImage,
+                        None => Kind::RawImage,
+                    },
+                    reason,
+                ),
+                Some(Declared::CompressedImage { .. }) => {
+                    Recognition::Failed(Kind::CompressedImage, reason)
                 }
+                Some(Declared::Other) => Recognition::NotRecognised(None),
+                None => Recognition::NotRecognised(Some(reason)),
             }
-            Some(Declared::CompressedImage { format }) => {
-                match decode(data)
-                    .and_then(|array| compressed_image(metadata, &array, format.as_deref()))
-                {
-                    Ok(json) => Recognition::Converted(Kind::CompressedImage, json),
-                    Err(reason) => Recognition::Failed(Kind::CompressedImage, reason),
+        })
+    }
+}
+
+fn convert_unguarded(
+    declared: Option<&Declared>,
+    metadata: &Metadata,
+    data: Option<&[u8]>,
+) -> Recognition {
+    match declared {
+        Some(Declared::Image { encoding }) => {
+            // Declared images come as the `Image` struct, or as a flat
+            // array: compressed bytes, or pixels with width/height
+            // metadata. An encoding on the type (`Image[encoding=jpeg]`)
+            // wins over one the node forwarded in its metadata.
+            let encoding = encoding.as_deref();
+            let result = decode(data).and_then(|array| {
+                if array.as_struct_opt().is_some() {
+                    return image_struct(metadata, &array, encoding);
                 }
+                frame(metadata, encoding, &array, false)
+            });
+            let expected = match encoding
+                .or_else(|| metadata_str(metadata, "encoding"))
+                .and_then(compressed_format)
+            {
+                Some(_) => Kind::CompressedImage,
+                None => Kind::RawImage,
+            };
+            match result {
+                Ok((kind, json)) => Recognition::Converted(kind, json),
+                Err(reason) => Recognition::Failed(expected, reason),
             }
-            Some(Declared::Other) => Recognition::NotRecognised(None),
-            // Not declared: only an image if it converts cleanly. Anything
-            // else (no `encoding` metadata, an encoding Foxglove can't show,
-            // a payload that doesn't match) stays Arrow instead of being
-            // dropped. The metadata is checked first, so other outputs aren't
-            // decoded.
-            None => {
-                if metadata_str(metadata, "encoding").is_none() {
-                    return Recognition::NotRecognised(None);
-                }
-                match decode(data).and_then(|array| frame(metadata, None, &array, true)) {
-                    Ok((kind, json)) => Recognition::Converted(kind, json),
-                    Err(reason) => Recognition::NotRecognised(Some(reason)),
-                }
+        }
+        Some(Declared::CompressedImage { format }) => {
+            match decode(data)
+                .and_then(|array| compressed_image(metadata, &array, format.as_deref()))
+            {
+                Ok(json) => Recognition::Converted(Kind::CompressedImage, json),
+                Err(reason) => Recognition::Failed(Kind::CompressedImage, reason),
+            }
+        }
+        Some(Declared::Other) => Recognition::NotRecognised(None),
+        // Not declared: only an image if it converts cleanly. Anything
+        // else (no `encoding` metadata, an encoding Foxglove can't show,
+        // a payload that doesn't match) stays Arrow instead of being
+        // dropped. The metadata is checked first, so other outputs aren't
+        // decoded.
+        None => {
+            if metadata_str(metadata, "encoding").is_none() {
+                return Recognition::NotRecognised(None);
+            }
+            match decode(data).and_then(|array| frame(metadata, None, &array, true)) {
+                Ok((kind, json)) => Recognition::Converted(kind, json),
+                Err(reason) => Recognition::NotRecognised(Some(reason)),
             }
         }
     }
@@ -591,10 +622,9 @@ fn is_avif(data: &[u8]) -> bool {
 /// in its Arrow IPC payload.
 ///
 /// `StreamDecoder` only ever takes the bytes that are there, so a corrupt
-/// length in a damaged recording is an error rather than a huge allocation or
-/// a panic, which `StreamReader` would give (it allocates `bodyLength` up
-/// front). Recordings have no checksum, and `--schema arrow` copies such a
-/// payload without trouble.
+/// `bodyLength` can't make it allocate that much (`StreamReader` allocates it
+/// up front). Other damage that makes arrow-ipc panic is caught in
+/// [`Mapper::convert`].
 fn decode(data: Option<&[u8]>) -> Result<ArrayRef, String> {
     let data = data.ok_or_else(|| "message has no payload".to_string())?;
     let invalid =
@@ -766,6 +796,98 @@ mod tests {
                 "{kind:?}"
             );
             assert!(schema["properties"]["timestamp"]["properties"]["nsec"].is_object());
+        }
+    }
+
+    fn ipc(array: arrow::array::ArrayRef) -> Vec<u8> {
+        let batch = arrow::record_batch::RecordBatch::try_from_iter([("c", array)]).unwrap();
+        let mut payload = Vec::new();
+        let mut writer =
+            arrow::ipc::writer::StreamWriter::try_new(&mut payload, &batch.schema()).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        drop(writer);
+        payload
+    }
+
+    /// Recordings have no checksum, and arrow-ipc panics on many kinds of
+    /// damaged payload (bad schema bits, impossible lengths, offsets out of
+    /// range). Every message converts or fails cleanly: damage one byte at a
+    /// time in valid payloads and check that nothing panics.
+    #[test]
+    fn damaged_payloads_never_panic() {
+        use arrow::array::{
+            ArrayRef, BinaryArray, ListArray, StringArray, StructArray, UInt8Array, UInt16Array,
+        };
+        use arrow_schema::{DataType, Field};
+        use dora_message::metadata::{Metadata, Parameter};
+        use std::sync::Arc;
+        let image = Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new("width", DataType::UInt16, false)),
+                Arc::new(UInt16Array::from(vec![2])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("height", DataType::UInt16, false)),
+                Arc::new(UInt16Array::from(vec![1])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("encoding", DataType::Utf8, false)),
+                Arc::new(StringArray::from(vec!["mono8"])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("data", DataType::Binary, false)),
+                Arc::new(BinaryArray::from(vec![[1u8, 2].as_slice()])) as ArrayRef,
+            ),
+        ])) as ArrayRef;
+        let payloads = [
+            ipc(Arc::new(UInt8Array::from(vec![
+                Some(1u8),
+                None,
+                Some(3),
+                Some(4),
+            ]))),
+            ipc(Arc::new(UInt16Array::from(vec![1u16, 2]))),
+            ipc(Arc::new(BinaryArray::from(vec![
+                [0xFFu8, 0xD8, 0xFF, 0xE0].as_slice(),
+            ]))),
+            ipc(Arc::new(ListArray::from_iter_primitive::<
+                arrow::datatypes::UInt8Type,
+                _,
+                _,
+            >(vec![Some(vec![
+                Some(1u8),
+                Some(2),
+            ])]))),
+            ipc(image),
+        ];
+        let mut metadata = Metadata::new(dora_message::uhlc::HLC::default().new_timestamp());
+        for (key, value) in [
+            ("width", Parameter::Integer(2)),
+            ("height", Parameter::Integer(2)),
+            ("encoding", Parameter::String("mono8".into())),
+        ] {
+            metadata.parameters.insert(key.into(), value);
+        }
+        let mapper = Mapper::from_descriptor_yaml(
+            "nodes:\n  - id: cam\n    output_types:\n      image: std/media/v1/Image\n",
+        );
+        for payload in &payloads {
+            for at in 0..payload.len() {
+                for flip in [0x01u8, 0x80, 0xFF] {
+                    let mut damaged = payload.clone();
+                    damaged[at] ^= flip;
+                    for output in ["image", "other"] {
+                        let result = std::panic::catch_unwind(|| {
+                            mapper.convert("cam", output, &metadata, Some(&damaged));
+                        });
+                        assert!(
+                            result.is_ok(),
+                            "byte {at} ^ {flip:#x} panicked on `{output}`"
+                        );
+                    }
+                }
+            }
         }
     }
 
