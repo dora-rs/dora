@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Builds the generated C++ ROS 2 bindings (dora-node-api-cxx) against a small
-# fixture package, then runs a C++ service client/server round trip over
-# native Zenoh for both identity profiles. CI has no ROS install, so without
+# Builds the generated C++ ROS 2 bindings (dora-node-api-cxx) against small
+# fixture packages, then runs C++ service and action client/server round trips
+# over native Zenoh for both identity profiles. CI has no ROS install, so without
 # this the generated cxx code is never compiled. Needs clang++, not ROS.
 set -euo pipefail
 
@@ -38,7 +38,7 @@ esac
 clang++ -std=c++17 \
   "$FIXTURE/roundtrip.cc" \
   "$BRIDGE/dora-node-api.cc" \
-  "$BRIDGE/ros2-bridge/msg/example_interfaces.cc" \
+  "$BRIDGE"/ros2-bridge/msg/*.cc \
   "$BRIDGE/ros2-bridge/impl.cc" \
   -I "$BRIDGE" -L "$TARGET_DIR/debug" -l dora_node_api_cxx "${SYSTEM_LIBS[@]}" \
   -o "$OUT/roundtrip"

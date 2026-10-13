@@ -41,4 +41,6 @@ ned = "ned"
 # Scoped allow: GitHub user name "YOR-robot" appears in the downstream-user
 # assessment table in docs/plan-dora-1.0-consolidation.md. Matching the full
 # compound token (not bare "YOR") keeps typo detection active everywhere else.
-extend-ignore-re = ["YOR-robot"]
+# REP-2016 ROS type hashes (`RIHS01_` + 64 hex digits) are random hex, which
+# can contain fragments such as "afe".
+extend-ignore-re = ["YOR-robot", "RIHS01_[0-9a-f]{64}"]
