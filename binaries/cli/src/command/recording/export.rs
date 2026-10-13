@@ -1815,6 +1815,109 @@ mod tests {
         }
     }
 
+    /// The raw-encoding side of forwarded camera metadata: a same-size float32
+    /// map behind an `rgb8` camera must not become an `rgb8` RawImage, and an
+    /// undeclared frame whose rows don't hold exactly `width` pixels isn't
+    /// trusted to be one either. Real frames of the right type still convert.
+    #[test]
+    fn foxglove_undeclared_raw_frames_must_match_their_encoding() {
+        use arrow::array::{Float32Array, UInt8Array};
+        let float_map = ipc_bytes(std::sync::Arc::new(Float32Array::from(vec![0.5f32; 8 * 4])));
+        // 2x2 rgb8 is 12 bytes; 16 bytes means rows of 8: not a plain frame.
+        let padded = ipc_bytes(std::sync::Arc::new(UInt8Array::from(vec![7u8; 16])));
+        let depth = ipc_bytes(std::sync::Arc::new(Float32Array::from(vec![1.5f32; 4])));
+        let messages = export_messages(
+            "nodes: []",
+            vec![
+                (
+                    "depth",
+                    "map",
+                    output_event_bytes_with_params(
+                        "depth",
+                        "map",
+                        &float_map,
+                        &camera_params(8, 4, "rgb8"),
+                    ),
+                ),
+                (
+                    "filter",
+                    "rgb",
+                    output_event_bytes_with_params(
+                        "filter",
+                        "rgb",
+                        &padded,
+                        &camera_params(2, 2, "rgb8"),
+                    ),
+                ),
+                (
+                    "stereo",
+                    "depth",
+                    output_event_bytes_with_params(
+                        "stereo",
+                        "depth",
+                        &depth,
+                        &camera_params(2, 2, "32FC1"),
+                    ),
+                ),
+            ],
+        );
+        assert_eq!(messages.len(), 3);
+        let by_topic = |topic: &str| {
+            messages
+                .iter()
+                .find(|message| message.0 == topic)
+                .unwrap_or_else(|| panic!("no {topic}"))
+        };
+        for (topic, payload) in [("depth/map", &float_map), ("filter/rgb", &padded)] {
+            let (_, encoding, schema, data) = by_topic(topic);
+            assert_eq!(encoding, "arrow-ipc", "{topic}");
+            assert_eq!(schema, &None, "{topic}");
+            assert_eq!(data, payload, "{topic} must stay unchanged");
+        }
+        let (_, _, schema, data) = by_topic("stereo/depth");
+        assert_eq!(schema.as_deref(), Some("foxglove.RawImage"));
+        let json: serde_json::Value = serde_json::from_slice(data).unwrap();
+        assert_eq!(json["encoding"], "32FC1");
+        assert_eq!(json["step"], 8);
+    }
+
+    /// A declared image whose payload doesn't fit its encoding is reported and
+    /// dropped, not exported as a garbage image; padded rows are fine there.
+    #[test]
+    fn foxglove_declared_frames_check_their_pixel_type() {
+        use arrow::array::{Float32Array, UInt8Array};
+        let float_frame = ipc_bytes(std::sync::Arc::new(Float32Array::from(vec![0.5f32; 4 * 3])));
+        let padded = ipc_bytes(std::sync::Arc::new(UInt8Array::from(vec![7u8; 16])));
+        let messages = export_messages(
+            CAMERA_DESCRIPTOR,
+            vec![
+                (
+                    "camera",
+                    "image",
+                    output_event_bytes_with_params(
+                        "camera",
+                        "image",
+                        &padded,
+                        &camera_params(2, 2, "rgb8"),
+                    ),
+                ),
+                (
+                    "camera",
+                    "image",
+                    output_event_bytes_with_params(
+                        "camera",
+                        "image",
+                        &float_frame,
+                        &camera_params(4, 1, "rgb8"),
+                    ),
+                ),
+            ],
+        );
+        assert_eq!(messages.len(), 1, "the float32 frame is dropped");
+        let json: serde_json::Value = serde_json::from_slice(&messages[0].3).unwrap();
+        assert_eq!(json["step"], 8, "declared rows may be padded");
+    }
+
     /// Once an undeclared topic's first frame converted, the channel is a
     /// Foxglove image channel, so a later frame that doesn't convert can't go
     /// on it as Arrow: it is dropped (and reported), not written.

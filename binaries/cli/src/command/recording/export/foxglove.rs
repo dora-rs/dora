@@ -254,17 +254,19 @@ fn image_struct(metadata: &Metadata, array: &ArrayRef) -> Result<(Kind, Vec<u8>)
         DataType::LargeUtf8 => encoding_column.as_string::<i64>().value(0),
         other => return Err(format!("`encoding` must be a string, got {other}")),
     };
-    let pixels = bytes(field("data")?.as_ref())
-        .ok_or_else(|| "`data` must be binary or a flat numeric array".to_string())?;
+    let data = field("data")?;
     if let Some(format) = compressed_format(encoding) {
+        let encoded = encoded_bytes(data.as_ref())
+            .ok_or_else(|| format!("`data` must be binary, got {}", data.data_type()))?;
         return Ok((
             Kind::CompressedImage,
-            compressed_json(metadata, pixels, format)?,
+            compressed_json(metadata, encoded, format)?,
         ));
     }
+    let pixels = pixel_bytes(data.as_ref(), encoding)?;
     Ok((
         Kind::RawImage,
-        raw_image(metadata, width, height, encoding, pixels)?,
+        raw_image(metadata, width, height, encoding, pixels, false)?,
     ))
 }
 
@@ -312,13 +314,17 @@ fn camera_metadata(metadata: &Metadata) -> Option<CameraMetadata<'_>> {
 /// The camera convention (dora-hub's `opencv-video-capture`,
 /// `dora-pyrealsense`, the examples): a flat array with `width`, `height` and
 /// `encoding` metadata. JPEG/PNG/WebP/AVIF become `CompressedImage`, the raw
-/// encodings Foxglove lists become `RawImage`. With `check_signature`, a
-/// compressed frame must start with the signature of the format it claims.
+/// encodings Foxglove lists become `RawImage`.
+///
+/// `strict` is for undeclared outputs, where the metadata may just have been
+/// forwarded from a camera onto data that isn't an image: a compressed frame
+/// must start with the signature of its format, and a raw frame must be
+/// exactly `width` pixels per row, without padding.
 fn camera_frame(
     metadata: &Metadata,
     camera: CameraMetadata<'_>,
     array: &ArrayRef,
-    check_signature: bool,
+    strict: bool,
 ) -> Result<(Kind, Vec<u8>), String> {
     let CameraMetadata {
         width,
@@ -332,7 +338,7 @@ fn camera_frame(
                 array.data_type()
             )
         })?;
-        if check_signature && detect_format(encoded) != Some(format) {
+        if strict && detect_format(encoded) != Some(format) {
             return Err(format!("data is not a {format} file"));
         }
         return Ok((
@@ -340,22 +346,23 @@ fn camera_frame(
             compressed_json(metadata, encoded, format)?,
         ));
     }
-    let pixels = bytes(array.as_ref())
-        .ok_or_else(|| format!("expected a flat image array, got {}", array.data_type()))?;
+    let pixels = pixel_bytes(array.as_ref(), encoding)?;
     let width = u64::try_from(width).map_err(|_| format!("negative width {width}"))?;
     let height = u64::try_from(height).map_err(|_| format!("negative height {height}"))?;
     Ok((
         Kind::RawImage,
-        raw_image(metadata, width, height, encoding, pixels)?,
+        raw_image(metadata, width, height, encoding, pixels, strict)?,
     ))
 }
 
+/// With `exact_rows`, rows must hold exactly `width` pixels (no padding).
 fn raw_image(
     metadata: &Metadata,
     width: u64,
     height: u64,
     encoding: &str,
     pixels: &[u8],
+    exact_rows: bool,
 ) -> Result<Vec<u8>, String> {
     let bytes_per_pixel = raw_bytes_per_pixel(encoding)
         .ok_or_else(|| format!("`{encoding}` is not an encoding Foxglove can display"))?;
@@ -375,9 +382,15 @@ fn raw_image(
         ));
     }
     let step = pixels.len() / rows;
-    if (step as u64) < width.saturating_mul(bytes_per_pixel) {
+    let row_bytes = width.saturating_mul(bytes_per_pixel);
+    if (step as u64) < row_bytes {
         return Err(format!(
             "rows of {step} bytes cannot hold {width} `{encoding}` pixels"
+        ));
+    }
+    if exact_rows && step as u64 != row_bytes {
+        return Err(format!(
+            "rows of {step} bytes are not {width} `{encoding}` pixels"
         ));
     }
     let json = serde_json::json!({
@@ -531,6 +544,26 @@ fn bytes(array: &dyn Array) -> Option<&[u8]> {
         ),
         _ => None,
     }
+}
+
+/// The bytes of raw pixel data, if the array's element type fits `encoding`:
+/// bytes (binary or `uint8`) for any encoding, as in a ROS `Image`, and also
+/// `uint16`/`int16` for the 16-bit single-channel encodings and `float32` for
+/// `32FC1`. A float32 array with `rgb8` metadata, say, is not an image.
+fn pixel_bytes<'a>(array: &'a dyn Array, encoding: &str) -> Result<&'a [u8], String> {
+    let fits = match array.data_type() {
+        DataType::Binary | DataType::LargeBinary | DataType::UInt8 => true,
+        DataType::UInt16 | DataType::Int16 => matches!(encoding, "mono16" | "16UC1"),
+        DataType::Float32 => encoding == "32FC1",
+        _ => false,
+    };
+    if !fits {
+        return Err(format!(
+            "{} data doesn't fit encoding `{encoding}`",
+            array.data_type()
+        ));
+    }
+    bytes(array).ok_or_else(|| format!("expected a flat image array, got {}", array.data_type()))
 }
 
 /// The bytes of a compressed image: one binary value or a flat `uint8` array.
