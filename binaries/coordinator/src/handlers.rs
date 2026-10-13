@@ -18,7 +18,7 @@ use dora_message::{
     coordinator_to_cli::{DataflowResult, LogMessage},
     coordinator_to_daemon::{BuildDataflowNodes, DaemonCoordinatorEvent, Timestamped},
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
-    descriptor::{Descriptor, ResolvedNode},
+    descriptor::Descriptor,
 };
 use eyre::{ContextCompat, WrapErr, bail, eyre};
 use futures::future::join_all;
@@ -505,26 +505,35 @@ pub(crate) async fn stop_node(
 /// "multiple matching daemon connections", making `dora logs` unavailable for
 /// a node that is definitely running on one specific daemon.
 ///
-/// Archived dataflows keep no `node_to_daemon` map, so they still fall back to
-/// the machine-based derivation. Archived takes priority when a dataflow id is
-/// somehow present in both, matching the previous behavior.
+/// An archived dataflow keeps the `node_to_daemon` map it had when it
+/// finished, so a node placed by `deploy.labels` or added at runtime with
+/// `dora node add` resolves to the daemon that actually ran it. That daemon is
+/// used while it is still connected. If it has disconnected since, a daemon
+/// that re-registered for the same machine is used instead; a node that was
+/// never assigned falls back to its `deploy.machine`. Archived takes priority
+/// when a dataflow id is somehow present in both, matching the previous
+/// behavior.
 fn resolve_log_daemon_id(
     running_node_to_daemon: Option<&BTreeMap<NodeId, DaemonId>>,
-    archived_nodes: Option<&BTreeMap<NodeId, ResolvedNode>>,
+    archived: Option<&ArchivedDataflow>,
     dataflow_id: Uuid,
     node_id: &NodeId,
     daemon_connections: &DaemonConnections,
 ) -> eyre::Result<DaemonId> {
-    if let Some(nodes) = archived_nodes {
-        // `nodes` is keyed by `NodeId` and every `ResolvedNode.id` equals its map
-        // key (see `resolve_aliases_and_set_defaults_in_topology`, which also
-        // rejects duplicate ids), so a direct lookup is equivalent to — and
-        // cheaper than — scanning every entry for a matching `id`. The previous
-        // `Vec` scan additionally carried an "more than one machine" arm that the
-        // map key uniqueness made unreachable.
-        let machine_id = match nodes.get(node_id) {
-            Some(node) => node.deploy.as_ref().and_then(|d| d.machine.clone()),
-            None => bail!("No machine contains {}/{}", dataflow_id, node_id),
+    if let Some(archived) = archived {
+        let machine_id = match archived.node_to_daemon.get(node_id) {
+            Some(daemon_id) if daemon_connections.get(daemon_id).is_some() => {
+                return Ok(daemon_id.clone());
+            }
+            Some(daemon_id) => daemon_id.machine_id().map(str::to_owned),
+            // `nodes` is keyed by `NodeId` and every `ResolvedNode.id` equals its
+            // map key (see `resolve_aliases_and_set_defaults_in_topology`, which
+            // also rejects duplicate ids), so a direct lookup is equivalent to —
+            // and cheaper than — scanning every entry for a matching `id`.
+            None => match archived.nodes.get(node_id) {
+                Some(node) => node.deploy.as_ref().and_then(|d| d.machine.clone()),
+                None => bail!("No machine contains {}/{}", dataflow_id, node_id),
+            },
         };
 
         let daemon_ids: Vec<_> = match &machine_id {
@@ -578,7 +587,7 @@ pub(crate) async fn retrieve_logs(
         running_dataflows
             .get(&dataflow_id)
             .map(|d| &d.node_to_daemon),
-        archived_dataflows.get(&dataflow_id).map(|d| &d.nodes),
+        archived_dataflows.get(&dataflow_id),
         dataflow_id,
         &node_id,
         daemon_connections,
@@ -913,6 +922,67 @@ mod tests {
         )
         .expect_err("a node absent from the dataflow must error");
         assert!(err.to_string().contains("ghost"), "got: {err}");
+    }
+
+    fn archived(node_to_daemon: BTreeMap<NodeId, DaemonId>) -> ArchivedDataflow {
+        ArchivedDataflow {
+            name: None,
+            nodes: BTreeMap::new(),
+            node_to_daemon,
+            spawn_error: None,
+        }
+    }
+
+    #[test]
+    fn archived_logs_use_the_daemon_the_node_ran_on() {
+        // The node was placed on the named daemon `gpu-box` (by
+        // `deploy.labels` or `dora node add`), not by `deploy.machine`. The
+        // machine-based derivation would pick the unnamed daemon instead.
+        let node = NodeId::from("detector".to_string());
+        let gpu_box = DaemonId::new(Some("gpu-box".to_string()));
+        let unnamed = DaemonId::new(None);
+
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(gpu_box.clone(), dummy_connection());
+        daemon_connections.add(unnamed.clone(), dummy_connection());
+
+        let archived = archived(BTreeMap::from([(node.clone(), gpu_box.clone())]));
+        let resolved = resolve_log_daemon_id(
+            None,
+            Some(&archived),
+            Uuid::nil(),
+            &node,
+            &daemon_connections,
+        )
+        .expect("archived node must resolve to the daemon it ran on");
+        assert_eq!(resolved, gpu_box);
+    }
+
+    #[test]
+    fn archived_logs_follow_a_daemon_that_reconnected() {
+        // The daemon that ran the node disconnected after the dataflow
+        // finished and re-registered for the same machine under a new id. Its
+        // stale id must not be returned, and the node's `deploy.machine` (none
+        // here) must not send the request to the unnamed daemon.
+        let node = NodeId::from("detector".to_string());
+        let gone = DaemonId::new(Some("gpu-box".to_string()));
+        let reconnected = DaemonId::new(Some("gpu-box".to_string()));
+        let unnamed = DaemonId::new(None);
+
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(reconnected.clone(), dummy_connection());
+        daemon_connections.add(unnamed, dummy_connection());
+
+        let archived = archived(BTreeMap::from([(node.clone(), gone)]));
+        let resolved = resolve_log_daemon_id(
+            None,
+            Some(&archived),
+            Uuid::nil(),
+            &node,
+            &daemon_connections,
+        )
+        .expect("the reconnected daemon must be found");
+        assert_eq!(resolved, reconnected);
     }
 
     #[test]
