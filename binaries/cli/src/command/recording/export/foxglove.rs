@@ -13,11 +13,10 @@
 //! metadata names, because nodes often forward a camera's metadata onto
 //! outputs that are not images.
 use std::collections::HashMap;
-use std::io::Cursor;
 
 use arrow::array::{Array, ArrayRef, AsArray};
 use arrow::datatypes::{DataType, UInt8Type};
-use arrow::ipc::reader::StreamReader;
+use arrow::ipc::reader::StreamDecoder;
 use base64::Engine as _;
 use dora_message::metadata::{Metadata, Parameter};
 
@@ -590,17 +589,30 @@ fn is_avif(data: &[u8]) -> bool {
 
 /// The single array a dora output carries: column 0 of the one record batch
 /// in its Arrow IPC payload.
+///
+/// `StreamDecoder` only ever takes the bytes that are there, so a corrupt
+/// length in a damaged recording is an error rather than a huge allocation or
+/// a panic, which `StreamReader` would give (it allocates `bodyLength` up
+/// front). Recordings have no checksum, and `--schema arrow` copies such a
+/// payload without trouble.
 fn decode(data: Option<&[u8]>) -> Result<ArrayRef, String> {
     let data = data.ok_or_else(|| "message has no payload".to_string())?;
-    let mut reader = StreamReader::try_new(Cursor::new(data), None)
-        .map_err(|err| format!("payload is not an Arrow IPC stream: {err}"))?;
-    let batch = reader
-        .next()
-        .ok_or_else(|| "payload has no record batch".to_string())?
-        .map_err(|err| format!("failed to read the payload: {err}"))?;
-    if reader.next().is_some() {
-        return Err("payload has more than one record batch".to_string());
+    let invalid =
+        |err: arrow::error::ArrowError| format!("payload is not an Arrow IPC stream: {err}");
+    let mut decoder = StreamDecoder::new();
+    let mut buffer = arrow::buffer::Buffer::from(data);
+    let mut batches = Vec::new();
+    while !buffer.is_empty() {
+        if let Some(batch) = decoder.decode(&mut buffer).map_err(invalid)? {
+            batches.push(batch);
+        }
     }
+    decoder.finish().map_err(invalid)?;
+    let batch = match <[_; 1]>::try_from(batches) {
+        Ok([batch]) => batch,
+        Err(batches) if batches.is_empty() => return Err("payload has no record batch".to_string()),
+        Err(_) => return Err("payload has more than one record batch".to_string()),
+    };
     if batch.num_columns() != 1 {
         return Err(format!("expected one column, got {}", batch.num_columns()));
     }

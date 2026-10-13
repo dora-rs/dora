@@ -2370,6 +2370,68 @@ mod tests {
         assert_eq!(json["format"], "jpeg");
     }
 
+    /// `payload` with the record batch's `bodyLength` corrupted (sign bit
+    /// flipped), as one bad bit on disk would do: recordings have no checksum.
+    fn corrupt_body_length(payload: &[u8]) -> Vec<u8> {
+        let mut out = payload.to_vec();
+        let mut offset = 0;
+        while offset + 8 <= out.len() {
+            let len = i32::from_le_bytes(out[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            let start = offset + 8;
+            let message = arrow::ipc::root_as_message(&out[start..start + len]).unwrap();
+            let body = message.bodyLength();
+            if message.header_type() == arrow::ipc::MessageHeader::RecordBatch {
+                let needle = body.to_le_bytes();
+                let at = out[start..start + len]
+                    .windows(8)
+                    .position(|window| window == needle)
+                    .expect("bodyLength in the message");
+                let corrupt = (body ^ i64::MIN).to_le_bytes();
+                out[start + at..start + at + 8].copy_from_slice(&corrupt);
+                return out;
+            }
+            offset = start + len + body as usize;
+        }
+        panic!("no record batch in the payload");
+    }
+
+    /// A corrupt payload must not crash the export (`--schema arrow` copies it
+    /// fine): undeclared it stays Arrow unchanged, declared it is dropped and
+    /// reported.
+    #[test]
+    fn foxglove_survives_a_corrupt_payload() {
+        use arrow::array::UInt8Array;
+        let bad = corrupt_body_length(&ipc_bytes(std::sync::Arc::new(UInt8Array::from(vec![
+            7u8;
+            12
+        ]))));
+        let undeclared = export_messages(
+            "nodes: []",
+            vec![(
+                "cam",
+                "image",
+                output_event_bytes_with_params("cam", "image", &bad, &camera_params(2, 2, "rgb8")),
+            )],
+        );
+        assert_eq!(undeclared.len(), 1);
+        assert_eq!(undeclared[0].1, "arrow-ipc");
+        assert_eq!(undeclared[0].3, bad);
+        let declared = export_messages(
+            CAMERA_DESCRIPTOR,
+            vec![(
+                "camera",
+                "image",
+                output_event_bytes_with_params(
+                    "camera",
+                    "image",
+                    &bad,
+                    &camera_params(2, 2, "rgb8"),
+                ),
+            )],
+        );
+        assert!(declared.is_empty());
+    }
+
     /// dora reads an `output_types` value that isn't a string (`scores:` with
     /// nothing, `~`, `5`, `true`) as a malformed type: the output is declared,
     /// so it is never guessed to be an image.
