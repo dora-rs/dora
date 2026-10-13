@@ -189,6 +189,13 @@ impl Action {
         let result_type_raw_str = result_type_raw.to_string();
         let feedback_type_raw_str = feedback_type_raw.to_string();
 
+        let client_backend = format_ident!("ActionClientBackend__{package_name}__{}", self.name);
+        let zenoh_client = quote! {
+            dora_ros2_bridge::transport::action::zenoh::TypedActionClient<
+                ffi::#goal_type_raw, ffi::#result_type_raw, ffi::#feedback_type_raw
+            >
+        };
+
         // Pick the ROS2 service mapping based on RMW_IMPLEMENTATION /
         // ROS_DISTRO at codegen time. See dora-rs/dora#449.
         let ros_service_mapping = crate::detect_ros_service_mapping_ident();
@@ -306,139 +313,207 @@ impl Action {
                 use futures::StreamExt as _;
                 use std::sync::Arc;
 
-                let client = node.dds_node_mut()?.create_action_client::< action :: #self_name >(
-                    crate::ros2_client::ServiceMapping:: #ros_service_mapping,
-                    &crate::ros2_client::Name::new(name_space, base_name)
-                        .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?,
-                    &crate::ros2_client::ActionTypeName::new(#package_name, #self_name_str),
-                    qos.into(),
-                ).map_err(|e| eyre::eyre!("{e:?}"))?;
-                let client = Arc::new(client);
-                let (result_tx, result_rx) = flume::bounded(1);
+                let name = crate::ros2_client::Name::new(name_space, base_name)
+                    .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?;
+                let (result_tx, result_rx) = flume::bounded::<eyre::Result<#result_event_name>>(1);
 
-                let result_stream = result_rx.into_stream()
-                    .map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                let result_id = events.events.merge(Box::pin(result_stream));
+                let (backend, feedback_id, status_id) = match &mut node.node {
+                    GeneratedNode::Dds(dds_node) => {
+                        let client = dds_node.create_action_client::< action :: #self_name >(
+                            crate::ros2_client::ServiceMapping:: #ros_service_mapping,
+                            &name,
+                            &crate::ros2_client::ActionTypeName::new(#package_name, #self_name_str),
+                            qos.into(),
+                        ).map_err(|e| eyre::eyre!("{e:?}"))?;
+                        let client = Arc::new(client);
+                        // GetResult request ids this client has sent and not yet matched to a
+                        // response, each paired with the goal it belongs to.
+                        let pending: Arc<std::sync::Mutex<Vec<(crate::ros2_client::service::RmwRequestId, ffi::ActionGoalId)>>> =
+                            Arc::new(std::sync::Mutex::new(Vec::new()));
 
-                // GetResult request ids this client has sent and not yet matched to a
-                // response, each paired with the goal it belongs to.
-                let pending: Arc<std::sync::Mutex<Vec<(crate::ros2_client::service::RmwRequestId, ffi::ActionGoalId)>>> =
-                    Arc::new(std::sync::Mutex::new(Vec::new()));
-
-                // dora #1972 (same class as #1970): one GetResult response pump that
-                // demuxes by request id. ros2-client's `async_request_result` discards
-                // responses whose id does not match, so a per-goal receiver lets
-                // concurrent goals steal each other's results; one pump avoids that.
-                {
-                    let client = Arc::clone(&client);
-                    let pending = pending.clone();
-                    let result_tx = result_tx.clone();
-                    std::thread::spawn(move || {
-                        loop {
-                            if result_tx.is_disconnected() {
-                                break;
-                            }
-                            // SAFETY: the `&mut`-via-ptr cast mirrors the feedback stream
-                            // above — `result_client(&mut self)` only needs `&mut` to hand
-                            // back the sub-client, and `receive_response` itself takes &self.
-                            // Only this pump thread receives. The concurrent &self
-                            // `send_request` from `request_result` is data-race-free on the
-                            // ros2-client `Client` (disjoint request/response paths + atomic
-                            // sequence ids) — the same concurrency the #1971 service pump relies on.
-                            let recv = unsafe {
-                                let ptr = Arc::as_ptr(&client)
-                                    as *mut crate::ros2_client::action::ActionClient< action :: #self_name >;
-                                (&mut *ptr).result_client().receive_response()
-                            };
-                            match recv {
-                                Ok(Some((req_id, response))) => {
-                                    // Route the response to its goal; drop responses we
-                                    // have no pending request for (they belong to another
-                                    // client sharing the topic).
-                                    let goal_id = match pending.lock() {
-                                        Ok(mut guard) => guard
-                                            .iter()
-                                            .position(|(pid, _)| *pid == req_id)
-                                            .map(|pos| guard.remove(pos).1),
-                                        Err(_) => None,
+                        // dora #1972 (same class as #1970): one GetResult response pump that
+                        // demuxes by request id. ros2-client's `async_request_result` discards
+                        // responses whose id does not match, so a per-goal receiver lets
+                        // concurrent goals steal each other's results; one pump avoids that.
+                        {
+                            let client = Arc::clone(&client);
+                            let pending = pending.clone();
+                            let result_tx = result_tx.clone();
+                            std::thread::spawn(move || {
+                                loop {
+                                    if result_tx.is_disconnected() {
+                                        break;
+                                    }
+                                    // SAFETY: the `&mut`-via-ptr cast mirrors the feedback stream
+                                    // above — `result_client(&mut self)` only needs `&mut` to hand
+                                    // back the sub-client, and `receive_response` itself takes &self.
+                                    // Only this pump thread receives. The concurrent &self
+                                    // `send_request` from `request_result` is data-race-free on the
+                                    // ros2-client `Client` (disjoint request/response paths + atomic
+                                    // sequence ids) — the same concurrency the #1971 service pump relies on.
+                                    let recv = unsafe {
+                                        let ptr = Arc::as_ptr(&client)
+                                            as *mut crate::ros2_client::action::ActionClient< action :: #self_name >;
+                                        (&mut *ptr).result_client().receive_response()
                                     };
-                                    if let Some(goal_id) = goal_id {
-                                        let status: ffi::ActionStatusEnum = response.status.into();
-                                        let event = #result_event_name {
-                                            goal_id,
-                                            status,
-                                            result: response.result,
-                                        };
-                                        if result_tx.send(Ok(event)).is_err() {
-                                            break;
+                                    match recv {
+                                        Ok(Some((req_id, response))) => {
+                                            // Route the response to its goal; drop responses we
+                                            // have no pending request for (they belong to another
+                                            // client sharing the topic).
+                                            let goal_id = match pending.lock() {
+                                                Ok(mut guard) => guard
+                                                    .iter()
+                                                    .position(|(pid, _)| *pid == req_id)
+                                                    .map(|pos| guard.remove(pos).1),
+                                                Err(_) => None,
+                                            };
+                                            if let Some(goal_id) = goal_id {
+                                                let status: ffi::ActionStatusEnum = response.status.into();
+                                                let event = #result_event_name {
+                                                    goal_id,
+                                                    status,
+                                                    result: response.result,
+                                                };
+                                                if result_tx.send(Ok(event)).is_err() {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        Ok(None) => {
+                                            std::thread::sleep(std::time::Duration::from_millis(2));
+                                        }
+                                        Err(e) => {
+                                            let _ = result_tx.send(Err(eyre::eyre!(
+                                                "failed to receive action result: {e:?}"
+                                            )));
+                                            std::thread::sleep(std::time::Duration::from_millis(2));
                                         }
                                     }
                                 }
-                                Ok(None) => {
-                                    std::thread::sleep(std::time::Duration::from_millis(2));
-                                }
-                                Err(e) => {
-                                    let _ = result_tx.send(Err(eyre::eyre!(
-                                        "failed to receive action result: {e:?}"
-                                    )));
-                                    std::thread::sleep(std::time::Duration::from_millis(2));
-                                }
-                            }
+                            });
                         }
-                    });
-                }
 
-                let feedback_id = {
-                    let stream = futures_lite::stream::unfold(Arc::clone(&client), |client| async {
-                        // SAFETY:
-                        // The ros2_client crate only provides &mut access to the feedback subscription, but
-                        // the mutable permission is not required at all.
-                        // There is no other position that will access the feedback subscription.
-                        // There is no modification on the feedback_subscription.
-                        // The Arc ensures the client is not dropped while the stream is active.
-                        // The async_take() method only requires immutable access to the subscription struct.
-                        let item = unsafe {
-                            let ptr = Arc::as_ptr(&client) as *mut crate::ros2_client::action::ActionClient< action :: #self_name>;
-                            let sub = (&mut *ptr).feedback_subscription();
-                            sub.async_take().await
-                        };
-                        let item = item.map(
-                            |(crate::ros2_client::action::FeedbackMessage {goal_id, feedback}, _msg_info)| {
-                                Box::new(#feedback_event_name {
-                                    goal_id: ActionGoalId { id: goal_id },
-                                    feedback
-                                })
-                            }
-                        ).map_err(|e| eyre::eyre!("Failed to read feedback: {}", e));
-                        let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
-                        Some((item_boxed, client))
-                    });
-                    events.events.merge(Box::pin(stream))
-                };
-
-                let status_id = {
-                    let client = Arc::clone(&client);
-                    let stream = futures_lite::stream::unfold(client, |client| async {
-                        Some((client.async_receive_status().await, client))
-                    }).filter_map(|status_res| async {
-                        if let Ok(status_arr) = status_res {
-                            Some(futures::stream::iter(status_arr.status_list.into_iter().map(|goal_status| {
-                                let item = #status_event_name {
-                                    goal_id: ActionGoalId { id: goal_status.goal_info.goal_id },
-                                    status: goal_status.status.into()
+                        let feedback_id = {
+                            let stream = futures_lite::stream::unfold(Arc::clone(&client), |client| async {
+                                // SAFETY:
+                                // The ros2_client crate only provides &mut access to the feedback subscription, but
+                                // the mutable permission is not required at all.
+                                // There is no other position that will access the feedback subscription.
+                                // There is no modification on the feedback_subscription.
+                                // The Arc ensures the client is not dropped while the stream is active.
+                                // The async_take() method only requires immutable access to the subscription struct.
+                                let item = unsafe {
+                                    let ptr = Arc::as_ptr(&client) as *mut crate::ros2_client::action::ActionClient< action :: #self_name>;
+                                    let sub = (&mut *ptr).feedback_subscription();
+                                    sub.async_take().await
                                 };
-                                Box::new(item) as Box<dyn std::any::Any + 'static>
-                            })))
-                        } else {
-                            None
-                        }
-                    }).flatten();
-                    events.events.merge(Box::pin(stream))
+                                let item = item.map(
+                                    |(crate::ros2_client::action::FeedbackMessage {goal_id, feedback}, _msg_info)| {
+                                        Box::new(#feedback_event_name {
+                                            goal_id: ActionGoalId { id: goal_id },
+                                            feedback
+                                        })
+                                    }
+                                ).map_err(|e| eyre::eyre!("Failed to read feedback: {}", e));
+                                let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
+                                Some((item_boxed, client))
+                            });
+                            events.events.merge(Box::pin(stream))
+                        };
+
+                        let status_id = {
+                            let client = Arc::clone(&client);
+                            let stream = futures_lite::stream::unfold(client, |client| async {
+                                Some((client.async_receive_status().await, client))
+                            }).filter_map(|status_res| async {
+                                if let Ok(status_arr) = status_res {
+                                    Some(futures::stream::iter(status_arr.status_list.into_iter().map(|goal_status| {
+                                        let item = #status_event_name {
+                                            goal_id: ActionGoalId { id: goal_status.goal_info.goal_id },
+                                            status: goal_status.status.into()
+                                        };
+                                        Box::new(item) as Box<dyn std::any::Any + 'static>
+                                    })))
+                                } else {
+                                    None
+                                }
+                            }).flatten();
+                            events.events.merge(Box::pin(stream))
+                        };
+                        (#client_backend::Dds { client, pending }, feedback_id, status_id)
+                    }
+                    #[cfg(feature = "rmw-zenoh")]
+                    GeneratedNode::Zenoh { node: zenoh_node, compatibility } => {
+                        use dora_ros2_bridge::transport::{action::zenoh::ActionCallError, zenoh::pubsub::PubSubError};
+
+                        // The feedback subscription is the one endpoint whose QoS
+                        // changes what this client receives; the status topic
+                        // always uses the fixed action status QoS.
+                        let feedback_qos = neutral_qos(&qos.feedback_subscription)?;
+                        let (keys, tokens) = dora_ros2_bridge::transport::action::zenoh::resolve_action_endpoints(
+                            zenoh_node.domain(),
+                            *compatibility,
+                            &name.to_string(),
+                            #package_name,
+                            #self_name_str,
+                            &feedback_qos,
+                            &dora_ros2_bridge::transport::zenoh::compatibility::TypeDescriptionResolver::from_ament_prefix_path(),
+                        )?;
+                        let client = Arc::new(futures::executor::block_on(<#zenoh_client>::declare(
+                            zenoh_node,
+                            &keys,
+                            tokens,
+                            &feedback_qos,
+                            ZENOH_ACTION_MAX_PAYLOAD,
+                        ))?);
+
+                        // Both streams end when the subscription closes, instead of
+                        // yielding the same error forever.
+                        let feedback_id = {
+                            let stream = futures_lite::stream::unfold(Arc::clone(&client), |client| async move {
+                                let item = match client.recv_feedback().await {
+                                    Ok((goal_id, feedback)) => Ok(Box::new(#feedback_event_name {
+                                        goal_id: ActionGoalId { id: goal_id },
+                                        feedback,
+                                    })),
+                                    Err(ActionCallError::Topic(PubSubError::Closed)) => return None,
+                                    Err(e) => Err(eyre::eyre!("Failed to read feedback: {e}")),
+                                };
+                                let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
+                                Some((item_boxed, client))
+                            });
+                            events.events.merge(Box::pin(stream))
+                        };
+
+                        let status_id = {
+                            let stream = futures_lite::stream::unfold(Arc::clone(&client), |client| async move {
+                                match client.recv_status().await {
+                                    Err(ActionCallError::Topic(PubSubError::Closed)) => None,
+                                    status => Some((status, client)),
+                                }
+                            }).filter_map(|status| async {
+                                // Like the DDS stream, skip status messages that fail to decode.
+                                status.ok().map(|status_list| futures::stream::iter(status_list.into_iter().map(|goal_status| {
+                                    let item = #status_event_name {
+                                        goal_id: ActionGoalId { id: goal_status.goal_info.goal_id },
+                                        status: goal_status.status.into(),
+                                    };
+                                    Box::new(item) as Box<dyn std::any::Any + 'static>
+                                })))
+                            }).flatten();
+                            events.events.merge(Box::pin(stream))
+                        };
+
+                        (#client_backend::Zenoh { client, result_tx, executor: node.executor.clone() }, feedback_id, status_id)
+                    }
                 };
+                let result_stream = result_rx.into_stream()
+                    .map(|v| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let result_id = events.events.merge(Box::pin(result_stream));
 
                 Ok(Box::new(#client_name {
-                    client,
-                    pending,
+                    backend,
                     result_id,
                     feedback_id,
                     status_id,
@@ -447,11 +522,25 @@ impl Action {
 
             #[allow(non_camel_case_types)]
             pub struct #client_name {
-                client: std::sync::Arc<crate::ros2_client::action::ActionClient< action :: #self_name>>,
-                pending: std::sync::Arc<std::sync::Mutex<Vec<(crate::ros2_client::service::RmwRequestId, ffi::ActionGoalId)>>>,
+                backend: #client_backend,
                 result_id: u32,
                 feedback_id: u32,
                 status_id: u32,
+            }
+
+            #[allow(non_camel_case_types)]
+            enum #client_backend {
+                Dds {
+                    client: std::sync::Arc<crate::ros2_client::action::ActionClient< action :: #self_name>>,
+                    pending: std::sync::Arc<std::sync::Mutex<Vec<(crate::ros2_client::service::RmwRequestId, ffi::ActionGoalId)>>>,
+                },
+                #[cfg(feature = "rmw-zenoh")]
+                Zenoh {
+                    client: std::sync::Arc<#zenoh_client>,
+                    // `request_result` answers come back through the result stream.
+                    result_tx: flume::Sender<eyre::Result<#result_event_name>>,
+                    executor: std::sync::Arc<futures::executor::ThreadPool>,
+                },
             }
 
             #[allow(non_camel_case_types)]
@@ -527,7 +616,22 @@ impl Action {
                         Some(core::time::Duration::from_nanos(timeout))
                     };
 
-                    let client_ref = &self.client;
+                    let client_ref = match &self.backend {
+                        #client_backend::Dds { client, .. } => client,
+                        #[cfg(feature = "rmw-zenoh")]
+                        #client_backend::Zenoh { client, .. } => {
+                            // A timeout of 0 means "wait as long as it takes", as on
+                            // DDS; GET_RESULT_TIMEOUT is that "forever" for a Zenoh call.
+                            let timeout = timeout.unwrap_or(dora_ros2_bridge::transport::action::zenoh::GET_RESULT_TIMEOUT);
+                            return match futures::executor::block_on(client.send_goal(&request, timeout)) {
+                                Ok(goal_id) => Ok(Box::new(ffi::ActionGoalId { id: goal_id })),
+                                Err(dora_ros2_bridge::transport::action::zenoh::ActionCallError::Rejected) => {
+                                    Err(eyre::eyre!("Goal was rejected by the server."))
+                                }
+                                Err(e) => Err(eyre::eyre!("Failed to send goal: {e}")),
+                            };
+                        }
+                    };
                     let send_goal_fut = async move {
                         let send_fut = client_ref.async_send_goal(request);
                         futures::pin_mut!(send_fut);
@@ -553,6 +657,21 @@ impl Action {
 
                 #[allow(non_snake_case)]
                 fn #wait_for_action(&self, node: &Box<Ros2Node>) -> eyre::Result<()> {
+                    let client = match &self.backend {
+                        #client_backend::Dds { client, .. } => client,
+                        #[cfg(feature = "rmw-zenoh")]
+                        #client_backend::Zenoh { client, .. } => {
+                            let GeneratedNode::Zenoh { node: zenoh_node, .. } = &node.node else {
+                                eyre::bail!("action client belongs to a different ROS2 transport");
+                            };
+                            // Same 20 s budget as the DDS loop below (10 x 2 s).
+                            return futures::executor::block_on(client.wait_for_server(
+                                zenoh_node,
+                                std::time::Instant::now() + std::time::Duration::from_secs(20),
+                            ))
+                            .map_err(|e| eyre::eyre!("action server not available: {e}"));
+                        }
+                    };
                     // Wait for every part of the action server, like
                     // `rcl_action_server_is_available`: the goal, result and
                     // cancel services and the feedback and status publishers.
@@ -561,7 +680,6 @@ impl Action {
                     // right after `send_goal` vanish, leaving the client without
                     // a result and the server blocked in `send_result`.
                     let dds_node = node.dds_node()?;
-                    let client = &self.client;
                     let server_ready = async {
                         for _ in 0..10 {
                             let ready = async {
@@ -596,8 +714,22 @@ impl Action {
                     // (the goal transitions to GoalStatusEnum::Canceled
                     // once the server acknowledges).
                     let goal_id = goal_id.id;
-                    self.client.cancel_goal(goal_id)
-                        .map_err(|e| eyre::eyre!("Failed to cancel goal: {:?}", e))?;
+                    match &self.backend {
+                        #client_backend::Dds { client, .. } => {
+                            client.cancel_goal(goal_id)
+                                .map_err(|e| eyre::eyre!("Failed to cancel goal: {:?}", e))?;
+                        }
+                        #[cfg(feature = "rmw-zenoh")]
+                        #client_backend::Zenoh { client, executor, .. } => {
+                            use futures::task::SpawnExt as _;
+                            let client = client.clone();
+                            executor.spawn(async move {
+                                if let Err(e) = client.cancel_goal(goal_id, SERVICE_RESPONSE_TIMEOUT).await {
+                                    eprintln!(concat!("failed to cancel ", #self_name_str, " goal: {}"), e);
+                                }
+                            }).map_err(|e| eyre::eyre!("Failed to cancel goal: {e}"))?;
+                        }
+                    }
                     Ok(())
                 }
 
@@ -611,12 +743,31 @@ impl Action {
                     // request id, instead of a per-goal receiver that would steal other
                     // goals' responses.
                     let goal_id = (**goal_id).clone();
-                    let mut pending = self
-                        .pending
+                    let (client, pending) = match &self.backend {
+                        #client_backend::Dds { client, pending } => (client, pending),
+                        // Each request waits for its own goal's result, so there
+                        // is nothing to demultiplex on Zenoh.
+                        #[cfg(feature = "rmw-zenoh")]
+                        #client_backend::Zenoh { client, result_tx, executor } => {
+                            use futures::task::SpawnExt as _;
+                            let client = client.clone();
+                            let result_tx = result_tx.clone();
+                            return executor.spawn(async move {
+                                let result = client.get_result(goal_id.id).await
+                                    .map(|(status, result)| #result_event_name {
+                                        goal_id,
+                                        status: status.into(),
+                                        result,
+                                    })
+                                    .map_err(|e| eyre::eyre!("failed to receive action result: {e}"));
+                                let _ = result_tx.send_async(result).await;
+                            }).map_err(|e| eyre::eyre!("Failed to request result: {e}"));
+                        }
+                    };
+                    let mut pending = pending
                         .lock()
                         .map_err(|_| eyre::eyre!("action client result state poisoned"))?;
-                    let req_id = self
-                        .client
+                    let req_id = client
                         .request_result(goal_id.id)
                         .map_err(|e| eyre::eyre!("Failed to request result: {:?}", e))?;
                     pending.push((req_id, goal_id));
@@ -709,8 +860,8 @@ impl Action {
     /// existing shared cxx type) carries the goal id across the FFI.
     ///
     /// The handle map is bounded two ways so a C++ server that abandons goals
-    /// cannot wedge: goals past `MAX_CONCURRENT_GOALS` in flight are rejected,
-    /// and a goal not finished within `GOAL_TIMEOUT` is aborted + evicted.
+    /// cannot wedge: goals past `ACTION_MAX_CONCURRENT_GOALS` in flight are rejected,
+    /// and a goal not finished within `ACTION_GOAL_TIMEOUT` is aborted + evicted.
     /// `send_result` is itself time-bounded so a never-arriving client
     /// get_result request can't freeze the caller's event loop.
     pub fn cxx_action_server_creation_functions(
@@ -751,6 +902,13 @@ impl Action {
 
         let ros_service_mapping = crate::detect_ros_service_mapping_ident();
 
+        let server_backend = format_ident!("ActionServerBackend__{package_name}__{}", self.name);
+        let zenoh_server = quote! {
+            dora_ros2_bridge::transport::action::zenoh::TypedActionServer<
+                ffi::#goal_type_raw, ffi::#result_type_raw, ffi::#feedback_type_raw
+            >
+        };
+
         let def = quote! {
             #[namespace = #package_name]
             #[cxx_name = #cxx_goal_event]
@@ -788,133 +946,178 @@ impl Action {
                 use futures::StreamExt as _;
                 use std::sync::Arc;
 
-                // One QoS profile for all five action endpoints (mirrors the
-                // native Rust action-server example).
-                let q: crate::rustdds::QosPolicies = qos.into();
-                let server = node.dds_node_mut()?.create_action_server::< action :: #self_name >(
-                    crate::ros2_client::ServiceMapping:: #ros_service_mapping,
-                    &crate::ros2_client::Name::new(name_space, base_name)
-                        .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?,
-                    &crate::ros2_client::ActionTypeName::new(#package_name, #self_name_str),
-                    crate::ros2_client::action::ActionServerQosPolicies {
-                        goal_service: q.clone(),
-                        result_service: q.clone(),
-                        cancel_service: q.clone(),
-                        feedback_publisher: q.clone(),
-                        status_publisher: q,
-                    },
-                ).map_err(|e| eyre::eyre!("{e:?}"))?;
-                let server = Arc::new(crate::ros2_client::action::AsyncActionServer::new(server));
-                // goal id (uuid string) -> (handle, accept time) for dispatching
-                // feedback/result. The accept time bounds the map: a goal whose
-                // C++ handler never calls `send_result` (crash, early return,
-                // abandoned goal) is aborted after a timeout so the server cannot
-                // wedge at the in-flight cap.
-                let executing: Arc<std::sync::Mutex<std::collections::HashMap<String, (crate::ros2_client::action::ExecutingGoalHandle< ffi :: #goal_type_raw >, std::time::Instant)>>> =
-                    Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-                let (goal_tx, goal_rx) = flume::bounded(16);
-                let stream = goal_rx.into_stream().map(|v: eyre::Result<(ffi::ActionGoalId, ffi::#goal_type_raw)>| Box::new(v) as Box<dyn std::any::Any + 'static>);
-                let id = events.events.merge(Box::pin(stream));
+                let name = crate::ros2_client::Name::new(name_space, base_name)
+                    .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?;
+                let (backend, stream_id) = match &mut node.node {
+                    GeneratedNode::Dds(dds_node) => {
+                        // One QoS profile for all five action endpoints (mirrors the
+                        // native Rust action-server example).
+                        let q: crate::rustdds::QosPolicies = qos.into();
+                        let server = dds_node.create_action_server::< action :: #self_name >(
+                            crate::ros2_client::ServiceMapping:: #ros_service_mapping,
+                            &name,
+                            &crate::ros2_client::ActionTypeName::new(#package_name, #self_name_str),
+                            crate::ros2_client::action::ActionServerQosPolicies {
+                                goal_service: q.clone(),
+                                result_service: q.clone(),
+                                cancel_service: q.clone(),
+                                feedback_publisher: q.clone(),
+                                status_publisher: q,
+                            },
+                        ).map_err(|e| eyre::eyre!("{e:?}"))?;
+                        let server = Arc::new(crate::ros2_client::action::AsyncActionServer::new(server));
+                        // goal id (uuid string) -> (handle, accept time) for dispatching
+                        // feedback/result. The accept time bounds the map: a goal whose
+                        // C++ handler never calls `send_result` (crash, early return,
+                        // abandoned goal) is aborted after a timeout so the server cannot
+                        // wedge at the in-flight cap.
+                        let executing: Arc<std::sync::Mutex<std::collections::HashMap<String, (crate::ros2_client::action::ExecutingGoalHandle< ffi :: #goal_type_raw >, std::time::Instant)>>> =
+                            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+                        let (goal_tx, goal_rx) = flume::bounded(16);
+                        let stream = goal_rx.into_stream().map(|v: eyre::Result<(ffi::ActionGoalId, ffi::#goal_type_raw)>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                        let stream_id = events.events.merge(Box::pin(stream));
 
-                // Goal pump: receive -> (bound check) accept -> execute -> store
-                // handle -> forward to C++. Runs on a dedicated thread (not the
-                // node executor) so it never competes with the spinner that
-                // announces + drives the action services -- on a thread-starved
-                // executor the spinner could otherwise be blocked, leaving the
-                // server undiscoverable.
-                {
-                    const MAX_CONCURRENT_GOALS: usize = 16;
-                    // A goal whose C++ handler never finishes it is aborted after
-                    // this long, so abandoned goals can't wedge the server at the
-                    // cap. Matches the daemon's ACTION_RESULT_TIMEOUT.
-                    const GOAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-                    let server = server.clone();
-                    let executing = executing.clone();
-                    std::thread::spawn(move || futures::executor::block_on(async move {
-                        loop {
-                            if goal_tx.is_disconnected() {
-                                break;
-                            }
-                            let new_goal = match server.receive_new_goal().await {
-                                Ok(h) => h,
-                                Err(e) => {
-                                    eprintln!("action server: failed to receive goal: {e:?}");
-                                    // Back off so a persistent receive error can't
-                                    // busy-spin / flood the log.
-                                    futures_timer::Delay::new(std::time::Duration::from_millis(2)).await;
-                                    continue;
+                        // Goal pump: receive -> (bound check) accept -> execute -> store
+                        // handle -> forward to C++. Runs on a dedicated thread (not the
+                        // node executor) so it never competes with the spinner that
+                        // announces + drives the action services -- on a thread-starved
+                        // executor the spinner could otherwise be blocked, leaving the
+                        // server undiscoverable.
+                        {
+                            let server = server.clone();
+                            let executing = executing.clone();
+                            std::thread::spawn(move || futures::executor::block_on(async move {
+                                loop {
+                                    if goal_tx.is_disconnected() {
+                                        break;
+                                    }
+                                    let new_goal = match server.receive_new_goal().await {
+                                        Ok(h) => h,
+                                        Err(e) => {
+                                            eprintln!("action server: failed to receive goal: {e:?}");
+                                            // Back off so a persistent receive error can't
+                                            // busy-spin / flood the log.
+                                            futures_timer::Delay::new(std::time::Duration::from_millis(2)).await;
+                                            continue;
+                                        }
+                                    };
+                                    // Evict (abort) goals abandoned past the timeout so the
+                                    // map can't wedge at the cap, then reject if still full.
+                                    let now = std::time::Instant::now();
+                                    let stale: Vec<_> = match executing.lock() {
+                                        Ok(mut map) => {
+                                            let keys: Vec<String> = map
+                                                .iter()
+                                                .filter(|(_, (_, t))| now.duration_since(*t) >= ACTION_GOAL_TIMEOUT)
+                                                .map(|(k, _)| k.clone())
+                                                .collect();
+                                            keys.into_iter().filter_map(|k| map.remove(&k).map(|(h, _)| h)).collect()
+                                        }
+                                        Err(_) => Vec::new(),
+                                    };
+                                    for handle in stale {
+                                        eprintln!("action server: goal abandoned past timeout, aborting");
+                                        let _ = server.abort_executing_goal(handle).await;
+                                    }
+                                    let full = executing.lock().map(|m| m.len() >= ACTION_MAX_CONCURRENT_GOALS).unwrap_or(false);
+                                    if full {
+                                        eprintln!("action server: {ACTION_MAX_CONCURRENT_GOALS} goals in flight, rejecting new goal");
+                                        let _ = server.reject_goal(new_goal).await;
+                                        continue;
+                                    }
+                                    let goal_data = server.get_new_goal(new_goal.clone());
+                                    let accepted = match server.accept_goal(new_goal).await {
+                                        Ok(h) => h,
+                                        Err(e) => {
+                                            eprintln!("action server: failed to accept goal: {e:?}");
+                                            continue;
+                                        }
+                                    };
+                                    let handle = match server.start_executing_goal(accepted).await {
+                                        Ok(h) => h,
+                                        Err(e) => {
+                                            eprintln!("action server: failed to start executing goal: {e:?}");
+                                            continue;
+                                        }
+                                    };
+                                    let goal_id = handle.goal_id();
+                                    let goal = match goal_data {
+                                        Some(g) => g,
+                                        None => {
+                                            eprintln!("action server: goal had no data, aborting");
+                                            let _ = server.abort_executing_goal(handle).await;
+                                            continue;
+                                        }
+                                    };
+                                    if let Ok(mut map) = executing.lock() {
+                                        map.insert(goal_id.uuid.to_string(), (handle, std::time::Instant::now()));
+                                    }
+                                    if goal_tx.send(Ok((ffi::ActionGoalId { id: goal_id }, goal))).is_err() {
+                                        break;
+                                    }
                                 }
-                            };
-                            // Evict (abort) goals abandoned past the timeout so the
-                            // map can't wedge at the cap, then reject if still full.
-                            let now = std::time::Instant::now();
-                            let stale: Vec<_> = match executing.lock() {
-                                Ok(mut map) => {
-                                    let keys: Vec<String> = map
-                                        .iter()
-                                        .filter(|(_, (_, t))| now.duration_since(*t) >= GOAL_TIMEOUT)
-                                        .map(|(k, _)| k.clone())
-                                        .collect();
-                                    keys.into_iter().filter_map(|k| map.remove(&k).map(|(h, _)| h)).collect()
-                                }
-                                Err(_) => Vec::new(),
-                            };
-                            for handle in stale {
-                                eprintln!("action server: goal abandoned past timeout, aborting");
-                                let _ = server.abort_executing_goal(handle).await;
-                            }
-                            let full = executing.lock().map(|m| m.len() >= MAX_CONCURRENT_GOALS).unwrap_or(false);
-                            if full {
-                                eprintln!("action server: {MAX_CONCURRENT_GOALS} goals in flight, rejecting new goal");
-                                let _ = server.reject_goal(new_goal).await;
-                                continue;
-                            }
-                            let goal_data = server.get_new_goal(new_goal.clone());
-                            let accepted = match server.accept_goal(new_goal).await {
-                                Ok(h) => h,
-                                Err(e) => {
-                                    eprintln!("action server: failed to accept goal: {e:?}");
-                                    continue;
-                                }
-                            };
-                            let handle = match server.start_executing_goal(accepted).await {
-                                Ok(h) => h,
-                                Err(e) => {
-                                    eprintln!("action server: failed to start executing goal: {e:?}");
-                                    continue;
-                                }
-                            };
-                            let goal_id = handle.goal_id();
-                            let goal = match goal_data {
-                                Some(g) => g,
-                                None => {
-                                    eprintln!("action server: goal had no data, aborting");
-                                    let _ = server.abort_executing_goal(handle).await;
-                                    continue;
-                                }
-                            };
-                            if let Ok(mut map) = executing.lock() {
-                                map.insert(goal_id.uuid.to_string(), (handle, std::time::Instant::now()));
-                            }
-                            if goal_tx.send(Ok((ffi::ActionGoalId { id: goal_id }, goal))).is_err() {
-                                break;
-                            }
+                            }));
                         }
-                    }));
-                }
+                        (#server_backend::Dds { server, executing }, stream_id)
+                    }
+                    #[cfg(feature = "rmw-zenoh")]
+                    GeneratedNode::Zenoh { node: zenoh_node, compatibility } => {
+                        use futures::task::SpawnExt as _;
+
+                        let qos = neutral_qos(&qos)?;
+                        let (keys, tokens) = dora_ros2_bridge::transport::action::zenoh::resolve_action_endpoints(
+                            zenoh_node.domain(),
+                            *compatibility,
+                            &name.to_string(),
+                            #package_name,
+                            #self_name_str,
+                            &qos,
+                            &dora_ros2_bridge::transport::zenoh::compatibility::TypeDescriptionResolver::from_ament_prefix_path(),
+                        )?;
+                        // Same limits as the DDS server. The pump answers the action's
+                        // services and stops when the server object is dropped, so the
+                        // action leaves the ROS graph.
+                        let (server, pump) = futures::executor::block_on(<#zenoh_server>::declare(
+                            zenoh_node,
+                            &keys,
+                            tokens,
+                            &qos,
+                            dora_ros2_bridge::transport::action::zenoh::ActionServerOptions {
+                                max_goals: ACTION_MAX_CONCURRENT_GOALS,
+                                goal_timeout: ACTION_GOAL_TIMEOUT,
+                            },
+                        ))?;
+                        node.executor.spawn(pump).map_err(|e| eyre::eyre!("failed to spawn action server pump: {e}"))?;
+                        let stream = server.goals().clone().into_stream().map(|(goal_id, goal)| {
+                            let event: eyre::Result<(ffi::ActionGoalId, ffi::#goal_type_raw)> =
+                                Ok((ffi::ActionGoalId { id: goal_id }, goal));
+                            Box::new(event) as Box<dyn std::any::Any + 'static>
+                        });
+                        let stream_id = events.events.merge(Box::pin(stream));
+                        (#server_backend::Zenoh(server), stream_id)
+                    }
+                };
 
                 Ok(Box::new(#server_name {
-                    server,
-                    executing,
-                    stream_id: id,
+                    backend,
+                    stream_id,
                 }))
             }
 
             #[allow(non_camel_case_types)]
             pub struct #server_name {
-                server: std::sync::Arc<crate::ros2_client::action::AsyncActionServer< action :: #self_name >>,
-                executing: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (crate::ros2_client::action::ExecutingGoalHandle< ffi :: #goal_type_raw >, std::time::Instant)>>>,
+                backend: #server_backend,
                 stream_id: u32,
+            }
+
+            #[allow(non_camel_case_types)]
+            enum #server_backend {
+                Dds {
+                    server: std::sync::Arc<crate::ros2_client::action::AsyncActionServer< action :: #self_name >>,
+                    executing: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (crate::ros2_client::action::ExecutingGoalHandle< ffi :: #goal_type_raw >, std::time::Instant)>>>,
+                },
+                #[cfg(feature = "rmw-zenoh")]
+                Zenoh(#zenoh_server),
             }
 
             #[allow(non_camel_case_types)]
@@ -958,28 +1161,50 @@ impl Action {
 
                 #[allow(non_snake_case)]
                 fn #publish_feedback(&mut self, goal_id: &Box<ffi::ActionGoalId>, feedback: ffi::#feedback_type_raw) -> eyre::Result<()> {
+                    let (server, executing) = match &self.backend {
+                        #server_backend::Dds { server, executing } => (server, executing),
+                        #[cfg(feature = "rmw-zenoh")]
+                        #server_backend::Zenoh(server) => {
+                            return futures::executor::block_on(server.publish_feedback(goal_id.id, &feedback))
+                                .map_err(|e| eyre::eyre!("failed to publish feedback: {e}"));
+                        }
+                    };
                     let key = goal_id.id.uuid.to_string();
-                    let handle = self
-                        .executing
+                    let handle = executing
                         .lock()
                         .map_err(|_| eyre::eyre!("action server goal state poisoned"))?
                         .get(&key)
                         .map(|(handle, _)| handle.clone())
                         .ok_or_else(|| eyre::eyre!("no executing goal with id {key}"))?;
-                    futures::executor::block_on(self.server.publish_feedback(handle, feedback))
+                    futures::executor::block_on(server.publish_feedback(handle, feedback))
                         .map_err(|e| eyre::eyre!("failed to publish feedback: {e:?}"))?;
                     Ok(())
                 }
 
                 #[allow(non_snake_case)]
                 fn #send_result(&mut self, goal_id: &Box<ffi::ActionGoalId>, status: ffi::ActionStatusEnum, result: ffi::#result_type_raw) -> eyre::Result<()> {
+                    let (server, executing) = match &self.backend {
+                        #server_backend::Dds { server, executing } => (server, executing),
+                        // Stores the result and answers the clients already
+                        // waiting for it; later `get_result` requests are answered
+                        // from the stored result, so this doesn't block.
+                        #[cfg(feature = "rmw-zenoh")]
+                        #server_backend::Zenoh(server) => {
+                            let status = match status {
+                                ffi::ActionStatusEnum::Succeeded => crate::ros2_client::action::GoalStatusEnum::Succeeded,
+                                ffi::ActionStatusEnum::Canceled => crate::ros2_client::action::GoalStatusEnum::Canceled,
+                                _ => crate::ros2_client::action::GoalStatusEnum::Aborted,
+                            };
+                            return futures::executor::block_on(server.finish(goal_id.id, status, &result))
+                                .map_err(|e| eyre::eyre!("failed to send result: {e}"));
+                        }
+                    };
                     let key = goal_id.id.uuid.to_string();
                     // Clone the handle but KEEP the map entry until the send
                     // succeeds: on a timeout/error the goal stays recoverable (the
                     // caller can retry `send_result`) and evictable (the pump
-                    // aborts it after GOAL_TIMEOUT) rather than being orphaned.
-                    let handle = self
-                        .executing
+                    // aborts it after ACTION_GOAL_TIMEOUT) rather than being orphaned.
+                    let handle = executing
                         .lock()
                         .map_err(|_| eyre::eyre!("action server goal state poisoned"))?
                         .get(&key)
@@ -994,7 +1219,7 @@ impl Action {
                     // request; bound it (like the daemon's ACTION_RESULT_TIMEOUT)
                     // so a missing/stalled request can't freeze the caller's event
                     // loop forever.
-                    let send = self.server.send_result_response(handle, end_status, result);
+                    let send = server.send_result_response(handle, end_status, result);
                     futures::executor::block_on(async {
                         futures::pin_mut!(send);
                         let timeout = futures_timer::Delay::new(std::time::Duration::from_secs(300));
@@ -1008,7 +1233,7 @@ impl Action {
                         }
                     })?;
                     // Only drop the goal once the result was delivered.
-                    let _ = self.executing.lock().map(|mut m| m.remove(&key));
+                    let _ = executing.lock().map(|mut m| m.remove(&key));
                     Ok(())
                 }
             }
@@ -1197,5 +1422,28 @@ mod codegen_tests {
         ]
         .map(|(accessor, wait)| (accessor.to_string(), wait.to_string()));
         assert_eq!(found.waits, expected.into());
+    }
+
+    // #3764: the generated action client and server used to require DDS
+    // (`dds_node_mut()`), so they failed on the native Zenoh transport.
+    #[test]
+    fn action_client_and_server_have_a_zenoh_backend() {
+        let action = Action {
+            package: "test_pkg".to_string(),
+            name: "Fibonacci".to_string(),
+            goal: empty_msg("Fibonacci_Goal"),
+            result: empty_msg("Fibonacci_Result"),
+            feedback: empty_msg("Fibonacci_Feedback"),
+        };
+        let (_decl, imp) = action.cxx_action_creation_functions("test_pkg");
+        let client = format_valid_rust(imp);
+        assert!(client.contains("GeneratedNode::Zenoh"), "client create fn");
+        assert!(client.contains("TypedActionClient"), "client create fn");
+        assert!(!client.contains("dds_node_mut"), "client create fn");
+        let (_decl, imp) = action.cxx_action_server_creation_functions("test_pkg");
+        let server = format_valid_rust(imp);
+        assert!(server.contains("GeneratedNode::Zenoh"), "server create fn");
+        assert!(server.contains("TypedActionServer"), "server create fn");
+        assert!(!server.contains("dds_node_mut"), "server create fn");
     }
 }
