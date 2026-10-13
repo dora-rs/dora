@@ -21,6 +21,7 @@ ignore = [
     "RUSTSEC-2025-0141",  # bincode unmaintained. No longer a dora dep (migrated to postcard); now transitive via zenoh-ext 1.9 only. Waiting for zenoh to migrate. Review: 2026-09.
     "RUSTSEC-2024-0436",  # paste: transitive (safer_ffi / macro_rules_attribute). Low risk. Review: 2026-07.
     "RUSTSEC-2025-0134",  # rustls-pemfile unmaintained (thin wrapper over rustls-pki-types). Transitive via zenoh-link-commons 1.10; waiting for zenoh to migrate to rustls-pki-types PemObject. Review: 2026-12.
+    "RUSTSEC-2024-0449",  # unsafe-libyaml unmaintained (archived 2024-03; last release 0.2.11). Only via serde_yaml 0.9, used by dora-core/cli/daemon/message/node-api/runtime-api/hub-client and by zenoh-config. No safe upgrade; replacing serde_yaml is a separate migration and zenoh-config would still pull it. Review: 2027-01.
     "RUSTSEC-2026-0299",  # owned-alloc unmaintained (no release since 2018, maintainer unresponsive). Same abandoned crate as the RUSTSEC-2026-0291 waiver below; transitive via zenoh-transport -> lockfree SHM queue. No safe upgrade; waiting for Zenoh replacement. Review: 2026-12.
     # --- Temporary vulnerability waivers ---
     "RUSTSEC-2026-0291",  # owned-alloc 0.2 double-free in drop_in_place. Transitive via zenoh-transport -> lockfree SHM queue, which does not call the affected APIs. No fixed release; waiting for Zenoh replacement. Review: 2026-12.
