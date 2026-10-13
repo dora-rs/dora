@@ -582,14 +582,14 @@ exported as with `arrow`. An output counts as an image when:
   dora-hub camera nodes.
   Because nodes often forward a camera's metadata onto outputs that aren't
   images, the data has to match: `jpeg`/`png`/`webp`/`avif` frames become
-  `CompressedImage` only if their bytes are a JPEG, PNG, WebP or AVIF file
-  (the file signature decides which), and the raw encodings
+  `CompressedImage` only if their bytes start with a JPEG, PNG, WebP or AVIF
+  file signature (which also decides the format), and the raw encodings
   Foxglove lists (`rgb8`, `bgr8`, `mono8`, `mono16`, `nv12`, ...) become
   `RawImage` only if each row is exactly `width` pixels and the element type
   fits the encoding: bytes (`uint8`) for any encoding, `uint16`/`int16` for
   `mono16`/`16UC1`, `float32` for `32FC1`. A node whose frames have padded
-  rows (a decoder such as `dora-dav1d`) needs `output_types` to be exported
-  as images.
+  rows (a decoder such as `dora-dav1d`), and a `ros2:` bridge node receiving
+  `sensor_msgs/Image`, need `output_types` to be exported as images.
 
 A topic's first message decides its channel. An undeclared output whose first
 message isn't one of these stays Arrow. On an image channel, a message that

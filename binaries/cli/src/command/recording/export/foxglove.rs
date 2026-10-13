@@ -112,10 +112,10 @@ impl Mapper {
             .get("nodes")
             .and_then(|nodes| nodes.as_sequence());
         for node in nodes.into_iter().flatten() {
-            let Some(node_id) = node.get("id").and_then(|id| id.as_str()) else {
+            let Some(node_id) = node.get("id").and_then(yaml_id) else {
                 continue;
             };
-            let outputs = declared.entry(node_id.to_owned()).or_default();
+            let outputs = declared.entry(node_id).or_default();
             add_declared(outputs, node, None);
             // `dora record` and `--proxy` both record a single operator's
             // outputs without the operator id (`record.rs`
@@ -125,8 +125,8 @@ impl Mapper {
             }
             let operators = node.get("operators").and_then(|ops| ops.as_sequence());
             for operator in operators.into_iter().flatten() {
-                if let Some(operator_id) = operator.get("id").and_then(|id| id.as_str()) {
-                    add_declared(outputs, operator, Some(operator_id));
+                if let Some(operator_id) = operator.get("id").and_then(yaml_id) {
+                    add_declared(outputs, operator, Some(&operator_id));
                 }
             }
         }
@@ -196,6 +196,16 @@ impl Mapper {
     }
 }
 
+/// A node, operator or output id: dora reads a YAML number (`1:`) as the id
+/// `1`, so it counts here too.
+fn yaml_id(value: &serde_yaml::Value) -> Option<String> {
+    match value {
+        serde_yaml::Value::String(id) => Some(id.clone()),
+        serde_yaml::Value::Number(id) => Some(id.to_string()),
+        _ => None,
+    }
+}
+
 /// Records the image types in `entry`'s `output_types`, keyed by output id,
 /// prefixed with `operator_id/` for an operator.
 fn add_declared(
@@ -205,7 +215,7 @@ fn add_declared(
 ) {
     let types = entry.get("output_types").and_then(|t| t.as_mapping());
     for (output_id, urn) in types.into_iter().flatten() {
-        let (Some(output_id), Some(urn)) = (output_id.as_str(), urn.as_str()) else {
+        let (Some(output_id), Some(urn)) = (yaml_id(output_id), urn.as_str()) else {
             continue;
         };
         let key = match operator_id {
@@ -262,7 +272,7 @@ fn image_struct(
         other => return Err(format!("`encoding` must be a string, got {other}")),
     };
     if let Some(declared) = declared_encoding {
-        let same = declared == encoding
+        let same = canonical_encoding(declared) == canonical_encoding(encoding)
             || compressed_format(declared).is_some_and(|f| compressed_format(encoding) == Some(f));
         if !same {
             return Err(format!(
@@ -465,6 +475,18 @@ fn raw_bytes_per_pixel(encoding: &str) -> Option<u64> {
     }
 }
 
+/// One name per encoding, for the pairs Foxglove's RawImage lists as the same.
+fn canonical_encoding(encoding: &str) -> &str {
+    match encoding {
+        "8UC1" => "mono8",
+        "8UC3" => "bgr8",
+        "16UC1" => "mono16",
+        "uyvy" => "yuv422",
+        "yuyv" => "yuv422_yuy2",
+        other => other,
+    }
+}
+
 /// The `foxglove.CompressedImage` format for an encoding name, if it is one.
 fn compressed_format(encoding: &str) -> Option<&'static str> {
     match encoding.to_ascii_lowercase().as_str() {
@@ -487,11 +509,14 @@ fn compressed_image(
 ) -> Result<Vec<u8>, String> {
     let data = match array.as_struct_opt() {
         Some(image) => {
-            if image.len() != 1 || image.is_null(0) {
+            if image.len() != 1 {
                 return Err(format!(
                     "expected one image per message, got {}",
                     image.len()
                 ));
+            }
+            if image.is_null(0) {
+                return Err("the image is null".to_string());
             }
             image
                 .column_by_name("data")
