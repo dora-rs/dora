@@ -2219,6 +2219,157 @@ mod tests {
         assert_eq!(json["encoding"], "rgb8");
     }
 
+    fn png_bytes() -> Vec<u8> {
+        let mut png = vec![0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend([3u8; 40]);
+        png
+    }
+
+    /// Metadata names "a compressed image"; the file signature says which
+    /// format. Only a format on the declared type has to match it exactly.
+    #[test]
+    fn foxglove_forwarded_compressed_name_does_not_drop_another_format() {
+        use arrow::array::{LargeBinaryArray, UInt8Array};
+        let png = ipc_bytes(std::sync::Arc::new(UInt8Array::from(png_bytes())));
+        let png_binary = ipc_bytes(std::sync::Arc::new(LargeBinaryArray::from(vec![
+            png_bytes().as_slice(),
+        ])));
+        let messages = export_messages(
+            CAMERA_DESCRIPTOR,
+            vec![
+                // declared CompressedImage without a format
+                (
+                    "camera",
+                    "png",
+                    output_event_bytes_with_params(
+                        "camera",
+                        "png",
+                        &png_binary,
+                        &camera_params(640, 480, "jpeg"),
+                    ),
+                ),
+                // undeclared
+                (
+                    "reencoder",
+                    "image",
+                    output_event_bytes_with_params(
+                        "reencoder",
+                        "image",
+                        &png,
+                        &camera_params(640, 480, "jpeg"),
+                    ),
+                ),
+                // declared `[format=jpeg]`: has to be a JPEG
+                (
+                    "camera",
+                    "jpeg",
+                    output_event_bytes("camera", "jpeg", &png_binary),
+                ),
+            ],
+        );
+        let formats: Vec<_> = messages
+            .iter()
+            .map(|message| {
+                let json: serde_json::Value = serde_json::from_slice(&message.3).unwrap();
+                (message.0.clone(), json["format"].clone())
+            })
+            .collect();
+        assert_eq!(
+            formats,
+            vec![
+                ("camera/png".to_string(), serde_json::json!("png")),
+                ("reencoder/image".to_string(), serde_json::json!("png")),
+            ]
+        );
+    }
+
+    /// A malformed type annotation still declares the output as something:
+    /// it is never guessed to be an image.
+    #[test]
+    fn foxglove_malformed_type_is_not_treated_as_undeclared() {
+        use arrow::array::UInt8Array;
+        let jpeg = ipc_bytes(std::sync::Arc::new(UInt8Array::from(jpeg_bytes())));
+        let messages = export_messages(
+            "nodes:\n  - id: n\n    output_types:\n      scores: std/core/v1/UInt8[\n",
+            vec![(
+                "n",
+                "scores",
+                output_event_bytes_with_params(
+                    "n",
+                    "scores",
+                    &jpeg,
+                    &camera_params(640, 480, "jpeg"),
+                ),
+            )],
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].1, "arrow-ipc");
+    }
+
+    /// ROS `sensor_msgs/CompressedImage` (from `image_transport`, via the ROS 2
+    /// bridge): a struct with `format` and `data` as a list of uint8. And an
+    /// `Image` struct whose encoding contradicts the declared one is dropped.
+    #[test]
+    fn foxglove_declared_ros_compressed_struct_and_encoding_conflicts() {
+        use arrow::array::{Array, ArrayRef, ListArray, StringArray, StructArray, UInt32Array};
+        use arrow_schema::Field;
+        use std::sync::Arc;
+        let list = |bytes: Vec<u8>| -> ArrayRef {
+            Arc::new(ListArray::from_iter_primitive::<
+                arrow::datatypes::UInt8Type,
+                _,
+                _,
+            >(vec![Some(
+                bytes.into_iter().map(Some).collect::<Vec<_>>(),
+            )]))
+        };
+        let field = |name: &str, array: ArrayRef| {
+            (
+                Arc::new(Field::new(name, array.data_type().clone(), false)),
+                array,
+            )
+        };
+        let ros_compressed: ArrayRef = Arc::new(StructArray::from(vec![
+            field("format", Arc::new(StringArray::from(vec!["jpeg"]))),
+            field("data", list(jpeg_bytes())),
+        ]));
+        let rgb_struct: ArrayRef = Arc::new(StructArray::from(vec![
+            field("width", Arc::new(UInt32Array::from(vec![2]))),
+            field("height", Arc::new(UInt32Array::from(vec![2]))),
+            field("encoding", Arc::new(StringArray::from(vec!["rgb8"]))),
+            field("data", list(vec![1; 12])),
+        ]));
+        let descriptor = "nodes:
+  - id: ros
+    output_types:
+      compressed: std/media/v1/CompressedImage
+      jpeg: std/media/v1/Image[encoding=jpeg]
+";
+        let messages = export_messages(
+            descriptor,
+            vec![
+                (
+                    "ros",
+                    "compressed",
+                    output_event_bytes("ros", "compressed", &ipc_bytes(ros_compressed)),
+                ),
+                (
+                    "ros",
+                    "jpeg",
+                    output_event_bytes("ros", "jpeg", &ipc_bytes(rgb_struct)),
+                ),
+            ],
+        );
+        assert_eq!(
+            messages.len(),
+            1,
+            "the rgb8 struct on `[encoding=jpeg]` is dropped"
+        );
+        assert_eq!(messages[0].0, "ros/compressed");
+        let json: serde_json::Value = serde_json::from_slice(&messages[0].3).unwrap();
+        assert_eq!(json["format"], "jpeg");
+    }
+
     /// Once an undeclared topic's first frame converted, the channel is a
     /// Foxglove image channel, so a later frame that doesn't convert can't go
     /// on it as Arrow: it is dropped (and reported), not written.
