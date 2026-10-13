@@ -553,36 +553,40 @@ impl Action {
 
                 #[allow(non_snake_case)]
                 fn #wait_for_action(&self, node: &Box<Ros2Node>) -> eyre::Result<()> {
-                    // SAFETY:
-                    // The ros2_client crate only provides &mut access to the goal service client, but
-                    // the mutable permission is not required at all.
-                    // There is no modification on the goal service client.
-                    // The other method will access the goal service client is send_goal() which is not required
-                    // mutable access as well.
-                    // The wait_for_service() method only requires immutable access to the subscription struct.
-                    let service_client = unsafe {
-                        let ptr = std::sync::Arc::as_ptr(&self.client)
-                            as *mut crate::ros2_client::action::ActionClient< action :: #self_name >;
-                        (&mut *ptr).goal_client()
-                    };
-                    let service_ready = async {
+                    // Wait for every part of the action server, like
+                    // `rcl_action_server_is_available`: the goal, result and
+                    // cancel services and the feedback and status publishers.
+                    // A request sent before its service is matched is lost, so
+                    // waiting for the goal service alone let a `request_result`
+                    // right after `send_goal` vanish, leaving the client without
+                    // a result and the server blocked in `send_result`.
+                    let dds_node = node.dds_node()?;
+                    let client = &self.client;
+                    let server_ready = async {
                         for _ in 0..10 {
-                            let ready = service_client.wait_for_service(node.dds_node()?);
+                            let ready = async {
+                                futures::join!(
+                                    client.goal_client().wait_for_service(dds_node),
+                                    client.result_client().wait_for_service(dds_node),
+                                    client.cancel_client().wait_for_service(dds_node),
+                                    client.feedback_subscription().wait_for_publisher(dds_node),
+                                    client.status_subscription().wait_for_publisher(dds_node),
+                                )
+                            };
                             futures::pin_mut!(ready);
                             let timeout = futures_timer::Delay::new(std::time::Duration::from_secs(2));
                             match futures::future::select(ready, timeout).await {
-                                futures::future::Either::Left(((), _)) => {
+                                futures::future::Either::Left(_) => {
                                     return Ok(());
                                 }
                                 futures::future::Either::Right(_) => {
-                                    eprintln!("timeout while waiting for service, retrying");
+                                    eprintln!("timeout while waiting for action server, retrying");
                                 }
                             }
                         }
-                        eyre::bail!("service not available");
+                        eyre::bail!("action server not available");
                     };
-                    futures::executor::block_on(service_ready)?;
-                    Ok(())
+                    futures::executor::block_on(server_ready)
                 }
 
                 #[allow(non_snake_case)]
