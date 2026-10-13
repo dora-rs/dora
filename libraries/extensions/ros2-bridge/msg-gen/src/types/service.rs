@@ -222,35 +222,56 @@ impl Service {
                         // matches them (as on DDS). Each call starts when the
                         // pump first polls it, in push order, and
                         // `FuturesOrdered` yields the results in that order.
-                        // Dropping the client closes `request_tx`, which ends
-                        // the pump and its in-flight calls.
+                        // At most MAX_PENDING_REQUESTS calls are in flight;
+                        // further requests wait in `request_rx`. Dropping the
+                        // client closes `shutdown`, which ends the pump and its
+                        // calls, also while it waits for room in the event
+                        // stream, and queued requests are not sent.
                         let (request_tx, request_rx) = flume::bounded::<Vec<u8>>(MAX_PENDING_REQUESTS);
+                        let (shutdown, shutdown_rx) = flume::bounded::<()>(1);
                         let pump = async move {
-                            use futures::StreamExt as _;
+                            use futures::{FutureExt as _, StreamExt as _};
                             let mut requests = request_rx.into_stream().fuse();
                             let mut in_flight = futures::stream::FuturesOrdered::new();
+                            let stopped = shutdown_rx.recv_async().fuse();
+                            futures::pin_mut!(stopped);
                             loop {
-                                futures::select! {
-                                    payload = requests.next() => match payload {
-                                        Some(payload) => in_flight.push_back(client.call(payload, SERVICE_RESPONSE_TIMEOUT)),
-                                        None => break,
-                                    },
+                                let room = in_flight.len() < MAX_PENDING_REQUESTS;
+                                let next_request = async {
+                                    if room {
+                                        requests.next().await
+                                    } else {
+                                        futures::future::pending::<Option<Vec<u8>>>().await
+                                    }
+                                }
+                                .fuse();
+                                futures::pin_mut!(next_request);
+                                futures::select_biased! {
+                                    _ = stopped => break,
                                     response = in_flight.select_next_some() => {
+                                        let response: Result<Vec<u8>, dora_ros2_bridge::transport::zenoh::service::ServiceError> = response;
                                         let response = response
                                             .map_err(|e| eyre::eyre!("{} service call failed: {e}", #self_name_str))
                                             .and_then(|bytes| {
                                                 dora_ros2_bridge::transport::zenoh::deserialize_cdr::<ffi::#res_type_raw>(&bytes)
                                                     .map_err(|e| eyre::eyre!("failed to decode {} response: {e}", #self_name_str))
                                             });
-                                        if response_tx.send_async(response).await.is_err() {
-                                            break;
+                                        let sent = response_tx.send_async(response).fuse();
+                                        futures::pin_mut!(sent);
+                                        futures::select_biased! {
+                                            _ = stopped => break,
+                                            sent = sent => if sent.is_err() { break },
                                         }
+                                    },
+                                    payload = next_request => match payload {
+                                        Some(payload) => in_flight.push_back(client.call(payload, SERVICE_RESPONSE_TIMEOUT)),
+                                        None => break,
                                     },
                                 }
                             }
                         };
                         node.executor.spawn(pump).context("failed to spawn service client pump")?;
-                        #client_backend::Zenoh { token, request_tx }
+                        #client_backend::Zenoh { token, request_tx, _shutdown: shutdown }
                     }
                 };
 
@@ -279,6 +300,8 @@ impl Service {
                     token: dora_ros2_bridge::transport::zenoh::keyexpr::TopicToken,
                     // CDR-encoded requests for the client's pump, in send order.
                     request_tx: flume::Sender<Vec<u8>>,
+                    // Dropped with the client, which stops the pump.
+                    _shutdown: flume::Sender<()>,
                 },
             }
 
@@ -352,7 +375,7 @@ impl Service {
                             let payload = dora_ros2_bridge::transport::zenoh::serialize_cdr(&request)?;
                             request_tx.try_send(payload).map_err(|err| match err {
                                 flume::TrySendError::Full(_) => eyre::eyre!(
-                                    "{} service client has {MAX_PENDING_REQUESTS} requests in flight", #self_name_str
+                                    "{} service client already has {MAX_PENDING_REQUESTS} requests waiting to be sent", #self_name_str
                                 ),
                                 flume::TrySendError::Disconnected(_) => {
                                     eyre::eyre!("{} service client stopped", #self_name_str)
