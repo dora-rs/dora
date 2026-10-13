@@ -6,15 +6,15 @@
 //!
 //! An output is an image when the dataflow says so: `output_types` in the
 //! descriptor stored in the recording header declares `std/media/v1/Image` or
-//! `std/media/v1/CompressedImage`. An undeclared output is an image when its
-//! messages follow the camera convention of the dora-hub nodes: a flat array
-//! with `width` / `height` / `encoding` metadata, in an encoding Foxglove can
-//! display. Undeclared compressed frames must also be bytes in the format the
-//! metadata names, because nodes often forward a camera's metadata onto
-//! outputs that are not images.
-use std::collections::HashMap;
+//! `std/media/v1/CompressedImage`. The only undeclared outputs converted are
+//! compressed frames: `encoding` metadata naming JPEG/PNG/WebP, and bytes that
+//! start with one of those file signatures. Nodes often forward a camera's
+//! metadata onto outputs that are not images, so metadata alone never makes
+//! an image, and undeclared raw pixels stay Arrow.
+use std::cell::Cell;
+use std::collections::{BTreeMap, HashMap};
 
-use arrow::array::{Array, ArrayRef, AsArray};
+use arrow::array::{Array, ArrayRef, AsArray, StructArray};
 use arrow::datatypes::{DataType, UInt8Type};
 use arrow::ipc::reader::StreamDecoder;
 use base64::Engine as _;
@@ -67,13 +67,11 @@ const COMPRESSED_IMAGE_SCHEMA: &str = concat!(
 
 /// What the mapper made of one recorded message.
 pub(super) enum Recognition {
-    /// Not an image: export it as Arrow like the default schema does. For an
-    /// undeclared message that looked like a camera frame but didn't convert,
-    /// the reason, for the report when its topic is already an image channel.
-    NotRecognised(Option<String>),
+    /// Not an image: export it as Arrow like the default schema does.
+    NotRecognised,
     /// The JSON message for this Foxglove schema.
     Converted(Kind, Vec<u8>),
-    /// An image output, but this message could not be converted.
+    /// A declared image output, but this message could not be converted.
     Failed(Kind, String),
 }
 
@@ -100,32 +98,25 @@ pub(super) struct Mapper {
 impl Mapper {
     /// Reads the `output_types` of each node and of its operators from the
     /// recorded descriptor (the user's YAML). A descriptor that does not parse
-    /// just declares nothing: export still works, using the camera metadata
-    /// convention only.
+    /// just declares nothing: export still works, converting only
+    /// undeclared compressed frames.
     pub(super) fn from_descriptor_yaml(yaml: &str) -> Self {
         let mut declared: HashMap<String, HashMap<String, Declared>> = HashMap::new();
-        let Ok(descriptor) = serde_yaml::from_str::<serde_yaml::Value>(yaml) else {
+        let Ok(descriptor) = serde_yaml::from_str::<DescriptorTypes>(yaml) else {
             return Self { declared };
         };
-        let nodes = descriptor
-            .get("nodes")
-            .and_then(|nodes| nodes.as_sequence());
-        for node in nodes.into_iter().flatten() {
-            let Some(node_id) = node.get("id").and_then(yaml_id) else {
-                continue;
-            };
-            let outputs = declared.entry(node_id).or_default();
-            add_declared(outputs, node, None);
+        for node in descriptor.nodes {
+            let outputs = declared.entry(node.id).or_default();
+            add_declared(outputs, node.output_types, None);
             // `dora record` and `--proxy` both record a single operator's
             // outputs without the operator id (`record.rs`
             // `discover_descriptor_outputs`, `public_topic_output_id`).
-            if let Some(operator) = node.get("operator") {
-                add_declared(outputs, operator, None);
+            if let Some(operator) = node.operator {
+                add_declared(outputs, operator.output_types, None);
             }
-            let operators = node.get("operators").and_then(|ops| ops.as_sequence());
-            for operator in operators.into_iter().flatten() {
-                if let Some(operator_id) = operator.get("id").and_then(yaml_id) {
-                    add_declared(outputs, operator, Some(&operator_id));
+            for operator in node.operators {
+                if let Some(operator_id) = operator.id {
+                    add_declared(outputs, operator.output_types, Some(&operator_id));
                 }
             }
         }
@@ -147,27 +138,47 @@ impl Mapper {
         // damaged payload (bad schema bits, impossible lengths, offsets out
         // of range). A damaged message is then one that can't be converted,
         // like any other; `--schema arrow` copies it without decoding.
+        quiet_conversion_panics();
+        CONVERTING.set(true);
         let converted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             convert_unguarded(declared, metadata, data)
         }));
+        CONVERTING.set(false);
         converted.unwrap_or_else(|_| {
             let reason = "the payload is damaged (not a valid Arrow IPC stream)".to_string();
             match declared {
-                Some(Declared::Image { encoding }) => Recognition::Failed(
-                    match encoding.as_deref().and_then(compressed_format) {
-                        Some(_) => Kind::CompressedImage,
-                        None => Kind::RawImage,
-                    },
-                    reason,
-                ),
+                Some(Declared::Image { encoding }) => {
+                    Recognition::Failed(expected_kind(encoding.as_deref(), metadata), reason)
+                }
                 Some(Declared::CompressedImage { .. }) => {
                     Recognition::Failed(Kind::CompressedImage, reason)
                 }
-                Some(Declared::Other) => Recognition::NotRecognised(None),
-                None => Recognition::NotRecognised(Some(reason)),
+                Some(Declared::Other) | None => Recognition::NotRecognised,
             }
         })
     }
+}
+
+thread_local! {
+    /// Set while this thread converts a message, so the panic hook stays
+    /// quiet for the panics [`Mapper::convert`] catches.
+    static CONVERTING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A caught panic is already reported as a dropped message, so the default
+/// hook's `thread 'main' panicked at ...` for each damaged message would only
+/// make the export look like a crash. Installed once; every other panic still
+/// goes to the previous hook.
+fn quiet_conversion_panics() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if !CONVERTING.get() {
+                previous(info);
+            }
+        }));
+    });
 }
 
 fn convert_unguarded(
@@ -182,22 +193,13 @@ fn convert_unguarded(
             // metadata. An encoding on the type (`Image[encoding=jpeg]`)
             // wins over one the node forwarded in its metadata.
             let encoding = encoding.as_deref();
-            let result = decode(data).and_then(|array| {
-                if array.as_struct_opt().is_some() {
-                    return image_struct(metadata, &array, encoding);
-                }
-                frame(metadata, encoding, &array, false)
+            let result = decode(data).and_then(|array| match array.as_struct_opt() {
+                Some(image) => image_struct(metadata, image),
+                None => frame(metadata, encoding, &array),
             });
-            let expected = match encoding
-                .or_else(|| metadata_str(metadata, "encoding"))
-                .and_then(compressed_format)
-            {
-                Some(_) => Kind::CompressedImage,
-                None => Kind::RawImage,
-            };
             match result {
                 Ok((kind, json)) => Recognition::Converted(kind, json),
-                Err(reason) => Recognition::Failed(expected, reason),
+                Err(reason) => Recognition::Failed(expected_kind(encoding, metadata), reason),
             }
         }
         Some(Declared::CompressedImage { format }) => {
@@ -208,49 +210,79 @@ fn convert_unguarded(
                 Err(reason) => Recognition::Failed(Kind::CompressedImage, reason),
             }
         }
-        Some(Declared::Other) => Recognition::NotRecognised(None),
-        // Not declared: only an image if it converts cleanly. Anything
-        // else (no `encoding` metadata, an encoding Foxglove can't show,
-        // a payload that doesn't match) stays Arrow instead of being
-        // dropped. The metadata is checked first, so other outputs aren't
-        // decoded.
+        Some(Declared::Other) => Recognition::NotRecognised,
+        // Not declared: only a compressed frame whose bytes really are the
+        // file the metadata says. The metadata is checked first, so other
+        // outputs aren't decoded. The signature, not the (maybe forwarded)
+        // name, decides the format.
         None => {
-            if metadata_str(metadata, "encoding").is_none() {
-                return Recognition::NotRecognised(None);
+            if metadata_str(metadata, "encoding")
+                .and_then(compressed_format)
+                .is_none()
+            {
+                return Recognition::NotRecognised;
             }
-            match decode(data).and_then(|array| frame(metadata, None, &array, true)) {
-                Ok((kind, json)) => Recognition::Converted(kind, json),
-                Err(reason) => Recognition::NotRecognised(Some(reason)),
+            let converted = decode(data).ok().and_then(|array| {
+                let encoded = encoded_bytes(array.as_ref())?;
+                compressed_json(metadata, encoded, detect_format(encoded)?).ok()
+            });
+            match converted {
+                Some(json) => Recognition::Converted(Kind::CompressedImage, json),
+                None => Recognition::NotRecognised,
             }
         }
     }
 }
 
-/// A node, operator or output id: dora reads a YAML number (`1:`) as the id
-/// `1`, so it counts here too.
-fn yaml_id(value: &serde_yaml::Value) -> Option<String> {
-    match value {
-        serde_yaml::Value::String(id) => Some(id.clone()),
-        serde_yaml::Value::Number(id) => Some(id.to_string()),
-        _ => None,
+/// The kind a declared `Image` is expected to convert to, for the report
+/// when it fails.
+fn expected_kind(declared_encoding: Option<&str>, metadata: &Metadata) -> Kind {
+    match declared_encoding
+        .or_else(|| metadata_str(metadata, "encoding"))
+        .and_then(compressed_format)
+    {
+        Some(_) => Kind::CompressedImage,
+        None => Kind::RawImage,
     }
 }
 
-/// Records the image types in `entry`'s `output_types`, keyed by output id,
-/// prefixed with `operator_id/` for an operator.
+/// The parts of the dataflow descriptor this export reads. Ids are
+/// deserialized as strings, which keeps their YAML text the way dora reads
+/// them: `0x10:` is output `0x10`, not `16`.
+#[derive(serde::Deserialize)]
+struct DescriptorTypes {
+    #[serde(default)]
+    nodes: Vec<NodeTypes>,
+}
+
+#[derive(serde::Deserialize)]
+struct NodeTypes {
+    id: String,
+    #[serde(default)]
+    output_types: BTreeMap<String, serde_yaml::Value>,
+    operator: Option<OperatorTypes>,
+    #[serde(default)]
+    operators: Vec<OperatorTypes>,
+}
+
+#[derive(serde::Deserialize)]
+struct OperatorTypes {
+    id: Option<String>,
+    #[serde(default)]
+    output_types: BTreeMap<String, serde_yaml::Value>,
+}
+
+/// Records the image types in `output_types`, keyed by output id, prefixed
+/// with `operator_id/` for an operator.
 fn add_declared(
     outputs: &mut HashMap<String, Declared>,
-    entry: &serde_yaml::Value,
+    output_types: BTreeMap<String, serde_yaml::Value>,
     operator_id: Option<&str>,
 ) {
-    let types = entry.get("output_types").and_then(|t| t.as_mapping());
-    for (output_id, urn) in types.into_iter().flatten() {
-        let Some(output_id) = yaml_id(output_id) else {
-            continue;
-        };
+    for (output_id, urn) in output_types {
         let key = match operator_id {
             Some(operator_id) => format!("{operator_id}/{output_id}"),
-            None => output_id.to_owned(),
+            None => output_id,
         };
         // Full URNs only: `dora validate` does not resolve short names in
         // `output_types` either. Anything else, a malformed type included,
@@ -269,16 +301,9 @@ fn add_declared(
 }
 
 /// A declared `std/media/v1/Image` struct: one row of `width`, `height`,
-/// `encoding`, `data`. A compressed `encoding` (jpeg, png, ...) makes it a
-/// `CompressedImage`.
-fn image_struct(
-    metadata: &Metadata,
-    array: &ArrayRef,
-    declared_encoding: Option<&str>,
-) -> Result<(Kind, Vec<u8>), String> {
-    let image = array
-        .as_struct_opt()
-        .ok_or_else(|| format!("expected a struct, got {}", array.data_type()))?;
+/// `encoding`, `data` (binary). A compressed `encoding` (jpeg, png, webp)
+/// makes it a `CompressedImage`.
+fn image_struct(metadata: &Metadata, image: &StructArray) -> Result<(Kind, Vec<u8>), String> {
     if image.len() != 1 {
         return Err(format!(
             "expected one image per message, got {}",
@@ -296,20 +321,14 @@ fn image_struct(
     let width = unsigned(field("width")?.as_ref(), "width")?;
     let height = unsigned(field("height")?.as_ref(), "height")?;
     let encoding_column = field("encoding")?;
+    if encoding_column.is_null(0) {
+        return Err("`encoding` is null".to_string());
+    }
     let encoding = match encoding_column.data_type() {
         DataType::Utf8 => encoding_column.as_string::<i32>().value(0),
         DataType::LargeUtf8 => encoding_column.as_string::<i64>().value(0),
         other => return Err(format!("`encoding` must be a string, got {other}")),
     };
-    if let Some(declared) = declared_encoding {
-        let same = canonical_encoding(declared) == canonical_encoding(encoding)
-            || compressed_format(declared).is_some_and(|f| compressed_format(encoding) == Some(f));
-        if !same {
-            return Err(format!(
-                "the image's encoding `{encoding}` isn't the declared `{declared}`"
-            ));
-        }
-    }
     let data = field("data")?;
     if let Some(format) = compressed_format(encoding) {
         let encoded = compressed_data(data.as_ref(), format)?;
@@ -319,45 +338,9 @@ fn image_struct(
         ));
     }
     let pixels = pixel_bytes(data.as_ref(), encoding)?;
-    // The extra fields of a ROS `sensor_msgs/Image` (what dora's ROS 2 bridge
-    // produces), when present.
-    if let Some(step) = image.column_by_name("step") {
-        let step = unsigned(step.as_ref(), "step")?;
-        if step.checked_mul(rows(encoding, height)) != Some(pixels.len() as u64) {
-            return Err(format!(
-                "`step` {step} doesn't match {} bytes of {height} rows",
-                pixels.len()
-            ));
-        }
-    }
-    if let Some(big_endian) = image.column_by_name("is_bigendian") {
-        let big_endian = match big_endian.data_type() {
-            DataType::Boolean if big_endian.is_null(0) => {
-                return Err("`is_bigendian` is null".to_string());
-            }
-            DataType::Boolean => big_endian.as_boolean().value(0),
-            _ => unsigned(big_endian.as_ref(), "is_bigendian")? != 0,
-        };
-        if big_endian && matches!(encoding, "mono16" | "16UC1" | "32FC1") {
-            return Err(format!("big-endian `{encoding}` data isn't supported"));
-        }
-    }
     Ok((
         Kind::RawImage,
-        raw_image(metadata, width, height, encoding, pixels, false)?,
-    ))
-}
-
-/// Plain compressed-image bytes (binary or flat `uint8`) in a known format.
-fn compressed_bytes(
-    metadata: &Metadata,
-    array: &ArrayRef,
-    format: &str,
-) -> Result<(Kind, Vec<u8>), String> {
-    let encoded = compressed_data(array.as_ref(), format)?;
-    Ok((
-        Kind::CompressedImage,
-        compressed_json(metadata, encoded, format)?,
+        raw_image(metadata, width, height, encoding, pixels)?,
     ))
 }
 
@@ -375,21 +358,15 @@ fn metadata_int(metadata: &Metadata, key: &str) -> Option<i64> {
     }
 }
 
-/// A frame sent as a flat array, the camera convention of the dora-hub nodes
-/// (`opencv-video-capture`, `dora-pyrealsense`, `dora-pyorbbecksdk`, the
-/// examples): compressed bytes when the encoding names JPEG/PNG/WebP/AVIF, or
-/// raw pixels in one of the encodings Foxglove lists, with `width` and
-/// `height` metadata. `encoding` overrides the `encoding` metadata.
-///
-/// `strict` is for undeclared outputs, where the metadata may just have been
-/// forwarded from a camera onto data that isn't an image: a raw frame must be
-/// exactly `width` pixels per row, without padding. (A compressed frame must
-/// always start with the signature of its format.)
+/// A declared image sent as a flat array, the camera convention of the
+/// dora-hub nodes (`opencv-video-capture`, `dora-pyrealsense`, the examples):
+/// compressed bytes when the encoding names JPEG/PNG/WebP, or raw pixels with
+/// `width` and `height` metadata. `encoding` (from the declared type)
+/// overrides the `encoding` metadata.
 fn frame(
     metadata: &Metadata,
     encoding: Option<&str>,
     array: &ArrayRef,
-    strict: bool,
 ) -> Result<(Kind, Vec<u8>), String> {
     let declared = encoding.is_some();
     let encoding = encoding
@@ -406,7 +383,11 @@ fn frame(
                 .and_then(detect_format)
                 .ok_or_else(|| format!("data is not a {named} file"))?
         };
-        return compressed_bytes(metadata, array, format);
+        let encoded = compressed_data(array.as_ref(), format)?;
+        return Ok((
+            Kind::CompressedImage,
+            compressed_json(metadata, encoded, format)?,
+        ));
     }
     let (Some(width), Some(height)) = (
         metadata_int(metadata, "width"),
@@ -421,63 +402,30 @@ fn frame(
     let height = u64::try_from(height).map_err(|_| format!("negative height {height}"))?;
     Ok((
         Kind::RawImage,
-        raw_image(metadata, width, height, encoding, pixels, strict)?,
+        raw_image(metadata, width, height, encoding, pixels)?,
     ))
 }
 
-/// Rows of `step` bytes in a frame: NV12 is a full-height Y plane followed by
-/// a half-height UV plane.
-fn rows(encoding: &str, height: u64) -> u64 {
-    if encoding == "nv12" {
-        height.saturating_add(height / 2)
-    } else {
-        height
-    }
-}
-
-/// With `exact_rows`, rows must hold exactly `width` pixels (no padding).
+/// Rows must be exactly `width` pixels: padding can't be told apart from
+/// stale or forwarded dimensions.
 fn raw_image(
     metadata: &Metadata,
     width: u64,
     height: u64,
     encoding: &str,
     pixels: &[u8],
-    exact_rows: bool,
 ) -> Result<Vec<u8>, String> {
     let bytes_per_pixel = raw_bytes_per_pixel(encoding)
-        .ok_or_else(|| format!("`{encoding}` is not an encoding Foxglove can display"))?;
-    // Foxglove's RawImage has uint32 sizes; NV12 needs an even width and
-    // height, and the YUV 4:2:2 encodings store pixels in pairs.
+        .ok_or_else(|| format!("`{encoding}` is not a raw encoding this export supports"))?;
+    // Foxglove's RawImage has uint32 sizes.
     if width == 0 || height == 0 || width > u64::from(u32::MAX) || height > u64::from(u32::MAX) {
         return Err(format!("a {width}x{height} image can't be displayed"));
     }
-    let pairs = matches!(
-        encoding,
-        "nv12" | "yuv422" | "uyvy" | "yuv422_yuy2" | "yuyv"
-    );
-    if pairs && (!width.is_multiple_of(2) || (encoding == "nv12" && !height.is_multiple_of(2))) {
+    let step = width * bytes_per_pixel;
+    if step.checked_mul(height) != Some(pixels.len() as u64) {
         return Err(format!(
-            "`{encoding}` needs even dimensions, got {width}x{height}"
-        ));
-    }
-    let rows = usize::try_from(rows(encoding, height))
-        .map_err(|_| format!("height {height} is too large"))?;
-    if rows == 0 || !pixels.len().is_multiple_of(rows) {
-        return Err(format!(
-            "{} bytes of `{encoding}` data are not whole rows of a {width}x{height} image",
+            "{} bytes of `{encoding}` data are not a {width}x{height} image",
             pixels.len()
-        ));
-    }
-    let step = pixels.len() / rows;
-    let row_bytes = width.saturating_mul(bytes_per_pixel);
-    if (step as u64) < row_bytes {
-        return Err(format!(
-            "rows of {step} bytes cannot hold {width} `{encoding}` pixels"
-        ));
-    }
-    if exact_rows && step as u64 != row_bytes {
-        return Err(format!(
-            "rows of {step} bytes are not {width} `{encoding}` pixels"
         ));
     }
     let json = serde_json::json!({
@@ -492,80 +440,47 @@ fn raw_image(
     serde_json::to_vec(&json).map_err(|err| err.to_string())
 }
 
-/// Bytes per pixel (of the first plane) for the raw encodings Foxglove's
-/// `RawImage` lists; `None` for anything it can't display.
+/// Bytes per pixel for the single-plane raw encodings Foxglove's `RawImage`
+/// lists; `None` for anything else.
 fn raw_bytes_per_pixel(encoding: &str) -> Option<u64> {
     match encoding {
-        "mono8" | "8UC1" | "nv12" | "bayer_rggb8" | "bayer_bggr8" | "bayer_gbrg8"
-        | "bayer_grbg8" => Some(1),
-        "mono16" | "16UC1" | "yuv422" | "uyvy" | "yuv422_yuy2" | "yuyv" => Some(2),
+        "mono8" | "8UC1" | "bayer_rggb8" | "bayer_bggr8" | "bayer_gbrg8" | "bayer_grbg8" => Some(1),
+        "mono16" | "16UC1" => Some(2),
         "rgb8" | "bgr8" | "8UC3" => Some(3),
         "rgba8" | "bgra8" | "32FC1" => Some(4),
         _ => None,
     }
 }
 
-/// One name per encoding, for the pairs Foxglove's RawImage lists as the same.
-fn canonical_encoding(encoding: &str) -> &str {
-    match encoding {
-        "8UC1" => "mono8",
-        "8UC3" => "bgr8",
-        "16UC1" => "mono16",
-        "uyvy" => "yuv422",
-        "yuyv" => "yuv422_yuy2",
-        other => other,
-    }
-}
-
 /// The `foxglove.CompressedImage` format for an encoding name, if it is one.
 fn compressed_format(encoding: &str) -> Option<&'static str> {
-    match encoding.to_ascii_lowercase().as_str() {
-        "jpeg" | "jpg" | "jpe" => Some("jpeg"),
+    match encoding {
+        "jpeg" => Some("jpeg"),
         "png" => Some("png"),
         "webp" => Some("webp"),
-        "avif" => Some("avif"),
         _ => None,
     }
 }
 
-/// A declared `std/media/v1/CompressedImage`: one binary value, or a struct
-/// with a `data` field like ROS `sensor_msgs/CompressedImage`. The format is
-/// the type's `format` parameter (the data must be that format), else the
-/// data's file signature.
+/// A declared `std/media/v1/CompressedImage`: one binary value or a flat
+/// `uint8` array. The format is the type's `format` parameter (the data must
+/// be that format), else the data's file signature.
 fn compressed_image(
     metadata: &Metadata,
     array: &ArrayRef,
     declared_format: Option<&str>,
 ) -> Result<Vec<u8>, String> {
-    let data = match array.as_struct_opt() {
-        Some(image) => {
-            if image.len() != 1 {
-                return Err(format!(
-                    "expected one image per message, got {}",
-                    image.len()
-                ));
-            }
-            if image.is_null(0) {
-                return Err("the image is null".to_string());
-            }
-            image
-                .column_by_name("data")
-                .ok_or_else(|| "image struct has no `data` field".to_string())?
-                .clone()
-        }
-        None => array.clone(),
-    };
     let format = match declared_format {
         Some(name) => compressed_format(name)
-            .ok_or_else(|| format!("`{name}` is not a format Foxglove can display"))?,
-        None => encoded_bytes(data.as_ref())
+            .ok_or_else(|| format!("`{name}` is not a format this export supports"))?,
+        None => encoded_bytes(array.as_ref())
             .and_then(detect_format)
             .ok_or_else(|| {
                 "unknown compressed image format; declare it as `std/media/v1/CompressedImage[format=jpeg]`"
                     .to_string()
             })?,
     };
-    compressed_json(metadata, compressed_data(data.as_ref(), format)?, format)
+    compressed_json(metadata, compressed_data(array.as_ref(), format)?, format)
 }
 
 fn compressed_json(metadata: &Metadata, encoded: &[u8], format: &str) -> Result<Vec<u8>, String> {
@@ -589,7 +504,7 @@ fn compressed_data<'a>(array: &'a dyn Array, format: &str) -> Result<&'a [u8], S
     }
 }
 
-/// The formats Foxglove's `CompressedImage` accepts, by file signature.
+/// The supported `CompressedImage` formats, by file signature.
 fn detect_format(data: &[u8]) -> Option<&'static str> {
     if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
         Some("jpeg")
@@ -597,25 +512,9 @@ fn detect_format(data: &[u8]) -> Option<&'static str> {
         Some("png")
     } else if data.len() >= 12 && &data[..4] == b"RIFF" && &data[8..12] == b"WEBP" {
         Some("webp")
-    } else if is_avif(data) {
-        Some("avif")
     } else {
         None
     }
-}
-
-/// An ISO-BMFF file whose `ftyp` box lists the `avif` (still) or `avis`
-/// (sequence) brand, as major or compatible brand.
-fn is_avif(data: &[u8]) -> bool {
-    if data.len() < 12 || &data[4..8] != b"ftyp" {
-        return false;
-    }
-    let size = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    let end = size.min(data.len()).max(16.min(data.len()));
-    // Major brand at 8..12, minor version at 12..16, compatible brands after.
-    std::iter::once(&data[8..12])
-        .chain(data.get(16..end).unwrap_or_default().chunks_exact(4))
-        .any(|brand| brand == b"avif" || brand == b"avis")
 }
 
 /// The single array a dora output carries: column 0 of the one record batch
@@ -650,33 +549,15 @@ fn decode(data: Option<&[u8]>) -> Result<ArrayRef, String> {
 }
 
 /// The bytes of a one-value binary array, or the value buffer of a flat
-/// array without nulls: `uint8` pixels, `uint16` / `int16` (e.g. `mono16`
-/// depth) or `float32` (`32FC1`). Arrow buffers are little-endian on every
+/// array without nulls: `uint8` pixels, `uint16` (e.g. `mono16` depth) or
+/// `float32` (`32FC1`). Arrow buffers are little-endian on every
 /// platform dora ships for, matching what Foxglove expects.
 fn bytes(array: &dyn Array) -> Option<&[u8]> {
-    use arrow::datatypes::{Float32Type, Int16Type, UInt16Type};
+    use arrow::datatypes::{Float32Type, UInt16Type};
     if array.null_count() != 0 {
         return None;
     }
     match array.data_type() {
-        DataType::List(item) | DataType::LargeList(item)
-            if array.len() == 1 && item.data_type() == &DataType::UInt8 =>
-        {
-            let (values, start, end) = match array.data_type() {
-                DataType::List(_) => {
-                    let list = array.as_list::<i32>();
-                    let offsets = list.value_offsets();
-                    (list.values(), offsets[0] as usize, offsets[1] as usize)
-                }
-                _ => {
-                    let list = array.as_list::<i64>();
-                    let offsets = list.value_offsets();
-                    (list.values(), offsets[0] as usize, offsets[1] as usize)
-                }
-            };
-            let values = values.as_primitive::<UInt8Type>();
-            (values.null_count() == 0).then(|| &values.values()[start..end])
-        }
         DataType::Binary if array.len() == 1 => Some(array.as_binary::<i32>().value(0)),
         DataType::LargeBinary if array.len() == 1 => Some(array.as_binary::<i64>().value(0)),
         DataType::UInt8 => Some(
@@ -693,13 +574,6 @@ fn bytes(array: &dyn Array) -> Option<&[u8]> {
                 .inner()
                 .as_slice(),
         ),
-        DataType::Int16 => Some(
-            array
-                .as_primitive::<Int16Type>()
-                .values()
-                .inner()
-                .as_slice(),
-        ),
         DataType::Float32 => Some(
             array
                 .as_primitive::<Float32Type>()
@@ -712,14 +586,13 @@ fn bytes(array: &dyn Array) -> Option<&[u8]> {
 }
 
 /// The bytes of raw pixel data, if the array's element type fits `encoding`:
-/// bytes (binary or `uint8`) for any encoding, as in a ROS `Image`, and also
-/// `uint16`/`int16` for the 16-bit single-channel encodings and `float32` for
-/// `32FC1`. A float32 array with `rgb8` metadata, say, is not an image.
+/// bytes (binary or `uint8`) for any encoding, and also `uint16` for the
+/// 16-bit single-channel encodings and `float32` for `32FC1`. A float32
+/// array with `rgb8` metadata, say, is not an image.
 fn pixel_bytes<'a>(array: &'a dyn Array, encoding: &str) -> Result<&'a [u8], String> {
     let fits = match array.data_type() {
         DataType::Binary | DataType::LargeBinary | DataType::UInt8 => true,
-        DataType::List(item) | DataType::LargeList(item) => item.data_type() == &DataType::UInt8,
-        DataType::UInt16 | DataType::Int16 => matches!(encoding, "mono16" | "16UC1"),
+        DataType::UInt16 => matches!(encoding, "mono16" | "16UC1"),
         DataType::Float32 => encoding == "32FC1",
         _ => false,
     };
@@ -733,15 +606,10 @@ fn pixel_bytes<'a>(array: &'a dyn Array, encoding: &str) -> Result<&'a [u8], Str
 }
 
 /// The bytes of a compressed image: one binary value or a flat `uint8` array.
-/// Wider numeric arrays can't hold a JPEG/PNG/WebP/AVIF file.
+/// Wider numeric arrays can't hold a JPEG/PNG/WebP file.
 fn encoded_bytes(array: &dyn Array) -> Option<&[u8]> {
     match array.data_type() {
         DataType::Binary | DataType::LargeBinary | DataType::UInt8 => bytes(array),
-        DataType::List(item) | DataType::LargeList(item)
-            if item.data_type() == &DataType::UInt8 =>
-        {
-            bytes(array)
-        }
         _ => None,
     }
 }
@@ -783,7 +651,7 @@ fn frame_id(metadata: &Metadata) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Kind, Mapper, Recognition, detect_format};
+    use super::{Kind, Mapper, detect_format};
 
     #[test]
     fn schemas_are_json_named_after_the_foxglove_type() {
@@ -817,7 +685,7 @@ mod tests {
     #[test]
     fn damaged_payloads_never_panic() {
         use arrow::array::{
-            ArrayRef, BinaryArray, ListArray, StringArray, StructArray, UInt8Array, UInt16Array,
+            ArrayRef, BinaryArray, StringArray, StructArray, UInt8Array, UInt16Array,
         };
         use arrow_schema::{DataType, Field};
         use dora_message::metadata::{Metadata, Parameter};
@@ -851,24 +719,20 @@ mod tests {
             ipc(Arc::new(BinaryArray::from(vec![
                 [0xFFu8, 0xD8, 0xFF, 0xE0].as_slice(),
             ]))),
-            ipc(Arc::new(ListArray::from_iter_primitive::<
-                arrow::datatypes::UInt8Type,
-                _,
-                _,
-            >(vec![Some(vec![
-                Some(1u8),
-                Some(2),
-            ])]))),
             ipc(image),
         ];
-        let mut metadata = Metadata::new(dora_message::uhlc::HLC::default().new_timestamp());
+        let mut raw = Metadata::new(dora_message::uhlc::HLC::default().new_timestamp());
         for (key, value) in [
             ("width", Parameter::Integer(2)),
             ("height", Parameter::Integer(2)),
             ("encoding", Parameter::String("mono8".into())),
         ] {
-            metadata.parameters.insert(key.into(), value);
+            raw.parameters.insert(key.into(), value);
         }
+        // Undeclared outputs are only decoded with a compressed encoding.
+        let mut jpeg = raw.clone();
+        jpeg.parameters
+            .insert("encoding".into(), Parameter::String("jpeg".into()));
         let mapper = Mapper::from_descriptor_yaml(
             "nodes:\n  - id: cam\n    output_types:\n      image: std/media/v1/Image\n",
         );
@@ -877,9 +741,9 @@ mod tests {
                 for flip in [0x01u8, 0x80, 0xFF] {
                     let mut damaged = payload.clone();
                     damaged[at] ^= flip;
-                    for output in ["image", "other"] {
+                    for (output, metadata) in [("image", &raw), ("other", &jpeg)] {
                         let result = std::panic::catch_unwind(|| {
-                            mapper.convert("cam", output, &metadata, Some(&damaged));
+                            mapper.convert("cam", output, metadata, Some(&damaged));
                         });
                         assert!(
                             result.is_ok(),
@@ -889,59 +753,19 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// An undeclared frame that has camera metadata but doesn't convert says
-    /// why, so the warning for a topic that is already an image channel names
-    /// the real problem.
-    #[test]
-    fn an_undeclared_frame_that_fails_keeps_its_reason() {
-        use arrow::array::UInt8Array;
-        use dora_message::metadata::{Metadata, Parameter};
-        // Claimed to be a JPEG, but not any image at all.
-        let png = UInt8Array::from(vec![1u8, 2, 3, 4, 5]);
-        let mut payload = Vec::new();
-        {
-            let batch = arrow::record_batch::RecordBatch::try_from_iter([(
-                "c",
-                std::sync::Arc::new(png) as arrow::array::ArrayRef,
-            )])
-            .unwrap();
-            let mut writer =
-                arrow::ipc::writer::StreamWriter::try_new(&mut payload, &batch.schema()).unwrap();
-            writer.write(&batch).unwrap();
-            writer.finish().unwrap();
-        }
-        let mut metadata = Metadata::new(dora_message::uhlc::HLC::default().new_timestamp());
-        metadata
-            .parameters
-            .insert("encoding".into(), Parameter::String("jpeg".into()));
-        let mapper = Mapper::from_descriptor_yaml("nodes: []");
-        match mapper.convert("cam", "image", &metadata, Some(&payload)) {
-            Recognition::NotRecognised(Some(reason)) => {
-                assert!(reason.contains("not a jpeg file"), "{reason}")
-            }
-            _ => panic!("expected NotRecognised with a reason"),
-        }
+        // A caught panic must not leave the hook quiet for later panics.
+        assert!(!super::CONVERTING.get());
     }
 
     #[test]
-    fn detects_the_formats_foxglove_accepts() {
+    fn detects_the_formats_this_export_supports() {
         assert_eq!(detect_format(&[0xFF, 0xD8, 0xFF, 0xDB]), Some("jpeg"));
         assert_eq!(
-            detect_format(&[
-                0, 0, 0, 0x1C, b'f', b't', b'y', b'p', b'a', b'v', b'i', b'f'
-            ]),
-            Some("avif")
+            detect_format(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
+            Some("png")
         );
+        assert_eq!(detect_format(b"RIFF\0\0\0\0WEBPVP8 "), Some("webp"));
         assert_eq!(detect_format(b"GIF89a"), None);
-        // `mif1` major brand with `avif` among the compatible brands.
-        let mut mif1 = vec![0, 0, 0, 0x18];
-        mif1.extend(b"ftypmif1\0\0\0\0mif1avif");
-        assert_eq!(detect_format(&mif1), Some("avif"));
-        // HEIC is ISO-BMFF too, but not a format Foxglove's CompressedImage takes.
-        let mut heic = vec![0, 0, 0, 0x18];
-        heic.extend(b"ftypheic\0\0\0\0mif1heic");
-        assert_eq!(detect_format(&heic), None);
+        assert_eq!(detect_format(b"RIFF\0\0\0\0WAVE"), None);
     }
 }

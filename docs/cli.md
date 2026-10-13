@@ -564,39 +564,32 @@ exported as with `arrow`. An output counts as an image when:
 
 - the dataflow declares it in `output_types` (of a node, its `operator`, or one
   of its `operators`) as `std/media/v1/Image` or
-  `std/media/v1/CompressedImage`. An `Image` may be sent as the `width`,
-  `height`, `encoding`, `data` struct (a ROS `sensor_msgs/Image` from the ROS 2
-  bridge works too: its `step` must match the data, and 16-bit or float data
-  must be little-endian) or as a flat array with the camera metadata below; an
-  encoding on the type (`std/media/v1/Image[encoding=rgb8]`) wins over the
-  metadata's. A compressed encoding (`[encoding=jpeg]`, or `jpeg`/`png` in the
-  struct or metadata) makes it a `CompressedImage`; a struct whose encoding
-  contradicts the type's is dropped. A `CompressedImage` is one binary value
-  or a struct with a `data` field (ROS `sensor_msgs/CompressedImage`). Its
-  format is `[format=jpeg]` on the type, and the data must be that format;
-  otherwise the data's file signature (JPEG, PNG, WebP, AVIF) decides. A
-  compressed name in the metadata only says the data is compressed;
-- or, undeclared (an output declared as any other type is never treated as
-  an image), its messages are a flat array with an `encoding` metadata
-  parameter (and `width` and `height` for raw encodings), the convention of the
-  dora-hub camera nodes.
-  Because nodes often forward a camera's metadata onto outputs that aren't
-  images, the data has to match: `jpeg`/`png`/`webp`/`avif` frames become
-  `CompressedImage` only if their bytes start with a JPEG, PNG, WebP or AVIF
-  file signature (which also decides the format), and the raw encodings
-  Foxglove lists (`rgb8`, `bgr8`, `mono8`, `mono16`, `nv12`, ...) become
-  `RawImage` only if each row is exactly `width` pixels and the element type
-  fits the encoding: bytes (`uint8`) for any encoding, `uint16`/`int16` for
-  `mono16`/`16UC1`, `float32` for `32FC1`. A node whose frames have padded
-  rows (a decoder such as `dora-dav1d`), and a `ros2:` bridge node receiving
-  `sensor_msgs/Image`, need `output_types` to be exported as images.
+  `std/media/v1/CompressedImage`. An `Image` is the `width`, `height`,
+  `encoding`, `data` struct, or a flat array with `width`/`height`/`encoding`
+  metadata, the convention of the dora-hub camera nodes. A struct's own
+  `encoding` describes its data; for a flat array, an encoding on the type
+  (`std/media/v1/Image[encoding=rgb8]`) wins over the metadata. Raw
+  pixels may be bytes (a `uint8` array or one binary value) for any
+  encoding, `uint16` for
+  `mono16`/`16UC1` and `float32` for `32FC1`, in the single-plane encodings
+  Foxglove lists (`rgb8`, `bgr8`, `rgba8`, `bgra8`, `mono8`, `mono16`, the
+  `bayer_*8` ones, `8UC1`, `8UC3`, `16UC1`, `32FC1`), and each row must be exactly `width`
+  pixels, without padding. A
+  compressed encoding (`jpeg`, `png`, `webp`) makes it a `CompressedImage`. A
+  `CompressedImage` is one binary value or a flat `uint8` array; its format is
+  `[format=jpeg]` on the type, which the data must match, or else the data's
+  file signature;
+- or, undeclared, it is a compressed frame: an `encoding` metadata parameter
+  naming `jpeg`, `png` or `webp`, and data that starts with a JPEG, PNG or
+  WebP file signature, which decides the format. Nodes often forward a
+  camera's metadata onto outputs that aren't images, so undeclared raw pixels
+  stay Arrow; declare them in `output_types` to export them as images.
 
-A topic's first message decides its channel. An undeclared output whose first
-message isn't one of these stays Arrow. On an image channel, a message that
-can't be converted, for example pixel data that doesn't fit `width` x
-`height` or the encoding, or an odd size where `nv12` / YUV 4:2:2 need even
-ones, is dropped and reported at the end. A declared image's rows may be
-padded. A `frame_id` metadata parameter becomes the image's
+An output declared as any other type is never treated as an image. A topic's
+first message decides its channel. On an image channel, a message that can't
+be converted (pixel data that doesn't fit `width` x `height` or the encoding,
+compressed data that isn't the format it claims, a damaged payload) is dropped
+and reported at the end. A `frame_id` metadata parameter becomes the image's
 `frame_id`. Image data is base64 in JSON, so these channels are about a third
 larger than the raw bytes.
 
