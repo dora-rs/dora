@@ -357,6 +357,12 @@ pub mod zenoh {
         },
     };
 
+    mod typed;
+    pub use typed::{
+        ActionCallError, ActionServerOptions, ActionServerPump, TypedActionClient,
+        TypedActionServer,
+    };
+
     /// Data keys for the three services followed by feedback and status.
     #[derive(Clone, Debug)]
     pub struct ActionKeys {
@@ -386,6 +392,74 @@ pub mod zenoh {
         Timeout,
         #[error("ROS graph closed while waiting for action server")]
         Closed,
+    }
+
+    #[derive(Debug, Error)]
+    #[non_exhaustive]
+    pub enum ActionEndpointError {
+        #[error(transparent)]
+        Identity(#[from] crate::transport::zenoh::compatibility::TypeIdentityError),
+        #[error(transparent)]
+        Key(#[from] crate::transport::zenoh::keyexpr::KeyError),
+        #[error("no type identity for action component `{0}`")]
+        MissingComponent(&'static str),
+    }
+
+    /// Data keys and graph tokens of the action `name` of type
+    /// `package/action`, named the way rmw_zenoh names them.
+    pub fn resolve_action_endpoints(
+        domain: usize,
+        compatibility: dora_message::descriptor::RmwZenohCompatibility,
+        name: &str,
+        package: &str,
+        action: &str,
+        qos: &Ros2Qos,
+        resolver: &crate::transport::zenoh::compatibility::TypeDescriptionResolver,
+    ) -> Result<(ActionKeys, ActionTokens), ActionEndpointError> {
+        use crate::transport::zenoh::{
+            compatibility::{RosTypeIdentity, resolve_action, resolve_message, resolve_service},
+            keyexpr::DataKey,
+            qos::ZenohQosMapping,
+        };
+
+        let identities = resolve_action(compatibility, package, action, resolver)?;
+        let component = |suffix: &'static str| {
+            identities
+                .iter()
+                .find(|identity| identity.ros_name.ends_with(suffix))
+                .ok_or(ActionEndpointError::MissingComponent(suffix))
+        };
+        let send_goal = component("_SendGoal")?;
+        let get_result = component("_GetResult")?;
+        let feedback = component("_FeedbackMessage")?;
+        let cancel_goal = resolve_service(compatibility, "action_msgs", "CancelGoal", resolver)?;
+        let status = resolve_message(compatibility, "action_msgs", "GoalStatusArray", resolver)?;
+
+        let endpoints = super::ActionEndpoints::new(name, package, action);
+        let key = |name: &str, identity: &RosTypeIdentity| {
+            DataKey::new(domain, name, identity).map(|key| key.as_str().to_owned())
+        };
+        let keys = ActionKeys {
+            send_goal: key(&endpoints.send_goal.name, send_goal)?,
+            get_result: key(&endpoints.get_result.name, get_result)?,
+            cancel_goal: key(&endpoints.cancel_goal.name, &cancel_goal)?,
+            feedback: key(&endpoints.feedback.name, feedback)?,
+            status: key(&endpoints.status.name, &status)?,
+        };
+        let token = |name: &str, identity: &RosTypeIdentity, qos: &Ros2Qos| TopicToken {
+            name: name.to_owned(),
+            type_name: identity.dds_name.clone(),
+            type_hash: identity.key_hash_component(),
+            qos: ZenohQosMapping::from_ros_qos(qos).to_string(),
+        };
+        let tokens = ActionTokens {
+            send_goal: token(&endpoints.send_goal.name, send_goal, qos),
+            get_result: token(&endpoints.get_result.name, get_result, qos),
+            cancel_goal: token(&endpoints.cancel_goal.name, &cancel_goal, qos),
+            feedback: token(&endpoints.feedback.name, feedback, qos),
+            status: token(&endpoints.status.name, &status, &action_status_qos(qos)),
+        };
+        Ok((keys, tokens))
     }
 
     pub const GET_RESULT_TIMEOUT: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
@@ -435,6 +509,12 @@ pub mod zenoh {
         }
     }
 
+    /// Calls each of a client's action services can have in flight. A
+    /// `get_result` call stays open until its goal ends, so this has to cover
+    /// every goal a server runs at once (rcl_action servers have no fixed cap,
+    /// dora's own allow up to 16).
+    const MAX_PENDING_CALLS: usize = 64;
+
     pub struct ActionClient {
         pub send_goal: NodeServiceClient,
         pub get_result: NodeServiceClient,
@@ -454,20 +534,25 @@ pub mod zenoh {
             let decode = Arc::new(|bytes: &[u8]| Ok(bytes.to_vec()));
             let status_qos = action_status_qos(qos);
             Ok(Self {
-                send_goal: NodeServiceClient::declare(node, &keys.send_goal, tokens.send_goal, 8)
-                    .await?,
+                send_goal: NodeServiceClient::declare(
+                    node,
+                    &keys.send_goal,
+                    tokens.send_goal,
+                    MAX_PENDING_CALLS,
+                )
+                .await?,
                 get_result: NodeServiceClient::declare(
                     node,
                     &keys.get_result,
                     tokens.get_result,
-                    8,
+                    MAX_PENDING_CALLS,
                 )
                 .await?,
                 cancel_goal: NodeServiceClient::declare(
                     node,
                     &keys.cancel_goal,
                     tokens.cancel_goal,
-                    8,
+                    MAX_PENDING_CALLS,
                 )
                 .await?,
                 feedback: NodeSubscription::declare(
