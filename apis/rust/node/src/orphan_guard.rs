@@ -68,10 +68,11 @@
 //! A `path: shell` node is *also* excluded from this module: it never calls
 //! [`DoraNode::init`][crate::DoraNode::init], so nothing here arms. It is
 //! instead wrapped by the daemon in `dora __shell-guard`, a hidden CLI
-//! subcommand that becomes the daemon's direct child and process-group leader,
-//! spawns the shell inside that group, and `killpg`s it once the
-//! `DORA_RUN_PARENT_PID` process is gone — covering the background forks a
-//! bare `PDEATHSIG` on the shell cannot (dora-rs/dora#3472).
+//! subcommand that leaves behind a detached watchdog and then `exec`s the shell
+//! in place, keeping the daemon-assigned pid and process-group leadership. The
+//! watchdog `killpg`s that group once the `DORA_RUN_PARENT_PID` process is gone
+//! — covering the background forks a bare `PDEATHSIG` on the shell cannot
+//! (dora-rs/dora#3472).
 //!
 //! Unix only; on Windows this module compiles to a no-op and the gap remains.
 //! Windows has no process groups in this sense, so a node cannot contain its

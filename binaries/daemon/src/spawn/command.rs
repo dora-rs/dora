@@ -53,10 +53,12 @@ pub(super) async fn path_spawn_command(
                 // once the parent is gone, and that only makes sense when the
                 // nodes are bound to the parent (#2029 trees the same way —
                 // coordinator-attached nodes must outlive the daemon). The
-                // guard becomes the direct child (and process-group leader) of
-                // the daemon and killpgs its group when the daemon disappears;
-                // a `sh -c 'cmd &'` background fork would otherwise outlive
-                // the daemon, orphaned to init. See
+                // guard leaves a detached watchdog watching the daemon and then
+                // `exec`s the shell in place, so the node keeps the pid and
+                // process-group leadership the daemon assigned it and the
+                // watchdog killpgs that group if the daemon disappears; a
+                // `sh -c 'cmd &'` background fork would otherwise outlive the
+                // daemon, orphaned to init. See
                 // `binaries/cli/src/command/shell_guard.rs`.
                 match dora_guard_command(&shell_args, shell_guard_host) {
                     Some(cmd) => cmd,
@@ -284,9 +286,18 @@ pub(super) async fn path_spawn_command(
 /// embedding program again inside the node (e.g. `examples/c-dataflow`
 /// redoing its whole build). The wheel's host is the wheel's own `dora`
 /// console script, so it passes the gate.
-/// The environment variables that decide which interpreter python starts with,
-/// and so have to be kept off a guard host that may itself be python.
-pub(super) const PYTHON_ENV_VARS: [&str; 2] = ["PYTHONHOME", "PYTHONPATH"];
+/// Whether `key` decides which interpreter python starts with, and so has to be
+/// kept off a guard host that may itself be python.
+///
+/// The whole `PYTHON*` namespace rather than a hand-picked pair: under the
+/// `dora-rs-cli` wheel the host is a python console script, and any of these can
+/// stop that interpreter from starting at all — not just `PYTHONHOME` and
+/// `PYTHONPATH`, but `PYTHONNOUSERSITE`, `PYTHONSTARTUP`, `PYTHONSAFEPATH`, …
+/// — taking the guard, and with it the containment it exists to provide, down
+/// with it (#3472 review).
+pub(super) fn is_guard_host_env(key: &str) -> bool {
+    key.starts_with("PYTHON")
+}
 
 /// Prefix under which the daemon hands those to the guard, which puts them back
 /// on the child. Kept in step with `shell_guard.rs` by the test there.

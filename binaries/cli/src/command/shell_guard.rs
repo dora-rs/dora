@@ -1,48 +1,46 @@
-use eyre::Context;
 use std::{process::Command, time::Duration};
 
 use super::Executable;
 use dora_core::topics::DORA_RUN_PARENT_PID_ENV;
 use libc::pid_t;
 
-/// Hidden subcommand: a process-group-aware supervisor for `path: shell` nodes.
+/// Hidden subcommand: keeps a `path: shell` node's process group contained.
 ///
 /// The daemon wraps shell node spawns with `dora __shell-guard -- sh -c <args>`
 /// on unix, but only on the in-process `dora run` / `Daemon::run_dataflow`
 /// spawn path. The `dora` executable to re-spawn is the CLI host itself —
 /// `current_exe` for the standalone binary, the recorded `sys.argv[0]`
 /// console-script path for the `dora-rs-cli` wheel, whose interpreter is not a
-/// `dora` binary (see `binaries/daemon/src/spawn/command.rs`). The guard
-/// becomes the direct child (and process-group leader) of the daemon, spawns
-/// the shell as its own child, and polls [`DORA_RUN_PARENT_PID`].
-/// When the parent is gone, the guard `killpg`s its entire process group —
-/// which, because the daemon wrapped it as `ProcessGroup::leader()`, covers the
-/// shell and its background forks *while the guard is alive* (dora-rs/dora#3472).
+/// `dora` binary (see `binaries/daemon/src/spawn/command.rs`).
+///
+/// The guard does two things and then gets out of the way:
+///
+/// 1. It forks a *watchdog* — detached from the node with a double `fork`, so
+///    it is not a child of the shell — that watches the `DORA_RUN_PARENT_PID`
+///    process and `killpg`s the node's group once that process is gone. That is
+///    the one case no other process can cover: a `SIGKILL`ed `dora run` runs no
+///    teardown code, so a shell that backgrounded a fork (`sh -c 'cmd & wait'`)
+///    would leave the fork orphaned to `ppid 1` (dora-rs/dora#3472).
+/// 2. It `exec`s the shell *in place*, keeping the pid and the process-group
+///    leadership the daemon gave the guard. The shell is therefore the node
+///    exactly as if the daemon had spawned it directly: `$$` is the shell's own
+///    process group, `kill -- -$$` reaches it, and the daemon's TERM-then-KILL
+///    stop ladder and its exit-time `killpg` address the node unchanged
+///    (dora-rs/dora#3472 review). Exec-in-place is what preserves that; a guard
+///    that stayed between the daemon and the shell would make the shell an
+///    ordinary child, so `$$` would no longer be its pgid.
 ///
 /// On the *normal* stop path (a terminal `dora run`, `--stop-after`, …) the
-/// daemon SIGTERMs the whole group — the shell gets the signal directly from
-/// that group kill, so the guard forwards nothing. The guard only has to
-/// survive those signals — it swallows SIGTERM/SIGINT/SIGHUP in armed mode so
-/// it stays registered and can reap the shell before exiting — because without
-/// the handlers it exits on the first SIGTERM, the node is unregistered, and
-/// the daemon skips the group-SIGKILL escalation for a node it believes
-/// already stopped: the TERM-ignoring shell and its background forks live on
-/// as orphans (dora-rs/dora#3472 review).
-///
-/// The guard can only contain forks while it is running. A background fork
-/// abandoned by a shell that already exited (`sh -c 'cmd &'` — the shell
-/// returns immediately, the guard reaps it and exits) survives the guard, so
-/// the daemon additionally `killpg`s a node's group the moment the node
-/// process exits (`binaries/daemon/src/spawn/prepared.rs`, the node's
-/// process-wait task); every node is spawned as its own group leader, so that
-/// is the one place a finished node's stragglers are still reachable.
+/// daemon `killpg`s the node's group; the shell gets the signal directly and
+/// the watchdog — which sits outside that group, see [`watchdog`] — exits as
+/// soon as the group is gone. On a node that exits on its own the daemon
+/// `killpg`s the group the same way (`binaries/daemon/src/spawn/prepared.rs`,
+/// `contain_exited_group`), with the watchdog collecting nothing and exiting.
 ///
 /// On the coordinator-attached path (`dora up` + `dora start`) the daemon does
 /// not use the guard at all — nodes there are meant to outlive the daemon
-/// (#2029) and would never carry [`DORA_RUN_PARENT_PID`]. Rendering the guard
-/// directly would add a resident `dora` process per shell node for nothing, so
-/// the daemon spawns `sh -c` itself. The passthrough below remains only as a
-/// bare fallback for a manually-invoked guard that finds the env var absent.
+/// (#2029) and never carry `DORA_RUN_PARENT_PID`. Rendering the guard directly
+/// then just `exec`s the command, since there is nothing to contain.
 #[derive(Debug, clap::Args)]
 pub struct ShellGuardArgs {
     /// The command to run under the guard, e.g. `sh -c <args>`.
@@ -63,8 +61,8 @@ impl Executable for ShellGuardArgs {
     }
 }
 
-/// How often the parent is re-checked — same interval as the in-node orphan
-/// guard (`apis/rust/node/src/orphan_guard.rs`).
+/// How often the watchdog re-checks the parent — same interval as the in-node
+/// orphan guard (`apis/rust/node/src/orphan_guard.rs`).
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 fn shell_guard_main(program: &str, args: &[String]) -> eyre::Result<()> {
@@ -73,222 +71,199 @@ fn shell_guard_main(program: &str, args: &[String]) -> eyre::Result<()> {
         .and_then(|raw| raw.trim().parse().ok());
 
     match parent {
-        None => passthrough(program, args),
+        // Nothing to contain: exec the command so it keeps this pid and group,
+        // exactly as on the guarded path.
+        None => exec_in_place(program, args),
         Some(parent) => armed(program, args, parent),
     }
 }
 
-/// Transparent passthrough: spawn the child, wait for it, forward the exit
-/// status.  Used on the coordinator-attached path where nodes must outlive
-/// daemon restarts.
-fn passthrough(program: &str, args: &[String]) -> eyre::Result<()> {
-    use std::process::Command;
-
-    let status = Command::new(program)
-        .args(args)
-        .status()
-        .wrap_err_with(|| format!("failed to spawn `{program}`"))?;
-
-    std::process::exit(status.code().unwrap_or(1));
-}
-
-/// Armed mode: the guard clears `PR_SET_PDEATHSIG` (set on it by the daemon's
-/// pre_exec), spawns the child, and polls the parent.  A dedicated reaper
-/// thread blocks on the shell's exit, so nothing delays node teardown; when
-/// the parent is gone, the poll thread `killpg`s its own process group —
-/// which, because the daemon wraps the guard with `ProcessGroup::leader()`,
-/// contains the shell and all of its background forks.
+/// Armed mode: leave the watchdog behind, then become the command.
 fn armed(program: &str, args: &[String], parent: u32) -> eyre::Result<()> {
-    use std::os::unix::process::ExitStatusExt as _;
-    use std::process::Command;
-
-    // Whether the guard is the daemon's direct child.  This is the common case
-    // on the `dora run` path (no `--uv` wrapper for shell nodes), and it makes
-    // `getppid()` an exact liveness test.
-    // SAFETY: reads this process's own parent id.
-    let direct_child = unsafe { libc::getppid() } == parent as pid_t;
     let parent = parent as pid_t;
 
-    // The daemon's pre_exec sets `PR_SET_PDEATHSIG(SIGKILL)` on us (the direct
-    // child).  Once the poll loop is running it is the sole containment
-    // mechanism, and the signal is a liability — it fires on the death of the
-    // *spawning thread*, not the daemon process.  Clear it now, mirroring the
-    // in-node guard (`clear_parent_death_signal`).
+    // The daemon's pre-exec armed `PR_SET_PDEATHSIG(SIGKILL)` on us. The
+    // watchdog owns containment from here, and the signal is a liability: it
+    // fires on the death of the *spawning thread*, not the daemon process.
     clear_parent_death_signal();
 
-    // Install stop-signal handlers BEFORE spawning the child: the daemon's stop
-    // ladder sends SIGTERM to the whole node process group, landing on the
-    // guard and the shell at once.  With the default disposition the guard
-    // dies first and is unregistered, the daemon then skips the SIGKILL
-    // escalation for a node it thinks already stopped, and a shell that
-    // ignores SIGTERM survives — reparented to init.  The handler keeps the
-    // guard alive to stay registered and reap the shell (dora-rs/dora#3472
-    // review).  A real handler rather than `SIG_IGN`: ignored dispositions
-    // survive `exec` and would be inherited by the shell.
-    install_stop_signal_handlers()?;
+    // Whether the guard is the daemon's direct child (the common case on the
+    // `dora run` path), which makes `getppid()` an exact liveness test.
+    // SAFETY: reads this process's own parent id.
+    let direct_child = unsafe { libc::getppid() } == parent;
 
-    // Check the parent *before* spawning the child — if it is already gone
-    // there is nothing to contain and we should exit immediately.  The guard
-    // has not spawned anything yet, so its group is (only) itself.
+    // Check the parent *before* leaving the watchdog: if it is already gone
+    // there is nothing left to contain and nothing worth running the command
+    // for. The guard has spawned nothing yet, so its group is only itself.
     if parent_is_gone(parent, direct_child) {
         std::process::exit(0);
     }
 
+    leave_watchdog(parent)?;
+    exec_in_place(program, args)
+}
+
+/// Fork the containment watchdog and return in the guard, ready to `exec`.
+///
+/// Two forks on purpose. The intermediate child exits at once and is reaped
+/// here, so the watchdog is reparented to `init` rather than becoming a child
+/// of the shell this function's caller is about to `exec` into. A direct child
+/// would be caught by the node's own `wait` — `sh -c 'cmd & wait'` waits for
+/// *every* child — and the node would hang instead of exiting (dora-rs/dora#3472
+/// review).
+fn leave_watchdog(parent: pid_t) -> eyre::Result<()> {
+    // SAFETY: this runs before any thread is spawned, so a plain `fork` has no
+    // lock to strand; the forked children below call only async-signal-safe
+    // functions (`fork`, `getpgrp`, `setpgid`, `kill`, `nanosleep`, `_exit`).
+    match unsafe { libc::fork() } {
+        -1 => eyre::bail!(
+            "__shell-guard: fork failed: {}",
+            std::io::Error::last_os_error()
+        ),
+        // The intermediate: fork the real watchdog and exit, so the watchdog is
+        // reparented away from the shell.
+        0 => match unsafe { libc::fork() } {
+            -1 => unsafe { libc::_exit(1) },
+            0 => watchdog(parent),
+            _ => unsafe { libc::_exit(0) },
+        },
+        intermediate => {
+            // Reap the intermediate before continuing, so the shell starts with
+            // no leftover child of its own. Best effort: a failure only leaves a
+            // zombie, which the group kill collects anyway.
+            let mut status = 0;
+            // SAFETY: `waitpid` on the pid just forked; `status` is a valid
+            // out-pointer for the call.
+            unsafe { libc::waitpid(intermediate, &mut status, 0) };
+            Ok(())
+        }
+    }
+}
+
+/// The watchdog: a detached process that contains the node's group if the
+/// daemon dies while the node is still running.
+///
+/// It reads the daemon's pid directly rather than through `getppid`, because
+/// the double `fork` in [`leave_watchdog`] left it a child of `init`. That
+/// probe is one-sided: a recycled pid can leave the node running — today's
+/// behavior, never a wrong kill.
+fn watchdog(parent: pid_t) -> ! {
+    // The group the daemon created for this node. Captured before moving out of
+    // it: this is what the watchdog contains if the daemon dies.
+    // SAFETY: reads this process's own process-group id.
+    let node_group = unsafe { libc::getpgrp() };
+    // Move into a group of our own. The daemon watches the node's group to
+    // decide when a node is really gone (`contain_exited_group`): a watchdog
+    // still sitting in it would read as a live straggler — a spurious
+    // "abandoned" warning on every clean exit and a full grace period added to
+    // every stop. Out here it is invisible to that scan, dies only by its own
+    // hand, and is still in place to contain the node's group.
+    //
+    // Best effort: `setpgid(0, 0)` on a process that is not a session leader
+    // does not fail in practice, and the fallback (staying in the node's group)
+    // only costs the spurious scan behavior above, not containment.
+    // SAFETY: affects this process's own group id only.
+    unsafe { libc::setpgid(0, 0) };
+
+    loop {
+        if parent_is_gone(parent, false) {
+            // The daemon is gone: contain the node and every background fork it
+            // left, as the daemon's own reaper would.
+            // SAFETY: signals the node's group, which the daemon created for
+            // this node alone, so no unrelated process can be signalled.
+            unsafe { libc::killpg(node_group, libc::SIGKILL) };
+            // SAFETY: `_exit` ends the watchdog; it touches no shared state.
+            unsafe { libc::_exit(0) };
+        }
+        // The node's group is gone: the node finished or was stopped, and the
+        // daemon has already collected its stragglers. Nothing is left to
+        // contain, so the watchdog is done. Only a recycled pgid could delay
+        // this, which is why the check never kills on its own.
+        // SAFETY: signal 0 performs error checking only and sends no signal.
+        let probe = unsafe { libc::killpg(node_group, 0) };
+        if probe != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            // SAFETY: `_exit` ends the watchdog; it touches no shared state.
+            unsafe { libc::_exit(0) };
+        }
+        sleep_in_poll();
+    }
+}
+
+/// Sleep one poll interval using only async-signal-safe calls: the watchdog
+/// runs in a forked child and must not touch the allocator or a lock the
+/// pre-fork process might have held.
+fn sleep_in_poll() {
+    let interval = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: POLL_INTERVAL.as_nanos() as libc::c_long,
+    };
+    // SAFETY: `nanosleep` is async-signal-safe, affects only this thread, and
+    // accepts a null remainder.
+    unsafe { libc::nanosleep(&interval, std::ptr::null_mut()) };
+}
+
+/// Replace this process with `program`.
+///
+/// `exec` keeps the pid and the process-group leadership, so the command
+/// becomes the node exactly as the daemon spawned it. The node's interpreter
+/// env the daemon set aside is handed back here.
+fn exec_in_place(program: &str, args: &[String]) -> eyre::Result<()> {
+    use std::os::unix::process::CommandExt as _;
+
     let mut command = Command::new(program);
     command.args(args);
-    restore_node_python_env(&mut command);
-    let mut child = command
-        .spawn()
-        .wrap_err_with(|| format!("failed to spawn `{program}` under guard"))?;
-
-    // Reaper thread: block on the shell's exit and propagate its status, so a
-    // node's normal teardown is not delayed by a poll interval.  When the
-    // shell dies by a signal, die the same way — the daemon classifies stops
-    // by the signal (e.g. `143` for SIGTERM) — and otherwise with its code.
-    std::thread::spawn(move || match child.wait() {
-        Ok(status) => {
-            if let Some(signal) = status.signal() {
-                re_raise(signal);
-            }
-            std::process::exit(status.code().unwrap_or(1));
-        }
-        Err(e) => {
-            eprintln!("shell guard: failed to reap guarded process: {e}");
-            std::process::exit(1);
-        }
-    });
-
-    // Poll the parent for the containment side: when it is gone (e.g. a
-    // SIGKILLed `dora run`), take down the whole group — the shell, its
-    // background forks, and this guard.  The reaper thread owns the child, so
-    // this group `killpg` is what ends a shell that outlives the daemon.  The
-    // loop only ever fires here: stop signals need no action (the group kill
-    // already reaches the shell), so the handlers above exist solely to keep
-    // the guard alive until the reaper thread exits.
-    loop {
-        // Contain background forks when the parent is gone.
-        if parent_is_gone(parent, direct_child) {
-            contain();
-        }
-
-        std::thread::sleep(POLL_INTERVAL);
-    }
+    restore_node_env(&mut command);
+    // `exec` returns only on failure; on success this process *is* the command.
+    let error = command.exec();
+    Err(eyre::eyre!(
+        "__shell-guard: failed to exec `{program}`: {error}"
+    ))
 }
 
-/// The stop signals the guard must survive so it can reap the shell they were
-/// sent to stop.
-const STOP_SIGNALS: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP];
-
-/// Signal handler: swallow the signal.  The guard's only job on a stop signal
-/// is to stay alive — the daemon group-kills the shell itself, so there is
-/// nothing to re-forward, and the reaper thread ends the guard once the shell
-/// is gone.  `SIG_IGN` would also work for staying alive but must not be used:
-/// ignored dispositions survive `exec` and would be inherited by the shell,
-/// changing shell semantics (e.g. rustup/sccache proxies that expect TERM to
-/// hurt).
-/// Put the node's interpreter selection back on `child`.
+/// Put the node's interpreter env back for the exec, under its own names.
 ///
-/// The daemon keeps `PYTHONHOME`/`PYTHONPATH` off the guard host on purpose,
-/// because the host may be a python console script (the `dora-rs-cli` wheel)
-/// and a node's interpreter settings can stop that python from starting, which
-/// would take the guard down with it. The child is the process those variables
-/// were meant for, so hand them over here — under the names the daemon chose,
-/// which it strips from its own environment on the way in.
-fn restore_node_python_env(child: &mut Command) {
-    restore_python_env_from(child, |var| std::env::var(var).ok());
+/// The daemon keeps the node's `PYTHON*` variables off the guard host — under
+/// the `dora-rs-cli` wheel the host is itself a python console script, and any
+/// of them can stop that python from starting, taking the guard down with it —
+/// by handing them over under `DORA_SHELL_GUARD_`-prefixed names. The exec'd
+/// command is the process they were meant for, so restore them and drop the
+/// prefixed copies.
+fn restore_node_env(command: &mut Command) {
+    restore_node_env_from(command, std::env::vars());
 }
 
-/// `restore_node_python_env`, with the passthrough read from `source` instead of
-/// this process's environment — which is the only thing a test can supply
-/// without `set_var`, and that is process-global.
-fn restore_python_env_from(child: &mut Command, source: impl Fn(&str) -> Option<String>) {
-    for var in ["PYTHONHOME", "PYTHONPATH"] {
-        if let Some(value) = source(&format!("{GUARD_ENV_PREFIX}{var}")) {
-            child.env(var, value);
+/// `restore_node_env`, with the input read from `vars` instead of this
+/// process's environment — which is the only thing a test can supply without
+/// `set_var`, and that is process-global.
+fn restore_node_env_from<I>(command: &mut Command, vars: I)
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    for (key, value) in vars {
+        if let Some(name) = key.strip_prefix(GUARD_ENV_PREFIX) {
+            command.env(name, value);
+            command.env_remove(key);
         }
     }
 }
 
-/// Prefix the daemon hands `restore_node_python_env`'s variables under, spelled
-/// the same as `GUARD_ENV_PREFIX` in the daemon's `spawn/command.rs`. One
-/// string in two crates, so they have to be changed together — if either is
-/// edited alone the node silently loses its interpreter.
+/// Prefix the daemon hands the node's interpreter variables under, spelled the
+/// same as `GUARD_ENV_PREFIX` in the daemon's `spawn/command.rs`. One string in
+/// two crates, so they have to be changed together — if either is edited alone
+/// the node silently loses its interpreter.
 const GUARD_ENV_PREFIX: &str = "DORA_SHELL_GUARD_";
 
-extern "C" fn swallow_stop_signal(_signal: libc::c_int) {}
-
-fn install_stop_signal_handlers() -> eyre::Result<()> {
-    for signal in STOP_SIGNALS {
-        // SAFETY: `signal` installs a handler that touches no state.  The
-        // handler never allocates or calls anything non-async-signal-safe.
-        let prev = unsafe {
-            libc::signal(
-                signal,
-                swallow_stop_signal as *const () as libc::sighandler_t,
-            )
-        };
-        if prev == libc::SIG_ERR {
-            eyre::bail!("failed to install a handler for signal {signal}");
-        }
-    }
-    Ok(())
-}
-
-/// Reset `signal` to its default action and re-raise it, so the process dies
-/// from the signal rather than the handler swallowing it.
-fn re_raise(signal: i32) -> ! {
-    clear_core_dumps();
-    // SAFETY: `signal` and `raise` are async-signal-safe, and resetting to the
-    // default first is what makes a second delivery terminal.
-    unsafe {
-        libc::signal(signal, libc::SIG_DFL);
-        libc::raise(signal);
-    }
-    // Defensive: if the signal was somehow blocked after re-raising, fall back
-    // to the shell convention for "killed by signal N".
-    std::process::exit(128 + signal);
-}
-
-/// Drop the core-dump limit, so dying from a crash that belongs to the guarded
-/// process leaves no dump of its own.
-///
-/// The guard dies from the *guarded* process's signal on purpose, because the
-/// daemon classifies a stop by signal (`143` for SIGTERM, `139` for SIGSEGV).
-/// With the inherited `ulimit -c` still in place that also dumps core, and the
-/// core's executable is `dora` — so `coredumpctl` answers "dora segfaulted" for
-/// a crash inside someone's node, and a `dora`-sized core file lands in the cwd
-/// of a container. The exit status the daemon acts on is unaffected either way.
-///
-/// This is the file-based case only, which is the one a container gets by
-/// default. Where `core_pattern` pipes to a handler instead — `systemd-coredump`
-/// and `apport` both do — the kernel collects the core regardless of
-/// `RLIMIT_CORE`, so the dump still reaches the handler and only the *filename*
-/// on disk goes away. Suppressing that is the handler's configuration, not this
-/// process's, and guessing at it is more risk than the dump is worth.
-fn clear_core_dumps() {
-    let no_core = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: this process's own limit, and lowering a limit is always
-    // permitted. The hard limit is lowered with it, which is why this only
-    // runs on the way out.
-    unsafe {
-        libc::setrlimit(libc::RLIMIT_CORE, &no_core);
-    }
-}
-
-/// Whether the process identified by `parent` has exited.
+/// Whether `parent` has exited.
 ///
 /// Two checks because there are two shapes, mirroring `ContainmentPlan` in
 /// `apis/rust/node/src/orphan_guard.rs`:
 ///
-/// - Direct child (the common `dora run` case): the kernel reparents an orphan,
-///   so `getppid()` moving away from the recorded pid proves that pid is gone,
-///   whether or not the id has since been recycled.
-/// - Not a direct child: ask about the pid directly with signal 0.  `EPERM`
-///   means the process exists but is not ours to signal, so only an outright
-///   lookup failure counts as gone.
+/// - Direct child (the guard itself, before the exec): the kernel reparents an
+///   orphan, so `getppid()` moving away from the recorded pid proves that pid
+///   is gone, whether or not the id has since been recycled.
+/// - Not a direct child (the watchdog): ask about the pid directly with signal
+///   0.  `EPERM` means the process exists but is not ours to signal, so only an
+///   outright lookup failure counts as gone.
 fn parent_is_gone(parent: pid_t, direct_child: bool) -> bool {
     if direct_child {
         // SAFETY: reads this process's own parent id.
@@ -299,36 +274,12 @@ fn parent_is_gone(parent: pid_t, direct_child: bool) -> bool {
     probe != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
-/// Kill this process's own process group.
-///
-/// The daemon wraps the guard with `ProcessGroup::leader()`, so the guard's
-/// pgid equals its own pid and contains the shell + all of its background
-/// forks.  `killpg` targets the group, not just this process, which is the
-/// whole point: ending only the guard would leave orphans one level down.
-///
-/// Reached only when the parent is gone; there is no one to flush outputs to.
-fn contain() -> ! {
-    // SAFETY: `killpg` signals this process's own group.  The group exists
-    // solely for this node (spawned as `ProcessGroup::leader()`), so there is
-    // no risk of signalling an unrelated process group.
-    unsafe {
-        libc::killpg(libc::getpgrp(), libc::SIGKILL);
-    }
-    // `_exit`, not `std::process::exit`: this runs on the main thread while the
-    // child may still be executing — `exit` would run `atexit` / destructors
-    // concurrently and could deadlock on locks held by spawned threads.
-    // SAFETY: `_exit` ends the process; it touches no state of ours.
-    unsafe {
-        libc::_exit(1);
-    }
-}
-
 /// Drop the parent-death signal the daemon set for the pre-`init` window.
 ///
 /// The daemon arms `PR_SET_PDEATHSIG` at spawn so a child killed before the
-/// poll loop starts is still contained.  Once the loop is running, the signal
-/// is not merely redundant but a liability — it fires on the death of the
-/// spawning *thread*, not the daemon process — so the guard drops it.
+/// watchdog forks is still contained. Once the watchdog is running the signal
+/// is a liability — it fires on the death of the spawning *thread*, not the
+/// daemon process — so the guard drops it before exec.
 ///
 /// On macOS there is no `PDEATHSIG` equivalent; this is a no-op there.
 #[cfg(target_os = "linux")]
@@ -346,18 +297,30 @@ fn clear_parent_death_signal() {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
-    /// The child's interpreter selection is restored from the passthrough, so a
-    /// node that needs `PYTHONHOME` still gets it even though the guard host
-    /// runs without it.
+    /// The node's interpreter selection is handed back under its own name for
+    /// the exec, so a node that needs any `PYTHON*` variable still gets it even
+    /// though the guard host ran without it.
     #[test]
-    fn the_node_python_env_reaches_the_child() {
+    fn the_node_env_is_restored_under_its_own_name() {
         let mut command = Command::new("sh");
-        restore_python_env_from(&mut command, |var| {
-            (var == "DORA_SHELL_GUARD_PYTHONHOME").then(|| "/opt/py".to_string())
-        });
+        restore_node_env_from(
+            &mut command,
+            [
+                (
+                    "DORA_SHELL_GUARD_PYTHONHOME".to_string(),
+                    "/opt/py".to_string(),
+                ),
+                (
+                    "DORA_SHELL_GUARD_PYTHONNOUSERSITE".to_string(),
+                    "1".to_string(),
+                ),
+                ("PATH".to_string(), "/bin".to_string()),
+            ],
+        );
 
-        let envs: Vec<(String, Option<String>)> = command
+        let envs: BTreeMap<String, Option<String>> = command
             .get_envs()
             .map(|(k, v)| {
                 (
@@ -366,93 +329,37 @@ mod tests {
                 )
             })
             .collect();
+        assert_eq!(
+            envs.get("PYTHONHOME"),
+            Some(&Some("/opt/py".to_string())),
+            "every PYTHON* the node set comes back under its own name, got {envs:?}"
+        );
+        assert_eq!(
+            envs.get("PYTHONNOUSERSITE"),
+            Some(&Some("1".to_string())),
+            "not just PYTHONHOME/PYTHONPATH: {envs:?}"
+        );
         assert!(
-            envs.contains(&("PYTHONHOME".into(), Some("/opt/py".into()))),
-            "the child must get the node's PYTHONHOME back, got {envs:?}"
+            !envs.contains_key("PATH"),
+            "a variable the daemon did not set aside is left as inherited"
+        );
+        assert_eq!(
+            envs.get("DORA_SHELL_GUARD_PYTHONHOME"),
+            Some(&None),
+            "the prefixed copy must not reach the node: {envs:?}"
         );
     }
 
-    /// A node that set no interpreter env of its own must not be overridden:
-    /// the child simply keeps what it inherited.
+    /// Nothing set aside means nothing overridden: the node keeps whatever it
+    /// would otherwise inherit.
     #[test]
-    fn without_a_passthrough_the_child_is_left_alone() {
+    fn without_a_passthrough_the_command_is_left_alone() {
         let mut command = Command::new("sh");
-        restore_python_env_from(&mut command, |_| None);
+        restore_node_env_from(&mut command, [("PATH".to_string(), "/bin".to_string())]);
         assert_eq!(
             command.get_envs().count(),
             0,
-            "nothing handed over must mean nothing overridden, or the child \
-             loses the value it inherited from the daemon"
+            "nothing handed over must mean nothing overridden"
         );
-    }
-
-    /// The guard must never be the executable in a core dump: it dies from the
-    /// guarded process's signal by design, and `ulimit -c` is inherited (#3472
-    /// review).
-    ///
-    /// Run in a forked child, because the check lowers the *hard* limit to 0
-    /// and that cannot be undone without privilege — in this process it would
-    /// silently disarm core dumps for every other test in the binary.
-    #[test]
-    fn the_core_limit_is_zeroed_before_the_guard_re_raises() {
-        // SAFETY: forking is fine here: the child runs only `setrlimit`,
-        // `getrlimit` and `_exit`, all async-signal-safe, and touches none of
-        // this process's state. The parent keeps its own limits either way.
-        let pid = unsafe { libc::fork() };
-        assert!(pid >= 0, "fork failed");
-        if pid == 0 {
-            // SAFETY: `_exit` ends the child without running the parent's
-            // destructors, which is what a forked child must do.
-            unsafe { libc::_exit(zeroed_core_limit_leaves_no_dump()) };
-        }
-        let mut status = 0;
-        // SAFETY: waiting on the pid just forked, with a `status` this block
-        // initialises.
-        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
-        assert_eq!(
-            libc::WEXITSTATUS(status),
-            0,
-            "the child rejected the core-limit check"
-        );
-    }
-
-    /// Child half of the above: establish that a non-zero core limit is
-    /// zeroed, and report through the exit status. Returns the exit code.
-    fn zeroed_core_limit_leaves_no_dump() -> i32 {
-        let eight_mib = 8 * 1024 * 1024;
-        let mut current = libc::rlimit {
-            rlim_cur: 0,
-            rlim_max: 0,
-        };
-        // SAFETY: reading and writing this child's own limit. The soft limit is
-        // raised only to what the current hard limit already allows, so
-        // `setrlimit` is permitted without privilege.
-        if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut current) } != 0 {
-            return 1;
-        }
-        let raised = libc::rlimit {
-            rlim_cur: eight_mib.min(current.rlim_max),
-            rlim_max: current.rlim_max,
-        };
-        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raised) } != 0 {
-            return 2;
-        }
-        // Premise: something to zero. A hard limit of 0 means the environment
-        // cannot express the case, so skip rather than pass vacuously.
-        if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut current) } != 0 || current.rlim_cur == 0
-        {
-            return 3;
-        }
-
-        clear_core_dumps();
-
-        // SAFETY: as above.
-        if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut current) } != 0 {
-            return 4;
-        }
-        if current.rlim_cur != 0 || current.rlim_max != 0 {
-            return 5;
-        }
-        0
     }
 }

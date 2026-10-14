@@ -2411,6 +2411,71 @@ fn run_killed_before_node_init_does_not_orphan() {
     }
 }
 
+/// dora-rs/dora#3472 (review): a shell node must still lead its own process
+/// group, so `$$` is the pgid and the common `trap 'kill -- -$$' EXIT` idiom
+/// works.
+///
+/// The shell guard wraps shell spawns. An earlier shape kept the guard as the
+/// daemon's direct child and group leader and spawned the shell inside that
+/// group, so the shell's `$$` was itself but its process group was the guard's;
+/// `kill -- -$$` then failed with "No such process" because no group `$$`
+/// existed, orphaning the node's children — which the daemon then SIGKILLed
+/// instead of the graceful stop the trap was reaching for. The guard now `exec`s
+/// the shell in place, preserving the daemon-assigned pid and group, so the shell
+/// is the leader exactly as on the unguarded `dora up` path.
+#[test]
+#[cfg(unix)]
+fn run_keeps_a_shell_node_in_its_own_process_group() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let mut run = ShellOrphanRun::start();
+    let (shell_pid, child_pid) = run.wait_for_shell_and_child();
+
+    // The fixture published `ps -o pgid= -p $$` alongside `$$`, and
+    // `wait_for_shell_and_child` only returns once the later child-pid file
+    // exists, so this is already on disk. Read defensively anyway, so a missing
+    // write fails as a named timeout rather than a panic in `parse`.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let pgid = loop {
+        if let Some(raw) = fs::read_to_string(&run.shell_pgid_file).ok()
+            && let Ok(pgid) = raw.trim().parse::<u32>()
+        {
+            break pgid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the fixture never published the shell's pgid to {}\nstderr tail:\n{}",
+            run.shell_pgid_file.display(),
+            run.stderr_tail()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
+
+    assert_eq!(
+        pgid,
+        shell_pid,
+        "the shell must lead its own process group: `$$` is {shell_pid} but its \
+         pgid is {pgid}, so `kill -- -$$` reaches nothing (dora-rs/dora#3472 \
+         review)\n\
+         stderr tail:\n{}",
+        run.stderr_tail()
+    );
+
+    // Tear down. The keep-alive shell (`sh -c '…; wait'`) never exits on its
+    // own, so the dataflow has to be stopped here: SIGKILL the CLI and reap it,
+    // as the sibling tests do. Its death is what the guard's watchdog is
+    // watching, so the node's group is then contained — wait for the shell and
+    // its fork to be gone before returning, rather than leaving them for
+    // `Drop` to group-kill.
+    let _ = Command::new("kill")
+        .args(["-KILL", &run.cli.id().to_string()])
+        .status();
+    let _ = run.cli.wait();
+    run.cli_reaped = true;
+    wait_for_process_exit(&shell_pid.to_string(), Duration::from_secs(15));
+    wait_for_process_exit(&child_pid.to_string(), Duration::from_secs(15));
+}
+
 /// dora-rs/dora#3472: the background fork of a shell node must not survive a
 /// SIGKILLed `dora run`.
 ///
@@ -2422,11 +2487,13 @@ fn run_killed_before_node_init_does_not_orphan() {
 /// shell alone, orphaning the grandchild to `ppid 1`.
 ///
 /// The daemon therefore routes shell spawns through `dora __shell-guard`
-/// (binaries/cli/src/command/shell_guard.rs), a hidden CLI subcommand spawned
-/// as the daemon's direct child AND the process-group leader. It launches the
-/// shell inside that group and, once the `DORA_RUN_PARENT_PID` process is
-/// gone, `killpg`s the whole group — guard, shell, and background forks
-/// together.
+/// (binaries/cli/src/command/shell_guard.rs), a hidden CLI subcommand that
+/// leaves behind a detached watchdog and then `exec`s the shell *in place*,
+/// keeping the daemon-assigned pid and process-group leadership. Once the
+/// `DORA_RUN_PARENT_PID` process is gone the watchdog `killpg`s the node's
+/// group — shell and background forks together. Exec-in-place is why the shell
+/// is still its own group leader (`$$` is the pgid); see
+/// `run_keeps_a_shell_node_in_its_own_process_group`.
 ///
 /// The fixture is the point of the test: the shell must not only run but fork
 /// a long-lived background child AND publish the pids of both to disk.
@@ -2717,9 +2784,9 @@ fn run_stop_grace_lets_a_stopped_nodes_child_finish_its_cleanup() {
 /// dora-rs/dora#3472 (review): a background fork abandoned by a shell that
 /// exits immediately (`sh -c 'cmd &'`, no `wait`) must not orphan.
 ///
-/// The shell-guard's own containment runs only while the guard is alive: the
-/// shell exits at once, the reaper thread exits the guard, and no `killpg`
-/// ever fires from the guard's side — the remaining fork is reachable only
+/// The shell-guard's containment only fires if the daemon dies: here the shell
+/// exits at once, so the watchdog — which only `killpg`s the node's group once
+/// the daemon is gone — never fires, and the remaining fork is reachable only
 /// from the daemon. The node's process-wait task (`prepared.rs`) `killpg`s
 /// the node's process group the moment the node process exits; on a branch
 /// without that daemon-side kill, the fork survives reparented to init until
@@ -2770,6 +2837,7 @@ struct ShellOrphanRun {
     child_pid: Option<u32>,
     log: std::path::PathBuf,
     shell_pid_file: std::path::PathBuf,
+    shell_pgid_file: std::path::PathBuf,
     child_pid_file: std::path::PathBuf,
     terms_file: std::path::PathBuf,
     child_terms_file: std::path::PathBuf,
@@ -2856,9 +2924,18 @@ impl ShellOrphanRun {
         }
         let scratch =
             |ext: &str| target.join(format!("dora-3472-shell-{}.{ext}", std::process::id()));
-        let (yaml, shell_pid_file, child_pid_file, terms_file, child_terms_file, log) = (
+        let (
+            yaml,
+            shell_pid_file,
+            shell_pgid_file,
+            child_pid_file,
+            terms_file,
+            child_terms_file,
+            log,
+        ) = (
             scratch("yml"),
             scratch("shell.pid"),
+            scratch("shell.pgid"),
             scratch("child.pid"),
             scratch("terms.txt"),
             scratch("child-terms.txt"),
@@ -2919,9 +2996,15 @@ impl ShellOrphanRun {
         let shell_args = if abandon_fork {
             format!("{ignore}{child} & echo $! > '{}'", child_pid_file.display(),)
         } else {
+            // The shell records its own `$$` and its process-group id. The
+            // guard must `exec` the shell in place so they are equal — the
+            // property `kill -- -$$` needs, which a guard left in between would
+            // break (#3472 review).
             format!(
-                "{ignore}echo $$ > '{}'; {child} & echo $! > '{}'; wait",
+                "{ignore}echo $$ > '{}'; ps -o pgid= -p $$ | tr -d ' ' > '{}'; \
+                 {child} & echo $! > '{}'; wait",
                 shell_pid_file.display(),
+                shell_pgid_file.display(),
                 child_pid_file.display(),
             )
         };
@@ -2952,12 +3035,14 @@ impl ShellOrphanRun {
             child_pid: None,
             log: log.clone(),
             shell_pid_file: shell_pid_file.clone(),
+            shell_pgid_file: shell_pgid_file.clone(),
             child_pid_file: child_pid_file.clone(),
             terms_file: terms_file.clone(),
             child_terms_file: child_terms_file.clone(),
             files: vec![
                 yaml,
                 shell_pid_file,
+                shell_pgid_file,
                 child_pid_file,
                 terms_file,
                 child_terms_file,
@@ -3078,9 +3163,9 @@ impl Drop for ShellOrphanRun {
         // The shell and its child are the daemon's descendants, never ours, so
         // we can never reap them and cannot lean on the unreaped rule above.
         // Confirm identity instead (see `still_our_fixture`). Killing the
-        // shell's process GROUP reaches it whether the group is led by the
-        // shell itself (an unfixed daemon spawn) or -- after this fix -- by
-        // the shell guard, whose pgid the shell inherits.
+        // shell's process GROUP reaches it when the shell leads that group, which
+        // it does whether the daemon spawned it directly or wrapped it in the
+        // shell guard: the guard `exec`s the shell in place, keeping the group.
         if let Some(pid) = self.shell_pid
             && still_our_shell(pid)
         {

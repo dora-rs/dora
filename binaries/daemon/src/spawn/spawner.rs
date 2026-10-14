@@ -4,7 +4,7 @@ use crate::{
     log::NodeLogger,
     node_communication::spawn_listener_loop,
     spawn::{
-        command::{GUARD_ENV_PREFIX, PYTHON_ENV_VARS, is_shell_guard, path_spawn_command},
+        command::{GUARD_ENV_PREFIX, is_guard_host_env, is_shell_guard, path_spawn_command},
         prepared::PreparedNode,
     },
 };
@@ -167,23 +167,23 @@ fn apply_descriptor_env(
     if let Some(envs) = envs {
         // A shell node's own interpreter selection is the one thing that must
         // not land on the guard host: the host is the `dora` CLI, which under
-        // the `dora-rs-cli` wheel is a python console script, and a
-        // `PYTHONHOME`/`PYTHONPATH` meant for the node's interpreter can leave
-        // python unable to start at all, taking the guard — and with it the
-        // containment it exists to provide — down with it (#3472 review).
+        // the `dora-rs-cli` wheel is a python console script, and any `PYTHON*`
+        // variable meant for the node's interpreter can leave python unable to
+        // start at all, taking the guard — and with it the containment it
+        // exists to provide — down with it (#3472 review).
         //
-        // Handed over under another name for the guard to put back on the child,
-        // and done here rather than anywhere else: at the point the node's env
-        // is applied is the only place the value can be kept off the host
-        // altogether. Every later step is free to overwrite an override, which
-        // is exactly how the wheel bug survived a fix that ran before
+        // Handed over under another name for the guard to put back on the
+        // child, and done here rather than anywhere else: at the point the
+        // node's env is applied is the only place the value can be kept off the
+        // host altogether. Every later step is free to overwrite an override,
+        // which is exactly how the wheel bug survived a fix that ran before
         // `compose_node_env`, and clearing it to `""` instead would take down
         // every shell node in a colcon or `pip install --target` workspace,
         // where the host needs the daemon's own value to import `dora_cli`.
         let guard = is_shell_guard(&command);
         for (key, value) in envs {
             if !is_denied_env(key) {
-                if guard && PYTHON_ENV_VARS.contains(&key.as_str()) {
+                if guard && is_guard_host_env(key) {
                     command = command.env(format!("{GUARD_ENV_PREFIX}{key}"), value.to_string());
                     continue;
                 }
@@ -1228,7 +1228,10 @@ mod tests {
     /// exactly the regression that was reported.
     #[test]
     fn a_guard_host_inherits_the_python_env_the_node_never_gets_to_break() {
-        let envs = BTreeMap::from([("PYTHONPATH".to_string(), EnvValue::String("./lib".into()))]);
+        let envs = BTreeMap::from([
+            ("PYTHONPATH".to_string(), EnvValue::String("./lib".into())),
+            ("PYTHONNOUSERSITE".to_string(), EnvValue::String("1".into())),
+        ]);
         let guard = Command::new("dora").args(["__shell-guard", "--", "sh", "-c", "python n.py"]);
         let spawner = spawner_for(None, false);
 
@@ -1256,6 +1259,23 @@ mod tests {
                 .environment
                 .contains_key(&OsString::from("PYTHONPATH")),
             "the node's value must never reach the guard host: {:?}",
+            applied.environment
+        );
+        // The whole `PYTHON*` namespace, not just the two interpreter-search
+        // variables: any of them can keep the host's own python from starting
+        // (#3472 review).
+        assert_eq!(
+            applied.environment.get(&OsString::from(format!(
+                "{GUARD_ENV_PREFIX}PYTHONNOUSERSITE"
+            ))),
+            Some(&Some(OsString::from("1"))),
+            "every PYTHON* the node sets must be handed over, not just PYTHONHOME/PYTHONPATH"
+        );
+        assert!(
+            !applied
+                .environment
+                .contains_key(&OsString::from("PYTHONNOUSERSITE")),
+            "PYTHONNOUSERSITE must never reach the guard host: {:?}",
             applied.environment
         );
 
@@ -1291,6 +1311,11 @@ mod tests {
             plain.environment.get(&OsString::from("PYTHONPATH")),
             Some(&Some(OsString::from("./lib"))),
             "a non-guard node must get its python env directly"
+        );
+        assert_eq!(
+            plain.environment.get(&OsString::from("PYTHONNOUSERSITE")),
+            Some(&Some(OsString::from("1"))),
+            "a non-guard node keeps every PYTHON* variable it sets"
         );
     }
 
