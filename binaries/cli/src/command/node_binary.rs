@@ -62,9 +62,15 @@ pub fn find(binary_name: &str, crate_name: &str) -> eyre::Result<PathBuf> {
 }
 
 /// `cargo install` arguments for a node crate that is not on crates.io.
+///
+/// `--locked` makes the install use the `Cargo.lock` committed at the release
+/// tag instead of resolving dependencies fresh, so the node matches the
+/// dependencies the release was built against. Without it a semver-compatible
+/// dependency published after the tag can break or silently change the build.
 fn install_args(crate_name: &str, version: &str) -> Vec<String> {
     vec![
         "install".to_owned(),
+        "--locked".to_owned(),
         "--git".to_owned(),
         REPO_URL.to_owned(),
         "--tag".to_owned(),
@@ -150,6 +156,7 @@ mod tests {
             install_args("dora-record-node", "1.1.0"),
             [
                 "install",
+                "--locked",
                 "--git",
                 REPO_URL,
                 "--tag",
@@ -159,7 +166,7 @@ mod tests {
         );
         assert_eq!(
             manual_install("dora-record-node", "1.1.0"),
-            format!("cargo install --git {REPO_URL} --tag v1.1.0 dora-record-node")
+            format!("cargo install --locked --git {REPO_URL} --tag v1.1.0 dora-record-node")
         );
     }
 
