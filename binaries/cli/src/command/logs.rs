@@ -8,7 +8,7 @@ use super::{Executable, default_tracing};
 use crate::common::parse_duration;
 use crate::{
     common::{
-        CoordinatorOptions, error_indicates_dataflow_finished, expect_reply,
+        CoordinatorOptions, coordinator_rejected, error_indicates_dataflow_finished, expect_reply,
         resolve_dataflow_identifier_interactive, send_control_request,
     },
     output::{
@@ -132,6 +132,9 @@ impl Executable for LogsArgs {
                         &config,
                     )
                 }
+                // A running coordinator refused us: its logs are not the
+                // stale local `out/` ones, so report why instead.
+                Err(err) if coordinator_rejected(&err) => Err(err),
                 Err(_) => dispatch_local_logs(&self),
             };
         }
@@ -160,6 +163,7 @@ impl Executable for LogsArgs {
                     &config,
                 )
             }
+            Err(err) if coordinator_rejected(&err) => Err(err),
             Err(_) => {
                 // Coordinator unavailable, fall back to local
                 dispatch_local_logs(&self)
