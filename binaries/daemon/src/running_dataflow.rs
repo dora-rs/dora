@@ -839,14 +839,14 @@ impl RunningDataflow {
         };
         self.stop_process_policy = Some(stop_process_policy);
 
-        for (node_id, channel) in self.subscribe_channels.drain() {
-            if send_with_timestamp(&channel, NodeEvent::Stop, clock).ok() == Some(true)
-                && let Some(counter) = self.pending_messages.get(&node_id)
-            {
-                counter.fetch_add(1, atomic::Ordering::Relaxed);
-            }
-        }
-
+        // Submit the stop markers before any `NodeEvent::Stop`, so a node that
+        // exits because of the Stop it just received cannot beat its marker into
+        // the process-wait task: the marker is what holds the node's group for
+        // the grace period, and a wait task that misses it cuts straight to the
+        // escalation (#3472 review). Sending first and relying on "nothing
+        // between the two yields" only holds on a current-thread runtime; the
+        // daemon runs multi-thread, so a worker can run the wait task in that
+        // window and find no marker.
         let running_processes: Vec<_> = self
             .running_nodes
             .iter_mut()
@@ -855,6 +855,14 @@ impl RunningDataflow {
         for (node_id, generation, process) in running_processes {
             if let Some(process) = process {
                 self.schedule_process_stop(node_id, generation, process, stop_process_policy);
+            }
+        }
+
+        for (node_id, channel) in self.subscribe_channels.drain() {
+            if send_with_timestamp(&channel, NodeEvent::Stop, clock).ok() == Some(true)
+                && let Some(counter) = self.pending_messages.get(&node_id)
+            {
+                counter.fetch_add(1, atomic::Ordering::Relaxed);
             }
         }
         self.stop_sent = true;
@@ -889,25 +897,24 @@ impl RunningDataflow {
                 let duration = duration.min(MAX_GRACE);
                 let kill_duration = duration / 2;
                 // Mark the stop as in flight before the grace period starts: a
-                // node that exits because of the `NodeEvent::Stop` it just
-                // received leaves before any signal is due, and its children are
-                // then mid-shutdown rather than abandoned (#3472 review). Both
+                // node that exits because of the `NodeEvent::Stop` it received
+                // leaves before any signal is due, and its children are then
+                // mid-shutdown rather than abandoned (#3472 review). Both
                 // deadlines travel with it so the node's process-wait task can
                 // put the group through this same ladder once the node process
                 // is gone, rather than cutting straight to the escalation — a
                 // node that stops promptly must not leave its children worse off
                 // than one that has to be chased (#3472 review).
                 //
-                // Submitted here and not from the task below, so the marker is
-                // queued before the wait task can look for one. `stop_all` sends
-                // `NodeEvent::Stop` to every node before it gets here, and a node
-                // is a separate process that can act on that event immediately,
-                // so the wait task may already be running; but it cannot reach
-                // the point where it takes a queued marker until the executor
-                // yields, and nothing between those sends and these submits
-                // awaits. A marker submitted by a spawned task would be queued a
-                // whole task wakeup later, by which time the group is SIGKILLed
-                // at once instead of held (#3472 review).
+                // Submitted here, and by the caller *before* it sends the
+                // `NodeEvent::Stop` that can make the node exit, so the marker is
+                // queued before the wait task can look for one. Ordering it the
+                // other way and relying on "nothing between the two awaits" only
+                // holds on a current-thread runtime; the daemon runs multi-thread,
+                // so a worker can run the wait task in that window and find no
+                // marker (#3472 review). A marker submitted from the spawned task
+                // below would be queued a whole task wakeup later still, by which
+                // time the group is SIGKILLed at once instead of held.
                 // A blocking `send` on the event loop, deliberately, and
                 // deliberately not `try_send`. It cannot block, because this is
                 // the *first* message on this incarnation's channel: the pair is
@@ -1100,27 +1107,30 @@ impl RunningDataflow {
         grace_duration: Option<Duration>,
         default_grace: Duration,
     ) {
-        if let Some(channel) = self.subscribe_channels.get(node_id)
-            && send_with_timestamp(channel, NodeEvent::Stop, clock).ok() == Some(true)
-            && let Some(counter) = self.pending_messages.get(node_id)
-        {
-            counter.fetch_add(1, atomic::Ordering::Relaxed);
-        }
-
         if let Some(proc) = process {
             // One ladder for every stop path, so they cannot drift apart: this
-            // is also what marks the stop as in flight, which a node that exits
-            // on the `NodeEvent::Stop` above depends on to keep its grace period
-            // (#3472 review). It mirrors `stop_process_policy` in
-            // `grace_duration_kills` so SpawnedNodeResult can distinguish
-            // "daemon explicitly sent SIGTERM to this node" from "node received
-            // SIGTERM from somewhere else" (dora-rs/dora#1882).
+            // also marks the stop as in flight, which a node that exits on the
+            // `NodeEvent::Stop` sent below depends on to keep its grace period.
+            // Submitted before that send: on the multi-thread daemon a node can
+            // exit and its wait task can take the no-marker path on another
+            // worker before the send returns (#3472 review). It mirrors
+            // `stop_process_policy` in `grace_duration_kills` so
+            // SpawnedNodeResult can distinguish "daemon explicitly sent SIGTERM
+            // to this node" from "node received SIGTERM from somewhere else"
+            // (dora-rs/dora#1882).
             self.schedule_process_stop(
                 node_id.clone(),
                 generation,
                 proc,
                 StopProcessPolicy::Graceful(grace_duration.unwrap_or(default_grace)),
             );
+        }
+
+        if let Some(channel) = self.subscribe_channels.get(node_id)
+            && send_with_timestamp(channel, NodeEvent::Stop, clock).ok() == Some(true)
+            && let Some(counter) = self.pending_messages.get(node_id)
+        {
+            counter.fetch_add(1, atomic::Ordering::Relaxed);
         }
     }
 
