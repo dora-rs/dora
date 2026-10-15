@@ -1,5 +1,12 @@
 use dora_message::daemon_to_coordinator::MAX_TOPIC_DEBUG_PAYLOAD_BYTES;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError, mpsc};
 
 pub struct TopicFrame {
@@ -9,7 +16,22 @@ pub struct TopicFrame {
     /// [`TOPIC_FRAME_BYTES_PER_CONNECTION`], given back when the frame is
     /// dropped — once the connection has written it to the CLI. Taken by
     /// [`TopicSubscriber::send_frame`].
-    pub budget: Option<OwnedSemaphorePermit>,
+    pub budget: Option<FrameBudget>,
+}
+
+/// A queued frame's share of its connection's byte budget. Dropping it gives
+/// the bytes back and counts the frame as written, which is how a subscriber
+/// whose own frames are being dropped tells a slow CLI from a stalled one:
+/// see [`TopicSubscriber::stalled_for`].
+pub struct FrameBudget {
+    _permit: OwnedSemaphorePermit,
+    written: Arc<AtomicU64>,
+}
+
+impl Drop for FrameBudget {
+    fn drop(&mut self) {
+        self.written.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Capacity, in frames, of one CLI connection's topic frame channel.
@@ -31,6 +53,18 @@ pub(crate) const TOPIC_FRAME_BYTES_PER_CONNECTION: usize = 2 * MAX_TOPIC_DEBUG_P
 // A payload larger than the whole budget could never be admitted.
 const _: () = assert!(MAX_TOPIC_DEBUG_PAYLOAD_BYTES <= TOPIC_FRAME_BYTES_PER_CONNECTION);
 
+/// How long a subscriber's frames may all be dropped for a spent connection
+/// budget, with the connection writing nothing, before it is closed as
+/// stalled — at least. The same order as the send-timeout eviction (100
+/// timeouts of 100 ms), so a CLI that stops reading is evicted after about as
+/// long either way. See [`TopicSubscriber::stalled_for`] for the full bound.
+pub(crate) const MIN_TOPIC_SUBSCRIBER_DROP_STALL: Duration = Duration::from_secs(10);
+
+/// The slowest CLI link, in bytes per second, that a stall bound allows for:
+/// 1 Mbit/s. The bound grows with the bytes the connection holds, so a link at
+/// least this fast always writes a frame before its subscribers are closed.
+pub(crate) const MIN_TOPIC_SUBSCRIBER_BYTES_PER_SEC: u64 = 125_000;
+
 /// The sending side of one CLI connection's topic frame channel: the channel
 /// plus its [`TOPIC_FRAME_BYTES_PER_CONNECTION`] budget, shared by every
 /// subscription on that connection.
@@ -38,6 +72,32 @@ const _: () = assert!(MAX_TOPIC_DEBUG_PAYLOAD_BYTES <= TOPIC_FRAME_BYTES_PER_CON
 pub struct TopicFrameSender {
     tx: mpsc::Sender<TopicFrame>,
     budget: Arc<Semaphore>,
+    /// The size of `budget`, so the bytes it holds can be worked out.
+    budget_bytes: usize,
+    /// Frames this connection has written to the CLI, counted as their
+    /// [`FrameBudget`]s are dropped.
+    written: Arc<AtomicU64>,
+}
+
+impl TopicFrameSender {
+    fn new(tx: mpsc::Sender<TopicFrame>, budget_bytes: usize) -> Self {
+        Self {
+            tx,
+            budget: Arc::new(Semaphore::new(budget_bytes)),
+            budget_bytes,
+            written: Arc::default(),
+        }
+    }
+
+    fn written(&self) -> u64 {
+        self.written.load(Ordering::Relaxed)
+    }
+
+    /// Budget held by frames that are queued or being written.
+    fn held_bytes(&self) -> usize {
+        self.budget_bytes
+            .saturating_sub(self.budget.available_permits())
+    }
 }
 
 /// The channel one CLI connection receives its topic frames on.
@@ -53,18 +113,14 @@ pub(crate) fn topic_frame_channel_sized(
     bytes: usize,
 ) -> (TopicFrameSender, mpsc::Receiver<TopicFrame>) {
     let (tx, rx) = mpsc::channel(capacity);
-    let budget = Arc::new(Semaphore::new(bytes));
-    (TopicFrameSender { tx, budget }, rx)
+    (TopicFrameSender::new(tx, bytes), rx)
 }
 
 /// For tests that build a subscriber on a bare channel: a budget of its own.
 #[cfg(test)]
 impl From<mpsc::Sender<TopicFrame>> for TopicFrameSender {
     fn from(tx: mpsc::Sender<TopicFrame>) -> Self {
-        Self {
-            tx,
-            budget: Arc::new(Semaphore::new(TOPIC_FRAME_BYTES_PER_CONNECTION)),
-        }
+        Self::new(tx, TOPIC_FRAME_BYTES_PER_CONNECTION)
     }
 }
 
@@ -85,9 +141,17 @@ pub(crate) struct TopicSubscriber {
     sender: Option<TopicFrameSender>,
     timeouts: crate::timeout_streak::TimeoutStreak,
     dropped: DroppedTopicFrames,
-    /// When the current run of budget-dropped frames began; `None` once a
-    /// frame is queued again. See [`Self::dropping_for`].
-    dropping_since: Option<tokio::time::Instant>,
+    /// The current run of budget-dropped frames; `None` once a frame is
+    /// queued again. See [`Self::stalled_for`].
+    stall: Option<DropStall>,
+}
+
+/// A run of budget-dropped frames, restarted whenever the connection writes a
+/// frame.
+struct DropStall {
+    since: tokio::time::Instant,
+    /// The connection's written-frame count when the run (re)started.
+    written: u64,
 }
 
 impl TopicSubscriber {
@@ -103,7 +167,7 @@ impl TopicSubscriber {
             sender: Some(sender.into()),
             timeouts: crate::timeout_streak::TimeoutStreak::default(),
             dropped: DroppedTopicFrames::default(),
-            dropping_since: None,
+            stall: None,
         }
     }
 
@@ -134,11 +198,21 @@ impl TopicSubscriber {
         let bytes = u32::try_from(frame.payload.len())
             .map_err(|_| eyre::eyre!("topic frame payload too large"))?;
         match Arc::clone(&sender.budget).try_acquire_many_owned(bytes) {
-            Ok(budget) => frame.budget = Some(budget),
+            Ok(permit) => {
+                frame.budget = Some(FrameBudget {
+                    _permit: permit,
+                    written: Arc::clone(&sender.written),
+                })
+            }
             Err(TryAcquireError::NoPermits) => {
                 self.dropped.record(frame.subscription_id);
-                self.dropping_since
-                    .get_or_insert_with(tokio::time::Instant::now);
+                let written = sender.written();
+                if self.stall.as_ref().is_none_or(|s| s.written != written) {
+                    self.stall = Some(DropStall {
+                        since: tokio::time::Instant::now(),
+                        written,
+                    });
+                }
                 return Ok(FrameSent::Dropped);
             }
             Err(TryAcquireError::Closed) => eyre::bail!("topic frame budget closed"),
@@ -148,16 +222,31 @@ impl TopicSubscriber {
             .send(frame)
             .await
             .map_err(|_| eyre::eyre!("WS topic subscriber channel closed"))?;
-        self.dropping_since = None;
+        self.stall = None;
         Ok(FrameSent::Queued)
     }
 
-    /// How long every frame for this subscriber has been dropped for a spent
-    /// budget, with none queued in between. A CLI that has stopped reading
-    /// never frees its budget, so this keeps growing; one that still drains
-    /// now and then gets a frame queued, which resets it.
-    pub(crate) fn dropping_for(&self) -> Option<std::time::Duration> {
-        self.dropping_since.map(|since| since.elapsed())
+    /// How long this subscriber's CLI has been stalled, once it counts as
+    /// stalled: every frame for it has been dropped for a spent budget, and
+    /// its connection has written no frame, for longer than a slow but working
+    /// link would need.
+    ///
+    /// Any frame the connection writes restarts the run, whichever
+    /// subscription it was for, since the CLI is still reading. But one frame
+    /// can take long to write: 15 MiB at 10 Mbit/s is about 13 s
+    /// (dora-rs/dora#3636 review). So the bound grows with the bytes the
+    /// connection holds — the frame being written is among them — at
+    /// [`MIN_TOPIC_SUBSCRIBER_BYTES_PER_SEC`], and is never below
+    /// [`MIN_TOPIC_SUBSCRIBER_DROP_STALL`]. A CLI that has stopped reading
+    /// holds its full budget, so it is closed after about four minutes.
+    pub(crate) fn stalled_for(&self) -> Option<Duration> {
+        let (stall, sender) = self.stall.as_ref().zip(self.sender.as_ref())?;
+        let stalled_for = stall.since.elapsed();
+        let bound = Duration::from_secs_f64(
+            sender.held_bytes() as f64 / MIN_TOPIC_SUBSCRIBER_BYTES_PER_SEC as f64,
+        )
+        .max(MIN_TOPIC_SUBSCRIBER_DROP_STALL);
+        (stalled_for >= bound).then_some(stalled_for)
     }
 
     pub(crate) fn reset_timeout_streak(&mut self) {
