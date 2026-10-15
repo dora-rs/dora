@@ -2476,6 +2476,61 @@ fn run_keeps_a_shell_node_in_its_own_process_group() {
     wait_for_process_exit(&child_pid.to_string(), Duration::from_secs(15));
 }
 
+/// dora-rs/dora#3472 (review): a shell node must be contained even when the
+/// process that killed `dora run` has not reaped it yet.
+///
+/// The guard clears the daemon's `PR_SET_PDEATHSIG` before it `exec`s the shell
+/// — that signal fires on the death of the *spawning thread*, not the daemon
+/// process, so it cannot be the containment — which leaves the watchdog to
+/// notice the parent is gone. It probes with `kill(parent, 0)`, which a zombie
+/// still answers. Without a zombie-aware check the shell and its fork both keep
+/// running for as long as `dora run` stays unreaped: a supervisor that SIGKILLs
+/// and tidies up later (a Rust `Child::kill()` without `wait()`, a Python
+/// `Popen.kill()` before other work) would leak the node for that whole window.
+/// On `main`, with no guard, `PDEATHSIG` took the shell at once.
+#[test]
+#[cfg(unix)]
+fn run_killed_without_reaping_still_contains_shell_nodes() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let mut run = ShellOrphanRun::start();
+    let (shell_pid, child_pid) = run.wait_for_shell_and_child();
+
+    let killed = Command::new("kill")
+        .args(["-KILL", &run.cli.id().to_string()])
+        .status()
+        .expect("failed to run `kill`");
+    assert!(killed.success(), "failed to SIGKILL `dora run`");
+
+    // Deliberately do NOT reap: `dora run` stays a zombie, mimicking a
+    // supervisor that cleans up later. This is the window the watchdog has to
+    // see through, and it must close inside it — the reap below comes only
+    // after the containment has been asserted.
+    std::thread::sleep(Duration::from_secs(3));
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    for (pid, what) in [
+        (shell_pid, "the shell"),
+        (child_pid, "its background child"),
+    ] {
+        while process_alive(&pid.to_string()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} {pid} outlived a SIGKILLed `dora run` by 30s while it was \
+                 still unreaped: the watchdog does not treat a zombie parent as \
+                 gone (#3472 review)\n\
+                 stderr tail:\n{}",
+                run.stderr_tail()
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
+    // Reap now so nothing is left as a zombie for the rest of the suite.
+    let _ = run.cli.wait();
+    run.cli_reaped = true;
+}
+
 /// dora-rs/dora#3472: the background fork of a shell node must not survive a
 /// SIGKILLed `dora run`.
 ///

@@ -20,7 +20,12 @@ use libc::pid_t;
 ///    process and `killpg`s the node's group once that process is gone. That is
 ///    the one case no other process can cover: a `SIGKILL`ed `dora run` runs no
 ///    teardown code, so a shell that backgrounded a fork (`sh -c 'cmd & wait'`)
-///    would leave the fork orphaned to `ppid 1` (dora-rs/dora#3472).
+///    would leave the fork orphaned to `ppid 1` (dora-rs/dora#3472). The
+///    watchdog releases the node's stdout/stderr so it never holds `dora run`
+///    open waiting for the log to end, and on Linux it treats a zombie as gone
+///    on both sides: a killed-but-unreaped `dora run` must not read as alive,
+///    nor a corpse left in the node's group as a member (dora-rs/dora#3472
+///    review).
 /// 2. It `exec`s the shell *in place*, keeping the pid and the process-group
 ///    leadership the daemon gave the guard. The shell is therefore the node
 ///    exactly as if the daemon had spawned it directly: `$$` is the shell's own
@@ -165,6 +170,13 @@ fn watchdog(parent: pid_t) -> ! {
     // SAFETY: affects this process's own group id only.
     unsafe { libc::setpgid(0, 0) };
 
+    // The watchdog outlives the node, and it inherited the node's stdout/stderr
+    // pipes. The daemon reports a node finished only after the node's log
+    // reaches EOF, so while the watchdog held those write ends a shell node's
+    // exit would hang `dora run` for as long as the watchdog lived. Point them
+    // at `/dev/null`: it prints nothing.
+    redirect_stdio_away();
+
     loop {
         if parent_is_gone(parent, false) {
             // The daemon is gone: contain the node and every background fork it
@@ -175,18 +187,189 @@ fn watchdog(parent: pid_t) -> ! {
             // SAFETY: `_exit` ends the watchdog; it touches no shared state.
             unsafe { libc::_exit(0) };
         }
-        // The node's group is gone: the node finished or was stopped, and the
+        // The node's group is empty: the node finished or was stopped, and the
         // daemon has already collected its stragglers. Nothing is left to
         // contain, so the watchdog is done. Only a recycled pgid could delay
         // this, which is why the check never kills on its own.
-        // SAFETY: signal 0 performs error checking only and sends no signal.
-        let probe = unsafe { libc::killpg(node_group, 0) };
-        if probe != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+        if group_is_empty(node_group) {
             // SAFETY: `_exit` ends the watchdog; it touches no shared state.
             unsafe { libc::_exit(0) };
         }
+        // A group that still answers `killpg` can hold nothing but corpses: the
+        // node — the group leader, since the daemon spawns it with pgid == pid —
+        // is gone, leaving only a reparented fork an init has not collected
+        // (`docker run` without `--init`). Treat that as empty too, as the
+        // daemon does in `contain_exited_group`: otherwise the watchdog outlives
+        // the node holding a pipe shut, and later risks signalling a recycled
+        // group (dora-rs/dora#3472 review).
+        #[cfg(target_os = "linux")]
+        {
+            if proc_is_gone(node_group) {
+                // SAFETY: `_exit` ends the watchdog; it touches no shared state.
+                unsafe { libc::_exit(0) };
+            }
+        }
         sleep_in_poll();
     }
+}
+
+/// Point this process's stdio at `/dev/null`.
+///
+/// The watchdog is forked from the guard and so holds the node's stdout/stderr
+/// pipe write ends. It lives past the node, so leaving them open keeps the
+/// daemon from ever seeing the node's log end, and `dora run` never reports the
+/// node finished (dora-rs/dora#3472 review). It writes nothing, so dropping them
+/// costs nothing.
+fn redirect_stdio_away() {
+    // SAFETY: opens `/dev/null` and `dup2`s it over this process's own fds 0/1/2,
+    // then closes the surplus descriptor. All async-signal-safe.
+    unsafe {
+        let null = b"/dev/null\0";
+        let fd = libc::open(null.as_ptr().cast(), libc::O_RDWR);
+        if fd < 0 {
+            return;
+        }
+        for target in 0..=2 {
+            libc::dup2(fd, target);
+        }
+        if fd > 2 {
+            libc::close(fd);
+        }
+    }
+}
+
+/// Whether the process group is empty, zombie or not. One syscall, so it is the
+/// cheap check that ends the loop on the common clean exit.
+fn group_is_empty(pgid: pid_t) -> bool {
+    // SAFETY: signal 0 performs error checking only and sends no signal.
+    let probe = unsafe { libc::killpg(pgid, 0) };
+    probe != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+}
+
+/// Whether `pid` is gone: reaped, or a real single-threaded zombie.
+///
+/// `kill(pid, 0)` cannot tell those apart — a zombie still answers it — so a
+/// parent that was killed but not yet reaped reads as alive, and the watchdog
+/// never contains the node it was watching (dora-rs/dora#3472 review). The
+/// `state` field on its own cannot either: the kernel reports `Z` for a process
+/// whose main thread has ended while other threads keep running, and only a
+/// single-threaded `Z` is a corpse. This mirrors the daemon's
+/// `group_has_live_member` (`binaries/daemon/src/spawn/group_lifetime.rs`).
+///
+/// Linux only. Everywhere else the one-sided `kill(pid, 0)` probe stands, which
+/// is no worse than `main` there (macOS has no `PDEATHSIG` to clear either, so
+/// a shell node already outlived a killed `dora run`).
+#[cfg(target_os = "linux")]
+fn proc_is_gone(pid: pid_t) -> bool {
+    match proc_state(pid) {
+        None => true, // reaped, or never existed
+        Some(parsed) => is_zombie(parsed),
+    }
+}
+
+/// Whether a parsed `(state, num_threads)` is a real corpse rather than a
+/// process still running on other threads.
+#[cfg(target_os = "linux")]
+fn is_zombie((state, threads): (u8, u32)) -> bool {
+    state == b'Z' && threads <= 1
+}
+
+/// The `state` byte and `num_threads` from `/proc/<pid>/stat`, or `None` if the
+/// entry cannot be read (reaped). Uses only `open`/`read`/`close` and a stack
+/// buffer, so it is safe in the forked watchdog.
+#[cfg(target_os = "linux")]
+fn proc_state(pid: pid_t) -> Option<(u8, u32)> {
+    let mut path = [0u8; 32];
+    stat_path(&mut path, pid)?;
+    // SAFETY: `path` holds a NUL-terminated path within the buffer.
+    let fd = unsafe { libc::open(path.as_ptr().cast(), libc::O_RDONLY | libc::O_CLOEXEC) };
+    if fd < 0 {
+        return None;
+    }
+    let mut buf = [0u8; 256];
+    // SAFETY: `buf` is a valid writable region of `buf.len()` bytes.
+    let read = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+    // SAFETY: closes the fd just opened.
+    unsafe { libc::close(fd) };
+    if read <= 0 {
+        return None;
+    }
+    parse_stat_state(&buf[..read as usize])
+}
+
+/// Write `b"/proc/<pid>/stat\0"` into `buf`.
+#[cfg(target_os = "linux")]
+fn stat_path(buf: &mut [u8], pid: pid_t) -> Option<()> {
+    let mut digits = [0u8; 10];
+    let mut count = 0;
+    let mut value = pid.max(0) as u32;
+    loop {
+        digits[count] = b'0' + (value % 10) as u8;
+        count += 1;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    let total = 6 + count + 6; // "/proc/", the pid, "/stat\0"
+    if total > buf.len() {
+        return None;
+    }
+    let mut i = 0;
+    for &b in b"/proc/" {
+        buf[i] = b;
+        i += 1;
+    }
+    for j in 0..count {
+        buf[i] = digits[count - 1 - j];
+        i += 1;
+    }
+    for &b in b"/stat\0" {
+        buf[i] = b;
+        i += 1;
+    }
+    Some(())
+}
+
+/// The `state` (field 3) and `num_threads` (field 20) from a `/proc/<pid>/stat`
+/// buffer.
+///
+/// The format is `pid (comm) state ppid …`, and `comm` may contain spaces and
+/// parentheses, so the fields start after the *last* `)`.
+#[cfg(target_os = "linux")]
+fn parse_stat_state(buf: &[u8]) -> Option<(u8, u32)> {
+    let close = buf.iter().rposition(|&b| b == b')')?;
+    let rest = &buf[close + 1..];
+    let mut state = None;
+    let mut threads = 1;
+    for (index, field) in rest
+        .split(|&b| b == b' ')
+        .filter(|f| !f.is_empty())
+        .enumerate()
+    {
+        match index {
+            0 => state = field.first().copied(),
+            17 => threads = parse_u32(field).unwrap_or(1),
+            _ => {}
+        }
+        if index == 17 {
+            break;
+        }
+    }
+    Some((state?, threads))
+}
+
+/// Parse an unsigned decimal, `None` on anything else (or overflow).
+#[cfg(target_os = "linux")]
+fn parse_u32(bytes: &[u8]) -> Option<u32> {
+    let mut value = 0u32;
+    for &byte in bytes {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add((byte - b'0') as u32)?;
+    }
+    Some(value)
 }
 
 /// Sleep one poll interval using only async-signal-safe calls: the watchdog
@@ -261,13 +444,20 @@ const GUARD_ENV_PREFIX: &str = "DORA_SHELL_GUARD_";
 /// - Direct child (the guard itself, before the exec): the kernel reparents an
 ///   orphan, so `getppid()` moving away from the recorded pid proves that pid
 ///   is gone, whether or not the id has since been recycled.
-/// - Not a direct child (the watchdog): ask about the pid directly with signal
-///   0.  `EPERM` means the process exists but is not ours to signal, so only an
-///   outright lookup failure counts as gone.
+/// - Not a direct child (the watchdog): ask the kernel about the pid directly.
+///   On Linux that means `/proc`, because `kill(pid, 0)` — and `getppid`, which
+///   the double fork took away — both count a zombie as alive, and a
+///   killed-but-unreaped `dora run` is exactly a zombie (dora-rs/dora#3472
+///   review). `EPERM` means the process exists but is not ours to signal, so
+///   only a real corpse or an outright lookup failure counts as gone.
 fn parent_is_gone(parent: pid_t, direct_child: bool) -> bool {
     if direct_child {
         // SAFETY: reads this process's own parent id.
         return unsafe { libc::getppid() } != parent;
+    }
+    #[cfg(target_os = "linux")]
+    if proc_is_gone(parent) {
+        return true;
     }
     // SAFETY: signal 0 delivers nothing; it is a pure existence check.
     let probe = unsafe { libc::kill(parent, 0) };
@@ -360,6 +550,50 @@ mod tests {
             command.get_envs().count(),
             0,
             "nothing handed over must mean nothing overridden"
+        );
+    }
+
+    /// `/proc/<pid>/stat` parsing: the fields follow the *comm*, which can hold
+    /// spaces and parentheses, so they start after the last `)`. `num_threads`
+    /// is field 20 (index 17 after it).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stat_fields_are_read_after_a_comm_that_holds_spaces_and_parens() {
+        let live = b"1234 (sh) R 1 1234 1234 0 -1 4194560 100 0 0 0 1 1 0 0 20 0 1 0 12345 9999";
+        assert_eq!(parse_stat_state(live), Some((b'R', 1)));
+
+        let corpse = b"99 (a )b) Z 1 99 99 0 -1 0 0 0 0 0 0 0 0 0 20 0 2 0 0 0";
+        assert_eq!(parse_stat_state(corpse), Some((b'Z', 2)));
+    }
+
+    /// A zombie is gone only when its main thread is the last one: a `Z` with
+    /// other threads still running is not a corpse.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_threaded_zombie_is_not_gone_but_a_plain_one_is() {
+        let plain = b"7 (sh) Z 1 7 7 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 0 0";
+        let threaded = b"7 (sh) Z 1 7 7 0 -1 0 0 0 0 0 0 0 0 0 20 0 3 0 0 0";
+        let running = b"7 (sh) S 1 7 7 0 -1 0 0 0 0 0 0 0 0 0 20 0 2 0 0 0";
+        assert_eq!(parse_stat_state(plain), Some((b'Z', 1)));
+        assert_eq!(parse_stat_state(threaded), Some((b'Z', 3)));
+        assert_eq!(parse_stat_state(running), Some((b'S', 2)));
+        assert!(is_zombie(parse_stat_state(plain).unwrap()));
+        assert!(!is_zombie(parse_stat_state(threaded).unwrap()));
+    }
+
+    /// End to end through `/proc`: this live process is not gone, and a pid
+    /// that cannot exist reads as gone.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn proc_is_gone_matches_a_live_and_a_missing_pid() {
+        let me = std::process::id() as pid_t;
+        assert!(
+            !proc_is_gone(me),
+            "this test process is running, so it must not read as gone"
+        );
+        assert!(
+            proc_is_gone(1_000_000_000),
+            "a pid with no /proc entry must read as gone"
         );
     }
 }
