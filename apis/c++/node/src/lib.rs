@@ -424,6 +424,9 @@ mod ffi {
         ) -> ArrowInputInfo;
 
         fn new_metadata() -> Box<Metadata>;
+        /// The message's hybrid logical clock timestamp in NTP64 format, not
+        /// nanoseconds: the upper 32 bits are seconds since the UNIX epoch,
+        /// the lower 32 bits the fraction of a second in units of 2^-32 s.
         fn timestamp(self: &Metadata) -> u64;
         fn get_bool(self: &Metadata, key: &str) -> Result<bool>;
         fn get_float(self: &Metadata, key: &str) -> Result<f64>;
@@ -881,6 +884,7 @@ impl Metadata {
         }
     }
 
+    /// NTP64, not nanoseconds — see the bridge declaration.
     pub fn timestamp(&self) -> u64 {
         self.timestamp
     }
