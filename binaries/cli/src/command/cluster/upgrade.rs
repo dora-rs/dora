@@ -16,8 +16,9 @@ use super::{query_connected_daemons, run_ssh, scp_target, ssh_target};
 /// Rolling upgrade: SCP the local dora binary to each machine and restart daemons.
 ///
 /// For each machine sequentially:
-///   1. SCP the local dora binary to `/usr/local/bin/dora`
-///   2. Restart the systemd service
+///   1. SCP the local dora binary to a staging file in the SSH user's home
+///   2. `sudo install` it as `/usr/local/bin/dora` and restart the systemd
+///      service
 ///   3. Wait for the daemon to reconnect
 ///
 /// Examples:
@@ -48,7 +49,11 @@ impl Executable for Upgrade {
 
             println!("Upgrading {} ({target})...", machine.id);
 
-            // 1. SCP binary
+            // 1. SCP the binary to a staging file. Copying straight onto
+            // `/usr/local/bin/dora` fails: the directory is root-owned for the
+            // non-root user `cluster install` assumes, and the running daemon
+            // holds the file open, so writing it fails with ETXTBSY.
+            let staged = staging_path(&machine.id);
             let local_binary_str = local_binary
                 .to_str()
                 .ok_or_else(|| eyre::eyre!("local binary path is not valid UTF-8"))?;
@@ -58,10 +63,7 @@ impl Executable for Upgrade {
                 // scp uses `-P` (capital) for the port; `-p` means "preserve mtimes"
                 scp.args(["-P", &p.to_string()]);
             }
-            scp.args([
-                local_binary_str,
-                &scp_target(machine, "/usr/local/bin/dora"),
-            ]);
+            scp.args([local_binary_str, &scp_target(machine, &staged)]);
             let scp_status = scp.status();
 
             match scp_status {
@@ -80,12 +82,12 @@ impl Executable for Upgrade {
                 }
             }
 
-            // 2. Restart systemd service
-            let restart_cmd = format!("sudo systemctl restart {service_name}");
+            // 2. Install the staged binary and restart the systemd service
+            let restart_cmd = install_and_restart_command(&staged, &service_name);
             match run_ssh(&target, machine.port, &restart_cmd) {
                 Ok(true) => {}
                 _ => {
-                    let msg = "systemctl restart failed".to_string();
+                    let msg = "installing the binary or restarting the service failed".to_string();
                     eprintln!("  FAILED: {msg}");
                     failures.push((machine.id.clone(), msg));
                     continue;
@@ -134,5 +136,42 @@ impl Executable for Upgrade {
                 config.machines.len()
             )
         }
+    }
+}
+
+/// Staging file for the uploaded binary, relative to the SSH user's home.
+///
+/// `machine_id` is shell-safe (`ClusterConfig::validate`), so the path can be
+/// interpolated into the remote command unquoted.
+fn staging_path(machine_id: &str) -> String {
+    format!(".dora-upgrade-{machine_id}")
+}
+
+/// Remote command that moves the staged binary into place and restarts the
+/// daemon.
+///
+/// `install` unlinks the destination before writing it, so it replaces the
+/// executable the running daemon was started from instead of writing into it.
+fn install_and_restart_command(staged: &str, service_name: &str) -> String {
+    format!(
+        "sudo install -m 755 {staged} /usr/local/bin/dora && rm -f {staged} && \
+         sudo systemctl restart {service_name}"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upgrade_installs_the_staged_binary_before_restarting() {
+        let staged = staging_path("robot-1");
+        assert_eq!(staged, ".dora-upgrade-robot-1");
+        let cmd = install_and_restart_command(&staged, "dora-daemon-robot-1");
+        assert_eq!(
+            cmd,
+            "sudo install -m 755 .dora-upgrade-robot-1 /usr/local/bin/dora && \
+             rm -f .dora-upgrade-robot-1 && sudo systemctl restart dora-daemon-robot-1"
+        );
     }
 }
