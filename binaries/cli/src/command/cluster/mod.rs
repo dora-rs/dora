@@ -214,8 +214,7 @@ mod tests {
             ssh_failure("installing the binary", Ok(false)).as_deref(),
             Some("installing the binary failed")
         );
-        let msg = ssh_failure("installing the binary", Err(eyre::eyre!("ssh not found")))
-            .unwrap();
+        let msg = ssh_failure("installing the binary", Err(eyre::eyre!("ssh not found"))).unwrap();
         assert!(msg.contains("ssh not found"), "{msg}");
     }
 
