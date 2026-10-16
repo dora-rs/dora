@@ -106,14 +106,14 @@ async fn build_dataflow(
         let mut join_set = tokio::task::JoinSet::new();
         for (node_id, task) in tasks {
             join_set.spawn(async move {
-                let node = task.await?;
+                let node = task
+                    .await
+                    .with_context(|| format!("failed to build node `{node_id}`"))?;
                 Ok::<_, eyre::Report>((node_id, node))
             });
         }
         while let Some(result) = join_set.join_next().await {
-            let (node_id, node) = result
-                .context("build task panicked")?
-                .with_context(|| "node build failed")?;
+            let (node_id, node) = result.context("build task panicked")??;
             info.node_working_dirs
                 .insert(node_id.clone(), node.node_working_dir);
             if let Some(python_env_dir) = node.python_env_dir {
@@ -167,5 +167,38 @@ impl BuildLogger for LocalBuildLogger {
         Ok(LocalBuildLogger {
             node_id: self.node_id.clone(),
         })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use dora_core::descriptor::DescriptorExt;
+
+    /// A failing node build must name the node in both build modes; the
+    /// parallel path used to report only "node build failed".
+    #[test]
+    fn failed_build_names_the_node_in_both_modes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let yaml = "nodes:\n  \
+             - id: ok-node\n    path: ok\n    build: \"true\"\n  \
+             - id: broken-node\n    path: broken\n    build: \"false\"\n";
+        let descriptor = Descriptor::parse(yaml.as_bytes().to_vec()).unwrap();
+        for parallel in [false, true] {
+            let err = build_dataflow_locally(
+                descriptor.clone(),
+                &BTreeMap::new(),
+                &DataflowSession::default(),
+                tmp.path().to_owned(),
+                false,
+                parallel,
+                &BTreeMap::new(),
+            )
+            .unwrap_err();
+            assert!(
+                format!("{err:?}").contains("failed to build node `broken-node`"),
+                "parallel={parallel}: {err:?}"
+            );
+        }
     }
 }
