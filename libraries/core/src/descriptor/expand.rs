@@ -1350,6 +1350,21 @@ fn rewrite_inputs_map(
                     input.clone()
                 }
             }
+            // A module node is replaced by its prefixed inner nodes, so a log
+            // filter naming it would match no node after expansion and the
+            // sink would silently receive nothing. Logs come from a concrete
+            // node, and unlike outputs there is no module-level mapping to
+            // pick one, so ask for it.
+            InputMapping::Logs(LogSubscriptionFilter {
+                node_filter: Some(filter),
+                ..
+            }) if output_maps.contains_key(filter.as_ref()) => {
+                bail!(
+                    "node `{node_id}` input `{input_id}` subscribes to the logs of \
+                     `{filter}`, which is a module; name one of its inner nodes \
+                     instead (e.g. `{filter}.<inner-node>`)"
+                );
+            }
             InputMapping::Timer { .. } | InputMapping::Logs(_) => input.clone(),
         };
         new_inputs.insert(input_id.clone(), new_input);
@@ -4214,6 +4229,90 @@ nodes:
             "outside"
         );
         assert!(filter_of("all").node_filter.is_none());
+    }
+
+    /// A log filter naming a module node (top level, or a nested module inside
+    /// a module) matches no node after expansion, so it must be rejected
+    /// rather than silently delivering nothing.
+    #[test]
+    fn reject_log_filter_naming_a_module() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "leaf_module.yml",
+            r#"
+module:
+  name: leaf_module
+  outputs: []
+
+nodes:
+  - id: worker
+    path: worker.py
+"#,
+        );
+        write_file(
+            base,
+            "outer_module.yml",
+            r#"
+module:
+  name: outer_module
+  outputs: []
+
+nodes:
+  - id: inner
+    module: leaf_module.yml
+  - id: sink
+    path: sink.py
+    inputs:
+      logs: dora/logs/info/inner
+"#,
+        );
+
+        let top_level = parse_descriptor(
+            r#"
+nodes:
+  - id: nav
+    module: leaf_module.yml
+  - id: sink
+    path: sink.py
+    inputs:
+      logs: dora/logs/info/nav
+"#,
+        );
+        let msg = expand_modules(&top_level, base).unwrap_err().to_string();
+        assert!(
+            msg.contains("`nav`, which is a module") && msg.contains("`nav.<inner-node>`"),
+            "got: {msg}"
+        );
+
+        let nested = parse_descriptor(
+            r#"
+nodes:
+  - id: outer
+    module: outer_module.yml
+"#,
+        );
+        let msg = expand_modules(&nested, base).unwrap_err().to_string();
+        assert!(
+            msg.contains("`outer.inner`, which is a module"),
+            "got: {msg}"
+        );
+
+        // Naming a concrete inner node is still accepted.
+        let concrete = parse_descriptor(
+            r#"
+nodes:
+  - id: nav
+    module: leaf_module.yml
+  - id: sink
+    path: sink.py
+    inputs:
+      logs: dora/logs/info/nav.worker
+"#,
+        );
+        expand_modules(&concrete, base).unwrap();
     }
 
     #[test]
