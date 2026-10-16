@@ -173,7 +173,6 @@ impl BuildLogger for LocalBuildLogger {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use dora_core::descriptor::DescriptorExt;
 
     /// A failing node build must name the node in both build modes; the
     /// parallel path used to report only "node build failed".
