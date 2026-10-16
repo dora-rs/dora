@@ -2750,6 +2750,79 @@ fn run_stop_signals_the_group_of_a_node_that_died_on_term_once() {
     }
 }
 
+/// dora-rs/dora#3472 (review, 2026-09-24): once the group leader is gone, the
+/// guard must keep watching until the WHOLE group is empty, not just until the
+/// leader is reaped.
+///
+/// A stop deliberately holds a live group after the shell exits, until the
+/// ladder's `kill_at` (see `contain_exited_group`). If the guard quit as soon as
+/// the leader was reaped, a `dora run` SIGKILLed inside that window would leave
+/// the surviving forks reparented to init — the exact orphan this guard exists
+/// to prevent. This fixture's shell exits on the ladder's SIGTERM while its child
+/// survives that same signal, so the window is real: SIGKILL `dora run` there and
+/// only a guard still watching the group can contain the child.
+#[test]
+#[cfg(unix)]
+fn run_killed_after_the_shell_exits_still_contains_its_forks() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    // Stop at 3s: the ladder's SIGTERM lands at ~13s, the shell (which exits on
+    // it, a second later) dies at ~14s, and the group is held until the SIGKILL
+    // escalation at ~18s. The window to kill `dora run` in is ~4s wide.
+    let mut run = ShellOrphanRun::start_node_dying_on_term(Duration::from_secs(3));
+    let (shell_pid, child_pid) = run.wait_for_shell_and_child();
+
+    // Wait for the window to open: the shell is gone — `process_alive` reads a
+    // zombie as gone — while its child survives the same SIGTERM, so the group
+    // still has a live member and the daemon is holding it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        if !process_alive(&shell_pid.to_string()) {
+            assert!(
+                process_alive(&child_pid.to_string()),
+                "the shell died on the ladder's SIGTERM but its child did not \
+                 survive it; the fixture no longer exercises the grace-window \
+                 hold (#3472 review)\nstderr tail:\n{}",
+                run.stderr_tail()
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the shell {shell_pid} never exited on the ladder's SIGTERM (#3472 \
+             review)\nstderr tail:\n{}",
+            run.stderr_tail()
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // SIGKILL `dora run` inside the window, without reaping it: the daemon's own
+    // escalation (`kill_at`) dies with it, and the zombie parent is left for the
+    // guard to notice. Only a guard still watching the whole group can contain
+    // the child.
+    let killed = Command::new("kill")
+        .args(["-KILL", &run.cli.id().to_string()])
+        .status()
+        .expect("failed to run `kill`");
+    assert!(killed.success(), "failed to SIGKILL `dora run`");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while process_alive(&child_pid.to_string()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the surviving fork {child_pid} outlived a `dora run` SIGKILLed while \
+             its group still had a live member: the guard stopped watching as soon \
+             as the shell (the group leader) exited (#3472 review)\n\
+             stderr tail:\n{}",
+            run.stderr_tail()
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    let _ = run.cli.wait();
+    run.cli_reaped = true;
+}
+
 /// dora-rs/dora#3472 (review, 2026-09-24): the exit-time `killpg` that contains
 /// a node's abandoned forks must NOT cut short the stop grace period.
 ///

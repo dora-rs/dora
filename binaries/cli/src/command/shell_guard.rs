@@ -189,25 +189,18 @@ fn watchdog(parent: pid_t) -> ! {
         }
         // The node's group is empty: the node finished or was stopped, and the
         // daemon has already collected its stragglers. Nothing is left to
-        // contain, so the watchdog is done. Only a recycled pgid could delay
-        // this, which is why the check never kills on its own.
+        // contain. Wait for a *fully* empty group (`ESRCH`), not merely a reaped
+        // leader — a stop deliberately holds a live group past the shell's exit
+        // until the ladder's `kill_at` (`contain_exited_group`), and quitting in
+        // that window would leak the surviving forks to init if `dora run` were
+        // then SIGKILLed, which is the very bug this guard exists for
+        // (dora-rs/dora#3472 review). Waiting costs nothing now that
+        // `redirect_stdio_away` keeps the watchdog off the node's log pipe, and
+        // the pgid cannot be recycled while any member, zombie included,
+        // remains.
         if group_is_empty(node_group) {
             // SAFETY: `_exit` ends the watchdog; it touches no shared state.
             unsafe { libc::_exit(0) };
-        }
-        // A group that still answers `killpg` can hold nothing but corpses: the
-        // node — the group leader, since the daemon spawns it with pgid == pid —
-        // is gone, leaving only a reparented fork an init has not collected
-        // (`docker run` without `--init`). Treat that as empty too, as the
-        // daemon does in `contain_exited_group`: otherwise the watchdog outlives
-        // the node holding a pipe shut, and later risks signalling a recycled
-        // group (dora-rs/dora#3472 review).
-        #[cfg(target_os = "linux")]
-        {
-            if proc_is_gone(node_group) {
-                // SAFETY: `_exit` ends the watchdog; it touches no shared state.
-                unsafe { libc::_exit(0) };
-            }
         }
         sleep_in_poll();
     }
@@ -246,25 +239,29 @@ fn group_is_empty(pgid: pid_t) -> bool {
     probe != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
-/// Whether `pid` is gone: reaped, or a real single-threaded zombie.
+/// Whether `pid` is a real single-threaded zombie: a process that has exited
+/// but whose pid is still held by an unreaped corpse.
 ///
-/// `kill(pid, 0)` cannot tell those apart — a zombie still answers it — so a
-/// parent that was killed but not yet reaped reads as alive, and the watchdog
-/// never contains the node it was watching (dora-rs/dora#3472 review). The
-/// `state` field on its own cannot either: the kernel reports `Z` for a process
-/// whose main thread has ended while other threads keep running, and only a
+/// `kill(pid, 0)` cannot make that distinction — a zombie still answers it — so
+/// a parent killed but not yet reaped reads as alive and the watchdog never
+/// contains the node it was watching (dora-rs/dora#3472 review). The `state`
+/// field alone cannot either: the kernel reports `Z` for a process whose main
+/// thread has ended while other threads keep running, and only a
 /// single-threaded `Z` is a corpse. This mirrors the daemon's
 /// `group_has_live_member` (`binaries/daemon/src/spawn/group_lifetime.rs`).
+///
+/// Only a *readable* single-threaded `Z` counts. A missing or unreadable
+/// `/proc/<pid>/stat` (a reaped pid, but also `/proc` not mounted in a chroot,
+/// or `EMFILE`) returns `false`, so the caller falls back to `kill(pid, 0)` and
+/// never mistakes an unreadable `/proc` for a dead parent — which would kill a
+/// live node on the watchdog's first iteration (dora-rs/dora#3472 review).
 ///
 /// Linux only. Everywhere else the one-sided `kill(pid, 0)` probe stands, which
 /// is no worse than `main` there (macOS has no `PDEATHSIG` to clear either, so
 /// a shell node already outlived a killed `dora run`).
 #[cfg(target_os = "linux")]
-fn proc_is_gone(pid: pid_t) -> bool {
-    match proc_state(pid) {
-        None => true, // reaped, or never existed
-        Some(parsed) => is_zombie(parsed),
-    }
+fn proc_is_zombie(pid: pid_t) -> bool {
+    matches!(proc_state(pid), Some(parsed) if is_zombie(parsed))
 }
 
 /// Whether a parsed `(state, num_threads)` is a real corpse rather than a
@@ -445,18 +442,20 @@ const GUARD_ENV_PREFIX: &str = "DORA_SHELL_GUARD_";
 ///   orphan, so `getppid()` moving away from the recorded pid proves that pid
 ///   is gone, whether or not the id has since been recycled.
 /// - Not a direct child (the watchdog): ask the kernel about the pid directly.
-///   On Linux that means `/proc`, because `kill(pid, 0)` — and `getppid`, which
-///   the double fork took away — both count a zombie as alive, and a
+///   On Linux `/proc` first, because `kill(pid, 0)` — and `getppid`, which the
+///   double fork took away — both count a zombie as alive, and a
 ///   killed-but-unreaped `dora run` is exactly a zombie (dora-rs/dora#3472
-///   review). `EPERM` means the process exists but is not ours to signal, so
-///   only a real corpse or an outright lookup failure counts as gone.
+///   review). Only a *readable* single-threaded `Z` short-circuits; anything
+///   else, an unreadable `/proc` included, falls through to `kill(pid, 0)`,
+///   whose `ESRCH` detects a reaped parent and whose success or `EPERM` means
+///   the process still exists.
 fn parent_is_gone(parent: pid_t, direct_child: bool) -> bool {
     if direct_child {
         // SAFETY: reads this process's own parent id.
         return unsafe { libc::getppid() } != parent;
     }
     #[cfg(target_os = "linux")]
-    if proc_is_gone(parent) {
+    if proc_is_zombie(parent) {
         return true;
     }
     // SAFETY: signal 0 delivers nothing; it is a pure existence check.
@@ -581,19 +580,44 @@ mod tests {
         assert!(!is_zombie(parse_stat_state(threaded).unwrap()));
     }
 
-    /// End to end through `/proc`: this live process is not gone, and a pid
-    /// that cannot exist reads as gone.
+    /// End to end through `/proc`: a running process is not a zombie, a pid
+    /// with no `/proc` entry is not mistaken for one (so `parent_is_gone` falls
+    /// through to the `kill`/`ESRCH` probe instead of killing a live node when
+    /// `/proc` is unreadable), and an exited-but-unreaped child is.
     #[cfg(target_os = "linux")]
     #[test]
-    fn proc_is_gone_matches_a_live_and_a_missing_pid() {
+    fn proc_is_zombie_sees_only_a_real_corpse() {
         let me = std::process::id() as pid_t;
         assert!(
-            !proc_is_gone(me),
-            "this test process is running, so it must not read as gone"
+            !proc_is_zombie(me),
+            "this test process is running, so it must not read as a zombie"
         );
         assert!(
-            proc_is_gone(1_000_000_000),
-            "a pid with no /proc entry must read as gone"
+            !proc_is_zombie(1_000_000_000),
+            "a pid with no /proc entry is not a zombie: the caller must fall \
+             back to the kill probe rather than read an unreadable /proc as death"
+        );
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn a child to leave unreaped");
+        let pid = child.id() as pid_t;
+        // Deliberately do not reap yet: poll `/proc` until the kernel marks the
+        // exited child `Z`, which is exactly what the watchdog must see.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !proc_is_zombie(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "an exited child that was not reaped must read as a zombie"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let _ = child.wait();
+        assert!(
+            !proc_is_zombie(pid),
+            "once reaped, the pid has no /proc entry and must not read as a zombie"
         );
     }
 }
