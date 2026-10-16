@@ -17,9 +17,9 @@ use super::{query_connected_daemons, run_ssh, scp_target, ssh_target};
 ///
 /// For each machine sequentially:
 ///   1. SCP the local dora binary to a staging file in the SSH user's home
-///   2. `sudo install` it as `/usr/local/bin/dora` and restart the systemd
-///      service
-///   3. Wait for the daemon to reconnect
+///   2. `sudo install` it as `/usr/local/bin/dora`
+///   3. Restart the systemd service
+///   4. Wait for the daemon to reconnect
 ///
 /// Examples:
 ///
@@ -82,19 +82,29 @@ impl Executable for Upgrade {
                 }
             }
 
-            // 2. Install the staged binary and restart the systemd service
-            let restart_cmd = install_and_restart_command(&staged, &service_name);
-            match run_ssh(&target, machine.port, &restart_cmd) {
-                Ok(true) => {}
-                _ => {
-                    let msg = "installing the binary or restarting the service failed".to_string();
-                    eprintln!("  FAILED: {msg}");
-                    failures.push((machine.id.clone(), msg));
-                    continue;
-                }
+            // 2. Install the staged binary, then remove the staging file
+            // whether or not that worked, so a failing `sudo` does not leave a
+            // binary-sized file behind on every retry.
+            let installed = run_ssh(&target, machine.port, &install_command(&staged));
+            let _ = run_ssh(&target, machine.port, &format!("rm -f {staged}"));
+            if let Some(msg) = ssh_failure("installing the binary", installed) {
+                eprintln!("  FAILED: {msg}");
+                failures.push((machine.id.clone(), msg));
+                continue;
             }
 
-            // 3. Wait for daemon to reconnect (30s timeout)
+            // 3. Restart the systemd service
+            let restart_cmd = format!("sudo systemctl restart {service_name}");
+            if let Some(msg) = ssh_failure(
+                "binary installed, but restarting the service",
+                run_ssh(&target, machine.port, &restart_cmd),
+            ) {
+                eprintln!("  FAILED: {msg}");
+                failures.push((machine.id.clone(), msg));
+                continue;
+            }
+
+            // 4. Wait for daemon to reconnect (30s timeout)
             let deadline = Instant::now() + Duration::from_secs(30);
             let mut reconnected = false;
             while Instant::now() < deadline {
@@ -147,16 +157,21 @@ fn staging_path(machine_id: &str) -> String {
     format!(".dora-upgrade-{machine_id}")
 }
 
-/// Remote command that moves the staged binary into place and restarts the
-/// daemon.
+/// Remote command that moves the staged binary into place.
 ///
 /// `install` unlinks the destination before writing it, so it replaces the
 /// executable the running daemon was started from instead of writing into it.
-fn install_and_restart_command(staged: &str, service_name: &str) -> String {
-    format!(
-        "sudo install -m 755 {staged} /usr/local/bin/dora && rm -f {staged} && \
-         sudo systemctl restart {service_name}"
-    )
+fn install_command(staged: &str) -> String {
+    format!("sudo install -m 755 {staged} /usr/local/bin/dora")
+}
+
+/// `None` if the remote command succeeded, else a message naming `step`.
+fn ssh_failure(step: &str, result: eyre::Result<bool>) -> Option<String> {
+    match result {
+        Ok(true) => None,
+        Ok(false) => Some(format!("{step} failed")),
+        Err(e) => Some(format!("{step} failed: {e:#}")),
+    }
 }
 
 #[cfg(test)]
@@ -164,14 +179,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn upgrade_installs_the_staged_binary_before_restarting() {
+    fn upgrade_installs_the_staged_binary() {
         let staged = staging_path("robot-1");
         assert_eq!(staged, ".dora-upgrade-robot-1");
-        let cmd = install_and_restart_command(&staged, "dora-daemon-robot-1");
         assert_eq!(
-            cmd,
-            "sudo install -m 755 .dora-upgrade-robot-1 /usr/local/bin/dora && \
-             rm -f .dora-upgrade-robot-1 && sudo systemctl restart dora-daemon-robot-1"
+            install_command(&staged),
+            "sudo install -m 755 .dora-upgrade-robot-1 /usr/local/bin/dora"
         );
+    }
+
+    #[test]
+    fn ssh_failure_names_the_step_and_keeps_the_cause() {
+        assert_eq!(ssh_failure("installing the binary", Ok(true)), None);
+        assert_eq!(
+            ssh_failure("installing the binary", Ok(false)).as_deref(),
+            Some("installing the binary failed")
+        );
+        let msg = ssh_failure("installing the binary", Err(eyre::eyre!("ssh not found")))
+            .unwrap();
+        assert!(msg.contains("ssh not found"), "{msg}");
     }
 }

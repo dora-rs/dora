@@ -511,8 +511,9 @@ dora cluster upgrade <PATH>
 For each machine sequentially:
 
 1. SCP the local `dora` binary to a staging file (`~/.dora-upgrade-<id>`) on the target machine.
-2. Install it as `/usr/local/bin/dora` with `sudo install`, then restart the systemd service via `sudo systemctl restart dora-daemon-<id>`.
-3. Poll the coordinator until the daemon reconnects (30s timeout, 500ms intervals).
+2. Install it as `/usr/local/bin/dora` with `sudo install`, then delete the staging file.
+3. Restart the systemd service via `sudo systemctl restart dora-daemon-<id>`.
+4. Poll the coordinator until the daemon reconnects (30s timeout, 500ms intervals).
 
 Nodes on other machines continue running while each machine is being upgraded.
 
