@@ -11,7 +11,7 @@ use crate::{
 };
 
 use super::config::ClusterConfig;
-use super::{query_connected_daemons, run_ssh, scp_target, ssh_target};
+use super::{query_connected_daemons, run_ssh, scp_target, ssh_failure, ssh_target};
 
 /// Rolling upgrade: SCP the local dora binary to each machine and restart daemons.
 ///
@@ -165,15 +165,6 @@ fn install_command(staged: &str) -> String {
     format!("sudo install -m 755 {staged} /usr/local/bin/dora")
 }
 
-/// `None` if the remote command succeeded, else a message naming `step`.
-fn ssh_failure(step: &str, result: eyre::Result<bool>) -> Option<String> {
-    match result {
-        Ok(true) => None,
-        Ok(false) => Some(format!("{step} failed")),
-        Err(e) => Some(format!("{step} failed: {e:#}")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -186,17 +177,5 @@ mod tests {
             install_command(&staged),
             "sudo install -m 755 .dora-upgrade-robot-1 /usr/local/bin/dora"
         );
-    }
-
-    #[test]
-    fn ssh_failure_names_the_step_and_keeps_the_cause() {
-        assert_eq!(ssh_failure("installing the binary", Ok(true)), None);
-        assert_eq!(
-            ssh_failure("installing the binary", Ok(false)).as_deref(),
-            Some("installing the binary failed")
-        );
-        let msg = ssh_failure("installing the binary", Err(eyre::eyre!("ssh not found")))
-            .unwrap();
-        assert!(msg.contains("ssh not found"), "{msg}");
     }
 }
