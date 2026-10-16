@@ -823,12 +823,13 @@ fn expand_module_node(
             )?;
         }
 
-        resolve_inner_node_paths(&mut inner_node, module_dir, project_root)?;
-
-        // Propagate deploy from module node to inner nodes
+        // Propagate deploy from module node to inner nodes (before resolving
+        // paths, which treat a deployed node's `path:` differently).
         if inner_node.deploy.is_none() {
             inner_node.deploy = node.deploy.clone();
         }
+
+        resolve_inner_node_paths(&mut inner_node, module_dir, project_root)?;
 
         propagate_module_node_env(&mut inner_node, node.env.as_ref());
 
@@ -950,6 +951,34 @@ fn expand_module_node(
     Ok((final_nodes, output_map))
 }
 
+/// Whether an inner node's `path:` is a command rather than a file next to the
+/// module file: a single name with no directory, no extension and no `$`,
+/// with nothing of that name next to the module file (`<name>`, or
+/// `<name>.exe` on Windows, as `resolve_path` looks it up; a directory or
+/// symlink counts too), such as a console script a `build:` step installs. It
+/// is then left as written, so it is looked up like a top-level node's `path:`
+/// (working dir, uv, `$PATH`) instead of as `<module dir>/<name>` (#3826).
+///
+/// This looks at the module directory when the dataflow is expanded, which can
+/// be before a `build:` creates the file there, so such a file should be
+/// written `./<name>`. A file name like `worker.py` is never a command.
+fn is_bare_command(path: &str, module_dir: &Path) -> bool {
+    let name = Path::new(path);
+    let mut components = name.components();
+    matches!(
+        (components.next(), components.next()),
+        (Some(std::path::Component::Normal(_)), None)
+    ) && name.extension().is_none()
+        // The daemon expands `$HOME`, `$USER`, ... in `path:` at spawn.
+        && !path.contains('$')
+        && std::fs::symlink_metadata(
+            module_dir
+                .join(name)
+                .with_extension(std::env::consts::EXE_EXTENSION),
+        )
+        .is_err()
+}
+
 fn resolve_inner_node_paths(
     node: &mut Node,
     module_dir: &Path,
@@ -957,9 +986,13 @@ fn resolve_inner_node_paths(
 ) -> eyre::Result<()> {
     let owner = node.id.to_string();
     // A `git:` node's `path` is relative to its clone (the node's working dir
-    // at build and spawn), not to the module file, so leave it untouched.
+    // at build and spawn), not to the module file, so leave it untouched. A
+    // bare command stays as written too, unless the node is deployed: its
+    // `<working dir>/<module dir>` is then on another machine or directory, so
+    // this machine's module directory can't tell a command from a file.
     if node.git.is_none()
         && let Some(ref mut path) = node.path
+        && !(node.deploy.is_none() && is_bare_command(path, module_dir))
     {
         resolve_module_relative_path(path, module_dir, project_root, &owner)?;
     }
@@ -4114,6 +4147,121 @@ nodes:
         assert_eq!(
             Path::new(&path_of("m.sibling")),
             Path::new("modules").join("worker.py")
+        );
+    }
+
+    /// A bare `path:` with no file next to the module file is a command, such
+    /// as a console script a `build:` step installs, so it is looked up the
+    /// way a top-level node's is (working dir, uv, `$PATH`) instead of being
+    /// re-rooted to `modules/<name>`, where it can never be found (#3826).
+    #[test]
+    fn expand_keeps_a_bare_inner_node_command_as_written() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join("modules")).unwrap();
+        write_file(&base.join("modules"), "worker.py", "");
+        write_file(
+            &base.join("modules"),
+            "echo.yml",
+            r#"
+module:
+  name: echo
+  outputs: [a, b, c]
+
+nodes:
+  - id: command
+    path: dora-echo
+    outputs:
+      - a
+  - id: script
+    path: worker.py
+    outputs:
+      - b
+  - id: built
+    path: bin/tool
+    outputs:
+      - c
+  - id: local
+    path: ./made-by-build
+    outputs:
+      - d
+  - id: binary
+    path: tool
+    outputs:
+      - e
+  - id: dotted
+    path: missing.py
+    outputs:
+      - f
+  - id: variable
+    path: $USER
+    outputs:
+      - g
+"#,
+        );
+        // `tool.exe` on Windows, `tool` elsewhere: found like `resolve_path` does.
+        write_file(
+            &base.join("modules"),
+            &format!("tool{}", std::env::consts::EXE_SUFFIX),
+            "",
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: modules/echo.yml
+  - id: remote
+    module: modules/echo.yml
+    deploy:
+      working_dir: /srv/robot
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let path_of = |id: &str| {
+            expanded
+                .nodes
+                .iter()
+                .find(|n| n.id.to_string() == id)
+                .and_then(|n| n.path.clone())
+                .unwrap()
+        };
+        assert_eq!(path_of("m.command"), "dora-echo");
+        // A file next to the module file, and any path with a directory, are
+        // still relative to the module file.
+        assert_eq!(
+            Path::new(&path_of("m.script")),
+            Path::new("modules").join("worker.py")
+        );
+        assert_eq!(
+            Path::new(&path_of("m.built")),
+            Path::new("modules").join("bin").join("tool")
+        );
+        // `./name` is never a command, even before a `build:` creates it.
+        assert_eq!(
+            Path::new(&path_of("m.local")),
+            Path::new("modules").join("made-by-build")
+        );
+        assert_eq!(
+            Path::new(&path_of("m.binary")),
+            Path::new("modules").join("tool")
+        );
+        // A name with an extension is a file name, never a command.
+        assert_eq!(
+            Path::new(&path_of("m.dotted")),
+            Path::new("modules").join("missing.py")
+        );
+        // The daemon expands `$USER` at spawn, so the name isn't known here.
+        assert_eq!(
+            Path::new(&path_of("m.variable")),
+            Path::new("modules").join("$USER")
+        );
+        // A deployed node (here through the module node's `deploy`) looks in
+        // `<its working dir>/modules`, which this machine can't check.
+        assert_eq!(
+            Path::new(&path_of("remote.command")),
+            Path::new("modules").join("dora-echo")
         );
     }
 
