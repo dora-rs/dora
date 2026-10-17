@@ -21,10 +21,14 @@ $zip = "$tmp\dora.zip"
 Invoke-WebRequest -Uri $archive -OutFile $zip
 
 New-Item -ItemType Directory -Path $dest -Force | Out-Null
-# The zip is flat: dora.exe sits at the archive root (unlike the unix
-# tarballs, which nest the binary in a dora-cli-<target>/ directory).
+# The zip is flat: the binaries sit at the archive root (unlike the unix
+# tarballs, which nest them in a dora-cli-<target>/ directory).
 Expand-Archive -Path $zip -DestinationPath $tmp -Force
 Move-Item -Path "$tmp\dora.exe" -Destination "$dest\dora.exe" -Force
+# `dora-record-node` and `dora-replay-node` are `publish = false`, so the
+# archive is where `dora record`/`dora replay` get them.
+Move-Item -Path "$tmp\dora-record-node.exe" -Destination "$dest\dora-record-node.exe" -Force
+Move-Item -Path "$tmp\dora-replay-node.exe" -Destination "$dest\dora-replay-node.exe" -Force
 Remove-Item -Path $tmp -Recurse -Force
 
 # Add to PATH if not already there
