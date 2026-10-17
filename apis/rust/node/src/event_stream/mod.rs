@@ -1145,6 +1145,9 @@ impl EventStream {
 
     fn add_event(&mut self, event: EventItem) {
         self.record_or_poison(&event);
+        if let Some(id) = scheduler::flush_target(&event) {
+            self.flush_passthrough(id);
+        }
         self.scheduler.add_event(event);
         self.scheduler_maybe_nonempty = true;
     }
@@ -1475,6 +1478,32 @@ impl EventStream {
         };
         self.pending_passthrough.push_back(event);
         self.enforce_passthrough_bound(&bucket, cap);
+    }
+
+    /// Apply a `flush: true` chunk for input `id` to `pending_passthrough` too.
+    ///
+    /// The scheduler flushes only its own queue, but a pattern-aware wait may
+    /// already have moved older chunks of `id` from there into this buffer, and
+    /// `recv()` drains the buffer first — so without this the node would see
+    /// chunks the flush would have discarded had no correlated wait touched
+    /// them. Correlated events are kept, as in the scheduler's flush
+    /// (dora-rs/adora#146, dora-rs/dora#3834).
+    fn flush_passthrough(&mut self, id: &DataId) {
+        use dora_message::metadata::carries_pattern_correlation;
+
+        let before = self.pending_passthrough.len();
+        self.pending_passthrough.retain(|event| match event {
+            Event::Input {
+                id: eid, metadata, ..
+            } => eid != id || carries_pattern_correlation(&metadata.parameters),
+            _ => true,
+        });
+        let drained = before - self.pending_passthrough.len();
+        if drained > 0 {
+            tracing::debug!(
+                "Flushed {drained} buffered passthrough event(s) for input `{id}` (flush signal)"
+            );
+        }
     }
 
     /// Enforce `bucket`'s bound over the buffered passthrough events belonging
@@ -3133,6 +3162,74 @@ mod tests {
             events.drain_drop_counts().get(&id),
             Some(&5),
             "over-cap passthrough events must be counted as drops for the input"
+        );
+    }
+
+    /// A `flush: true` chunk must also discard the stale chunks of its input
+    /// that a pattern-aware wait already moved out of the scheduler into
+    /// `pending_passthrough` — otherwise `recv()` (which drains the buffer
+    /// first) hands the node chunks the flush would have dropped had no
+    /// correlated wait touched them. Correlated events and other inputs'
+    /// events survive, exactly as in the scheduler's own flush
+    /// (dora-rs/dora#3834).
+    #[test]
+    fn flush_discards_stale_passthrough_chunks() {
+        use crate::event_stream::thread::EventItem;
+        use dora_message::metadata::{FLUSH, Metadata, MetadataParameters, Parameter};
+
+        let (_node, mut events) = test_event_stream();
+        let _ = events.recv(); // drain the initial Stop
+
+        let audio = DataId::from("audio".to_string());
+        let other = DataId::from("other".to_string());
+        events.buffer_passthrough(passthrough_input(&audio, None)); // A1
+        events.buffer_passthrough(passthrough_input(&audio, Some("req-1")));
+        events.buffer_passthrough(passthrough_input(&other, None));
+        events.buffer_passthrough(passthrough_input(&audio, None)); // A2
+
+        let mut params = MetadataParameters::new();
+        params.insert(FLUSH.into(), Parameter::Bool(true));
+        events.use_scheduler = true;
+        events.add_event(EventItem::ZenohInput {
+            id: audio.clone(),
+            metadata: std::sync::Arc::new(Metadata::from_parameters(
+                dora_core::uhlc::HLC::default().new_timestamp(),
+                params,
+            )),
+            data: {
+                use arrow::array::Array;
+                arrow::array::Int32Array::from(vec![3]).into_data()
+            },
+        });
+
+        let correlated = |e: &Event| {
+            matches!(e, Event::Input { metadata, .. }
+                if dora_message::metadata::carries_pattern_correlation(&metadata.parameters))
+        };
+        let buffered: Vec<_> = events.pending_passthrough.iter().collect();
+        assert_eq!(
+            buffered.len(),
+            2,
+            "only the correlated audio event and the other input may remain, got {buffered:?}"
+        );
+        assert!(
+            matches!(buffered[0], Event::Input { id, .. } if id == &audio)
+                && correlated(buffered[0]),
+            "the correlated audio response must survive the flush"
+        );
+        assert!(
+            matches!(buffered[1], Event::Input { id, .. } if id == &other),
+            "a flush on `audio` must not touch other inputs"
+        );
+
+        // The flush-carrying chunk itself still reaches the node after them.
+        let _ = events.recv();
+        let _ = events.recv();
+        assert!(
+            matches!(events.recv(), Some(Event::Input { id, metadata, .. })
+                if id == audio && dora_message::metadata::get_bool_param(
+                    &metadata.parameters, FLUSH) == Some(true)),
+            "the flush chunk must be delivered"
         );
     }
 

@@ -49,6 +49,32 @@ fn is_correlated(event: &EventItem) -> bool {
     event_parameters(event).is_some_and(carries_pattern_correlation)
 }
 
+/// The input id of an input-bearing event, or `None` for control events.
+fn input_id(event: &EventItem) -> Option<&DataId> {
+    match event {
+        EventItem::NodeEvent {
+            event: NodeEvent::Input { id, .. },
+            ..
+        }
+        | EventItem::ZenohInput { id, .. } => Some(id),
+        _ => None,
+    }
+}
+
+/// The input id whose stale queued chunks `event` asks to discard, i.e. the
+/// event's own id when it is an input carrying the streaming pattern's
+/// `flush: true` metadata, or `None` otherwise.
+///
+/// Shared by the scheduler's own flush and the `EventStream`'s flush of its
+/// `pending_passthrough` buffer, so both agree on what a flush is
+/// (dora-rs/dora#3834).
+pub(crate) fn flush_target(event: &EventItem) -> Option<&DataId> {
+    let id = input_id(event)?;
+    let params = event_parameters(event)?;
+    (dora_message::metadata::get_bool_param(params, dora_message::metadata::FLUSH) == Some(true))
+        .then_some(id)
+}
+
 /// Returns `true` if the event is the daemon's [`Stop`][NodeEvent::Stop]
 /// shutdown signal.
 ///
@@ -303,26 +329,8 @@ impl Scheduler {
     }
 
     pub(crate) fn add_event(&mut self, event: EventItem) {
-        let (event_id, should_flush) = match &event {
-            EventItem::NodeEvent {
-                event: NodeEvent::Input { id, metadata, .. },
-                ..
-            } => {
-                let flush = dora_message::metadata::get_bool_param(
-                    &metadata.parameters,
-                    dora_message::metadata::FLUSH,
-                ) == Some(true);
-                (Some(id), flush)
-            }
-            EventItem::ZenohInput { id, metadata, .. } => {
-                let flush = dora_message::metadata::get_bool_param(
-                    &metadata.parameters,
-                    dora_message::metadata::FLUSH,
-                ) == Some(true);
-                (Some(id), flush)
-            }
-            _ => (None, false),
-        };
+        let event_id = input_id(&event);
+        let should_flush = flush_target(&event).is_some();
         // Control events have no input id; they go to their own queue so that no
         // user input can ever share it (dora-rs/dora#3632).
         let Some(event_id) = event_id else {

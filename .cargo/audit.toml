@@ -25,4 +25,14 @@ ignore = [
     # MAVLink XML). Waiting for upstream bumps. Review: 2026-12.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
+    # zip <9: ZipArchive::extract / ZipStreamReader::extract keep SUID/SGID
+    # bits (0367), create symlinks that escape the destination (0368) and
+    # apply permissions through them (0369). zip comes in only through
+    # self_update, whose Windows `dora self update` path reads the one entry
+    # it needs with by_name/by_index and io::copy into a new file; it never
+    # calls extract(). The latest self_update (1.3.0) still pins zip ^8, so
+    # there is no upgrade yet. Review: 2027-01.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]
