@@ -126,11 +126,26 @@ impl Connection for TcpConnection {
                 return Ok(None);
             }
         };
-        // A decode error is different: the whole frame was consumed, so the
-        // stream is still aligned and the listener can keep going.
-        dora_message::decode(&raw)
-            .wrap_err("failed to deserialize DaemonRequest")
-            .map(Some)
+        // A decode error also ends the connection, even though the frame was
+        // consumed in full and the stream is still aligned. A node built
+        // against the same `dora-message` never sends an undecodable frame;
+        // in practice it is a newer node (still version-compatible) sending a
+        // `DaemonRequest` variant this daemon predates. Such a request
+        // usually expects a reply, and the node blocks on it with no timeout,
+        // so skipping the frame would hang the node forever. Answering with
+        // an error is no better: for a no-reply request the unsolicited frame
+        // would desync the next request/reply pair. Closing makes the node
+        // see EOF and fail loudly, the same as `local_listener` does.
+        match dora_message::decode(&raw) {
+            Ok(message) => Ok(Some(message)),
+            Err(err) => {
+                tracing::warn!(
+                    "closing node connection: failed to deserialize DaemonRequest \
+                     (is the node newer than this daemon?): {err}"
+                );
+                Ok(None)
+            }
+        }
     }
 
     async fn send_reply(&mut self, message: DaemonReply) -> eyre::Result<()> {
@@ -175,7 +190,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn undecodable_frame_keeps_the_connection() {
+    async fn undecodable_frame_closes_the_connection() {
         let (mut conn, mut client) = connected_pair().await;
         let body = [0xFF; 16];
         client
@@ -184,8 +199,13 @@ mod tests {
             .unwrap();
         client.write_all(&body).await.unwrap();
 
-        // The frame was consumed in full, so the stream is still aligned:
-        // report the error but don't treat it as a disconnect.
-        assert!(conn.receive_message().await.is_err());
+        // Typically a request variant from a newer node: keeping the
+        // connection open would leave the node blocked on a reply that never
+        // comes, so it must see EOF instead.
+        let received = conn.receive_message().await;
+        assert!(
+            matches!(received, Ok(None)),
+            "an undecodable request must end the connection, got {received:?}"
+        );
     }
 }

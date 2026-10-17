@@ -637,13 +637,14 @@ impl Listener {
                 )
                 .await?;
             }
-            // `DaemonRequest` is `#[non_exhaustive]`: a node built against a newer
-            // dora-node-api may send a request this daemon predates. Answer with an
-            // explicit error so the node fails loudly instead of hanging on a reply
-            // that never comes.
+            // Defensive: every variant this daemon knows is matched above. A
+            // variant it predates (from a node built against a newer
+            // dora-node-api) cannot reach here — it fails to decode, and
+            // `TcpConnection::receive_message` closes the connection so the
+            // node sees EOF rather than hanging on a reply.
             other => {
                 let reply = DaemonReply::Result(Err(format!(
-                    "unsupported request `{}` from node (node is likely newer than this daemon)",
+                    "unsupported request `{}` from node",
                     crate::local_listener::request_kind(&other)
                 )));
                 self.send_reply(reply, connection).await?;
