@@ -52,11 +52,11 @@ pub const DEFAULT_UDP_PORT: u16 = 14550;
 /// Default serial baud rate used when the `?baud=` query is missing.
 pub const DEFAULT_SERIAL_BAUD: u32 = 115_200;
 
-/// Open a MAVLink 2 transport described by `url`.
+/// Open a MAVLink transport described by `url`.
 ///
-/// The returned connection is pre-configured for MAVLink V2 and is
-/// `Send + Sync`, so reader and writer threads may share an `Arc<_>`
-/// without an extra mutex.
+/// The returned connection speaks MAVLink V2 unless the URL's `?proto=`
+/// query selects V1 (see [`parse_proto_query`]). It is `Send + Sync`, so
+/// reader and writer threads may share an `Arc<_>` without an extra mutex.
 pub fn connect(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
     match url.scheme() {
         "tcp" => connect_tcp(url),

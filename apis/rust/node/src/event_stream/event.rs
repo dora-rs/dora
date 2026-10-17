@@ -30,10 +30,12 @@ pub enum Event {
         /// The actual data in the Apache Arrow data format.
         data: DoraArray,
     },
-    /// An input was closed by the sender.
+    /// An input was closed.
     ///
-    /// The sending node mapped to an input exited, so this input will receive
-    /// no more data.
+    /// Either the sending node mapped to this input exited, so the input will
+    /// receive no more data, or the input's `input_timeout` circuit breaker
+    /// fired. In the timeout case the input is reopened, announced by
+    /// [`Event::InputRecovered`], once the upstream node produces data again.
     InputClosed {
         /// The ID of the input that was closed, as specified in the YAML file.
         ///
