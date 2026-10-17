@@ -507,6 +507,52 @@ fn hub_override_unused_is_warned() {
     );
 }
 
+/// An override whose checkout is a different package (wrong name, or a fork
+/// under another namespace) is rejected instead of building that package's
+/// entrypoint and contracts for this node (#3848).
+#[test]
+fn hub_override_rejects_mismatched_package() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub override mismatch test");
+        return;
+    }
+    let fixture = build_fixture();
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+
+    for (name, namespace) in [("hub-smoke-other", "test"), ("hub-smoke-hello", "acme")] {
+        let checkout = fixture.root.join(format!("checkouts/{namespace}-{name}"));
+        write(
+            &checkout.join("dora-node.yml"),
+            &format!(
+                "apiVersion: 1\nname: {name}\nnamespace: {namespace}\nruntime: rust\n\
+                 entrypoint: target/release/{name}\nbuild: cargo build --release\n"
+            ),
+        );
+        let out = dora(&fixture)
+            .args([
+                "build",
+                flow.to_str().unwrap(),
+                "--hub-override",
+                &format!("test/hub-smoke-hello={}", checkout.display()),
+            ])
+            .output()
+            .unwrap();
+        let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+        assert!(
+            !out.status.success(),
+            "override with a `{namespace}/{name}` checkout must fail, got:\n{combined}"
+        );
+        assert!(
+            combined.contains(&format!("declares package `{namespace}/{name}`")),
+            "expected a package-mismatch error, got:\n{combined}"
+        );
+    }
+}
+
 /// An override is also surfaced when the dataflow has *no* hub nodes at all —
 /// the resolver early-returns in that case, so the warning must fire there too.
 #[test]
