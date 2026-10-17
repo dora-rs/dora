@@ -12,7 +12,7 @@ use axum::{
 };
 use dora_coordinator_store::CoordinatorStore;
 use dora_core::uhlc::HLC;
-use dora_message::auth::AuthToken;
+use dora_message::{auth::AuthToken, daemon_to_coordinator::MAX_DAEMON_MESSAGE_BYTES};
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
@@ -93,9 +93,10 @@ impl IpRateLimiter {
 #[derive(Clone)]
 pub(crate) struct WsState {
     pub event_tx: mpsc::Sender<Event>,
-    /// Topic debug frames, kept off `event_tx` so they cannot queue ahead of
-    /// control events (dora-rs/dora#3535).
-    pub topic_debug_tx: mpsc::Sender<Event>,
+    /// Topic debug frames, kept off `event_tx` so they can neither delay a
+    /// control event nor queue ahead of one: see
+    /// `ws_daemon::topic_debug_channel`.
+    pub topic_debug_tx: crate::ws_daemon::TopicDebugSender,
     pub clock: Arc<HLC>,
     pub auth_token: Option<AuthToken>,
     pub artifact_store: Arc<ArtifactStore>,
@@ -218,8 +219,11 @@ async fn ws_daemon_handler(
     let token = extract_token(&headers);
     validate_token(&state.auth_token, &token)?;
     let permit = acquire_ws_slot(&state.daemon_connections)?;
+    // The limit daemons are built against, text and binary alike: a topic
+    // debug frame larger than it arrives as chunks (dora-rs/dora#3535), so a
+    // camera-sized output needs no larger message.
     Ok(ws
-        .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
+        .max_message_size(MAX_DAEMON_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             let _permit = permit;
             handle_daemon_ws(
@@ -274,7 +278,7 @@ async fn artifact_handler(
 pub(crate) async fn serve(
     bind: SocketAddr,
     event_tx: mpsc::Sender<Event>,
-    topic_debug_tx: mpsc::Sender<Event>,
+    topic_debug_tx: crate::ws_daemon::TopicDebugSender,
     clock: Arc<HLC>,
     auth_token: Option<AuthToken>,
     artifact_store: Arc<ArtifactStore>,
