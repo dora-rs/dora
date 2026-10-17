@@ -545,9 +545,11 @@ dora recording export <RECORDING> [OPTIONS]
 | `<RECORDING>` | required | Path to `.drec` recording |
 | `-o, --output <PATH>` | `<RECORDING>` with the extension replaced (`capture.drec` → `capture.mcap`) | Output MCAP file path |
 | `--topics <TOPICS>` | all | Comma-separated `node/output` topics to export |
+| `--schema <SCHEMA>` | `arrow` | `arrow` copies payloads verbatim; `foxglove` writes image outputs in Foxglove's own schemas so Foxglove can display them |
 
-Payloads are remuxed verbatim, never decoded and re-encoded. Two limits worth
-knowing before you point a consumer at the output:
+With the default `--schema arrow`, payloads are remuxed verbatim, never decoded
+and re-encoded. Two limits worth knowing before you point a consumer at the
+output:
 
 - `metadata.parameters` is **not** exported. That is where image outputs carry
   `width`/`height`/`encoding`, and where services and actions carry
@@ -555,6 +557,41 @@ knowing before you point a consumer at the output:
   own.
 - Chunks are uncompressed, because `mcap` is built with
   `default-features = false`. Compress the `.mcap` afterwards if size matters.
+
+`--schema foxglove` re-encodes image outputs as JSON `foxglove.RawImage` or
+`foxglove.CompressedImage` messages, which Foxglove renders. Everything else is
+exported as with `arrow`. An output counts as an image when:
+
+- the dataflow declares it in `output_types` (of a node, its `operator`, or one
+  of its `operators`) as `std/media/v1/Image` or
+  `std/media/v1/CompressedImage`. An `Image` is the `width`, `height`,
+  `encoding`, `data` struct, or a flat array with `width`/`height`/`encoding`
+  metadata, the convention of the dora-hub camera nodes. A struct's own
+  `encoding` describes its data; for a flat array, an encoding on the type
+  (`std/media/v1/Image[encoding=rgb8]`) wins over the metadata. Raw
+  pixels may be bytes (a `uint8` array or one binary value) for any
+  encoding, `uint16` for
+  `mono16`/`16UC1` and `float32` for `32FC1`, in the single-plane encodings
+  Foxglove lists (`rgb8`, `bgr8`, `rgba8`, `bgra8`, `mono8`, `mono16`, the
+  `bayer_*8` ones, `8UC1`, `8UC3`, `16UC1`, `32FC1`), and each row must be exactly `width`
+  pixels, without padding. A
+  compressed encoding (`jpeg`, `png`, `webp`) makes it a `CompressedImage`. A
+  `CompressedImage` is one binary value or a flat `uint8` array; its format is
+  `[format=jpeg]` on the type, which the data must match, or else the data's
+  file signature;
+- or, undeclared, it is a compressed frame: an `encoding` metadata parameter
+  naming `jpeg`, `png` or `webp`, and data that starts with a JPEG, PNG or
+  WebP file signature, which decides the format. Nodes often forward a
+  camera's metadata onto outputs that aren't images, so undeclared raw pixels
+  stay Arrow; declare them in `output_types` to export them as images.
+
+An output declared as any other type is never treated as an image. A topic's
+first message decides its channel. On an image channel, a message that can't
+be converted (pixel data that doesn't fit `width` x `height` or the encoding,
+compressed data that isn't the format it claims, a damaged payload) is dropped
+and reported at the end. A `frame_id` metadata parameter becomes the image's
+`frame_id`. Image data is base64 in JSON, so these channels are about a third
+larger than the raw bytes.
 
 The output is written to a temporary file next to the destination and renamed
 into place only once the export completes, so a failed export never leaves a
