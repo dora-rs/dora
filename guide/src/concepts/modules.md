@@ -263,15 +263,12 @@ declaring `python: op.py` refers to `modules/nested/op.py`.
 
 Exempt from the rewrite: URLs, absolute paths, and the `dynamic` and `shell`
 sentinels (which the daemon matches verbatim). A node `path:` that is a single
-name without an extension, with nothing of that name next to the module file
-(`name`, or `name.exe` on Windows; a directory or symlink counts too), such as
-`path: dora-echo` for a command a `build:` step installs, is also left as
-written: it is looked up like a top-level node's `path:` (the dataflow's working
-directory, uv, then `$PATH`). This does not apply to a node with `deploy:` or
-to a name containing `$`, and it is checked when the dataflow is expanded,
-which can be before a `build:` creates the file (for example when the build runs
-on another machine), so write a file a build creates next to the module file as
-`./name`.
+name (no `/`, `\` or `:`) without an extension, such as `path: dora-echo` for a
+command a `build:` step installs, is also left as written: it is looked up like
+a top-level node's `path:` (the dataflow's working directory, uv, then
+`$PATH`). This does not apply to a node with `deploy:` or to a name containing
+`$`. To run a file with no extension that sits next to the module file, and to
+pick up a `dora-node.yml` next to it, write it as `./name`.
 
 Two consequences worth knowing:
 
