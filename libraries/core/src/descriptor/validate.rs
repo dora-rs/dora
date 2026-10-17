@@ -5,7 +5,7 @@ use crate::{
 };
 
 use dora_message::{
-    config::{Input, InputMapping, UserInputMapping, parse_byte_count},
+    config::{Input, InputMapping, LogSubscriptionFilter, UserInputMapping, parse_byte_count},
     descriptor::{CoreNodeKind, DYNAMIC_SOURCE, OperatorSource, ResolvedNode, SHELL_SOURCE},
     id::{DataId, NodeId, OperatorId},
 };
@@ -604,6 +604,16 @@ fn check_input(
     input_id_str: &str,
 ) -> Result<(), eyre::ErrReport> {
     match &input.mapping {
+        // The daemon matches a log filter's node id exactly, so a filter
+        // naming no node (a typo, or a module node, which expansion replaces
+        // with its prefixed inner nodes) would silently deliver nothing.
+        InputMapping::Logs(LogSubscriptionFilter {
+            node_filter: Some(node),
+            ..
+        }) if !nodes.contains_key(node) => bail!(
+            "log filter on input `{input_id_str}` names node `{node}`, which does not exist \
+             (the nodes of a module `m` are named `m.<inner-node>`)"
+        ),
         InputMapping::Timer { interval: _ } | InputMapping::Logs(_) => {}
         InputMapping::User(UserInputMapping { source, output }) => {
             // `nodes` is keyed by each node's own id (see
@@ -3256,6 +3266,27 @@ nodes:
         assert!(
             err.to_string().contains("nonexistent"),
             "expected error about missing node, got: {err}"
+        );
+    }
+
+    #[test]
+    fn wiring_rejects_log_filter_naming_no_node() {
+        let yaml = r#"
+nodes:
+  - id: camera
+    path: camera.py
+  - id: sink
+    path: sink.py
+    inputs:
+      ok: dora/logs/info/camera
+      all: dora/logs/info
+      typo: dora/logs/info/cmaera
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let err = check_wiring(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("`sink/typo`") && err.contains("`cmaera`, which does not exist"),
+            "got: {err}"
         );
     }
 
