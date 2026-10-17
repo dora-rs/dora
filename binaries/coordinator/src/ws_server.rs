@@ -200,7 +200,7 @@ async fn ws_control_handler(
         .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             let _permit = permit;
-            handle_control_ws(socket, state.event_tx.clone(), state.clock.clone()).await
+            handle_control_ws(socket, addr, state.event_tx.clone(), state.clock.clone()).await
         }))
 }
 
