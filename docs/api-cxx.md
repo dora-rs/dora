@@ -338,7 +338,7 @@ rust::Box<Metadata> new_metadata();
 #### Reading
 
 ```cpp
-uint64_t     Metadata::timestamp() const;
+uint64_t     Metadata::timestamp() const;                         // NTP64, not nanoseconds (see below)
 
 bool         Metadata::get_bool(const rust::Str key) const;        // throws on missing/wrong type
 int64_t      Metadata::get_int(const rust::Str key) const;
@@ -351,6 +351,14 @@ rust::Vec<rust::String> Metadata::get_list_string(const rust::Str key) const;
 
 int64_t      Metadata::get_timestamp(const rust::Str key) const;   // nanoseconds since epoch
 rust::String Metadata::get_json(const rust::Str key) const;        // single value as JSON string
+```
+
+`Metadata::timestamp()` is the message's hybrid logical clock timestamp in NTP64 format: a 32.32 fixed-point number whose upper 32 bits are whole seconds since the UNIX epoch and whose lower 32 bits are the fraction of a second in units of 2^-32 s. Unlike `get_timestamp`, it is not nanoseconds; convert it before comparing it with a wall-clock reading:
+
+```cpp
+uint64_t ts = metadata->timestamp();
+uint64_t nanos_since_epoch =
+    (ts >> 32) * 1000000000ull + (((ts & 0xFFFFFFFFull) * 1000000000ull) >> 32);
 ```
 
 #### Writing
