@@ -186,7 +186,7 @@ async fn run(
 
         let meter_id = config.node_id.to_string();
         tokio::spawn(async move {
-            if let Err(e) = run_metrics_monitor(meter_id, &endpoint)
+            if let Err(e) = run_metrics_monitor(&meter_id, meter_id.clone(), &endpoint)
                 .await
                 .wrap_err("metrics monitor exited unexpectedly")
             {
