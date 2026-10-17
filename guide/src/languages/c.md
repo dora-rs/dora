@@ -244,7 +244,7 @@ Vec_uint8_t dora_read_data(Input_t *input);
 
 Reads the input data as a byte array. Consumes the underlying Arrow array from the input (the data can only be read once per event). Returns a `Vec_uint8_t` with `.ptr = NULL` if the input has no data or the data has already been consumed.
 
-The caller must free the returned data with `dora_free_data`.
+The caller must free the returned data with `dora_free_data`. Freeing a result whose `.ptr` is `NULL` is a no-op, so the result can be freed unconditionally.
 
 ### Output Sending
 
