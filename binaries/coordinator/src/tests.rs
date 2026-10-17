@@ -1377,6 +1377,96 @@ fn disconnect_releases_ready_barrier_when_last_pending_daemon_drops() {
     assert!(df.pending_daemons.is_empty());
 }
 
+// #3736: survivor B sent `ReadyOnDaemon` before its spawn result, then A
+// disconnected mid-spawn. No further `ReadyOnDaemon` will come, so the
+// cleanup must release the barrier even though the spawn is still pending,
+// and B's later Ok must still resolve the spawn.
+#[tokio::test]
+async fn disconnect_mid_spawn_releases_ready_barrier_for_survivors() {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let clock = Arc::new(HLC::default());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_a = DaemonId::new(Some("a".to_string()));
+    let daemon_b = DaemonId::new(Some("b".to_string()));
+
+    let (tx_b, mut rx_b) = tokio::sync::mpsc::channel::<String>(8);
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(
+        daemon_b.clone(),
+        crate::state::DaemonConnection::new(
+            tx_b,
+            Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            BTreeMap::new(),
+        ),
+    );
+
+    let mut df = test_running_dataflow(dataflow_id, daemon_a.clone(), "sender".to_string().into());
+    df.daemons.insert(daemon_b.clone());
+    df.node_to_daemon
+        .insert("receiver".to_string().into(), daemon_b.clone());
+    // B already reported ready; both spawn results are outstanding.
+    df.pending_daemons.insert(daemon_a.clone());
+    df.pending_spawn_results = BTreeSet::from([daemon_a.clone(), daemon_b.clone()]);
+    let mut running_dataflows = HashMap::from([(dataflow_id, df)]);
+
+    let actions = cleanup_disconnected_daemons_from_running_dataflows(
+        &mut running_dataflows,
+        &BTreeSet::from([daemon_a]),
+        &mut HashMap::new(),
+    );
+    assert!(
+        matches!(actions.as_slice(), [DisconnectAction::ReleaseReadyBarrier(id)] if *id == dataflow_id),
+        "must release the ready barrier while the spawn is pending, got {} action(s)",
+        actions.len()
+    );
+    apply_disconnect_actions(
+        actions,
+        &mut running_dataflows,
+        &mut daemon_connections,
+        &store,
+        &clock,
+    )
+    .await
+    .expect("apply_disconnect_actions");
+
+    let df = &running_dataflows[&dataflow_id];
+    assert!(df.ready_barrier_released, "barrier must be released");
+    assert!(
+        df.spawn_result.is_pending(),
+        "releasing the barrier must leave spawn_result to the watchdog"
+    );
+    let outbound = rx_b.try_recv().expect("B must be sent AllNodesReady");
+    let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+    assert!(
+        matches!(
+            outbound.params.inner,
+            DaemonCoordinatorEvent::AllNodesReady { dataflow_id: id, .. } if id == dataflow_id
+        ),
+        "unexpected event: {:?}",
+        outbound.params.inner
+    );
+
+    handle_dataflow_spawn_result(
+        dataflow_id,
+        daemon_b,
+        Ok(()),
+        &mut running_dataflows,
+        &mut IndexMap::new(),
+        &mut IndexMap::new(),
+        &mut daemon_connections,
+        &mut HashMap::new(),
+        &clock,
+        store.as_ref(),
+    )
+    .await;
+    assert!(running_dataflows[&dataflow_id].spawn_result.is_cached_ok());
+}
+
 // #2028 deadlocks #2 + #3 + #2029 reclaim: the sole daemon of a running
 // dataflow disconnects -> the dataflow must be removed from the running set
 // and any parked `dora stop` waiter resolved instead of hanging. But unlike
