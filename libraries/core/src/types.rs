@@ -366,14 +366,42 @@ pub struct TypeRule {
 
 /// Graph of type compatibility rules for checking implicit conversions.
 pub struct CompatibilityGraph {
-    /// Adjacency list: from-URN -> set of to-URNs
-    edges: BTreeMap<String, Vec<String>>,
+    /// Adjacency list keyed by the base of each rule's `from` URN.
+    edges: BTreeMap<String, Vec<Edge>>,
+}
+
+/// One compatibility rule, stored under the base of its `from` URN.
+struct Edge {
+    /// Parameters of the rule's `from` URN, which the source must agree with.
+    from_params: BTreeMap<String, String>,
+    /// Base of the rule's `to` URN.
+    to_base: String,
+    /// Parameters of the rule's `to` URN.
+    to_params: BTreeMap<String, String>,
+}
+
+/// Split a URN into base and parameters, treating an unparseable one as a
+/// bare base (the same fallback `is_compatible` applies to its arguments).
+fn base_and_params(urn: &str) -> (String, BTreeMap<String, String>) {
+    match parse_urn(urn) {
+        Some(parsed) => (parsed.base, parsed.params),
+        None => (urn.to_string(), BTreeMap::new()),
+    }
 }
 
 impl CompatibilityGraph {
     /// Create a new compatibility graph with hardcoded rules + optional user rules.
     pub fn new(user_rules: &[TypeRule]) -> Self {
-        let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut edges: BTreeMap<String, Vec<Edge>> = BTreeMap::new();
+        let mut add = |from: &str, to: &str| {
+            let (from_base, from_params) = base_and_params(from);
+            let (to_base, to_params) = base_and_params(to);
+            edges.entry(from_base).or_default().push(Edge {
+                from_params,
+                to_base,
+                to_params,
+            });
+        };
 
         // Hardcoded widening rules
         let builtins = [
@@ -383,18 +411,14 @@ impl CompatibilityGraph {
             ("std/core/v1/Float32", "std/core/v1/Float64"),
         ];
         for (from, to) in builtins {
-            edges
-                .entry(from.to_string())
-                .or_default()
-                .push(to.to_string());
+            add(from, to);
         }
 
-        // User-defined rules
+        // User-defined rules. A rule endpoint may carry parameters
+        // (`acme/Image[encoding=jpeg]`): edges are keyed by base, and the
+        // parameters are matched with the same agreement rule as `types_match`.
         for rule in user_rules {
-            edges
-                .entry(rule.from.clone())
-                .or_default()
-                .push(rule.to.clone());
+            add(&rule.from, &rule.to);
         }
 
         Self { edges }
@@ -436,44 +460,42 @@ impl CompatibilityGraph {
             return true;
         }
 
-        // Parse URNs once and reuse for both matching and BFS
-        let from_parsed = parse_urn(from);
-        let to_parsed = parse_urn(to);
-        let from_base = from_parsed
-            .as_ref()
-            .map(|p| p.base.as_str())
-            .unwrap_or(from);
-        let to_base = to_parsed.as_ref().map(|p| p.base.as_str()).unwrap_or(to);
+        // Parse URNs once and reuse for both matching and BFS. An unparsed
+        // side (no params map) is treated as a wildcard.
+        let (from_base, from_params) = base_and_params(from);
+        let (to_base, to_params) = base_and_params(to);
 
-        // Check parameterized match using already-parsed URNs
+        // Same base — check params via the shared agreement rule.
         if from_base == to_base {
-            // Same base — check params via the shared agreement rule. An
-            // unparsed side (no params map) is treated as a wildcard, matching
-            // the previous behavior.
-            if let (Some(fp), Some(tp)) = (from_parsed.as_ref(), to_parsed.as_ref()) {
-                return params_agree(&fp.params, &tp.params);
-            }
-            return true;
+            return params_agree(&from_params, &to_params);
         }
 
-        // BFS with depth limit 3
+        // BFS with depth limit 3. Each state carries the parameters known so
+        // far: a rule applies when they agree with its `from` parameters, and
+        // its `to` parameters override them (`Int32[unit=s]` widens to
+        // `Int64[unit=s]`, not to an unconstrained `Int64`).
         let mut queue = std::collections::VecDeque::new();
         let mut visited = std::collections::BTreeSet::new();
-        queue.push_back((from_base.to_string(), 0u32));
-        visited.insert(from_base.to_string());
+        queue.push_back((from_base.as_str(), from_params, 0u32));
 
-        while let Some((current, depth)) = queue.pop_front() {
+        while let Some((current, params, depth)) = queue.pop_front() {
             if depth >= 3 {
                 continue;
             }
-            if let Some(neighbors) = self.edges.get(&current) {
-                for next in neighbors {
-                    if next == to_base {
-                        return true;
-                    }
-                    if visited.insert(next.clone()) {
-                        queue.push_back((next.clone(), depth + 1));
-                    }
+            let Some(neighbors) = self.edges.get(current) else {
+                continue;
+            };
+            for edge in neighbors {
+                if !params_agree(&edge.from_params, &params) {
+                    continue;
+                }
+                let mut next_params = params.clone();
+                next_params.extend(edge.to_params.iter().map(|(k, v)| (k.clone(), v.clone())));
+                if edge.to_base == to_base && params_agree(&next_params, &to_params) {
+                    return true;
+                }
+                if visited.insert((edge.to_base.as_str(), next_params.clone())) {
+                    queue.push_back((edge.to_base.as_str(), next_params, depth + 1));
                 }
             }
         }
@@ -1129,6 +1151,38 @@ mod tests {
         }];
         let g = CompatibilityGraph::new(&rules);
         assert!(g.is_compatible("myproject/SensorV1", "myproject/SensorV2"));
+    }
+
+    #[test]
+    fn compat_user_rule_with_parameterized_endpoints() {
+        let rule = |from: &str, to: &str| TypeRule {
+            from: from.into(),
+            to: to.into(),
+        };
+        let g = CompatibilityGraph::new(&[
+            rule("acme/Img[enc=jpeg]", "acme/Blob"),
+            rule("acme/Scan", "acme/Cloud[frame=lidar]"),
+        ]);
+        // parameterized `from`: matches a source that agrees with its params
+        assert!(g.is_compatible("acme/Img[enc=jpeg]", "acme/Blob"));
+        assert!(g.is_compatible("acme/Img", "acme/Blob"));
+        assert!(!g.is_compatible("acme/Img[enc=png]", "acme/Blob"));
+        // parameterized `to`: reaches a target that agrees with its params
+        assert!(g.is_compatible("acme/Scan", "acme/Cloud[frame=lidar]"));
+        assert!(g.is_compatible("acme/Scan", "acme/Cloud"));
+        assert!(!g.is_compatible("acme/Scan", "acme/Cloud[frame=radar]"));
+    }
+
+    #[test]
+    fn compat_params_carry_across_a_hop() {
+        let g = CompatibilityGraph::new(&[TypeRule {
+            from: "std/core/v1/Int64[unit=m]".into(),
+            to: "acme/Meters".into(),
+        }]);
+        // Int32 -> Int64 keeps `unit`, so only metres reach the metres rule
+        assert!(g.is_compatible("std/core/v1/Int32[unit=m]", "acme/Meters"));
+        assert!(!g.is_compatible("std/core/v1/Int32[unit=s]", "acme/Meters"));
+        assert!(!g.is_compatible("std/core/v1/Int32[unit=s]", "std/core/v1/Int64[unit=m]"));
     }
 
     // --- Phase 5: metadata pattern tests ---
