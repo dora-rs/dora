@@ -16,8 +16,8 @@ use uuid::Uuid;
 ///
 /// Carried as the root of the `eyre::Report` from [`WsSession::connect`] so
 /// callers can tell "a coordinator is running here" from "nothing is
-/// listening". Commands that fall back to local data, or spawn a coordinator,
-/// when none is reachable must not do so for this error. See
+/// listening". Commands that spawn a coordinator, or build locally, when none
+/// is reachable must not do so for this error. See
 /// [`crate::common::coordinator_rejected`].
 #[derive(Debug)]
 pub(crate) struct CoordinatorRejected(String);

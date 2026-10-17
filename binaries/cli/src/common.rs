@@ -218,9 +218,11 @@ pub(crate) fn connect_to_coordinator(coordinator_addr: SocketAddr) -> eyre::Resu
 /// running but turned this CLI away (rejected `--auth` token or version
 /// handshake), as opposed to no coordinator answering at all.
 ///
-/// A command that falls back to local data, or starts a coordinator, when
-/// none is reachable must surface this error instead: the fallback would show
-/// the wrong data, and a second coordinator cannot start on the same port.
+/// A command that starts a coordinator, or builds locally, when none is
+/// reachable must surface this error instead: a second coordinator cannot
+/// start on the same port, and a local build skips the `deploy:` targets.
+/// `dora logs` still falls back to the local `out/` logs, with a warning,
+/// because the refusing coordinator may not be the one that ran the dataflow.
 pub(crate) fn coordinator_rejected(err: &eyre::Report) -> bool {
     err.downcast_ref::<CoordinatorRejected>().is_some()
 }
