@@ -61,8 +61,10 @@ pub(crate) struct DrainSignal {
     /// backpressure cycle. While set, deliveries to its full channel are
     /// dropped and counted instead of holding their producer for another
     /// stall limit each — once is enough to know (dora-rs/dora#3601).
-    /// Cleared once the receiver has drained its channel back to the
-    /// headroom a held delivery waits for.
+    /// Cleared once the receiver has drained its channel to
+    /// [`GAVE_UP_RECOVERY_ROOM`](crate::GAVE_UP_RECOVERY_ROOM) free slots or
+    /// more; clearing it at the headroom a held delivery waits for would take
+    /// one event off a stalled channel and re-arm the hold (dora-rs/dora#3630).
     pub gave_up: AtomicBool,
     /// Set when the node dropped its event stream deliberately, so a held
     /// delivery that finds its channel closed afterwards is not a loss.
