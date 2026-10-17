@@ -28,6 +28,9 @@ ignore = [
     "RUSTSEC-2026-0041",  # lz4_flex 0.10 uninit-memory leak on invalid input. Transitive via zenoh-transport (pins ^0.10); dora doesn't enable zenoh compression. Waiting for upstream zenoh bump. Review: 2026-12.
     "RUSTSEC-2026-0194",  # quick-xml <0.41 quadratic attribute check. Own parser (msg-gen) on fixed 0.41; rest transitive via self_update + mavlink-bindgen (build-time). Review: 2026-12.
     "RUSTSEC-2026-0195",  # quick-xml <0.41 NsReader memory-exhaustion DoS. Same transitive parents as above. Review: 2026-12.
+    "RUSTSEC-2026-0367",  # zip <9 keeps SUID/SGID bits in ZipArchive::extract / stream extract. Only via self_update (Windows `dora self update`), which reads one entry with by_name/by_index + io::copy into a new file and never calls extract(); latest self_update 1.3.0 still pins zip ^8. Review: 2027-01.
+    "RUSTSEC-2026-0368",  # zip <9 ZipArchive::extract creates symlinks escaping the destination. Same self_update path as above; extract() is never called. Review: 2027-01.
+    "RUSTSEC-2026-0369",  # zip <9 extract() applies Unix permissions through symlinks. Same self_update path as above; extract() is never called. Review: 2027-01.
 ]
 
 # ----- Licenses -----
