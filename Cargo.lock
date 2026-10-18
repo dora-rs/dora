@@ -2719,7 +2719,6 @@ dependencies = [
  "futures-timer",
  "serde",
  "serde_json",
- "serde_yaml",
  "tracing",
  "tracing-subscriber",
 ]
