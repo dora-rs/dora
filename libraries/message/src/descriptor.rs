@@ -103,6 +103,8 @@ pub struct Descriptor {
 
     /// Debug options (optional).
     #[serde(default)]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<Debug>")]
     pub debug: Debug,
 
     /// How often the daemon checks node health (in seconds).
@@ -163,6 +165,8 @@ pub struct Descriptor {
     ///     to: myproject/SensorV2
     /// ```
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<Vec<TypeRuleDef>>")]
     pub type_rules: Vec<TypeRuleDef>,
 
     /// Global environment variables inherited by every node.
@@ -555,6 +559,8 @@ pub struct Node {
     /// Maps output identifiers to type URNs (e.g. `std/media/v1/Image`).
     /// Only annotated outputs are type-checked; unannotated outputs remain dynamic.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<BTreeMap<DataId, String>>")]
     pub output_types: BTreeMap<DataId, String>,
 
     /// Per-output framing overrides (default: Raw for all).
@@ -562,6 +568,8 @@ pub struct Node {
     /// Maps output identifiers to their wire framing mode.
     /// Outputs not listed here use the default `Raw` framing.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<BTreeMap<DataId, OutputFraming>>")]
     pub output_framing: BTreeMap<DataId, OutputFraming>,
 
     /// Input data connections from other nodes.
@@ -606,6 +614,8 @@ pub struct Node {
     /// Maps input identifiers to expected type URNs. Used by `dora validate`
     /// to check that upstream output types match expectations.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<BTreeMap<DataId, String>>")]
     pub input_types: BTreeMap<DataId, String>,
 
     /// Required metadata keys per output.
@@ -620,6 +630,8 @@ pub struct Node {
     ///   response: [request_id]
     /// ```
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<BTreeMap<DataId, Vec<String>>>")]
     pub output_metadata: BTreeMap<DataId, Vec<String>>,
 
     /// Communication pattern shorthand (e.g. `service-server`).
@@ -989,6 +1001,8 @@ pub struct Node {
     ///       mode: turbo
     /// ```
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<BTreeMap<String, String>>")]
     pub params: BTreeMap<String, String>,
 
     /// CPU cores to pin this node's process to (Linux only, ignored on other platforms).
@@ -2316,33 +2330,53 @@ debug:
         }
     }
 
-    /// The schema must agree with the parser on empty `inputs:`/`outputs:`
-    /// keys. On a node they are YAML `null`, which deserializes to an empty
-    /// collection. On an operator they are rejected, because `OperatorConfig`
-    /// is flattened and flattened fields don't map `null` to a default.
+    /// The schema must agree with the parser on every empty key. An empty
+    /// key is YAML `null`: on the dataflow and on a node, serde accepts it
+    /// wherever the field has a default, so the schema has to accept it there
+    /// too, and reject it everywhere serde does. Every property is checked,
+    /// so a new field cannot drift.
     #[test]
-    fn empty_inputs_and_outputs_schema_matches_parser() {
-        let node = "nodes:\n  - id: a\n    path: x\n    inputs:\n    outputs:\n";
-        let descriptor: Descriptor = serde_yaml::from_str(node).unwrap();
-        assert!(descriptor.nodes[0].inputs.is_empty());
-        assert!(descriptor.nodes[0].outputs.is_empty());
+    fn empty_keys_schema_matches_parser() {
+        fn schema_accepts_null(property: &serde_json::Value) -> bool {
+            property["type"]
+                .as_array()
+                .is_some_and(|t| t.contains(&"null".into()))
+                || property["anyOf"]
+                    .as_array()
+                    .is_some_and(|v| v.iter().any(|s| s["type"] == "null"))
+        }
 
+        let schema = serde_json::to_value(schemars::schema_for!(Descriptor)).unwrap();
+        let node = "nodes:\n  - id: a\n    path: x\n";
+        for (properties, indent) in [
+            (&schema["properties"], ""),
+            (&schema["$defs"]["Node"]["properties"], "    "),
+        ] {
+            for (key, property) in properties.as_object().unwrap() {
+                // Already set by the minimal node; a duplicate key is an error.
+                if ["nodes", "id", "path"].contains(&key.as_str()) {
+                    continue;
+                }
+                let yaml = format!("{node}{indent}{key}:\n");
+                let parses = serde_yaml::from_str::<Descriptor>(&yaml).is_ok();
+                assert_eq!(schema_accepts_null(property), parses, "{yaml}{property}");
+            }
+        }
+
+        // Operators are `#[serde(flatten)]`ed, and flattened fields don't
+        // map `null` to a default, so there the schema must reject it.
         let operators = "nodes:\n  - id: a\n    operators:\n      - id: op\n        python: x.py\n        inputs:\n";
         let operator = "nodes:\n  - id: a\n    operator:\n      python: x.py\n      outputs:\n";
         for yaml in [operators, operator] {
             assert!(serde_yaml::from_str::<Descriptor>(yaml).is_err(), "{yaml}");
         }
-
-        let schema = serde_json::to_value(schemars::schema_for!(Descriptor)).unwrap();
-        for (definition, nullable) in [
-            ("Node", true),
-            ("OperatorDefinition", false),
-            ("SingleOperatorDefinition", false),
-        ] {
-            for key in ["inputs", "outputs"] {
-                let types = &schema["$defs"][definition]["properties"][key]["type"];
-                let accepts_null = types.as_array().is_some_and(|t| t.contains(&"null".into()));
-                assert_eq!(accepts_null, nullable, "{definition}.{key}: {types}");
+        for definition in ["OperatorDefinition", "SingleOperatorDefinition"] {
+            for key in ["inputs", "outputs", "input_types", "output_types"] {
+                let property = &schema["$defs"][definition]["properties"][key];
+                assert!(
+                    !schema_accepts_null(property),
+                    "{definition}.{key}: {property}"
+                );
             }
         }
     }
