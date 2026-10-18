@@ -243,6 +243,11 @@ fn decode_hex_as_uint8_array(hex: &str) -> eyre::Result<arrow::array::ArrayData>
         .chunks(2)
         .enumerate()
         .map(|(i, chunk)| {
+            eyre::ensure!(
+                chunk.iter().all(u8::is_ascii_hexdigit),
+                "invalid hex at position {}",
+                i * 2
+            );
             let s = std::str::from_utf8(chunk)
                 .with_context(|| format!("non-ASCII at byte {}", i * 2))?;
             u8::from_str_radix(s, 16).with_context(|| format!("invalid hex at position {}", i * 2))
@@ -301,6 +306,14 @@ mod tests {
     #[test]
     fn test_decode_hex_invalid() {
         assert!(decode_hex_as_uint8_array("zz").is_err());
+    }
+
+    #[test]
+    fn test_decode_hex_rejects_sign() {
+        assert!(decode_hex_as_uint8_array("+f+f").is_err());
+        assert!(decode_hex_as_uint8_array("-f-f").is_err());
+        assert!(decode_hex_as_uint8_array("+abc").is_err());
+        assert!(decode_hex_as_uint8_array("00+f").is_err());
     }
 
     #[test]
