@@ -1053,4 +1053,149 @@ mod codegen_tests {
         let (_decl, imp) = action.cxx_action_server_creation_functions("test_pkg");
         assert!(format_valid_rust(imp).contains(needle), "server create fn");
     }
+
+    /// The `wait_for_service` / `wait_for_publisher` calls a function makes on
+    /// the parts of an action server, as `(accessor, wait)` pairs, e.g.
+    /// `("goal_client", "wait_for_service")` for
+    /// `client.goal_client().wait_for_service(node)`. Read from the syntax
+    /// tree, so it doesn't depend on formatting, and it follows `let`
+    /// bindings (also through parentheses and the tail of a block or
+    /// `unsafe` block) and the arguments of macros like `futures::join!`. A wait whose future is thrown away
+    /// (`let _ = ..;` or `..;`, also in parentheses or braces) doesn't count:
+    /// nothing waits for it.
+    #[derive(Default)]
+    struct EndpointWaits {
+        bindings: std::collections::HashMap<String, String>,
+        /// The thrown-away calls of the statements being walked.
+        thrown_away: Vec<*const syn::ExprMethodCall>,
+        waits: std::collections::BTreeSet<(String, String)>,
+    }
+
+    impl EndpointWaits {
+        const ACCESSORS: [&str; 5] = [
+            "goal_client",
+            "result_client",
+            "cancel_client",
+            "feedback_subscription",
+            "status_subscription",
+        ];
+
+        /// `expr` without its parentheses and block or `unsafe` braces.
+        fn unwrap(expr: &syn::Expr) -> &syn::Expr {
+            match expr {
+                syn::Expr::Paren(inner) => Self::unwrap(&inner.expr),
+                syn::Expr::Unsafe(syn::ExprUnsafe { block, .. })
+                | syn::Expr::Block(syn::ExprBlock { block, .. }) => match block.stmts.last() {
+                    Some(syn::Stmt::Expr(tail, None)) => Self::unwrap(tail),
+                    _ => expr,
+                },
+                _ => expr,
+            }
+        }
+
+        /// The action server part that `expr` evaluates to, if any.
+        fn accessor(&self, expr: &syn::Expr) -> Option<String> {
+            match Self::unwrap(expr) {
+                syn::Expr::MethodCall(call) => Self::ACCESSORS
+                    .into_iter()
+                    .find(|accessor| call.method == accessor)
+                    .map(str::to_string),
+                syn::Expr::Path(path) => self
+                    .bindings
+                    .get(&path.path.get_ident()?.to_string())
+                    .cloned(),
+                _ => None,
+            }
+        }
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for EndpointWaits {
+        fn visit_stmt(&mut self, stmt: &'ast syn::Stmt) {
+            let discarded = match stmt {
+                syn::Stmt::Expr(expr, Some(_)) => Some(expr),
+                syn::Stmt::Local(syn::Local {
+                    pat: syn::Pat::Wild(_),
+                    init: Some(init),
+                    ..
+                }) => Some(&*init.expr),
+                _ => None,
+            };
+            if let Some(syn::Expr::MethodCall(call)) = discarded.map(Self::unwrap) {
+                self.thrown_away.push(call);
+                syn::visit::visit_stmt(self, stmt);
+                self.thrown_away.pop();
+            } else {
+                syn::visit::visit_stmt(self, stmt);
+            }
+        }
+
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            syn::visit::visit_local(self, local);
+            if let (syn::Pat::Ident(name), Some(init)) = (&local.pat, &local.init)
+                && let Some(accessor) = self.accessor(&init.expr)
+            {
+                self.bindings.insert(name.ident.to_string(), accessor);
+            }
+        }
+
+        fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+            syn::visit::visit_expr_method_call(self, call);
+            if (call.method == "wait_for_service" || call.method == "wait_for_publisher")
+                && !self.thrown_away.contains(&std::ptr::from_ref(call))
+                && let Some(accessor) = self.accessor(&call.receiver)
+            {
+                self.waits.insert((accessor, call.method.to_string()));
+            }
+        }
+
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            use syn::parse::Parser as _;
+            let args = syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated;
+            if let Ok(args) = args.parse2(mac.tokens.clone()) {
+                args.iter().for_each(|arg| self.visit_expr(arg));
+            }
+        }
+    }
+
+    /// A `request_result` sent before the result service is matched is lost on
+    /// DDS: the client never gets a result and the server waits in `send_result`.
+    /// So `wait_for_action` has to wait for every part of the action server, like
+    /// `rcl_action_server_is_available`, not only for the goal service.
+    #[test]
+    fn wait_for_action_waits_for_every_action_endpoint() {
+        use syn::visit::Visit as _;
+        let action = Action {
+            package: "test_pkg".to_string(),
+            name: "Fibonacci".to_string(),
+            goal: empty_msg("Fibonacci_Goal"),
+            result: empty_msg("Fibonacci_Result"),
+            feedback: empty_msg("Fibonacci_Feedback"),
+        };
+        let (_decl, imp) = action.cxx_action_creation_functions("test_pkg");
+        let file: syn::File = syn::parse2(imp.into_token_stream()).expect("generated code parses");
+        let wait_for_action = file
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Impl(imp) => Some(&imp.items),
+                _ => None,
+            })
+            .flatten()
+            .find_map(|item| match item {
+                syn::ImplItem::Fn(f) if f.sig.ident == "wait_for__test_pkg__Fibonacci" => Some(f),
+                _ => None,
+            })
+            .expect("generated wait_for_action");
+        let mut found = EndpointWaits::default();
+        found.visit_impl_item_fn(wait_for_action);
+        let expected = [
+            ("goal_client", "wait_for_service"),
+            ("result_client", "wait_for_service"),
+            ("cancel_client", "wait_for_service"),
+            ("feedback_subscription", "wait_for_publisher"),
+            ("status_subscription", "wait_for_publisher"),
+        ]
+        .map(|(accessor, wait)| (accessor.to_string(), wait.to_string()));
+        assert_eq!(found.waits, expected.into());
+    }
 }
