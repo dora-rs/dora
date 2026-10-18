@@ -349,16 +349,36 @@ impl Ros2Context {
         {
             eyre::bail!("ROS2 parameters are not yet supported by the native Zenoh transport");
         }
-        if matches!(self.context, dora_ros2_bridge::transport::Context::Zenoh(_))
-            && rosout_requested
-        {
-            eyre::bail!("ROS2 rosout is not yet supported by the native Zenoh transport");
-        }
+        // ros2-client declares a DDS node's `/rosout` publisher itself; a Zenoh
+        // node gets it below. Its type is resolved before the node is created,
+        // so a missing type leaves nothing in the ROS graph.
+        let rosout_type = match &self.transport.config {
+            dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. }
+                if rosout_requested =>
+            {
+                Some(
+                    resolve_message(
+                        *compatibility,
+                        "rcl_interfaces",
+                        "Log",
+                        &TypeDescriptionResolver::from_ament_prefix_path(),
+                    )
+                    .wrap_err("`rosout=True` needs the `rcl_interfaces/msg/Log` type")?,
+                )
+            }
+            _ => None,
+        };
         let mut node = futures::executor::block_on(self.context.new_named_node(
             namespace,
             name.base_name(),
             node_options,
         ))?;
+        let rosout = match (&node, &rosout_type) {
+            (dora_ros2_bridge::transport::Node::Zenoh(node), Some(identity)) => {
+                Some(declare_zenoh_rosout(node, identity)?)
+            }
+            _ => None,
+        };
 
         // Start a spinner so service/discovery status events are processed.
         // One worker thread is enough (the spinner is a single task); this keeps
@@ -387,8 +407,42 @@ impl Ros2Context {
             transport: self.transport.clone(),
             messages: self.messages.clone(),
             _spinner_pool: spinner_pool,
+            _rosout: rosout,
         })
     }
+}
+
+/// Declares a Zenoh node's `/rosout` publisher (`rcl_interfaces/msg/Log`).
+fn declare_zenoh_rosout(
+    node: &dora_ros2_bridge::transport::zenoh::Node,
+    identity: &dora_ros2_bridge::transport::zenoh::compatibility::RosTypeIdentity,
+) -> eyre::Result<NodePublisher> {
+    use dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
+    // rcl's `rcl_qos_profile_rosout_default`. Its 10 s lifespan has no
+    // `Ros2Qos` field and doesn't affect which subscribers match.
+    let qos = Ros2Qos {
+        reliability: Reliability::Reliable {
+            max_blocking_time: Duration::ZERO,
+        },
+        durability: Durability::TransientLocal,
+        history: History::KeepLast { depth: 1000 },
+        liveliness: Liveliness::Automatic {
+            lease_duration: None,
+        },
+    };
+    let key = DataKey::new(node.domain(), "/rosout", identity)?;
+    let token = TopicToken {
+        name: "/rosout".into(),
+        type_name: identity.dds_name.clone(),
+        type_hash: identity.key_hash_component(),
+        qos: ZenohQosMapping::from_ros_qos(&qos).to_string(),
+    };
+    Ok(futures::executor::block_on(NodePublisher::declare(
+        node,
+        key.as_str(),
+        token,
+        &qos,
+    ))?)
 }
 
 /// ROS2 Node
@@ -408,6 +462,8 @@ pub struct Ros2Node {
     // requires a running spinner for service/discovery status events
     // (`wait_for_service` panics otherwise).
     _spinner_pool: Option<futures::executor::ThreadPool>,
+    // A Zenoh node's `/rosout` publisher, kept so it stays in the ROS graph.
+    _rosout: Option<NodePublisher>,
 }
 
 impl Ros2Node {
@@ -2589,5 +2645,113 @@ mod transport_tests {
             std::mem::size_of::<Ros2NodeOptions>(),
             std::mem::size_of::<bool>()
         );
+    }
+}
+
+#[cfg(test)]
+mod zenoh_node_feature_tests {
+    use std::time::Duration;
+
+    use dora_ros2_bridge::transport::zenoh::keyexpr::{EntityKind, LivelinessKey};
+    use futures::FutureExt;
+
+    use super::{Ros2Context, Ros2NodeOptions, Ros2Transport};
+
+    /// Waits until the context's graph holds an entity matching `predicate`.
+    fn wait_for_entity(
+        context: &Ros2Context,
+        predicate: impl Fn(&LivelinessKey) -> bool,
+    ) -> LivelinessKey {
+        let dora_ros2_bridge::transport::Context::Zenoh(zenoh) = &context.context else {
+            panic!("expected a Zenoh context");
+        };
+        let found = async {
+            loop {
+                let snapshot = zenoh.graph.snapshot();
+                if let Some(entity) = snapshot.entities.iter().find(|e| predicate(&e.token)) {
+                    return entity.token.clone();
+                }
+                zenoh
+                    .graph
+                    .wait_for_change(snapshot.generation)
+                    .await
+                    .expect("graph closed while waiting");
+            }
+        };
+        futures::executor::block_on(async {
+            futures::select! {
+                token = found.fuse() => token,
+                () = futures_timer::Delay::new(Duration::from_secs(10)).fuse() => {
+                    panic!("timed out waiting for the graph entity")
+                }
+            }
+        })
+    }
+
+    /// `rosout=True` gives a Zenoh node a `/rosout` publisher, as ros2-client
+    /// does on DDS, instead of failing.
+    #[test]
+    fn a_zenoh_node_with_rosout_declares_a_rosout_publisher() {
+        let context = Ros2Context::new(
+            Some(Vec::new()),
+            Some(Ros2Transport::zenoh("humble", None).unwrap()),
+            Some(71),
+        )
+        .unwrap();
+        let node = context
+            .new_node("rosout_test", "/", Ros2NodeOptions::new(Some(true)), None)
+            .unwrap();
+        // The node keeps the publisher, so it stays in the graph.
+        assert!(node._rosout.is_some());
+
+        let token = wait_for_entity(&context, |token| {
+            token.kind == EntityKind::Publisher
+                && token
+                    .topic
+                    .as_ref()
+                    .is_some_and(|topic| topic.name == "/rosout")
+        });
+        assert_eq!(token.node_name, "rosout_test");
+        let topic = token.topic.unwrap();
+        assert_eq!(topic.type_name, "rcl_interfaces::msg::dds_::Log_");
+        // rcl's `rosout` QoS: reliable, transient local, keep last 1000.
+        assert_eq!(topic.qos, ":1:,1000:,:,:,,");
+
+        let quiet = context
+            .new_node("quiet_test", "/", Ros2NodeOptions::new(Some(false)), None)
+            .unwrap();
+        assert!(quiet._rosout.is_none());
+    }
+
+    /// If the `rcl_interfaces/msg/Log` type can't be resolved, `new_node`
+    /// fails with an error naming `rosout=True` and declares nothing, so no
+    /// half-built node shows up in the ROS graph.
+    #[test]
+    fn a_rosout_type_failure_declares_no_node() {
+        if std::env::var_os("AMENT_PREFIX_PATH").is_some() {
+            eprintln!("skipped: AMENT_PREFIX_PATH is set, so rep2016 can resolve the type");
+            return;
+        }
+        let context = Ros2Context::new(
+            Some(Vec::new()),
+            Some(Ros2Transport::zenoh("rep2016", None).unwrap()),
+            Some(72),
+        )
+        .unwrap();
+        let dora_ros2_bridge::transport::Context::Zenoh(zenoh) = &context.context else {
+            panic!("expected a Zenoh context");
+        };
+        // Local tokens update the graph synchronously: a node declared and
+        // dropped inside `new_node` would bump the generation twice.
+        let before = zenoh.graph.snapshot().generation;
+
+        let Err(error) =
+            context.new_node("ghost_test", "/", Ros2NodeOptions::new(Some(true)), None)
+        else {
+            panic!("expected `new_node` to fail without the Log type description");
+        };
+
+        assert!(format!("{error:#}").contains("rosout=True"), "{error:#}");
+        assert_eq!(zenoh.graph.snapshot().generation, before);
     }
 }
