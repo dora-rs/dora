@@ -7,6 +7,8 @@ pub mod graph;
 #[cfg(feature = "rmw-zenoh")]
 pub mod keyexpr;
 #[cfg(feature = "rmw-zenoh")]
+pub mod parameters;
+#[cfg(feature = "rmw-zenoh")]
 pub mod pubsub;
 #[cfg(feature = "rmw-zenoh")]
 pub mod qos;
