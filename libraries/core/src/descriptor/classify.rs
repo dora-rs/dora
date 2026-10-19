@@ -124,6 +124,10 @@ const ALL_CHECKABLE_FIELDS: &[CheckableField] = &[
         is_set: |node| node.path_sha256.is_some(),
     },
     CheckableField {
+        name: "path_fallback",
+        is_set: |node| node.path_fallback.is_some(),
+    },
+    CheckableField {
         name: "args",
         is_set: |node| node.args.is_some(),
     },
@@ -289,7 +293,7 @@ fn validate_against_whitelist(node: &Node, allowed: &[&str], kind_name: &str) ->
 // ── Per-kind whitelists and checks ────────────────────────────────
 
 /// Standard node whitelist:
-/// path, git, branch, tag, rev, hub, build, path_sha256, args,
+/// path, git, branch, tag, rev, hub, build, path_sha256, path_fallback, args,
 /// inputs, outputs, output_types, input_types, output_framing,
 /// shared_memory_pool_size, restart_policy, max_restarts,
 /// restart_delay, max_restart_delay, restart_window,
@@ -305,6 +309,7 @@ const STANDARD_ALLOWED: &[&str] = &[
     "hub",
     "build",
     "path_sha256",
+    "path_fallback",
     "args",
     "inputs",
     "outputs",
@@ -333,7 +338,21 @@ const STANDARD_ALLOWED: &[&str] = &[
 fn check_standard(node: &Node) -> Result<()> {
     let mut allowed = SHARED_FIELDS.to_vec();
     allowed.extend(STANDARD_ALLOWED);
-    validate_against_whitelist(node, &allowed, "Standard")
+    validate_against_whitelist(node, &allowed, "Standard")?;
+    // The daemon only falls back for a local `path`; a hub entrypoint or a
+    // URL download is resolved without it, so reject it there rather than
+    // silently ignore it (a `path_sha256` on a local path is rejected at
+    // spawn already).
+    if node.path_fallback.is_some()
+        && (node.hub.is_some() || node.path.as_deref().is_some_and(super::source_is_url))
+    {
+        bail!(
+            "node `{}` has `path_fallback`, which only applies to a local `path`, \
+             not to a `hub:` node or a URL download",
+            node.id
+        );
+    }
+    Ok(())
 }
 
 /// Runtime node whitelist:
@@ -475,6 +494,10 @@ hub: dora-yolo@^0.5
         let field_cases = [
             ("path", "id: x\npath: ./node\n"),
             ("path_sha256", "id: x\npath: ./node\npath_sha256: abc123\n"),
+            (
+                "path_fallback",
+                "id: x\npath: ./node\npath_fallback: node\n",
+            ),
             ("args", "id: x\npath: ./node\nargs: --foo\n"),
             ("build", "id: x\npath: ./node\nbuild: cargo build\n"),
             (
@@ -579,6 +602,27 @@ hub: dora-yolo@^0.5
                 "field `{field_name}` should be detected as set"
             );
         }
+    }
+
+    #[test]
+    fn path_fallback_is_rejected_where_the_daemon_would_ignore_it() {
+        for yaml in [
+            // `dora build` resolves a hub node to its entrypoint `path`.
+            "id: x\npath: ./node\nhub: dora-yolo@^0.5\npath_fallback: node\n",
+            "id: x\npath: https://example.com/node\npath_fallback: node\n",
+            "id: x\npath: https://example.com/node\npath_sha256: abc123\npath_fallback: node\n",
+        ] {
+            let err = classify(&parse_node(yaml)).expect_err(yaml).to_string();
+            assert_eq!(
+                err,
+                "node `x` has `path_fallback`, which only applies to a local `path`, \
+                 not to a `hub:` node or a URL download"
+            );
+        }
+        classify(&parse_node(
+            "id: x\npath: modules/node\npath_fallback: node\n",
+        ))
+        .unwrap();
     }
 
     #[test]

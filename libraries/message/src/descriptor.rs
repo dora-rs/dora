@@ -967,10 +967,10 @@ pub struct Node {
     /// so only `module`, `inputs`, `params`, `env`, `build`, and `deploy` are
     /// meaningful on it. Every other node field is rejected at expansion time
     /// rather than silently discarded -- both the source/kind fields (`path`,
-    /// `args`, `path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`,
-    /// `operator`, `ros2`) and per-node runtime fields (`outputs`,
-    /// `output_types`, `cpu_affinity`, `restart_policy`, ...). The same rule
-    /// applies at every nesting level.
+    /// `args`, `path_sha256`, `path_fallback`, `git`, `hub`, `branch`, `tag`,
+    /// `rev`, `operators`, `operator`, `ros2`) and per-node runtime fields
+    /// (`outputs`, `output_types`, `cpu_affinity`, `restart_policy`, ...).
+    /// The same rule applies at every nesting level.
     ///
     /// `env`, `build`, `deploy`, and `params` *are* accepted: they propagate
     /// into the module's inner nodes.
@@ -1033,6 +1033,16 @@ pub struct Node {
     /// Evaluated on each `health_check_interval` tick (default 5s).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_timeout: Option<f64>,
+
+    /// What to run when nothing exists at `path`, looked up like a top-level
+    /// `path` (working directory, uv environment, then `$PATH`; variables
+    /// are not expanded). Set internally when a module node's `path` is a
+    /// single name without an extension, such as `dora-echo`: `path` points
+    /// next to the module file, and this keeps the name as written; rarely
+    /// set by hand.
+    // Appended last so existing fields keep their wire-format order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_fallback: Option<String>,
 }
 
 impl Node {
@@ -1095,6 +1105,7 @@ impl Node {
             cpu_affinity: None,
             deploy: None,
             startup_timeout: None,
+            path_fallback: None,
         }
     }
 }
@@ -1488,6 +1499,11 @@ pub struct CustomNode {
     // Appended last so existing fields keep their wire-format order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_timeout: Option<f64>,
+    /// What to run when nothing exists at `path`, resolved like a top-level
+    /// `path` (the name a module node's `path:` was written as).
+    // Appended last so existing fields keep their wire-format order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_fallback: Option<String>,
 }
 
 impl CustomNode {
@@ -1519,6 +1535,7 @@ impl CustomNode {
             finish_grace_secs: None,
             run_config: NodeRunConfig::default(),
             startup_timeout: None,
+            path_fallback: None,
         }
     }
 
@@ -1572,6 +1589,7 @@ impl CustomNode {
                 shared_memory_pool_size: node.shared_memory_pool_size.take(),
             },
             startup_timeout: node.startup_timeout.take(),
+            path_fallback: node.path_fallback.take(),
         }
     }
 }

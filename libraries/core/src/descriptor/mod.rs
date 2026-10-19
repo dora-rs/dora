@@ -300,9 +300,10 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 );
 
                 // The bridge binary is fixed, so `path` is a constant and
-                // `source` stays at its default. `path_sha256` and `build` are
-                // not accepted on a `ros2:` node (classification rejects them),
-                // so `from_node` finds them unset.
+                // `source` stays at its default. `path_sha256`,
+                // `path_fallback` and `build` are not accepted on a `ros2:`
+                // node (classification rejects them), so `from_node` finds
+                // them unset.
                 let mut custom =
                     CustomNode::from_node(&mut node, "dora-ros2-bridge-node".to_string());
                 custom.envs = Some(envs);
@@ -608,6 +609,22 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
         Ok(abs_path)
     } else {
         bail!("Could not find source path {}", path.display())
+    }
+}
+
+/// [`resolve_path`] for a node's `path`; when nothing is found there and the
+/// node has a `path_fallback`, resolves that instead. Module expansion sets
+/// it to the name a bare module node `path:` was written as (#3826), so a
+/// file next to the module wins and a command on `$PATH` still runs.
+pub fn resolve_node_path(
+    path: &str,
+    fallback: Option<&str>,
+    working_dir: &Path,
+) -> Result<PathBuf> {
+    match (resolve_path(path, working_dir), fallback) {
+        (Err(err), Some(fallback)) => resolve_path(fallback, working_dir)
+            .wrap_err_with(|| format!("{err}, nor its `path_fallback` `{fallback}`")),
+        (result, _) => result,
     }
 }
 
@@ -1426,6 +1443,54 @@ nodes:
         );
     }
 
+    /// #3826: inside a module in a subdirectory, a bare `path:` names either a
+    /// file next to the module or, like a top-level `path:`, something found
+    /// from the working directory, uv or `$PATH`. Expansion still points
+    /// `path` at the module directory; the name as written is the fallback
+    /// when no file is there.
+    #[test]
+    fn a_bare_module_node_path_falls_back_to_a_top_level_lookup() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("modules")).unwrap();
+        std::fs::write(
+            dir.join("modules/m.yml"),
+            "module:\n  name: m\nnodes:\n  - id: worker\n    path: worker-3826\n",
+        )
+        .unwrap();
+        let desc: Descriptor =
+            serde_yaml::from_str("nodes:\n  - id: m\n    module: modules/m.yml\n").unwrap();
+        // `resolve_path` appends `.exe` to an extensionless name on Windows.
+        let file = format!("worker-3826{}", std::env::consts::EXE_SUFFIX);
+
+        let missing = desc.check(dir).expect_err("no file anywhere");
+        let missing = format!("{missing:?}");
+        assert!(
+            missing.contains("nor its `path_fallback` `worker-3826`"),
+            "{missing}"
+        );
+
+        // Only the top-level lookup finds it: the node runs this file.
+        std::fs::write(dir.join(&file), "").unwrap();
+        desc.check(dir).unwrap();
+        let expanded = desc.expand(dir).unwrap();
+        let path = expanded.nodes[0].path.clone().unwrap();
+        let fallback = expanded.nodes[0].path_fallback.as_deref();
+        assert_eq!(Path::new(&path), Path::new("modules").join("worker-3826"));
+        assert_eq!(fallback, Some("worker-3826"));
+        assert_eq!(
+            resolve_node_path(&path, fallback, dir).unwrap(),
+            dir.join(&file)
+        );
+
+        // A file next to the module still wins, as on main.
+        std::fs::write(dir.join("modules").join(&file), "").unwrap();
+        assert_eq!(
+            resolve_node_path(&path, fallback, dir).unwrap(),
+            dir.join("modules").join(&file)
+        );
+    }
+
     #[test]
     fn resolve_path_confined_has_no_path_fallback() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1661,14 +1726,14 @@ nodes:
     }
 
     /// A `path:` node: every shared key and the standard-only `path_sha256` /
-    /// `build` arrive. `source` resolves to `Local`, which is already the
+    /// `path_fallback` / `build` arrive. `source` resolves to `Local`, which is already the
     /// default, and `envs` is set only by the ROS2-bridge arm — the two tests
     /// below cover those.
     #[test]
     fn every_custom_node_field_is_carried_through() {
         let yaml = format!(
             "nodes:\n  - id: full\n    path: ./full-node\n    path_sha256: abc123\n    \
-             build: cargo build{SHARED_CUSTOM_NODE_KEYS}"
+             path_fallback: full-node\n    build: cargo build{SHARED_CUSTOM_NODE_KEYS}"
         );
         let custom = resolve_and_check_carried_through(&yaml, &["source", "envs"]);
         assert!(
@@ -1686,7 +1751,7 @@ nodes:
     fn git_source_is_carried_through() {
         let yaml = format!(
             "nodes:\n  - id: full\n    path: node\n    path_sha256: abc123\n    \
-             build: cargo build\n    git: https://github.com/example/node.git\n    \
+             path_fallback: full-node\n    build: cargo build\n    git: https://github.com/example/node.git\n    \
              branch: main{SHARED_CUSTOM_NODE_KEYS}"
         );
         let custom = resolve_and_check_carried_through(&yaml, &["source", "envs"]);
@@ -1704,8 +1769,8 @@ nodes:
 
     /// The ROS2-bridge arm: `path` is the bridge binary, `envs` carries the
     /// bridge config the binary reads at startup, and every shared key still
-    /// arrives. `path_sha256` and `build` are rejected on a `ros2:` node by
-    /// classification, so they must stay unset.
+    /// arrives. `path_sha256`, `path_fallback` and `build` are rejected on a
+    /// `ros2:` node by classification, so they must stay unset.
     #[test]
     fn ros2_bridge_node_is_carried_through() {
         let yaml = format!(
@@ -1715,7 +1780,14 @@ nodes:
         );
         let custom = resolve_and_check_carried_through(
             &yaml,
-            &["path", "source", "path_sha256", "build", "envs"],
+            &[
+                "path",
+                "source",
+                "path_sha256",
+                "path_fallback",
+                "build",
+                "envs",
+            ],
         );
         assert_eq!(custom.path, "dora-ros2-bridge-node");
         assert!(
@@ -1724,6 +1796,7 @@ nodes:
             custom.source
         );
         assert!(custom.path_sha256.is_none(), "{:?}", custom.path_sha256);
+        assert!(custom.path_fallback.is_none(), "{:?}", custom.path_fallback);
         assert!(custom.build.is_none(), "{:?}", custom.build);
         let envs = custom
             .envs
