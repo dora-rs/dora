@@ -268,8 +268,8 @@ A module node references a sub-dataflow, so it has no source or per-node runtime
 configuration of its own. Only `module`, `inputs`, `params`, `env`, `build`, and
 `deploy` are meaningful on it. Every other node field is rejected at expansion
 time rather than silently dropped -- both the source/kind fields (`path`, `args`,
-`path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`, `operator`,
-`ros2`) and per-node runtime fields (`outputs`, `output_types`, `cpu_affinity`,
+`path_sha256`, `path_fallback`, `git`, `hub`, `branch`, `tag`, `rev`,
+`operators`, `operator`, `ros2`) and per-node runtime fields (`outputs`, `output_types`, `cpu_affinity`,
 `restart_policy`, `send_stdout_as`, ...). The same whitelist applies at every
 nesting level, so a nested module node is validated identically to a top-level
 one.

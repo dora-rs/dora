@@ -832,13 +832,12 @@ fn expand_module_node(
             )?;
         }
 
-        // Propagate deploy from module node to inner nodes (before resolving
-        // paths, which treat a deployed node's `path:` differently).
+        resolve_inner_node_paths(&mut inner_node, module_dir, project_root)?;
+
+        // Propagate deploy from module node to inner nodes
         if inner_node.deploy.is_none() {
             inner_node.deploy = node.deploy.clone();
         }
-
-        resolve_inner_node_paths(&mut inner_node, module_dir, project_root)?;
 
         propagate_module_node_env(&mut inner_node, node.env.as_ref());
 
@@ -960,29 +959,6 @@ fn expand_module_node(
     Ok((final_nodes, output_map))
 }
 
-/// Whether an inner node's `path:` is a command rather than a file next to the
-/// module file: a single name with no `/`, `\` or `:`, no extension and no
-/// `$`, such as a console script a `build:` step installs. It is then left as
-/// written, so it is looked up like a top-level node's `path:` (working dir,
-/// uv, `$PATH`) instead of as `<module dir>/<name>` (#3826).
-///
-/// This reads only the string, never the module directory or the host OS:
-/// `dora build` expands the dataflow before its builds run and `dora start`
-/// after them, and both must get the same result. A file next to the module
-/// file is written `./<name>`; a file name like `worker.py` is never a command.
-fn is_bare_command(path: &str) -> bool {
-    let name = Path::new(path);
-    let mut components = name.components();
-    !path.contains(['/', '\\', ':'])
-        && matches!(
-            (components.next(), components.next()),
-            (Some(std::path::Component::Normal(_)), None)
-        )
-        && name.extension().is_none()
-        // The daemon expands `$HOME`, `$USER`, ... in `path:` at spawn.
-        && !path.contains('$')
-}
-
 fn resolve_inner_node_paths(
     node: &mut Node,
     module_dir: &Path,
@@ -990,15 +966,19 @@ fn resolve_inner_node_paths(
 ) -> eyre::Result<()> {
     let owner = node.id.to_string();
     // A `git:` node's `path` is relative to its clone (the node's working dir
-    // at build and spawn), not to the module file, so leave it untouched. A
-    // bare command stays as written too, unless the node is deployed: a
-    // deployed node's `path:` is resolved under its deploy working dir,
-    // usually on another machine, and keeps its `<module dir>/<name>` meaning.
+    // at build and spawn), not to the module file, so leave it untouched.
     if node.git.is_none()
         && let Some(ref mut path) = node.path
-        && !(node.deploy.is_none() && is_bare_command(path))
     {
+        let as_written = path.clone();
         resolve_module_relative_path(path, module_dir, project_root, &owner)?;
+        // A single extensionless name like `dora-echo` may also be a command
+        // on `$PATH` rather than a file next to the module (#3826). `path`
+        // keeps meaning the file; the name as written is what spawn falls
+        // back to when there is none.
+        if *path != as_written && is_bare_name(&as_written) {
+            node.path_fallback = Some(as_written);
+        }
     }
     if let Some(ref mut operators) = node.operators {
         for op in &mut operators.operators {
@@ -1061,6 +1041,23 @@ fn resolve_module_relative_path(
     })?;
     *path = relative.to_string_lossy().into_owned();
     Ok(())
+}
+
+/// One plain file name without an extension, the form a command on `$PATH`
+/// is written in (a console script, a binary). Reads only the string, so
+/// `dora build` and `dora start` expand alike. A `:` (`C:tool` is a drive
+/// path on Windows) or a `$` (the daemon expands variables in `path`) never
+/// makes one. `worker.py` doesn't either: a script next to the module needs
+/// no fallback, and every node with one sends a field older daemons reject.
+fn is_bare_name(path: &str) -> bool {
+    let name = Path::new(path);
+    let mut components = name.components();
+    !path.contains(['/', '\\', ':', '$'])
+        && name.extension().is_none()
+        && matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        )
 }
 
 fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
@@ -4251,180 +4248,67 @@ nodes:
         );
     }
 
-    /// A bare `path:` (one name, no extension) is a command, such as a console
-    /// script a `build:` step installs, so it is looked up the way a top-level
-    /// node's is (working dir, uv, `$PATH`) instead of being re-rooted to
-    /// `modules/<name>`, where it can never be found (#3826).
+    /// #3826: a module node's `path:` that is a single extensionless name
+    /// keeps meaning the file next to the module (`path`), and the name as
+    /// written becomes its `path_fallback`, for a command found like a
+    /// top-level `path:`. Any other `path:` (`worker.py` too), a `git:` node
+    /// and a module in the project root (where nothing is rewritten) get
+    /// none.
     #[test]
-    fn expand_keeps_a_bare_inner_node_command_as_written() {
+    fn expand_keeps_a_bare_inner_node_path_as_its_fallback() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
-        std::fs::create_dir_all(base.join("modules")).unwrap();
-        write_file(&base.join("modules"), "worker.py", "");
-        write_file(
-            &base.join("modules"),
-            "echo.yml",
-            r#"
-module:
-  name: echo
-  outputs: [a, b, c]
-
-nodes:
-  - id: command
-    path: dora-echo
-    outputs:
-      - a
-  - id: script
-    path: worker.py
-    outputs:
-      - b
-  - id: built
-    path: bin/tool
-    outputs:
-      - c
-  - id: local
-    path: ./made-by-build
-    outputs:
-      - d
-  - id: dotted
-    path: missing.py
-    outputs:
-      - f
-  - id: variable
-    path: $USER
-    outputs:
-      - g
-  - id: trailing
-    path: tool/
-    outputs:
-      - h
-  - id: backslash
-    path: 'sub\tool'
-    outputs:
-      - i
-"#,
-        );
-
-        let desc = parse_descriptor(
-            r#"
-nodes:
-  - id: m
-    module: modules/echo.yml
-  - id: remote
-    module: modules/echo.yml
-    deploy:
-      working_dir: /srv/robot
-"#,
-        );
-
-        let expanded = expand_modules(&desc, base).unwrap();
-        let path_of = |id: &str| {
-            expanded
-                .nodes
-                .iter()
-                .find(|n| n.id.to_string() == id)
-                .and_then(|n| n.path.clone())
-                .unwrap()
-        };
-        assert_eq!(path_of("m.command"), "dora-echo");
-        // A file next to the module file, and any path with a directory, are
-        // still relative to the module file.
-        assert_eq!(
-            Path::new(&path_of("m.script")),
-            Path::new("modules").join("worker.py")
-        );
-        assert_eq!(
-            Path::new(&path_of("m.built")),
-            Path::new("modules").join("bin").join("tool")
-        );
-        // `./name` is never a command, even before a `build:` creates it.
-        assert_eq!(
-            Path::new(&path_of("m.local")),
-            Path::new("modules").join("made-by-build")
-        );
-        // A name with an extension is a file name, never a command.
-        assert_eq!(
-            Path::new(&path_of("m.dotted")),
-            Path::new("modules").join("missing.py")
-        );
-        // The daemon expands `$USER` at spawn, so the name isn't known here.
-        assert_eq!(
-            Path::new(&path_of("m.variable")),
-            Path::new("modules").join("$USER")
-        );
-        // A `/` or `\` always means a path, on every OS (`sub\tool` is a
-        // single file name on Unix but a path on Windows).
-        assert_eq!(
-            Path::new(&path_of("m.trailing")),
-            Path::new("modules").join("tool")
-        );
-        assert_eq!(
-            Path::new(&path_of("m.backslash")),
-            Path::new("modules").join("sub\\tool")
-        );
-        // A deployed node (here through the module node's `deploy`) keeps the
-        // old meaning: `<its working dir>/modules/<name>`.
-        assert_eq!(
-            Path::new(&path_of("remote.command")),
-            Path::new("modules").join("dora-echo")
-        );
-    }
-
-    /// `C:tool` is one file name on Unix but a drive path on Windows, so a `:`
-    /// never makes a bare command; the answer must not depend on the host.
-    #[test]
-    fn a_name_with_a_colon_is_never_a_bare_command() {
-        assert!(is_bare_command("tool"));
-        assert!(!is_bare_command("C:tool"));
-        assert!(!is_bare_command("a:b"));
-    }
-
-    /// `dora build` expands the dataflow before its `build:` steps run, and
-    /// `dora start` expands it again after them; with a `hub:` node the two
-    /// expansions must match. So a file a build creates next to the module
-    /// file must not change what a bare `path:` expands to.
-    #[test]
-    fn expand_of_a_bare_inner_node_path_ignores_files_next_to_the_module() {
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path();
-        std::fs::create_dir_all(base.join("modules")).unwrap();
         write_file(
             &base.join("modules"),
             "m.yml",
             r#"
 module:
   name: m
-  outputs: [out]
-
 nodes:
-  - id: node
-    path: tool
-    build: go build -o modules/tool ./modules/src
-    outputs:
-      - out
+  - id: echo
+    path: dora-echo
+  - id: script
+    path: worker.py
+  - id: nested
+    path: bin/tool
+  - id: current
+    path: ./tool
+  - id: var
+    path: $TOOL
+  - id: fromgit
+    git: https://github.com/example/x.git
+    path: x
 "#,
         );
-        let desc = parse_descriptor("nodes:\n  - id: m\n    module: modules/m.yml\n");
-        let path_of_node = || {
-            expand_modules(&desc, base)
-                .unwrap()
-                .nodes
-                .into_iter()
-                .find(|n| n.id.to_string() == "m.node")
-                .and_then(|n| n.path)
-                .unwrap()
-        };
-
-        let before_build = path_of_node();
         write_file(
-            &base.join("modules"),
-            &format!("tool{}", std::env::consts::EXE_SUFFIX),
-            "",
+            base,
+            "root.yml",
+            "module:\n  name: root\nnodes:\n  - id: echo\n    path: dora-echo\n",
         );
-        let after_build = path_of_node();
+        let desc = parse_descriptor(
+            "nodes:\n  - id: m\n    module: modules/m.yml\n  - id: r\n    module: root.yml\n",
+        );
 
-        assert_eq!(before_build, "tool");
-        assert_eq!(after_build, "tool");
+        let expanded = expand_modules(&desc, base).unwrap();
+        let node = |id: &str| {
+            let node = expanded
+                .nodes
+                .iter()
+                .find(|n| n.id.to_string() == id)
+                .unwrap();
+            (
+                node.path.as_deref().map(PathBuf::from),
+                node.path_fallback.as_deref(),
+            )
+        };
+        let in_modules = |name: &str| Some(Path::new("modules").join(name));
+        assert_eq!(node("m.echo"), (in_modules("dora-echo"), Some("dora-echo")));
+        assert_eq!(node("m.script"), (in_modules("worker.py"), None));
+        assert_eq!(node("m.nested"), (in_modules("bin/tool"), None));
+        assert_eq!(node("m.current"), (in_modules("tool"), None));
+        assert_eq!(node("m.var"), (in_modules("$TOOL"), None));
+        assert_eq!(node("m.fromgit"), (Some(PathBuf::from("x")), None));
+        assert_eq!(node("r.echo"), (Some(PathBuf::from("dora-echo")), None));
     }
 
     #[test]
