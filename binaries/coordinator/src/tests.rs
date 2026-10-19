@@ -6235,3 +6235,30 @@ async fn node_topology_changes_are_persisted() {
     drop(coordinator);
     daemon_task.await.unwrap();
 }
+
+/// #3872: the WS handler's per-connection subscription list is not told when
+/// the coordinator drops a subscriber on its own (a stalled reader evicted,
+/// the dataflow ended). `live_topic_subscriptions` reports which of the ids
+/// are still registered, so the handler can free the slots of the rest.
+#[test]
+fn live_topic_subscriptions_keeps_only_registered_ids() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "sender".to_string().into();
+    let live_id = Uuid::new_v4();
+    let evicted_id = Uuid::new_v4();
+
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id);
+    let (frame_tx, _frame_rx) =
+        tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    dataflow.topic_subscribers.insert(
+        live_id,
+        crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), frame_tx),
+    );
+    let running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+
+    let live =
+        crate::topic_debug::live_topic_subscriptions(&running_dataflows, vec![live_id, evicted_id]);
+
+    assert_eq!(live, vec![live_id]);
+}

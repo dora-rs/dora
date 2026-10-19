@@ -42,4 +42,9 @@ pub enum ControlEvent {
         subscription_id: Uuid,
         done_tx: oneshot::Sender<()>,
     },
+    /// Sends back the ids that still have a subscriber in some dataflow.
+    TopicSubscriptionsLive {
+        subscription_ids: Vec<Uuid>,
+        live_tx: oneshot::Sender<Vec<Uuid>>,
+    },
 }

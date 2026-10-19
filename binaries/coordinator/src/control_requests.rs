@@ -11,7 +11,7 @@ use crate::{
         reload_dataflow, resolve_name, restart_node, retrieve_logs, start_dataflow, stop_dataflow,
         stop_node,
     },
-    initiate_restart,
+    initiate_restart, live_topic_subscriptions,
     log_subscriber::LogSubscriber,
     resolve_param_target, resolve_single_node, start_topic_debug_stream,
     state::{LaunchContext, ParamTarget, RunningDataflow},
@@ -599,6 +599,15 @@ impl Coordinator {
                     tracing::warn!("failed to unsubscribe topic debug stream: {err:?}");
                 }
                 let _ = done_tx.send(());
+            }
+            ControlEvent::TopicSubscriptionsLive {
+                subscription_ids,
+                live_tx,
+            } => {
+                let _ = live_tx.send(live_topic_subscriptions(
+                    &self.running_dataflows,
+                    subscription_ids,
+                ));
             }
         }
         Ok(())
