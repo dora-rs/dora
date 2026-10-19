@@ -2489,7 +2489,7 @@ fn run_keeps_a_shell_node_in_its_own_process_group() {
 /// `Popen.kill()` before other work) would leak the node for that whole window.
 /// On `main`, with no guard, `PDEATHSIG` took the shell at once.
 #[test]
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn run_killed_without_reaping_still_contains_shell_nodes() {
     let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
@@ -2762,7 +2762,7 @@ fn run_stop_signals_the_group_of_a_node_that_died_on_term_once() {
 /// survives that same signal, so the window is real: SIGKILL `dora run` there and
 /// only a guard still watching the group can contain the child.
 #[test]
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn run_killed_after_the_shell_exits_still_contains_its_forks() {
     let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 

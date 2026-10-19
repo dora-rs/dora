@@ -548,6 +548,7 @@ mod tests {
     /// not been reaped is gone as far as they are concerned. Without this the
     /// suite would pass or fail on whether the host's PID 1 got round to it.
     #[tokio::test]
+    #[cfg(target_os = "linux")]
     async fn a_zombie_does_not_count_as_alive() {
         let mut child = tokio::process::Command::new("sh")
             .arg("-c")
