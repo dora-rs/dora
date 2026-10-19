@@ -455,6 +455,12 @@ pub struct Daemon {
     /// the `dora up` daemon, whose nodes are deliberately decoupled from it
     /// (#2029).
     pub(crate) bind_nodes_to_parent: bool,
+    /// The dynamic-node port this daemon failed to listen on because another
+    /// process holds it, if so. A dynamic node of ours would connect to that
+    /// process instead (likely another daemon, which may hand it another
+    /// dataflow's config), so dataflows and nodes needing one are refused.
+    /// Always `None` for `dora run`, which fails outright instead (#3814).
+    pub(crate) dynamic_node_port_unavailable: Option<u16>,
     /// A `Destroy` that is holding its reply until this daemon's node
     /// processes are gone (#2980).
     pub(crate) pending_destroy: Option<PendingDestroy>,
@@ -694,11 +700,12 @@ impl Daemon {
         // the whole loop so the channel stays open across reconnect gaps; each
         // iteration streams a clone of it.
         let (dynamic_node_events_tx, dynamic_node_events_rx) = flume::bounded(10);
-        let _listen_port = local_listener::spawn_listener_loop(
+        let listen_port = local_listener::spawn_listener_loop(
             (LOCALHOST, local_listen_port).into(),
             dynamic_node_events_tx,
         )
         .await?;
+        let dynamic_node_port_unavailable = listen_port.is_none().then_some(local_listen_port);
 
         loop {
             // Sized for bursts of inter-daemon events
@@ -795,7 +802,7 @@ impl Daemon {
                                     daemon_id.clone(),
                                 ),
                             };
-                            let (built, rx) = Self::build_daemon(
+                            let (mut built, rx) = Self::build_daemon(
                                 machine_id.clone(),
                                 Some(coordinator_sender),
                                 daemon_id,
@@ -826,6 +833,7 @@ impl Daemon {
                                 false,
                             )
                             .await?;
+                            built.dynamic_node_port_unavailable = dynamic_node_port_unavailable;
                             daemon = Some(built);
                             dora_events_rx = Some(rx);
                         }
@@ -1398,6 +1406,7 @@ impl Daemon {
             zenoh_routable_addr: Some(zenoh_bind.addr()).filter(|addr| !addr.is_loopback()),
             disable_multicast,
             bind_nodes_to_parent,
+            dynamic_node_port_unavailable: None,
             pending_destroy: None,
             zenoh_publish_tx,
             remote_daemon_events_tx,

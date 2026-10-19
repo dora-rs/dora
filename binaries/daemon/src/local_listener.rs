@@ -28,7 +28,9 @@ pub async fn spawn_listener_loop(
         Ok(socket) => socket,
         Err(err) if err.kind() == ErrorKind::AddrInUse => {
             tracing::warn!(
-                "Daemon listen port already in use. There might be another daemon running already."
+                "Daemon listen port {} already in use. There might be another daemon running \
+                 already. Dataflows with dynamic nodes will be refused by this daemon.",
+                bind.port()
             );
             return Ok(None);
         }
