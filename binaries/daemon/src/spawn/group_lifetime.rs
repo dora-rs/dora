@@ -410,6 +410,7 @@ mod tests {
     /// assertion. `process_group(0)` then puts that corpse alone in its group:
     /// the child is its own group leader, so there is no second member to keep
     /// the group occupied. Returns the group, which is the zombie's own pid.
+    #[cfg(target_os = "linux")]
     async fn spawn_zombie_only_group() -> (std::process::Child, u32) {
         use std::os::unix::process::CommandExt as _;
 
