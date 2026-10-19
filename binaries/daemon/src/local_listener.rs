@@ -1,4 +1,6 @@
-use crate::socket_stream_utils::{socket_stream_receive_with_header_timeout, socket_stream_send};
+use crate::socket_stream_utils::{
+    accept_failed, socket_stream_receive_with_header_timeout, socket_stream_send,
+};
 use dora_core::topics::{
     DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST,
 };
@@ -91,13 +93,6 @@ async fn listener_loop(
     listener: TcpListener,
     events_tx: flume::Sender<Timestamped<DynamicNodeEventWrapper>>,
 ) {
-    // Exponential backoff for repeated resource-exhaustion `accept()` failures.
-    // A persistent error (e.g. `EMFILE` — too many open files) would otherwise
-    // busy-spin the loop at 100% CPU and flood the logs (dora-rs/dora#2027).
-    // Per-connection errors (a peer that reset before `accept` completed) are
-    // transient and retried immediately, matching the standard accept-loop
-    // idiom — only resource exhaustion warrants the pause.
-    const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
     let mut backoff: Option<Duration> = None;
     loop {
         match listener.accept().await {
@@ -105,26 +100,11 @@ async fn listener_loop(
                 backoff = None;
                 tokio::spawn(handle_connection_loop(connection, events_tx.clone()));
             }
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    ErrorKind::ConnectionAborted
-                        | ErrorKind::ConnectionReset
-                        | ErrorKind::Interrupted
-                ) =>
-            {
-                // Transient: the offending connection is already gone, so the
-                // next `accept` makes progress. Retry without a penalty.
-                tracing::warn!("failed to accept new connection: {err}");
-                backoff = None;
-            }
             Err(err) => {
-                let delay = backoff
-                    .map_or(Duration::from_millis(10), |d| d * 2)
-                    .min(ACCEPT_BACKOFF_MAX);
-                backoff = Some(delay);
-                tracing::warn!("failed to accept new connection: {err} (retrying in {delay:?})");
-                tokio::time::sleep(delay).await;
+                backoff = accept_failed(backoff, &err);
+                if let Some(delay) = backoff {
+                    tokio::time::sleep(delay).await;
+                }
             }
         }
     }
