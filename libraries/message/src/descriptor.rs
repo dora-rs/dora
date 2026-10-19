@@ -295,6 +295,8 @@ pub struct Deploy {
     /// Labels for label-based scheduling (e.g. `gpu: "true"`, `arch: arm64`).
     /// The coordinator matches these against daemon labels reported at registration.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<BTreeMap<String, String>>")]
     pub labels: BTreeMap<String, String>,
     /// How built binaries are distributed to remote daemons.
     #[serde(default)]
@@ -1737,6 +1739,8 @@ pub struct Ros2BridgeConfig {
 
     /// QoS policies applied to all topics (can be overridden per-topic).
     #[serde(default)]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<Ros2QosConfig>")]
     pub qos: Ros2QosConfig,
 
     /// ROS2 namespace (default: "/").
@@ -2331,10 +2335,12 @@ debug:
     }
 
     /// The schema must agree with the parser on every empty key. An empty
-    /// key is YAML `null`: on the dataflow and on a node, serde accepts it
-    /// wherever the field has a default, so the schema has to accept it there
-    /// too, and reject it everywhere serde does. Every property is checked,
-    /// so a new field cannot drift.
+    /// key is YAML `null`, which serde maps to the field's default wherever
+    /// the field has one, so the schema has to accept `null` exactly there.
+    ///
+    /// Every property of every struct a dataflow spells out as a YAML mapping
+    /// is checked at a real location. A struct definition this test doesn't
+    /// know about fails it, so a new field or struct cannot drift unseen.
     #[test]
     fn empty_keys_schema_matches_parser() {
         fn schema_accepts_null(property: &serde_json::Value) -> bool {
@@ -2345,22 +2351,115 @@ debug:
                     .as_array()
                     .is_some_and(|v| v.iter().any(|s| s["type"] == "null"))
         }
+        /// The properties of a definition, including those of its variants.
+        fn properties(
+            definition: &serde_json::Value,
+        ) -> serde_json::Map<String, serde_json::Value> {
+            let mut properties = serde_json::Map::new();
+            let variants = ["oneOf", "anyOf"]
+                .iter()
+                .filter_map(|k| definition[k].as_array())
+                .flatten();
+            for variant in std::iter::once(definition).chain(variants) {
+                if let Some(p) = variant["properties"].as_object() {
+                    properties.extend(p.clone());
+                }
+            }
+            properties
+        }
 
         let schema = serde_json::to_value(schemars::schema_for!(Descriptor)).unwrap();
         let node = "nodes:\n  - id: a\n    path: x\n";
-        for (properties, indent) in [
-            (&schema["properties"], ""),
-            (&schema["$defs"]["Node"]["properties"], "    "),
-        ] {
-            for (key, property) in properties.as_object().unwrap() {
-                // Already set by the minimal node; a duplicate key is an error.
-                if ["nodes", "id", "path"].contains(&key.as_str()) {
+        let ros2 =
+            "nodes:\n  - id: a\n    ros2:\n      topic: /x\n      message_type: std_msgs/String\n";
+        // (definition, a dataflow with `{key}` where the empty key goes, keys
+        // that dataflow already sets). `""` is the dataflow itself.
+        let locations: &[(&str, String, &[&str])] = &[
+            ("", format!("{node}{{key}}:\n"), &["nodes"]),
+            ("Node", format!("{node}    {{key}}:\n"), &["id", "path"]),
+            ("Debug", format!("{node}debug:\n  {{key}}:\n"), &[]),
+            ("Deploy", format!("{node}    deploy:\n      {{key}}:\n"), &[]),
+            (
+                "Input",
+                format!("{node}    inputs:\n      i:\n        source: b/o\n        {{key}}:\n"),
+                &["source"],
+            ),
+            (
+                "PythonSource",
+                "nodes:\n  - id: a\n    operator:\n      python:\n        source: x.py\n        {key}:\n"
+                    .to_owned(),
+                &["source"],
+            ),
+            (
+                "Ros2BridgeConfig",
+                format!("{ros2}      {{key}}:\n"),
+                &["topic", "message_type"],
+            ),
+            ("Ros2QosConfig", format!("{ros2}      qos:\n        {{key}}:\n"), &[]),
+            (
+                "Ros2TopicConfig",
+                "nodes:\n  - id: a\n    ros2:\n      topics:\n        - topic: /x\n          message_type: std_msgs/String\n          {key}:\n"
+                    .to_owned(),
+                &["topic", "message_type"],
+            ),
+            (
+                "Ros2TransportConfig",
+                format!("{ros2}      transport:\n        kind: zenoh\n        compatibility: humble\n        {{key}}:\n"),
+                &["kind", "compatibility"],
+            ),
+        ];
+        // serde_yaml reads `null` into a plain `String` as "", not as the
+        // field's default (`namespace` would be "" instead of "/"), so the
+        // schema rejects an empty key there on purpose.
+        let null_is_not_the_default = [("Ros2BridgeConfig", "namespace")];
+
+        for (definition, template, preset) in locations {
+            let def = if definition.is_empty() {
+                &schema
+            } else {
+                &schema["$defs"][definition]
+            };
+            let without_key: String = template
+                .lines()
+                .filter(|l| !l.contains("{key}"))
+                .map(|l| format!("{l}\n"))
+                .collect();
+            serde_yaml::from_str::<Descriptor>(&without_key)
+                .unwrap_or_else(|e| panic!("template for `{definition}` must parse: {e}"));
+            for (key, property) in properties(def) {
+                if preset.contains(&key.as_str()) {
                     continue;
                 }
-                let yaml = format!("{node}{indent}{key}:\n");
+                let yaml = template.replace("{key}", &key);
                 let parses = serde_yaml::from_str::<Descriptor>(&yaml).is_ok();
-                assert_eq!(schema_accepts_null(property), parses, "{yaml}{property}");
+                let expected = parses && !null_is_not_the_default.contains(&(definition, &key));
+                assert_eq!(schema_accepts_null(&property), expected, "{yaml}{property}");
             }
+        }
+
+        // Not written as YAML mappings, so there is no empty key to check:
+        // input mappings and their parts are strings (`node/output`,
+        // `dora/timer/millis/100`, `dora/logs/...`).
+        // `TypeRuleDef`: both fields are required strings, and an empty one
+        // reads as "" (like `namespace`), so the schema rejects it on purpose.
+        // Operators are checked below.
+        let not_walked = [
+            "InputMapping",
+            "UserInputMapping",
+            "LogSubscriptionFilter",
+            "Duration",
+            "TypeRuleDef",
+            "OperatorDefinition",
+            "SingleOperatorDefinition",
+        ];
+        for (name, def) in schema["$defs"].as_object().unwrap() {
+            if properties(def).is_empty() || not_walked.contains(&name.as_str()) {
+                continue;
+            }
+            assert!(
+                locations.iter().any(|(d, ..)| d == name),
+                "new struct `{name}` in the schema: add a location for it to this test"
+            );
         }
 
         // Operators are `#[serde(flatten)]`ed, and flattened fields don't

@@ -123,7 +123,10 @@
         },
         "labels": {
           "description": "Labels for label-based scheduling (e.g. `gpu: \"true\"`, `arch: arm64`).\nThe coordinator matches these against daemon labels reported at registration.",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "type": "string"
           }
@@ -976,7 +979,14 @@
         },
         "qos": {
           "description": "QoS policies applied to all topics (can be overridden per-topic).",
-          "$ref": "#/$defs/Ros2QosConfig",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Ros2QosConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "keep_all": false,
             "reliable": false
