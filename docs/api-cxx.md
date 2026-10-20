@@ -113,6 +113,10 @@ ArrowInputInfo event_as_arrow_input_with_info(
 
 // Downcast to a NodeFailed payload. Throws if the event is not NodeFailed.
 DoraNodeFailed event_as_node_failed(rust::Box<DoraEvent> event);
+
+// Id of the upstream node that restarted. Throws if the event is not
+// NodeRestarted.
+rust::String event_as_node_restarted(rust::Box<DoraEvent> event);
 ```
 
 ### DoraEventType
@@ -129,6 +133,7 @@ enum class DoraEventType : uint8_t {
     Timeout,          // next_event_timeout deadline elapsed without an event
     NodeFailed,       // an upstream node failed (use event_as_node_failed to inspect)
     Reload,           // hot-reload notification for an operator
+    NodeRestarted,    // an upstream node restarted (use event_as_node_restarted for its id)
 };
 ```
 
