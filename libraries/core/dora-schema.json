@@ -428,7 +428,7 @@
           ]
         },
         "id": {
-          "description": "Unique node identifier. Must not contain `/` characters.\n\nNode IDs can be arbitrary strings with the following limitations:\n\n- They must not contain any `/` characters (slashes).\n- We do not recommend using whitespace characters (e.g. spaces) in IDs\n\nEach node must have an ID field.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_node\n  - id: some_other_node\n```",
+          "description": "Unique node identifier.\n\nNode IDs may only contain ASCII letters, digits, `_`, `.` and `-`\n(no `/`, no whitespace), with the following further limitations:\n\n- They must not be empty or start with `.`.\n- They must not be the reserved id `dora`.\n\nEach node must have an ID field.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_node\n  - id: some_other_node\n```",
           "$ref": "#/$defs/NodeId"
         },
         "input_types": {
