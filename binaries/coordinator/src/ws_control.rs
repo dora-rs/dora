@@ -409,8 +409,23 @@ pub(crate) async fn handle_control_ws(
                         continue;
                     }
                     ControlRequest::TopicUnsubscribe { subscription_id } => {
+                        // Only this connection's own subscriptions may be torn
+                        // down: the event loop looks the id up across every
+                        // dataflow, so forwarding a foreign id would silently
+                        // stop another client's stream (dora-rs/dora#3873).
+                        let before = topic_subscriptions.len();
                         topic_subscriptions
                             .retain(|active| active.subscription_id != *subscription_id);
+                        if topic_subscriptions.len() == before {
+                            let resp = WsResponse::err(
+                                req.id,
+                                format!(
+                                    "no topic subscription with id {subscription_id} on this connection"
+                                ),
+                            );
+                            let _ = send_ws_response(&mut ws_tx, &resp).await;
+                            continue;
+                        }
                         let (done_tx, done_rx) = oneshot::channel();
                         let _ = event_tx
                             .send(Event::Control(ControlEvent::TopicUnsubscribe {

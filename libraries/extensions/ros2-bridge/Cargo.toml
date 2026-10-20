@@ -44,7 +44,6 @@ ros2-client = { workspace = true }
 rustdds = "0.14"
 eyre = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = "0.3.23"
 flume = "0.12.0"
 futures = { workspace = true, features = ["thread-pool"] }
 futures-timer = "3.0.4"
@@ -55,11 +54,9 @@ zenoh = { workspace = true, optional = true }
 zenoh-ext = { workspace = true, optional = true }
 
 [dev-dependencies]
-dora-daemon = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 dora-cli = { workspace = true }
 dunce = "1.0.5"
-rand = "0.10.2"
 futures = { workspace = true }
 process-wrap = { version = "9.1.0", features = ["std", "tokio1"] }
 

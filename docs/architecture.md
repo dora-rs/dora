@@ -752,7 +752,7 @@ impl<R: Read> RecordingReader<R> {
 **Distributed Tracing** (`dora-tracing`):
 - OpenTelemetry with OTLP exporter (compatible with Jaeger, Zipkin, Tempo)
 - Context propagation across nodes
-- Setup: `set_up_tracing(name: &str)`
+- Setup: `TracingBuilder::new(name)`, configured with its `with_*` methods, then `.build()`
 
 **Metrics** (`dora-metrics`):
 - System metrics via `sysinfo` (CPU, memory, disk)

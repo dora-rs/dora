@@ -5287,6 +5287,7 @@ fn archived_dataflows_predicate_distinguishes_watchdog_failed_from_unknown() {
         ArchivedDataflow {
             name: Some("flagged".to_string()),
             nodes: BTreeMap::new(),
+            node_to_daemon: BTreeMap::new(),
             spawn_error: None,
         },
     );
