@@ -66,7 +66,11 @@ void read_dora_input_id(void *dora_event, char **out_ptr, size_t *out_len);
  * read_dora_input_id about caller-owned out destinations. */
 void read_dora_input_data(void *dora_event, char **out_ptr, size_t *out_len);
 
-/* Thread-safe: yes (read-only). Returns by value. */
+/* Thread-safe: yes (read-only). Returns by value. The timestamp is NTP64,
+ * not nanoseconds: the upper 32 bits are seconds since the UNIX epoch, the
+ * lower 32 bits the fraction of a second in units of 2^-32 s. In nanoseconds:
+ * (ts >> 32) * 1000000000ull + (((ts & 0xFFFFFFFFull) * 1000000000ull) >> 32)
+ * Returns 0 if the event is not an input event. */
 unsigned long long read_dora_input_timestamp(void *dora_event);
 
 /* Thread-safe: NO. Mutates the context's internal sender state. Concurrent

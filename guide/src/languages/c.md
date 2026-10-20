@@ -114,7 +114,16 @@ The returned pointer borrows from the event. It becomes invalid after `free_dora
 unsigned long long read_dora_input_timestamp(void *dora_event);
 ```
 
-Returns the hybrid logical clock timestamp from an input event's metadata as a `uint64` value. Returns `0` if the event is not an input event.
+Returns the hybrid logical clock timestamp from an input event's metadata. Returns `0` if the event is not an input event.
+
+The value is an NTP64 timestamp, **not** nanoseconds: a 32.32 fixed-point number whose upper 32 bits are whole seconds since the UNIX epoch and whose lower 32 bits are the fraction of a second in units of 2^-32 s (the lowest bits carry the hybrid logical clock's counter). Convert it before comparing it with a wall-clock reading, for example to compute latency:
+
+```c
+unsigned long long ts = read_dora_input_timestamp(event);
+uint64_t secs = ts >> 32;
+uint64_t subsec_nanos = ((ts & 0xFFFFFFFFull) * 1000000000ull) >> 32;
+uint64_t nanos_since_epoch = secs * 1000000000ull + subsec_nanos;
+```
 
 ### Output
 
