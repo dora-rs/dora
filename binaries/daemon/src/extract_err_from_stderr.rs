@@ -1,3 +1,14 @@
+/// Largest error cause reported for one node.
+///
+/// The cause travels to the coordinator inside the dataflow's finish report,
+/// and the coordinator closes any daemon message over 1 MiB. Stderr lines are
+/// only capped at 1 MiB each, so without this bound one long line (a large
+/// exception repr, a dumped buffer) would drop the daemon connection, and the
+/// same report is resent on every reconnect.
+/// The bound is per node, and the report holds one cause per failed node, so
+/// it is kept small enough for dozens of failing nodes to fit.
+const MAX_ERROR_CAUSE_BYTES: usize = 16 * 1024;
+
 pub fn extract_err_from_stderr(stderr: Vec<String>) -> String {
     const FALLBACK_LINES: usize = 10;
     let mut matcher = StderrMatcher::default();
@@ -44,7 +55,24 @@ pub fn extract_err_from_stderr(stderr: Vec<String>) -> String {
         .saturating_sub(1)
         .saturating_sub(start_line_idx_from_end);
 
-    stderr.into_iter().skip(start_line_idx).collect()
+    elide_middle(
+        stderr.into_iter().skip(start_line_idx).collect(),
+        MAX_ERROR_CAUSE_BYTES,
+    )
+}
+
+/// Shorten `text` to about `max` bytes by keeping its head (where the error
+/// marker is) and its tail (where a Python traceback names the exception) and
+/// replacing the middle with an elision marker.
+fn elide_middle(mut text: String, max: usize) -> String {
+    if text.len() <= max {
+        return text;
+    }
+    let head_end = text.floor_char_boundary(max / 2);
+    let tail_start = text.ceil_char_boundary(text.len() - max / 2);
+    let marker = format!("\n[... {} bytes elided ...]\n", tail_start - head_end);
+    text.replace_range(head_end..tail_start, &marker);
+    text
 }
 
 #[derive(Debug, Clone, Default)]
@@ -93,7 +121,7 @@ impl StderrMatcher {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_err_from_stderr;
+    use super::{MAX_ERROR_CAUSE_BYTES, extract_err_from_stderr};
 
     fn lines(s: &str) -> Vec<String> {
         s.lines().map(|l| format!("{}\n", l)).collect()
@@ -251,5 +279,25 @@ mod tests {
         let input = lines("startup ok\nWarning: retrying\nconnection refused\naborting");
         let result = extract_err_from_stderr(input);
         assert_eq!(result, "connection refused\naborting\n");
+    }
+
+    // An over-long cause is bounded so the finish report stays under the
+    // coordinator's 1 MiB message limit, keeping both ends of the error.
+    #[test]
+    fn test_long_cause_is_bounded() {
+        let input = vec![
+            "Error: boom\n".to_string(),
+            format!("{}\n", "é".repeat(1024 * 1024)),
+            "ValueError: last line\n".to_string(),
+        ];
+        let result = extract_err_from_stderr(input);
+        assert!(
+            result.len() <= MAX_ERROR_CAUSE_BYTES + 64,
+            "{}",
+            result.len()
+        );
+        assert!(result.starts_with("Error: boom\n"));
+        assert!(result.ends_with("ValueError: last line\n"));
+        assert!(result.contains(" bytes elided ...]"));
     }
 }

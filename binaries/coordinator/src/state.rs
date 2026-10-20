@@ -894,6 +894,11 @@ impl CachedResult {
 pub(crate) struct ArchivedDataflow {
     pub(crate) name: Option<String>,
     pub(crate) nodes: BTreeMap<NodeId, ResolvedNode>,
+    /// The daemon each node ran on, so `dora logs` on a finished dataflow
+    /// reaches the daemon that holds the log file even when the node's
+    /// placement came from `deploy.labels` or `dora node add` rather than
+    /// `deploy.machine`.
+    pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
     /// Why the dataflow failed to start, if it did, as the spawn waiters were
     /// told. A `WaitForSpawn` that arrives after the failed dataflow was
     /// archived answers with this.
@@ -911,6 +916,7 @@ impl From<&RunningDataflow> for ArchivedDataflow {
         ArchivedDataflow {
             name: dataflow.name.clone(),
             nodes: dataflow.nodes.clone(),
+            node_to_daemon: dataflow.node_to_daemon.clone(),
             spawn_error,
         }
     }
