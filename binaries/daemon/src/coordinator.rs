@@ -38,7 +38,7 @@ const TOPIC_DEBUG_CHANNEL_CAPACITY: usize = 64;
 /// (`MAX_CONTROL_MESSAGE_BYTES` in its `ws_server`). A larger one makes it
 /// close the connection, so a topic debug frame past it is dropped here
 /// instead of taking the control plane down with it.
-const MAX_COORDINATOR_MESSAGE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_COORDINATOR_MESSAGE_BYTES: usize = 1024 * 1024;
 
 /// Wraps the WS send channels for fire-and-forget daemon events to the coordinator.
 #[derive(Clone)]
@@ -80,18 +80,27 @@ impl std::fmt::Display for TrySendEventError {
 impl std::error::Error for TrySendEventError {}
 
 impl CoordinatorSender {
+    /// Wrap `message` in a `daemon_event` envelope, refusing the result if
+    /// the coordinator would reject it: it closes the daemon connection on a
+    /// message past [`MAX_COORDINATOR_MESSAGE_BYTES`].
     fn format_event_message(message: &[u8]) -> Result<String, TrySendEventError> {
         let params_str = std::str::from_utf8(message).map_err(TrySendEventError::InvalidUtf8)?;
         let id = Uuid::new_v4();
-        Ok(format!(
-            r#"{{"id":"{id}","method":"daemon_event","params":{params_str}}}"#
-        ))
+        let json = format!(r#"{{"id":"{id}","method":"daemon_event","params":{params_str}}}"#);
+        if json.len() > MAX_COORDINATOR_MESSAGE_BYTES {
+            return Err(TrySendEventError::TooLarge { bytes: json.len() });
+        }
+        Ok(json)
     }
 
     /// Send a serialized event message to the coordinator (fire-and-forget).
     ///
     /// Embeds the raw JSON bytes directly to preserve u128 fidelity
     /// for uhlc::ID inside timestamps.
+    ///
+    /// A message past [`MAX_COORDINATOR_MESSAGE_BYTES`] is refused with an
+    /// error instead of sent, since the coordinator would close the daemon
+    /// connection on it.
     pub async fn send_event(&self, message: &[u8]) -> eyre::Result<()> {
         let json = Self::format_event_message(message).map_err(|err| eyre!("{err}"))?;
         self.sender
@@ -154,11 +163,7 @@ impl CoordinatorSender {
             timestamp: clock.new_timestamp(),
         })
         .map_err(TrySendEventError::Encode)?;
-        let json = Self::format_event_message(&event)?;
-        if json.len() > MAX_COORDINATOR_MESSAGE_BYTES {
-            return Err(TrySendEventError::TooLarge { bytes: json.len() });
-        }
-        slot.send(json);
+        slot.send(Self::format_event_message(&event)?);
         Ok(())
     }
 
