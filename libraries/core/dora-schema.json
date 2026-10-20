@@ -6,7 +6,14 @@
   "properties": {
     "debug": {
       "description": "Debug options (optional).",
-      "$ref": "#/$defs/Debug",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Debug"
+        },
+        {
+          "type": "null"
+        }
+      ],
       "default": {
         "enable_debug_inspection": false
       }
@@ -64,7 +71,10 @@
     },
     "type_rules": {
       "description": "Custom type compatibility rules.\n\nEach rule declares that a source type can be implicitly converted to\na target type. These supplement the built-in widening rules.\n\n## Example\n\n```yaml\ntype_rules:\n  - from: myproject/SensorV1\n    to: myproject/SensorV2\n```",
-      "type": "array",
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "$ref": "#/$defs/TypeRuleDef"
       }
@@ -113,7 +123,10 @@
         },
         "labels": {
           "description": "Labels for label-based scheduling (e.g. `gpu: \"true\"`, `arch: arm64`).\nThe coordinator matches these against daemon labels reported at registration.",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "type": "string"
           }
@@ -420,7 +433,10 @@
         },
         "input_types": {
           "description": "Optional type annotations for inputs.\n\nMaps input identifiers to expected type URNs. Used by `dora validate`\nto check that upstream output types match expectations.",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "type": "string"
           }
@@ -513,14 +529,20 @@
         },
         "output_framing": {
           "description": "Per-output framing overrides (default: Raw for all).\n\nMaps output identifiers to their wire framing mode.\nOutputs not listed here use the default `Raw` framing.",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "$ref": "#/$defs/OutputFraming"
           }
         },
         "output_metadata": {
           "description": "Required metadata keys per output.\n\nMaps output identifiers to lists of required metadata key names.\nThese are checked at build/validate time.\n\n## Example\n\n```yaml\noutput_metadata:\n  response: [request_id]\n```",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "type": "array",
             "items": {
@@ -530,7 +552,10 @@
         },
         "output_types": {
           "description": "Optional type annotations for outputs.\n\nMaps output identifiers to type URNs (e.g. `std/media/v1/Image`).\nOnly annotated outputs are type-checked; unannotated outputs remain dynamic.",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "type": "string"
           }
@@ -549,7 +574,10 @@
         },
         "params": {
           "description": "Parameters passed to a module for compile-time substitution.\n\nOnly meaningful when `module` is set. Values are substituted into\ninner node `args` fields (using `${_param.name}` syntax) and can be\ninjected into inner node `env` maps.\n\n## Example\n\n```yaml\nnodes:\n  - id: nav_stack\n    module: modules/navigation_module.yml\n    params:\n      speed: \"2.0\"\n      mode: turbo\n```",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "type": "string"
           }
@@ -951,7 +979,14 @@
         },
         "qos": {
           "description": "QoS policies applied to all topics (can be overridden per-topic).",
-          "$ref": "#/$defs/Ros2QosConfig",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Ros2QosConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "keep_all": false,
             "reliable": false
