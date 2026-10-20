@@ -3555,10 +3555,12 @@ pub fn init_tracing(
     #[cfg(feature = "metrics")]
     if let Ok(endpoint) = std::env::var("DORA_OTLP_ENDPOINT") {
         let id = format!("{dataflow_id}/{node_id}");
+        // the bare node id, as the node's tracing uses for its service name
+        let service_name = node_id.to_string();
         let monitor_task = async move {
             use dora_metrics::run_metrics_monitor;
 
-            if let Err(e) = run_metrics_monitor(id.clone(), &endpoint)
+            if let Err(e) = run_metrics_monitor(&service_name, id, &endpoint)
                 .await
                 .wrap_err("metrics monitor exited unexpectedly")
             {

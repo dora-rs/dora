@@ -280,7 +280,7 @@ async fn start_with_events(
         // exporter then resolves its target from the OTel-standard
         // `OTEL_EXPORTER_OTLP_ENDPOINT` env vars (defaulting to localhost).
         let endpoint = std::env::var("DORA_OTLP_ENDPOINT").ok();
-        let provider = dora_metrics::init_metrics(endpoint.as_deref())?;
+        let provider = dora_metrics::init_metrics("dora-coordinator", endpoint.as_deref())?;
         opentelemetry::global::set_meter_provider(provider.clone());
         provider
     };
