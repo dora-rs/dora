@@ -1139,6 +1139,74 @@ async fn a_failed_barrier_is_persisted_as_durably_as_a_successful_one() {
 }
 
 #[tokio::test]
+async fn a_ready_report_after_the_barrier_released_does_not_release_it_again() {
+    // #3885: the barrier can release before a daemon reports (the last
+    // pending daemon disconnected, #2028), and that daemon still reports its
+    // nodes ready once it reconnects. That late report must not broadcast a
+    // second, possibly different verdict, rewrite the stored status, or
+    // replay params to every daemon again.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let connection = crate::state::DaemonConnection::new(
+        tx,
+        Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        BTreeMap::new(),
+    );
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), connection);
+
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+    dataflow.pending_daemons.clear();
+    dataflow.ready_barrier_released = true;
+    // The dataflow moved on since the release; the late report must not
+    // put the durable record back to `Running`.
+    let seeded = dataflow
+        .make_record(StoreDataflowStatus::Stopping)
+        .expect("seed record");
+    store.put_dataflow(&seeded).expect("seed");
+
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, dataflow)]),
+        daemon_connections,
+        store.clone(),
+    );
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id,
+                exited_before_subscribe: vec![node_id],
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        rx.try_recv().is_err(),
+        "no second AllNodesReady (or param replay) may be sent"
+    );
+    assert!(
+        coordinator.running_dataflows[&dataflow_id]
+            .exited_before_subscribe
+            .is_empty(),
+        "the released verdict stays frozen, so reconnect replays match the broadcast"
+    );
+    assert_eq!(
+        store
+            .get_dataflow(&dataflow_id)
+            .expect("read back")
+            .expect("record present")
+            .status,
+        StoreDataflowStatus::Stopping,
+        "the stored status must not be rewritten"
+    );
+}
+
+#[tokio::test]
 async fn broadcasting_the_barrier_records_it_even_with_no_daemon_reachable() {
     // Goes through the real broadcast, with no daemon connections: every
     // send is skipped, yet the release must still be recorded. This is the

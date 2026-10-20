@@ -32,6 +32,21 @@ impl Coordinator {
             } => match self.running_dataflows.entry(uuid) {
                 std::collections::hash_map::Entry::Occupied(mut entry) => {
                     let dataflow = entry.get_mut();
+                    // A daemon that reconnects after the barrier released (for
+                    // example via the disconnect path) still reports its local
+                    // nodes ready. The verdict was already broadcast and
+                    // persisted: releasing again would re-send a possibly
+                    // different verdict, overwrite the stored status and
+                    // re-run the param replay for every daemon (#3885).
+                    if dataflow.ready_barrier_released {
+                        tracing::debug!(
+                            dataflow = %uuid,
+                            "ignoring ReadyOnDaemon from `{daemon_id}`: ready barrier \
+                             already released (exited before subscribe: \
+                             {exited_before_subscribe:?})"
+                        );
+                        return Ok(());
+                    }
                     dataflow.pending_daemons.remove(&daemon_id);
                     dataflow
                         .exited_before_subscribe
