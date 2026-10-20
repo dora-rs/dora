@@ -1952,11 +1952,12 @@ fn run_action_server(
                                 None => ros2_client::action::GoalEndStatus::Succeeded,
                             };
                             let _guard = TypeInfoGuard::serialize(result_type_info.clone());
-                            let send_result = server.send_result_response(
-                                handle,
+                            let (status, result) = sendable_result_or_abort(
                                 status,
                                 BridgeMessage(Some(array_data)),
+                                &goal_id,
                             );
+                            let send_result = server.send_result_response(handle, status, result);
                             let result = block_on_result_timeout(send_result);
                             match result {
                                 Some(Err(e)) => {
@@ -2037,6 +2038,32 @@ fn abort_executing_goal(
         Some(Err(e)) => tracing::warn!("failed to send abort for goal {goal_id}: {e:?}"),
         None => tracing::warn!("abort result response timed out for goal {goal_id}"),
         Some(Ok(())) => {}
+    }
+}
+
+/// The end status and result to send for a goal the handler finished.
+///
+/// A result that cannot be serialized ends the goal as Aborted with
+/// [`default_result_message`] instead, as on the Zenoh path. Sending it as is
+/// would fail inside `send_result_response` after ros2-client has already
+/// marked the goal terminal, so the client would never get any result
+/// (dora-rs/dora#3813). Must run under the result type's `TypeInfoGuard`.
+fn sendable_result_or_abort(
+    status: ros2_client::action::GoalEndStatus,
+    result: BridgeMessage,
+    goal_id: &str,
+) -> (ros2_client::action::GoalEndStatus, BridgeMessage) {
+    match serialize_cdr(&result) {
+        Ok(_) => (status, result),
+        Err(e) => {
+            tracing::warn!(
+                "action result for goal {goal_id} cannot be serialized, aborting the goal: {e}"
+            );
+            (
+                ros2_client::action::GoalEndStatus::Aborted,
+                default_result_message(),
+            )
+        }
     }
 }
 
@@ -2808,5 +2835,36 @@ mod abort_result_tests {
         let payload = serialize_cdr(&default_result_message()).expect("abort payload");
         // CDR encapsulation header, then the defaulted `int32 code`.
         assert_eq!(&payload[4..], &[0, 0, 0, 0]);
+    }
+
+    /// A DDS result the handler sent but that cannot be serialized must end
+    /// the goal as Aborted with a default result, not fail inside ros2-client
+    /// and leave the client without one (#3813).
+    #[test]
+    fn unserializable_dds_result_becomes_abort() {
+        use ros2_client::action::GoalEndStatus;
+        let _guard = TypeInfoGuard::serialize(result_type_info());
+
+        let (status, result) =
+            sendable_result_or_abort(GoalEndStatus::Succeeded, BridgeMessage(None), "g");
+        assert!(matches!(status, GoalEndStatus::Aborted));
+        serialize_cdr(&result).expect("the abort result must serialize");
+
+        let valid = arrow::array::StructArray::from(vec![(
+            Arc::new(arrow::datatypes::Field::new(
+                "code",
+                arrow::datatypes::DataType::Int32,
+                false,
+            )),
+            Arc::new(arrow::array::Int32Array::from(vec![7])) as arrow::array::ArrayRef,
+        )]);
+        let (status, result) = sendable_result_or_abort(
+            GoalEndStatus::Succeeded,
+            BridgeMessage(Some(arrow::array::Array::into_data(valid))),
+            "g",
+        );
+        assert!(matches!(status, GoalEndStatus::Succeeded));
+        let payload = serialize_cdr(&result).expect("valid result");
+        assert_eq!(&payload[4..], &7i32.to_le_bytes());
     }
 }
