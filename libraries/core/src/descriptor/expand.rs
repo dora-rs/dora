@@ -966,8 +966,9 @@ fn resolve_inner_node_paths(
         // A single extensionless name like `dora-echo` may also be a command
         // on `$PATH` rather than a file next to the module (#3826). `path`
         // keeps meaning the file; the name as written is what spawn falls
-        // back to when there is none.
-        if *path != as_written && is_bare_name(&as_written) {
+        // back to when there is none. A `hub:` node never runs from `path`
+        // (hub resolution rejects one that has it), so it gets no fallback.
+        if node.hub.is_none() && *path != as_written && is_bare_name(&as_written) {
             node.path_fallback = Some(as_written);
         }
     }
@@ -4145,9 +4146,9 @@ nodes:
     /// #3826: a module node's `path:` that is a single extensionless name
     /// keeps meaning the file next to the module (`path`), and the name as
     /// written becomes its `path_fallback`, for a command found like a
-    /// top-level `path:`. Any other `path:` (`worker.py` too), a `git:` node
-    /// and a module in the project root (where nothing is rewritten) get
-    /// none.
+    /// top-level `path:`. Any other `path:` (`worker.py` too), a `git:` or
+    /// `hub:` node and a module in the project root (where nothing is
+    /// rewritten) get none.
     #[test]
     fn expand_keeps_a_bare_inner_node_path_as_its_fallback() {
         let tmp = TempDir::new().unwrap();
@@ -4172,6 +4173,9 @@ nodes:
   - id: fromgit
     git: https://github.com/example/x.git
     path: x
+  - id: fromhub
+    hub: test/x@^0.1
+    path: tool
 "#,
         );
         write_file(
@@ -4202,6 +4206,7 @@ nodes:
         assert_eq!(node("m.current"), (in_modules("tool"), None));
         assert_eq!(node("m.var"), (in_modules("$TOOL"), None));
         assert_eq!(node("m.fromgit"), (Some(PathBuf::from("x")), None));
+        assert_eq!(node("m.fromhub"), (in_modules("tool"), None));
         assert_eq!(node("r.echo"), (Some(PathBuf::from("dora-echo")), None));
     }
 

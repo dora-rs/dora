@@ -339,16 +339,21 @@ fn check_standard(node: &Node) -> Result<()> {
     let mut allowed = SHARED_FIELDS.to_vec();
     allowed.extend(STANDARD_ALLOWED);
     validate_against_whitelist(node, &allowed, "Standard")?;
-    // The daemon only falls back for a local `path`; a hub entrypoint or a
-    // URL download is resolved without it, so reject it there rather than
-    // silently ignore it (a `path_sha256` on a local path is rejected at
-    // spawn already).
+    // The daemon only falls back for a local `path`; a hub entrypoint, a
+    // URL download and a `dynamic` or `shell` node are resolved without it,
+    // so reject it there rather than silently ignore it (a `path_sha256` on a
+    // local path is rejected at spawn already).
     if node.path_fallback.is_some()
-        && (node.hub.is_some() || node.path.as_deref().is_some_and(super::source_is_url))
+        && (node.hub.is_some()
+            || node.path.as_deref().is_some_and(|path| {
+                super::source_is_url(path)
+                    || path == super::DYNAMIC_SOURCE
+                    || path == super::SHELL_SOURCE
+            }))
     {
         bail!(
             "node `{}` has `path_fallback`, which only applies to a local `path`, \
-             not to a `hub:` node or a URL download",
+             not to a `hub:` node, a URL download or a `dynamic` or `shell` node",
             node.id
         );
     }
@@ -607,16 +612,20 @@ hub: dora-yolo@^0.5
     #[test]
     fn path_fallback_is_rejected_where_the_daemon_would_ignore_it() {
         for yaml in [
-            // `dora build` resolves a hub node to its entrypoint `path`.
+            // `dora build` rejects this in hub resolution; `dora doctor`, `dora
+            // status --dataflow`, `dora graph` and the coordinator check
+            // without resolving.
             "id: x\npath: ./node\nhub: dora-yolo@^0.5\npath_fallback: node\n",
             "id: x\npath: https://example.com/node\npath_fallback: node\n",
             "id: x\npath: https://example.com/node\npath_sha256: abc123\npath_fallback: node\n",
+            "id: x\npath: dynamic\npath_fallback: node\n",
+            "id: x\npath: shell\npath_fallback: node\n",
         ] {
             let err = classify(&parse_node(yaml)).expect_err(yaml).to_string();
             assert_eq!(
                 err,
                 "node `x` has `path_fallback`, which only applies to a local `path`, \
-                 not to a `hub:` node or a URL download"
+                 not to a `hub:` node, a URL download or a `dynamic` or `shell` node"
             );
         }
         classify(&parse_node(
