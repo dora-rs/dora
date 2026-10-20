@@ -1619,7 +1619,13 @@ impl<'de> Deserialize<'de> for EnvValue {
         Ok(match Raw::deserialize(deserializer)? {
             Raw::Bool(b) => EnvValue::Bool(b),
             Raw::Integer(i) => EnvValue::Integer(i),
-            Raw::Float(f) => EnvValue::Float(f),
+            Raw::Float(f) if f.is_finite() => EnvValue::Float(f),
+            // A non-finite native float (`.inf`, `.nan`, or a literal such as
+            // `1e400` that overflows): JSON has no encoding for it (serde_json
+            // writes `null`), so a `Float` would not survive the CLI ->
+            // coordinator hop. Keep the text that `Float` prints as (`inf`,
+            // `-inf`, `NaN`), i.e. what the node's env var would have held.
+            Raw::Float(f) => EnvValue::String(f.to_string()),
             Raw::String(s) => EnvValue::from_string_lossless(s),
         })
     }
@@ -1994,6 +2000,22 @@ mod tests {
         assert_eq!(parse("-3"), EnvValue::Integer(-3));
         assert_eq!(parse("1.5"), EnvValue::Float(1.5));
         assert_eq!(parse("hello"), EnvValue::String("hello".into()));
+    }
+
+    /// A native YAML `.inf` / `.nan` has no JSON encoding (serde_json
+    /// writes `null`), so as a `Float` it made the coordinator reject the
+    /// whole `dora start`. It must stay the string the node would have seen
+    /// and survive the JSON hops CLI -> coordinator -> daemon.
+    #[test]
+    fn env_value_keeps_non_finite_native_floats_as_strings() {
+        for (yaml, text) in [(".inf", "inf"), ("-.inf", "-inf"), (".nan", "NaN")] {
+            let value: EnvValue = serde_yaml::from_str(yaml).unwrap();
+            assert_eq!(value, EnvValue::String(text.into()), "yaml {yaml}");
+
+            let json = serde_json::to_string(&value).unwrap();
+            let value: EnvValue = serde_json::from_str(&json).unwrap();
+            assert_eq!(value.to_string(), text, "json {json}");
+        }
     }
 
     /// Strings still expand `$VAR` references, quoted or not, and the result
