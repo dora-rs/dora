@@ -1348,7 +1348,10 @@ impl Ros2Publisher {
                 .context("publish failed")?,
             PublisherBackend::Zenoh(publisher) => {
                 let cdr = serialize_raw_cdr(&typed_value)?;
-                futures::executor::block_on(publisher.publish(&cdr))?;
+                // A reliable Zenoh publish can wait for the network: don't
+                // hold the GIL meanwhile.
+                data.py()
+                    .detach(|| futures::executor::block_on(publisher.publish(&cdr)))?;
             }
         }
         Ok(())
@@ -1949,7 +1952,7 @@ impl Ros2ActionServer {
             self.executing.remove(&oldest);
         }
         self.executing.insert(goal_id.clone(), executing)?;
-        publish_python_zenoh_status(&self.server, &self.executing)?;
+        publish_python_zenoh_status(py, &self.server, &self.executing)?;
         Ok(Some((goal_id, arr.to_pyarrow(py)?.unbind())))
     }
 
@@ -2095,7 +2098,7 @@ impl Ros2ActionServer {
             }
         })?;
         self.executing.remove(goal_id);
-        publish_python_zenoh_status(&self.server, &self.executing)?;
+        publish_python_zenoh_status(py, &self.server, &self.executing)?;
         Ok(())
     }
 
@@ -2202,6 +2205,7 @@ fn end_status_to_status(
 }
 
 fn publish_python_zenoh_status(
+    py: Python<'_>,
     server: &ActionServerBackend,
     goals: &GoalSlots<String, PythonServerGoal>,
 ) -> eyre::Result<()> {
@@ -2223,8 +2227,247 @@ fn publish_python_zenoh_status(
             })
             .collect(),
     };
-    futures::executor::block_on(server.status.publish(&serialize_cdr(&status)?))?;
+    let payload = serialize_cdr(&status)?;
+    // A reliable Zenoh publish can wait for the network: don't hold the GIL.
+    py.detach(|| futures::executor::block_on(server.status.publish(&payload)))?;
     Ok(())
+}
+
+/// A Zenoh publish can wait (reliable QoS uses `CongestionControl::Block`), so
+/// it must not hold the GIL: every other Python thread would stop until it
+/// returns.
+#[cfg(test)]
+mod publish_gil_tests {
+    use super::*;
+    use ::dora_ros2_bridge::transport::zenoh::pubsub::RawSubscription;
+    use arrow::array::{Array, ArrayRef, Int32Array, StructArray};
+    use arrow::datatypes::{DataType, Field};
+    use pyo3::types::PyCFunction;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{SyncSender, sync_channel},
+    };
+
+    /// A test that holds the GIL would also stop the other test's Python
+    /// thread, so they run one at a time.
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+    /// Holds up each publish on a key until a Python thread has run, for at
+    /// most 5 s. Zenoh calls the subscribers of its own session inside `put`,
+    /// so the publish waits here like it waits on a stalled link.
+    struct HoldUp {
+        release: SyncSender<()>,
+        thread_ran: Arc<AtomicBool>,
+        _subscription: RawSubscription<()>,
+    }
+
+    impl HoldUp {
+        fn declare(node: &Ros2Node, key: &str) -> Self {
+            let dora_ros2_bridge::transport::Node::Zenoh(node) = &node.node else {
+                panic!("expected a Zenoh node");
+            };
+            // A rendezvous channel: `try_send` only succeeds while the
+            // subscriber is waiting in `recv_timeout`.
+            let (release, released) = sync_channel(0);
+            let released = Mutex::new(released);
+            let thread_ran = Arc::new(AtomicBool::new(false));
+            let ran = thread_ran.clone();
+            let subscription = futures::executor::block_on(RawSubscription::declare(
+                node.session(),
+                key,
+                16,
+                1 << 20,
+                Arc::new(move |_: &[u8]| -> Result<(), PubSubError> {
+                    let received = released
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(Duration::from_secs(5));
+                    ran.store(received.is_ok(), Ordering::SeqCst);
+                    Ok(())
+                }),
+            ))
+            .unwrap();
+            Self {
+                release,
+                thread_ran,
+                _subscription: subscription,
+            }
+        }
+
+        /// Starts a Python thread that tries to release the held-up publish,
+        /// and runs `call` while it does. The thread can only run while
+        /// nothing holds the GIL. `pa` (pyarrow) is in the globals.
+        fn run_with_python_thread(&self, call: impl FnOnce(Python, &Bound<PyDict>)) -> bool {
+            // Taken before attaching: waiting for it while holding the GIL
+            // could deadlock with the other test.
+            let _one_at_a_time = ONE_AT_A_TIME
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Python::attach(|py| {
+                let release = self.release.clone();
+                let poll = PyCFunction::new_closure(py, None, None, move |_, _| {
+                    release.try_send(()).is_ok()
+                })
+                .unwrap();
+                let globals = PyDict::new(py);
+                globals.set_item("poll", poll).unwrap();
+                py.run(
+                    c"import threading, time\n\
+                      import pyarrow as pa\n\
+                      def spin():\n    \
+                          for _ in range(10000):\n        \
+                              if poll():\n            \
+                                  return\n        \
+                              time.sleep(0.001)\n\
+                      thread = threading.Thread(target=spin, daemon=True)\n\
+                      thread.start()",
+                    Some(&globals),
+                    None,
+                )
+                .unwrap();
+                call(py, &globals);
+                py.run(c"thread.join()", Some(&globals), None).unwrap();
+            });
+            self.thread_ran.load(Ordering::SeqCst)
+        }
+    }
+
+    /// The publish methods take pyarrow arrays, and CI's PyO3 unit test job
+    /// has no pyarrow installed.
+    fn pyarrow_missing() -> bool {
+        let missing = Python::attach(|py| py.import("pyarrow").is_err());
+        if missing {
+            eprintln!("skipped: pyarrow is not installed");
+        }
+        missing
+    }
+
+    /// Peers on this machine (another run of these tests) see the same keys,
+    /// so each process uses its own name.
+    fn name() -> String {
+        format!("/gil_count_{}", std::process::id())
+    }
+
+    fn reliable() -> qos::Ros2QosPolicies {
+        qos::Ros2QosPolicies::new(None, None, Some(true), None, None, None, None)
+    }
+
+    /// A Zenoh node that knows `gil_test_msgs/Count`, a message and an action.
+    fn zenoh_test_node(node_name: &str, domain_id: u16) -> (Ros2Context, Ros2Node) {
+        let packages = std::env::temp_dir().join(format!(
+            "dora-publish-gil-{node_name}-{}",
+            std::process::id()
+        ));
+        let package = packages.join("gil_test_msgs");
+        std::fs::create_dir_all(package.join("msg")).unwrap();
+        std::fs::create_dir_all(package.join("action")).unwrap();
+        std::fs::write(
+            package.join("package.xml"),
+            "<package><name>gil_test_msgs</name></package>",
+        )
+        .unwrap();
+        std::fs::write(package.join("msg/Count.msg"), "int32 data\n").unwrap();
+        std::fs::write(
+            package.join("action/Count.action"),
+            "int32 goal\n---\nint32 result\n---\nint32 feedback\n",
+        )
+        .unwrap();
+        let context = Ros2Context::new(
+            Some(vec![packages.clone()]),
+            Some(Ros2Transport::zenoh("humble", None).unwrap()),
+            Some(domain_id),
+        );
+        // The message definitions are read in `new`.
+        std::fs::remove_dir_all(&packages).unwrap();
+        let context = context.unwrap();
+        let node = context
+            .new_node(node_name, "/", Ros2NodeOptions::new(Some(false)), None)
+            .unwrap();
+        (context, node)
+    }
+
+    #[test]
+    fn zenoh_publish_lets_other_python_threads_run() {
+        if pyarrow_missing() {
+            return;
+        }
+        let (_context, mut node) = zenoh_test_node("gil_publisher", 81);
+        let topic = node
+            .create_topic(&name(), "gil_test_msgs/Count".into(), reliable())
+            .unwrap();
+        let publisher = node.create_publisher(&topic, None).unwrap();
+        let TopicBackend::Zenoh { key, .. } = &topic.topic else {
+            panic!("expected a Zenoh topic");
+        };
+        let hold_up = HoldUp::declare(&node, key);
+
+        let thread_ran = hold_up.run_with_python_thread(|py, globals| {
+            let data = py
+                .eval(
+                    c"pa.array([{'data': 7}], type=pa.struct([('data', pa.int32())]))",
+                    Some(globals),
+                    None,
+                )
+                .unwrap();
+            publisher.publish(data).unwrap();
+        });
+        assert!(thread_ran);
+    }
+
+    /// `take_goal` publishes the new goal status on Zenoh after accepting it.
+    #[test]
+    fn zenoh_action_status_publish_lets_other_python_threads_run() {
+        if pyarrow_missing() {
+            return;
+        }
+        let (_context, mut node) = zenoh_test_node("gil_action", 82);
+        let mut server = node
+            .create_action_server(&name(), "gil_test_msgs/Count".into(), reliable())
+            .unwrap();
+        let client = node
+            .create_action_client(&name(), "gil_test_msgs/Count".into(), reliable())
+            .unwrap();
+        let (keys, _) = zenoh_action_entities(
+            dora_message::descriptor::RmwZenohCompatibility::Humble,
+            &name(),
+            "gil_test_msgs",
+            "Count",
+            &reliable().into(),
+        )
+        .unwrap();
+        let hold_up = HoldUp::declare(&node, &keys.status);
+
+        let send_goal = move || {
+            let ActionClientBackend::Zenoh(zenoh_client) = &client.client else {
+                panic!("expected a Zenoh action client");
+            };
+            let _guard = TypeInfoGuard::serialize(client.goal_type_info.clone());
+            let goal = StructArray::from(vec![(
+                Arc::new(Field::new("goal", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![7])) as ArrayRef,
+            )]);
+            let request = serialize_cdr(&ros2_client::action::SendGoalRequest {
+                goal_id: ros2_client::action::GoalId::new_random(),
+                goal: BridgeMessage(Some(goal.into_data())),
+            })
+            .unwrap();
+            futures::executor::block_on(
+                zenoh_client
+                    .send_goal
+                    .call(request, Duration::from_secs(10)),
+            )
+            .unwrap();
+        };
+
+        let thread_ran = hold_up.run_with_python_thread(|py, _| {
+            // The goal comes from a Rust thread, which needs no GIL.
+            let sender = std::thread::spawn(send_goal);
+            assert!(server.take_goal(py, Some(10.0)).unwrap().is_some());
+            sender.join().unwrap();
+        });
+        assert!(thread_ran);
+    }
 }
 
 /// Convert an optional `timeout_s` (seconds) from Python into a `Duration`,
