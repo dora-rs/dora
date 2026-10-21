@@ -274,16 +274,14 @@ fn info(
 
 /// Decode just the schema/data type from a self-describing Arrow IPC stream.
 /// Returns `None` for a malformed or empty stream (the type is left unknown).
+///
+/// Uses `dora topic echo`'s decoder, not arrow's `StreamReader`: that one
+/// allocates the size a message claims before reading it, so a corrupt length
+/// aborts the CLI.
 fn decode_ipc_data_type(bytes: &[u8]) -> Option<DataType> {
-    use arrow::ipc::reader::StreamReader;
-    use std::io::Cursor;
-
-    let mut reader = StreamReader::try_new(Cursor::new(bytes), None).ok()?;
-    let batch = reader.next()?.ok()?;
-    if batch.num_columns() != 1 {
-        return None;
-    }
-    Some(batch.column(0).data_type().clone())
+    super::echo::decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from(bytes))
+        .ok()
+        .map(|array| array.data_type().clone())
 }
 
 /// Compute the average bandwidth in Mbps over the actual collection window.
@@ -417,6 +415,17 @@ mod tests {
         // not 0.8 Mbps (over the full configured window).
         let mbps = bandwidth_mbps(1_000_000, 5, 1.0).expect("some bandwidth");
         assert!((mbps - 8.0).abs() < 1e-9, "expected 8 Mbps, got {mbps}");
+    }
+
+    /// The data type of a valid stream is read; a corrupt stream that claims a
+    /// huge body gives "unknown" instead of aborting `dora topic info` (#3863).
+    #[test]
+    fn data_type_of_valid_and_corrupt_streams() {
+        use crate::command::topic::echo::tests::{CLAIMS_HUGE_BODY, encode_ipc, hex};
+
+        let valid = encode_ipc(&arrow::array::Int32Array::from(vec![1, 2, 3]));
+        assert_eq!(decode_ipc_data_type(&valid), Some(DataType::Int32));
+        assert_eq!(decode_ipc_data_type(&hex(CLAIMS_HUGE_BODY)), None);
     }
 
     #[test]

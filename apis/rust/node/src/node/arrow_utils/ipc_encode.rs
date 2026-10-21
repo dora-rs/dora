@@ -993,7 +993,7 @@ impl InputDecoder {
                 None => return Ok(None),
             }
         }
-        match decode_one_batch(&mut self.decoder, buffer) {
+        match decode_one_batch(&mut self.decoder, super::align_for_decode(buffer)) {
             Ok(array) => {
                 // `decode_one_batch` yields a non-empty batch *before* the
                 // trailing end-of-stream marker is consumed, and a 0-row batch
@@ -1041,22 +1041,24 @@ fn prime_with_schema(
     decoder: &mut arrow::ipc::reader::StreamDecoder,
     mut buffer: ArrowBuffer,
 ) -> eyre::Result<()> {
-    while !buffer.is_empty() {
-        let before = buffer.len();
-        if decoder
-            .decode(&mut buffer)
-            .map_err(|e| eyre!("failed to decode IPC schema message: {e}"))?
-            .is_some()
-        {
-            bail!("expected a schema message but got a record batch");
+    super::catch_arrow_panic(|| {
+        while !buffer.is_empty() {
+            let before = buffer.len();
+            if decoder
+                .decode(&mut buffer)
+                .map_err(|e| eyre!("failed to decode IPC schema message: {e}"))?
+                .is_some()
+            {
+                bail!("expected a schema message but got a record batch");
+            }
+            // Guard against a crafted/truncated payload that decodes to no batch
+            // without consuming bytes — otherwise this loop spins forever.
+            if buffer.len() == before {
+                bail!("IPC schema decoder made no progress on a partial/corrupt message");
+            }
         }
-        // Guard against a crafted/truncated payload that decodes to no batch
-        // without consuming bytes — otherwise this loop spins forever.
-        if buffer.len() == before {
-            bail!("IPC schema decoder made no progress on a partial/corrupt message");
-        }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Feed a record-batch message to `decoder` and return the single decoded array.
@@ -1075,6 +1077,13 @@ fn prime_with_schema(
 /// resetting after each. A poisoned decoder is instead recovered on the error
 /// path of [`InputDecoder::decode_batch`].
 fn decode_one_batch(
+    decoder: &mut arrow::ipc::reader::StreamDecoder,
+    buffer: ArrowBuffer,
+) -> eyre::Result<arrow::array::ArrayData> {
+    super::catch_arrow_panic(|| decode_one_batch_unguarded(decoder, buffer))
+}
+
+fn decode_one_batch_unguarded(
     decoder: &mut arrow::ipc::reader::StreamDecoder,
     mut buffer: ArrowBuffer,
 ) -> eyre::Result<arrow::array::ArrayData> {
@@ -2079,5 +2088,101 @@ mod tests {
             };
             assert_fast_roundtrip(&array);
         }
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// A schema from a peer (the `@schema` subtopic) that makes arrow-ipc panic
+    /// is an error, not a panic, and leaves the decoder usable (#3863).
+    #[test]
+    fn a_schema_that_panics_arrow_is_an_error() {
+        let corrupt = hex(
+            "ffffffff320000001000000000000a0000000000090004000a00000000000000000100000000000000000000000000000000000000000000000000",
+        );
+        let mut decoder = InputDecoder::new();
+        let err = decoder
+            .set_schema_raw(1, Buffer::from(corrupt))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the decoder panicked: "), "got: {err}");
+        assert!(!decoder.knows_schema(1));
+    }
+
+    /// A valid schema-less dense-union batch on a buffer that is not aligned (a
+    /// borrowed zenoh network payload can start anywhere) decodes: arrow's own
+    /// realignment panics on a dense union (#3863).
+    #[test]
+    fn a_misaligned_dense_union_batch_decodes() {
+        use arrow::array::UnionArray;
+        use arrow::buffer::ScalarBuffer;
+        use arrow_schema::UnionFields;
+
+        let fields: UnionFields = [
+            (0i8, Arc::new(Field::new("a", DataType::Int32, false))),
+            (1i8, Arc::new(Field::new("b", DataType::Utf8, false))),
+        ]
+        .into_iter()
+        .collect();
+        let union = UnionArray::try_new(
+            fields,
+            ScalarBuffer::from(vec![0i8, 1, 0]),
+            Some(ScalarBuffer::from(vec![0i32, 0, 1])),
+            vec![
+                Arc::new(Int32Array::from(vec![10, 20])),
+                Arc::new(StringArray::from(vec!["x"])),
+            ],
+        )
+        .unwrap();
+        let data = union.into_data();
+        let full = crate::arrow_utils::encode_arrow_ipc_data(&data).unwrap();
+        let block = schema_block_len(&full).unwrap();
+        let batch = batch_slice(&full).unwrap();
+
+        let mut decoder = InputDecoder::new();
+        decoder
+            .set_schema_raw(1, Buffer::from(&full[..block]))
+            .unwrap();
+        let mut shifted = vec![0u8; batch.len() + 1];
+        shifted[1..].copy_from_slice(batch);
+        let misaligned = Buffer::from_vec(shifted).slice(1);
+        let decoded = decoder.decode_batch_raw(misaligned, 1).unwrap().unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    /// A schema-less batch from a peer that makes arrow-ipc panic is an error,
+    /// not a panic (which the zenoh callback would turn into a fatal error),
+    /// and the next valid batch still decodes (#3863). Found by fuzzing.
+    #[test]
+    fn a_batch_that_panics_arrow_is_an_error_and_decoding_continues() {
+        let data = Int32Array::from(vec![1, 2, 3]).into_data();
+        let mut full = vec![0u8; ipc_fast_path_len_data(&data).unwrap()];
+        encode_ipc_into_data(&data, &mut full).unwrap();
+        let block = schema_block_len(&full).unwrap();
+        let mut decoder = InputDecoder::new();
+        decoder
+            .set_schema_raw(1, Buffer::from(&full[..block]))
+            .unwrap();
+
+        let corrupt = hex(
+            "ffffffffb8000000100000000c001a0018001700040008000c000000200000008000000000000000000000000000000304000a0018000c00080004000a0000002c000000100000000300000000000000000000000100000003000000000000000000000000000000000000000200000000000000000000000100000000000000400000000000ff000c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000020000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffff00000000",
+        );
+        let err = decoder
+            .decode_batch_raw(Buffer::from(corrupt), 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the decoder panicked: "), "got: {err}");
+
+        let mut batch = vec![0u8; batch_fast_path_len_data(&data).unwrap()];
+        encode_batch_into_data(&data, &mut batch).unwrap();
+        let decoded = decoder
+            .decode_batch_raw(Buffer::from(batch), 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded, data);
     }
 }
