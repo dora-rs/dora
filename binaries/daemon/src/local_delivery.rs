@@ -621,6 +621,139 @@ where
     first_error.map_or(Ok(()), Err)
 }
 
+/// A remote producer has no local listener to hold for backpressure. Hand a
+/// full receiver's close control events to its drain waiter instead. The
+/// caller runs the returned deliveries in order on a separate task.
+pub(crate) fn close_input_from_remote(
+    dataflow: &mut RunningDataflow,
+    receiver_id: &NodeId,
+    input_id: &DataId,
+    clock: &HLC,
+    ft_stats: &FaultToleranceStats,
+) -> (eyre::Result<()>, Vec<DeferredDelivery>) {
+    let previous_close_pending = dataflow
+        .remote_close_delivery_tasks
+        .get(receiver_id)
+        .is_some_and(|task| !task.is_finished());
+    if previous_close_pending
+        && !dataflow.open_inputs(receiver_id).contains(input_id)
+        && !dataflow
+            .broken_inputs
+            .contains_key(&(receiver_id.clone(), input_id.clone()))
+    {
+        return (Ok(()), Vec::new());
+    }
+    let drained = dataflow
+        .drain_signals
+        .get(receiver_id)
+        .filter(|signal| !signal.gave_up.load(atomic::Ordering::Acquire))
+        .cloned();
+    let can_defer = (previous_close_pending
+        || dataflow.input_requires_backpressure(receiver_id, input_id))
+        && drained.is_some();
+    let broken_only = previous_close_pending
+        && !dataflow.open_inputs(receiver_id).contains(input_id)
+        && dataflow
+            .broken_inputs
+            .contains_key(&(receiver_id.clone(), input_id.clone()));
+    if broken_only && can_defer {
+        let key = (receiver_id.clone(), input_id.clone());
+        dataflow.broken_inputs.remove(&key);
+        dataflow.input_deadlines.remove(&key);
+        let _ = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock, false);
+        if !dataflow.is_finished(receiver_id) {
+            return (Ok(()), Vec::new());
+        }
+    }
+    let result = if previous_close_pending && can_defer {
+        Err(eyre::eyre!("earlier remote close is still pending"))
+    } else {
+        close_input(dataflow, receiver_id, input_id, clock)
+    };
+    if result.is_ok() {
+        return (result, Vec::new());
+    }
+    let channel = dataflow
+        .subscribe_channels
+        .get(receiver_id)
+        .filter(|channel| !channel.is_closed())
+        .cloned();
+    if !can_defer || channel.is_none() {
+        ft_stats.record_drop(
+            1,
+            dataflow.input_requires_backpressure(receiver_id, input_id),
+        );
+        return (result, Vec::new());
+    }
+    let (Some(channel), Some(drained)) = (channel, drained) else {
+        return (result, Vec::new());
+    };
+    let pending = dataflow.pending_messages.get(receiver_id).cloned();
+
+    let mut deferred = Vec::new();
+    if dataflow.open_inputs(receiver_id).contains(input_id) {
+        let key = (receiver_id.clone(), input_id.clone());
+        if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
+            open_inputs.remove(input_id);
+        }
+        dataflow.broken_inputs.remove(&key);
+        dataflow.input_deadlines.remove(&key);
+        deferred.push(deferred_control_event(
+            receiver_id,
+            NodeEvent::InputClosed {
+                id: input_id.clone(),
+            },
+            clock,
+            &channel,
+            &drained,
+            pending.clone(),
+        ));
+        let _ = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock, false);
+    }
+    if dataflow.is_finished(receiver_id)
+        && !dataflow.all_inputs_closed_at.contains_key(receiver_id)
+        && !dataflow
+            .pending_remote_all_inputs_closed
+            .contains_key(receiver_id)
+    {
+        deferred.push(deferred_control_event(
+            receiver_id,
+            NodeEvent::AllInputsClosed,
+            clock,
+            &channel,
+            &drained,
+            pending,
+        ));
+        dataflow.mark_deferred_all_inputs_closed(receiver_id);
+    }
+    if deferred.is_empty() {
+        ft_stats.record_drop(1, true);
+        (result, deferred)
+    } else {
+        (Ok(()), deferred)
+    }
+}
+
+fn deferred_control_event(
+    receiver_id: &NodeId,
+    event: NodeEvent,
+    clock: &HLC,
+    channel: &mpsc::Sender<Timestamped<NodeEvent>>,
+    drained: &Arc<DrainSignal>,
+    pending: Option<Arc<AtomicU64>>,
+) -> DeferredDelivery {
+    DeferredDelivery {
+        receiver: receiver_id.clone(),
+        channel: channel.clone(),
+        pending,
+        drained: drained.clone(),
+        event: Timestamped {
+            inner: event,
+            timestamp: clock.new_timestamp(),
+        },
+    }
+}
+
 fn send_input_closed_strict(
     dataflow: &mut RunningDataflow,
     receiver_id: &NodeId,
@@ -682,6 +815,9 @@ fn signal_all_inputs_closed_if_drained(
     if send_event
         && dataflow.is_finished(receiver_id)
         && !dataflow.all_inputs_closed_at.contains_key(receiver_id)
+        && !dataflow
+            .pending_remote_all_inputs_closed
+            .contains_key(receiver_id)
         && match send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock) {
             Ok(true) => true,
             Ok(false) => return Err(eyre::eyre!("node `{receiver_id}` channel full")),

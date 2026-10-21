@@ -940,6 +940,7 @@ impl Daemon {
                     dataflow.pending_messages.remove(&node_id);
                     dataflow.drain_signals.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
+                    dataflow.pending_remote_all_inputs_closed.remove(&node_id);
                     // clear the connected marker too, else a re-added node ID
                     // would look already-connected before its new incarnation
                     // subscribes and could be selected mid-startup (dora#2270).
@@ -1324,6 +1325,7 @@ impl Daemon {
                     dataflow.pending_messages.remove(&node_id);
                     dataflow.drain_signals.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
+                    dataflow.pending_remote_all_inputs_closed.remove(&node_id);
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
                     // Also drops the cascading-error cause and the id's

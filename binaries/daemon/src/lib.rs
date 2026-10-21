@@ -1878,6 +1878,16 @@ impl Daemon {
                         break;
                     }
                 }
+                Event::DeferredAllInputsClosed {
+                    dataflow_id,
+                    receiver_id,
+                    token,
+                    delivered,
+                } => {
+                    if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                        dataflow.note_deferred_all_inputs_closed(&receiver_id, token, delivered);
+                    }
+                }
             }
 
             // warn if event handling took too long -> the main loop should never be blocked for too long
@@ -2129,12 +2139,78 @@ impl Daemon {
                     })?;
 
                     if let Some(inputs) = dataflow.mappings.get(&output_id).cloned() {
-                        close_inputs_best_effort(
-                            dataflow,
-                            inputs,
-                            &self.clock,
-                            "failed to handle OutputClosed for input",
-                        )?;
+                        let mut result = Ok(());
+                        let mut deferred_by_receiver: BTreeMap<
+                            NodeId,
+                            Vec<local_delivery::DeferredDelivery>,
+                        > = BTreeMap::new();
+                        for (receiver_id, input_id) in inputs {
+                            let (close_result, deferred) = local_delivery::close_input_from_remote(
+                                dataflow,
+                                &receiver_id,
+                                &input_id,
+                                &self.clock,
+                                &self.ft_stats,
+                            );
+                            if let Err(err) = close_result {
+                                tracing::warn!(%receiver_id, %input_id, "failed to handle OutputClosed for input: {err:?}");
+                                if result.is_ok() {
+                                    result = Err(err);
+                                }
+                            }
+                            deferred_by_receiver
+                                .entry(receiver_id)
+                                .or_default()
+                                .extend(deferred);
+                        }
+                        for (receiver_id, deliveries) in deferred_by_receiver {
+                            if deliveries.is_empty() {
+                                continue;
+                            }
+                            let last_activity = dataflow
+                                .running_nodes
+                                .get(&receiver_id)
+                                .map(|node| node.last_activity.clone())
+                                .unwrap_or_default();
+                            let ft_stats = self.ft_stats.clone();
+                            let events_tx = self.events_tx.clone();
+                            let clock = self.clock.clone();
+                            let previous =
+                                dataflow.remote_close_delivery_tasks.remove(&receiver_id);
+                            let task_receiver_id = receiver_id.clone();
+                            let completion_token = dataflow
+                                .pending_remote_all_inputs_closed
+                                .get(&receiver_id)
+                                .copied();
+                            let handle = tokio::spawn(async move {
+                                let (delivered, has_all_closed) =
+                                    node_communication::deliver_deferred_controls(
+                                        deliveries,
+                                        previous,
+                                        &last_activity,
+                                        &ft_stats,
+                                    )
+                                    .await;
+                                if has_all_closed && let Some(token) = completion_token {
+                                    let _ = events_tx
+                                        .send(Timestamped {
+                                            inner: Event::DeferredAllInputsClosed {
+                                                dataflow_id,
+                                                receiver_id: task_receiver_id,
+                                                token,
+                                                delivered,
+                                            },
+                                            timestamp: clock.new_timestamp(),
+                                        })
+                                        .await;
+                                }
+                                delivered
+                            });
+                            dataflow
+                                .remote_close_delivery_tasks
+                                .insert(receiver_id, handle);
+                        }
+                        result?;
                     }
                     Result::<(), eyre::Report>::Ok(())
                 };

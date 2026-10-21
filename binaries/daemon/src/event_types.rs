@@ -73,6 +73,13 @@ pub enum Event {
         dataflow_id: uuid::Uuid,
         node_id: NodeId,
     },
+    /// The receiver-side deferred AllInputsClosed was delivered or gave up.
+    DeferredAllInputsClosed {
+        dataflow_id: DataflowId,
+        receiver_id: NodeId,
+        token: u64,
+        delivered: bool,
+    },
     /// A data-plane output observed by the daemon's debug subscriber.
     ///
     /// Only emitted when the dataflow has `enable_debug_inspection` set.
@@ -115,6 +122,7 @@ impl Event {
             Event::BuildDataflowResult { .. } => "BuildDataflowResult",
             Event::SpawnDataflowResult { .. } => "SpawnDataflowResult",
             Event::NodeStopped { .. } => "NodeStopped",
+            Event::DeferredAllInputsClosed { .. } => "DeferredAllInputsClosed",
             Event::DebugTopicData { .. } => "DebugTopicData",
         }
     }
