@@ -17,11 +17,19 @@ use crate::command::Executable;
 const FALLBACK_NAME: &str = "my-node";
 const FALLBACK_NAMESPACE: &str = "your-namespace";
 
-/// A valid entrypoint derived from the (already-valid) node name.
+/// An entrypoint derived from the (already-valid) node name.
+///
+/// A python node's entrypoint is the bare name, which the validator still
+/// rejects when the name is a reserved node source (`shell`, `dynamic`); the
+/// name-independent placeholder is used then, keeping the detected name.
 fn fallback_entrypoint(node: &DetectedNode) -> String {
-    match node.runtime {
-        "rust" | "c" | "cpp" => format!("target/release/{}", node.name),
-        _ => node.name.clone(),
+    let entrypoint = |name: &str| match node.runtime {
+        "rust" | "c" | "cpp" => format!("target/release/{name}"),
+        _ => name.to_owned(),
+    };
+    match entrypoint(&node.name) {
+        reserved if reserved == "shell" || reserved == "dynamic" => entrypoint(FALLBACK_NAME),
+        derived => derived,
     }
 }
 
@@ -443,6 +451,14 @@ mod tests {
             ),
             ("reserved-ns", node("lidar", "rust", "target/release/lidar")),
             ("bad-entrypoint", node("lidar", "python", "weird name!")),
+            // the name is valid but its name-derived python entrypoint is a
+            // reserved node source (#3899)
+            ("reserved-shell", node("shell", "python", "shell")),
+            ("reserved-dynamic", node("dynamic", "python", "dynamic")),
+            (
+                "reserved-rust",
+                node("shell", "rust", "target/release/shell"),
+            ),
         ];
         for (label, n) in cases {
             // force a bad namespace for the reserved-ns case via the renderer
