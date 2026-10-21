@@ -283,4 +283,6 @@ pub(crate) struct ZenohOutbound {
     pub net_bytes_sent: Arc<AtomicU64>,
     pub net_messages_sent: Arc<AtomicU64>,
     pub net_publish_failures: Arc<AtomicU64>,
+    /// Present for lifecycle messages whose caller must observe publication.
+    pub receipt: Option<oneshot::Sender<eyre::Result<()>>>,
 }

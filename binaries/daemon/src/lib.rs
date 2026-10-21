@@ -206,6 +206,9 @@ const ZENOH_OUTPUT_QUEUE_CAPACITY: usize = 32;
 /// Bound blocking control publishes so a stuck Zenoh put cannot hold a
 /// per-output drain task forever. Regular data-plane publishes do not use this.
 const ZENOH_PUBLISH_TIMEOUT: Duration = Duration::from_secs(1);
+/// Bound each queue, drain, and receipt wait below the daemon's 20s heartbeat
+/// watchdog. Failure is returned to the caller so a stalled close is visible.
+const ZENOH_REQUIRED_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the daemon keeps trying to (re)connect to the coordinator before
 /// giving up and exiting. Bounds the orphan-daemon window when the coordinator
 /// is permanently gone (dora-rs/dora#1996); a reachable coordinator connects
@@ -2131,7 +2134,7 @@ impl Daemon {
                             inputs,
                             &self.clock,
                             "failed to handle OutputClosed for input",
-                        );
+                        )?;
                     }
                     Result::<(), eyre::Report>::Ok(())
                 };

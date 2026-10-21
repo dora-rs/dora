@@ -534,41 +534,67 @@ pub(crate) fn close_input(
     clock: &HLC,
 ) -> eyre::Result<()> {
     // Clean up broken state if this input was circuit-broken
-    let was_broken = dataflow
-        .broken_inputs
-        .remove(&(receiver_id.clone(), input_id.clone()))
-        .is_some();
+    let key = (receiver_id.clone(), input_id.clone());
+    let broken_timeout = dataflow.broken_inputs.get(&key).copied();
+    let was_broken = broken_timeout.is_some();
 
-    // Drop any armed deadline for this input. A closed input can never
-    // meaningfully time out, and leaving the entry behind lets
+    // Drop any armed deadline even if notification needs a retry. A closed
+    // input can never meaningfully time out, and leaving it behind lets
     // `check_input_timeouts` fire on it later, insert a `broken_inputs`
     // record, and then no-op in `break_input` (the input is already gone from
     // `open_inputs`) — orphaning that record so `has_broken_input` stays true
     // forever and the drained node is never sent `AllInputsClosed` (#2968).
-    dataflow
-        .input_deadlines
-        .remove(&(receiver_id.clone(), input_id.clone()));
-
     let was_open = dataflow
         .open_inputs
-        .get_mut(receiver_id)
-        .map(|inputs| inputs.remove(input_id))
+        .get(receiver_id)
+        .map(|inputs| inputs.contains(input_id))
         .unwrap_or(false);
 
     if !was_open && !was_broken {
-        return Ok(());
+        return signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock, true);
     }
+    dataflow.input_deadlines.remove(&key);
 
     let mut result = Ok(());
     if was_open && let Err(err) = send_input_closed_strict(dataflow, receiver_id, input_id, clock) {
         result = Err(err);
     }
-    if let Err(err) = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock) {
+    if result.is_ok() {
+        dataflow.broken_inputs.remove(&key);
+        if was_open && let Some(inputs) = dataflow.open_inputs.get_mut(receiver_id) {
+            inputs.remove(input_id);
+        }
+    } else {
+        // Keep the input retryable, but run drain bookkeeping against the
+        // logically closed state before restoring it below.
+        dataflow.broken_inputs.remove(&key);
+        if was_open && let Some(inputs) = dataflow.open_inputs.get_mut(receiver_id) {
+            inputs.remove(input_id);
+        }
+    }
+    // A closed channel is removed by send_input_closed_strict; a later
+    // subscription replays the closure from open_inputs. A full live channel
+    // needs the old state retained so the caller can retry.
+    let input_delivery_failed =
+        result.is_err() && dataflow.subscribe_channels.contains_key(receiver_id);
+    if let Err(err) =
+        signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock, !input_delivery_failed)
+    {
         if result.is_ok() {
             result = Err(err);
         } else {
             tracing::warn!("failed to signal drained input `{receiver_id}/{input_id}`: {err:?}");
         }
+    }
+    if input_delivery_failed && was_open {
+        dataflow
+            .open_inputs
+            .entry(receiver_id.clone())
+            .or_default()
+            .insert(input_id.clone());
+    }
+    if input_delivery_failed && let Some(timeout) = broken_timeout {
+        dataflow.broken_inputs.insert(key, timeout);
     }
 
     result
@@ -579,14 +605,20 @@ pub(crate) fn close_inputs_best_effort<I>(
     inputs: I,
     clock: &HLC,
     context: &'static str,
-) where
+) -> eyre::Result<()>
+where
     I: IntoIterator<Item = (NodeId, DataId)>,
 {
+    let mut first_error = None;
     for (receiver_id, input_id) in inputs {
         if let Err(err) = close_input(dataflow, &receiver_id, &input_id, clock) {
             tracing::warn!(%receiver_id, %input_id, "{context}: {err:?}");
+            if first_error.is_none() {
+                first_error = Some(err);
+            }
         }
     }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn send_input_closed_strict(
@@ -632,6 +664,7 @@ fn signal_all_inputs_closed_if_drained(
     dataflow: &mut RunningDataflow,
     receiver_id: &NodeId,
     clock: &HLC,
+    send_event: bool,
 ) -> eyre::Result<()> {
     // As at the subscribe site: either "nothing left open" (pre-existing
     // behavior, and true for a source) or "drained" (the node we are about
@@ -646,7 +679,9 @@ fn signal_all_inputs_closed_if_drained(
     let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
         return Ok(());
     };
-    if dataflow.is_finished(receiver_id)
+    if send_event
+        && dataflow.is_finished(receiver_id)
+        && !dataflow.all_inputs_closed_at.contains_key(receiver_id)
         && match send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock) {
             Ok(true) => true,
             Ok(false) => return Err(eyre::eyre!("node `{receiver_id}` channel full")),
@@ -689,7 +724,7 @@ pub(crate) fn break_input(
         tracing::warn!("failed to break input `{receiver_id}/{input_id}`: {err:?}");
     }
 
-    if let Err(err) = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock) {
+    if let Err(err) = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock, true) {
         tracing::warn!("failed to signal drained input `{receiver_id}/{input_id}`: {err:?}");
     }
 }

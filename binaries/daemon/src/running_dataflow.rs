@@ -407,6 +407,8 @@ pub struct RunningDataflow {
     pub(crate) publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
     pub(crate) control_publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
     pub(crate) remote_output_queues: BTreeMap<OutputId, Sender<ZenohOutbound>>,
+    pub(crate) remote_output_queue_handles: BTreeMap<OutputId, tokio::task::JoinHandle<()>>,
+    pub(crate) retired_remote_output_queues: BTreeMap<OutputId, tokio::task::JoinHandle<()>>,
     /// Reverse index from output to the set of CLI subscribers watching it.
     /// Hot-path read on every node output dispatch (`send_topic_debug_frames`)
     /// and on the `has_debug_watchers` check. Unsubscribe scans this map
@@ -524,6 +526,8 @@ impl RunningDataflow {
             publishers: Default::default(),
             control_publishers: Default::default(),
             remote_output_queues: Default::default(),
+            remote_output_queue_handles: Default::default(),
+            retired_remote_output_queues: Default::default(),
             debug_topic_watchers: Default::default(),
             debug_watched_outputs: Default::default(),
             finished_tx,
@@ -590,6 +594,19 @@ impl RunningDataflow {
         retain_other_nodes(&mut self.publishers, node_id);
         retain_other_nodes(&mut self.control_publishers, node_id);
         retain_other_nodes(&mut self.remote_output_queues, node_id);
+        self.retired_remote_output_queues
+            .retain(|_, handle| !handle.is_finished());
+        let retired: Vec<_> = self
+            .remote_output_queue_handles
+            .keys()
+            .filter(|output| &output.0 == node_id)
+            .cloned()
+            .collect();
+        for output in retired {
+            if let Some(handle) = self.remote_output_queue_handles.remove(&output) {
+                self.retired_remote_output_queues.insert(output, handle);
+            }
+        }
         self.missing_channel_warned.retain(|(n, _)| n != node_id);
         self.dropped_event_streams.remove(node_id);
     }

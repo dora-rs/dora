@@ -1,7 +1,9 @@
 use super::*;
 use crate::coordinator_events::{
     apply_state_catch_up_entries, deliver_param_delete_strict, deliver_param_update_strict,
+    remove_mapping_and_close,
 };
+use crate::node_events::reload_target;
 use crate::node_exit::{DEFAULT_FINISH_DRAIN_GRACE, parse_finish_drain_grace};
 use crate::pending::DataflowStatus;
 use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
@@ -23,6 +25,19 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 fn test_dataflow() -> RunningDataflow {
     let descriptor = Descriptor::new(vec![]);
     RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor)
+}
+
+#[test]
+fn reload_target_distinguishes_unsubscribed_host_from_other_daemon() {
+    let mut df = test_dataflow();
+    let host = NodeId::from("host".to_string());
+    let other = NodeId::from("other".to_string());
+    df.running_nodes.insert(host.clone(), test_running_node());
+    assert!(reload_target(&df, &host).is_err());
+    assert!(reload_target(&df, &other).unwrap().is_none());
+    let (tx, _rx) = mpsc::channel(1);
+    df.subscribe_channels.insert(host.clone(), tx);
+    assert!(reload_target(&df, &host).unwrap().is_some());
 }
 
 // dora-rs/dora: a node added to an already-running dataflow (via
@@ -1379,6 +1394,13 @@ fn close_input_returns_error_when_receiver_channel_is_full() {
         .entry(node_a.clone())
         .or_default()
         .insert(input_x.clone());
+    df.input_deadlines.insert(
+        (node_a.clone(), input_x.clone()),
+        InputDeadline {
+            timeout: Duration::from_secs(1),
+            last_received: Some(Instant::now()),
+        },
+    );
     let (tx, mut rx) = mpsc::channel(1);
     tx.try_send(Timestamped {
         inner: NodeEvent::AllInputsClosed,
@@ -1395,12 +1417,75 @@ fn close_input_returns_error_when_receiver_channel_is_full() {
         "unexpected error: {err:?}"
     );
     assert!(
-        !df.open_inputs(&node_a).contains(&input_x),
-        "the input is still closed even when notifying the node fails"
+        df.open_inputs(&node_a).contains(&input_x),
+        "failed delivery must remain retryable"
+    );
+    assert!(
+        !df.input_deadlines
+            .contains_key(&(node_a.clone(), input_x.clone()))
     );
     let events = drain_events(&mut rx);
     assert_eq!(events.len(), 1);
     assert!(matches_event(&events[0], "AllInputsClosed"));
+    assert!(close_input(&mut df, &node_a, &input_x, &clock).is_err());
+    assert!(!df.open_inputs(&node_a).contains(&input_x));
+    let events = drain_events(&mut rx);
+    assert_eq!(events.len(), 1);
+    assert!(matches_event(&events[0], "InputClosed"));
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
+}
+
+#[test]
+fn close_input_on_closed_channel_keeps_state_for_subscribe_replay() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let node = NodeId::from("receiver".to_string());
+    let input = DataId::from("value".to_string());
+    df.open_inputs
+        .entry(node.clone())
+        .or_default()
+        .insert(input.clone());
+    let (tx, rx) = mpsc::channel(1);
+    drop(rx);
+    df.subscribe_channels.insert(node.clone(), tx);
+    assert!(close_input(&mut df, &node, &input, &clock).is_err());
+    assert!(!df.open_inputs(&node).contains(&input));
+    assert!(!df.subscribe_channels.contains_key(&node));
+}
+
+#[test]
+fn failed_mapping_close_keeps_edge_for_retry() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let source = NodeId::from("source".to_string());
+    let receiver = NodeId::from("receiver".to_string());
+    let output = OutputId(source, DataId::from("value".to_string()));
+    let input = DataId::from("value".to_string());
+    df.mappings
+        .entry(output.clone())
+        .or_default()
+        .insert((receiver.clone(), input.clone()));
+    df.open_inputs
+        .entry(receiver.clone())
+        .or_default()
+        .insert(input.clone());
+    let (tx, mut rx) = mpsc::channel(1);
+    tx.try_send(Timestamped {
+        inner: NodeEvent::Stop,
+        timestamp: clock.new_timestamp(),
+    })
+    .unwrap();
+    df.subscribe_channels.insert(receiver.clone(), tx);
+
+    assert!(remove_mapping_and_close(&mut df, &output, &receiver, &input, &clock).is_err());
+    assert!(df.mappings[&output].contains(&(receiver.clone(), input.clone())));
+    assert!(df.open_inputs(&receiver).contains(&input));
+    drain_events(&mut rx);
+    assert!(remove_mapping_and_close(&mut df, &output, &receiver, &input, &clock).is_err());
+    assert!(df.mappings[&output].contains(&(receiver.clone(), input.clone())));
+    drain_events(&mut rx);
+    remove_mapping_and_close(&mut df, &output, &receiver, &input, &clock).unwrap();
+    assert!(!df.mappings[&output].contains(&(receiver, input)));
 }
 
 #[test]
@@ -1433,7 +1518,7 @@ fn close_inputs_best_effort_continues_after_error() {
     let (tx_b, mut rx_b) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
     df.subscribe_channels.insert(node_b.clone(), tx_b);
 
-    close_inputs_best_effort(
+    let result = close_inputs_best_effort(
         &mut df,
         [
             (node_a.clone(), input_a.clone()),
@@ -1443,7 +1528,8 @@ fn close_inputs_best_effort_continues_after_error() {
         "test",
     );
 
-    assert!(!df.open_inputs(&node_a).contains(&input_a));
+    assert!(result.is_err(), "the failed close must reach the caller");
+    assert!(df.open_inputs(&node_a).contains(&input_a));
     assert!(!df.open_inputs(&node_b).contains(&input_b));
     assert!(df.open_inputs(&node_b).contains(&input_b_guard));
 

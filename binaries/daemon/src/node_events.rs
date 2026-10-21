@@ -4,9 +4,10 @@
 use crate::local_listener::DynamicNodeEventWrapper;
 use crate::{
     Daemon, DaemonNodeEvent, Event, InterDaemonEvent, OutputId, RunningDataflow,
-    ZENOH_OUTPUT_QUEUE_CAPACITY, ZENOH_PUBLISH_TIMEOUT, ZenohOutbound, close_inputs_best_effort,
-    drop_extension_and_notify, extension_table::ExtensionKey, local_delivery::DeferredDelivery,
-    note_output_sent_to_local_receivers, send_output_to_local_receivers, send_with_timestamp,
+    ZENOH_OUTPUT_QUEUE_CAPACITY, ZENOH_PUBLISH_TIMEOUT, ZENOH_REQUIRED_ACK_TIMEOUT, ZenohOutbound,
+    close_inputs_best_effort, drop_extension_and_notify, extension_table::ExtensionKey,
+    local_delivery::DeferredDelivery, note_output_sent_to_local_receivers,
+    send_output_to_local_receivers, send_with_timestamp,
 };
 use dora_core::{
     config::{DataId, NodeId, OperatorId},
@@ -31,6 +32,7 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 use tracing::error;
 use uuid::Uuid;
+use zenoh::Wait;
 use zenoh::qos::{CongestionControl, Priority};
 
 /// Cap on `Daemon::warned_late_outputs`, so a daemon that serves many
@@ -381,7 +383,7 @@ impl Daemon {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("Reload failed: no running dataflow with ID `{dataflow_id}`")
         })?;
-        let Some(channel) = dataflow.subscribe_channels.get(&node_id) else {
+        let Some(channel) = reload_target(dataflow, &node_id)? else {
             return Ok(());
         };
         match send_with_timestamp(channel, NodeEvent::Reload { operator_id }, &self.clock) {
@@ -592,14 +594,20 @@ impl Daemon {
 
         let publisher =
             remote_receiver_control_publisher(&self.zenoh_session, dataflow, output_id).await?;
-        let queue = remote_output_publish_queue(dataflow, output_id);
-        let outbound = zenoh_outbound(
+        let queue = remote_output_publish_queue(dataflow, output_id).await?;
+        let (receipt_tx, receipt_rx) = oneshot::channel();
+        let mut outbound = zenoh_outbound(
             dataflow,
             publisher,
             serialized_event,
             Some(ZENOH_PUBLISH_TIMEOUT),
         );
-        enqueue_required_zenoh_outbound(queue, outbound, "inter-daemon output-closed event");
+        outbound.receipt = Some(receipt_tx);
+        enqueue_required_zenoh_outbound(&queue, outbound).await?;
+        tokio::time::timeout(ZENOH_REQUIRED_ACK_TIMEOUT, receipt_rx)
+            .await
+            .map_err(|_| eyre!("timed out waiting for inter-daemon OutputClosed receipt"))?
+            .map_err(|_| eyre!("inter-daemon OutputClosed drain task exited without receipt"))??;
 
         Ok(())
     }
@@ -616,7 +624,7 @@ impl Daemon {
 
         let publisher =
             remote_receiver_data_publisher(&self.zenoh_session, dataflow, output_id).await?;
-        let queue = remote_output_publish_queue(dataflow, output_id);
+        let queue = remote_output_publish_queue(dataflow, output_id).await?;
         let outbound = zenoh_outbound(dataflow, publisher, serialized_event, None);
         handle_publish_enqueue_result(
             dataflow,
@@ -715,7 +723,7 @@ impl Daemon {
                 local_node_inputs.extend(receivers.iter().cloned());
             }
         }
-        close_inputs_best_effort(
+        let local_close_result = close_inputs_best_effort(
             dataflow,
             local_node_inputs,
             &self.clock,
@@ -729,6 +737,7 @@ impl Daemon {
             }
         }
 
+        let mut close_result = local_close_result;
         for output_id in closed {
             let serialized_event = Timestamped {
                 inner: InterDaemonEvent::OutputClosed {
@@ -740,11 +749,18 @@ impl Daemon {
             }
             .serialize()
             .wrap_err("failed to serialize inter-daemon output-closed event")?;
-            self.send_to_remote_receivers(dataflow_id, &output_id, serialized_event)
-                .await?;
+            if let Err(err) = self
+                .send_to_remote_receivers(dataflow_id, &output_id, serialized_event)
+                .await
+            {
+                tracing::error!(?output_id, "failed to publish OutputClosed: {err:?}");
+                if close_result.is_ok() {
+                    close_result = Err(err);
+                }
+            }
         }
 
-        Ok(())
+        close_result
     }
 
     pub(crate) async fn subscribe(
@@ -1079,6 +1095,19 @@ impl Daemon {
     }
 }
 
+pub(crate) fn reload_target<'a>(
+    dataflow: &'a RunningDataflow,
+    node_id: &NodeId,
+) -> eyre::Result<Option<&'a mpsc::Sender<Timestamped<NodeEvent>>>> {
+    match dataflow.subscribe_channels.get(node_id) {
+        Some(channel) => Ok(Some(channel)),
+        None if dataflow.running_nodes.contains_key(node_id) => {
+            Err(eyre!("node `{node_id}` has not subscribed for reload"))
+        }
+        None => Ok(None),
+    }
+}
+
 async fn remote_receiver_data_publisher(
     zenoh_session: &zenoh::Session,
     dataflow: &mut RunningDataflow,
@@ -1138,16 +1167,23 @@ async fn remote_receiver_publisher(
     }
 }
 
-fn remote_output_publish_queue(
+async fn remote_output_publish_queue(
     dataflow: &mut RunningDataflow,
     output_id: &OutputId,
-) -> mpsc::Sender<ZenohOutbound> {
+) -> eyre::Result<mpsc::Sender<ZenohOutbound>> {
+    if let Some(old_drain) = dataflow.retired_remote_output_queues.get_mut(output_id) {
+        tokio::time::timeout(ZENOH_REQUIRED_ACK_TIMEOUT, old_drain)
+            .await
+            .map_err(|_| eyre!("previous zenoh drain for {output_id:?} did not finish"))?
+            .map_err(|err| eyre!("previous zenoh drain for {output_id:?} failed: {err}"))?;
+        dataflow.retired_remote_output_queues.remove(output_id);
+    }
     match dataflow.remote_output_queues.entry(output_id.clone()) {
-        std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
+        std::collections::btree_map::Entry::Occupied(e) => Ok(e.get().clone()),
         std::collections::btree_map::Entry::Vacant(e) => {
             let (tx, mut rx) = mpsc::channel::<ZenohOutbound>(ZENOH_OUTPUT_QUEUE_CAPACITY);
-            let output_id = output_id.clone();
-            tokio::spawn(async move {
+            let logged_output_id = output_id.clone();
+            let handle = tokio::spawn(async move {
                 while let Some(msg) = rx.recv().await {
                     // Regular Output and its OutputClosed use distinct Drop/Block
                     // publishers on the same Zenoh key, but this per-output FIFO
@@ -1155,10 +1191,16 @@ fn remote_output_publish_queue(
                     // next one is submitted, so a close cannot pass earlier data.
                     publish_zenoh_outbound(msg).await;
                 }
-                tracing::debug!(?output_id, "per-output zenoh publish drain task exiting");
+                tracing::debug!(
+                    ?logged_output_id,
+                    "per-output zenoh publish drain task exiting"
+                );
             });
+            dataflow
+                .remote_output_queue_handles
+                .insert(output_id.clone(), handle);
             e.insert(tx.clone());
-            tx
+            Ok(tx)
         }
     }
 }
@@ -1177,6 +1219,7 @@ fn zenoh_outbound(
         net_bytes_sent: dataflow.net_bytes_sent.clone(),
         net_messages_sent: dataflow.net_messages_sent.clone(),
         net_publish_failures: dataflow.net_publish_failures.clone(),
+        receipt: None,
     }
 }
 
@@ -1202,48 +1245,77 @@ enum ZenohPublishOutcome<E> {
     TimedOut,
 }
 
-async fn await_zenoh_put_with_timeout<F, E>(
+async fn await_zenoh_put_with_timeout<F>(
     publish: F,
     timeout: std::time::Duration,
-) -> ZenohPublishOutcome<E>
+) -> (
+    ZenohPublishOutcome<eyre::Report>,
+    Option<tokio::task::JoinHandle<eyre::Result<()>>>,
+)
 where
-    F: std::future::IntoFuture<Output = Result<(), E>>,
+    F: FnOnce() -> eyre::Result<()> + Send + 'static,
 {
-    match tokio::time::timeout(timeout, publish.into_future()).await {
-        Ok(Ok(())) => ZenohPublishOutcome::Published,
-        Ok(Err(err)) => ZenohPublishOutcome::Failed(err),
-        Err(_) => ZenohPublishOutcome::TimedOut,
+    let mut handle = tokio::task::spawn_blocking(publish);
+    match tokio::time::timeout(timeout, &mut handle).await {
+        Ok(Ok(Ok(()))) => (ZenohPublishOutcome::Published, None),
+        Ok(Ok(Err(err))) => (ZenohPublishOutcome::Failed(err), None),
+        Ok(Err(err)) => (ZenohPublishOutcome::Failed(eyre!(err)), None),
+        Err(_) => (ZenohPublishOutcome::TimedOut, Some(handle)),
     }
 }
 
-async fn publish_zenoh_outbound(msg: ZenohOutbound) {
-    let result = if let Some(timeout) = msg.timeout {
-        await_zenoh_put_with_timeout(msg.publisher.put(msg.serialized), timeout).await
+async fn publish_zenoh_outbound(mut msg: ZenohOutbound) {
+    let (result, in_flight) = if let Some(timeout) = msg.timeout {
+        let publisher = msg.publisher.clone();
+        let serialized = std::mem::take(&mut msg.serialized);
+        await_zenoh_put_with_timeout(
+            move || publisher.put(serialized).wait().map_err(|err| eyre!(err)),
+            timeout,
+        )
+        .await
     } else {
-        match msg.publisher.put(msg.serialized).await {
-            Ok(()) => ZenohPublishOutcome::Published,
-            Err(err) => ZenohPublishOutcome::Failed(err),
+        let serialized = std::mem::take(&mut msg.serialized);
+        match msg.publisher.put(serialized).await {
+            Ok(()) => (ZenohPublishOutcome::Published, None),
+            Err(err) => (ZenohPublishOutcome::Failed(eyre!(err)), None),
         }
     };
+    finish_zenoh_publish(&mut msg, result);
+    if let Some(in_flight) = in_flight {
+        // The caller has already received a timeout. Zenoh's synchronous
+        // wait cannot be cancelled, so keep this output's FIFO behind it.
+        let _ = in_flight.await;
+    }
+}
+
+fn finish_zenoh_publish(msg: &mut ZenohOutbound, result: ZenohPublishOutcome<eyre::Report>) {
     match result {
-        ZenohPublishOutcome::Published => {}
+        ZenohPublishOutcome::Published => {
+            msg.net_bytes_sent
+                .fetch_add(msg.payload_len, atomic::Ordering::Relaxed);
+            msg.net_messages_sent
+                .fetch_add(1, atomic::Ordering::Relaxed);
+            if let Some(receipt) = msg.receipt.take() {
+                let _ = receipt.send(Ok(()));
+            }
+        }
         ZenohPublishOutcome::Failed(e) => {
             tracing::error!("zenoh publish failed: {e}");
             msg.net_publish_failures
                 .fetch_add(1, atomic::Ordering::Relaxed);
-            return;
+            if let Some(receipt) = msg.receipt.take() {
+                let _ = receipt.send(Err(e));
+            }
         }
         ZenohPublishOutcome::TimedOut => {
             tracing::error!("zenoh publish timed out after {:?}", msg.timeout.unwrap());
             msg.net_publish_failures
                 .fetch_add(1, atomic::Ordering::Relaxed);
-            return;
+            if let Some(receipt) = msg.receipt.take() {
+                let _ = receipt.send(Err(eyre!("zenoh publish timed out")));
+            }
         }
     }
-    msg.net_bytes_sent
-        .fetch_add(msg.payload_len, atomic::Ordering::Relaxed);
-    msg.net_messages_sent
-        .fetch_add(1, atomic::Ordering::Relaxed);
 }
 
 fn handle_publish_enqueue_result(
@@ -1270,34 +1342,38 @@ fn handle_publish_enqueue_result(
     }
 }
 
-fn enqueue_required_zenoh_outbound(
-    tx: mpsc::Sender<ZenohOutbound>,
+async fn enqueue_required_zenoh_outbound(
+    tx: &mpsc::Sender<ZenohOutbound>,
     outbound: ZenohOutbound,
-    event_kind: &'static str,
-) {
-    match tx.try_send(outbound) {
-        Ok(()) => {}
-        Err(mpsc::error::TrySendError::Full(outbound)) => {
-            tokio::spawn(async move {
-                tracing::debug!(
-                    "zenoh publish channel full ({ZENOH_OUTPUT_QUEUE_CAPACITY}); \
-                     waiting to enqueue {event_kind}"
-                );
-                if let Err(mpsc::error::SendError(outbound)) = tx.send(outbound).await {
-                    outbound
-                        .net_publish_failures
-                        .fetch_add(1, atomic::Ordering::Relaxed);
-                    tracing::error!("zenoh drain task is gone; dropping {event_kind}");
-                }
-            });
-        }
-        Err(mpsc::error::TrySendError::Closed(outbound)) => {
+) -> eyre::Result<()> {
+    let failures = outbound.net_publish_failures.clone();
+    let queued = tokio::time::timeout(
+        ZENOH_REQUIRED_ACK_TIMEOUT,
+        send_required_to_queue(tx, outbound),
+    )
+    .await
+    .map_err(|_| {
+        failures.fetch_add(1, atomic::Ordering::Relaxed);
+        eyre!("timed out waiting to queue inter-daemon OutputClosed")
+    })?;
+    match queued {
+        Ok(()) => Ok(()),
+        Err(mpsc::error::SendError(outbound)) => {
             outbound
                 .net_publish_failures
                 .fetch_add(1, atomic::Ordering::Relaxed);
-            tracing::error!("zenoh drain task is gone; dropping {event_kind}");
+            Err(eyre!(
+                "zenoh drain task is gone; inter-daemon OutputClosed not queued"
+            ))
         }
     }
+}
+
+async fn send_required_to_queue<T>(
+    tx: &mpsc::Sender<T>,
+    outbound: T,
+) -> Result<(), mpsc::error::SendError<T>> {
+    tx.send(outbound).await
 }
 
 #[cfg(test)]
@@ -1345,6 +1421,12 @@ mod tests {
             .remote_output_queues
             .insert(output.clone(), publish_tx);
         daemon.running.insert(dataflow_id, dataflow);
+        let received = tokio::spawn(async move {
+            let data = publish_rx.recv().await.unwrap();
+            let mut close = publish_rx.recv().await.unwrap();
+            close.receipt.take().unwrap().send(Ok(())).unwrap();
+            (data, close)
+        });
 
         daemon
             .try_send_to_remote_receivers(dataflow_id, &output, b"data".to_vec())
@@ -1355,10 +1437,7 @@ mod tests {
             .await
             .unwrap();
 
-        let data = publish_rx.try_recv().unwrap();
-        let close = publish_rx
-            .try_recv()
-            .expect("OutputClosed must share the output FIFO with earlier data");
+        let (data, close) = received.await.unwrap();
         assert_eq!(data.publisher.congestion_control(), CongestionControl::Drop);
         assert_eq!(
             close.publisher.congestion_control(),
@@ -1379,11 +1458,48 @@ mod tests {
             !Arc::ptr_eq(&data.publisher, close_publisher),
             "regular output and OutputClosed must not share one blocking publisher"
         );
+        let (receipt_tx, receipt_rx) = oneshot::channel();
+        let mut failed = zenoh_outbound(
+            dataflow,
+            close_publisher.clone(),
+            b"failed close".to_vec(),
+            Some(ZENOH_PUBLISH_TIMEOUT),
+        );
+        failed.receipt = Some(receipt_tx);
+        finish_zenoh_publish(
+            &mut failed,
+            ZenohPublishOutcome::Failed(eyre!("fake put failure")),
+        );
+        assert!(
+            receipt_rx
+                .await
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("fake put failure")
+        );
+
+        let (closed_tx, closed_rx) = mpsc::channel(1);
+        drop(closed_rx);
+        daemon
+            .running
+            .get_mut(&dataflow_id)
+            .unwrap()
+            .remote_output_queues
+            .insert(output.clone(), closed_tx);
+        let err = daemon
+            .send_to_remote_receivers(dataflow_id, &output, b"closed".to_vec())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not queued"));
     }
 
     #[tokio::test(start_paused = true)]
     async fn zenoh_publish_wait_is_bounded() {
-        let publish = std::future::pending::<eyre::Result<()>>();
+        let publish = || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            Ok(())
+        };
         let handle = tokio::spawn(await_zenoh_put_with_timeout(publish, ZENOH_PUBLISH_TIMEOUT));
 
         tokio::task::yield_now().await;
@@ -1394,8 +1510,83 @@ mod tests {
 
         tokio::time::advance(ZENOH_PUBLISH_TIMEOUT).await;
         assert!(matches!(
-            handle.await.unwrap(),
+            handle.await.unwrap().0,
             ZenohPublishOutcome::TimedOut
         ));
+    }
+
+    #[tokio::test]
+    async fn blocking_publisher_timeout_does_not_block_runtime() {
+        let result = await_zenoh_put_with_timeout(
+            || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                Ok(())
+            },
+            std::time::Duration::from_millis(10),
+        )
+        .await;
+        assert!(matches!(result.0, ZenohPublishOutcome::TimedOut));
+    }
+
+    #[test]
+    fn required_publish_waits_fit_within_heartbeat_watchdog() {
+        assert!(
+            ZENOH_REQUIRED_ACK_TIMEOUT * 3 < crate::COORDINATOR_HEARTBEAT_TIMEOUT,
+            "old-drain, queue, and receipt waits must not individually exhaust the watchdog"
+        );
+    }
+
+    #[tokio::test]
+    async fn full_required_queue_preserves_close_before_later_data() {
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.send(1).await.unwrap();
+        let close_tx = tx.clone();
+        let close =
+            tokio::spawn(async move { send_required_to_queue(&close_tx, 2).await.unwrap() });
+        tokio::task::yield_now().await;
+        assert!(!close.is_finished());
+        assert_eq!(rx.recv().await, Some(1));
+        close.await.unwrap();
+        assert!(tx.try_send(3).is_err());
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                send_required_to_queue(&tx, 4),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(rx.recv().await, Some(2));
+        tx.try_send(3).unwrap();
+        assert_eq!(rx.recv().await, Some(3));
+    }
+
+    #[tokio::test]
+    async fn retired_output_drain_finishes_before_new_queue_is_created() {
+        let mut dataflow = test_dataflow();
+        let output = OutputId(
+            NodeId::from("source".to_string()),
+            DataId::from("value".to_string()),
+        );
+        let (old_tx, mut old_rx) = mpsc::channel(1);
+        let (release_tx, release_rx) = oneshot::channel();
+        let old_handle = tokio::spawn(async move {
+            let _ = release_rx.await;
+            assert!(old_rx.recv().await.is_none());
+        });
+        dataflow.remote_output_queues.insert(output.clone(), old_tx);
+        dataflow
+            .remote_output_queue_handles
+            .insert(output.clone(), old_handle);
+        dataflow.forget_node_bookkeeping(&output.0);
+        assert!(dataflow.remote_output_queues.get(&output).is_none());
+        let mut create = Box::pin(remote_output_publish_queue(&mut dataflow, &output));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), &mut create)
+                .await
+                .is_err()
+        );
+        release_tx.send(()).unwrap();
+        let _new_queue = create.await.unwrap();
     }
 }
