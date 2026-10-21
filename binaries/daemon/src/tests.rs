@@ -587,7 +587,7 @@ async fn stop_of_a_just_finished_dataflow_succeeds() {
 
     for (dataflow_id, expect_ok) in [(finished, true), (Uuid::new_v4(), false)] {
         let (reply_tx, reply_rx) = oneshot::channel();
-        daemon
+        let _status = daemon
             .handle_coordinator_event(
                 DaemonCoordinatorEvent::StopDataflow {
                     dataflow_id,
