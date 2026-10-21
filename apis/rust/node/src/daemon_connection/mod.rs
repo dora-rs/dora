@@ -3,6 +3,7 @@ use dora_core::{config::NodeId, uhlc::Timestamp};
 use dora_message::{
     DataflowId,
     daemon_to_node::DaemonReply,
+    dynamic_node::DynamicNodeConfigReply,
     node_to_daemon::{DaemonRequest, NodeRegisterRequest, Timestamped},
 };
 use eyre::{Context, bail, eyre};
@@ -28,6 +29,23 @@ pub enum DaemonChannel {
 }
 
 impl DaemonChannel {
+    pub fn dynamic_node_config(
+        &mut self,
+        node_id: NodeId,
+        timestamp: Timestamp,
+    ) -> eyre::Result<DynamicNodeConfigReply> {
+        let Self::Tcp(stream) = self else {
+            bail!("dynamic node configuration requires a TCP daemon connection");
+        };
+        tcp::request_dynamic_node_config(
+            stream,
+            &Timestamped {
+                inner: DaemonRequest::NodeConfig { node_id },
+                timestamp,
+            },
+        )
+    }
+
     #[tracing::instrument(level = "trace")]
     pub fn new_tcp(socket_addr: SocketAddr) -> eyre::Result<Self> {
         let stream = TcpStream::connect(socket_addr).wrap_err("failed to open TCP connection")?;

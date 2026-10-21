@@ -92,7 +92,7 @@ Every node requires an `id`. All other fields are optional (though most nodes ne
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | **Required.** Unique identifier. Must not contain `/`. Whitespace is discouraged |
+| `id` | string | **Required.** Unique identifier. Only ASCII letters, digits, `_`, `.` and `-` (no `/`, no whitespace); must not be empty, start with `.`, or be the reserved id `dora` |
 | `name` | string | Human-readable display name (metadata only, used in tooling and logs) |
 | `description` | string | Documentation string (metadata only, not used at runtime) |
 
@@ -165,6 +165,28 @@ inputs:
 | `queue_size` | integer | `10` | Input buffer size |
 | `queue_policy` | string | `drop_oldest` | `drop_oldest`: drops oldest message when full. `backpressure`: buffers up to 10x `queue_size` without dropping (drops with ERROR log at hard cap) |
 | `input_timeout` | float | -- | Circuit breaker timeout in seconds. If no message arrives within this period, the daemon closes the input and the node receives an `InputClosed` event for graceful degradation |
+
+A `backpressure` input keeps its producer's output on the daemon path instead
+of the direct zenoh path. The direct path's callback drops at the receiver's
+shared ingress channel when that channel is full, so a timer or a busier input
+can discard the message before the per-input policy ever applies; the daemon
+path feeds the same channel with a blocking send, and when the receiver's
+per-node channel (1000 events) is full as well, the daemon holds the producer's
+send until there is room, so the producer's `send_output` blocks instead of the
+message being dropped. Two cases still drop, each logged and counted: a
+producer on another machine cannot be held, so a message forwarded across
+daemons to a full receiver is dropped; and a receiver that frees no room at all
+for 60 seconds (wedged, or blocked on its own producer in a backpressure cycle)
+stops holding the producer, which then loses that message, and every further
+message to that receiver's full channel is dropped the same way, without
+another 60-second hold, until the receiver takes an event again. The routing applies
+to the producer's entire output, so every consumer of
+that output leaves the zero-copy path, and the daemon path carries the 64 MiB
+per-message limit. A producer learns its routing when it starts, so
+`dora node add` and `dora node replace` refuse a `backpressure` input whose
+producer is already running with that output on the direct path. `dora replay`
+sets `backpressure` on every input without a policy, so replay dataflows run
+entirely on the daemon path. The scheduler's documented hard cap still applies.
 
 #### Built-in Timers
 
@@ -325,7 +347,8 @@ For a complete guide to all logging features, see [Logging](logging.md).
 | `restart_delay` | float | -- | Initial backoff in seconds. Doubles each attempt |
 | `max_restart_delay` | float | -- | Cap for exponential backoff |
 | `restart_window` | float | -- | Time window for counting restarts. The counter resets after this many seconds since the first restart in the current window. Enables "N restarts per M seconds" semantics with `max_restarts` |
-| `health_check_timeout` | float | -- | Once the node has connected (subscribed to events), if it then does not communicate with the daemon (send outputs, acknowledge ticks, etc.) for this many seconds, the daemon kills the process and evaluates the `restart_policy`. Covers **post-connection** liveness only -- it does not bound startup time, so a node that hangs before it ever subscribes is not killed |
+| `health_check_timeout` | float | -- | Once the node has connected (subscribed to events), if it then does not communicate with the daemon (send outputs, acknowledge ticks, etc.) for this many seconds, the daemon kills the process and evaluates the `restart_policy`. Covers **post-connection** liveness only (see `startup_timeout` to bound startup time) |
+| `startup_timeout` | float | -- | If the node process fails to connect (subscribe to events) within this many seconds after process spawn, the daemon kills the process and evaluates the `restart_policy`. Bounds startup/initialization time. Evaluated on each `health_check_interval` tick (default 5s) |
 
 Restart policies:
 
@@ -428,13 +451,14 @@ The `id` field is optional for single operators (defaults to the node `id`):
       - bbox
 ```
 
-### Multiple Operators
+### The `operators` List
 
-Each operator in `operators` **requires** a unique `id`:
+`operators` is the list form of `operator`. Its entry **requires** an `id`, which becomes part of every reference to its outputs (`<node>/<operator>/<output>`).
 
+A runtime node holds exactly one operator: the operator runtime refuses to start with zero or several, so validation rejects such a node. To run several operators, give each one its own node:
 
 ```yaml
-- id: runtime-node
+- id: preprocess
   operators:
     - id: preprocessor
       shared-library: ../../target/debug/libpreprocess
@@ -442,10 +466,12 @@ Each operator in `operators` **requires** a unique `id`:
         raw: sensor/data
       outputs:
         - processed
+- id: analyze
+  operators:
     - id: analyzer
       shared-library: ../../target/debug/libanalyze
       inputs:
-        data: runtime-node/preprocessor/processed
+        data: preprocess/preprocessor/processed
       outputs:
         - result
 ```

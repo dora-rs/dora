@@ -93,11 +93,23 @@ cargo release minor              # dry-run: review what will happen
 cargo release minor --execute    # bumps workspace version, tags v0.5.0, pushes
 ```
 
-CI takes over from the tag push and automatically:
-- Publishes all crates to crates.io (in dependency order)
-- Builds and publishes the Python node API wheel to PyPI (`dora-rs`)
+If `main` is protected, `cargo release --execute` cannot push the bump commit to it. Land the version bump as a normal PR instead, then tag the merge commit by hand — `release.yml` verifies the tag against `[workspace.package].version` and fails fast on skew.
+
+`release.yml` takes over from the tag push and does the whole release in one run:
+- Publishes all crates to crates.io, in dependency order
+- Builds and publishes **both** wheels to PyPI — `dora-rs` and `dora-rs-cli` — across the full platform matrix plus sdists, by calling `pip-release.yml`
+- Builds the C/C++ libraries for 4 targets, by calling `publish-c-cpp-libraries.yml`
 - Builds CLI binaries for all platforms
-- Creates a GitHub Release with changelog and binary assets
+- Creates a GitHub Release with the changelog, the CLI binaries, the install scripts, and the C/C++ archives
+- **Verifies the release is complete** and fails if it is not
+
+That last step exists because it used to be possible to ship a green but half-finished release. The wheel and C/C++ jobs lived in workflows triggered only by `release: published`, and a release created by `GITHUB_TOKEN` raises no such event — so `v1.0.0-rc.4` published 4 of `dora-rs`'s 11 files, no `dora-rs-cli` at all, and none of the 8 C/C++ archives, with every job green. Those workflows are now *called* by `release.yml` on the tag push, and `verify-release` reads back what is actually on crates.io, PyPI and the GitHub Release, failing the run naming anything absent.
+
+To audit an already-published tag:
+
+```bash
+make qa-verify-release VERSION=1.0.0-rc.5
+```
 
 ### Configuration
 
@@ -105,9 +117,13 @@ CI takes over from the tag push and automatically:
 |------|---------|
 | `release.toml` | cargo-release settings (version bump, tagging) |
 | `cliff.toml` | git-cliff changelog generation |
-| `.github/workflows/release.yml` | Tag-triggered publish pipeline |
+| `.github/workflows/release.yml` | Tag-triggered publish pipeline; calls the two workflows below |
+| `.github/workflows/pip-release.yml` | Python wheels + sdists; also the merge-queue build check |
+| `.github/workflows/publish-c-cpp-libraries.yml` | C/C++ library archives |
+| `scripts/release/verify-release.py` | Completeness gate — reads back what a release actually published |
+| `scripts/qa/publish-graph.sh` | Static publish-graph rules, run in PR CI (`make qa-publish-graph`) |
 
 ### Required GitHub secrets
 
 - `CARGO_REGISTRY_TOKEN`: crates.io API token
-- PyPI: configure [OIDC trusted publishing](https://docs.pypi.org/trusted-publishers/) for the `pypi` environment (no secret needed)
+- `PYPI_PASS`: PyPI API token, used by `pip-release.yml` for both `dora-rs` and `dora-rs-cli`. Keyless [OIDC trusted publishing](https://docs.pypi.org/trusted-publishers/) needs a publisher registered on PyPI first; the exchange fails with `invalid-publisher` until one is. To switch, register a publisher for workflow `pip-release.yml` and environment `pypi`, then swap `MATURIN_PYPI_TOKEN` for the OIDC action.

@@ -19,6 +19,12 @@ impl IntoArrow for bool {
     }
 }
 
+impl IntoArrow for Vec<bool> {
+    fn into_arrow(self) -> DoraArray {
+        wrap(arrow::array::BooleanArray::from(self))
+    }
+}
+
 macro_rules! impl_into_arrow {
     ($($t:ty => $arrow_type:ty),*) => {
         $(
@@ -130,6 +136,21 @@ mod tests {
             .downcast_ref::<TimestampNanosecondArray>()
             .expect("timestamp array")
             .value(0)
+    }
+
+    #[test]
+    fn vec_bool_into_arrow_roundtrips() {
+        use arrow::array::BooleanArray;
+        let values = vec![true, false, true, true];
+        let arr = values.clone().into_arrow();
+        let boolean = crate::internal::array_ref(&arr)
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .expect("boolean array");
+        assert_eq!(boolean.len(), values.len());
+        assert_eq!(boolean.null_count(), 0);
+        let got: Vec<bool> = (0..boolean.len()).map(|i| boolean.value(i)).collect();
+        assert_eq!(got, values);
     }
 
     #[test]

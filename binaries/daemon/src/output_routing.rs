@@ -9,29 +9,52 @@
 //! (`dora_message::daemon_to_node::NodeConfig`).
 //!
 //! Policy (see the `OutputRouting` docs for the consumer-side contract):
-//! - a consumer under **another daemon** pins the output to the daemon path
-//!   (`daemon_only`): the node-to-node zenoh mesh is same-machine only, and
-//!   only daemon-path sends feed the inter-daemon forwarder (dora #2738).
-//!   This holds for dynamic remote consumers too — they can only ever be
-//!   reached through forwarding.
-//! - a **local static** consumer becomes a required acker: the producer keeps
-//!   the output on the lossless daemon path until this consumer's startup ack
-//!   proves the direct zenoh route end-to-end. The producer gives that proof a
-//!   bounded startup window and pins the output to the daemon path for the run
-//!   if it does not arrive in time, so adding a required acker that is slow to
-//!   answer costs the fast path rather than reordering a live topic
-//!   (dora-rs/dora#2891).
+//! - a consumer declaring **backpressure** pins the output to the daemon path.
+//!   Direct zenoh callbacks `try_send` into the receiver's shared ingress
+//!   channel and drop when it is full, before the per-input scheduler ever
+//!   sees the event, so a timer or a busier input can discard a backpressure
+//!   input outright. The daemon path feeds that channel with a blocking send,
+//!   and when the receiver's per-node channel is full too, the producer's
+//!   listener holds the producer's send until there is room
+//!   (`DeferredDelivery` in `local_delivery.rs`, [`backpressured_outputs`]),
+//!   so a local producer stalls rather than loses the message. Cross-daemon
+//!   forwarding is still a bounded `try_send`: a remote producer cannot be
+//!   held, so that drop is counted and logged instead. The pin applies to
+//!   every fan-out consumer of the output, and the daemon path carries the
+//!   daemon message size limit.
+//! - a **static** consumer becomes a required acker, wherever it runs: the
+//!   producer keeps the output on the lossless daemon path until this
+//!   consumer's startup ack proves the direct zenoh route end-to-end. The
+//!   producer gives that proof a bounded startup window and pins the output to
+//!   the daemon path for the run if it does not arrive in time, so adding a
+//!   required acker that is slow to answer costs the fast path rather than
+//!   reordering a live topic (dora-rs/dora#2891).
+//! - a **remote static** consumer only qualifies when its producer has an
+//!   endpoint that consumer's machine can dial — `routable_producers`, decided
+//!   by `spawn::reserve_node_listeners`. Without one there is no route to
+//!   prove, so waiting for an ack that cannot come would spend a whole startup
+//!   window before falling back to where the output belonged all along:
+//!   `daemon_only`.
+//! - a consumer under another daemon that is **dynamic** pins the output to the
+//!   daemon path unconditionally: it joins at an arbitrary time, so no endpoint
+//!   can be planned for it and only forwarding can ever reach it.
 //! - **local dynamic** consumers are neither: they join at arbitrary times (or
 //!   never), so nothing may wait on them, and their pre-join messages are
 //!   inherently out of scope.
 //!
-//! When cross-machine node-to-node zenoh lands, only this policy changes:
-//! remote static consumers become required ackers instead of forcing
-//! `daemon_only`, and a fully-acked output goes pure-zenoh across machines.
+//! A remote static consumer that acks takes its edge off the daemon path
+//! entirely — producer node to consumer node, one zenoh hop, no daemon on
+//! either side of the wire. Note that `daemon_only` remains sticky per
+//! *output*, not per consumer: an output with a remote dynamic consumer stays
+//! pinned for all of them, because only daemon-path sends feed the inter-daemon
+//! forwarder (dora #2738).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use dora_core::{config::InputMapping, descriptor::ResolvedNode};
+use dora_core::{
+    config::{Input, InputMapping},
+    descriptor::ResolvedNode,
+};
 use dora_message::{
     daemon_to_node::{OutputRouting, RequiredAcker},
     id::{DataId, NodeId},
@@ -39,17 +62,85 @@ use dora_message::{
 
 use crate::{CoreNodeKindExt, OutputId, node_inputs};
 
+/// Whether an input declares `queue_policy: backpressure` — the one input
+/// policy that decides routing. Single definition so the spawn-time routing,
+/// the live-dataflow routing and the add/replace admission check cannot drift.
+pub fn input_is_backpressure(input: &Input) -> bool {
+    input.queue_policy == Some(dora_message::config::QueuePolicy::Backpressure)
+}
+
+/// The outputs of every producer in `nodes` that feed at least one
+/// `queue_policy: backpressure` input of a consumer accepted by `consumers`,
+/// keyed by producer. With every consumer, these are the outputs a
+/// producer's listener asks the daemon loop to hand back rather than drop
+/// (`DeferredDelivery`); with only the consumers on other daemons, the
+/// outputs whose cross-daemon forward must not be lost quietly. Producers on
+/// other daemons are included and simply never looked up.
+pub fn backpressured_outputs(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+    consumers: impl Fn(&NodeId) -> bool,
+) -> BTreeMap<NodeId, BTreeSet<DataId>> {
+    let mut outputs: BTreeMap<NodeId, BTreeSet<DataId>> = BTreeMap::new();
+    for consumer in nodes.values().filter(|consumer| consumers(&consumer.id)) {
+        for (_, input) in node_inputs(consumer) {
+            if !input_is_backpressure(&input) {
+                continue;
+            }
+            let InputMapping::User(mapping) = input.mapping else {
+                continue;
+            };
+            outputs
+                .entry(mapping.source)
+                .or_default()
+                .insert(mapping.output);
+        }
+    }
+    outputs
+}
+
+/// [`backpressured_outputs`] for one node entering a running dataflow, judged
+/// from the live routing table: the outputs among `outputs` with a current
+/// receiver whose input `requires_backpressure`. A backpressure consumer
+/// added *later* behind a running producer is not in that producer's set:
+/// `unpinnable_backpressure_input` refuses it unless the output is already
+/// on the daemon path, and in that case its overflow is a counted drop
+/// rather than a held producer.
+pub fn added_node_backpressured_outputs(
+    node_id: &NodeId,
+    outputs: &BTreeSet<DataId>,
+    mappings: &HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
+    requires_backpressure: impl Fn(&NodeId, &DataId) -> bool,
+) -> BTreeSet<DataId> {
+    outputs
+        .iter()
+        .filter(|output_id| {
+            mappings
+                .get(&OutputId(node_id.clone(), (*output_id).clone()))
+                .is_some_and(|receivers| {
+                    receivers
+                        .iter()
+                        .any(|(receiver, input_id)| requires_backpressure(receiver, input_id))
+                })
+        })
+        .cloned()
+        .collect()
+}
+
 /// Computes the per-output routing for every producer in `local_nodes`, from
 /// the full resolved node set of the dataflow.
 ///
 /// Every declared output of a local producer gets an entry (a zero-consumer
 /// output resolves to the default routing: no pin, no required ackers — the
 /// producer may use the direct zenoh path immediately). Consumers of remote
-/// producers are ignored here; the remote producer's own daemon sees those
-/// consumers as non-local and pins the output on its side.
+/// producers are ignored here; the remote producer's own daemon decides those.
+///
+/// `routable_producers` are the local nodes that were given an endpoint
+/// reachable from other machines, which is what makes a *remote* consumer's
+/// direct route possible at all.
 pub fn compute_output_routing(
     nodes: &BTreeMap<NodeId, ResolvedNode>,
     local_nodes: &BTreeSet<NodeId>,
+    routable_producers: &BTreeSet<NodeId>,
 ) -> BTreeMap<NodeId, BTreeMap<DataId, OutputRouting>> {
     let mut routing: BTreeMap<NodeId, BTreeMap<DataId, OutputRouting>> = local_nodes
         .iter()
@@ -70,6 +161,10 @@ pub fn compute_output_routing(
         let consumer_local = local_nodes.contains(&consumer.id);
         let consumer_dynamic = consumer.kind.dynamic();
         for (input_id, input) in node_inputs(consumer) {
+            // A liveness deadline on a *remote* input is only fed by the
+            // daemon path (see the `daemon_only` reasoning below).
+            let watches_liveness = input.input_timeout.is_some();
+            let requires_backpressure = input_is_backpressure(&input);
             let InputMapping::User(mapping) = input.mapping else {
                 continue;
             };
@@ -82,13 +177,43 @@ pub fn compute_output_routing(
             let Some(entry) = outputs.get_mut(&mapping.output) else {
                 continue;
             };
-            if !consumer_local {
+            if requires_backpressure {
                 entry.daemon_only = true;
-            } else if !consumer_dynamic {
+                continue;
+            }
+            // A dynamic consumer is never an acker — nothing may wait on a node
+            // that may never join — and a *remote* one additionally pins the
+            // output, since forwarding is the only way to reach it.
+            if consumer_dynamic {
+                if !consumer_local {
+                    entry.daemon_only = true;
+                }
+            } else if consumer_local
+                || (routable_producers.contains(&mapping.source) && !watches_liveness)
+            {
                 entry.required_ackers.insert(RequiredAcker {
                     node_id: consumer.id.clone(),
                     input_id,
                 });
+            } else {
+                // Two reasons to pin a remote static consumer's output.
+                //
+                // No dialable producer endpoint: there is no direct route to
+                // prove, so pinning beats spending a startup window waiting for
+                // an ack that cannot arrive.
+                //
+                // Or the consumer declares an `input_timeout`: its deadline is
+                // armed unfired and refreshed only when its *own* daemon sees
+                // the message — either delivering it (`send_output_to_local_
+                // receivers`) or being told about it by a local producer
+                // (`note_output_sent_to_local_receivers`, which walks local
+                // mappings only). A direct cross-machine send reaches neither,
+                // so `last_received` would stay `None`, the deadline would
+                // never fire, and `input_timeout` — plus the circuit breaker
+                // built on it — would silently stop working on exactly the
+                // edges most likely to need it. The fast path is not worth a
+                // liveness guarantee the descriptor asked for.
+                entry.daemon_only = true;
             }
         }
     }
@@ -106,12 +231,15 @@ pub fn compute_output_routing(
 /// only be wired via `dora node connect` (`AddMapping`), and connect-edges
 /// deliver solely on the daemon path — a direct-zenoh output would starve
 /// them (the consumer has no zenoh subscriber for a source it didn't declare).
+/// Live input policies also retain a backpressure consumer's daemon-route pin
+/// when its producer is added again or replaced.
 pub fn added_node_output_routing(
     node_id: &NodeId,
     outputs: BTreeSet<DataId>,
     mappings: &HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
     open_external_mappings: &BTreeSet<OutputId>,
     dynamic_nodes: &BTreeSet<NodeId>,
+    requires_backpressure: impl Fn(&NodeId, &DataId) -> bool,
 ) -> BTreeMap<DataId, OutputRouting> {
     outputs
         .into_iter()
@@ -127,6 +255,10 @@ pub fn added_node_output_routing(
             {
                 Some(receivers) => {
                     for (receiver, input_id) in receivers {
+                        if requires_backpressure(receiver, input_id) {
+                            routing.daemon_only = true;
+                            continue;
+                        }
                         if !dynamic_nodes.contains(receiver) {
                             routing.required_ackers.insert(RequiredAcker {
                                 node_id: receiver.clone(),
@@ -144,14 +276,49 @@ pub fn added_node_output_routing(
         .collect()
 }
 
+/// Pins the outputs a node feeds back into itself through a backpressure
+/// input. [`added_node_output_routing`] works from the live mappings, and a
+/// node entering the dataflow has none of its own yet — they are installed
+/// after its spawn succeeds — so its self-loops are invisible there. Any
+/// other consumer's policy is already in the live state; only the node's own
+/// inputs need this pass.
+pub fn pin_backpressure_self_loops(
+    node_id: &NodeId,
+    inputs: &BTreeMap<DataId, Input>,
+    routing: &mut BTreeMap<DataId, OutputRouting>,
+) {
+    for input in inputs.values().filter(|input| input_is_backpressure(input)) {
+        let InputMapping::User(mapping) = &input.mapping else {
+            continue;
+        };
+        if &mapping.source != node_id {
+            continue;
+        }
+        if let Some(entry) = routing.get_mut(&mapping.output) {
+            entry.daemon_only = true;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use dora_core::descriptor::{Descriptor, DescriptorExt};
+    use dora_message::config::QueuePolicy;
 
+    /// Routing where every local producer is dialable from other machines —
+    /// the state after a successful endpoint exchange.
     fn routing_for(
         yaml: &str,
         local: &[&str],
+    ) -> BTreeMap<NodeId, BTreeMap<DataId, OutputRouting>> {
+        routing_with_routable(yaml, local, local)
+    }
+
+    fn routing_with_routable(
+        yaml: &str,
+        local: &[&str],
+        routable: &[&str],
     ) -> BTreeMap<NodeId, BTreeMap<DataId, OutputRouting>> {
         let descriptor: Descriptor = serde_yaml::from_str(yaml).expect("parse descriptor");
         let nodes = descriptor
@@ -161,7 +328,233 @@ mod tests {
             .iter()
             .map(|id| NodeId::from(id.to_string()))
             .collect();
-        compute_output_routing(&nodes, &local_nodes)
+        let routable_producers: BTreeSet<NodeId> = routable
+            .iter()
+            .map(|id| NodeId::from(id.to_string()))
+            .collect();
+        compute_output_routing(&nodes, &local_nodes, &routable_producers)
+    }
+
+    /// `backpressured_outputs` names exactly the outputs with a backpressure
+    /// consumer, keyed by producer, whatever else consumes them.
+    #[test]
+    fn backpressured_outputs_are_keyed_by_producer() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: source
+    path: ./source
+    outputs: [image, depth, unconsumed]
+  - id: viewer
+    path: ./viewer
+    inputs:
+      camera: source/image
+  - id: recorder
+    path: ./recorder
+    inputs:
+      camera:
+        source: source/image
+        queue_policy: backpressure
+      depth:
+        source: source/depth
+        queue_policy: drop_oldest
+  - id: other
+    path: ./other
+    outputs: [status]
+"#,
+        )
+        .expect("parse descriptor");
+        let nodes = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("resolve descriptor");
+        let outputs = backpressured_outputs(&nodes, |_| true);
+        assert_eq!(
+            outputs,
+            BTreeMap::from([(
+                NodeId::from("source".to_string()),
+                BTreeSet::from([DataId::from("image".to_string())]),
+            )]),
+            "only `image` has a backpressure consumer; `depth` (drop_oldest), `unconsumed` \
+             and the consumer-less `other` node must not appear"
+        );
+        assert!(
+            backpressured_outputs(&nodes, |consumer| consumer.as_ref() != "recorder").is_empty(),
+            "the consumer filter decides which inputs count"
+        );
+    }
+
+    /// The live variant reads the routing table and the caller's policy
+    /// predicate, for a node added to a running dataflow.
+    #[test]
+    fn added_node_backpressured_outputs_follow_the_live_receivers() {
+        let source = NodeId::from("source".to_string());
+        let image = DataId::from("image".to_string());
+        let depth = DataId::from("depth".to_string());
+        let recorder = NodeId::from("recorder".to_string());
+        let viewer = NodeId::from("viewer".to_string());
+        let camera = DataId::from("camera".to_string());
+        let mappings = HashMap::from([
+            (
+                OutputId(source.clone(), image.clone()),
+                BTreeSet::from([
+                    (viewer.clone(), camera.clone()),
+                    (recorder.clone(), camera.clone()),
+                ]),
+            ),
+            (
+                OutputId(source.clone(), depth.clone()),
+                BTreeSet::from([(recorder.clone(), depth.clone())]),
+            ),
+        ]);
+        let outputs = added_node_backpressured_outputs(
+            &source,
+            &BTreeSet::from([
+                image.clone(),
+                depth.clone(),
+                DataId::from("unconsumed".to_string()),
+            ]),
+            &mappings,
+            |receiver, input_id| *receiver == recorder && *input_id == camera,
+        );
+        assert_eq!(outputs, BTreeSet::from([image]));
+    }
+
+    #[test]
+    fn backpressure_consumers_pin_the_output_for_every_placement() {
+        for dynamic in [false, true] {
+            for local_consumer in [false, true] {
+                for policy in ["drop_oldest", "backpressure"] {
+                    let path = if dynamic { "dynamic" } else { "./sink" };
+                    let graph = format!(
+                        r#"
+nodes:
+  - id: source
+    path: ./source
+    outputs: [image, unconsumed]
+  - id: sink
+    path: {path}
+    inputs:
+      camera:
+        source: source/image
+        queue_policy: {policy}
+"#
+                    );
+                    let local = if local_consumer {
+                        vec!["source", "sink"]
+                    } else {
+                        vec!["source"]
+                    };
+                    let routing = routing_for(&graph, &local);
+                    assert_eq!(
+                        output(&routing, "source", "image").daemon_only,
+                        policy == "backpressure" || (dynamic && !local_consumer),
+                        "dynamic={dynamic}, local={local_consumer}, policy={policy}"
+                    );
+                    assert!(!output(&routing, "source", "unconsumed").daemon_only);
+                }
+            }
+        }
+    }
+
+    /// Fan-out with mixed policies: one backpressure consumer pins the output
+    /// for everyone, whichever order the consumers are visited in, and the
+    /// backpressure consumer itself is never registered as a startup acker
+    /// (a pinned output runs no handshake).
+    #[test]
+    fn a_backpressure_consumer_pins_a_mixed_fan_out_and_is_no_acker() {
+        for (first, second) in [("fast", "slow"), ("slow", "fast")] {
+            let yaml = format!(
+                r#"
+nodes:
+  - id: source
+    path: ./source
+    outputs: [image]
+  - id: {first}
+    path: ./{first}
+    inputs:
+      camera:
+        source: source/image
+        queue_policy: {}
+  - id: {second}
+    path: ./{second}
+    inputs:
+      camera:
+        source: source/image
+        queue_policy: {}
+"#,
+                if first == "slow" {
+                    "backpressure"
+                } else {
+                    "drop_oldest"
+                },
+                if second == "slow" {
+                    "backpressure"
+                } else {
+                    "drop_oldest"
+                },
+            );
+            let routing = routing_for(&yaml, &["source", "fast", "slow"]);
+            let out = output(&routing, "source", "image");
+            assert!(out.daemon_only, "order {first},{second}");
+            assert!(
+                out.required_ackers
+                    .iter()
+                    .all(|acker| acker.node_id.as_ref() != "slow"),
+                "the backpressure consumer is not an acker (order {first},{second})"
+            );
+        }
+    }
+
+    /// `dora node add`/`replace` compute routing from live mappings, which do
+    /// not yet contain the entering node's own edges; its backpressure
+    /// self-loops are pinned by a separate pass.
+    #[test]
+    fn a_readded_producer_pins_its_own_backpressure_self_loop() {
+        let node = NodeId::from("loop".to_string());
+        let mut routing = BTreeMap::from([
+            (
+                DataId::from("fed_back".to_string()),
+                OutputRouting::default(),
+            ),
+            (DataId::from("plain".to_string()), OutputRouting::default()),
+            (
+                DataId::from("dropping".to_string()),
+                OutputRouting::default(),
+            ),
+        ]);
+        let inputs = BTreeMap::from([
+            (
+                DataId::from("again".to_string()),
+                input_with_policy("loop", "fed_back", Some(QueuePolicy::Backpressure)),
+            ),
+            (
+                DataId::from("lossy".to_string()),
+                input_with_policy("loop", "dropping", Some(QueuePolicy::DropOldest)),
+            ),
+            (
+                DataId::from("other".to_string()),
+                input_with_policy("elsewhere", "plain", Some(QueuePolicy::Backpressure)),
+            ),
+        ]);
+        pin_backpressure_self_loops(&node, &inputs, &mut routing);
+        assert!(routing[&DataId::from("fed_back".to_string())].daemon_only);
+        assert!(!routing[&DataId::from("dropping".to_string())].daemon_only);
+        assert!(
+            !routing[&DataId::from("plain".to_string())].daemon_only,
+            "an input from another producer is that producer's business"
+        );
+    }
+
+    fn input_with_policy(source: &str, output: &str, policy: Option<QueuePolicy>) -> Input {
+        Input {
+            mapping: InputMapping::User(dora_message::config::UserInputMapping {
+                source: NodeId::from(source.to_string()),
+                output: DataId::from(output.to_string()),
+            }),
+            queue_size: None,
+            input_timeout: None,
+            queue_policy: policy,
+        }
     }
 
     fn acker(node: &str, input: &str) -> RequiredAcker {
@@ -244,20 +637,77 @@ nodes:
     }
 
     #[test]
-    fn remote_consumers_pin_daemon_only_static_or_dynamic() {
-        // Remote *static* consumer pins.
-        let routing = routing_for(CHAIN, &["source", "dynamic-sink"]);
-        assert!(output(&routing, "source", "image").daemon_only);
+    fn a_remote_static_consumer_acks_instead_of_pinning() {
+        // `static-sink` runs under another daemon and `source` is dialable from
+        // there, so the edge has a direct route to prove — the whole point of
+        // the cross-machine node mesh. Until it is proven the producer stays on
+        // the daemon path, so this is a fast path won, never a message lost.
+        let routing = routing_with_routable(CHAIN, &["source", "dynamic-sink"], &["source"]);
+        let image = output(&routing, "source", "image");
+        assert!(!image.daemon_only);
+        assert_eq!(
+            image.required_ackers,
+            BTreeSet::from([acker("static-sink", "camera")])
+        );
+    }
 
-        // Remote *dynamic* consumer pins too: a dynamic node on another daemon
-        // can only ever be reached through inter-daemon forwarding, which only
-        // daemon-path sends feed (#2738).
-        let routing = routing_for(CHAIN, &["source", "static-sink"]);
+    #[test]
+    fn a_remote_static_consumer_pins_when_its_producer_is_undialable() {
+        // No routable endpoint for `source` — a single-machine bind, or an
+        // endpoint exchange that timed out. There is no route to prove, and
+        // waiting for an ack that cannot arrive would burn a whole startup
+        // window before landing on the daemon path anyway.
+        let routing = routing_with_routable(CHAIN, &["source", "dynamic-sink"], &[]);
         let image = output(&routing, "source", "image");
         assert!(image.daemon_only);
-        // The local acker is still recorded accurately alongside the pin (the
-        // producer ignores ackers on pinned outputs today; the cross-machine
-        // follow-up flips this policy).
+        assert!(image.required_ackers.is_empty());
+    }
+
+    /// An `input_timeout` on a remote input is refreshed only when the
+    /// consumer's *own* daemon sees the message, and a direct cross-machine
+    /// send bypasses it. Taking the fast path would leave the deadline armed
+    /// but unfired forever — the descriptor asked for liveness detection, so
+    /// the daemon path wins.
+    #[test]
+    fn a_remote_consumer_watching_liveness_keeps_the_daemon_path() {
+        let yaml = r#"
+nodes:
+  - id: source
+    path: ./source
+    outputs:
+      - image
+  - id: watchful-sink
+    path: ./sink
+    inputs:
+      camera:
+        source: source/image
+        input_timeout: 5
+"#;
+        let routing = routing_with_routable(yaml, &["source"], &["source"]);
+        let image = output(&routing, "source", "image");
+        assert!(image.daemon_only);
+        assert!(image.required_ackers.is_empty());
+
+        // The same consumer on this machine is unaffected: its daemon is the
+        // one delivering (or being notified of) every message either way.
+        let routing = routing_with_routable(yaml, &["source", "watchful-sink"], &["source"]);
+        let image = output(&routing, "source", "image");
+        assert!(!image.daemon_only);
+        assert_eq!(
+            image.required_ackers,
+            BTreeSet::from([acker("watchful-sink", "camera")])
+        );
+    }
+
+    #[test]
+    fn a_remote_dynamic_consumer_still_pins() {
+        // A dynamic node on another daemon joins at an arbitrary time, so no
+        // endpoint can be planned for it and only inter-daemon forwarding can
+        // reach it — which only daemon-path sends feed (#2738).
+        let routing = routing_with_routable(CHAIN, &["source", "static-sink"], &["source"]);
+        let image = output(&routing, "source", "image");
+        assert!(image.daemon_only);
+        // The local acker is still recorded accurately alongside the pin.
         assert_eq!(
             image.required_ackers,
             BTreeSet::from([acker("static-sink", "camera")])
@@ -332,6 +782,7 @@ nodes:
             &HashMap::new(),
             &BTreeSet::new(),
             &BTreeSet::new(),
+            |_, _| false,
         );
         let out = routing.get(&DataId::from("out".to_string())).unwrap();
         assert!(out.daemon_only);
@@ -364,6 +815,7 @@ nodes:
             &mappings,
             &BTreeSet::new(),
             &dynamic_nodes,
+            |_, _| false,
         );
         let out = routing.get(&out_id).unwrap();
         assert!(!out.daemon_only);
@@ -375,6 +827,34 @@ nodes:
                 input_id: DataId::from("value".to_string()),
             }])
         );
+    }
+
+    #[test]
+    fn readded_producer_keeps_live_backpressure_consumers_on_daemon_route() {
+        let node = NodeId::from("source".to_string());
+        let out_id = DataId::from("image".to_string());
+        let sink = NodeId::from("sink".to_string());
+        let input = DataId::from("camera".to_string());
+        let mappings = HashMap::from([(
+            OutputId(node.clone(), out_id.clone()),
+            BTreeSet::from([(sink.clone(), input.clone())]),
+        )]);
+        for dynamic in [false, true] {
+            let dynamic_nodes = if dynamic {
+                BTreeSet::from([sink.clone()])
+            } else {
+                BTreeSet::new()
+            };
+            let routing = added_node_output_routing(
+                &node,
+                BTreeSet::from([out_id.clone()]),
+                &mappings,
+                &BTreeSet::new(),
+                &dynamic_nodes,
+                |receiver, id| receiver == &sink && id == &input,
+            );
+            assert!(routing.get(&out_id).unwrap().daemon_only);
+        }
     }
 
     #[test]
@@ -395,6 +875,7 @@ nodes:
             &mappings,
             &BTreeSet::from([output]),
             &BTreeSet::new(),
+            |_, _| false,
         );
         assert!(routing.get(&out_id).unwrap().daemon_only);
     }

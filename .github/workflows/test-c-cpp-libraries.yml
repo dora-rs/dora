@@ -196,11 +196,14 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        # SHA-pinned like the rest. The v1 tree makes `toolchain` a required
+        # input (the @stable *branch* defaulted it), hence naming it here.
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # v1
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Cache cargo target

@@ -154,6 +154,26 @@ Your user nodes never link against ROS2 -- all ROS2 communication is isolated in
 - **For action client**: A ROS2 action server must be running *before* starting the dataflow (no `wait_for_action_server` mechanism)
 - **For action server**: A ROS2 action client sends goals to the bridge (e.g., `ros2 action send_goal`)
 
+### Building for your ROS distro
+
+Published bridge builds target Humble. On another distro, build with the matching feature before running a dataflow, or the bridge logs `ROS_DISTRO='jazzy' but ros2-client was built for 'humble'`.
+
+The `ros2-humble` (default), `ros2-iron`, `ros2-jazzy`, and `ros2-kilted` features are a single choice for the whole build, not an additive set. `ros2-client` compiles for the newest distro feature it sees, so `ros2-jazzy` replaces Humble's 24-byte `Gid` with Jazzy's 16-byte one rather than adding Jazzy support alongside Humble, and no dora feature turns that back off. Because Cargo unifies `ros2-client`'s features across the whole build, enabling a newer distro in any other crate switches the bridge too -- including a crate that depends on `ros2-client` with its default features, since its own default is `jazzy`. Humble is only the floor the workspace pins, so there is no way to force exactly Humble. Nothing warns at build time; check the startup `ROS_DISTRO` log, which `ros2-client` logs as an error on a mismatch and as a warning when `ROS_DISTRO` is unset.
+
+- **YAML bridge**: `dora-ros2-bridge-node` isn't shipped with the CLI, so install it for your distro and keep it on `PATH` (the resolver spawns it by name):
+
+  ```bash
+  cargo install --git https://github.com/dora-rs/dora dora-ros2-bridge-node --features ros2-jazzy
+  ```
+
+- **In-process Python (`from dora import Ros2Context`)**: the `dora-rs` wheel links the bridge, so rebuild it with maturin:
+
+  ```bash
+  maturin build -m apis/python/node/Cargo.toml --features ros2-jazzy
+  ```
+
+- **C++ nodes**: `dora-node-api-cxx` has no `ros2-*` features of its own and gets the Humble default, so enable `dora-ros2-bridge/ros2-jazzy` directly to target another distro.
+
 ---
 
 ## Topic Bridge
@@ -222,14 +242,16 @@ Multi-topic mode supports up to 64 topics per bridge node.
 
 ### Input/Output ID Mapping
 
-By default, topic names are converted to Dora IDs by stripping the leading `/` and replacing remaining `/` with `_`:
+A topic name maps to a *derived* Dora ID by stripping the leading `/` and replacing remaining `/` with `_`:
 
-| ROS2 Topic | Default Dora ID |
+| ROS2 Topic | Derived Dora ID |
 |------------|------------------|
 | `/turtle1/pose` | `turtle1_pose` |
 | `/camera/image_raw` | `camera_image_raw` |
 
-In multi-topic mode, you can override this with explicit `output` (for subscribe) or `input` (for publish) fields. In single-topic mode, the node's declared `outputs` or `inputs` are used directly.
+In multi-topic mode, you can override this with explicit `output` (for subscribe) or `input` (for publish) fields; without an override the derived id must be one of the node's declared ports, or the dataflow is rejected.
+
+In single-topic mode there is no `output`/`input` field, so the node's declared port is used directly: `topic: /turtle1/pose` with `outputs: [pose]` binds to `pose`. When the node declares several ports the choice is ambiguous and the dataflow is rejected — unless one of them *is* the derived id, which then wins (so a bridge can still declare an extra `send_stdout_as` output). Use multi-topic mode with an explicit mapping when you need several ports and a custom name.
 
 ---
 
@@ -524,22 +546,30 @@ nodes:
 In multi-topic mode, each topic can override the bridge-level QoS:
 
 ```yaml
-ros2:
-  topics:
-    - topic: /fast_sensor
-      message_type: sensor_msgs/Imu
-      direction: subscribe
+nodes:
+  - id: sensor_bridge
+    ros2:
+      topics:
+        - topic: /fast_sensor
+          message_type: sensor_msgs/Imu
+          direction: subscribe
+          qos:
+            reliable: false          # override: best effort for this topic
+            keep_last: 1
+        - topic: /cmd
+          message_type: geometry_msgs/Twist
+          direction: publish
+          # inherits bridge-level QoS (reliable: true)
       qos:
-        reliable: false          # override: best effort for this topic
-        keep_last: 1
-    - topic: /cmd
-      message_type: geometry_msgs/Twist
-      direction: publish
-      # inherits bridge-level QoS (reliable: true)
-  qos:
-    reliable: true               # default for all topics
-    keep_last: 10
+        reliable: true               # default for all topics
+        keep_last: 10
+    inputs:
+      cmd: planner/cmd               # the `/cmd` publish topic's dora input
+    outputs:
+      - fast_sensor                  # the `/fast_sensor` subscribe topic's dora output
 ```
+
+Neither topic sets `output:`/`input:`, so both use the topic-derived ids (`fast_sensor`, `cmd`) — and, as everywhere else, those must be declared on the node or the config is rejected.
 
 ### Validation Rules
 

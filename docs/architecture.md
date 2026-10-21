@@ -378,18 +378,14 @@ pub struct NodeError {
 
 ### Apache Arrow
 
-All data payloads use Apache Arrow columnar format with 128-byte alignment. Arrow type information is carried in every message via `ArrowTypeInfo`:
+All data payloads use Apache Arrow columnar format with 128-byte alignment. The payload is a self-describing Arrow IPC stream, so the message carries no separate type descriptor — the `ArrowTypeInfo` sidecar that 0.x sent alongside every message was dropped in #2366.
+
+The framing is announced through a metadata parameter rather than a struct field:
 
 ```rust
-pub struct ArrowTypeInfo {
-    pub data_type: DataType,           // Arrow DataType
-    pub len: usize,
-    pub null_count: usize,
-    pub validity: Option<Vec<u8>>,     // null bitmap
-    pub offset: usize,
-    pub buffer_offsets: Vec<BufferOffset>,
-    pub child_data: Vec<ArrowTypeInfo>,  // recursive for nested types
-}
+pub const FRAMING: &str = "_framing";
+pub const FRAMING_ARROW_IPC: &str = "arrow-ipc";
+pub const SCHEMA_HASH: &str = "_schema_hash";   // internal; set by the schema-once path
 ```
 
 ### Metadata
@@ -398,12 +394,13 @@ Every message carries structured metadata:
 
 ```rust
 pub struct Metadata {
-    metadata_version: u16,
+    metadata_version: u16,                // Metadata::CURRENT_VERSION
     timestamp: uhlc::Timestamp,
-    pub type_info: ArrowTypeInfo,
     pub parameters: MetadataParameters,   // BTreeMap<String, Parameter>
 }
 ```
+
+`metadata_version` is bumped whenever the wire format changes shape: 0 to 1 when the `ArrowTypeInfo` sidecar was dropped, and 1 to 2 when the binary encoding moved from bincode to postcard. A receiver compares it against `Metadata::CURRENT_VERSION` to report an incompatible peer clearly instead of failing with a positional-deserialization error.
 
 ### Parameter Types
 
@@ -525,21 +522,15 @@ nodes:
       outputs:
         - detection
 
-  # Multi-operator runtime
+  # Operator list form (one operator per runtime node)
   - id: pipeline
     operators:
       - id: stage1
-        python: stage1.py
+        shared-library: target/release/libstage1.so
         inputs:
           data: source/output
         outputs:
           - intermediate
-      - id: stage2
-        shared-library: target/release/libstage2.so
-        inputs:
-          data: stage1/intermediate
-        outputs:
-          - final
 
   # ROS2 bridge
   - id: ros-input
@@ -616,7 +607,8 @@ pub enum RestartPolicy {
 - `restart_delay` — initial backoff in seconds (doubles each attempt)
 - `max_restart_delay` — caps exponential backoff
 - `restart_window` — reset counter after N seconds (enables "N restarts per M seconds")
-- `health_check_timeout` — kill node if no activity within this duration, measured only after the node connects (post-connection liveness, not a startup deadline)
+- `health_check_timeout` — kill node if no activity within this duration, measured only after the node connects (post-connection liveness)
+- `startup_timeout` — kill node if it fails to connect/subscribe within this duration after process spawn (startup deadline)
 
 ### Health Monitoring
 
@@ -760,7 +752,7 @@ impl<R: Read> RecordingReader<R> {
 **Distributed Tracing** (`dora-tracing`):
 - OpenTelemetry with OTLP exporter (compatible with Jaeger, Zipkin, Tempo)
 - Context propagation across nodes
-- Setup: `set_up_tracing(name: &str)`
+- Setup: `TracingBuilder::new(name)`, configured with its `with_*` methods, then `.build()`
 
 **Metrics** (`dora-metrics`):
 - System metrics via `sysinfo` (CPU, memory, disk)

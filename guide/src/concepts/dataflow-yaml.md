@@ -51,7 +51,7 @@ Every node requires an `id`. All other fields are optional (though most nodes ne
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | **Required.** Unique identifier. Must not contain `/`. Whitespace is discouraged |
+| `id` | string | **Required.** Unique identifier. Only ASCII letters, digits, `_`, `.` and `-` (no `/`, no whitespace); must not be empty, start with `.`, or be the reserved id `dora` |
 | `name` | string | Human-readable display name (metadata only, used in tooling and logs) |
 | `description` | string | Documentation string (metadata only, not used at runtime) |
 
@@ -277,7 +277,8 @@ For a complete guide to all logging features, see [Logging](logging.md).
 | `restart_delay` | float | -- | Initial backoff in seconds. Doubles each attempt |
 | `max_restart_delay` | float | -- | Cap for exponential backoff |
 | `restart_window` | float | -- | Time window for counting restarts. The counter resets after this many seconds since the first restart in the current window. Enables "N restarts per M seconds" semantics with `max_restarts` |
-| `health_check_timeout` | float | -- | If the node does not communicate with the daemon (send outputs, subscribe, etc.) for this many seconds, the daemon kills the process and evaluates the `restart_policy` |
+| `health_check_timeout` | float | -- | Once the node has connected (subscribed to events), if it then does not communicate with the daemon (send outputs, acknowledge ticks, etc.) for this many seconds, the daemon kills the process and evaluates the `restart_policy`. Covers **post-connection** liveness only |
+| `startup_timeout` | float | -- | If the node process fails to connect (subscribe to events) within this many seconds after process spawn, the daemon kills the process and evaluates the `restart_policy`. Bounds startup/initialization time. Evaluated on each `health_check_interval` tick (default 5s) |
 
 Restart policies:
 
@@ -363,13 +364,14 @@ The `id` field is optional for single operators (defaults to the node `id`):
       - bbox
 ```
 
-### Multiple Operators
+### The `operators` List
 
-Each operator in `operators` **requires** a unique `id`:
+`operators` is the list form of `operator`. Its entry **requires** an `id`, which becomes part of every reference to its outputs (`<node>/<operator>/<output>`).
 
+A runtime node holds exactly one operator: the operator runtime refuses to start with zero or several, so validation rejects such a node. To run several operators, give each one its own node:
 
 ```yaml
-- id: runtime-node
+- id: preprocess
   operators:
     - id: preprocessor
       shared-library: ../../target/debug/libpreprocess
@@ -377,10 +379,12 @@ Each operator in `operators` **requires** a unique `id`:
         raw: sensor/data
       outputs:
         - processed
+- id: analyze
+  operators:
     - id: analyzer
       shared-library: ../../target/debug/libanalyze
       inputs:
-        data: runtime-node/preprocessor/processed
+        data: preprocess/preprocessor/processed
       outputs:
         - result
 ```

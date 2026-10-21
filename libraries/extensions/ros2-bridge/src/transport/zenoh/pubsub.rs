@@ -349,7 +349,7 @@ impl<T: Send + 'static> RawSubscription<T> {
         let key = zenoh::key_expr::OwnedKeyExpr::try_from(key.to_owned())
             .map_err(|error| PubSubError::Session(error.to_string()))?;
         let builder = session.declare_subscriber(key).callback(move |sample| {
-            if std::env::var_os("DORA_ROS2_ZENOH_TRACE").is_some() {
+            if super::trace_enabled() {
                 eprintln!(
                     "rmw_zenoh data sample: key={} payload={} attachment={}",
                     sample.key_expr(),
@@ -364,7 +364,7 @@ impl<T: Send + 'static> RawSubscription<T> {
             let attachment = attachment.to_bytes();
             let payload = sample.payload().to_bytes();
             if let Err(error) = callback_ingress.ingest(attachment.as_ref(), payload.as_ref())
-                && std::env::var_os("DORA_ROS2_ZENOH_TRACE").is_some()
+                && super::trace_enabled()
             {
                 eprintln!("rmw_zenoh data sample rejected: {error}");
             }

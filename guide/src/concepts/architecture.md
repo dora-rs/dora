@@ -495,21 +495,15 @@ nodes:
       outputs:
         - detection
 
-  # Multi-operator runtime
+  # Operator list form (one operator per runtime node)
   - id: pipeline
     operators:
       - id: stage1
-        python: stage1.py
+        shared-library: target/release/libstage1.so
         inputs:
           data: source/output
         outputs:
           - intermediate
-      - id: stage2
-        shared-library: target/release/libstage2.so
-        inputs:
-          data: stage1/intermediate
-        outputs:
-          - final
 
   # ROS2 bridge
   - id: ros-input
@@ -730,7 +724,7 @@ impl<R: Read> RecordingReader<R> {
 **Distributed Tracing** (`dora-tracing`):
 - OpenTelemetry with OTLP exporter (compatible with Jaeger, Zipkin, Tempo)
 - Context propagation across nodes
-- Setup: `set_up_tracing(name: &str)`
+- Setup: `TracingBuilder::new(name)`, configured with its `with_*` methods, then `.build()`
 
 **Metrics** (`dora-metrics`):
 - System metrics via `sysinfo` (CPU, memory, disk)

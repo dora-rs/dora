@@ -53,14 +53,18 @@ pub fn default_for_member(
             Some(array.size),
         )?,
         MemberType::Sequence(seq) => {
-            list_default_values(m, &seq.value_type, package_name, messages, None)?
+            // A variable-length sequence default-constructs *empty*; never
+            // invent elements for it (dora-rs/dora#3499).
+            list_default_values(m, &seq.value_type, package_name, messages, Some(0))?
         }
         MemberType::BoundedSequence(seq) => list_default_values(
             m,
             &seq.value_type,
             package_name,
             messages,
-            Some(seq.max_size),
+            // A bounded sequence also defaults to empty, not to `max_size`
+            // zero elements (dora-rs/dora#3499).
+            Some(0),
         )?,
     };
     Ok(value)
@@ -317,7 +321,9 @@ mod tests {
     use dora_ros2_bridge_msg_gen::types::{
         Member, MemberType, Message,
         primitives::{GenericString, NamedType, NestableType},
-        sequences::Array as ArrayType,
+        sequences::{
+            Array as ArrayType, BoundedSequence as BoundedSequenceType, Sequence as SequenceType,
+        },
     };
 
     use super::*;
@@ -484,5 +490,120 @@ mod tests {
             2,
             "inner struct default must hold N rows"
         );
+    }
+
+    fn sequence_member(value_type: NestableType) -> Member {
+        Member {
+            name: "field".to_string(),
+            r#type: MemberType::Sequence(SequenceType { value_type }),
+            default: None,
+        }
+    }
+
+    fn bounded_sequence_member(value_type: NestableType, max_size: usize) -> Member {
+        Member {
+            name: "field".to_string(),
+            r#type: MemberType::BoundedSequence(BoundedSequenceType {
+                value_type,
+                max_size,
+            }),
+            default: None,
+        }
+    }
+
+    /// #3499: an omitted unbounded `Sequence` (`int32[]`) must default to an
+    /// empty sequence — it previously synthesized a fabricated 1-element
+    /// `[0]` default, putting on the wire an element the producer never sent.
+    #[test]
+    fn absent_unbounded_sequence_default_is_empty() {
+        let member = sequence_member(NestableType::BasicType(
+            dora_ros2_bridge_msg_gen::types::primitives::BasicType::I32,
+        ));
+        let messages = HashMap::new();
+        let data = default_for_member(&member, "test_pkg", &messages).unwrap();
+        let list = make_array(data);
+        let list = list.as_list::<i32>();
+        assert_eq!(list.len(), 1, "sequence default is a single-element list");
+        assert_eq!(
+            list.value(0).len(),
+            0,
+            "omitted unbounded sequence must default to empty"
+        );
+    }
+
+    /// #3499: an omitted `BoundedSequence` (`uint8[<=4]`) must default to an
+    /// empty sequence — it previously synthesized a `max_size`-element
+    /// `[0, 0, 0, 0]` default.
+    #[test]
+    fn absent_bounded_sequence_default_is_empty() {
+        let member = bounded_sequence_member(
+            NestableType::BasicType(dora_ros2_bridge_msg_gen::types::primitives::BasicType::U8),
+            4,
+        );
+        let messages = HashMap::new();
+        let data = default_for_member(&member, "test_pkg", &messages).unwrap();
+        let list = make_array(data);
+        let list = list.as_list::<i32>();
+        assert_eq!(list.len(), 1, "sequence default is a single-element list");
+        assert_eq!(
+            list.value(0).len(),
+            0,
+            "omitted bounded sequence must default to empty"
+        );
+    }
+
+    /// End-to-end (#3499): an Arrow input that omits an `int32[]` field and a
+    /// `uint8[<=4]` field must serialize each as `[u32 0]` (empty sequence),
+    /// not `[u32 1][0]` / `[u32 4][0 0 0 0]`.
+    #[test]
+    fn omitted_sequence_fields_serialize_empty() {
+        use std::borrow::Cow;
+
+        use arrow::array::{ArrayRef, StructArray};
+        use byteorder::LittleEndian;
+        use dora_ros2_bridge_msg_gen::types::primitives::BasicType;
+
+        let message = Message {
+            package: "test_pkg".to_string(),
+            name: "M".to_string(),
+            members: vec![
+                Member {
+                    name: "unbounded".to_string(),
+                    r#type: MemberType::Sequence(SequenceType {
+                        value_type: NestableType::BasicType(BasicType::I32),
+                    }),
+                    default: None,
+                },
+                Member {
+                    name: "bounded".to_string(),
+                    r#type: MemberType::BoundedSequence(BoundedSequenceType {
+                        value_type: NestableType::BasicType(BasicType::U8),
+                        max_size: 4,
+                    }),
+                    default: None,
+                },
+            ],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("M".to_string(), message);
+        let mut messages = HashMap::new();
+        messages.insert("test_pkg".to_string(), package);
+
+        // Length-1 struct with no columns => every field uses its default.
+        let value: ArrayRef = Arc::new(StructArray::new_empty_fields(1, None));
+        let type_info = crate::TypeInfo {
+            package_name: Cow::Borrowed("test_pkg"),
+            message_name: Cow::Borrowed("M"),
+            messages: Arc::new(messages),
+        };
+        let typed = crate::serialize::TypedValue {
+            value: &value,
+            type_info: &type_info,
+        };
+        let bytes = cdr_encoding::to_vec::<_, LittleEndian>(&typed)
+            .expect("omitted sequence fields must serialize");
+        // Each sequence serializes as a u32 length prefix of 0 and no elements.
+        assert_eq!(bytes, vec![0u8, 0, 0, 0, 0, 0, 0, 0]);
     }
 }

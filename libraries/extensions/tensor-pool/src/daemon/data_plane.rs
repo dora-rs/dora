@@ -120,12 +120,14 @@ pub(crate) async fn serve_cross_data_frame(
     match frame {
         Ok(Some((dataflow_id, shared_memory_id, seq))) => {
             // Remote commit ack via zenoh (the origin's pending reply
-            // waits on it).
+            // waits on it), addressed to the pool's origin.
+            let origin_machine =
+                tensor_pool.cross_peer(&dataflow_id.to_string(), &shared_memory_id);
             publish_pool_message(
                 session,
                 clock,
                 &dataflow_id,
-                None,
+                origin_machine.as_deref(),
                 &PeerMessage::WriteAck {
                     shared_memory_id,
                     seq,
@@ -149,7 +151,9 @@ pub(crate) async fn serve_cross_data_frame(
                     session,
                     clock,
                     &dataflow_id,
-                    None,
+                    tensor_pool
+                        .cross_peer(&dataflow_id.to_string(), &shared_memory_id)
+                        .as_deref(),
                     &PeerMessage::WriteAck {
                         shared_memory_id,
                         seq,
@@ -322,14 +326,13 @@ pub(crate) async fn handle_cross_data_frame(
         // even generation over a truncated tensor that readers accept as
         // complete (the segment-length bound alone cannot catch it, since
         // the segment is created at the registered size + header).
-        let registered_size = {
-            let json_len = unsafe { read_header_u64(shmem_ptr.add(8)) } as usize;
-            let json_bytes =
-                unsafe { std::slice::from_raw_parts(shmem_ptr.add(DORADMA_HEADER_SIZE), json_len) };
-            serde_json::from_slice::<serde_json::Value>(json_bytes)
-                .ok()
-                .and_then(|v| v.get("size").and_then(|s| s.as_u64()))
-                .unwrap_or(0) as usize
+        let Some(registered_size) = read_registered_size(shmem_ptr, shmem.len()) else {
+            return Err(CrossFrameError::with_ack(
+                format!("{shared_memory_id} header JSON length exceeds segment"),
+                dataflow_id,
+                shared_memory_id.clone(),
+                seq,
+            ));
         };
         if size != registered_size {
             return Err(CrossFrameError::with_ack(
@@ -386,6 +389,26 @@ pub(crate) async fn handle_cross_data_frame(
     Ok(Some((dataflow_id, shared_memory_id, seq)))
 }
 
+/// Whether a pooled direct-TCP data connection can still carry a frame.
+///
+/// The mirror never writes on a data connection after the auth handshake,
+/// so a socket that has become readable means the peer closed (EOF) or
+/// reset it: typically the mirror's `CROSS_DATA_READ_TIMEOUT` firing on a
+/// connection that sat idle between writes, or a mirror daemon restart.
+/// Writing a frame that fits in the send buffer into such a half-closed
+/// socket still succeeds locally, so reusing it loses the frame without an
+/// error, nothing falls back to the relay, and the node's write waits out
+/// the whole ack timeout.
+fn pooled_conn_is_open(stream: &tokio::net::TcpStream) -> bool {
+    let mut probe = [0u8; 1];
+    // `WouldBlock` is the only answer from a live, quiet connection: `Ok(0)`
+    // is EOF, `Ok(_)` is bytes the protocol never sends, `Err(_)` is a reset.
+    matches!(
+        stream.try_read(&mut probe),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+    )
+}
+
 /// Send one direct-TCP data frame to a peer's data listener (origin side).
 /// Reuses a persistent connection per endpoint; a dead connection is
 /// dropped and re-established lazily. The connection is taken out of the
@@ -410,7 +433,8 @@ pub(crate) async fn send_cross_data_frame(
         let existing = conns
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&endpoint);
+            .remove(&endpoint)
+            .filter(pooled_conn_is_open);
         match existing {
             Some(stream) => stream,
             None => {

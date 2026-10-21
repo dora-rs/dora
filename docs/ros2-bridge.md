@@ -172,14 +172,16 @@ Multi-topic mode supports up to 64 topics per bridge node.
 
 ### Input/Output ID Mapping
 
-By default, topic names are converted to Dora IDs by stripping the leading `/` and replacing remaining `/` with `_`:
+A topic name maps to a *derived* Dora ID by stripping the leading `/` and replacing remaining `/` with `_`:
 
-| ROS2 Topic | Default Dora ID |
+| ROS2 Topic | Derived Dora ID |
 |------------|------------------|
 | `/turtle1/pose` | `turtle1_pose` |
 | `/camera/image_raw` | `camera_image_raw` |
 
-In multi-topic mode, you can override this with explicit `output` (for subscribe) or `input` (for publish) fields. In single-topic mode, the node's declared `outputs` or `inputs` are used directly.
+In multi-topic mode, you can override this with explicit `output` (for subscribe) or `input` (for publish) fields; without an override the derived id must be one of the node's declared ports, or the dataflow is rejected.
+
+In single-topic mode there is no `output`/`input` field, so the node's declared port is used directly: `topic: /turtle1/pose` with `outputs: [pose]` binds to `pose`. When the node declares several ports the choice is ambiguous and the dataflow is rejected — unless one of them *is* the derived id, which then wins (so a bridge can still declare an extra `send_stdout_as` output). Use multi-topic mode with an explicit mapping when you need several ports and a custom name.
 
 ---
 
@@ -474,22 +476,30 @@ nodes:
 In multi-topic mode, each topic can override the bridge-level QoS:
 
 ```yaml
-ros2:
-  topics:
-    - topic: /fast_sensor
-      message_type: sensor_msgs/Imu
-      direction: subscribe
+nodes:
+  - id: sensor_bridge
+    ros2:
+      topics:
+        - topic: /fast_sensor
+          message_type: sensor_msgs/Imu
+          direction: subscribe
+          qos:
+            reliable: false          # override: best effort for this topic
+            keep_last: 1
+        - topic: /cmd
+          message_type: geometry_msgs/Twist
+          direction: publish
+          # inherits bridge-level QoS (reliable: true)
       qos:
-        reliable: false          # override: best effort for this topic
-        keep_last: 1
-    - topic: /cmd
-      message_type: geometry_msgs/Twist
-      direction: publish
-      # inherits bridge-level QoS (reliable: true)
-  qos:
-    reliable: true               # default for all topics
-    keep_last: 10
+        reliable: true               # default for all topics
+        keep_last: 10
+    inputs:
+      cmd: planner/cmd               # the `/cmd` publish topic's dora input
+    outputs:
+      - fast_sensor                  # the `/fast_sensor` subscribe topic's dora output
 ```
+
+Neither topic sets `output:`/`input:`, so both use the topic-derived ids (`fast_sensor`, `cmd`) — and, as everywhere else, those must be declared on the node or the config is rejected.
 
 ### Validation Rules
 
@@ -1036,12 +1046,14 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 (notably: the Python action client/server *do* support cancel).
 
 - **Action server auto-accept**: All incoming goals are automatically accepted. The handler cannot reject goals before execution starts.
+- **DDS domain range**: `ROS_DOMAIN_ID` values from 0 through 232 are supported. An invalid or out-of-range value logs a warning and uses domain 0.
 - **No action cancel support (YAML bridge)**: The YAML action bridge does not handle ROS2 cancel requests (the Python native action API does).
 - **Action client startup wait**: the YAML bridge waits for the action
   `send_goal`, `get_result`, and `cancel_goal` service endpoints at startup
-  (10 retries, 2 seconds each). Start the action server before the dataflow; if
-  an endpoint is unavailable, startup fails with diagnostics that include the
-  endpoint name, `ROS_DOMAIN_ID`, and discovered request/reply topics.
+  (10 retries, 2 seconds each). It joins the Dora dataflow before waiting, so
+  the server can be another node in the same dataflow. A Dora Stop interrupts
+  the wait. If an endpoint remains unavailable, the bridge reports the
+  endpoint name, `ROS_DOMAIN_ID`, and remote server request/reply topics.
 - **Native action server discovery (ros2-client#4)**: a Dora-hosted *action* server is not discoverable by a real `rcl`-based client; pair it with a Dora client. Service servers are unaffected.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
 - **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable.
@@ -1054,12 +1066,31 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 
 This applies to **all** bridge surfaces (YAML and native code APIs).
 
-- **Built for ROS 2 Humble**: The bridge enables `ros2-client`'s `humble`
-  distro feature, which selects the **24-byte `Gid`** used by
-  `rmw_dds_common` graph discovery. ROS 2 changed `Gid` from 24 to 16 bytes
-  between Humble and Iron, so graph *discovery* against an Iron-or-newer stack
-  will not match. Topic, service, and action **payloads are unaffected** --
-  those are ordinary CDR and interoperate across distros regardless.
+- **Pick one distro for the whole build.** `ros2-client`'s distro features form a chain (`kilted` -> `jazzy` -> `iron` -> `humble` -> `galactic`) and it compiles for the *newest* one it sees. `dora-ros2-bridge`, `dora-ros2-bridge-arrow`, the YAML bridge node, and the Python bridge each expose `ros2-humble` (default), `ros2-iron`, `ros2-jazzy`, and `ros2-kilted`, mapped 1:1 onto that chain. They are a selector, not an additive set: `ros2-jazzy` doesn't add Jazzy support next to Humble, it replaces Humble's `Gid` layout for the entire build, and no dora feature turns that back off.
+- **Humble is a floor, not a lock.** The workspace keeps `features = ["humble"]` on its `ros2-client` line, so `ros2-humble` is on by default and a `--no-default-features` build still resolves to Humble instead of `ros2-client`'s Galactic fallback. A newer distro enabled anywhere in the build wins over it; there is no way to force "exactly Humble".
+- **The `Gid` width is what changes.** Humble and Galactic use the **24-byte `Gid`**, Iron and newer the **16-byte** one, and that is the `rmw_dds_common` graph-discovery wire format. ROS 2 changed it between Humble and Iron, so graph *discovery* against an Iron-or-newer stack will not match a Humble build. Topic, service, and action **payloads are unaffected** -- those are ordinary CDR and interoperate across distros regardless.
+- **Feature unification can switch the distro from outside dora.** Cargo compiles one `ros2-client` per build with the union of every enabled feature. If any other crate in the dependency graph enables a newer distro, the bridge becomes that distro too, with nothing in dora to stop it. Depending on `ros2-client` with its default features does exactly that, because its default is `jazzy`. Match the whole build, not just the bridge's own features.
+- **Nothing warns at build time.** The only signal is `ros2-client`'s runtime check on the first `Context`: it logs an error when `ROS_DISTRO` is set and doesn't match the build, and a warning when it is unset. Check that startup log line.
+
+### Building for your ROS distro
+
+Published artifacts are Humble builds. To target another distro, build from a checkout with the matching feature. A mismatch is what produces `ROS_DISTRO='jazzy' but ros2-client was built for 'humble'`.
+
+**YAML bridge.** The `dora-ros2-bridge-node` binary isn't distributed, so build it and put it on `PATH` (the descriptor resolver spawns it by name):
+
+```bash
+cargo install --git https://github.com/dora-rs/dora dora-ros2-bridge-node --features ros2-jazzy
+```
+
+**In-process Python.** The `dora-rs` wheel links `dora-ros2-bridge-python` unconditionally, so `from dora import Ros2Context` only changes distro with a rebuild:
+
+```bash
+maturin build -m apis/python/node/Cargo.toml --features ros2-jazzy
+```
+
+The standalone bridge module used by the Zenoh interop harness builds the same way, with `--manifest-path libraries/extensions/ros2-bridge/python/Cargo.toml`.
+
+**C++ nodes.** `dora-node-api-cxx` has no `ros2-*` features of its own, so a C++ build gets the Humble default. Select another distro through the bridge directly, with `--features dora-ros2-bridge/ros2-jazzy` (the `ros2-bridge` feature has to be on).
 
 ---
 
@@ -1067,10 +1098,10 @@ This applies to **all** bridge surfaces (YAML and native code APIs).
 
 **Source your ROS2 environment before running.** Ensure `AMENT_PREFIX_PATH` is set and includes all required message packages. The bridge logs an error if no definitions are found.
 
-**Start action servers before the dataflow.** The YAML action client waits for
-the `send_goal`, `get_result`, and `cancel_goal` service endpoints during
-startup. If an endpoint is not ready within the retry window, startup fails
-before accepting Dora goals.
+**Allow action servers time to start.** The YAML action client waits for the
+`send_goal`, `get_result`, and `cancel_goal` service endpoints after joining
+the dataflow. The server may be in the same dataflow. If an endpoint is not
+ready within the retry window, the bridge exits before accepting Dora goals.
 
 **Use multi-topic mode for related topics.** Bridging `/turtle1/pose` (subscribe) and `/turtle1/cmd_vel` (publish) on the same bridge node reduces resource usage compared to two separate bridge nodes.
 

@@ -8,10 +8,44 @@ use serde::{Deserialize, Serialize};
 /// Includes a timestamp and additional user-provided parameters. The payload is
 /// a self-describing Arrow IPC stream, so the message carries no separate type
 /// descriptor.
+///
+/// A node receives a `Metadata` alongside every input. The [`timestamp`] and
+/// [`metadata_version`] are read through accessors, while [`parameters`] — the
+/// user-provided key/value pairs — is a public field read and written directly.
+///
+/// [`timestamp`]: Self::timestamp
+/// [`metadata_version`]: Self::metadata_version
+/// [`parameters`]: Self::parameters
+///
+/// # Examples
+///
+/// ```
+/// use dora_message::metadata::{get_integer_param, Metadata, Parameter};
+///
+/// let timestamp = uhlc::HLC::default().new_timestamp();
+/// let mut metadata = Metadata::new(timestamp);
+///
+/// // A fresh `Metadata` carries the current wire-format version and no
+/// // user parameters.
+/// assert_eq!(metadata.metadata_version(), Metadata::CURRENT_VERSION);
+/// assert!(metadata.parameters.is_empty());
+///
+/// // Attach a typed parameter and read it back with the matching getter.
+/// metadata
+///     .parameters
+///     .insert("frame".to_string(), Parameter::Integer(7));
+/// assert_eq!(get_integer_param(&metadata.parameters, "frame"), Some(7));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metadata {
     metadata_version: u16,
     timestamp: uhlc::Timestamp,
+    /// User-provided key/value parameters carried alongside the payload.
+    ///
+    /// A [`BTreeMap`] of [`Parameter`] values keyed by name. Read the common
+    /// scalar cases through the type-checked [`get_string_param`],
+    /// [`get_integer_param`], and [`get_bool_param`] helpers rather than
+    /// matching on the [`Parameter`] variant directly.
     pub parameters: MetadataParameters,
 }
 
@@ -314,7 +348,9 @@ pub const SCHEMA_HASH: &str = "_schema_hash";
 /// accurate, the daemon stamps the original data-sample length here; the CLI
 /// measures this instead of the rebuilt stream length (dora-rs/dora#2584).
 ///
-/// Debug/inspection path only — never set on real node→node outputs.
+/// Debug/inspection path only — never set on real node→node outputs, and
+/// removed by [`strip_internal_parameters`] so it can't leak into one through a
+/// recorded or re-sent debug frame.
 pub const WIRE_SIZE: &str = "_wire_size";
 
 /// Byte size to charge for a `dora topic` debug frame when accounting bandwidth.
@@ -353,15 +389,21 @@ pub fn carries_pattern_correlation(params: &MetadataParameters) -> bool {
         || params.contains_key(GOAL_STATUS)
 }
 
-/// Remove internal wire-protocol keys ([`SCHEMA_HASH`], [`FRAMING`]) from a
-/// parameter map. Call this at every wire→user boundary: the keys are
-/// meaningless after decode, and a stale [`SCHEMA_HASH`] forwarded from an
-/// input's metadata into `send_output` parameters (a standard pattern, e.g.
-/// replay) would ride onto outputs that don't overwrite it, making receivers
-/// hash-mismatch and silently drop them (dora-rs/dora#2366 review).
+/// Remove internal wire-protocol keys ([`SCHEMA_HASH`], [`FRAMING`], and the
+/// debug-frame [`WIRE_SIZE`] stamp) from a parameter map. Call this at every
+/// wire→user boundary: the keys are meaningless after decode, and a stale
+/// [`SCHEMA_HASH`] forwarded from an input's metadata into `send_output`
+/// parameters (a standard pattern, e.g. replay) would ride onto outputs that
+/// don't overwrite it, making receivers hash-mismatch and silently drop them
+/// (dora-rs/dora#2366 review).
+///
+/// The daemon stamps [`WIRE_SIZE`] *after* stripping a debug frame, so `dora
+/// topic info` still sees it; consumers that store, print or re-send debug
+/// frames call this to drop it.
 pub fn strip_internal_parameters(params: &mut MetadataParameters) {
     params.remove(SCHEMA_HASH);
     params.remove(FRAMING);
+    params.remove(WIRE_SIZE);
 }
 
 /// FNV-1a-64 hash with a fixed seed (cross-process deterministic). Used to

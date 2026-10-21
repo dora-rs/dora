@@ -1,9 +1,10 @@
 //! **Internal to dora — not a public API.**
 //!
 //! This crate is published to crates.io only because cargo requires every
-//! dependency of a published crate to be published; `dora-node-api` and
-//! `dora-cli` depend on it. It is not covered by dora's 1.0 stability
-//! guarantee and may change in any release, including a patch.
+//! dependency of a published crate to be published; `dora-cli`,
+//! `dora-daemon` and `dora-runtime-shared-lib` depend on it. It is not covered
+//! by dora's 1.0 stability guarantee and may change in any release, including
+//! a patch.
 //!
 //! Depend on it directly at your own risk. See the "Stability scope at 1.0"
 //! section of `docs/api-rust.md`.
@@ -13,7 +14,42 @@ use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::prelude::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
+
+/// Time allowed to establish the TCP/TLS connection to the download host.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Maximum idle time waiting for the next chunk of the response body. This is a
+/// per-read timeout (it resets on every chunk), not a total-download deadline,
+/// so it does not penalize a legitimately large (multi-GB) but
+/// steadily-progressing artifact. reqwest's defaults already set TCP keepalive
+/// and `tcp_user_timeout`, so a peer whose connection *dies* is already caught;
+/// the failure this adds cover for is a live peer that keeps the socket open but
+/// stops sending — a slow-loris mirror or a stalled CDN edge — which no default
+/// catches. It does not defend against an adversary that dribbles bytes just
+/// under the interval; a total deadline can't do that either without capping
+/// legitimate large transfers, so it is deliberately left out.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Build an HTTP client with the given connect and read timeouts.
+///
+/// A client is built per download rather than shared in a `static`: the only
+/// benefit of reuse — a warm connection pool — is worthless on this
+/// once-per-artifact path, and `runtime-python` / `runtime-shared-lib` each
+/// spin up and tear down a `current_thread` runtime per operator download, so a
+/// pooled client outliving the runtime that created its connections is a known
+/// reqwest footgun. Building fresh (as the previous `reqwest::get` did) keeps
+/// each client bound to the runtime that uses it.
+fn build_client(
+    connect_timeout: Duration,
+    read_timeout: Duration,
+) -> eyre::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .read_timeout(read_timeout)
+        .build()
+        .wrap_err("failed to build HTTP client")
+}
 
 /// Extract the `filename` parameter from a `Content-Disposition` header value.
 ///
@@ -120,34 +156,102 @@ fn split_disposition_params(header: &str) -> impl Iterator<Item = &str> {
 /// query string and fragment (e.g. the long presigned-URL parameters that S3
 /// and GitHub-release redirects append) never leak into the name. Returns
 /// `None` when the URL has no non-empty path segment.
+///
+/// `Url::path_segments` yields segments in their percent-*encoded* form, so the
+/// chosen segment is decoded before use: a download from `.../my%20model.bin`
+/// must land on disk as `my model.bin`, not the literal `my%20model.bin`. Bytes
+/// that do not form valid UTF-8 after decoding become the Unicode replacement
+/// character (`decode_utf8_lossy`) rather than dropping the name; the result is
+/// still vetted by `sanitize_filename`.
 fn filename_from_url(url: &reqwest::Url) -> Option<String> {
-    url.path_segments()?
-        .rfind(|segment| !segment.is_empty())
-        .map(|segment| segment.to_string())
+    let segment = url.path_segments()?.rfind(|segment| !segment.is_empty())?;
+    Some(
+        percent_encoding::percent_decode_str(segment)
+            .decode_utf8_lossy()
+            .into_owned(),
+    )
+}
+
+/// Sanitize a candidate filename: strip path components to prevent traversal,
+/// reject null bytes and overly long names, trim trailing dots/spaces, and
+/// reject Windows reserved device names. Returns `None` when nothing usable
+/// survives — e.g. `".."` or `"."` (which `Path::file_name` maps to `None`),
+/// a name over 255 bytes / containing a NUL, a name that is only dots and
+/// spaces, or a reserved device name such as `NUL`. (A trailing slash such as
+/// `"dir/"` keeps its last component: `Path::file_name` returns `"dir"`.)
+///
+/// The `Content-Disposition` header is attacker-influenced, so the returned
+/// name is a name a hostile server could pick. The two hardening steps below
+/// are applied on **every** platform — not gated to Windows — both so the
+/// returned name always matches the file that is actually created and so the
+/// checks are exercised by the Linux PR gate. Rejecting a download literally
+/// named `NUL`/`CON`/… is acceptable: such names are exceedingly rare as real
+/// artifact filenames.
+fn sanitize_filename(name: &str) -> Option<String> {
+    let sanitized = Path::new(name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())?;
+    if sanitized.contains('\0') || sanitized.len() > 255 {
+        return None;
+    }
+    // Windows silently strips trailing dots and spaces when creating a file, so
+    // a name like `evil.` would land at a different path than the one returned.
+    // Trim them and reject a name that trims away to nothing.
+    let sanitized = sanitized.trim_end_matches(['.', ' ']);
+    if sanitized.is_empty() {
+        return None;
+    }
+    // `tokio::fs::File::create(dir/NUL)` opens the *null device* on Windows
+    // rather than a file: the write and `sync_all` both "succeed" and the
+    // caller goes on to spawn/`dlopen` something with no content. Reject the
+    // reserved device names so a hostile header cannot redirect the download.
+    if is_windows_reserved_name(sanitized) {
+        return None;
+    }
+    Some(sanitized.to_string())
+}
+
+/// Whether `name` is a Windows reserved device name (`CON`, `PRN`, `AUX`,
+/// `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), compared case-insensitively and
+/// ignoring any extension — `NUL`, `NUL.bin`, and `NUL.tar.gz` are all
+/// reserved. Windows also ignores trailing spaces in the device stem, so
+/// `NUL .txt` is matched too.
+fn is_windows_reserved_name(name: &str) -> bool {
+    // The reserved status is decided by the stem before the first `.`.
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    // `COM0`–`COM9` and `LPT0`–`LPT9`.
+    matches!(
+        upper.strip_prefix("COM").or_else(|| upper.strip_prefix("LPT")),
+        Some(rest) if rest.len() == 1 && rest.as_bytes()[0].is_ascii_digit()
+    )
+}
+
+/// Pick a sanitized filename from the `Content-Disposition` header (if any),
+/// falling back to the URL's last path segment.
+///
+/// Each source is sanitized *independently* and then chained: a
+/// `Content-Disposition` filename that sanitizes away (e.g. a
+/// hostile/degenerate `filename=".."`, which `Path::file_name` maps to `None`)
+/// must not suppress the URL fallback that would otherwise name the download
+/// fine.
+fn resolve_filename(content_disposition: Option<&str>, url: &reqwest::Url) -> Option<String> {
+    content_disposition
+        .and_then(parse_content_disposition_filename)
+        .and_then(|name| sanitize_filename(&name))
+        .or_else(|| filename_from_url(url).and_then(|name| sanitize_filename(&name)))
 }
 
 fn get_filename(response: &reqwest::Response) -> Option<String> {
-    let raw_name = response
+    let content_disposition = response
         .headers()
         .get("content-disposition")
-        .and_then(|value| value.to_str().ok())
-        .and_then(parse_content_disposition_filename);
-
-    // If Content-Disposition header is not available, extract from the URL.
-    let raw_name = raw_name.or_else(|| filename_from_url(response.url()));
-
-    // Sanitize: strip path components to prevent traversal,
-    // reject null bytes and overly long names
-    raw_name.and_then(|name| {
-        let sanitized = Path::new(&name)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string())?;
-        if sanitized.contains('\0') || sanitized.len() > 255 {
-            return None;
-        }
-        Some(sanitized)
-    })
+        .and_then(|value| value.to_str().ok());
+    resolve_filename(content_disposition, response.url())
 }
 
 /// Download a file from a URL into `target_dir`.
@@ -163,11 +267,34 @@ pub async fn download_file<T>(
 where
     T: reqwest::IntoUrl + std::fmt::Display + Copy,
 {
+    // A client with connect + read timeouts. `reqwest::get` uses reqwest's
+    // default configuration, which sets no read timeout, so a peer that accepts
+    // the connection and then goes silent mid-body (a slow-loris mirror or a
+    // stalled CDN edge) would wedge the caller with no diagnostic. This runs on
+    // the node/daemon path that fetches operator artifacts, so one silent host
+    // must not stall node startup.
+    let client = build_client(CONNECT_TIMEOUT, READ_TIMEOUT)?;
+    download_with(&client, url, target_dir, expected_sha256).await
+}
+
+/// Download `url` into `target_dir` using an already-built `client`, so the
+/// timeout behavior can be exercised in tests with a short read timeout.
+async fn download_with<T>(
+    client: &reqwest::Client,
+    url: T,
+    target_dir: &Path,
+    expected_sha256: Option<&str>,
+) -> Result<PathBuf, eyre::ErrReport>
+where
+    T: reqwest::IntoUrl + std::fmt::Display + Copy,
+{
     tokio::fs::create_dir_all(&target_dir)
         .await
         .wrap_err("failed to create parent folder")?;
 
-    let response = reqwest::get(url)
+    let response = client
+        .get(url)
+        .send()
         .await
         .wrap_err_with(|| format!("failed to request operator from `{url}`"))?;
 
@@ -178,16 +305,56 @@ where
         .wrap_err_with(|| format!("server returned an error status for `{url}`"))?;
 
     let filename = get_filename(&response).context("Could not find a filename")?;
-    let bytes = response
-        .bytes()
-        .await
-        .wrap_err_with(|| format!("failed to download from `{url}`"))?;
+    let path = target_dir.join(&filename);
+
+    // Stream the body to a temp file while hashing it incrementally, so peak
+    // memory stays O(chunk) rather than O(file size). Model artifacts
+    // (safetensors/weights) are routinely multiple GB, and buffering the whole
+    // body in RAM first (the previous `response.bytes()`) risked OOM-ing the
+    // process on a large download. The bytes land on a temp sibling and are
+    // only renamed onto `path` once the digest has been verified, so a
+    // mismatched or interrupted download never leaves a usable file at the
+    // target path.
+    //
+    // The temp name is unique (pid + process-wide counter) and independent of
+    // `filename`'s length: two concurrent downloads into the same dir — the
+    // daemon can spawn nodes sharing one content-addressed hub artifact — must
+    // not race on a single `.partial` file, and a `.{filename}.partial` scheme
+    // would also push an already-max-length filename past the 255-byte
+    // component limit.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp_path = target_dir.join(format!(
+        ".dora-download-{}-{}.partial",
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let mut hasher = Sha256::new();
+    let mut response = response;
+    let stream_to_tmp = async {
+        let mut file = tokio::fs::File::create(&tmp_path)
+            .await
+            .wrap_err("failed to create target file")?;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .wrap_err_with(|| format!("failed to download from `{url}`"))?
+        {
+            hasher.update(&chunk);
+            file.write_all(&chunk)
+                .await
+                .wrap_err("failed to write downloaded operator to file")?;
+        }
+        file.sync_all().await.wrap_err("failed to `sync_all`")?;
+        Ok::<(), eyre::ErrReport>(())
+    };
+    if let Err(err) = stream_to_tmp.await {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(err);
+    }
 
     // Verify integrity if a digest was provided.
     // Without a digest, the download is vulnerable to MITM or CDN compromise
     // since the downloaded binary may be executed or dlopen-ed.
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
     let actual_hash: String = hasher
         .finalize()
         .iter()
@@ -197,6 +364,7 @@ where
         // `actual_hash` is lowercase hex; a digest from an index/lockfile may be
         // uppercase, so compare case-insensitively rather than rejecting it.
         if !expected.eq_ignore_ascii_case(&actual_hash) {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
             eyre::bail!("SHA-256 mismatch for `{url}`: expected {expected}, got {actual_hash}");
         }
     } else {
@@ -208,26 +376,25 @@ where
         );
     }
 
-    let path = target_dir.join(filename);
-    let mut file = tokio::fs::File::create(&path)
-        .await
-        .wrap_err("failed to create target file")?;
-    file.write_all(&bytes)
-        .await
-        .wrap_err("failed to write downloaded operator to file")?;
-    file.sync_all().await.wrap_err("failed to `sync_all`")?;
-
     #[cfg(unix)]
-    file.set_permissions(std::fs::Permissions::from_mode(0o700))
-        .await
-        .wrap_err("failed to make downloaded file executable")?;
+    if let Err(err) =
+        tokio::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o700)).await
+    {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(err).wrap_err("failed to make downloaded file executable");
+    }
+
+    if let Err(err) = tokio::fs::rename(&tmp_path, &path).await {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(err).wrap_err("failed to move downloaded file into place");
+    }
 
     Ok(path.to_path_buf())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{filename_from_url, parse_content_disposition_filename};
+    use super::{filename_from_url, parse_content_disposition_filename, sanitize_filename};
 
     fn name_from(url: &str) -> Option<String> {
         filename_from_url(&reqwest::Url::parse(url).unwrap())
@@ -267,6 +434,17 @@ mod tests {
         assert_eq!(
             name_from("https://example.com/a/b/weights.safetensors"),
             Some("weights.safetensors".to_string())
+        );
+    }
+
+    #[test]
+    fn url_filename_percent_decoded() {
+        // Regression: `Url::path_segments` returns percent-encoded segments, so
+        // a URL ending in `my%20model.bin` must be decoded to `my model.bin`
+        // rather than saved as the literal `my%20model.bin`.
+        assert_eq!(
+            name_from("https://example.com/models/my%20model.bin"),
+            Some("my model.bin".to_string())
         );
     }
 
@@ -424,5 +602,204 @@ mod tests {
             parse_content_disposition_filename("attachment; filename*=UTF-8''model.bin"),
             None
         );
+    }
+
+    // --- resolve_filename (Content-Disposition + URL fallback) ---
+
+    fn resolve(cd: Option<&str>, url: &str) -> Option<String> {
+        super::resolve_filename(cd, &reqwest::Url::parse(url).unwrap())
+    }
+
+    #[test]
+    fn resolve_prefers_content_disposition() {
+        assert_eq!(
+            resolve(
+                Some("attachment; filename=\"model.bin\""),
+                "https://example.com/other.bin"
+            ),
+            Some("model.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_url_when_no_header() {
+        assert_eq!(
+            resolve(None, "https://example.com/dir/weights.safetensors"),
+            Some("weights.safetensors".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_url_when_header_sanitizes_away() {
+        // Regression: a degenerate/hostile `Content-Disposition` filename that
+        // `Path::file_name` maps to `None` (`..`, `.`, a trailing slash) must
+        // not suppress the perfectly good URL fallback — previously
+        // `get_filename` returned `None` and aborted the download.
+        for cd in ["attachment; filename=\"..\"", "attachment; filename=\".\""] {
+            assert_eq!(
+                resolve(Some(cd), "https://example.com/model.bin"),
+                Some("model.bin".to_string()),
+                "header {cd:?} should fall back to the URL name"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_returns_none_when_both_sources_are_unusable() {
+        assert_eq!(
+            resolve(Some("attachment; filename=\"..\""), "https://example.com/"),
+            None
+        );
+    }
+
+    // --- sanitize_filename (traversal, NUL, length, reserved names, dots) ---
+
+    #[test]
+    fn sanitize_strips_path_components_and_rejects_degenerate() {
+        // Traversal is defeated by `Path::file_name`, which keeps only the last
+        // component and maps `.`/`..` to `None`.
+        assert_eq!(
+            sanitize_filename("../../etc/passwd"),
+            Some("passwd".to_string())
+        );
+        assert_eq!(sanitize_filename("/etc/passwd"), Some("passwd".to_string()));
+        assert_eq!(sanitize_filename(".."), None);
+        assert_eq!(sanitize_filename("."), None);
+        // An embedded NUL and an over-long (256-byte) name are rejected; a
+        // 255-byte name is the largest that is kept.
+        assert_eq!(sanitize_filename("a\0b"), None);
+        assert_eq!(sanitize_filename(&"a".repeat(256)), None);
+        assert_eq!(sanitize_filename(&"a".repeat(255)), Some("a".repeat(255)));
+    }
+
+    #[test]
+    fn sanitize_rejects_windows_reserved_names() {
+        // Case-insensitive, with or without an extension, and ignoring a
+        // trailing space in the stem — all forms open a device on Windows.
+        for name in [
+            "NUL",
+            "nul",
+            "CON",
+            "aux",
+            "PRN",
+            "COM0",
+            "COM1",
+            "com9",
+            "LPT1",
+            "lpt9",
+            "NUL.bin",
+            "con.txt",
+            "COM1.tar.gz",
+            "NUL.",
+            "nul ",
+            "NUL .txt",
+        ] {
+            assert_eq!(
+                sanitize_filename(name),
+                None,
+                "reserved name {name:?} must be rejected"
+            );
+        }
+        // Names that merely start like a device but are not one stay valid.
+        for name in ["NULls", "console.log", "COM10", "LPT", "com.bin"] {
+            assert_eq!(
+                sanitize_filename(name),
+                Some(name.to_string()),
+                "non-reserved name {name:?} must be kept"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_trims_trailing_dots_and_spaces() {
+        // Windows strips these on create, so the returned name must match the
+        // file that actually lands on disk.
+        assert_eq!(sanitize_filename("evil."), Some("evil".to_string()));
+        assert_eq!(
+            sanitize_filename("model.bin "),
+            Some("model.bin".to_string())
+        );
+        assert_eq!(sanitize_filename("data.. "), Some("data".to_string()));
+        // A name that is nothing but dots/spaces trims to empty and is rejected.
+        assert_eq!(sanitize_filename("..."), None);
+        assert_eq!(sanitize_filename("   "), None);
+    }
+
+    // --- read timeout (stalled body) ---
+
+    #[tokio::test]
+    async fn read_timeout_aborts_a_stalled_body_and_cleans_up() {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // A server that sends the response headers plus a few body bytes and
+        // then stalls forever, holding the connection open without sending the
+        // rest of the body it promised via Content-Length. This is the "live
+        // peer that stops sending" case that no TCP-level keepalive catches.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            // Drain the request so the client's `send()` completes.
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\n\
+                      Content-Length: 1048576\r\n\
+                      \r\n\
+                      partial",
+                )
+                .await
+                .unwrap();
+            socket.flush().await.unwrap();
+            // Stall: keep the socket open but never send the remaining bytes.
+            std::future::pending::<()>().await;
+        });
+
+        let target_dir = std::env::temp_dir().join(format!(
+            "dora-download-timeout-{}-{}",
+            std::process::id(),
+            addr.port()
+        ));
+
+        // A short read timeout and `no_proxy()` so the loopback request is not
+        // routed through any ambient HTTP proxy.
+        let client = reqwest::Client::builder()
+            .read_timeout(Duration::from_millis(200))
+            .no_proxy()
+            .build()
+            .unwrap();
+        let url = format!("http://{addr}/model.bin");
+
+        // The outer timeout is a backstop: it must NOT fire, because the read
+        // timeout is what makes the download fail. On `main` (no read timeout)
+        // this download hangs and the outer timeout is what would trip.
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            super::download_with(&client, url.as_str(), &target_dir, None),
+        )
+        .await
+        .expect("download hung — the read timeout did not fire");
+        assert!(
+            result.is_err(),
+            "a stalled download should return an error, got {result:?}"
+        );
+
+        // The interrupted download must not leave a `.dora-download-*.partial`
+        // (or any other) file behind.
+        let mut leftovers = Vec::new();
+        let mut entries = tokio::fs::read_dir(&target_dir).await.unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            leftovers.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        assert!(
+            leftovers.is_empty(),
+            "stalled download left files behind: {leftovers:?}"
+        );
+
+        server.abort();
+        let _ = tokio::fs::remove_dir_all(&target_dir).await;
     }
 }

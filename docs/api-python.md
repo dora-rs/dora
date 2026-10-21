@@ -6,6 +6,14 @@ This document covers the Python APIs for building dora nodes, operators, and dat
 pip install dora-rs
 ```
 
+**Supported interpreters: CPython 3.11 and later.** The wheels are built
+`abi3-py311`, so a single wheel works on every later CPython without waiting for
+a dora release — 3.11 is a floor dora 1.x will not raise, not a version it is
+pinned to. Free-threaded builds (`python3.13t`, `python3.14t`) are not
+supported: abi3 does not cover them and no wheels are published for them. See
+[Python version policy](api-rust.md#python-version-policy) for the full
+guarantee.
+
 ---
 
 ## Table of Contents
@@ -200,14 +208,19 @@ node.send_output("goal", data, {"goal_id": goal_id})
 **Streaming example** (flush downstream queues on user interruption):
 
 ```python
-params = {
-    "session_id": session_id,
-    "segment_id": 1,
-    "seq": 0,
-    "fin": False,
-    "flush": True,
-}
-node.send_output("text", data, metadata={"parameters": params})
+# `metadata` is a flat dict of parameter name -> value; there is no
+# enclosing "parameters" key.
+node.send_output(
+    "text",
+    data,
+    metadata={
+        "session_id": session_id,
+        "segment_id": 1,
+        "seq": 0,
+        "fin": False,
+        "flush": True,
+    },
+)
 ```
 
 See [patterns.md](patterns.md) for the full guide.
@@ -346,30 +359,37 @@ print(f"Restart #{node.restart_count()}")
 
 ---
 
-#### `merge_external_events(subscription)`
+#### `merge_external_events(subscription, id=None)`
 
-Merge a ROS2 subscription stream into the node's main event loop. After calling this method, ROS2 messages arrive as events with `kind` set to `"external"`.
+Merge a ROS2 subscription stream into the node's main event loop. After calling this method, ROS2 messages arrive as events with `kind` set to `"external"` and `id` set to the subscription's `id` (by default its ROS2 topic name). Call it once per subscription to handle several topics in one node.
 
 ```python
-from dora import Node, Ros2Context, Ros2Node, Ros2NodeOptions, Ros2Topic
+from dora import Node, Ros2Context, Ros2NodeOptions, Ros2QosPolicies
 
 node = Node()
 ros2_context = Ros2Context()
-ros2_node = ros2_context.new_node("listener", Ros2NodeOptions())
-topic = Ros2Topic("/chatter", "std_msgs/String", ros2_node)
-subscription = ros2_node.create_subscription(topic)
+ros2_node = ros2_context.new_node("listener", "/", Ros2NodeOptions())
+qos = Ros2QosPolicies()
+chatter = ros2_node.create_subscription(
+    ros2_node.create_topic("/chatter", "std_msgs/String", qos)
+)
+pose = ros2_node.create_subscription(
+    ros2_node.create_topic("/turtle1/pose", "turtlesim/Pose", qos)
+)
 
-node.merge_external_events(subscription)
+node.merge_external_events(chatter)            # id defaults to "/chatter"
+node.merge_external_events(pose, id="pose")    # or choose your own label
 
 for event in node:
     if event["kind"] == "external":
-        print("ROS2:", event["value"])
+        print("ROS2", event["id"], event["value"])
     elif event["type"] == "INPUT":
         print("Dora:", event["id"])
 ```
 
 **Parameters:**
 - `subscription` (`dora.Ros2Subscription`) -- A ROS2 subscription created via the dora ROS2 bridge.
+- `id` (`str`, optional) -- Label for events from this subscription, returned as `event["id"]`. Defaults to the subscription's topic name exactly as passed to `create_topic` (not namespace-resolved). Must not be empty.
 
 ---
 
@@ -461,6 +481,7 @@ When using `merge_external_events`, ROS2 messages arrive as:
 ```python
 {
     "kind": "external",
+    "id": "/turtle1/pose",      # the `id` given to merge_external_events, or the topic name
     "value": <pyarrow.Array>,   # the ROS2 message as an Arrow array
 }
 ```
@@ -743,10 +764,12 @@ Return the dictionary representation for YAML serialization.
 
 ---
 
-## CUDA Module
+## CUDA Module (opt-in extension)
+
+> **Not part of the 1.0 API.** These helpers moved out of the `dora` package into the `dora_tensor_pool` extension before 1.0 — they exist to serve the tensor-pool transport, which sits behind the extension seam, and are not covered by dora's 1.0 compatibility guarantees. Install from `libraries/extensions/tensor-pool/python`.
 
 ```python
-from dora.cuda import torch_to_ipc_buffer, ipc_buffer_to_ipc_handle, open_ipc_handle
+from dora_tensor_pool import torch_to_ipc_buffer, ipc_buffer_to_ipc_handle, open_ipc_handle
 ```
 
 Utilities for zero-copy GPU tensor sharing between nodes via CUDA IPC. Requires PyTorch with CUDA and Numba with CUDA support.
@@ -759,7 +782,7 @@ Convert a PyTorch CUDA tensor into an Arrow array containing the CUDA IPC handle
 import torch
 import pyarrow as pa
 from dora import Node
-from dora.cuda import torch_to_ipc_buffer
+from dora_tensor_pool import torch_to_ipc_buffer
 
 node = Node()
 tensor = torch.randn(1024, 768, device="cuda")
@@ -779,7 +802,7 @@ node.send_output("gpu_data", ipc_buffer, metadata)
 Reconstruct a CUDA IPC handle from a received Arrow buffer and metadata.
 
 ```python
-from dora.cuda import ipc_buffer_to_ipc_handle
+from dora_tensor_pool import ipc_buffer_to_ipc_handle
 
 event = node.next()
 ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
@@ -789,7 +812,7 @@ ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
 - `handle_buffer` (pyarrow.Array) -- The Arrow array from `event["value"]`.
 - `metadata` (dict) -- The metadata from `event["metadata"]`.
 
-**Returns:** `dora.cuda.IpcHandle` (a lightweight wrapper around `cudaIpcMemHandle_t`; call `.open()` to map the handle into the current process and get a device pointer, `.close()` to release it).
+**Returns:** `dora_tensor_pool.IpcHandle` (a lightweight wrapper around `cudaIpcMemHandle_t`; call `.open()` to map the handle into the current process and get a device pointer, `.close()` to release it).
 
 ---
 
@@ -798,7 +821,7 @@ ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
 Open a CUDA IPC handle and yield a PyTorch tensor. Use as a context manager to ensure proper cleanup.
 
 ```python
-from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
+from dora_tensor_pool import ipc_buffer_to_ipc_handle, open_ipc_handle
 
 event = node.next()
 ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])

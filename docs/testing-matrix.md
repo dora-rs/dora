@@ -21,7 +21,7 @@ Fast gates. Must pass for every PR.
 | Area | Where | How |
 |---|---|---|
 | Format | `.github/workflows/ci.yml` `fmt` | `cargo fmt --all -- --check` |
-| Clippy | `.github/workflows/ci.yml` `clippy` | `cargo clippy --all -- -D warnings` |
+| Clippy | `.github/workflows/ci.yml` `clippy` | `cargo clippy --all --all-targets -- -D warnings` |
 | Core tests (Linux) | `.github/workflows/ci.yml` `test` | `cargo test --all` (Python crates excluded) on ubuntu-latest |
 | CLI smoke (argparse, `validate`, `expand`, `graph`) | `.github/workflows/ci.yml` `test` | Per-subcommand `--help` + validate/expand/graph on representative YAMLs (ubuntu-latest) |
 | Core tests (macOS + Windows) | `.github/workflows/nightly.yml` `test-cross-platform` | same steps as PR `test`, nightly-gated (#1716) |
@@ -139,12 +139,12 @@ touched in the cycle. Tracked as #256.
 
 ```bash
 # Terminal 1
-dora coordinator --backend redb --store-path /tmp/dora-coord
+dora coordinator --store redb:/tmp/dora-coord
 # Terminal 2
 dora daemon --machine-id A --coordinator-addr 127.0.0.1
 # Terminal 3 — kill coordinator, restart, verify daemon auto-reconnects
-pkill dora-coordinator
-dora coordinator --backend redb --store-path /tmp/dora-coord
+pkill -f 'dora coordinator'
+dora coordinator --store redb:/tmp/dora-coord
 ```
 
 Not automated: failure-injection timing is flaky on cloud runners.
@@ -154,7 +154,7 @@ Planned: dedicated self-hosted runner for HA scenarios.
 
 ```bash
 # Machine A
-dora coordinator --bind 0.0.0.0
+dora coordinator --interface 0.0.0.0
 dora daemon --machine-id A --coordinator-addr <machine-a-ip>
 # Machine B
 dora daemon --machine-id B --coordinator-addr <machine-a-ip>

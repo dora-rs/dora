@@ -7,7 +7,7 @@ use crate::{
     send_with_timestamp,
 };
 use dora_core::{
-    config::{DataId, NodeId},
+    config::{DataId, Input, InputMapping, NodeId},
     descriptor::Descriptor,
     uhlc::HLC,
 };
@@ -32,7 +32,7 @@ use crossbeam::queue::ArrayQueue;
 use eyre::eyre;
 use futures::FutureExt;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     sync::{
         Arc,
         atomic::{self, AtomicBool, AtomicU32, AtomicU64},
@@ -121,7 +121,12 @@ pub struct RunningNode {
     /// the CLI help ("the daemon's restart loop re-spawns it").
     pub(crate) force_restart_next: Arc<AtomicBool>,
     pub(crate) last_activity: Arc<AtomicU64>,
+    /// Timestamp (millis since epoch) when the child process was spawned (0 if not currently running / in backoff).
+    pub(crate) spawned_at: Arc<AtomicU64>,
+    /// One-shot latch set when startup_timeout kills the process, preventing repeated kill submissions while awaiting exit.
+    pub(crate) startup_kill_sent: Arc<AtomicBool>,
     pub(crate) health_check_timeout: Option<Duration>,
+    pub(crate) startup_timeout: Option<Duration>,
     /// Per-node finish-drain grace override (from `finish_grace_secs` in the
     /// descriptor). When `Some`, overrides the global `DORA_FINISH_DRAIN_GRACE_SECS`
     /// for this node in the finish-straggler watchdog.
@@ -209,7 +214,7 @@ static NEXT_NODE_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// the currently registered incarnation.
 pub(crate) fn next_node_generation() -> u64 {
     NEXT_NODE_GENERATION
-        .fetch_update(
+        .try_update(
             atomic::Ordering::Relaxed,
             atomic::Ordering::Relaxed,
             |generation| generation.checked_add(1),
@@ -297,14 +302,49 @@ pub struct RunningDataflow {
     pub(crate) descriptor: Descriptor,
     /// Per-node zenoh listener + dial-list, so the node↔node links this dataflow
     /// needs are established deterministically rather than left to gossip.
-    /// Populated when the dataflow is spawned; see `plan_zenoh_peering`.
+    /// Populated for static nodes at spawn and for dynamic nodes on each
+    /// configuration request; see `spawn::build_peering_plan` and
+    /// `dynamic_peering`.
     pub(crate) zenoh_peering: Arc<BTreeMap<NodeId, crate::spawn::NodeZenohPeering>>,
+    /// Keeps this daemon answering other daemons' node-endpoint queries (and
+    /// probing for the ones it could not reach) for as long as the dataflow
+    /// runs. Dropped with the dataflow; see `spawn::endpoint_exchange`.
+    pub(crate) endpoint_exchange: Option<crate::spawn::endpoint_exchange::ExchangeHandle>,
     pub(crate) pending_nodes: PendingNodes,
     pub(crate) dataflow_started: bool,
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
     /// Per-node pending message counters (incremented on send, decremented on recv)
     pub(crate) pending_messages: HashMap<NodeId, Arc<AtomicU64>>,
+    /// Per-node "the listener took something out of the subscribe channel"
+    /// signal, installed with the channel. A producer's listener holding a
+    /// deferred delivery for a full channel waits on it instead of polling
+    /// (see `DeferredDelivery`).
+    pub(crate) drain_signals: HashMap<NodeId, Arc<crate::local_delivery::DrainSignal>>,
+    /// Outputs with a `queue_policy: backpressure` consumer on another
+    /// daemon. A cross-daemon forward cannot hold its producer, so a
+    /// forward of one of these that is dropped is a lost backpressure
+    /// message (`FaultToleranceStats::lost_backpressure_messages`).
+    pub(crate) remote_backpressured_outputs: BTreeSet<OutputId>,
     pub(crate) mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
+    /// Edges seen routed with the receiver missing from `subscribe_channels` —
+    /// i.e. the receiver's daemon event stream was gone (dropped or closed)
+    /// while its entry in `mappings` survived. Guards the diagnostic warning so
+    /// it fires once per (receiver, input) edge instead of on every dropped
+    /// message; cleared when the receiver (re)subscribes, so an edge that drops
+    /// again after reconnecting gets a fresh warning (dora-rs/dora#3201).
+    pub(crate) missing_channel_warned: BTreeSet<(NodeId, DataId)>,
+    /// Nodes that deliberately dropped their daemon event stream
+    /// (`EventStreamDropped`, sent by `EventStream::drop` on normal shutdown)
+    /// but are still in `running_nodes` because their process exit has not been
+    /// observed yet. In that window an upstream still producing to such a
+    /// consumer routes to a receiver with no `subscribe_channels` entry, which
+    /// would otherwise hit the "may still be starting up / failed to
+    /// re-subscribe" warning — a false positive for a consumer that simply
+    /// finished. Demotes that case to `debug`, keeping the warning for the true
+    /// silent-routing-loss mode of dora-rs/dora#3201 (a receiver that never
+    /// dropped its stream). Cleared on (re)subscribe and on node removal, so a
+    /// re-added node ID starts a fresh incarnation (dora-rs/dora#3556).
+    pub(crate) dropped_event_streams: BTreeSet<NodeId>,
     pub(crate) timers: BTreeMap<Duration, BTreeSet<(NodeId, DataId)>>,
     /// Nodes subscribing to `dora/logs` virtual input.
     pub(crate) log_subscribers: Vec<LogSubscriber>,
@@ -361,6 +401,8 @@ pub struct RunningDataflow {
     /// predecessor's marker, and cleaning up a stale event cannot clear a
     /// live incarnation's marker.
     pub(crate) grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<(NodeId, u64)>>,
+    /// Startup-timeout kill markers keyed by `(node id, generation)`.
+    pub(crate) startup_timeout_kills: Arc<crossbeam_skiplist::SkipSet<(NodeId, u64)>>,
     pub(crate) node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
     pub(crate) publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
     /// Reverse index from output to the set of CLI subscribers watching it.
@@ -370,6 +412,12 @@ pub struct RunningDataflow {
     /// compared to dispatch, and the scan is bounded by the count of outputs
     /// that currently have at least one subscriber.
     pub(crate) debug_topic_watchers: BTreeMap<OutputId, BTreeSet<uuid::Uuid>>,
+    /// The key set of `debug_topic_watchers`, shared with the per-output
+    /// debug-inspection subscriber tasks so they can drop a sample before
+    /// copying it into the daemon event loop when nobody watches its output
+    /// (dora-rs/dora#3781). Only change it through the `*_debug_topic_*`
+    /// methods below, which keep it in sync with the map.
+    pub(crate) debug_watched_outputs: Arc<crossbeam_skiplist::SkipSet<OutputId>>,
     pub(crate) finished_tx: broadcast::Sender<()>,
     /// Shutdown signal for listener loops — send `true` when dataflow finishes.
     pub(crate) listener_shutdown_tx: tokio::sync::watch::Sender<bool>,
@@ -394,6 +442,42 @@ pub enum FinishDataflowWhen {
 }
 
 impl RunningDataflow {
+    /// Register `subscription_id` as a `dora topic` watcher of `output_id`.
+    pub(crate) fn add_debug_topic_watcher(
+        &mut self,
+        output_id: OutputId,
+        subscription_id: uuid::Uuid,
+    ) {
+        self.debug_watched_outputs.insert(output_id.clone());
+        self.debug_topic_watchers
+            .entry(output_id)
+            .or_default()
+            .insert(subscription_id);
+    }
+
+    /// Drop `subscription_id` from every output it watches.
+    ///
+    /// Scans watchers rather than maintaining an inverse map. Unsubscribe is
+    /// rare; the scan is bounded by the count of outputs with active
+    /// subscribers. `retain` drops empty entries in one pass.
+    pub(crate) fn remove_debug_topic_subscription(&mut self, subscription_id: uuid::Uuid) {
+        let watched = &self.debug_watched_outputs;
+        self.debug_topic_watchers.retain(|output_id, watchers| {
+            watchers.remove(&subscription_id);
+            let keep = !watchers.is_empty();
+            if !keep {
+                watched.remove(output_id);
+            }
+            keep
+        });
+    }
+
+    /// Drop every `dora topic` watcher of this dataflow.
+    pub(crate) fn clear_debug_topic_watchers(&mut self) {
+        self.debug_topic_watchers.clear();
+        self.debug_watched_outputs.clear();
+    }
+
     pub(crate) fn new(
         dataflow_id: uuid::Uuid,
         daemon_id: DaemonId,
@@ -404,11 +488,16 @@ impl RunningDataflow {
         Self {
             id: dataflow_id,
             zenoh_peering: Arc::new(BTreeMap::new()),
+            endpoint_exchange: None,
             pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
             dataflow_started: false,
             subscribe_channels: HashMap::new(),
             pending_messages: HashMap::new(),
+            drain_signals: HashMap::new(),
+            remote_backpressured_outputs: BTreeSet::new(),
             mappings: HashMap::new(),
+            missing_channel_warned: BTreeSet::new(),
+            dropped_event_streams: BTreeSet::new(),
             timers: BTreeMap::new(),
             log_subscribers: Vec::new(),
             open_inputs: BTreeMap::new(),
@@ -428,9 +517,11 @@ impl RunningDataflow {
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
             grace_duration_kills: Default::default(),
+            startup_timeout_kills: Default::default(),
             node_stderr_most_recent: BTreeMap::new(),
             publishers: Default::default(),
             debug_topic_watchers: Default::default(),
+            debug_watched_outputs: Default::default(),
             finished_tx,
             listener_shutdown_tx,
             listener_shutdown_rx,
@@ -463,11 +554,93 @@ impl RunningDataflow {
     /// failure of the *new* incarnation misattributed to the stale cause and
     /// classified as `NodeErrorCause::Cascading`, suppressing its real stderr
     /// capture.
+    ///
+    /// The lazily-declared remote `publishers` — an `OutputId`-keyed
+    /// (`(node id, output)`) map that the `RemoveNode` / `ReplaceNode` routing
+    /// cleanup never touched — are dropped too. They are created on demand in
+    /// `send_to_remote_receivers`, so without this a removed node's zenoh
+    /// `Publisher` (and its retained session clone) would stay declared for the
+    /// life of the dataflow, accumulating unboundedly across repeated dynamic
+    /// add/remove cycles that use fresh node ids or output names. Dropping them
+    /// is safe on both call sites because the next remote send re-declares the
+    /// publisher.
+    ///
+    /// The sibling `debug_topic_watchers` map is deliberately *not* purged —
+    /// not here and not on any other path. A watcher is only ever (re)created
+    /// by a fresh `StartTopicDebugStream` from the coordinator, and neither the
+    /// `AddNode` re-add path nor the `ReplaceNode` restart re-sends one — only
+    /// a full daemon reconnect does, via the coordinator's
+    /// `restore_topic_debug_streams_for_daemon`. Remove + re-add of the same
+    /// node id is a supported flow (see `added_node_output_routing`) that
+    /// resumes under the same `OutputId(node_id, output)`, exactly like a
+    /// `ReplaceNode`, so purging the watcher would silently kill an active
+    /// `dora topic` stream across that cycle, never to recover. The map only
+    /// grows while a user holds a `dora topic` subscription, and
+    /// `StopTopicDebugStream` already reaps its entries on unsubscribe, so it is
+    /// bounded by live subscriptions rather than by add/remove churn.
     pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
         self.node_stderr_most_recent.remove(node_id);
         self.cascading_error_causes.forget(node_id);
+        retain_other_nodes(&mut self.publishers, node_id);
+        self.missing_channel_warned.retain(|(n, _)| n != node_id);
+        self.dropped_event_streams.remove(node_id);
+    }
+
+    /// Record that a node deliberately dropped its daemon event stream on
+    /// normal shutdown (`EventStreamDropped`): remove its send channel and mark
+    /// it so an upstream still producing to it — while its `running_nodes`
+    /// entry lingers until the process exit is observed — does not trigger the
+    /// #3201 "failed to re-subscribe" warning for what is an intentional drop.
+    /// The marker is cleared on (re)subscribe, on restart, and on node removal
+    /// (dora-rs/dora#3556).
+    ///
+    /// Also marks the node's drain signal, so a producer held for its full
+    /// channel does not count the coming close as a lost backpressure
+    /// message. It has to be this registered signal: the node sends
+    /// `EventStreamDropped` over its separate close connection, whose
+    /// listener has a drain signal no held delivery waits on.
+    pub(crate) fn mark_event_stream_dropped(&mut self, node_id: &NodeId) {
+        self.subscribe_channels.remove(node_id);
+        self.dropped_event_streams.insert(node_id.clone());
+        if let Some(drained) = self.drain_signals.get(node_id) {
+            drained
+                .stream_dropped
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    /// Reset the per-incarnation bookkeeping when a node's process exit is
+    /// observed, so a respawn under the same id starts fresh. Runs on every
+    /// exit, before the restart decision, and both restart paths (a
+    /// `restart_policy` respawn and `dora node restart`) reach it once the exit
+    /// is observed — after the exiting node's blocking `EventStreamDropped` has
+    /// been handled, so clearing `dropped_event_streams` here is not undone by a
+    /// late marker from the old incarnation (dora-rs/dora#3558).
+    ///
+    /// `grace_duration_kills` / `startup_timeout_kills` are keyed by
+    /// `(node_id, generation)`, so a successor can no longer inherit its
+    /// predecessor's marker structurally — removal here is hygiene for this
+    /// incarnation's own entry (consumed classifying this exit). The drain clock
+    /// and the connected marker are cleared for the same "respawn re-subscribes
+    /// from scratch" reason (dora-rs/dora#2270). `finish_escalated` is
+    /// deliberately NOT cleared here — it is consumed later by
+    /// `handle_node_stop_inner` to keep the coordinator-facing `clean_stop` flag
+    /// honest, and an escalated node never restarts.
+    pub(crate) fn reset_incarnation_state(&mut self, node_id: &NodeId, generation: u64) {
+        self.grace_duration_kills
+            .remove(&(node_id.clone(), generation));
+        self.startup_timeout_kills
+            .remove(&(node_id.clone(), generation));
+        self.all_inputs_closed_at.remove(node_id);
+        self.connected_nodes.remove(node_id);
+        // The exiting incarnation's clean `EventStream::drop` set this marker
+        // (it keeps its `running_nodes` entry across a restart). Clear it so the
+        // fresh incarnation is expected to re-subscribe: if it never does,
+        // upstream deliveries surface the #3201 "failed to re-subscribe"
+        // warning instead of being silenced as an intentional drop.
+        self.dropped_event_streams.remove(node_id);
     }
 
     /// Whether a startup-barrier completion (reported as
@@ -512,38 +685,48 @@ impl RunningDataflow {
                     interval_stream.tick().await;
 
                     let span = tracing::span!(tracing::Level::TRACE, "tick");
-                    let _ = span.enter();
 
-                    // Build metadata with minimal allocations.
-                    // Use shared daemon clock (not per-timer HLC) for causality.
-                    #[cfg(feature = "telemetry")]
-                    let parameters = {
-                        let ctx = dora_tracing::telemetry::serialize_context(&span.context());
-                        if ctx.is_empty() {
-                            BTreeMap::new()
-                        } else {
-                            let mut m = BTreeMap::new();
-                            m.insert(
-                                dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT.to_string(),
-                                dora_node_api::Parameter::String(ctx),
-                            );
-                            m
+                    // Enter the span only for the synchronous metadata/event
+                    // build, and drop the guard (end of this block) before the
+                    // `events_tx.send(...).await` below. Holding a span guard
+                    // across an await point would keep the span entered on the
+                    // worker thread while the task is parked, misattributing
+                    // whatever the runtime polls next on that thread to this
+                    // span on a multi-threaded runtime.
+                    let event = {
+                        let _guard = span.enter();
+
+                        // Build metadata with minimal allocations.
+                        // Use shared daemon clock (not per-timer HLC) for causality.
+                        #[cfg(feature = "telemetry")]
+                        let parameters = {
+                            let ctx = dora_tracing::telemetry::serialize_context(&span.context());
+                            if ctx.is_empty() {
+                                BTreeMap::new()
+                            } else {
+                                let mut m = BTreeMap::new();
+                                m.insert(
+                                    dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT.to_string(),
+                                    dora_node_api::Parameter::String(ctx),
+                                );
+                                m
+                            }
+                        };
+                        #[cfg(not(feature = "telemetry"))]
+                        let parameters = BTreeMap::new();
+
+                        let metadata =
+                            metadata::Metadata::from_parameters(clock.new_timestamp(), parameters);
+
+                        Timestamped {
+                            inner: DoraEvent::Timer {
+                                dataflow_id,
+                                interval,
+                                metadata,
+                            }
+                            .into(),
+                            timestamp: clock.new_timestamp(),
                         }
-                    };
-                    #[cfg(not(feature = "telemetry"))]
-                    let parameters = BTreeMap::new();
-
-                    let metadata =
-                        metadata::Metadata::from_parameters(clock.new_timestamp(), parameters);
-
-                    let event = Timestamped {
-                        inner: DoraEvent::Timer {
-                            dataflow_id,
-                            interval,
-                            metadata,
-                        }
-                        .into(),
-                        timestamp: clock.new_timestamp(),
                     };
                     if events_tx.send(event).await.is_err() {
                         break;
@@ -567,6 +750,18 @@ impl RunningDataflow {
         self.dataflow_started = true;
 
         Ok(())
+    }
+
+    /// Drop every `dora/logs` subscription `node_id` holds.
+    ///
+    /// A subscriber's entry outlives its channel: it is the node's logs edge,
+    /// kept while the node is down so a restarted incarnation keeps receiving
+    /// logs. So `RemoveNode` must drop it explicitly, and `AddNode` must drop
+    /// any stale entry before registering the node's inputs again — otherwise a
+    /// re-added id gets every log line once per entry, and keeps receiving on
+    /// an input id its new incarnation no longer declares.
+    pub(crate) fn unsubscribe_node_from_logs(&mut self, node_id: &NodeId) {
+        self.log_subscribers.retain(|sub| &sub.node_id != node_id);
     }
 
     /// Drop `node_id` from every timer subscriber set, and for any interval it
@@ -1048,6 +1243,78 @@ impl RunningDataflow {
     /// consumer, so their remote consumers would never receive the
     /// `OutputClosed` event when the producing node finishes (dora-rs/dora#2152
     /// region — graceful cross-daemon shutdown).
+    /// Whether `receiver`'s `input_id` declares `queue_policy: backpressure`,
+    /// judged from the live node config. Static and dynamic nodes alike have
+    /// an entry from spawn time (a dynamic node's config is served from it
+    /// when the node connects), so a consumer that has not joined yet still
+    /// counts. A receiver with no entry has exited; its edge is judged again
+    /// when it is added back.
+    pub(crate) fn input_requires_backpressure(&self, receiver: &NodeId, input_id: &DataId) -> bool {
+        self.running_nodes
+            .get(receiver)
+            .and_then(|node| node.node_config.run_config.inputs.get(input_id))
+            .is_some_and(crate::output_routing::input_is_backpressure)
+    }
+
+    /// The outputs among `outputs` of a node entering this running dataflow
+    /// that feed a `queue_policy: backpressure` input of a current receiver
+    /// (`output_routing::backpressured_outputs` for the live routing table).
+    pub(crate) fn backpressured_outputs_of(
+        &self,
+        node_id: &NodeId,
+        outputs: &BTreeSet<DataId>,
+    ) -> BTreeSet<DataId> {
+        crate::output_routing::added_node_backpressured_outputs(
+            node_id,
+            outputs,
+            &self.mappings,
+            |receiver, input_id| self.input_requires_backpressure(receiver, input_id),
+        )
+    }
+
+    /// The first `queue_policy: backpressure` input of a node entering this
+    /// running dataflow whose local producer is already running with that
+    /// output on the direct zenoh path.
+    ///
+    /// A producer learns its routing once, in its `NodeConfig`; nothing
+    /// re-pins a running producer when a consumer is added or replaced. Such
+    /// an edge would silently run over the lossy direct ingress the policy
+    /// exists to avoid, so the add/replace is refused instead. Self-loops are
+    /// the entering node's own routing (`pin_backpressure_self_loops`), a
+    /// producer without an entry runs on another daemon (its daemon owns that
+    /// call), and a producer without routing keeps every output on the
+    /// daemon path already.
+    pub(crate) fn unpinnable_backpressure_input(
+        &self,
+        node_id: &NodeId,
+        inputs: &BTreeMap<DataId, Input>,
+    ) -> Option<(DataId, OutputId)> {
+        inputs.iter().find_map(|(input_id, input)| {
+            if !crate::output_routing::input_is_backpressure(input) {
+                return None;
+            }
+            let InputMapping::User(mapping) = &input.mapping else {
+                return None;
+            };
+            if &mapping.source == node_id {
+                return None;
+            }
+            let producer = self.running_nodes.get(&mapping.source)?;
+            let pinned = match &producer.node_config.output_routing {
+                None => true,
+                Some(routing) => routing
+                    .get(&mapping.output)
+                    .is_some_and(|routing| routing.daemon_only),
+            };
+            (!pinned).then(|| {
+                (
+                    input_id.clone(),
+                    OutputId(mapping.source.clone(), mapping.output.clone()),
+                )
+            })
+        })
+    }
+
     pub(crate) fn node_output_ids(&self, node_id: &NodeId) -> BTreeSet<DataId> {
         node_output_ids(&self.mappings, &self.open_external_mappings, node_id)
     }
@@ -1066,17 +1333,19 @@ impl RunningDataflow {
     /// A running source (no inputs, never drains) means the dataflow is still
     /// producing, so nothing escalates; likewise an active non-source node
     /// (recent traffic) means work is still in progress. Explicitly stopped
-    /// dataflows are excluded (`stop_all` runs its own kill escalation), as are
-    /// dataflows with open cross-daemon output mappings — a local node that
-    /// looks like a straggler may still be flushing outputs to consumers on
-    /// other daemons, which this daemon cannot see.
+    /// dataflows are excluded (`stop_all` runs its own kill escalation). Nodes
+    /// with open cross-daemon output mappings are skipped only when they would
+    /// otherwise be selected for escalation — they may still be flushing
+    /// outputs to consumers on other daemons, which this daemon cannot see —
+    /// but unrelated local nodes stay watchdog-covered.
     ///
     /// `now_millis` is the current `node_communication::current_millis()`, the
     /// clock `RunningNode::last_activity` is stamped against.
     pub(crate) fn finish_stragglers(&self, grace: Duration, now_millis: u64) -> Vec<NodeId> {
-        if self.stop_sent || !self.open_external_mappings.is_empty() {
+        if self.stop_sent {
             return Vec::new();
         }
+        let remote_blocked_nodes = self.nodes_blocked_by_open_remote_edges();
         select_finish_stragglers(
             self.running_nodes.iter().map(|(id, node)| {
                 let last = node.last_activity.load(atomic::Ordering::Acquire);
@@ -1096,11 +1365,74 @@ impl RunningDataflow {
                     drained_for: self.all_inputs_closed_at.get(id).map(Instant::elapsed),
                     silent_for: Duration::from_millis(now_millis.saturating_sub(last)),
                     node_grace: node.finish_grace_secs,
+                    remote_output_open: self
+                        .open_external_mappings
+                        .iter()
+                        .any(|output| &output.0 == id),
+                    blocked_by_remote_output_chain: remote_blocked_nodes.contains(id),
                 }
             }),
             &self.finish_escalated,
             grace,
         )
+    }
+
+    fn nodes_blocked_by_open_remote_edges(&self) -> BTreeSet<NodeId> {
+        let mut blocked = BTreeSet::new();
+        let mut visited = BTreeSet::new();
+        let mut queue = VecDeque::new();
+
+        for output in &self.open_external_mappings {
+            if visited.insert(output.0.clone()) {
+                queue.push_back(output.0.clone());
+            }
+        }
+
+        for (output, receivers) in &self.mappings {
+            if self.running_nodes.contains_key(&output.0) {
+                continue;
+            }
+
+            for (receiver, input) in receivers {
+                let input_still_open = self
+                    .open_inputs
+                    .get(receiver)
+                    .is_some_and(|open_inputs| open_inputs.contains(input));
+                if !input_still_open {
+                    continue;
+                }
+
+                blocked.insert(receiver.clone());
+                if visited.insert(receiver.clone()) {
+                    queue.push_back(receiver.clone());
+                }
+            }
+        }
+
+        while let Some(producer) = queue.pop_front() {
+            for (_, receivers) in self
+                .mappings
+                .iter()
+                .filter(|(output, _)| output.0 == producer)
+            {
+                for (receiver, input) in receivers {
+                    let input_still_open = self
+                        .open_inputs
+                        .get(receiver)
+                        .is_some_and(|open_inputs| open_inputs.contains(input));
+                    if !input_still_open {
+                        continue;
+                    }
+
+                    blocked.insert(receiver.clone());
+                    if visited.insert(receiver.clone()) {
+                        queue.push_back(receiver.clone());
+                    }
+                }
+            }
+        }
+
+        blocked
     }
 
     /// Whether a node can never reach natural finish, so the finish-straggler
@@ -1168,6 +1500,13 @@ struct StragglerNode<'a> {
     /// When `Some`, takes precedence over the global grace passed to
     /// [`select_finish_stragglers`] for this node only.
     node_grace: Option<Duration>,
+    /// This node still has an output consumed by another daemon. It is exempt
+    /// from local finish escalation, but must not disable the watchdog for
+    /// unrelated local nodes.
+    remote_output_open: bool,
+    /// This node is still waiting on a local chain rooted at an open
+    /// cross-daemon edge.
+    blocked_by_remote_output_chain: bool,
 }
 
 /// Pure core of [`RunningDataflow::node_output_ids`].
@@ -1214,7 +1553,10 @@ fn select_finish_stragglers<'a>(
             // draining: ready past grace; still within grace it is progressing
             // toward exit and does not veto, but is not escalated yet
             Some(drained_for) => {
-                if drained_for >= effective_grace {
+                if drained_for >= effective_grace
+                    && !node.remote_output_open
+                    && !node.blocked_by_remote_output_chain
+                {
                     eligible.push(node.id.clone());
                 }
             }
@@ -1224,7 +1566,9 @@ fn select_finish_stragglers<'a>(
             // node still has work in progress — both veto.
             None => {
                 if node.connected && node.silent_for >= effective_grace {
-                    eligible.push(node.id.clone());
+                    if !node.remote_output_open && !node.blocked_by_remote_output_chain {
+                        eligible.push(node.id.clone());
+                    }
                 } else {
                     return Vec::new();
                 }
@@ -1236,6 +1580,15 @@ fn select_finish_stragglers<'a>(
         .into_iter()
         .filter(|node_id| !already_escalated.contains(node_id))
         .collect()
+}
+
+/// Drops every entry of an `OutputId`-keyed map whose output belongs to
+/// `node_id`, keeping all others. Extracted so the keying can be unit-tested:
+/// its one production caller purges [`RunningDataflow::publishers`], whose value
+/// type (`Arc<zenoh::pubsub::Publisher>`) can't be constructed in-process, so a
+/// direct map-shape test of that field isn't possible.
+fn retain_other_nodes<V>(map: &mut BTreeMap<OutputId, V>, node_id: &NodeId) {
+    map.retain(|output_id, _| &output_id.0 != node_id);
 }
 
 #[cfg(test)]
@@ -1250,6 +1603,29 @@ mod tests {
 
     fn data_id(name: &str) -> DataId {
         DataId::from(name.to_string())
+    }
+
+    #[test]
+    fn retain_other_nodes_drops_only_that_nodes_outputs() {
+        // Covers the `OutputId` keying of the `publishers` purge in
+        // `forget_node_bookkeeping`, whose real value type
+        // (`Arc<zenoh::pubsub::Publisher>`) can't be built in a unit test — a
+        // dummy value stands in for the map shape. Guards against the purge
+        // being keyed on the wrong `OutputId` field, which would silently
+        // reintroduce the per-dataflow publisher leak across add/remove cycles.
+        let node_a = node_id("node_a");
+        let node_b = node_id("node_b");
+        let mut map: BTreeMap<OutputId, u32> = BTreeMap::new();
+        map.insert(OutputId(node_a.clone(), data_id("x")), 1);
+        map.insert(OutputId(node_a.clone(), data_id("y")), 2);
+        map.insert(OutputId(node_b.clone(), data_id("x")), 3);
+
+        retain_other_nodes(&mut map, &node_a);
+
+        // Every output of node_a is gone, regardless of output name …
+        assert!(!map.keys().any(|OutputId(n, _)| n == &node_a));
+        // … while node_b keeps its entry untouched.
+        assert_eq!(map.get(&OutputId(node_b.clone(), data_id("x"))), Some(&3));
     }
 
     // ---- node_output_ids: remote-only outputs must be included ----
@@ -1371,6 +1747,38 @@ mod tests {
              and must not be treated as a source, regardless of what its \
              top-level descriptor `inputs` map looks like"
         );
+    }
+
+    fn test_running_node(node_id: &NodeId) -> RunningNode {
+        RunningNode {
+            process: None,
+            restart_loop_start: None,
+            _listener_shutdown: None,
+            generation: 7,
+            generation_counter: Arc::new(AtomicU64::new(7)),
+            node_config: NodeConfig {
+                dataflow_id: uuid::Uuid::nil(),
+                node_id: node_id.clone(),
+                run_config: dora_core::config::NodeRunConfig::default(),
+                daemon_communication: None,
+                dataflow_descriptor: serde_yaml::Value::Null,
+                dynamic: false,
+                write_events_to: None,
+                restart_count: 0,
+                output_routing: None,
+            },
+            pid: None,
+            restart_count: Arc::new(AtomicU32::new(0)),
+            restart_policy: RestartPolicy::Never,
+            disable_restart: Arc::new(AtomicBool::new(false)),
+            force_restart_next: Arc::new(AtomicBool::new(false)),
+            last_activity: Arc::new(AtomicU64::new(0)),
+            spawned_at: Arc::new(AtomicU64::new(0)),
+            startup_kill_sent: Arc::new(AtomicBool::new(false)),
+            health_check_timeout: None,
+            startup_timeout: None,
+            finish_grace_secs: None,
+        }
     }
 
     /// Default behavior is unchanged: every input gates the drain, so a
@@ -1678,17 +2086,7 @@ mod tests {
     }
 
     fn empty_descriptor() -> Descriptor {
-        use dora_message::descriptor::Debug as DescriptorDebug;
-        Descriptor {
-            nodes: vec![],
-            deploy: None,
-            debug: DescriptorDebug::default(),
-            health_check_interval: None,
-            strict_types: None,
-            exit_when_nodes_finish: None,
-            type_rules: vec![],
-            env: None,
-        }
+        Descriptor::new(vec![])
     }
 
     #[test]
@@ -1750,6 +2148,8 @@ mod tests {
             drained_for: Some(age),
             silent_for: Duration::ZERO,
             node_grace: None,
+            remote_output_open: false,
+            blocked_by_remote_output_chain: false,
         }
     }
 
@@ -1763,6 +2163,8 @@ mod tests {
             drained_for: None,
             silent_for,
             node_grace: None,
+            remote_output_open: false,
+            blocked_by_remote_output_chain: false,
         }
     }
 
@@ -1802,6 +2204,8 @@ mod tests {
             drained_for: None,
             silent_for: PAST_GRACE,
             node_grace: None,
+            remote_output_open: false,
+            blocked_by_remote_output_chain: false,
         };
         let selected = select_finish_stragglers(
             [source_node, drained(&sink, PAST_GRACE)].into_iter(),
@@ -1823,6 +2227,8 @@ mod tests {
             drained_for: None,
             silent_for: WITHIN_GRACE,
             node_grace: None,
+            remote_output_open: false,
+            blocked_by_remote_output_chain: false,
         };
         let selected = select_finish_stragglers(
             [dynamic_node, drained(&sink, PAST_GRACE)].into_iter(),
@@ -1856,6 +2262,63 @@ mod tests {
         assert_eq!(selected, vec![node_id("a"), node_id("b")]);
     }
 
+    #[test]
+    fn remote_output_open_skips_only_that_node() {
+        let remote = node_id("remote_producer");
+        let local = node_id("local_stuck");
+        let mut remote_node = drained(&remote, PAST_GRACE);
+        remote_node.remote_output_open = true;
+
+        let selected = select_finish_stragglers(
+            [remote_node, drained(&local, PAST_GRACE)].into_iter(),
+            &BTreeSet::new(),
+            TEST_GRACE,
+        );
+
+        assert_eq!(selected, vec![local]);
+    }
+
+    #[test]
+    fn remote_output_open_does_not_bypass_active_node_veto() {
+        let remote = node_id("remote_producer");
+        let local = node_id("local_stuck");
+        let mut remote_node = never_drained(&remote, WITHIN_GRACE);
+        remote_node.remote_output_open = true;
+
+        let selected = select_finish_stragglers(
+            [remote_node, drained(&local, PAST_GRACE)].into_iter(),
+            &BTreeSet::new(),
+            TEST_GRACE,
+        );
+
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn remote_output_open_does_not_bypass_starting_node_veto() {
+        let remote = node_id("remote_producer");
+        let local = node_id("local_stuck");
+        let remote_node = StragglerNode {
+            id: &remote,
+            dynamic: false,
+            never_finishes: false,
+            connected: false,
+            drained_for: None,
+            silent_for: PAST_GRACE,
+            node_grace: None,
+            remote_output_open: true,
+            blocked_by_remote_output_chain: false,
+        };
+
+        let selected = select_finish_stragglers(
+            [remote_node, drained(&local, PAST_GRACE)].into_iter(),
+            &BTreeSet::new(),
+            TEST_GRACE,
+        );
+
+        assert!(selected.is_empty());
+    }
+
     // ---- dora-rs/dora#2270: wedge-before-drain escalation ----
 
     #[test]
@@ -1872,6 +2335,267 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_remote_output_does_not_disable_local_straggler_watchdog() {
+        let mut df =
+            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let local_stuck = node_id("local_stuck");
+        let remote_producer = node_id("remote_producer");
+        let now = 10_000;
+        let running = test_running_node(&local_stuck);
+        running.last_activity.store(1, atomic::Ordering::Release);
+
+        df.add_mapping(
+            node_id("local_source"),
+            data_id("value"),
+            local_stuck.clone(),
+            data_id("input"),
+        );
+        df.open_inputs
+            .get_mut(&local_stuck)
+            .expect("test input should be registered")
+            .remove(&data_id("input"));
+        df.all_inputs_closed_at.insert(
+            local_stuck.clone(),
+            Instant::now() - Duration::from_millis(2),
+        );
+        df.running_nodes.insert(local_stuck.clone(), running);
+        df.connected_nodes.insert(local_stuck.clone());
+        df.open_external_mappings
+            .insert(OutputId(remote_producer, data_id("remote_out")));
+
+        assert_eq!(
+            df.finish_stragglers(Duration::from_millis(1), now),
+            vec![local_stuck],
+            "a remote-only output from another producer must not globally disable \
+             the local finish-straggler watchdog"
+        );
+    }
+
+    #[test]
+    fn remote_output_producer_keeps_local_consumer_from_escalating() {
+        let mut df =
+            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let producer = node_id("producer");
+        let local_consumer = node_id("local_consumer");
+        let unrelated_stuck = node_id("unrelated_stuck");
+        let upstream = node_id("upstream");
+        let now = 10_000;
+
+        let producer_running = test_running_node(&producer);
+        producer_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+        let consumer_running = test_running_node(&local_consumer);
+        consumer_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+        let unrelated_running = test_running_node(&unrelated_stuck);
+        unrelated_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+
+        df.add_mapping(
+            upstream,
+            data_id("source_out"),
+            producer.clone(),
+            data_id("producer_in"),
+        );
+        df.add_mapping(
+            producer.clone(),
+            data_id("fan_out"),
+            local_consumer.clone(),
+            data_id("consumer_in"),
+        );
+        df.add_mapping(
+            node_id("local_source"),
+            data_id("unrelated_out"),
+            unrelated_stuck.clone(),
+            data_id("unrelated_in"),
+        );
+
+        df.open_inputs
+            .get_mut(&producer)
+            .expect("producer input should be registered")
+            .remove(&data_id("producer_in"));
+        df.all_inputs_closed_at
+            .insert(producer.clone(), Instant::now() - Duration::from_millis(2));
+        df.open_inputs
+            .get_mut(&unrelated_stuck)
+            .expect("unrelated input should be registered")
+            .remove(&data_id("unrelated_in"));
+        df.all_inputs_closed_at.insert(
+            unrelated_stuck.clone(),
+            Instant::now() - Duration::from_millis(2),
+        );
+
+        df.running_nodes.insert(producer.clone(), producer_running);
+        df.running_nodes
+            .insert(local_consumer.clone(), consumer_running);
+        df.running_nodes
+            .insert(unrelated_stuck.clone(), unrelated_running);
+        df.connected_nodes.insert(producer.clone());
+        df.connected_nodes.insert(local_consumer.clone());
+        df.connected_nodes.insert(unrelated_stuck.clone());
+        df.open_external_mappings
+            .insert(OutputId(producer, data_id("fan_out")));
+
+        assert_eq!(
+            df.finish_stragglers(Duration::from_millis(1), now),
+            vec![unrelated_stuck],
+            "a local consumer of a producer held alive for remote-output flushing \
+             must not be escalated while that producer's output is still open, \
+             but unrelated stragglers must stay watchdog-covered"
+        );
+    }
+
+    #[test]
+    fn remote_output_producer_protects_multi_hop_local_consumers() {
+        let mut df =
+            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let producer = node_id("producer");
+        let middle = node_id("middle");
+        let leaf = node_id("leaf");
+        let unrelated_stuck = node_id("unrelated_stuck");
+        let upstream = node_id("upstream");
+        let now = 10_000;
+
+        let producer_running = test_running_node(&producer);
+        producer_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+        let middle_running = test_running_node(&middle);
+        middle_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+        let leaf_running = test_running_node(&leaf);
+        leaf_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+        let unrelated_running = test_running_node(&unrelated_stuck);
+        unrelated_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+
+        df.add_mapping(
+            upstream,
+            data_id("source_out"),
+            producer.clone(),
+            data_id("producer_in"),
+        );
+        df.add_mapping(
+            producer.clone(),
+            data_id("producer_out"),
+            middle.clone(),
+            data_id("middle_in"),
+        );
+        df.add_mapping(
+            middle.clone(),
+            data_id("middle_out"),
+            leaf.clone(),
+            data_id("leaf_in"),
+        );
+        df.add_mapping(
+            node_id("local_source"),
+            data_id("unrelated_out"),
+            unrelated_stuck.clone(),
+            data_id("unrelated_in"),
+        );
+
+        df.open_inputs
+            .get_mut(&producer)
+            .expect("producer input should be registered")
+            .remove(&data_id("producer_in"));
+        df.all_inputs_closed_at
+            .insert(producer.clone(), Instant::now() - Duration::from_millis(2));
+        df.open_inputs
+            .get_mut(&unrelated_stuck)
+            .expect("unrelated input should be registered")
+            .remove(&data_id("unrelated_in"));
+        df.all_inputs_closed_at.insert(
+            unrelated_stuck.clone(),
+            Instant::now() - Duration::from_millis(2),
+        );
+
+        df.running_nodes.insert(producer.clone(), producer_running);
+        df.running_nodes.insert(middle.clone(), middle_running);
+        df.running_nodes.insert(leaf.clone(), leaf_running);
+        df.running_nodes
+            .insert(unrelated_stuck.clone(), unrelated_running);
+        df.connected_nodes.insert(producer.clone());
+        df.connected_nodes.insert(middle);
+        df.connected_nodes.insert(leaf);
+        df.connected_nodes.insert(unrelated_stuck.clone());
+        df.open_external_mappings
+            .insert(OutputId(producer, data_id("producer_out")));
+
+        assert_eq!(
+            df.finish_stragglers(Duration::from_millis(1), now),
+            vec![unrelated_stuck],
+            "all local consumers still waiting on a remote-held producer chain \
+             must stay out of finish-straggler escalation, while unrelated \
+             stragglers stay watchdog-covered"
+        );
+    }
+
+    #[test]
+    fn inbound_remote_source_keeps_local_consumer_from_escalating() {
+        let mut df =
+            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let remote_source = node_id("remote_source");
+        let inbound_consumer = node_id("inbound_consumer");
+        let unrelated_stuck = node_id("unrelated_stuck");
+        let outbound_producer = node_id("outbound_producer");
+        let now = 10_000;
+
+        let inbound_running = test_running_node(&inbound_consumer);
+        inbound_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+        let unrelated_running = test_running_node(&unrelated_stuck);
+        unrelated_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+
+        df.add_mapping(
+            remote_source,
+            data_id("remote_out"),
+            inbound_consumer.clone(),
+            data_id("inbound_in"),
+        );
+        df.add_mapping(
+            node_id("local_source"),
+            data_id("unrelated_out"),
+            unrelated_stuck.clone(),
+            data_id("unrelated_in"),
+        );
+        df.open_inputs
+            .get_mut(&unrelated_stuck)
+            .expect("unrelated input should be registered")
+            .remove(&data_id("unrelated_in"));
+        df.all_inputs_closed_at.insert(
+            unrelated_stuck.clone(),
+            Instant::now() - Duration::from_millis(2),
+        );
+
+        df.running_nodes
+            .insert(inbound_consumer.clone(), inbound_running);
+        df.running_nodes
+            .insert(unrelated_stuck.clone(), unrelated_running);
+        df.connected_nodes.insert(inbound_consumer);
+        df.connected_nodes.insert(unrelated_stuck.clone());
+        df.open_external_mappings
+            .insert(OutputId(outbound_producer, data_id("remote_out")));
+
+        assert_eq!(
+            df.finish_stragglers(Duration::from_millis(1), now),
+            vec![unrelated_stuck],
+            "a local consumer whose open input is fed by a remote source must \
+             stay out of finish-straggler escalation, while unrelated local \
+             stragglers remain covered"
+        );
+    }
+
+    #[test]
     fn unconnected_node_silent_past_grace_is_not_escalated() {
         // `last_activity` is seeded at spawn, so a slow-starting node that has
         // not subscribed yet reads as long-silent — but it is still coming up,
@@ -1885,6 +2609,8 @@ mod tests {
             drained_for: None,
             silent_for: PAST_GRACE,
             node_grace: None,
+            remote_output_open: false,
+            blocked_by_remote_output_chain: false,
         };
         let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert!(selected.is_empty());
@@ -1923,6 +2649,8 @@ mod tests {
             drained_for: None,
             silent_for: PAST_GRACE,
             node_grace: None,
+            remote_output_open: false,
+            blocked_by_remote_output_chain: false,
         };
         let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert!(selected.is_empty());
@@ -1959,6 +2687,8 @@ mod tests {
             drained_for: Some(PAST_GRACE),
             silent_for: PAST_GRACE,
             node_grace: Some(Duration::from_secs(600)),
+            remote_output_open: false,
+            blocked_by_remote_output_chain: false,
         };
         let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert!(
@@ -1980,6 +2710,8 @@ mod tests {
             drained_for: Some(Duration::from_millis(200)), // well past long_grace
             silent_for: Duration::ZERO,
             node_grace: Some(long_grace),
+            remote_output_open: false,
+            blocked_by_remote_output_chain: false,
         };
         let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert_eq!(selected, vec![node_id("trainer")]);
@@ -2004,6 +2736,8 @@ mod tests {
             drained_for: Some(PAST_GRACE), // past global grace, within per-node grace
             silent_for: PAST_GRACE,
             node_grace: Some(long_grace),
+            remote_output_open: false,
+            blocked_by_remote_output_chain: false,
         };
         let selected = select_finish_stragglers(
             [drained(&sink, PAST_GRACE), trainer_node].into_iter(),
@@ -2037,6 +2771,8 @@ mod tests {
             drained_for: None,      // has not received AllInputsClosed yet
             silent_for: PAST_GRACE, // silent past global grace, within per-node grace
             node_grace: Some(long_grace),
+            remote_output_open: false,
+            blocked_by_remote_output_chain: false,
         };
         let selected = select_finish_stragglers(
             [drained(&sink, PAST_GRACE), trainer_node].into_iter(),

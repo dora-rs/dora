@@ -5,7 +5,7 @@ use crate::{
 };
 
 use dora_message::{
-    config::{Input, InputMapping, UserInputMapping},
+    config::{Input, InputMapping, UserInputMapping, parse_byte_count},
     descriptor::{CoreNodeKind, DYNAMIC_SOURCE, OperatorSource, ResolvedNode, SHELL_SOURCE},
     id::{DataId, NodeId, OperatorId},
 };
@@ -89,23 +89,8 @@ fn check_dataflow_static_resolved(
     dataflow: &Descriptor,
     nodes: &BTreeMap<NodeId, ResolvedNode>,
 ) -> eyre::Result<()> {
-    // reject negative / non-finite / overflowing timing values before they
-    // reach the daemon, where `Duration::from_secs_f64` would panic on spawn.
     for node in nodes.values() {
-        if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
-            check_timing_fields(&node.id, custom)?;
-        }
-        // `input_timeout` is a second-valued `f64` that the daemon also feeds
-        // to `Duration::from_secs_f64`, on both the initial-spawn and the
-        // reconnect paths.
-        for (input_id, input) in node_inputs(node) {
-            check_seconds_field(
-                &format!("input `{input_id}` of node `{}`", node.id),
-                "input_timeout",
-                input.input_timeout,
-                true,
-            )?;
-        }
+        check_node_timing(node)?;
     }
     // dataflow-level `health_check_interval` reaches `Duration::from_secs_f64`
     // in the same way (`binaries/daemon/src/lib.rs`). A zero interval must also
@@ -219,6 +204,85 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
     Ok(())
 }
 
+/// Validate the second-valued timing fields of one resolved node: the custom
+/// node's own timeouts and restart delays, plus every input's
+/// `input_timeout`.
+///
+/// The daemon feeds these to `Duration::from_secs_f64`, which panics on
+/// negative, non-finite, or overflowing values. [`check_dataflow_static`]
+/// runs this for every node; call it directly for a node that joins a running
+/// dataflow (`dora node add` / `dora node replace`), which never goes through
+/// whole-dataflow validation.
+///
+/// This also enforces the `startup_timeout` rule for dynamic nodes, which is
+/// a descriptor-policy check rather than a panic guard. The spawn path of an
+/// existing dataflow (`dora start`) must not apply that rule to a descriptor
+/// that started fine before, so it calls [`check_node_timing_values`] instead.
+pub fn check_node_timing(node: &ResolvedNode) -> eyre::Result<()> {
+    check_node_timing_values(node)?;
+    if let descriptor::CoreNodeKind::Custom(custom) = &node.kind
+        && custom.path.as_str() == DYNAMIC_SOURCE
+        && custom.startup_timeout.is_some()
+    {
+        bail!(
+            "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
+            node.id
+        );
+    }
+    Ok(())
+}
+
+/// A runtime node must hold exactly one operator: the operator runtime
+/// (`dora_runtime_api::main`, shared by the shared-library and Python
+/// backends) refuses to start with zero or several. Without this check such a
+/// descriptor passes validation and only fails when the runtime process
+/// starts.
+///
+/// Like [`check_operator_ids`], descriptor resolution runs this for every
+/// node, so `dora start`, `dora node add/replace` and recovery are covered.
+pub fn check_runtime_operator_count(node: &ResolvedNode) -> eyre::Result<()> {
+    if let descriptor::CoreNodeKind::Runtime(runtime) = &node.kind
+        && runtime.operators.len() != 1
+    {
+        bail!(
+            "runtime node `{}` has {} operators, but a runtime node runs exactly one \
+             operator; split them into one node per operator",
+            node.id,
+            runtime.operators.len()
+        );
+    }
+    Ok(())
+}
+
+/// The panic-guard half of [`check_node_timing`]: reject only the values the
+/// daemon would panic on in `Duration::from_secs_f64`, with no
+/// descriptor-policy rules on top.
+///
+/// `dora start` never ran whole-dataflow validation before, so applying a
+/// policy rule there would reject descriptors that start fine on 1.0.x and
+/// never panicked -- a dynamic node carrying an (ignored) `startup_timeout`,
+/// for one. The spawn path therefore guards against the panic only, and
+/// leaves the policy rules to `dora run` / `dora validate`
+/// ([`check_dataflow_static`]) and to the node-join path
+/// ([`check_node_timing`]).
+pub fn check_node_timing_values(node: &ResolvedNode) -> eyre::Result<()> {
+    if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
+        check_timing_fields(&node.id, custom)?;
+    }
+    // `input_timeout` is a second-valued `f64` that the daemon also feeds
+    // to `Duration::from_secs_f64`, on both the initial-spawn and the
+    // reconnect paths.
+    for (input_id, input) in node_inputs(node) {
+        check_seconds_field(
+            &format!("input `{input_id}` of node `{}`", node.id),
+            "input_timeout",
+            input.input_timeout,
+            true,
+        )?;
+    }
+    Ok(())
+}
+
 /// Reject negative / non-finite / overflowing second-valued timing fields on a
 /// custom node.
 ///
@@ -234,6 +298,7 @@ fn check_timing_fields(
     for (field, value) in [
         ("finish_grace_secs", custom.finish_grace_secs),
         ("health_check_timeout", custom.health_check_timeout),
+        ("startup_timeout", custom.startup_timeout),
         ("restart_delay", custom.restart_delay),
         ("max_restart_delay", custom.max_restart_delay),
         ("restart_window", custom.restart_window),
@@ -252,28 +317,79 @@ fn check_timing_fields(
 /// probe the exact same boundary with its non-panicking twin
 /// `try_from_secs_f64`, so a value accepted here can never panic the daemon.
 ///
-/// When `allow_zero` is `false`, `0.0` is also rejected. This is required for
-/// fields that reach `tokio::time::interval` (e.g. `health_check_interval`),
-/// which panics on a zero period.
+/// When `allow_zero` is `false`, any value that produces a zero-length
+/// `Duration` is also rejected. This is required for fields that reach
+/// `tokio::time::interval` (e.g. `health_check_interval`), which panics on a
+/// zero period. Checking the resulting `Duration` -- not just the literal
+/// `0.0` -- also rejects a tiny-but-positive value such as `1e-10`, which
+/// `Duration::from_secs_f64` rounds down to `Duration::ZERO`. This mirrors the
+/// timer parser's `interval.is_zero()` guard in `dora-message`.
 fn check_seconds_field(
     owner: &str,
     field: &str,
     value: Option<f64>,
     allow_zero: bool,
 ) -> eyre::Result<()> {
-    if let Some(value) = value
-        && (std::time::Duration::try_from_secs_f64(value).is_err() || (!allow_zero && value == 0.0))
-    {
-        let requirement = if allow_zero {
-            "non-negative"
-        } else {
-            "positive"
-        };
-        bail!(
-            "{owner} has invalid `{field}`: {value} \
-             (must be a finite, {requirement} number of seconds smaller than {})",
-            std::time::Duration::MAX.as_secs_f64()
-        );
+    if let Some(value) = value {
+        // A negative / non-finite / overflowing value fails to convert; a
+        // tiny-but-positive value (e.g. `1e-10`) converts to `Duration::ZERO`,
+        // which must also be rejected for interval fields (`allow_zero ==
+        // false`). Inspect the resulting `Duration`, not the literal `0.0`.
+        let duration = std::time::Duration::try_from_secs_f64(value);
+        let is_zero = duration.as_ref().is_ok_and(|d| d.is_zero());
+        if !allow_zero && is_zero {
+            // Distinct message: a value like `1e-10` *is* positive, so calling it
+            // "not positive" would misdirect the user -- the real reason is that
+            // it rounds down to a zero-length duration.
+            bail!(
+                "{owner} has invalid `{field}`: {value} \
+                 (must be a positive number of seconds; this value is zero or \
+                 rounds down to a zero-length duration)"
+            );
+        }
+        if duration.is_err() {
+            let requirement = if allow_zero {
+                "non-negative"
+            } else {
+                "positive"
+            };
+            bail!(
+                "{owner} has invalid `{field}`: {value} \
+                 (must be a finite, {requirement} number of seconds smaller than {})",
+                std::time::Duration::MAX.as_secs_f64()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Reject a runtime operator id that cannot prefix a `DataId`.
+///
+/// The daemon and the operator runtime expose each operator input/output as
+/// the `DataId` `{operator_id}/{id}`, built with `DataId::from`, which panics
+/// on an invalid id. `OperatorId` itself accepts any string (its `FromStr` is
+/// infallible), so an id such as `my op` or `""` would otherwise pass
+/// validation and crash the daemon when it spawns the node. The id must also
+/// be a single path segment, or the `{operator_id}/{id}` split is ambiguous.
+///
+/// Descriptor resolution (`resolve_aliases_and_set_defaults`) runs this for
+/// every node, so every coordinator path is covered. The daemon also calls it
+/// on the nodes it is asked to spawn, so an older coordinator cannot crash it.
+pub fn check_operator_ids(node: &ResolvedNode) -> eyre::Result<()> {
+    let CoreNodeKind::Runtime(runtime) = &node.kind else {
+        return Ok(());
+    };
+    for operator in &runtime.operators {
+        let id: &str = operator.id.as_ref();
+        if id.contains('/') {
+            bail!(
+                "node `{}`: invalid operator id `{id}`: must not contain `/`",
+                node.id
+            );
+        }
+        if let Err(err) = id.parse::<DataId>() {
+            bail!("node `{}`: invalid operator id `{id}`: {err}", node.id);
+        }
     }
     Ok(())
 }
@@ -299,9 +415,20 @@ pub trait ResolvedNodeExt {
     fn max_rotated_files(&self) -> eyre::Result<Option<u32>>;
 }
 
+/// Check that a resolved `send_stdout_as` / `send_logs_as` name is a valid
+/// [`DataId`]. The daemon's per-node log task turns it into one for every log
+/// line, and an invalid name (empty, a space, `op/` from an empty operator
+/// entry, ...) would otherwise panic that task on the node's first line and
+/// silently drop all of the node's later logs.
+fn checked_output_name(field: &str, name: String) -> eyre::Result<String> {
+    name.parse::<DataId>()
+        .map_err(|err| eyre!("`{field}: {name}` is not a valid output id: {err}"))?;
+    Ok(name)
+}
+
 impl ResolvedNodeExt for ResolvedNode {
     fn send_stdout_as(&self) -> eyre::Result<Option<String>> {
-        match &self.kind {
+        let name = match &self.kind {
             // TODO: Split stdout between operators
             CoreNodeKind::Runtime(n) => {
                 let count = n
@@ -318,19 +445,21 @@ impl ResolvedNodeExt for ResolvedNode {
                         "More than one `send_stdout_as` entries for a runtime node. Please only use one `send_stdout_as` per runtime."
                     ));
                 }
-                Ok(n.operators.iter().find_map(|op| {
+                n.operators.iter().find_map(|op| {
                     op.config
                         .send_stdout_as
-                        .clone()
+                        .as_ref()
                         .map(|stdout| format!("{}/{}", op.id, stdout))
-                }))
+                })
             }
-            CoreNodeKind::Custom(n) => Ok(n.send_stdout_as.clone()),
-        }
+            CoreNodeKind::Custom(n) => n.send_stdout_as.clone(),
+        };
+        name.map(|name| checked_output_name("send_stdout_as", name))
+            .transpose()
     }
 
     fn send_logs_as(&self) -> eyre::Result<Option<String>> {
-        match &self.kind {
+        let name = match &self.kind {
             CoreNodeKind::Runtime(n) => {
                 let count = n
                     .operators
@@ -342,15 +471,17 @@ impl ResolvedNodeExt for ResolvedNode {
                         "More than one `send_logs_as` entries for a runtime node. Please only use one `send_logs_as` per runtime."
                     ));
                 }
-                Ok(n.operators.iter().find_map(|op| {
+                n.operators.iter().find_map(|op| {
                     op.config
                         .send_logs_as
-                        .clone()
+                        .as_ref()
                         .map(|logs| format!("{}/{}", op.id, logs))
-                }))
+                })
             }
-            CoreNodeKind::Custom(n) => Ok(n.send_logs_as.clone()),
-        }
+            CoreNodeKind::Custom(n) => n.send_logs_as.clone(),
+        };
+        name.map(|name| checked_output_name("send_logs_as", name))
+            .transpose()
     }
 
     fn min_log_level(&self) -> eyre::Result<Option<dora_message::common::LogLevelOrStdout>> {
@@ -424,9 +555,10 @@ impl ResolvedNodeExt for ResolvedNode {
             CoreNodeKind::Custom(n) => n.max_rotated_files,
         };
         if let Some(n) = value {
-            if n == 0 {
-                bail!("`max_rotated_files` must be at least 1");
-            }
+            // 0 is meaningful: keep the active log only, rotating the previous
+            // one away rather than retaining it. That matches the documented
+            // disk bound `max_log_size * (1 + max_rotated_files)`, which at 0
+            // is one active file.
             if n > 100 {
                 bail!("`max_rotated_files` must not exceed 100");
             }
@@ -436,48 +568,10 @@ impl ResolvedNodeExt for ResolvedNode {
 }
 
 fn parse_byte_size(s: &str) -> eyre::Result<u64> {
-    let s = s.trim();
-    let (num_str, unit) = match s.find(|c: char| c.is_ascii_alphabetic()) {
-        Some(pos) => (&s[..pos], s[pos..].trim().to_uppercase()),
-        None => {
-            return s
-                .parse::<u64>()
-                .map_err(|_| eyre!("invalid byte size: '{s}'"));
-        }
-    };
-    let num_str = num_str.trim();
-    let multiplier: u64 = match unit.as_str() {
-        "B" => 1,
-        "KB" | "K" => 1024,
-        "MB" | "M" => 1024 * 1024,
-        "GB" | "G" => 1024 * 1024 * 1024,
-        _ => bail!("unknown byte size unit: '{unit}', expected B, KB, MB, or GB"),
-    };
-    // Use integer parse when possible to avoid float rounding
-    if let Ok(num) = num_str.parse::<u64>() {
-        return num
-            .checked_mul(multiplier)
-            .ok_or_else(|| eyre!("byte size '{num_str}{unit}' overflows u64"));
-    }
-    let num: f64 = num_str
-        .parse()
-        .map_err(|_| eyre!("invalid byte size number: '{num_str}'"))?;
-    // Casting a negative or non-finite f64 to u64 saturates (negatives and
-    // NaN to 0, +inf to u64::MAX) instead of erroring, so reject them up front.
-    if !num.is_finite() || num < 0.0 {
-        bail!("byte size must be a non-negative, finite number: '{s}'");
-    }
-    let bytes = num * multiplier as f64;
-    // A finite product can still exceed u64::MAX (e.g. "99999999999999999999GB"),
-    // and casting an out-of-range f64 to u64 saturates to u64::MAX instead of
-    // erroring, silently turning an absurd limit into the maximum. `u64::MAX as
-    // f64` rounds up to 2^64 and no f64 values exist between u64::MAX and 2^64,
-    // so `>=` rejects exactly the products that overflow u64. Mirrors the guard
-    // in `ByteSize::from_str` (dora-message).
-    if bytes >= u64::MAX as f64 {
-        bail!("byte size '{s}' overflows u64");
-    }
-    Ok(bytes as u64)
+    // Share `dora_message::config::ByteSize`'s grammar, but parse in `u64`:
+    // `ByteSize` is `usize`-based, which would reject log sizes of 4 GiB and
+    // above on 32-bit targets (#3604).
+    parse_byte_count(s).map_err(|e| eyre!("{e}"))
 }
 
 fn parse_log_level(s: &str) -> eyre::Result<dora_message::common::LogLevelOrStdout> {
@@ -603,7 +697,7 @@ fn validate_ros2_config(
     node_inputs: &BTreeMap<DataId, Input>,
     node_outputs: &BTreeSet<DataId>,
 ) -> eyre::Result<()> {
-    use dora_message::descriptor::{Ros2Direction, Ros2Role, Ros2TransportConfig};
+    use dora_message::descriptor::{Ros2Role, Ros2TransportConfig};
 
     if let Ros2TransportConfig::Zenoh {
         config_uri: Some(uri),
@@ -644,18 +738,12 @@ fn validate_ros2_config(
         })?;
         validate_ros2_type_format(node_id, topic, message_type)?;
 
-        match &config.direction {
-            Ros2Direction::Subscribe => {
-                if node_outputs.is_empty() {
-                    bail!("node `{node_id}`: ros2 subscribe bridge requires at least one output");
-                }
-            }
-            Ros2Direction::Publish => {
-                if node_inputs.is_empty() {
-                    bail!("node `{node_id}`: ros2 publish bridge requires at least one input");
-                }
-            }
-        }
+        // Single-topic mode has no explicit `output:`/`input:` field, so the
+        // bridge binds to the node's declared port. Resolution is what picks
+        // that port and what rejects a node whose declarations leave the choice
+        // ambiguous, so call it here rather than restating the rule: the two
+        // must not be able to disagree.
+        super::resolve_ros2_single_topic(node_id, config, node_inputs, node_outputs)?;
     } else if let Some(topics) = &config.topics {
         if topics.is_empty() {
             bail!("node `{node_id}`: ros2 `topics` list must not be empty");
@@ -666,28 +754,16 @@ fn validate_ros2_config(
                 topics.len()
             );
         }
-        let mut has_subscribe = false;
-        let mut has_publish = false;
         for t in topics {
             validate_ros2_name(node_id, "topic", &t.topic)?;
             validate_ros2_type_format(node_id, &t.topic, &t.message_type)?;
-            match &t.direction {
-                Ros2Direction::Subscribe => has_subscribe = true,
-                Ros2Direction::Publish => has_publish = true,
-            }
         }
-        if has_subscribe && node_outputs.is_empty() {
-            bail!(
-                "node `{node_id}`: ros2 multi-topic bridge with subscribe topics \
-                 requires at least one output"
-            );
-        }
-        if has_publish && node_inputs.is_empty() {
-            bail!(
-                "node `{node_id}`: ros2 multi-topic bridge with publish topics \
-                 requires at least one input"
-            );
-        }
+        // The per-topic port-existence check lives on the resolution path
+        // (`validate_ros2_topic_ports`) so the coordinator's `dora start` path,
+        // which resolves without validating, enforces it too. Delegate here
+        // rather than restating the rule, keeping validation and `dora start` in
+        // lockstep by construction (dora-rs/dora#3484).
+        super::validate_ros2_topic_ports(node_id, topics, node_inputs, node_outputs)?;
     } else if let Some(service) = &config.service {
         validate_ros2_name(node_id, "service", service)?;
         let service_type = config.service_type.as_ref().ok_or_else(|| {
@@ -1404,7 +1480,8 @@ mod tests {
     use crate::types::TypeRegistry;
     use dora_message::config::{Input, InputMapping};
     use dora_message::descriptor::{
-        Descriptor, RmwZenohCompatibility, Ros2BridgeConfig, Ros2Role, Ros2TransportConfig,
+        Descriptor, RmwZenohCompatibility, Ros2BridgeConfig, Ros2Direction, Ros2Role,
+        Ros2TopicConfig, Ros2TransportConfig,
     };
     use std::{path::PathBuf, time::Duration};
 
@@ -1451,28 +1528,75 @@ operators:
         .unwrap()
     }
 
+    #[test]
+    fn runtime_node_with_several_operators_is_rejected() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: op1
+      - id: op2
+        shared-library: op2
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("runtime-node") && err.contains("2 operators"),
+            "error should name the node and the operator count, got: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_node_with_no_operators_is_rejected() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators: []
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("runtime-node") && err.contains("0 operators"),
+            "error should name the node and the operator count, got: {err}"
+        );
+    }
+
+    /// `dora start`, `dora node add/replace` and recovery resolve the
+    /// descriptor without running `check_dataflow_static`, so the count must
+    /// be enforced by resolution itself.
+    #[test]
+    fn resolution_rejects_a_runtime_node_with_several_operators() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: op1
+      - id: op2
+        shared-library: op2
+"#,
+        )
+        .unwrap();
+        let err = descriptor
+            .resolve_aliases_and_set_defaults()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("2 operators"), "got: {err}");
+    }
+
+    #[test]
+    fn runtime_node_with_one_operator_passes_the_operator_count_check() {
+        check_runtime_operator_count(&runtime_node()).unwrap();
+    }
+
     fn custom_node() -> dora_message::descriptor::CustomNode {
-        dora_message::descriptor::CustomNode {
-            path: "node".to_string(),
-            source: dora_message::descriptor::NodeSource::Local,
-            path_sha256: None,
-            args: None,
-            envs: None,
-            build: None,
-            send_stdout_as: None,
-            send_logs_as: None,
-            min_log_level: None,
-            max_log_size: None,
-            max_rotated_files: None,
-            restart_policy: Default::default(),
-            max_restarts: 0,
-            restart_delay: None,
-            max_restart_delay: None,
-            restart_window: None,
-            health_check_timeout: None,
-            finish_grace_secs: None,
-            run_config: serde_yaml::from_str("{}").unwrap(),
-        }
+        dora_message::descriptor::CustomNode::new("node".to_string())
     }
 
     #[test]
@@ -1484,6 +1608,7 @@ operators:
         // a large finite grace is fine
         node.finish_grace_secs = Some(3600.0);
         node.health_check_timeout = Some(0.0);
+        node.startup_timeout = Some(5.0);
         check_timing_fields(&id, &node).unwrap();
     }
 
@@ -1496,6 +1621,127 @@ operators:
         assert!(
             err.contains("finish_grace_secs") && err.contains("non-negative"),
             "error should name the field and the constraint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn timing_fields_reject_negative_startup_timeout() {
+        let id = NodeId::from("n".to_owned());
+        let mut node = custom_node();
+        node.startup_timeout = Some(-0.5);
+        let err = check_timing_fields(&id, &node).unwrap_err().to_string();
+        assert!(
+            err.contains("startup_timeout") && err.contains("non-negative"),
+            "error should name the field and the constraint, got: {err}"
+        );
+    }
+
+    /// The daemon and the runtime join each operator id with its input and
+    /// output ids into `DataId`s (`{operator}/{id}`), and `DataId::from`
+    /// panics on an invalid one. An operator id that is not itself a valid,
+    /// slash-free `DataId` must therefore be rejected up front, not crash the
+    /// daemon at spawn.
+    #[test]
+    fn invalid_operator_id_is_rejected() {
+        for (form, id) in [
+            ("operators", "my op"),
+            ("operators", "a/b"),
+            ("operators", "\"\""),
+            ("operator", "my op"),
+        ] {
+            let yaml = if form == "operators" {
+                format!(
+                    "nodes:\n  - id: rt\n    operators:\n      - id: {id}\n        \
+                     python: op.py\n        outputs:\n          - out\n"
+                )
+            } else {
+                format!(
+                    "nodes:\n  - id: rt\n    operator:\n      id: {id}\n      \
+                     python: op.py\n      outputs:\n        - out\n"
+                )
+            };
+            let descriptor: Descriptor = serde_yaml::from_str(&yaml).unwrap();
+            let err = check_dataflow_static(&descriptor)
+                .expect_err(&format!("operator id {id:?} ({form}) must be rejected"))
+                .to_string();
+            assert!(
+                err.contains("invalid operator id"),
+                "error should name the operator id problem, got: {err}"
+            );
+        }
+
+        let ok: Descriptor = serde_yaml::from_str(
+            "nodes:\n  - id: rt\n    operators:\n      - id: my-op.v2\n        \
+             python: op.py\n        outputs:\n          - out\n",
+        )
+        .unwrap();
+        check_dataflow_static(&ok).unwrap();
+    }
+
+    #[test]
+    fn dynamic_node_rejects_startup_timeout() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: dyn
+    path: dynamic
+    startup_timeout: 5.0
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("dynamic node `dyn` cannot specify `startup_timeout`"),
+            "error should explain dynamic node startup_timeout rejection, got: {err}"
+        );
+    }
+
+    /// `check_node_timing_values` is the panic guard the `dora start` path
+    /// uses, so it must stop at the values `Duration::from_secs_f64` panics
+    /// on and leave the dynamic-node `startup_timeout` policy rule to
+    /// `check_node_timing` (`dora node add` / `replace`) and
+    /// `check_dataflow_static` (`dora run` / `validate`). Were the policy
+    /// rule in both, `dora start` would reject a descriptor that starts fine
+    /// on 1.0.x.
+    #[test]
+    fn timing_values_check_skips_the_dynamic_node_policy_rule() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: dyn
+    path: dynamic
+    startup_timeout: 5.0
+"#,
+        )
+        .unwrap();
+        let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+        let node = nodes.values().next().unwrap();
+
+        check_node_timing_values(node)
+            .expect("an ignored startup_timeout is not a panic risk, so the spawn path allows it");
+        let err = check_node_timing(node).unwrap_err().to_string();
+        assert!(
+            err.contains("dynamic node `dyn` cannot specify `startup_timeout`"),
+            "the node-join path keeps the policy rule, got: {err}"
+        );
+
+        // The panic guard itself is unchanged by the split.
+        let bad: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: dyn
+    path: dynamic
+    restart_delay: -1.0
+"#,
+        )
+        .unwrap();
+        let bad_nodes = bad.resolve_aliases_and_set_defaults().unwrap();
+        let err = check_node_timing_values(bad_nodes.values().next().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("restart_delay"),
+            "the spawn path still rejects a panicking value, got: {err}"
         );
     }
 
@@ -1567,7 +1813,10 @@ operators:
     fn seconds_field_rejects_zero_when_positive_required() {
         check_seconds_field("owner", "field", None, false).unwrap();
         check_seconds_field("owner", "field", Some(3600.0), false).unwrap();
-        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        // `1e-10` is finite and positive but `Duration::from_secs_f64` rounds
+        // it down to `Duration::ZERO`, which would panic `tokio::time::interval`
+        // just like a literal `0.0`, so it must be rejected too.
+        for bad in [0.0, 1e-10, -1.0, f64::NAN, f64::INFINITY] {
             let err = check_seconds_field("owner", "field", Some(bad), false)
                 .unwrap_err()
                 .to_string();
@@ -1576,6 +1825,9 @@ operators:
                 "{bad} should be rejected with a field/constraint message, got: {err}"
             );
         }
+        // A tiny-but-positive value is fine when zero is allowed (it does not
+        // reach `tokio::time::interval`).
+        check_seconds_field("owner", "field", Some(1e-10), true).unwrap();
     }
 
     // `health_check_interval` (dataflow-level) reaches `Duration::from_secs_f64`
@@ -1613,6 +1865,33 @@ nodes:
         let dataflow = parse_dataflow(
             "\
 health_check_interval: 0.0
+nodes:
+  - id: a
+    path: node_a
+    build: cargo build
+    outputs:
+      - out
+",
+        );
+        let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("health_check_interval") && err.contains("positive"),
+            "error should name the field and constraint, got: {err}"
+        );
+    }
+
+    // A tiny-but-positive `health_check_interval` (e.g. `1e-10`) is finite and
+    // non-zero as an `f64`, so a literal `value == 0.0` check would let it
+    // through -- but `Duration::from_secs_f64` rounds it down to
+    // `Duration::ZERO`, which panics `tokio::time::interval`. It must be
+    // rejected up front just like `0.0`.
+    #[test]
+    fn check_dataflow_rejects_subnanosecond_health_check_interval() {
+        let dataflow = parse_dataflow(
+            "\
+health_check_interval: 0.0000000001
 nodes:
   - id: a
     path: node_a
@@ -1824,6 +2103,196 @@ nodes:
         )
         .unwrap_err();
         assert!(err.to_string().contains("config_uri must not be empty"));
+    }
+
+    fn single_topic_config(topic: &str, direction: Ros2Direction) -> Ros2BridgeConfig {
+        Ros2BridgeConfig {
+            topic: Some(topic.into()),
+            message_type: Some("turtlesim/Pose".into()),
+            direction,
+            ..Default::default()
+        }
+    }
+
+    /// Single-topic mode binds to the node's declared port, so a name that has
+    /// nothing to do with the topic is correct and must be accepted.
+    #[test]
+    fn validate_single_topic_accepts_the_sole_declared_port() {
+        let config = single_topic_config("/turtle1/pose", Ros2Direction::Subscribe);
+        validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::from([DataId::from("pose".to_owned())]),
+        )
+        .unwrap();
+    }
+
+    /// Several declared outputs leave the binding ambiguous, which the bridge
+    /// would resolve by silently dropping every message.
+    #[test]
+    fn validate_single_topic_rejects_ambiguous_subscribe_output() {
+        let config = single_topic_config("/turtle1/pose", Ros2Direction::Subscribe);
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::from([
+                DataId::from("pose".to_owned()),
+                DataId::from("log".to_owned()),
+            ]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("no unambiguous output")
+                && err.contains("`pose`")
+                && err.contains("`log`")
+                && err.contains("turtle1_pose"),
+            "error should list the candidates and the topic-derived id, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_multi_topic_rejects_undeclared_subscribe_output() {
+        // A subscribe topic mapped to an output the node never declares would
+        // pass validation and then silently drop every message at runtime
+        // (`DoraNode::send_output` ignores unknown output ids).
+        let config = Ros2BridgeConfig {
+            topics: Some(vec![Ros2TopicConfig {
+                topic: "/scan".into(),
+                message_type: "sensor_msgs/LaserScan".into(),
+                direction: Ros2Direction::Subscribe,
+                output: Some("typo_out".into()),
+                input: None,
+                qos: None,
+            }]),
+            ..Default::default()
+        };
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::from([DataId::from("scan".to_owned())]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("typo_out") && err.contains("not declared"),
+            "error should name the undeclared output, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_multi_topic_rejects_undeclared_publish_input() {
+        let config = Ros2BridgeConfig {
+            topics: Some(vec![Ros2TopicConfig {
+                topic: "/cmd_vel".into(),
+                message_type: "geometry_msgs/Twist".into(),
+                direction: Ros2Direction::Publish,
+                output: None,
+                input: Some("typo_in".into()),
+                qos: None,
+            }]),
+            ..Default::default()
+        };
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::from([(DataId::from("cmd".to_owned()), dummy_input())]),
+            &BTreeSet::new(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("typo_in") && err.contains("not declared"),
+            "error should name the undeclared input, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_multi_topic_rejects_undeclared_derived_output() {
+        // No explicit `output:` — the bridge derives the output id from the
+        // topic name (`/scan` -> `scan`). A derived id that is not a declared
+        // output silently drops every message, so validation must reject it.
+        let config = Ros2BridgeConfig {
+            topics: Some(vec![Ros2TopicConfig {
+                topic: "/scan".into(),
+                message_type: "sensor_msgs/LaserScan".into(),
+                direction: Ros2Direction::Subscribe,
+                output: None,
+                input: None,
+                qos: None,
+            }]),
+            ..Default::default()
+        };
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::from([DataId::from("laser".to_owned())]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("scan") && err.contains("not declared"),
+            "error should name the derived output, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_multi_topic_accepts_derived_output() {
+        // The topic-derived id (`/scan` -> `scan`) matches a declared output.
+        let config = Ros2BridgeConfig {
+            topics: Some(vec![Ros2TopicConfig {
+                topic: "/scan".into(),
+                message_type: "sensor_msgs/LaserScan".into(),
+                direction: Ros2Direction::Subscribe,
+                output: None,
+                input: None,
+                qos: None,
+            }]),
+            ..Default::default()
+        };
+        validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::from([DataId::from("scan".to_owned())]),
+        )
+        .expect("a topic-derived output matching a declared output should validate");
+    }
+
+    #[test]
+    fn validate_multi_topic_accepts_declared_ports() {
+        let config = Ros2BridgeConfig {
+            topics: Some(vec![
+                Ros2TopicConfig {
+                    topic: "/scan".into(),
+                    message_type: "sensor_msgs/LaserScan".into(),
+                    direction: Ros2Direction::Subscribe,
+                    output: Some("scan".into()),
+                    input: None,
+                    qos: None,
+                },
+                Ros2TopicConfig {
+                    topic: "/cmd_vel".into(),
+                    message_type: "geometry_msgs/Twist".into(),
+                    direction: Ros2Direction::Publish,
+                    output: None,
+                    input: Some("cmd".into()),
+                    qos: None,
+                },
+            ]),
+            ..Default::default()
+        };
+        validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::from([(DataId::from("cmd".to_owned()), dummy_input())]),
+            &BTreeSet::from([DataId::from("scan".to_owned())]),
+        )
+        .expect("multi-topic config mapping declared ports should validate");
     }
 
     #[test]
@@ -2687,24 +3156,68 @@ nodes:
         check_wiring(&descriptor).unwrap();
     }
 
+    /// Every shipped `ros2:` example must satisfy the port-mapping rule the
+    /// bridge binds by. The docs present these as working dataflows, and a
+    /// mismatch is silent data loss at runtime rather than a startup error, so
+    /// parsing them is not enough — they have to be validated.
+    #[test]
+    fn ros2_example_dataflows_have_valid_port_mappings() {
+        let examples = [
+            "examples/ros2-bridge/yaml-bridge/dataflow.yml",
+            "examples/ros2-bridge/yaml-bridge/dataflow-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-service/dataflow-client.yml",
+            "examples/ros2-bridge/yaml-bridge-service/dataflow-client-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-service/dataflow-server.yml",
+            "examples/ros2-bridge/yaml-bridge-service/dataflow-server-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-action/dataflow.yml",
+            "examples/ros2-bridge/yaml-bridge-action/dataflow-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-action-server/dataflow.yml",
+        ];
+        for relative in examples {
+            let Some(yaml) = repo_fixture(relative) else {
+                continue; // packaged crate: the examples tree is not shipped
+            };
+            let descriptor: Descriptor = serde_yaml::from_str(&yaml).unwrap();
+            if let Err(err) = validate_ros2_configs(&descriptor) {
+                panic!("shipped example `{relative}` has an invalid ros2 config: {err}");
+            }
+        }
+    }
+
+    /// Reads a fixture that lives outside this crate, or `None` when this is
+    /// not a repository checkout. `include_str!` would be the obvious choice,
+    /// but a path that leaves the crate directory is not in the published
+    /// `.crate`, so the crate would fail to *compile* its tests for anyone
+    /// building from crates.io (#3400).
+    ///
+    /// The workspace manifest is the marker for "we are in the repo". Only
+    /// its absence skips: inside a checkout a missing fixture is a stale
+    /// path and panics, so this keeps the one property `include_str!` had
+    /// that a plain `.ok()` would throw away.
+    fn repo_fixture(relative: &str) -> Option<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        if !root.join("Cargo.toml").is_file() {
+            return None;
+        }
+        let path = root.join(relative);
+        Some(
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("fixture {} is missing: {e}", path.display())),
+        )
+    }
+
     #[test]
     fn ros2_zenoh_documentation_examples_parse_with_explicit_profiles() {
         let examples = [
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../examples/ros2-bridge/yaml-bridge/dataflow-zenoh.yml"
-            )),
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../examples/ros2-bridge/yaml-bridge-service/dataflow-client-zenoh.yml"
-            )),
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../examples/ros2-bridge/yaml-bridge-action/dataflow-zenoh.yml"
-            )),
+            "examples/ros2-bridge/yaml-bridge/dataflow-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-service/dataflow-client-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-action/dataflow-zenoh.yml",
         ];
-        for yaml in examples {
-            let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        for relative in examples {
+            let Some(yaml) = repo_fixture(relative) else {
+                continue; // packaged crate: the examples tree is not shipped
+            };
+            let descriptor: Descriptor = serde_yaml::from_str(&yaml).unwrap();
             let ros2 = descriptor
                 .nodes
                 .iter()
@@ -2722,10 +3235,9 @@ nodes:
 
     #[test]
     fn ros2_zenoh_documentation_links_upstream_wire_contract() {
-        let guide = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../guide/src/advanced/ros2-bridge.md"
-        ));
+        let Some(guide) = repo_fixture("guide/src/advanced/ros2-bridge.md") else {
+            return; // packaged crate: the guide is not shipped
+        };
         assert!(guide.contains("https://github.com/ros2/rmw_zenoh/blob/rolling/docs/design.md"));
         assert!(guide.contains("https://www.ros.org/reps/rep-2016.html"));
     }
@@ -2985,6 +3497,16 @@ nodes:
     }
 
     #[test]
+    fn parse_byte_size_accepts_sizes_above_4gib() {
+        // `usize` is 32 bits on i686/armv7; the log size limit must not be
+        // bounded by it (#3604).
+        assert_eq!(parse_byte_size("8GB").unwrap(), 8 << 30);
+        assert_eq!(parse_byte_size("5000MB").unwrap(), 5000 << 20);
+        assert_eq!(parse_byte_size("4294967296").unwrap(), 1 << 32);
+        assert_eq!(parse_byte_size("4.5GB").unwrap(), 9 << 29);
+    }
+
+    #[test]
     fn parse_byte_size_float_path() {
         // When the integer parse fails, fall back to float.
         assert_eq!(parse_byte_size("1.5KB").unwrap(), 1536);
@@ -3047,6 +3569,73 @@ nodes:
         assert!(parse_byte_size("abc").is_err());
         assert!(parse_byte_size("abcKB").is_err());
         assert!(parse_byte_size("1.2.3KB").is_err());
+    }
+
+    #[test]
+    fn send_as_rejects_names_that_are_not_valid_output_ids() {
+        for (field, value) in [
+            ("send_stdout_as", "std out"),
+            ("send_stdout_as", "out/"),
+            ("send_logs_as", "\"\""),
+            ("send_logs_as", "a//b"),
+        ] {
+            let yaml = format!(
+                "nodes:\n  - id: talker\n    path: talker\n    {field}: {value}\n    outputs: [out]\n"
+            );
+            let descriptor: Descriptor = serde_yaml::from_str(&yaml).unwrap();
+            let err = check_dataflow_static(&descriptor)
+                .expect_err(&format!("`{field}: {value}` must be rejected"));
+            assert!(
+                format!("{err:?}").contains("is not a valid output id"),
+                "unexpected error for `{field}: {value}`: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn send_as_rejects_empty_operator_entry() {
+        let yaml = r#"
+nodes:
+  - id: rt
+    operators:
+      - id: op1
+        python: op.py
+        send_stdout_as: ""
+        send_logs_as: ""
+        outputs: [out]
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+        let node = &nodes[&NodeId::from("rt".to_string())];
+        assert!(node.send_stdout_as().is_err());
+        assert!(node.send_logs_as().is_err());
+    }
+
+    #[test]
+    fn send_as_accepts_valid_names() {
+        let yaml = r#"
+nodes:
+  - id: rt
+    operators:
+      - id: op1
+        python: op.py
+        send_stdout_as: stdout
+        send_logs_as: logs
+        outputs: [stdout, logs]
+  - id: talker
+    path: talker
+    send_stdout_as: stdout
+    send_logs_as: logs
+    outputs: [stdout, logs]
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+        let rt = &nodes[&NodeId::from("rt".to_string())];
+        assert_eq!(rt.send_stdout_as().unwrap().as_deref(), Some("op1/stdout"));
+        assert_eq!(rt.send_logs_as().unwrap().as_deref(), Some("op1/logs"));
+        let talker = &nodes[&NodeId::from("talker".to_string())];
+        assert_eq!(talker.send_stdout_as().unwrap().as_deref(), Some("stdout"));
+        assert_eq!(talker.send_logs_as().unwrap().as_deref(), Some("logs"));
     }
 
     // parse_log_level: every level variant ----
@@ -3119,6 +3708,23 @@ nodes:
                 "expected '{expected}' to be mentioned in error, got: {err}"
             );
         }
+    }
+
+    #[test]
+    fn max_rotated_files_accepts_zero_and_still_caps_at_100() {
+        let node = |n: u32| -> ResolvedNode {
+            let mut custom = custom_node();
+            custom.max_rotated_files = Some(n);
+            ResolvedNode::new(NodeId::from("n".to_owned()), CoreNodeKind::Custom(custom))
+        };
+
+        // 0 is a real configuration: keep the active log only, rotating the
+        // previous one away. The documented disk bound
+        // `max_log_size * (1 + max_rotated_files)` is one file at 0.
+        assert_eq!(node(0).max_rotated_files().unwrap(), Some(0));
+        // The upper bound is unchanged.
+        assert_eq!(node(100).max_rotated_files().unwrap(), Some(100));
+        assert!(node(101).max_rotated_files().is_err());
     }
 }
 

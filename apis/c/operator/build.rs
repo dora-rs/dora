@@ -1,8 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const CONFIG_TEMPLATE: &str = include_str!("../node/cmake/dora-api-config.cmake.in");
-const CONFIG_VERSION: &str = include_str!("../node/cmake/dora-api-version.cmake.in");
+// Crate-local copies of apis/c/node/cmake/*.cmake.in — `cargo package`
+// cannot include files that live outside the crate directory.
+const CONFIG_TEMPLATE: &str = include_str!("cmake/dora-api-config.cmake.in");
+const CONFIG_VERSION: &str = include_str!("cmake/dora-api-version.cmake.in");
 
 const PACKAGE: &str = "dora-operator-api-c";
 const LIB_UNIX: &str = "libdora_operator_api_c.a";
@@ -43,12 +45,12 @@ fn main() {
     // writing the `operator_types.h` file; cargo will still rerun this script
     // when the `dora_operator_api_types` crate changes)
     println!("cargo:rerun-if-changed=build.rs");
-    // Cross-package `include_str!` targets aren't auto-tracked by cargo
-    // once any `rerun-if-changed` directive is set — without these the
-    // cmake config goes stale on incremental builds when the templates
-    // are edited.
-    println!("cargo:rerun-if-changed=../node/cmake/dora-api-config.cmake.in");
-    println!("cargo:rerun-if-changed=../node/cmake/dora-api-version.cmake.in");
+    // `include_str!` targets aren't auto-tracked by cargo once any
+    // `rerun-if-changed` directive is set — without these the cmake
+    // config goes stale on incremental builds when the templates are
+    // edited.
+    println!("cargo:rerun-if-changed=cmake/dora-api-config.cmake.in");
+    println!("cargo:rerun-if-changed=cmake/dora-api-version.cmake.in");
 }
 
 fn compute_target() -> String {

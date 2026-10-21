@@ -125,13 +125,16 @@ fn format_pretty_line(log_message: &LogMessage, config: &LogOutputConfig) -> Str
         }
         _ => String::new().cyan(),
     };
-    let daemon = match daemon_id {
-        Some(id) if config.print_daemon_name => match id.machine_id() {
+    let daemon = if config.print_daemon_name {
+        // A daemon with no machine id (or no daemon at all) is the default
+        // daemon; both render the same, with no trailing space so the colon
+        // that follows a node-scoped label abuts it directly.
+        match daemon_id.as_ref().and_then(|id| id.machine_id()) {
             Some(machine_id) => format!("on daemon `{machine_id}`"),
-            None => "on default daemon ".to_string(),
-        },
-        None if config.print_daemon_name => "on default daemon".to_string(),
-        _ => String::new(),
+            None => "on default daemon".to_string(),
+        }
+    } else {
+        String::new()
     }
     .bright_black();
     let time = format!("{}", timestamp.with_timezone(&Local).format("%H:%M:%S"));
@@ -241,6 +244,12 @@ pub fn parse_jsonl_line(line: &str) -> Option<LogMessage> {
         .get("target")
         .and_then(|t| t.as_str())
         .map(|s| s.to_string());
+    // The daemon writes a node's structured `tracing` fields here; keep them
+    // so `--log-format json` shows them. A malformed value is dropped rather
+    // than failing the line.
+    let fields = v
+        .get("fields")
+        .and_then(|f| serde::Deserialize::deserialize(f).ok());
 
     Some(LogMessage {
         build_id: None,
@@ -254,11 +263,33 @@ pub fn parse_jsonl_line(line: &str) -> Option<LogMessage> {
         line: None,
         message,
         timestamp,
-        fields: None,
+        fields,
     })
 }
 
-/// Parse a log filter string like "sensor=debug,processor=warn".
+/// Parse a log filter string like `"sensor=debug,processor=warn"` into a
+/// per-node level map.
+///
+/// Segments are comma-separated `node=level` pairs; surrounding whitespace is
+/// trimmed and empty segments are skipped. A segment without `=`, or one whose
+/// level is not one of `error|warn|info|debug|trace|stdout` (see
+/// [`parse_log_level_str`]), is an error.
+///
+/// ```
+/// # fn main() -> Result<(), String> {
+/// use dora_cli::output::parse_log_filter;
+///
+/// let map = parse_log_filter("sensor=debug, processor=warn")?;
+/// assert_eq!(map.len(), 2);
+///
+/// // Trailing/empty segments are ignored.
+/// assert_eq!(parse_log_filter("sensor=info,")?.len(), 1);
+///
+/// // A segment without `=` is rejected.
+/// assert!(parse_log_filter("sensor").is_err());
+/// # Ok(())
+/// # }
+/// ```
 pub fn parse_log_filter(s: &str) -> Result<HashMap<String, LogLevelOrStdout>, String> {
     let mut map = HashMap::new();
     for pair in s.split(',') {
@@ -275,6 +306,18 @@ pub fn parse_log_filter(s: &str) -> Result<HashMap<String, LogLevelOrStdout>, St
     Ok(map)
 }
 
+/// Parse a single log-level token into a [`LogLevelOrStdout`].
+///
+/// Accepts `error|warn|info|debug|trace|stdout`, case-insensitively; any other
+/// value is an error.
+///
+/// ```
+/// use dora_cli::output::parse_log_level_str;
+///
+/// assert!(parse_log_level_str("INFO").is_ok());
+/// assert!(parse_log_level_str("stdout").is_ok());
+/// assert!(parse_log_level_str("verbose").is_err());
+/// ```
 pub fn parse_log_level_str(s: &str) -> Result<LogLevelOrStdout, String> {
     match s.to_lowercase().as_str() {
         "error" => Ok(LogLevelOrStdout::LogLevel(log::Level::Error)),
@@ -447,6 +490,26 @@ mod tests {
         assert_eq!(rest, "INFO   [dora]: coordinator ready");
     }
 
+    #[test]
+    fn pretty_line_default_daemon_no_space_before_colon() {
+        // A node-scoped message on the unnamed/default daemon (a `DaemonId`
+        // with no machine id) with `print_daemon_name` on must render the same
+        // way the named-daemon path does — no stray space before the colon
+        // (regression: `sensor on default daemon : hello`).
+        let config = LogOutputConfig {
+            print_daemon_name: true,
+            ..LogOutputConfig::default()
+        };
+        let mut msg = pretty_message(Some("sensor"), None, "hello");
+        msg.daemon_id = Some(dora_message::common::DaemonId::new(None));
+        let rest = rendered_rest(msg, &config);
+        assert_eq!(rest, "INFO   sensor on default daemon: hello");
+        assert!(
+            !rest.contains("on default daemon :"),
+            "stray space before the colon: {rest:?}"
+        );
+    }
+
     // --- parse_log_level_str ---
 
     #[test]
@@ -549,6 +612,24 @@ mod tests {
             LogLevelOrStdout::LogLevel(log::Level::Info)
         ));
         assert_eq!(msg.node_id.unwrap().to_string(), "sensor");
+    }
+
+    #[test]
+    fn parse_jsonl_daemon_compact_keeps_fields() {
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","level":"info","node":"sensor","msg":"reading","target":null,"fields":{"sensor_id":"temp-01"}}"#;
+        let msg = parse_jsonl_line(line).unwrap();
+        assert_eq!(
+            msg.fields,
+            Some(std::collections::BTreeMap::from([(
+                "sensor_id".to_string(),
+                "temp-01".to_string()
+            )]))
+        );
+
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","level":"info","msg":"m","fields":null}"#;
+        assert_eq!(parse_jsonl_line(line).unwrap().fields, None);
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","level":"info","msg":"m","fields":[1]}"#;
+        assert_eq!(parse_jsonl_line(line).unwrap().fields, None);
     }
 
     #[test]

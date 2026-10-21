@@ -268,11 +268,11 @@ run_networked() {
         elapsed=$((elapsed + 2))
         printf '\r  up ok |  build ok |  start ok | running %ds/%ds ' "$elapsed" "$timeout"
         local list_out
-        # NOTE: `dora list --json` exits non-zero (2) even on success when there
-        # are no dataflows, so the exit code is NOT a reliable failure signal --
-        # parse stdout only, matching the authoritative Rust suite
+        # `dora list` has no `--json` flag; the machine-readable form is
+        # `--format json`. The JSON entries carry a "status":"Running"/"Failed"
+        # field, so parse stdout only, matching the authoritative Rust suite
         # (tests/example-smoke.rs, which uses .output().ok() and ignores status).
-        list_out=$("$DORA" list --json 2>/dev/null || true)
+        list_out=$("$DORA" list --format json 2>/dev/null || true)
         if echo "$list_out" | grep -q "Failed"; then
             failed=true
             break
@@ -635,6 +635,8 @@ log_skip "c-dataflow" "C compiler"
 log_skip "c++-dataflow" "C++ compiler"
 log_skip "c++-arrow-dataflow" "C++ + Arrow libs"
 log_skip "c++-service-action" "C++ compiler (covered by examples job via cargo run --example)"
+log_skip "cxx-thread-safe-output" "C++ compiler (run by the nightly examples job)"
+log_skip "cxx-thread-safe-output-bench" "manual measurement tool, not a smoke test"
 log_skip "cmake-dataflow" "CMake + C++"
 log_skip "python-dataflow-builder" "no YAML (API-based)"
 log_skip "dynamic-add-remove" "interactive dynamic topology CLI"

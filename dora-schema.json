@@ -1,9 +1,34 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "dora-rs specification",
-  "description": "The main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```yaml\nnodes:\n - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n```",
+  "description": "The main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Deployment**: Optional deployment configuration\n- **Debug options**: Optional development and debugging settings\n\n## Example\n\n```\n# fn main() -> Result<(), Box<dyn std::error::Error>> {\nuse dora_message::descriptor::Descriptor;\nlet yaml = r#\"\nnodes:\n  - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n\"#;\nlet descriptor: Descriptor = serde_yaml::from_str(yaml)?;\nassert_eq!(descriptor.nodes.len(), 2);\n# Ok(())\n# }\n```",
   "type": "object",
   "properties": {
+    "debug": {
+      "description": "Debug options (optional).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Debug"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": {
+        "enable_debug_inspection": false
+      }
+    },
+    "deploy": {
+      "description": "Deployment configuration (optional).",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Deploy"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "env": {
       "description": "Global environment variables inherited by every node.\n\nEach node's own `env` map takes precedence on key conflicts, so nodes\ncan override a global default without repeating shared values like\n`RUST_LOG`, `OTEL_EXPORTER_OTLP_ENDPOINT`, or `CUDA_VISIBLE_DEVICES`.\n\n## Example\n\n```yaml\nenv:\n  RUST_LOG: info\n  OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4317\nnodes:\n  - id: verbose-node\n    path: path/to/node\n    env:\n      RUST_LOG: debug  # overrides the global RUST_LOG for this node\n```",
       "type": [
@@ -46,7 +71,10 @@
     },
     "type_rules": {
       "description": "Custom type compatibility rules.\n\nEach rule declares that a source type can be implicitly converted to\na target type. These supplement the built-in widening rules.\n\n## Example\n\n```yaml\ntype_rules:\n  - from: myproject/SensorV1\n    to: myproject/SensorV2\n```",
-      "type": "array",
+      "type": [
+        "array",
+        "null"
+      ],
       "items": {
         "$ref": "#/$defs/TypeRuleDef"
       }
@@ -71,6 +99,74 @@
     "DataId": {
       "description": "A validated data (output) identifier.\n\nA `DataId` may contain only `[a-zA-Z0-9_./-]` and must be non-empty. Unlike\n[`NodeId`], a `DataId` **may** contain `/` (runtime-operator outputs are\nnamespaced as `<operator-id>/<output-name>`), but leading, trailing, or\nconsecutive slashes — which would produce empty path segments — are\nrejected.\n\n# Parsing vs. conversion (panic footgun)\n\nUse [`str::parse`] / [`FromStr`](std::str::FromStr) for untrusted input: it\nreturns `Result<DataId, InvalidId>`. The `From<String>` / `From<&str>`\nconversions — and therefore `.into()` and the auto-derived `TryFrom` —\n**panic** on an invalid id.\n\n```\nuse dora_message::id::DataId;\n\nassert!(\"image\".parse::<DataId>().is_ok());\nassert!(\"op/status\".parse::<DataId>().is_ok()); // '/' is allowed in a DataId\nassert!(\"a//b\".parse::<DataId>().is_err());     // empty path segment rejected\nassert!(\"/out\".parse::<DataId>().is_err());     // leading '/' rejected\nassert!(\"bad id\".parse::<DataId>().is_err());   // space rejected\n```\n\nThe infallible-looking conversion panics on the same invalid input:\n\n```should_panic\nuse dora_message::id::DataId;\nlet _ = DataId::from(\"a//b\".to_string()); // panics — prefer .parse()\n```",
       "type": "string"
+    },
+    "Debug": {
+      "description": "Debug options for dataflow development and troubleshooting.",
+      "type": "object",
+      "properties": {
+        "enable_debug_inspection": {
+          "description": "When true, daemons mirror every node output to the coordinator WebSocket\nso that `dora topic echo`, `dora topic hz`, and `dora topic info` can\ninspect runtime messages.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": true
+    },
+    "Deploy": {
+      "description": "Deployment configuration for distributing nodes across machines.",
+      "type": "object",
+      "properties": {
+        "distribute": {
+          "description": "How built binaries are distributed to remote daemons.",
+          "$ref": "#/$defs/DistributeStrategy",
+          "default": "local"
+        },
+        "labels": {
+          "description": "Labels for label-based scheduling (e.g. `gpu: \"true\"`, `arch: arm64`).\nThe coordinator matches these against daemon labels reported at registration.",
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "machine": {
+          "description": "Target machine for deployment",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "working_dir": {
+          "description": "Working directory for the deployment",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "DistributeStrategy": {
+      "description": "Strategy for distributing built binaries to daemons.",
+      "oneOf": [
+        {
+          "description": "Each daemon builds from source (current/default behavior).",
+          "type": "string",
+          "const": "local"
+        },
+        {
+          "description": "CLI pushes built binary via SSH/SCP before spawn.",
+          "type": "string",
+          "const": "scp"
+        },
+        {
+          "description": "Daemon pulls binary from coordinator HTTP artifact store before spawn.",
+          "type": "string",
+          "const": "http"
+        }
+      ]
     },
     "Duration": {
       "type": "object",
@@ -157,6 +253,11 @@
       "description": "The source an [`Input`] subscribes to.\n\nThe wire form is a `/`-separated string; [`FromStr`] parses it and\n[`fmt::Display`] renders it back, so the two round-trip:\n\n```\nuse dora_message::config::InputMapping;\n\nlet mapping: InputMapping = \"camera/image\".parse().unwrap();\nassert!(matches!(mapping, InputMapping::User(_)));\nassert_eq!(mapping.to_string(), \"camera/image\");\n\n// Built-in timer source.\nlet timer: InputMapping = \"dora/timer/millis/100\".parse().unwrap();\nassert_eq!(timer.to_string(), \"dora/timer/millis/100\");\n\n// A mapping without a `/` separator is rejected.\nassert!(\"no-slash\".parse::<InputMapping>().is_err());\n```",
       "oneOf": [
         {
+          "description": "`<source>/<output>` for another node's output, `dora/timer/{unit}/{value}` for a built-in timer, or `dora/logs[/{level}[/{node_id}]]` for node logs.",
+          "type": "string",
+          "pattern": "/"
+        },
+        {
           "description": "A built-in timer that fires at a fixed `interval`.\n\nSyntax: `dora/timer/{unit}/{value}`, e.g. `dora/timer/millis/100`.",
           "type": "object",
           "properties": {
@@ -207,7 +308,7 @@
       ]
     },
     "LogSubscriptionFilter": {
-      "description": "Filter for the `dora/logs` virtual input.",
+      "description": "Filter for the `dora/logs` virtual input.\n\nThe wire form parsed by [`FromStr`] / rendered by [`Display`](fmt::Display)\nis `dora/logs/{level}/{node}`, so a `node_filter` can only be expressed\ntogether with a `min_level`. Parsing therefore never produces a filter with\n`node_filter: Some(_)` while `min_level` is `None`. That combination is still\nconstructible directly (both fields are public); when it is rendered, the\n`stdout` level is emitted to keep the node restriction — see the\n[`Display`](fmt::Display) impl of [`InputMapping`]. A `Stdout` minimum is the\nmost permissive level filter ([`LogLevelOrStdout::passes`](crate::common::LogLevelOrStdout::passes)\nlets every message through it), so it delivers the same messages as `None`\n(all levels, including stdout); such a value round-trips to\n`{ min_level: Some(stdout), node_filter }`, which is behaviorally equivalent\nto the original rather than exactly equal to it.",
       "type": "object",
       "properties": {
         "min_level": {
@@ -268,6 +369,17 @@
             "minimum": 0
           }
         },
+        "deploy": {
+          "description": "Machine deployment configuration.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Deploy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "description": {
           "description": "Detailed description of the node's functionality.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_node\n    description: \"Captures video frames from webcam\"\n```",
           "type": [
@@ -316,19 +428,25 @@
           ]
         },
         "id": {
-          "description": "Unique node identifier. Must not contain `/` characters.\n\nNode IDs can be arbitrary strings with the following limitations:\n\n- They must not contain any `/` characters (slashes).\n- We do not recommend using whitespace characters (e.g. spaces) in IDs\n\nEach node must have an ID field.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_node\n  - id: some_other_node\n```",
+          "description": "Unique node identifier.\n\nNode IDs may only contain ASCII letters, digits, `_`, `.` and `-`\n(no `/`, no whitespace), with the following further limitations:\n\n- They must not be empty or start with `.`.\n- They must not be the reserved id `dora`.\n\nEach node must have an ID field.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_node\n  - id: some_other_node\n```",
           "$ref": "#/$defs/NodeId"
         },
         "input_types": {
           "description": "Optional type annotations for inputs.\n\nMaps input identifiers to expected type URNs. Used by `dora validate`\nto check that upstream output types match expectations.",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "type": "string"
           }
         },
         "inputs": {
           "description": "Input data connections from other nodes.\n\nDefines the inputs that this node is subscribing to.\n\nThe `inputs` field should be a key-value map of the following format:\n\n`input_id: source_node_id/source_node_output_id`\n\nThe components are defined as follows:\n\n  - `input_id` is the local identifier that should be used for this input.\n\n    This will map to the `id` field of\n    [`Event::Input`](https://docs.rs/dora-node-api/latest/dora_node_api/enum.Event.html#variant.Input)\n    events sent to the node event loop.\n  - `source_node_id` should be the `id` field of the node that sends the output that we want\n    to subscribe to\n  - `source_node_output_id` should be the identifier of the output that that we want\n    to subscribe to\n\n## Example\n\n```yaml\nnodes:\n  - id: example-node\n    outputs:\n      - one\n      - two\n  - id: receiver\n    inputs:\n        my_input: example-node/two\n```",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "$ref": "#/$defs/Input"
           },
@@ -357,12 +475,13 @@
           "minimum": 0
         },
         "max_rotated_files": {
-          "description": "Maximum number of rotated log files to keep (default: 5)",
+          "description": "Maximum number of rotated log files to keep (default: 5, range: 0-100)\n\n`0` keeps the active log only, rotating the previous one away.",
           "type": [
             "integer",
             "null"
           ],
           "format": "uint32",
+          "maximum": 100,
           "minimum": 0
         },
         "min_log_level": {
@@ -373,7 +492,7 @@
           ]
         },
         "module": {
-          "description": "Path to a module definition file (e.g. `nav_module.yml`).\n\nA module is a reusable sub-dataflow: a group of nodes with declared\ninputs and outputs. At build time the module is expanded inline —\ninternal node IDs are prefixed with `{module_id}.` and all wiring is\nrewritten so the runtime sees only flat nodes.\n\nMutually exclusive with `path`, `operators`, `operator`, `custom`,\nand `ros2`.\n\n## Example\n\n```yaml\nnodes:\n  - id: nav_stack\n    module: modules/navigation_module.yml\n    inputs:\n      goal_pose: localization/goal\n```",
+          "description": "Path to a module definition file (e.g. `nav_module.yml`).\n\nA module is a reusable sub-dataflow: a group of nodes with declared\ninputs and outputs. At build time the module is expanded inline —\ninternal node IDs are prefixed with `{module_id}.` and all wiring is\nrewritten so the runtime sees only flat nodes.\n\nA module node has no source or per-node runtime configuration of its own,\nso only `module`, `inputs`, `params`, `env`, `build`, and `deploy` are\nmeaningful on it. Every other node field is rejected at expansion time\nrather than silently discarded -- both the source/kind fields (`path`,\n`args`, `path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`,\n`operator`, `ros2`) and per-node runtime fields (`outputs`,\n`output_types`, `cpu_affinity`, `restart_policy`, ...). The same rule\napplies at every nesting level.\n\n`env`, `build`, `deploy`, and `params` *are* accepted: they propagate\ninto the module's inner nodes.\n\n## Example\n\n```yaml\nnodes:\n  - id: nav_stack\n    module: modules/navigation_module.yml\n    inputs:\n      goal_pose: localization/goal\n```",
           "type": [
             "string",
             "null"
@@ -410,14 +529,20 @@
         },
         "output_framing": {
           "description": "Per-output framing overrides (default: Raw for all).\n\nMaps output identifiers to their wire framing mode.\nOutputs not listed here use the default `Raw` framing.",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "$ref": "#/$defs/OutputFraming"
           }
         },
         "output_metadata": {
           "description": "Required metadata keys per output.\n\nMaps output identifiers to lists of required metadata key names.\nThese are checked at build/validate time.\n\n## Example\n\n```yaml\noutput_metadata:\n  response: [request_id]\n```",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "type": "array",
             "items": {
@@ -427,14 +552,20 @@
         },
         "output_types": {
           "description": "Optional type annotations for outputs.\n\nMaps output identifiers to type URNs (e.g. `std/media/v1/Image`).\nOnly annotated outputs are type-checked; unannotated outputs remain dynamic.",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "type": "string"
           }
         },
         "outputs": {
           "description": "Output data identifiers produced by this node.\n\nList of output identifiers that the node sends.\nMust contain all `output_id` values that the node uses when sending output, e.g. through the\n[`send_output`](https://docs.rs/dora-node-api/latest/dora_node_api/struct.DoraNode.html#method.send_output)\nfunction.\n\n## Example\n\n```yaml\nnodes:\n  - id: example-node\n    outputs:\n      - processed_image\n      - metadata\n```",
-          "type": "array",
+          "type": [
+            "array",
+            "null"
+          ],
           "default": [],
           "items": {
             "$ref": "#/$defs/DataId"
@@ -443,7 +574,10 @@
         },
         "params": {
           "description": "Parameters passed to a module for compile-time substitution.\n\nOnly meaningful when `module` is set. Values are substituted into\ninner node `args` fields (using `${_param.name}` syntax) and can be\ninjected into inner node `env` maps.\n\n## Example\n\n```yaml\nnodes:\n  - id: nav_stack\n    module: modules/navigation_module.yml\n    params:\n      speed: \"2.0\"\n      mode: turbo\n```",
-          "type": "object",
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": {
             "type": "string"
           }
@@ -533,6 +667,14 @@
             }
           ]
         },
+        "startup_timeout": {
+          "description": "Startup connection deadline in seconds.\n\nIf the node process fails to connect (subscribe to events) within this\nmany seconds after process spawn, the daemon kills the process and\nevaluates the `restart_policy`.\n\nEvaluated on each `health_check_interval` tick (default 5s).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
         "tag": {
           "description": "Git tag to checkout after cloning.\n\nThe `tag` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git tag that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    tag: v0.1.0\n```",
           "type": [
@@ -594,12 +736,13 @@
           ]
         },
         "max_rotated_files": {
-          "description": "Maximum number of rotated log files to keep (default: 5)",
+          "description": "Maximum number of rotated log files to keep (default: 5, range: 0-100)\n\n`0` keeps the active log only, rotating the previous one away.",
           "type": [
             "integer",
             "null"
           ],
           "format": "uint32",
+          "maximum": 100,
           "minimum": 0
         },
         "min_log_level": {
@@ -700,6 +843,7 @@
       ]
     },
     "OperatorId": {
+      "description": "The identifier of an operator running inside a `dora runtime` node.\n\nAn operator is addressed as `<node_id>/<operator_id>/<output_id>`, so an\n`OperatorId` is the middle segment of a runtime output's fully-qualified\nname.\n\nUnlike [`NodeId`] and [`DataId`], an `OperatorId` is **not** validated:\n[`FromStr`] is [`Infallible`] and [`From<String>`] accepts any string\nverbatim (this is why it derives `Deserialize` directly rather than through\na validating deserializer). Callers are responsible for not embedding a `/`\nin an operator id — a `/` collides with the `<node>/<operator>/<output>`\naddressing separator and makes the operator unaddressable (it would resolve\nto a different operator/output split).\n\n```\nuse dora_message::id::OperatorId;\n\n// Construction is infallible from both `&str` and `String`:\nlet from_str: OperatorId = \"detector\".parse().unwrap(); // FromStr is Infallible\nlet from_string = OperatorId::from(\"detector\".to_string());\nassert_eq!(from_str, from_string);\n\n// Display and AsRef expose the underlying id:\nassert_eq!(from_str.to_string(), \"detector\");\nassert_eq!(from_str.as_ref(), \"detector\");\n```",
       "type": "string"
     },
     "OutputFraming": {
@@ -835,7 +979,14 @@
         },
         "qos": {
           "description": "QoS policies applied to all topics (can be overridden per-topic).",
-          "$ref": "#/$defs/Ros2QosConfig",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Ros2QosConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": {
             "keep_all": false,
             "reliable": false
@@ -1130,12 +1281,13 @@
           ]
         },
         "max_rotated_files": {
-          "description": "Maximum number of rotated log files to keep (default: 5)",
+          "description": "Maximum number of rotated log files to keep (default: 5, range: 0-100)\n\n`0` keeps the active log only, rotating the previous one away.",
           "type": [
             "integer",
             "null"
           ],
           "format": "uint32",
+          "maximum": 100,
           "minimum": 0
         },
         "min_log_level": {

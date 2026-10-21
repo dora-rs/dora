@@ -35,23 +35,34 @@ pub struct GitManager {
     /// both choose a writing arm for the same dir before it exists on disk;
     /// with a plain set the first claim to drop would strip the protection
     /// while the second writer is still going.
-    clones_in_progress: Arc<Mutex<BTreeMap<PathBuf, usize>>>,
-    // reuse_for: BTreeMap<PathBuf, PathBuf>,
+    clones_in_progress: Arc<Mutex<BTreeMap<PathBuf, DirWriters>>>,
+}
+
+/// The writers currently claiming one clone dir (see
+/// `GitManager::clones_in_progress`).
+struct DirWriters {
+    count: usize,
+    /// Never sent on; dropped together with this entry once the last writer
+    /// releases its claim. A `Reuse` of the dir subscribes to it and waits for
+    /// that before using the dir: `dora build --parallel` runs every node's
+    /// `prepare` at once, and a reuse that ran ahead of a sibling node's clone
+    /// found no directory.
+    done: tokio::sync::watch::Sender<()>,
 }
 
 /// Releases a `clones_in_progress` claim when the owning `GitFolder` is
 /// dropped, whatever the reason (clone finished, failed, or was cancelled).
 struct InProgressClaim {
     dir: PathBuf,
-    claims: Arc<Mutex<BTreeMap<PathBuf, usize>>>,
+    claims: Arc<Mutex<BTreeMap<PathBuf, DirWriters>>>,
 }
 
 impl Drop for InProgressClaim {
     fn drop(&mut self) {
         let mut claims = lock_in_progress(&self.claims);
-        if let Some(count) = claims.get_mut(&self.dir) {
-            *count -= 1;
-            if *count == 0 {
+        if let Some(writers) = claims.get_mut(&self.dir) {
+            writers.count -= 1;
+            if writers.count == 0 {
                 claims.remove(&self.dir);
             }
         }
@@ -65,8 +76,8 @@ impl Drop for InProgressClaim {
 /// leave the dir's claim permanently unreleased, exempting it from
 /// verification forever.
 fn lock_in_progress(
-    claims: &Mutex<BTreeMap<PathBuf, usize>>,
-) -> std::sync::MutexGuard<'_, BTreeMap<PathBuf, usize>> {
+    claims: &Mutex<BTreeMap<PathBuf, DirWriters>>,
+) -> std::sync::MutexGuard<'_, BTreeMap<PathBuf, DirWriters>> {
     claims
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -120,10 +131,14 @@ impl GitManager {
             // different, concurrently-running session sharing this daemon's
             // GitManager -- must never have its HEAD checked or be deleted, so I
             // skip verification and just reuse it, same as before this change.
-            let in_progress = lock_in_progress(&self.clones_in_progress).contains_key(&clone_dir);
+            // Instead, wait for those writers to finish before using it.
+            let writers = lock_in_progress(&self.clones_in_progress)
+                .get(&clone_dir)
+                .map(|writers| writers.done.subscribe());
             ReuseOptions::Reuse {
                 dir: clone_dir.clone(),
-                verify_commit: (!in_progress).then_some(commit_hash),
+                verify_commit: writers.is_none().then_some(commit_hash),
+                wait_for: writers,
             }
         } else if let Some(previous_commit_hash) = prev_commit_hash {
             // we might be able to update a previous clone
@@ -181,9 +196,13 @@ impl GitManager {
                 | ReuseOptions::RenameAndFetch { .. }
         )
         .then(|| {
-            *lock_in_progress(&self.clones_in_progress)
+            lock_in_progress(&self.clones_in_progress)
                 .entry(clone_dir.clone())
-                .or_insert(0) += 1;
+                .or_insert_with(|| DirWriters {
+                    count: 0,
+                    done: tokio::sync::watch::Sender::new(()),
+                })
+                .count += 1;
             InProgressClaim {
                 dir: clone_dir,
                 claims: self.clones_in_progress.clone(),
@@ -232,6 +251,16 @@ impl GitManager {
                 .context("no path in git URL")?
                 .map(sanitize_dir_component),
         );
+        // The commit hash becomes a path component, and on the `--locked` path
+        // it comes verbatim from the lockfile (only its repo is compared). A
+        // value such as `../../..` would escape `base_dir`: the node would be
+        // built in an arbitrary existing directory, and a later update of the
+        // same repo would rename (and, if the fetch then failed, delete) it.
+        // Every legitimate source (`git rev-parse`, descriptor `rev:`, hub
+        // pins) produces a (possibly abbreviated) hex hash.
+        if !is_commit_hash_component(commit_hash) {
+            eyre::bail!("invalid git commit hash `{commit_hash}`: expected 4 to 64 hex digits");
+        }
         let path = path.join(commit_hash);
         Ok(dunce::simplified(&path).to_owned())
     }
@@ -352,7 +381,7 @@ impl GitFolder {
                         )
                         .await;
 
-                    let repository = fetch_changes(&tmp_dir, None).await?;
+                    let repository = fetch_changes(&tmp_dir, &commit_hash).await?;
                     checkout_tree(&repository, &commit_hash)?;
                     Ok(())
                     // `repository` is dropped at the end of this block, before
@@ -392,7 +421,7 @@ impl GitFolder {
                     .await;
 
                 let result: eyre::Result<()> = async {
-                    let repository = fetch_changes(&tmp_dir, None).await?;
+                    let repository = fetch_changes(&tmp_dir, &commit_hash).await?;
                     checkout_tree(&repository, &commit_hash)?;
                     Ok(())
                     // `repository` is dropped at the end of this block, before
@@ -408,7 +437,23 @@ impl GitFolder {
                     }
                 }
             }
-            ReuseOptions::Reuse { dir, verify_commit } => {
+            ReuseOptions::Reuse {
+                dir,
+                verify_commit,
+                wait_for,
+            } => {
+                if let Some(mut writers) = wait_for {
+                    // Nothing is ever sent, so this returns once the last
+                    // writer is done: finished, failed, or cancelled.
+                    let _ = writers.changed().await;
+                    if !dir.exists() {
+                        bail!(
+                            "the clone into {} that this node shares with another \
+                             node failed; see that node's build error",
+                            dir.display()
+                        );
+                    }
+                }
                 // Belt and braces for #2480: even with the cleanup above, a stale
                 // dir could still slip through if remove_dir_all itself failed or
                 // we got killed mid-checkout. So for a clone left by a prior build
@@ -496,6 +541,10 @@ enum ReuseOptions {
     Reuse {
         dir: PathBuf,
         verify_commit: Option<String>,
+        /// Set while other `GitFolder`s are still writing this dir (and then
+        /// `verify_commit` is `None`). `prepare` waits until they have all
+        /// finished before using it.
+        wait_for: Option<tokio::sync::watch::Receiver<()>>,
     },
     /// Copy an older clone of the repository and fetch changes, then reuse it.
     CopyAndFetch {
@@ -600,6 +649,12 @@ async fn promote_clone(
     }
 }
 
+/// Whether `s` is a (possibly abbreviated) hex commit hash and therefore safe
+/// to use as a single path component.
+fn is_commit_hash_component(s: &str) -> bool {
+    (4..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// True for a full-length hex commit id (40 chars for SHA-1, 64 for SHA-256).
 /// Branch and tag names are shorter or non-hex, and I can't resolve those to a
 /// commit without hitting the network, so those pins skip the HEAD check.
@@ -646,34 +701,37 @@ fn clone_into(repo_addr: Url, clone_dir: &Path) -> eyre::Result<git2::Repository
         .context("failed to clone repo")
 }
 
+/// Make sure an existing clone contains `commit_hash`, fetching from
+/// `origin` if it does not.
+///
+/// The fetch must get what a fresh clone would (the remote's configured
+/// refspecs, i.e. all of `refs/heads/*`), not only the default branch: the
+/// commit being checked out may only be reachable from another branch (a
+/// node with `branch: dev`, or a `rev:` on a feature branch), and a fetch of
+/// the default branch alone would leave it missing.
 async fn fetch_changes(
     repo_dir: &Path,
-    refname: Option<String>,
+    commit_hash: &str,
 ) -> Result<git2::Repository, eyre::Error> {
     let repo_dir = repo_dir.to_owned();
+    let commit_hash = commit_hash.to_owned();
     let fetch_changes = tokio::task::spawn_blocking(move || {
         let repository = git2::Repository::open(&repo_dir).context("failed to open git repo")?;
 
-        {
+        let present = repository
+            .revparse_single(&commit_hash)
+            .and_then(|object| object.peel_to_commit())
+            .is_ok();
+        if !present {
             let mut remote = repository
                 .find_remote("origin")
                 .context("failed to find remote `origin` in repo")?;
-            remote
-                .connect(git2::Direction::Fetch)
-                .context("failed to connect to remote")?;
-            let default_branch = remote
-                .default_branch()
-                .context("failed to get default branch for remote")?;
-            let fetch = match &refname {
-                Some(refname) => refname,
-                None => default_branch
-                    .as_str()
-                    .context("failed to read default branch as string")?,
-            };
             let mut fetch_options = FetchOptions::new();
             fetch_options.download_tags(git2::AutotagOption::All);
+            // An empty refspec list makes libgit2 use the remote's configured
+            // fetch refspecs.
             remote
-                .fetch(&[&fetch], Some(&mut fetch_options), None)
+                .fetch::<&str>(&[], Some(&mut fetch_options), None)
                 .context("failed to fetch from git repo")?;
         }
         Result::<_, eyre::Error>::Ok(repository)
@@ -767,6 +825,39 @@ mod tests {
     }
 
     #[test]
+    fn clone_dir_path_rejects_a_commit_hash_that_is_not_hex() {
+        let url = Url::parse("https://github.com/dora-rs/dora").unwrap();
+        for bad in [
+            "../../../../home/user/project",
+            "..",
+            "a/b",
+            "abc\\def",
+            "",
+            "abc",
+            "main",
+            &"a".repeat(65),
+        ] {
+            let err = GitManager::clone_dir_path(Path::new("base"), &url, &bad.to_string())
+                .expect_err(&format!("`{bad}` must be rejected"));
+            assert!(
+                err.to_string().contains("invalid git commit hash"),
+                "unexpected error for `{bad}`: {err}"
+            );
+        }
+        for good in [
+            "abcd",
+            "0123456789abcdefABCDEF",
+            &"f".repeat(40),
+            &"0".repeat(64),
+        ] {
+            let dir =
+                GitManager::clone_dir_path(Path::new("base"), &url, &good.to_string()).unwrap();
+            assert!(dir.starts_with("base"));
+            assert!(dir.ends_with(good));
+        }
+    }
+
+    #[test]
     fn clone_dir_path_keeps_a_file_url_drive_letter_out_of_the_on_disk_path() {
         // A `file://` URL to a Windows-style absolute path parses with the
         // drive letter as its first path segment (`C:`). Colon is illegal in a
@@ -844,6 +935,7 @@ mod tests {
                 dir: dir.clone(),
                 // Well-formed full hash that is definitely not commit A.
                 verify_commit: Some("0".repeat(40)),
+                wait_for: None,
             },
             _claim: None,
         };
@@ -864,6 +956,7 @@ mod tests {
             reuse: ReuseOptions::Reuse {
                 dir: dir.clone(),
                 verify_commit: Some(oid),
+                wait_for: None,
             },
             _claim: None,
         };
@@ -890,6 +983,7 @@ mod tests {
             reuse: ReuseOptions::Reuse {
                 dir: dir.clone(),
                 verify_commit: Some("0".repeat(40)),
+                wait_for: None,
             },
             _claim: None,
         };
@@ -911,6 +1005,7 @@ mod tests {
             reuse: ReuseOptions::Reuse {
                 dir: dir.clone(),
                 verify_commit: Some("main".into()),
+                wait_for: None,
             },
             _claim: None,
         };
@@ -976,6 +1071,81 @@ mod tests {
         // folder_a is still alive, holding its in-progress claim. Dropping it
         // now releases the claim, same as when its real clone finishes.
         drop(folder_a);
+    }
+
+    /// `dora build --parallel` runs every node's `prepare` at once. A node
+    /// that reuses the clone a sibling node of the same build is creating must
+    /// wait for that clone, not hand back a directory that doesn't exist yet.
+    #[tokio::test]
+    async fn parallel_reuse_waits_for_the_sibling_clone() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo");
+        let commit = init_repo_with_commit(&repo_path);
+        let repo_url = file_url(&repo_path).to_string();
+        let target_dir = tempfile::tempdir().unwrap();
+
+        let mut manager = GitManager::default();
+        let session = SessionId::generate();
+        let mut choose = || {
+            manager
+                .choose_clone_dir(
+                    session,
+                    repo_url.clone(),
+                    commit.clone(),
+                    None,
+                    target_dir.path(),
+                )
+                .unwrap()
+        };
+        let writer = choose();
+        let reuser = choose();
+        assert!(matches!(writer.reuse, ReuseOptions::NewClone { .. }));
+        assert!(matches!(reuser.reuse, ReuseOptions::Reuse { .. }));
+
+        let (mut writer_logger, mut reuser_logger) = (TestLogger, TestLogger);
+        let (written, reused) = tokio::join!(writer.prepare(&mut writer_logger), async {
+            let dir = reuser.prepare(&mut reuser_logger).await.unwrap();
+            assert!(
+                dir.join("file.txt").exists(),
+                "reuse returned before the sibling clone was in place"
+            );
+            dir
+        });
+        assert_eq!(written.unwrap(), reused);
+    }
+
+    #[tokio::test]
+    async fn parallel_reuse_fails_when_the_sibling_clone_fails() {
+        // No such repository, so the writer's clone fails.
+        let missing = tempfile::tempdir().unwrap();
+        let repo_url = file_url(&missing.path().join("missing")).to_string();
+        let commit = "0123456789abcdef0123456789abcdef01234567".to_string();
+        let target_dir = tempfile::tempdir().unwrap();
+
+        let mut manager = GitManager::default();
+        let session = SessionId::generate();
+        let mut choose = || {
+            manager
+                .choose_clone_dir(
+                    session,
+                    repo_url.clone(),
+                    commit.clone(),
+                    None,
+                    target_dir.path(),
+                )
+                .unwrap()
+        };
+        let writer = choose();
+        let reuser = choose();
+
+        let (mut writer_logger, mut reuser_logger) = (TestLogger, TestLogger);
+        let (written, reused) = tokio::join!(
+            writer.prepare(&mut writer_logger),
+            reuser.prepare(&mut reuser_logger)
+        );
+        assert!(written.is_err());
+        let err = format!("{:?}", reused.unwrap_err());
+        assert!(err.contains("failed"), "{err}");
     }
 
     #[tokio::test]
@@ -1167,6 +1337,7 @@ mod tests {
             reuse: ReuseOptions::Reuse {
                 dir: dir.clone(),
                 verify_commit: None,
+                wait_for: None,
             },
             _claim: None,
         };
@@ -1468,6 +1639,72 @@ mod tests {
         assert_eq!(head_commit(&target), commit);
         assert!(!from.exists(), "the source clone is consumed by the rename");
         assert!(!has_partial_leftover(&target), "temp must be gone");
+    }
+
+    // Add a commit on top of `branch` in `repo` (creating the branch from HEAD
+    // if needed) without moving HEAD, and return its hash.
+    fn commit_on_branch(repo_path: &Path, branch: &str, content: &[u8]) -> String {
+        let repo = git2::Repository::open(repo_path).unwrap();
+        let parent = match repo.find_branch(branch, git2::BranchType::Local) {
+            Ok(b) => b.get().peel_to_commit().unwrap(),
+            Err(_) => repo.head().unwrap().peel_to_commit().unwrap(),
+        };
+        let blob = repo.blob(content).unwrap();
+        let mut builder = repo.treebuilder(Some(&parent.tree().unwrap())).unwrap();
+        builder.insert("file.txt", blob, 0o100644).unwrap();
+        let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        repo.commit(
+            Some(&format!("refs/heads/{branch}")),
+            &sig,
+            &sig,
+            "on branch",
+            &tree,
+            &[&parent],
+        )
+        .unwrap()
+        .to_string()
+    }
+
+    // Updating a clone of a node pinned to a non-default branch must fetch
+    // that branch too: a fresh clone gets every branch, and the reuse arms
+    // must see the same commits. They used to fetch only the remote's
+    // default branch, so the checkout failed and (for `RenameAndFetch`) the
+    // previous clone was deleted.
+    #[tokio::test]
+    async fn fetch_reuse_reaches_commits_on_non_default_branches() {
+        for rename in [false, true] {
+            let base = tempfile::tempdir().unwrap();
+            let origin = base.path().join("origin");
+            init_repo_with_commit(&origin);
+            commit_on_branch(&origin, "dev", b"dev 1");
+            let from = base.path().join("localhost").join("prev");
+            clone_from_origin(&origin, &from);
+            // A new commit lands on `dev` after the first build.
+            let commit = commit_on_branch(&origin, "dev", b"dev 2");
+
+            let target = base.path().join("localhost").join(&commit);
+            let reuse = if rename {
+                ReuseOptions::RenameAndFetch {
+                    from,
+                    target_dir: target.clone(),
+                    commit_hash: commit.clone(),
+                }
+            } else {
+                ReuseOptions::CopyAndFetch {
+                    from,
+                    target_dir: target.clone(),
+                    commit_hash: commit.clone(),
+                }
+            };
+            let folder = GitFolder {
+                reuse,
+                _claim: None,
+            };
+            let out = folder.prepare(&mut TestLogger).await.unwrap();
+            assert_eq!(out, target);
+            assert_eq!(head_commit(&target), commit, "rename = {rename}");
+        }
     }
 
     // A `RenameAndFetch` whose fetch fails must leave nothing at `target_dir`

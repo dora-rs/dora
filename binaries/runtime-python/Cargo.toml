@@ -8,6 +8,13 @@ readme.workspace = true
 description.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false  # PyO3 glue, not a crates.io API -- see below
+# Links `pyo3`, and `pyo3-ffi` declares `links = "python"`, so cargo refuses
+# two pyo3 versions in one build graph. Publishing this crate would therefore
+# force any downstream that builds its own PyO3 extension onto dora's exact
+# pyo3 minor, and freeze that minor for the life of 1.x. It reaches users
+# compiled into the `dora-rs` wheel instead, where the pyo3 version is an
+# implementation detail. Nothing published depends on it.
 
 # Python (PyO3) operator runtime backend. Loads a Python module's `Operator`
 # class and runs it on the `dora-runtime-api` event loop. Shipped inside the
@@ -38,12 +45,12 @@ tracing = { workspace = true }
 tracing-opentelemetry = { version = "0.33.0", optional = true }
 
 [build-dependencies]
-# pyo3-build-config's own build script (resolve-config feature) probes the
-# Python interpreter and fails when it's older than the workspace abi3-py311
-# floor. In the old monolithic `dora-runtime` that had to be gated behind a
-# `python` feature, because the crate was linked into `dora-cli` on machines
-# with Python <= 3.10. This crate *is* the Python backend and always links
-# pyo3, so the dependency is unconditional here.
+# `use_pyo3_cfgs()` needs the interpreter config that `pyo3-ffi`'s build script
+# resolves, which cargo forwards only to direct dependents of `pyo3`/`pyo3-ffi`
+# — satisfied by the unconditional `pyo3` dependency above. In the old
+# monolithic `dora-runtime` this had to be gated behind a `python` feature,
+# because the crate was linked into `dora-cli` on machines with Python <= 3.10.
+# This crate *is* the Python backend and always links pyo3.
 pyo3-build-config = { workspace = true }
 
 [dev-dependencies]

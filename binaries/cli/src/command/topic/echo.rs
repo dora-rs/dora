@@ -1,13 +1,20 @@
-use std::{ptr::NonNull, sync::Arc, time::SystemTime};
+use std::{collections::HashMap, ptr::NonNull, sync::Arc, time::SystemTime};
 
 use arrow::{buffer::OffsetBuffer, datatypes::Field};
 use clap::Args;
 use colored::Colorize;
-use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::Parameter};
+use dora_message::{
+    common::Timestamped,
+    daemon_to_daemon::InterDaemonEvent,
+    metadata::{Parameter, strip_internal_parameters},
+};
 use eyre::{Context, eyre};
 
 use crate::{
-    command::{Executable, default_tracing, topic::selector::TopicSelector},
+    command::{
+        Executable, default_tracing,
+        topic::selector::{TopicSelector, public_topic_output_id},
+    },
     common::CoordinatorOptions,
     formatting::OutputFormat,
 };
@@ -76,6 +83,31 @@ impl Executable for Echo {
     }
 }
 
+/// Compute the `recv_timeout` for one iteration of the echo loop, or `None`
+/// when the `--duration` window has elapsed and the loop should stop.
+///
+/// Taking the already-computed `elapsed` (rather than an absolute deadline)
+/// keeps the caller off `Instant + Duration`, which overflows and panics for a
+/// large-but-valid `--duration`. A remaining wait is capped at `hint` so the
+/// loop still wakes periodically to show the "enable debug inspection" hint.
+fn echo_recv_timeout(
+    duration: Option<std::time::Duration>,
+    elapsed: std::time::Duration,
+    hint: std::time::Duration,
+) -> Option<std::time::Duration> {
+    match duration {
+        Some(d) => {
+            let remaining = d.saturating_sub(elapsed);
+            if remaining.is_zero() {
+                None
+            } else {
+                Some(remaining.min(hint))
+            }
+        }
+        None => Some(hint),
+    }
+}
+
 fn inspect(
     coordinator: CoordinatorOptions,
     selector: TopicSelector,
@@ -84,7 +116,10 @@ fn inspect(
     duration: Option<u64>,
 ) -> eyre::Result<()> {
     let session = coordinator.connect()?;
-    let (dataflow_id, topics) = selector.resolve(&session)?;
+    let (dataflow_id, topics, descriptor) = selector.resolve_with_descriptor(&session)?;
+    // Frames report the daemon's wire output id; label them with the public id
+    // the user typed and `topic list`/`info` display (dora-rs/dora#2893).
+    let nodes: HashMap<_, _> = descriptor.nodes.iter().map(|n| (&n.id, n)).collect();
 
     let ws_topics: Vec<_> = topics
         .iter()
@@ -98,7 +133,13 @@ fn inspect(
     let mut hint_shown = false;
     let mut buf = Vec::with_capacity(1024);
     let mut emitted: u64 = 0;
-    let deadline = duration.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
+    // Track the run window as a start instant plus `elapsed()` rather than an
+    // absolute `Instant::now() + Duration::from_secs(seconds)`: `--duration` is
+    // bounded only from below (`range(1..)`), so a large-but-valid `u64` would
+    // make `Instant + Duration` overflow the monotonic clock and panic. See
+    // `echo_recv_timeout`, and the sibling `topic hz` sampler.
+    let start = std::time::Instant::now();
+    let duration = duration.map(std::time::Duration::from_secs);
     loop {
         // Stop conditions: --count reached or --duration elapsed.
         if let Some(max) = count
@@ -106,21 +147,15 @@ fn inspect(
         {
             break;
         }
-        let recv_timeout = match deadline {
-            Some(d) => {
-                let remaining = d.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                remaining.min(HINT_TIMEOUT)
-            }
-            None => HINT_TIMEOUT,
+        let recv_timeout = match echo_recv_timeout(duration, start.elapsed(), HINT_TIMEOUT) {
+            Some(timeout) => timeout,
+            None => break,
         };
         let result = match data_rx.recv_timeout(recv_timeout) {
             Ok(result) => result,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if let Some(d) = deadline
-                    && std::time::Instant::now() >= d
+                if let Some(d) = duration
+                    && start.elapsed() >= d
                 {
                     break;
                 }
@@ -154,7 +189,7 @@ fn inspect(
 
         match event.inner {
             InterDaemonEvent::Output {
-                metadata,
+                mut metadata,
                 data,
                 node_id,
                 output_id,
@@ -162,12 +197,15 @@ fn inspect(
             } => {
                 use std::fmt::Write;
 
-                let output_name = format!("{node_id}/{output_id}");
+                // The daemon stamps every debug frame with its on-wire size for
+                // `dora topic info`; it is not part of the node's metadata.
+                strip_internal_parameters(&mut metadata.parameters);
 
-                let timestamp = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis();
+                let display_output = nodes
+                    .get(&node_id)
+                    .map(|node| public_topic_output_id(node, &output_id))
+                    .unwrap_or_else(|| output_id.clone());
+                let output_name = format!("{node_id}/{display_output}");
 
                 let data_str = if let Some(data) = data {
                     // Every data-plane payload is a self-describing Arrow IPC
@@ -227,6 +265,20 @@ fn inspect(
                         println!("{output}");
                     }
                     OutputFormat::Json => {
+                        // Computed only on the JSON path: the default `table`
+                        // format discards this, so a high-rate topic should not
+                        // pay a `SystemTime::now()` syscall per frame for a value
+                        // it never emits.
+                        //
+                        // `duration_since(UNIX_EPOCH)` errors when the wall clock
+                        // is set before 1970 (e.g. an embedded target booting
+                        // with an unset RTC before NTP sync). Fall back to a zero
+                        // timestamp rather than panicking a live `dora topic
+                        // echo`, mirroring the daemon's `current_millis()` helper.
+                        let timestamp = SystemTime::now()
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_millis();
                         println!(
                             r#"{{"timestamp":{},"name":{},"data":{},"metadata":{}}}"#,
                             timestamp,
@@ -306,6 +358,11 @@ fn render_array_json(array: arrow::array::ArrayData, buf: &mut Vec<u8>) -> eyre:
 /// plane is Arrow-IPC-only, so `dora topic echo` decodes the same self-describing
 /// stream every node receives. The default `require_alignment = false` decoder
 /// realigns under-aligned input rather than erroring.
+///
+/// Like that decoder, this rejects a multi-batch stream and trailing bytes
+/// after the end-of-stream marker rather than silently returning only the first
+/// batch — `dora topic echo` must not misrepresent a malformed payload as a
+/// clean single value.
 fn decode_arrow_ipc_zero_copy(
     mut buffer: arrow::buffer::Buffer,
 ) -> eyre::Result<arrow::array::ArrayData> {
@@ -315,19 +372,39 @@ fn decode_arrow_ipc_zero_copy(
     let mut batch = None;
     while !buffer.is_empty() {
         let before = buffer.len();
-        if let Some(b) = decoder
-            .decode(&mut buffer)
-            .context("failed to decode Arrow IPC stream")?
-        {
-            batch = Some(b);
-            break;
-        }
-        // Guard against a crafted/truncated payload that yields no batch without
-        // consuming bytes — otherwise this loop spins forever.
-        if buffer.len() == before {
-            return Err(eyre!(
-                "Arrow IPC decoder made no progress on a partial/corrupt stream"
-            ));
+        let decoded = match decoder.decode(&mut buffer) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                // `decode` consumes the end-of-stream marker and then errors on
+                // any byte after it, so once we already hold the batch a decode
+                // error means the stream carried trailing bytes after a complete
+                // single-batch stream. Reject them explicitly rather than
+                // truncating to the first batch (matching the node-api decoder).
+                let context = if batch.is_some() {
+                    "unexpected trailing bytes after the record batch in IPC stream"
+                } else {
+                    "failed to decode Arrow IPC stream"
+                };
+                return Err::<arrow::array::ArrayData, _>(e).context(context);
+            }
+        };
+        match decoded {
+            Some(b) => {
+                // A second batch means the stream is malformed; reject it rather
+                // than silently dropping everything after the first batch.
+                if batch.replace(b).is_some() {
+                    return Err(eyre!(
+                        "expected exactly one record batch in IPC stream, but found more than one"
+                    ));
+                }
+            }
+            // No batch and no progress: a crafted/truncated payload. Stop so the
+            // loop cannot spin forever on a partial/corrupt stream.
+            None if buffer.len() == before => break,
+            // Progress without a batch: the schema message before the batch, or
+            // the end-of-stream marker after it. Keep going; the loop ends when
+            // the buffer is drained.
+            None => {}
         }
     }
 
@@ -433,5 +510,85 @@ mod tests {
         let err =
             decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(vec![0u8; 16])).unwrap_err();
         assert!(!err.to_string().is_empty());
+    }
+
+    /// Encode the same single-column batch twice into one stream, to exercise
+    /// the multi-batch rejection.
+    fn encode_two_batch_ipc(array: &dyn Array) -> Vec<u8> {
+        use arrow::datatypes::{Field, Schema};
+        use arrow::ipc::writer::StreamWriter;
+        use arrow::record_batch::RecordBatch;
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            array.data_type().clone(),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![arrow::array::make_array(array.to_data())],
+        )
+        .unwrap();
+        let mut buf = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut buf, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        buf
+    }
+
+    /// A multi-batch stream must be rejected rather than silently truncated to
+    /// its first batch — otherwise `dora topic echo` would render a malformed
+    /// payload as a clean single value.
+    #[test]
+    fn multi_batch_stream_is_rejected() {
+        let array = Int32Array::from(vec![1, 2, 3]);
+        let encoded = encode_two_batch_ipc(&array);
+        let err = decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(encoded)).unwrap_err();
+        assert!(err.to_string().contains("more than one"), "got: {err}");
+    }
+
+    /// A valid single-batch stream with extra bytes after its end-of-stream
+    /// marker must be rejected too, matching the node-api decoder.
+    #[test]
+    fn trailing_bytes_are_rejected() {
+        let array = Int32Array::from(vec![1, 2, 3]);
+        let mut encoded = encode_ipc(&array);
+        encoded.extend_from_slice(&[0u8; 16]);
+        let err = decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(encoded)).unwrap_err();
+        assert!(err.to_string().contains("trailing bytes"), "got: {err}");
+    }
+
+    #[test]
+    fn echo_recv_timeout_does_not_panic_on_oversized_duration() {
+        use std::time::Duration;
+        let hint = Duration::from_secs(5);
+
+        // No `--duration`: always wait a hint-length window.
+        assert_eq!(echo_recv_timeout(None, Duration::ZERO, hint), Some(hint));
+
+        // A huge-but-valid `--duration` (10^19 s) must not panic: previously the
+        // loop formed `Instant::now() + Duration::from_secs(seconds)`, which
+        // overflowed the monotonic clock. The remaining wait is capped at `hint`.
+        let huge = Duration::from_secs(10_000_000_000_000_000_000);
+        assert_eq!(
+            echo_recv_timeout(Some(huge), Duration::from_secs(1), hint),
+            Some(hint),
+        );
+
+        // Once the window has elapsed, the loop is told to stop (`None`).
+        assert_eq!(
+            echo_recv_timeout(Some(Duration::from_secs(2)), Duration::from_secs(2), hint),
+            None,
+        );
+
+        // A remaining window shorter than the hint is returned as-is.
+        assert_eq!(
+            echo_recv_timeout(Some(Duration::from_secs(3)), Duration::from_secs(1), hint),
+            Some(Duration::from_secs(2)),
+        );
     }
 }

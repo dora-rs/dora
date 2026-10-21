@@ -14,7 +14,7 @@
 //! able to serialize and deserialize context that has been sent via the middleware.
 //! Supports any OTLP-compatible backend (Jaeger, Zipkin, Tempo, etc.).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use eyre::Context as EyreContext;
 use opentelemetry::trace::TracerProvider;
@@ -62,22 +62,63 @@ fn with_noisy_crates_off(mut filter: EnvFilter) -> EnvFilter {
     filter
 }
 
-/// Setup tracing with a default configuration.
+/// Whether `RUST_LOG` carries a directive that a hard-coded default for
+/// `target` also covers, so the user's directive must be layered over that
+/// default (see [`with_target_default`]).
 ///
-/// This will set up a global subscriber that logs to stdout with a filter level of "warn".
-/// Outputs structured JSONL that the dora daemon parses as `LogMessage`,
-/// so `tracing::info!()` calls in user nodes are automatically routed through
-/// the dora log pipeline (file, coordinator, `dora/logs` subscribers).
+/// `RUST_LOG` is a comma-separated list of `[target[=level]]` directives.
+/// `tracing-subscriber` applies a directive to every event whose target
+/// *starts with* the directive's target, so the default `zenoh=warn` also
+/// governs `zenoh_transport`, `zenoh_link_tcp`, … Match the same way: a
+/// `zenoh_transport=error` directive must be forwarded too, or the default
+/// keeps letting `zenoh_transport` warnings through. An unrelated target that
+/// merely contains the name elsewhere (e.g. `my_dora_daemon=info`) does not
+/// match.
+fn env_configures_target(env_log: &str, target: &str) -> bool {
+    env_log.split(',').any(|directive| {
+        // The bare target name is everything up to the first `=` (level) or `[`
+        // (span filter); trim surrounding whitespace so we compare the crate/
+        // module path itself.
+        let name = directive.split(['=', '[']).next().unwrap_or("").trim();
+        name.starts_with(target)
+    })
+}
+
+/// Add the hard-coded `default` directive for `target` to `filter`, followed
+/// by any `RUST_LOG` directives the default also covers (`target`, a submodule
+/// of it, or a sibling crate like `zenoh_transport`), which take precedence
+/// over the default.
 ///
-/// Should **ONLY** be used in `DoraNode` implementations.
-pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
-    TracingBuilder::new(name)
-        .with_node_stdout("warn")
-        .build()
-        .wrap_err(format!(
-            "failed to set tracing global subscriber for {name}"
-        ))?;
-    Ok(())
+/// Just leaving the default out when `RUST_LOG` names the target is not
+/// enough: the stdout filters are `EnvFilter::from_default_env().or(filter)`,
+/// which enables an event when *either* side does, so a target missing from
+/// `filter` falls back to its global level. A `RUST_LOG=zenoh=error` meant to
+/// quiet zenoh would then let zenoh through at `info`, louder than the
+/// `zenoh=warn` default.
+fn with_target_default(
+    filter: EnvFilter,
+    env_log: &str,
+    target: &str,
+    default: &'static str,
+) -> EnvFilter {
+    let mut filter = filter.add_directive(directive(default));
+    for user_directive in env_log
+        .split(',')
+        .filter(|d| env_configures_target(d, target))
+    {
+        if let Ok(user_directive) = user_directive.trim().parse::<Directive>() {
+            filter = filter.add_directive(user_directive);
+        }
+    }
+    filter
+}
+
+/// The non-`RUST_LOG` side of [`TracingBuilder::with_stdout`]'s filter.
+fn stdout_filter(filter: &str, env_log: &str) -> EnvFilter {
+    let parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
+    let parsed = with_target_default(parsed, env_log, "dora_daemon", "dora_daemon=info");
+    let parsed = with_target_default(parsed, env_log, "dora_core", "dora_core=warn");
+    with_target_default(parsed, env_log, "zenoh", "zenoh=warn")
 }
 
 pub struct OtelGuard {
@@ -107,11 +148,9 @@ impl TracingBuilder {
     /// This is the recommended layer for user nodes: `tracing::info!()` calls
     /// are automatically parsed by the daemon and routed through the log pipeline.
     pub fn with_node_stdout(mut self, filter: impl AsRef<str>) -> Self {
-        let mut parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
+        let parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
-        if !env_log.contains("zenoh") {
-            parsed = parsed.add_directive(directive("zenoh=warn"));
-        }
+        let parsed = with_target_default(parsed, &env_log, "zenoh", "zenoh=warn");
         let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
             .json()
@@ -127,17 +166,8 @@ impl TracingBuilder {
     /// it uses [std::io::stdout] which is synchronous
     /// and might block the logging thread.
     pub fn with_stdout(mut self, filter: impl AsRef<str>, json: bool) -> Self {
-        let mut parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
-        if !env_log.contains("dora_daemon") {
-            parsed = parsed.add_directive(directive("dora_daemon=info"));
-        }
-        if !env_log.contains("dora_core") {
-            parsed = parsed.add_directive(directive("dora_core=warn"));
-        }
-        if !env_log.contains("zenoh") {
-            parsed = parsed.add_directive(directive("zenoh=warn"));
-        }
+        let parsed = stdout_filter(filter.as_ref(), &env_log);
         let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
             .compact()
@@ -162,7 +192,7 @@ impl TracingBuilder {
         let file_name = file_name.into();
         let out_dir = Path::new("out");
         std::fs::create_dir_all(out_dir).context("failed to create `out` directory")?;
-        let path = out_dir.join(file_name).with_extension("txt");
+        let path = log_file_path(out_dir, &file_name);
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -183,15 +213,19 @@ impl TracingBuilder {
     /// If not set, falls back to `DORA_JAEGER_TRACING` for backward compatibility.
     ///
     /// The endpoint should be in the format: "http://localhost:4317"
-    pub fn with_otlp_tracing(mut self) -> eyre::Result<Self> {
-        let endpoint = std::env::var("DORA_OTLP_ENDPOINT")
-            .or_else(|_| std::env::var("DORA_JAEGER_TRACING"))
-            .wrap_err("DORA_OTLP_ENDPOINT or DORA_JAEGER_TRACING environment variable not set")?;
+    pub fn with_otlp_tracing(self) -> eyre::Result<Self> {
+        let endpoint = otlp_endpoint_from_env().ok_or_else(|| {
+            eyre::eyre!("DORA_OTLP_ENDPOINT or DORA_JAEGER_TRACING environment variable not set")
+        })?;
+        self.with_otlp_tracing_to(&endpoint)
+    }
 
+    /// [`with_otlp_tracing`](Self::with_otlp_tracing) with an explicit endpoint.
+    fn with_otlp_tracing_to(mut self, endpoint: &str) -> eyre::Result<Self> {
         // Initialize OTLP tracing - this returns a tracer and sets the global provider
-        let sdk_tracer_provider = crate::telemetry::init_tracing(&self.name, &endpoint)
+        let sdk_tracer_provider = crate::telemetry::init_tracing(&self.name, endpoint)
             .wrap_err("failed to initialize OTLP tracing exporter")?;
-        let meter_provider = metrics::init_meter_provider(&self.name, &endpoint)
+        let meter_provider = metrics::init_meter_provider(&self.name, endpoint)
             .wrap_err("failed to initialize OTLP metrics exporter")?;
 
         // TODO: Maybe this needs to be removed in favor of application level global.
@@ -206,11 +240,19 @@ impl TracingBuilder {
 
         self.guard = Some(guard);
         self.layers.push(MetricsLayer::new(meter_provider).boxed());
-        let mut filter_otel = with_noisy_crates_off(EnvFilter::new("trace"));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
-        if !env_log.contains("dora_daemon") {
-            filter_otel = filter_otel.add_directive(directive("dora_daemon=debug"));
-        }
+        let filter_otel = with_target_default(
+            with_noisy_crates_off(EnvFilter::new("trace")),
+            &env_log,
+            "dora_daemon",
+            "dora_daemon=debug",
+        )
+        // Keep zenoh's trace-level logs out of the OTLP export: they carry each
+        // message Debug-formatted, payload included, and formatting every payload
+        // on the hot path is prohibitive for large messages. Unconditional:
+        // unlike `dora_daemon` above, a `RUST_LOG` zenoh directive is
+        // deliberately not honoured on this layer.
+        .add_directive(directive("zenoh=warn"));
         self.layers.push(
             OpenTelemetryLayer::new(tracer)
                 .with_filter(filter_otel)
@@ -230,25 +272,6 @@ impl TracingBuilder {
             .add_directive(directive("dora_core=info"));
         let layer = span_store::SpanCaptureLayer::new(store).with_filter(filter);
         self.layers.push(layer.boxed());
-        self
-    }
-
-    pub fn add_layer<L>(mut self, layer: L) -> Self
-    where
-        L: Layer<Registry> + Send + Sync + 'static,
-    {
-        self.layers.push(layer.boxed());
-        self
-    }
-
-    pub fn with_layers<I, L>(mut self, layers: I) -> Self
-    where
-        I: IntoIterator<Item = L>,
-        L: Layer<Registry> + Send + Sync + 'static,
-    {
-        for layer in layers {
-            self.layers.push(layer.boxed());
-        }
         self
     }
 
@@ -272,7 +295,7 @@ impl Drop for OtelGuard {
     }
 }
 
-/// Initialize tracing with OTLP (if configured) or stdout/file logging.
+/// Initialize tracing with OTLP export (if configured) plus stdout/file logging.
 ///
 /// This function should be called after creating a tokio runtime and calling `runtime.enter()`.
 ///
@@ -306,28 +329,230 @@ pub fn init_tracing_subscriber(
     file_name: Option<&str>,
     file_filter: LevelFilter,
 ) -> eyre::Result<Option<OtelGuard>> {
-    let mut builder = TracingBuilder::new(name);
-    let guard: Option<OtelGuard>;
+    let otlp_endpoint = otlp_endpoint_from_env();
+    let (builder, guard) = subscriber_builder(
+        name,
+        otlp_endpoint.as_deref(),
+        stdout_filter,
+        file_name,
+        file_filter,
+    )?;
+    builder
+        .build()
+        .wrap_err("failed to set up tracing subscriber")?;
 
-    if std::env::var("DORA_OTLP_ENDPOINT").is_ok() || std::env::var("DORA_JAEGER_TRACING").is_ok() {
+    Ok(guard)
+}
+
+/// The OTLP endpoint from `DORA_OTLP_ENDPOINT`, falling back to the legacy
+/// `DORA_JAEGER_TRACING`.
+fn otlp_endpoint_from_env() -> Option<String> {
+    std::env::var("DORA_OTLP_ENDPOINT")
+        .or_else(|_| std::env::var("DORA_JAEGER_TRACING"))
+        .ok()
+}
+
+/// The layers [`init_tracing_subscriber`] installs, before they are made the
+/// global subscriber.
+fn subscriber_builder(
+    name: &str,
+    otlp_endpoint: Option<&str>,
+    stdout_filter: Option<&str>,
+    file_name: Option<&str>,
+    file_filter: LevelFilter,
+) -> eyre::Result<(TracingBuilder, Option<OtelGuard>)> {
+    let mut builder = TracingBuilder::new(name);
+
+    let guard: Option<OtelGuard> = if let Some(endpoint) = otlp_endpoint {
         builder = builder
-            .with_otlp_tracing()
+            .with_otlp_tracing_to(endpoint)
             .wrap_err("failed to set up OTLP tracing")?;
-        guard = builder.guard.take();
+        builder.guard.take()
     } else {
-        if let Some(filter) = stdout_filter {
-            builder = builder.with_stdout(filter, false);
-        }
-        guard = None;
+        None
+    };
+
+    // Console output is independent of OTLP export: exporting spans must not
+    // silence the daemon's and CLI's own warnings and errors. Callers opt out
+    // by passing `None` (e.g. `--quiet`).
+    if let Some(filter) = stdout_filter {
+        builder = builder.with_stdout(filter, false);
     }
 
     if let Some(filename) = file_name {
         builder = builder.with_file(filename, file_filter)?;
     }
 
-    builder
-        .build()
-        .wrap_err("failed to set up tracing subscriber")?;
+    Ok((builder, guard))
+}
 
-    Ok(guard)
+/// `<out_dir>/<file_name>.txt`.
+///
+/// Appends the extension rather than using `Path::with_extension`, which
+/// *replaces* everything after the last `.`: the daemon names its file
+/// `dora-daemon-<machine_id>`, so machine ids `10.0.0.1` and `10.0.0.2` would
+/// both log to `dora-daemon-10.0.0.txt`, and `robot.local` to
+/// `dora-daemon-robot.txt`.
+fn log_file_path(out_dir: &Path, file_name: &str) -> PathBuf {
+    out_dir.join(format!("{file_name}.txt"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        EnvFilter, Layer, env_configures_target, log_file_path, stdout_filter, subscriber_builder,
+    };
+    use std::path::Path;
+    use tracing::Level;
+    use tracing::level_filters::LevelFilter;
+    use tracing_subscriber::{filter::FilterExt, layer::SubscriberExt};
+
+    /// Whether `target` at `level` passes `with_stdout("info", _)`'s filter
+    /// with `RUST_LOG` set to `env_log`. A macro because `tracing::enabled!`
+    /// needs a literal target.
+    macro_rules! stdout_enabled {
+        ($env_log:expr, $target:literal, $level:expr) => {{
+            let env_log: &str = $env_log;
+            let filter = EnvFilter::builder()
+                .parse_lossy(env_log)
+                .or(stdout_filter("info", env_log));
+            let subscriber = tracing_subscriber::Registry::default()
+                .with(tracing_subscriber::layer::Identity::new().with_filter(filter));
+            tracing::subscriber::with_default(subscriber, || {
+                tracing::enabled!(target: $target, $level)
+            })
+        }};
+    }
+
+    #[test]
+    fn quieter_rust_log_for_a_target_is_not_louder_than_the_default() {
+        // Defaults with no RUST_LOG.
+        assert!(!stdout_enabled!("", "zenoh", Level::INFO));
+        assert!(stdout_enabled!("", "zenoh", Level::WARN));
+        // Asking for less zenoh output must not yield more.
+        assert!(!stdout_enabled!("zenoh=error", "zenoh", Level::INFO));
+        assert!(!stdout_enabled!("zenoh=error", "zenoh", Level::WARN));
+        assert!(!stdout_enabled!("zenoh=off", "zenoh", Level::WARN));
+        assert!(!stdout_enabled!(
+            "dora_core=error",
+            "dora_core",
+            Level::INFO
+        ));
+        // A submodule directive keeps the default for the rest of the crate.
+        assert!(!stdout_enabled!("zenoh::net=error", "zenoh", Level::INFO));
+        assert!(!stdout_enabled!(
+            "zenoh::net=error",
+            "zenoh::net",
+            Level::WARN
+        ));
+        // So does one for a zenoh sibling crate, which `zenoh=warn` covers.
+        assert!(!stdout_enabled!(
+            "zenoh_transport=error",
+            "zenoh_transport",
+            Level::WARN
+        ));
+        assert!(stdout_enabled!(
+            "zenoh_transport=error",
+            "zenoh",
+            Level::WARN
+        ));
+        // Raising verbosity still works.
+        assert!(stdout_enabled!("zenoh=debug", "zenoh", Level::DEBUG));
+        assert!(stdout_enabled!(
+            "zenoh::net=info",
+            "zenoh::net",
+            Level::INFO
+        ));
+    }
+
+    /// Enabling OTLP export must not drop the console layer: `dora daemon`
+    /// and `dora run` pass a stdout filter and still need their warnings and
+    /// errors on the terminal (Rust nodes already keep stdout alongside OTLP).
+    #[test]
+    fn otlp_export_keeps_the_stdout_layer() {
+        // `init_tracing` may replace the global propagator; don't race the
+        // telemetry tests that set it.
+        let _lock = crate::telemetry::PROPAGATOR_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // The exporters connect lazily, so nothing has to listen here.
+        let endpoint = Some("http://127.0.0.1:4317");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let _enter = rt.enter();
+
+        let (without_stdout, _guard_a) =
+            subscriber_builder("test", endpoint, None, None, LevelFilter::INFO).unwrap();
+        let (with_stdout, guard_b) =
+            subscriber_builder("test", endpoint, Some("info"), None, LevelFilter::INFO).unwrap();
+
+        assert!(guard_b.is_some(), "OTLP export should be set up");
+        assert_eq!(
+            with_stdout.layers.len(),
+            without_stdout.layers.len() + 1,
+            "the stdout filter must add a console layer next to the OTLP layers"
+        );
+    }
+
+    #[test]
+    fn log_file_path_keeps_dots_in_the_name() {
+        let out = Path::new("out");
+        assert_eq!(
+            log_file_path(out, "dora-daemon-10.0.0.1"),
+            out.join("dora-daemon-10.0.0.1.txt")
+        );
+        assert_eq!(
+            log_file_path(out, "dora-daemon-robot.local"),
+            out.join("dora-daemon-robot.local.txt")
+        );
+        assert_eq!(
+            log_file_path(out, "dora-coordinator"),
+            out.join("dora-coordinator.txt")
+        );
+    }
+
+    #[test]
+    fn exact_target_is_configured() {
+        assert!(env_configures_target("zenoh=debug", "zenoh"));
+        assert!(env_configures_target("zenoh", "zenoh"));
+        // among several comma-separated directives
+        assert!(env_configures_target(
+            "info,dora_daemon=trace,zenoh=warn",
+            "dora_daemon"
+        ));
+        // tolerant of surrounding whitespace
+        assert!(env_configures_target("info, zenoh = trace", "zenoh"));
+    }
+
+    #[test]
+    fn submodule_target_is_configured() {
+        assert!(env_configures_target("zenoh::transport=trace", "zenoh"));
+        assert!(env_configures_target(
+            "dora_daemon::spawn=debug",
+            "dora_daemon"
+        ));
+    }
+
+    #[test]
+    fn sibling_crate_covered_by_the_default_is_configured() {
+        // `tracing-subscriber` applies `zenoh=warn` to every target starting
+        // with `zenoh`, so a directive for one of those crates must be layered
+        // over the default too.
+        assert!(env_configures_target("zenoh_transport=trace", "zenoh"));
+        assert!(env_configures_target("zenoh_link_tcp=error", "zenoh"));
+    }
+
+    #[test]
+    fn unrelated_substring_is_not_configured() {
+        // the bug this replaced: a bare `contains` matched these and silently
+        // dropped the intended default for the real target.
+        assert!(!env_configures_target(
+            "my_dora_daemon_helper=info",
+            "dora_daemon"
+        ));
+        assert!(!env_configures_target("azenoh=trace", "zenoh"));
+        assert!(!env_configures_target("info", "zenoh"));
+        assert!(!env_configures_target("", "zenoh"));
+    }
 }

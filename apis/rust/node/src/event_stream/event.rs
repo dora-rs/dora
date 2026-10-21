@@ -73,7 +73,10 @@ pub enum Event {
     Reload {
         /// The ID of the operator that should be reloaded.
         ///
-        /// There is currently no case where `operator_id` is `None`.
+        /// `Some(id)` targets a single operator (the Python-operator reload
+        /// path always sets this). `None` requests reloading the whole runtime
+        /// node, which the runtime currently rejects with a warning rather than
+        /// acting on ("Reloading runtime nodes is not supported").
         operator_id: Option<OperatorId>,
     },
     /// A runtime parameter has been updated via `dora param set`.

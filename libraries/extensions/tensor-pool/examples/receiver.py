@@ -7,7 +7,7 @@ import time
 import pyarrow as pa
 import torch
 from dora import Node
-from dora.cuda import tensor_from_info
+from dora_tensor_pool import tensor_from_info
 from tqdm import tqdm
 
 node = Node("receiver_node")

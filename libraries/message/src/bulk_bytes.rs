@@ -130,11 +130,17 @@ pub mod option {
 /// The same bulk-bytes treatment for a plain `Vec<u8>` field.
 ///
 /// Used by cross-machine payloads that do not need the 128-byte Arrow
-/// alignment (`InterDaemonEvent::MemoryPoolWrite::tensor_data`), where the
-/// receiver copies the bytes into a mirror segment rather than decoding them
-/// zero-copy. The wire encoding is identical to serde's default `Vec<u8>`
-/// (postcard: varint length + raw bytes), so this is a pure speedup with no
-/// version bump — `vec_encoding_is_unchanged_from_the_seq_form` pins it.
+/// alignment. The in-tree users are the extension-envelope payloads —
+/// `InterDaemonEvent::ExtensionMessage`, `DaemonRequest::ExtensionRequest`,
+/// and `DaemonReply::ExtensionReply` — and, carried opaquely inside one of
+/// those envelopes, the tensor-pool `PeerMessage::Write { tensor_data }`
+/// field (`dora_tensor_pool::protocol`), whose receiver copies the bytes
+/// into a mirror segment rather than decoding them zero-copy.
+/// (`InterDaemonEvent` has no `MemoryPoolWrite` variant, and the tensor-pool
+/// type is `PeerMessage::Write`, not `MemoryPoolWrite`.) The wire encoding is
+/// identical to serde's default `Vec<u8>` (postcard: varint length + raw
+/// bytes), so this is a pure speedup with no version bump —
+/// `vec_encoding_is_unchanged_from_the_seq_form` pins it.
 pub mod vec {
     use serde::{
         Deserializer, Serializer,
@@ -288,7 +294,8 @@ mod tests {
     }
 
     /// Same premise as `encoding_is_unchanged_from_the_seq_form`, for the
-    /// plain-`Vec<u8>` helper used by `MemoryPoolWrite::tensor_data` (#3195):
+    /// plain-`Vec<u8>` helper used by the extension-envelope payloads and the
+    /// tensor-pool `PeerMessage::Write { tensor_data }` field (#3195):
     /// swapping the per-element loop for a bulk copy must not move a byte on
     /// the wire, including across postcard's 127/128 varint-prefix boundary.
     #[test]

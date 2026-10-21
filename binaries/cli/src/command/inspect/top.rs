@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::common::{
-    CoordinatorOptions, connect_to_coordinator, expect_reply, send_control_request,
+    CoordinatorOptions, connect_to_coordinator, expect_reply, is_quit_key, send_control_request,
 };
 use clap::Args;
 use crossterm::{
@@ -299,8 +299,7 @@ fn run_app<B: Backend>(
 
     // Query node info once initially
     let reply = send_control_request(&session, &ControlRequest::GetNodeInfo)?;
-    let mut node_infos = expect_reply!(reply, NodeInfoList(infos))?;
-    app.update_stats(node_infos.clone());
+    app.update_stats(expect_reply!(reply, NodeInfoList(infos))?);
 
     loop {
         terminal
@@ -315,10 +314,10 @@ fn run_app<B: Backend>(
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {
+            if is_quit_key(&key) {
+                return Ok(());
+            }
             match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => {
-                    return Ok(());
-                }
                 KeyCode::Down | KeyCode::Char('j') => {
                     app.next();
                 }
@@ -346,10 +345,9 @@ fn run_app<B: Backend>(
         if should_refresh(force_refresh, last_update.elapsed(), refresh_duration) {
             // Query node info every refresh interval to get updated metrics
             let reply = send_control_request(&session, &ControlRequest::GetNodeInfo)?;
-            node_infos = expect_reply!(reply, NodeInfoList(infos))?;
 
             // Update stats with current node info
-            app.update_stats(node_infos.clone());
+            app.update_stats(expect_reply!(reply, NodeInfoList(infos))?);
             last_update = Instant::now();
             force_refresh = false;
         }
@@ -462,7 +460,7 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
     ];
 
     let title = format!(
-        " Dora Inspect Top - Refreshing every {}s (q: quit, n/c/m: sort, r: refresh nodes) ",
+        " Dora Inspect Top - Refreshing every {}s (q/Ctrl-C: quit, n/c/m: sort, r: refresh nodes) ",
         refresh_duration.as_secs()
     );
 
@@ -496,6 +494,28 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+
+    #[test]
+    fn ctrl_c_quits_instead_of_sorting() {
+        assert!(is_quit_key(&KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(is_quit_key(&KeyEvent::new(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE
+        )));
+        assert!(is_quit_key(&KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE
+        )));
+        // A plain `c` is still the sort-by-CPU key.
+        assert!(!is_quit_key(&KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::NONE
+        )));
+    }
 
     #[test]
     fn force_refresh_triggers_regardless_of_elapsed() {

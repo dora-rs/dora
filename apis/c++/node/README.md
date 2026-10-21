@@ -148,9 +148,10 @@ std::shared_ptr<arrow::Array> input_array = result.ValueOrDie();
 ```
 
 The metadata JSON contains:
-- `timestamp` - Message timestamp with `secs` and `nanos` fields
-- `type_info` - Arrow type information
-- `parameters` - Custom metadata parameters (key-value pairs)
+- `timestamp` - The message's raw HLC timestamp as a single unsigned integer (the same value `metadata->timestamp()` returns)
+- `parameters` - Custom metadata parameters, keyed by name; each value is tagged with its type, e.g. `{"Integer": 3}` or `{"String": "base"}`
+
+For example: `{"timestamp":7389450938482194432,"parameters":{"count":{"Integer":3}}}`.
 
 ### Sending Outputs
 
@@ -249,6 +250,13 @@ The `event` field also carries a matching `DoraEventType` (`Timeout` /
 `AllInputsClosed` / `Empty`), so you can branch on either field. A malformed
 `server_node_id` yields `DoraPatternStatus::InvalidArgument` rather than
 aborting the process.
+
+`ServerRestarted` is reported for a restart that lands while a wait is
+running, because the correlation is reading the stream then. One that lands
+between calls reaches your own loop as `DoraEventType::NodeRestarted` (use
+`event_as_node_restarted` for the id). Ignore it and the next request will
+wait out its whole deadline against a server you had already been told had
+restarted.
 
 The server must echo the request's `request_id` back, which is why it needs
 `event_as_input_with_metadata`:

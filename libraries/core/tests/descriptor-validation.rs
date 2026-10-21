@@ -39,9 +39,11 @@ fn valid_descriptor_field_cases_resolve() {
             .unwrap_or_else(|err| panic!("{name} should resolve: {err:#}"));
     }
 
-    read_case("valid-module.yml")
-        .expand(case_path("valid-module.yml").parent().unwrap())
-        .expect("valid module descriptor should expand");
+    for name in ["valid-module.yml", "valid-module-build.yml"] {
+        read_case(name)
+            .expand(case_path(name).parent().unwrap())
+            .unwrap_or_else(|err| panic!("{name} should expand: {err:#}"));
+    }
 }
 
 #[test]
@@ -51,7 +53,7 @@ fn invalid_descriptor_field_cases_report_rejected_fields() {
         ("invalid-runtime-outputs.yml", "outputs"),
         ("invalid-operator-outputs.yml", "outputs"),
         ("invalid-ros2-git.yml", "git"),
-        ("invalid-module-build.yml", "build"),
+        ("invalid-module-outputs.yml", "outputs"),
     ] {
         let error = case_error(name);
         assert!(

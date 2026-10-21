@@ -39,7 +39,7 @@ pub struct Run {
     /// Path to the dataflow descriptor file
     #[clap(value_name = "PATH")]
     pub dataflow: String,
-    // Use UV to run nodes.
+    /// Use `uv` to run nodes
     #[clap(long, action)]
     pub uv: bool,
     /// Automatically stop the dataflow after the given duration
@@ -177,6 +177,35 @@ impl Run {
         self.working_dir = Some(working_dir);
         self
     }
+
+    /// A run of a descriptor generated in memory (`dora record` /
+    /// `dora replay`), with descriptor-relative paths resolved against
+    /// `working_dir`.
+    ///
+    /// The descriptor is written into a fresh private (0700 on Unix) temp
+    /// directory, whose guard is returned: keep it alive until the run
+    /// returns, it removes the directory on drop. The directory must be
+    /// private because the run keeps its session state in an `out/` directory
+    /// next to the descriptor, which must not be a shared `$TMPDIR/out/`.
+    pub(crate) fn for_generated_dataflow(
+        yaml: &str,
+        working_dir: PathBuf,
+    ) -> eyre::Result<(tempfile::TempDir, Self)> {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("dora-dataflow-");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o700));
+        }
+        let dir = builder
+            .tempdir()
+            .context("failed to create temp dir for the generated dataflow")?;
+        let path = dir.path().join("dataflow.yml");
+        std::fs::write(&path, yaml).context("failed to write the generated dataflow")?;
+        let run = Self::new(path.to_string_lossy().into_owned()).with_working_dir(working_dir);
+        Ok((dir, run))
+    }
 }
 
 pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
@@ -187,6 +216,16 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
 
 impl Executable for Run {
     fn execute(self) -> eyre::Result<()> {
+        self.execute_with(false)
+    }
+}
+
+impl Run {
+    /// Runs the dataflow. With `fail_on_lost_backpressure_messages`, a run
+    /// in which the daemon dropped a message on a `queue_policy: backpressure`
+    /// input exits non-zero instead of merely warning (`dora replay`,
+    /// dora-rs/dora#3397). Crate-internal so the public `Run` type is unchanged.
+    pub(crate) fn execute_with(self, fail_on_lost_backpressure_messages: bool) -> eyre::Result<()> {
         if self.allow_shell_nodes {
             // SAFETY: Called before spawning any threads (tokio runtime not yet built),
             // so there are no concurrent reads of environment variables.
@@ -263,10 +302,16 @@ impl Executable for Run {
         };
 
         let (log_tx, log_rx) = flume::bounded(100);
-        std::thread::spawn(move || {
+        // `printer_done` lets us wait for the printer to finish draining with a
+        // timeout (see the flush after `shutdown_timeout` below) instead of
+        // blocking on its `JoinHandle`, which could hang forever if a leaked
+        // tokio worker still holds a `Sender<LogMessage>` clone.
+        let (printer_done_tx, printer_done_rx) = std::sync::mpsc::channel();
+        let printer = std::thread::spawn(move || {
             for message in log_rx {
                 print_log_message(message, &log_config);
             }
+            let _ = printer_done_tx.send(());
         });
 
         // Drive `Daemon::run_dataflow` on a tokio worker thread, not the
@@ -307,18 +352,67 @@ impl Executable for Run {
                 match exit_when_nodes_finish {
                     Some(v) => RunDataflowOptions::default().exit_when_nodes_finish(v),
                     None => RunDataflowOptions::default(),
-                },
+                }
+                .fail_on_lost_backpressure_messages(fail_on_lost_backpressure_messages),
             )
             .await
         });
-        let result = rt
-            .block_on(handle)
-            .context("dora-run daemon task panicked")??;
+        let result = rt.block_on(handle);
         // Bound runtime shutdown to prevent hanging on blocking Drop impls
         // (e.g. zenoh::Session::drop blocks tokio workers on macOS during
         // TCP teardown). Without this, `rt` drops implicitly at end of scope
         // and waits indefinitely for all worker threads to exit (#2287).
         rt.shutdown_timeout(Duration::from_secs(10));
+        // Flush the buffered log lines before returning (on both the success
+        // and daemon-error paths — a failing run's final lines are the ones the
+        // user needs most). In the normal case the daemon task has finished and
+        // the runtime is shut down, so every `Sender` clone has been dropped,
+        // the channel is closed, and the printer drains and exits. Bound the
+        // wait, though: if `shutdown_timeout` leaked a tokio worker wedged in a
+        // blocking `Drop` (the #2287 case it exists for), that worker's task —
+        // and thus a `Sender<LogMessage>` clone — is never dropped, the channel
+        // never closes, and joining the printer would hang forever. Wait at most
+        // 5s for the drain to signal; if it does, `join` returns immediately,
+        // otherwise give up the last few lines rather than hang the CLI.
+        if printer_done_rx.recv_timeout(Duration::from_secs(5)).is_ok()
+            && let Err(panic) = printer.join()
+        {
+            std::panic::resume_unwind(panic);
+        }
+        let result = result.context("dora-run daemon task panicked")??;
         handle_dataflow_result(result, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn generated_dataflow_keeps_session_state_in_a_private_dir() {
+        let (dir, run) =
+            Run::for_generated_dataflow("nodes: []\n", PathBuf::from("source")).unwrap();
+        assert_eq!(run.working_dir.as_deref(), Some(Path::new("source")));
+        let dataflow = Path::new(&run.dataflow);
+        assert_eq!(std::fs::read_to_string(dataflow).unwrap(), "nodes: []\n");
+        // The session file `dora run` writes next to the descriptor must land
+        // inside the private dir, not in a shared `$TMPDIR/out/`.
+        let session_file = crate::session::session_file_path(dataflow).unwrap();
+        assert!(
+            session_file.starts_with(dir.path()),
+            "{} is outside {}",
+            session_file.display(),
+            dir.path().display()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "temp dir must be private: {mode:o}");
+        }
+        let dir_path = dir.path().to_owned();
+        drop(dir);
+        assert!(!dir_path.exists(), "temp dir must be removed on drop");
     }
 }

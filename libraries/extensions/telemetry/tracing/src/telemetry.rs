@@ -1,10 +1,12 @@
 use eyre::Context as _;
 use opentelemetry::propagation::Extractor;
+use opentelemetry::trace::TraceContextExt as _;
 use opentelemetry::{Context, global};
 use opentelemetry_otlp::WithExportConfig;
 
 use std::collections::HashMap;
 
+use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{self as sdktrace, SdkTracerProvider};
 
 struct MetadataMap<'a>(HashMap<&'a str, &'a str>);
@@ -40,7 +42,18 @@ impl Extractor for MetadataMap<'_> {
 /// docker run -d -p 4317:4317 -p 4318:4318 -p 16686:16686 jaegertracing/all-in-one:latest
 /// ```
 ///
+/// This also installs the W3C TraceContext propagator as the process-global
+/// text-map propagator, unless the application already installed one of its
+/// own. [`serialize_context`] and [`deserialize_context`] go through that
+/// global, and OpenTelemetry's default is a no-op propagator, so without it no
+/// trace context would cross node boundaries and every node's spans would
+/// start a separate trace.
 pub fn init_tracing(name: &str, endpoint: &str) -> eyre::Result<sdktrace::SdkTracerProvider> {
+    // The no-op default propagates no fields; any real propagator does.
+    if global::get_text_map_propagator(|propagator| propagator.fields().next().is_none()) {
+        global::set_text_map_propagator(TraceContextPropagator::new());
+    }
+
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
@@ -78,6 +91,22 @@ const CONTEXT_ENTRY_SEP: char = '\n';
 /// OTel Baggage keys are stripped to prevent sensitive data from leaking
 /// across node boundaries in the dataflow.
 pub fn serialize_context(context: &Context) -> String {
+    // Fast path: with no valid active span there is nothing to propagate.
+    // Every standard text-map propagator (W3C TraceContext, B3, Jaeger,
+    // X-Ray) injects nothing when the span context is invalid (and without
+    // `init_tracing` the process-global is OpenTelemetry's no-op propagator),
+    // so the map below would stay empty and this returns "". Nodes commonly
+    // enable telemetry for logging without ever opening an OTel span, and
+    // `serialize_context` runs on the per-message send path
+    // (`DoraNode::send_output`) and per-event in the operator runtimes;
+    // short-circuiting here skips the
+    // `global::get_text_map_propagator` lock acquisition and dynamic dispatch
+    // on every such call. The only behavior this would change is a custom
+    // third-party propagator that chose to inject on an invalid context —
+    // dora installs only the W3C TraceContext propagator, which does not.
+    if !context.span().span_context().is_valid() {
+        return String::new();
+    }
     let mut map = HashMap::new();
     global::get_text_map_propagator(|propagator| propagator.inject_context(context, &mut map));
     // Strip baggage to avoid propagating sensitive data across nodes
@@ -113,9 +142,17 @@ pub fn deserialize_to_hashmap(string_context: &str) -> HashMap<&str, &str> {
     map
 }
 
+/// Serializes the tests that touch the process-global text-map propagator
+/// (`set_text_map_propagator` sets a single shared global with no restore),
+/// so they don't race when the test binary runs them on separate threads.
+/// [`init_tracing`] reads and may replace that global, so every test that
+/// reaches it must hold this lock too.
+#[cfg(test)]
+pub(crate) static PROPAGATOR_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
-    use super::service_resource;
+    use super::{PROPAGATOR_LOCK, service_resource};
     use opentelemetry::Key;
 
     #[test]
@@ -138,9 +175,11 @@ mod tests {
         };
         use opentelemetry_sdk::propagation::TraceContextPropagator;
 
+        let _guard = PROPAGATOR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         // `serialize_context`/`deserialize_context` route through the process-global
-        // text-map propagator, exactly as production does; install the same W3C
-        // TraceContext propagator the daemon/runtime rely on.
+        // text-map propagator, which `init_tracing` sets to W3C TraceContext.
+        // Install it directly so this test does not depend on test ordering.
         opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
 
         // A realistic multi-member W3C `tracestate`. Members are joined with `,`
@@ -192,6 +231,148 @@ mod tests {
         assert_eq!(recovered.trace_id(), span_context.trace_id());
         assert_eq!(recovered.span_id(), span_context.span_id());
         assert_eq!(recovered.trace_state().header(), trace_state.header());
+    }
+
+    #[test]
+    fn init_tracing_installs_trace_context_propagator() {
+        use opentelemetry::Context;
+        use opentelemetry::trace::noop::NoopTextMapPropagator;
+        use opentelemetry::trace::{
+            SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+        };
+
+        let _guard = PROPAGATOR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Start from OpenTelemetry's default so the assertion below can only
+        // pass if `init_tracing` installed a real propagator.
+        opentelemetry::global::set_text_map_propagator(NoopTextMapPropagator::new());
+
+        // The tonic exporter needs a tokio runtime to build its (lazy) channel.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let _rt_guard = rt.enter();
+        let _provider =
+            super::init_tracing("propagator_test", "http://127.0.0.1:4317").expect("init");
+
+        let span_context = SpanContext::new(
+            TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap(),
+            SpanId::from_hex("b7ad6b7169203331").unwrap(),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::default(),
+        );
+        let cx = Context::new().with_remote_span_context(span_context.clone());
+        let serialized = serialize_context(&cx);
+        assert_eq!(
+            deserialize_to_hashmap(&serialized)
+                .get("traceparent")
+                .copied(),
+            Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
+            "init_tracing must install a propagator that injects the trace context",
+        );
+        let recovered = deserialize_context(&serialized);
+        assert_eq!(
+            recovered.span().span_context().trace_id(),
+            span_context.trace_id()
+        );
+    }
+
+    #[test]
+    fn init_tracing_keeps_an_application_propagator() {
+        use opentelemetry::propagation::TextMapCompositePropagator;
+        use opentelemetry_sdk::propagation::{BaggagePropagator, TraceContextPropagator};
+
+        let _guard = PROPAGATOR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // An application that propagates baggage as well installs a composite
+        // propagator before setting up dora's tracing; `init_tracing` must not
+        // replace it with plain TraceContext.
+        opentelemetry::global::set_text_map_propagator(TextMapCompositePropagator::new(vec![
+            Box::new(TraceContextPropagator::new()),
+            Box::new(BaggagePropagator::new()),
+        ]));
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let _rt_guard = rt.enter();
+        let _provider =
+            super::init_tracing("propagator_test", "http://127.0.0.1:4317").expect("init");
+
+        let fields: Vec<String> = opentelemetry::global::get_text_map_propagator(|p| {
+            p.fields().map(str::to_owned).collect()
+        });
+        assert!(
+            fields.iter().any(|f| f == "baggage"),
+            "the application's propagator was replaced: {fields:?}"
+        );
+    }
+
+    #[test]
+    fn serialize_skips_propagator_when_span_invalid() {
+        use opentelemetry::Context;
+        use opentelemetry::propagation::text_map_propagator::FieldIter;
+        use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator};
+        use opentelemetry::trace::{
+            SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Counts how often the installed propagator's `inject_context` runs, so
+        // the test can observe whether `serialize_context` consulted it at all.
+        static INJECT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Debug)]
+        struct CountingPropagator {
+            fields: Vec<String>,
+        }
+
+        impl TextMapPropagator for CountingPropagator {
+            fn inject_context(&self, _cx: &Context, _injector: &mut dyn Injector) {
+                INJECT_CALLS.fetch_add(1, Ordering::SeqCst);
+            }
+
+            fn extract_with_context(&self, cx: &Context, _extractor: &dyn Extractor) -> Context {
+                cx.clone()
+            }
+
+            fn fields(&self) -> FieldIter<'_> {
+                FieldIter::new(&self.fields)
+            }
+        }
+
+        let _guard = PROPAGATOR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        opentelemetry::global::set_text_map_propagator(CountingPropagator { fields: Vec::new() });
+
+        // Invalid (default) context: the fast path must return "" WITHOUT
+        // consulting the propagator. Before the fast path existed,
+        // `serialize_context` reached `global::get_text_map_propagator` here, so
+        // this assertion fails on the pre-change code — it pins the change.
+        INJECT_CALLS.store(0, Ordering::SeqCst);
+        assert_eq!(serialize_context(&Context::new()), "");
+        assert_eq!(
+            INJECT_CALLS.load(Ordering::SeqCst),
+            0,
+            "propagator must not be consulted for an invalid span context",
+        );
+
+        // A valid span context: the propagator IS consulted (the fast path is
+        // not taken), confirming the guard only short-circuits the invalid case.
+        let span_context = SpanContext::new(
+            TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap(),
+            SpanId::from_hex("b7ad6b7169203331").unwrap(),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::default(),
+        );
+        let cx = Context::new().with_remote_span_context(span_context);
+        let _ = serialize_context(&cx);
+        assert_eq!(
+            INJECT_CALLS.load(Ordering::SeqCst),
+            1,
+            "propagator must be consulted when a valid span is active",
+        );
     }
 
     #[test]

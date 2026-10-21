@@ -83,7 +83,7 @@ Ten workspace crates are not currently on crates.io. A decision is needed per cr
 | `dora-node-api-cxx` | lib (C++ API FFI) | Recommend **publish** — downstream depends on it |
 | `dora-operator-api-cxx` | lib (C++ API FFI) | Recommend **publish** |
 | `dora-node-api-python` | lib (Rust side of PyO3 node) | Already on PyPI as `dora-rs`; crates.io publish **optional** |
-| `dora-ros2-bridge-python` | lib (PyO3) | Published via PyPI via maturin; **optional** on crates.io |
+| `dora-ros2-bridge-python` | lib (PyO3) | Not actually published anywhere: no `pyproject.toml`, and `pip-release.yml` builds only `dora-rs` and `dora-rs-cli`. `publish = false` on crates.io |
 | `dora-ros2-bridge-arrow` | lib | Recommend **publish** |
 | `dora-ros2-bridge-node` | binary | Typically `publish = false` for binaries unless distributed via `cargo install` |
 | `dora-recording` | lib | Recommend **publish** — `.drec` format reusable |
@@ -103,7 +103,7 @@ Workspace publishes two PyPI packages, both already present:
 | Package | Source | PyPI URL | Latest version (2026-04-16) |
 |---|---|---|---|
 | `dora-rs` | `apis/python/node/pyproject.toml` | https://pypi.org/project/dora-rs/ | 0.5.0 |
-| `dora-rs-cli` | `binaries/cli/pyproject.toml` | https://pypi.org/project/dora-rs-cli/ | 0.5.0 |
+| `dora-rs-cli` | `apis/python/cli/pyproject.toml` | https://pypi.org/project/dora-rs-cli/ | 0.5.0 |
 
 **Note:** both PyPI names are shared with `dora-rs/dora` upstream. Under D-0a (fork takes over), the 1.0 release ships from the same PyPI namespace. The PyPI JSON API does not expose the maintainer list without auth, so the project owners must be verified manually:
 

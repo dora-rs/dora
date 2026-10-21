@@ -1,14 +1,52 @@
-use std::{collections::BTreeMap, io::Write, path::PathBuf, time::SystemTime};
+use std::{
+    collections::{BTreeMap, HashMap},
+    io::Write,
+    path::PathBuf,
+    time::{Instant, SystemTime},
+};
 
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use clap::Args;
+use dora_core::descriptor::{Descriptor, Node};
 use dora_message::{
-    common::Timestamped, coordinator_to_cli::DataflowIdAndName, daemon_to_daemon::InterDaemonEvent,
-    id::NodeId,
+    common::Timestamped,
+    coordinator_to_cli::DataflowIdAndName,
+    daemon_to_daemon::InterDaemonEvent,
+    id::{DataId, NodeId},
+    metadata::strip_internal_parameters,
 };
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::{Context, bail};
 
-use crate::command::{Executable, Run, default_tracing};
+use crate::command::{Executable, Run, default_tracing, topic::selector::public_topic_output_id};
+
+/// Wall-clock nanoseconds since the Unix epoch, falling back to `0` when the
+/// clock is set before 1970 (e.g. an embedded target booting with an unset RTC
+/// before NTP sync) rather than panicking. Only the header's `start_nanos`
+/// uses it; entry offsets are measured on the monotonic clock instead.
+fn epoch_nanos() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
+
+/// Per-topic queue depth for the injected record node, unless `--queue-size`
+/// overrides it.
+///
+/// Ten times dora's real-time `DEFAULT_QUEUE_SIZE`, because the recorder's work
+/// is disk I/O: a producer burst or a stalled write makes it fall behind for a
+/// moment, and a 100-deep queue turns that moment into buffered slack instead of
+/// lost messages. That depth matches the record node's own flush cadence
+/// (`FLUSH_EVERY_N_RECORDS` 100, `FLUSH_INTERVAL` 1 s) — about one flush window
+/// of slack per topic, enough to ride out the stalled write that the flush
+/// itself can cause.
+///
+/// Deeper is not strictly better — a buffered zero-copy message pins its
+/// shared-memory region, so an over-deep queue pushes the producer onto the
+/// heap-copy path for all its consumers. See [`build_record_inputs`] for why
+/// this is a depth and not a `queue_policy`.
+const DEFAULT_RECORD_QUEUE_SIZE: u64 = 100;
 
 /// Record dataflow messages to a file for offline replay.
 ///
@@ -50,6 +88,25 @@ pub struct Record {
     #[clap(long, value_name = "PATH")]
     output_yaml: Option<String>,
 
+    /// Per-topic queue depth for the injected record node.
+    ///
+    /// How much slack each recorded topic gets before the oldest messages are
+    /// dropped. Raise it to ride out longer write stalls; peak memory is about
+    /// `2 x queue_size x payload size` per topic. Dropped messages are reported
+    /// when the run ends. See the `dora record` section of docs/cli.md before
+    /// raising it for large frames.
+    ///
+    /// Not available with `--proxy`, which records over the WebSocket rather
+    /// than injecting a node.
+    #[clap(
+        long,
+        value_name = "N",
+        default_value_t = DEFAULT_RECORD_QUEUE_SIZE,
+        value_parser = clap::value_parser!(u64).range(1..),
+        conflicts_with = "proxy",
+    )]
+    queue_size: u64,
+
     /// Stream data through coordinator WebSocket instead of recording on target.
     /// Useful when the target machine has no local disk.
     #[clap(long)]
@@ -80,6 +137,25 @@ impl Executable for Record {
     }
 }
 
+/// Parse the `(node, output)` pairs discovered by the untyped YAML walk into
+/// typed ids for the WS topic subscription.
+///
+/// The walk accepts any string, so both ids go through the fallible
+/// `parse` -- `DataId`'s `From<String>` panics on an invalid id.
+fn parse_ws_topics(topics: &[(String, String)]) -> eyre::Result<Vec<(NodeId, DataId)>> {
+    topics
+        .iter()
+        .map(|(n, o)| {
+            Ok((
+                n.parse::<NodeId>()
+                    .map_err(|e| eyre::eyre!("invalid node ID in topic: {e}"))?,
+                o.parse::<DataId>()
+                    .map_err(|e| eyre::eyre!("invalid output ID in topic: {e}"))?,
+            ))
+        })
+        .collect()
+}
+
 /// Discover all `(node_id, output_id)` pairs from a parsed descriptor YAML.
 fn discover_descriptor_outputs(
     descriptor: &serde_yaml::Value,
@@ -92,11 +168,23 @@ fn discover_descriptor_outputs(
     let mut outputs = Vec::new();
     for node in nodes {
         let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-        if let Some(node_outputs) = node.get("outputs").and_then(|v| v.as_sequence()) {
-            for output in node_outputs {
-                if let Some(output_id) = output.as_str() {
-                    outputs.push((node_id.to_string(), output_id.to_string()));
-                }
+        extend_outputs(&mut outputs, node_id, node.get("outputs"));
+        extend_outputs(
+            &mut outputs,
+            node_id,
+            node.get("operator").and_then(|v| v.get("outputs")),
+        );
+        if let Some(operators) = node.get("operators").and_then(|v| v.as_sequence()) {
+            for operator in operators {
+                let Some(operator_id) = operator.get("id").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                extend_prefixed_outputs(
+                    &mut outputs,
+                    node_id,
+                    operator_id,
+                    operator.get("outputs"),
+                );
             }
         }
     }
@@ -110,10 +198,220 @@ fn discover_descriptor_outputs(
     Ok(outputs)
 }
 
+fn extend_outputs(
+    outputs: &mut Vec<(String, String)>,
+    node_id: &str,
+    value: Option<&serde_yaml::Value>,
+) {
+    if let Some(node_outputs) = value.and_then(|v| v.as_sequence()) {
+        for output in node_outputs {
+            if let Some(output_id) = output.as_str() {
+                outputs.push((node_id.to_string(), output_id.to_string()));
+            }
+        }
+    }
+}
+
+fn extend_prefixed_outputs(
+    outputs: &mut Vec<(String, String)>,
+    node_id: &str,
+    prefix: &str,
+    value: Option<&serde_yaml::Value>,
+) {
+    if let Some(node_outputs) = value.and_then(|v| v.as_sequence()) {
+        for output in node_outputs {
+            if let Some(output_id) = output.as_str() {
+                outputs.push((node_id.to_string(), format!("{prefix}/{output_id}")));
+            }
+        }
+    }
+}
+
+/// Build the record node's `{ input_id: topic }` map from the selected
+/// `(topic, input_id)` pairs.
+///
+/// Input ids can't contain `/`, so each `node/output` topic is re-encoded as
+/// `node___output`. That encoding is not injective: node `x` with output
+/// `y___z` and node `x___y` with output `z` both encode to `x___y___z`.
+/// Collecting straight into a map keyed by input id would let the second entry
+/// silently overwrite the first, dropping one topic from the recording with no
+/// error. Detect the collision and fail loudly instead.
+fn build_input_id_map<'a>(
+    topics: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> eyre::Result<BTreeMap<&'a str, &'a str>> {
+    let mut map: BTreeMap<&str, &str> = BTreeMap::new();
+    for (topic, input_id) in topics {
+        if let Some(existing) = map.insert(input_id, topic) {
+            bail!(
+                "record: topics `{existing}` and `{topic}` both map to the record-node \
+                 input id `{input_id}`; the `/` -> `___` encoding cannot tell them apart. \
+                 Rename one of the colliding node/output ids, or select only one with --topics."
+            );
+        }
+    }
+    Ok(map)
+}
+
+/// Build the `inputs:` mapping for the injected `__dora_record__` node from the
+/// collision-validated `input_id -> node/output` map.
+///
+/// Each topic becomes a mapping (`source` + `queue_size`) rather than a bare
+/// `node/output` string. A bare string takes dora's real-time defaults — a
+/// 10-deep queue with `drop_oldest` — which is wrong for a node whose work is
+/// disk I/O: any burst or stalled write evicts the oldest events *before the
+/// writer sees them*, and the `.drec` ends up short with nothing in it to say so
+/// (#3282).
+///
+/// **No `queue_policy` is emitted, deliberately.** Setting `backpressure` is the
+/// obvious-looking fix and the wrong one:
+///
+/// - It is not flow control. `QueuePolicy::effective_cap` makes it
+///   `max(10 x queue_size, 100)` and the scheduler then drops at that cap
+///   anyway, with an ERROR log. Nothing throttles the producer.
+/// - It changes the dataflow being recorded. `output_routing::input_is_backpressure`
+///   pins the *producer's entire output* to the daemon path, so **every**
+///   consumer of that output — not just the recorder — leaves the zero-copy
+///   direct-zenoh path, and the 64 MiB daemon message limit starts applying. A
+///   recorder that silently re-routes the traffic it observes is measuring
+///   something other than the system under test.
+///
+/// That is also why the symmetry with `replay::raise_input_queue_sizes` (#2144),
+/// which *does* set `backpressure`, does not carry over: a replay dataflow is
+/// synthetic, so there is no live transport to perturb. `record` attaches to a
+/// running one.
+///
+/// And before reaching for a deeper fix — making the ingress send block rather
+/// than `try_send` — note that it buys nothing. The producer declares its direct
+/// zenoh publisher with `CongestionControl::Drop` (see `DoraNode`'s publisher
+/// setup), per-output at declare time and shared by every subscriber, precisely
+/// so a stalled consumer cannot back-pressure it. Blocking on the receive side
+/// would just move the loss upstream into zenoh's egress, where it is *less*
+/// visible. Genuine losslessness would need `CongestionControl::Block` on the
+/// producer, which stalls the producing node for all its consumers: the same
+/// objection as `backpressure`, one layer up. There is no lossless path
+/// available to an observer that does not perturb the observed dataflow, which
+/// is why this fixes the depth and reports the residue instead of promising
+/// zero loss.
+///
+/// Keyed off `topic_map` rather than the `topic -> input_id` map so this cannot
+/// reintroduce the collision `build_input_id_map` rejects (#3444): both
+/// structures stay derived from the one validated map.
+fn build_record_inputs(topic_map: &BTreeMap<&str, &str>, queue_size: u64) -> serde_yaml::Mapping {
+    let mut inputs = serde_yaml::Mapping::new();
+    for (input_id, topic) in topic_map {
+        let mut input = serde_yaml::Mapping::new();
+        input.insert(
+            serde_yaml::Value::String("source".to_owned()),
+            serde_yaml::Value::String((*topic).to_owned()),
+        );
+        input.insert(
+            serde_yaml::Value::String("queue_size".to_owned()),
+            serde_yaml::Value::Number(queue_size.into()),
+        );
+        inputs.insert(
+            serde_yaml::Value::String((*input_id).to_owned()),
+            serde_yaml::Value::Mapping(input),
+        );
+    }
+    inputs
+}
+
+/// The record node's `env:` entries that carry the original descriptor.
+///
+/// Every `env:` value goes through `$VAR` expansion each time the
+/// descriptor is parsed (by the CLI, then again by the daemon), so the raw
+/// YAML must not travel as one: a `$NAME` anywhere in it, even in a
+/// comment, failed `dora record` when unset, and was substituted otherwise,
+/// writing e.g. the value of an `${API_TOKEN}` reference into the
+/// recording's header. [`dora_recording::DESCRIPTOR_ENV`] carries it
+/// compressed and base64-encoded instead.
+///
+/// With `legacy`, the raw [`dora_recording::LEGACY_DESCRIPTOR_ENV`] is set as
+/// well when expansion cannot touch it (valid UTF-8 without `$`), because
+/// `dora record` reuses whatever `dora-record-node` it finds, and one from
+/// before the encoded variable reads only the raw one.
+fn descriptor_env(yaml: &[u8], legacy: bool) -> eyre::Result<Vec<(String, String)>> {
+    let mut deflate = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+    deflate
+        .write_all(yaml)
+        .and_then(|()| deflate.try_finish())
+        .wrap_err("failed to compress the descriptor")?;
+    let encoded = BASE64_STANDARD.encode(deflate.get_ref());
+    let mut env = vec![(dora_recording::DESCRIPTOR_ENV.to_string(), encoded)];
+    if legacy
+        && let Ok(text) = std::str::from_utf8(yaml)
+        && !text.contains('$')
+    {
+        env.push((
+            dora_recording::LEGACY_DESCRIPTOR_ENV.to_string(),
+            text.to_string(),
+        ));
+    }
+    Ok(env)
+}
+
+/// Linux's `MAX_ARG_STRLEN`: the longest single `NAME=value` env entry.
+///
+/// The daemon hands every node the whole submitted descriptor, this
+/// record node's `env:` included, in one `DORA_NODE_CONFIG` entry, so the
+/// submitted YAML must stay below it.
+const MAX_ENV_ENTRY_LEN: usize = 128 * 1024;
+/// Room left in `DORA_NODE_CONFIG` for the node config's other fields before
+/// the raw legacy copy is dropped to make space.
+const NODE_CONFIG_HEADROOM: usize = 16 * 1024;
+
+/// `descriptor` with `record_node` appended, as YAML, with the
+/// descriptor's env entries for the record node (see [`descriptor_env`]).
+///
+/// The raw legacy copy is left out when it would push the result near
+/// [`MAX_ENV_ENTRY_LEN`]. On Linux, a result over that limit is refused,
+/// since every node's spawn would otherwise fail with a bare `E2BIG`.
+fn descriptor_with_record_node(
+    descriptor: serde_yaml::Value,
+    record_node: serde_yaml::Mapping,
+    yaml: &[u8],
+) -> eyre::Result<String> {
+    let build = |legacy: bool| -> eyre::Result<String> {
+        let mut record_node = record_node.clone();
+        let env = record_node
+            .entry(serde_yaml::Value::String("env".to_string()))
+            .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()))
+            .as_mapping_mut()
+            .ok_or_else(|| eyre::eyre!("record node `env` is not a mapping"))?;
+        for (key, value) in descriptor_env(yaml, legacy)? {
+            env.insert(
+                serde_yaml::Value::String(key),
+                serde_yaml::Value::String(value),
+            );
+        }
+        let mut descriptor = descriptor.clone();
+        descriptor
+            .get_mut("nodes")
+            .and_then(|v| v.as_sequence_mut())
+            .ok_or_else(|| eyre::eyre!("descriptor has no nodes array"))?
+            .push(serde_yaml::Value::Mapping(record_node));
+        serde_yaml::to_string(&descriptor).wrap_err("failed to serialize modified descriptor")
+    };
+    let mut modified = build(true)?;
+    if modified.len() + NODE_CONFIG_HEADROOM > MAX_ENV_ENTRY_LEN {
+        modified = build(false)?;
+    }
+    if cfg!(target_os = "linux") && modified.len() > MAX_ENV_ENTRY_LEN {
+        eyre::bail!(
+            "the dataflow is too large for `dora record`: with the record node \
+             added, its descriptor is {} bytes, and the daemon passes it to \
+             every node in one environment variable, which Linux limits to \
+             {MAX_ENV_ENTRY_LEN} bytes",
+            modified.len(),
+        );
+    }
+    Ok(modified)
+}
+
 fn run_record(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
         std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
-    let mut descriptor: serde_yaml::Value =
+    let descriptor: serde_yaml::Value =
         serde_yaml::from_slice(&yaml_bytes).wrap_err("failed to parse descriptor YAML")?;
 
     let all_outputs = discover_descriptor_outputs(&descriptor)?;
@@ -154,25 +452,22 @@ fn run_record(args: Record) -> eyre::Result<()> {
     let cwd = std::env::current_dir().wrap_err("failed to get current directory")?;
     let output_path = dunce::canonicalize(&cwd).unwrap_or(cwd).join(&output_file);
 
-    // Find record node binary
-    let record_node_bin = find_record_node_binary()?;
-
     // Build topic map JSON: { "input_id": "node/output" }
-    let topic_map: BTreeMap<&str, &str> = topics
-        .iter()
-        .map(|(topic, input_id)| (input_id.as_str(), topic.as_str()))
-        .collect();
+    //
+    // Validate the input-id encoding *before* `find_record_node_binary` below,
+    // which can trigger a multi-minute `cargo build`/`cargo install`: a
+    // colliding topic set must fail fast, not after that build completes.
+    let topic_map = build_input_id_map(topics.iter().map(|(t, i)| (t.as_str(), i.as_str())))?;
     let topics_json =
         serde_json::to_string(&topic_map).wrap_err("failed to serialize topic map")?;
 
-    // Build inputs mapping for the record node YAML entry
-    let mut inputs_mapping = serde_yaml::Mapping::new();
-    for (topic, input_id) in &topics {
-        inputs_mapping.insert(
-            serde_yaml::Value::String(input_id.clone()),
-            serde_yaml::Value::String(topic.clone()),
-        );
-    }
+    // Build the record node's YAML inputs from the validated map, so this
+    // second `input_id`-keyed structure cannot reintroduce a collision
+    // independently of `topic_map` (it would otherwise silently overwrite).
+    let inputs_mapping = build_record_inputs(&topic_map, args.queue_size);
+
+    // Find record node binary
+    let record_node_bin = find_record_node_binary()?;
 
     // Build env vars
     let mut env_mapping = serde_yaml::Mapping::new();
@@ -183,10 +478,6 @@ fn run_record(args: Record) -> eyre::Result<()> {
     env_mapping.insert(
         serde_yaml::Value::String("DORA_RECORD_TOPICS".to_string()),
         serde_yaml::Value::String(topics_json),
-    );
-    env_mapping.insert(
-        serde_yaml::Value::String("DORA_RECORD_DESCRIPTOR".to_string()),
-        serde_yaml::Value::String(String::from_utf8_lossy(&yaml_bytes).to_string()),
     );
 
     // Build the record node YAML entry
@@ -208,15 +499,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
         serde_yaml::Value::Mapping(env_mapping),
     );
 
-    // Append record node to descriptor
-    let nodes_mut = descriptor
-        .get_mut("nodes")
-        .and_then(|v| v.as_sequence_mut())
-        .ok_or_else(|| eyre::eyre!("descriptor has no nodes array"))?;
-    nodes_mut.push(serde_yaml::Value::Mapping(record_node));
-
-    let modified_yaml =
-        serde_yaml::to_string(&descriptor).wrap_err("failed to serialize modified descriptor")?;
+    let modified_yaml = descriptor_with_record_node(descriptor, record_node, &yaml_bytes)?;
 
     // If --output-yaml, just write and exit
     if let Some(yaml_output_path) = args.output_yaml {
@@ -226,7 +509,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
         return Ok(());
     }
 
-    // The tempfile lives in /tmp but descriptor-relative paths
+    // The descriptor lives in a temp dir but descriptor-relative paths
     // (`build:` cargo, node binaries) must still resolve against the
     // original source dir, so pass it as an explicit `working_dir`
     // override to `Run`.
@@ -235,11 +518,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let mut tmp =
-        tempfile::NamedTempFile::with_suffix(".yml").wrap_err("failed to create temp file")?;
-    tmp.write_all(modified_yaml.as_bytes())?;
-    tmp.flush()?;
-    let tmp_path = tmp.into_temp_path();
+    let (_tmp_dir, run) = Run::for_generated_dataflow(&modified_yaml, source_dir)?;
 
     eprintln!("Recording {} topics to {output_file}", topics.len());
     eprintln!(
@@ -248,9 +527,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
     );
     eprintln!();
 
-    Run::new(tmp_path.to_string_lossy().to_string())
-        .with_working_dir(source_dir)
-        .execute()
+    run.execute()
 }
 
 /// What a Ctrl-C on the recording loop should do, given whether one was already
@@ -285,6 +562,12 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     let descriptor: serde_yaml::Value =
         serde_yaml::from_slice(&yaml_bytes).wrap_err("failed to parse descriptor YAML")?;
 
+    // A second, typed parse, used only to translate wire output ids back to
+    // public ones below. Deliberately non-fatal: the untyped walk above is what
+    // `--proxy` needs to work, and a descriptor that fails the typed parse
+    // should still record -- just without the translation.
+    let typed_descriptor: Option<Descriptor> = serde_yaml::from_slice(&yaml_bytes).ok();
+
     let all_topics = discover_descriptor_outputs(&descriptor)?;
 
     // Filter topics if --topics specified
@@ -312,11 +595,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     };
 
     let output_file = match &args.output {
-        Some(p) => {
-            // Resolve to filename only if user provided a bare name, otherwise use as-is
-            let path = PathBuf::from(p);
-            path.to_string_lossy().to_string()
-        }
+        Some(p) => p.clone(),
         None => {
             let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
             format!("recording_{ts}.drec")
@@ -380,23 +659,15 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     };
 
     // Subscribe to topics via WS
-    let ws_topics: Vec<_> = topics
-        .iter()
-        .map(|(n, o)| -> eyre::Result<_> {
-            Ok((
-                n.parse::<NodeId>()
-                    .map_err(|e| eyre::eyre!("invalid node ID in topic: {e}"))?,
-                o.clone().into(),
-            ))
-        })
-        .collect::<eyre::Result<Vec<_>>>()?;
+    let ws_topics = parse_ws_topics(&topics)?;
     let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
-    // Set up recording writer
-    let start_nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
+    // Set up recording writer. `duration_since(UNIX_EPOCH)` errors when the
+    // wall clock is set before 1970; `epoch_nanos` falls back to a zero base
+    // rather than panicking the recorder (see its doc).
+    let start_nanos = epoch_nanos();
+    // Monotonic base for entry offsets (see `dora_recording::offset_since`).
+    let start = Instant::now();
 
     let header = RecordingHeader {
         version: dora_recording::FORMAT_VERSION,
@@ -447,7 +718,20 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     })
     .wrap_err("failed to set ctrl-c handler")?;
 
+    // Node lookup for the wire -> public output-id translation below. Empty
+    // when the typed parse failed, which just means no translation.
+    let nodes: HashMap<_, _> = typed_descriptor
+        .iter()
+        .flat_map(|d| d.nodes.iter())
+        .map(|n| (n.id.clone(), n))
+        .collect();
+
     let mut msg_count: u64 = 0;
+    // Whether the stream ended on its own rather than because we asked it to.
+    // The coordinator evicts a subscriber that has timed out 100 consecutive
+    // times, and the CLI sees that as a bare `Disconnected` — indistinguishable
+    // from a clean finish unless we keep track (#3282).
+    let mut ended_unexpectedly = false;
     loop {
         // Check for Ctrl-C
         if stop_rx.try_recv().is_ok() {
@@ -458,30 +742,35 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
             Ok(Ok(payload)) => {
                 // The payload is already `Timestamped<InterDaemonEvent>` postcard bytes.
                 // Parse it to extract node_id and output_id for the recording entry.
-                let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
+                let mut event = match Timestamped::deserialize_inter_daemon_event(&payload) {
                     Ok(e) => e,
                     Err(_) => continue,
                 };
 
-                let (node_id, output_id) = match &event.inner {
-                    InterDaemonEvent::Output {
-                        node_id, output_id, ..
-                    } => (node_id.to_string(), output_id.to_string()),
-                    InterDaemonEvent::OutputClosed { .. } => continue,
-                    // `InterDaemonEvent` is `#[non_exhaustive]`: skip events this build predates.
-                    _ => continue,
+                // Rewrite the event in place so a `--proxy` recording is
+                // shaped exactly like one from the record node, which stores
+                // the bare `source_output` in both the entry and the event.
+                let Some((node_id, output_id)) = prepare_proxy_event(&mut event.inner, &nodes)
+                else {
+                    continue;
                 };
 
-                let now_nanos = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos() as u64;
+                // Re-serialize rather than storing `payload`: the id inside the
+                // event is what `replay-node` re-emits, so an untouched payload
+                // would carry the wire id no matter what the entry says.
+                let event_bytes = match event.serialize() {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("failed to re-encode recorded event: {e}");
+                        continue;
+                    }
+                };
 
                 let entry = RecordEntry {
                     node_id,
                     output_id,
-                    timestamp_offset_nanos: now_nanos.saturating_sub(start_nanos),
-                    event_bytes: payload,
+                    timestamp_offset_nanos: dora_recording::offset_since(start),
+                    event_bytes,
                 };
                 writer.write_entry(&entry)?;
                 msg_count += 1;
@@ -492,7 +781,10 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
             }
             Ok(Err(_)) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                ended_unexpectedly = true;
+                break;
+            }
         }
     }
 
@@ -508,8 +800,19 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     writer.flush()?;
 
     let footer = writer.finish()?;
+    // Proxy mode has no drop accounting of its own — the frames it can lose are
+    // discarded in the coordinator and the daemon, which never report a count
+    // back over the WebSocket. So say what happened rather than asserting a
+    // completeness this path cannot measure (#3282).
+    if ended_unexpectedly {
+        eprintln!(
+            "Recording ended: the data stream closed before the recording was stopped. \
+             Messages may be missing — the coordinator drops frames for a subscriber it \
+             cannot keep up with, and evicts it after 100 consecutive timeouts."
+        );
+    }
     eprintln!(
-        "Recording complete: {} messages, {:.2} MB",
+        "Recording finished: {} messages, {:.2} MB",
         footer.total_messages,
         footer.total_bytes as f64 / 1_048_576.0
     );
@@ -578,6 +881,42 @@ fn select_dataflow(
     })
 }
 
+/// Shape a debug-topic frame received by `dora record --proxy` like an event
+/// recorded by the record node, returning its `(node_id, output_id)` entry key,
+/// or `None` for an event that isn't an output.
+///
+/// - The daemon reports the *wire* output id, which for a single `operator:`
+///   node is `op/image` where the descriptor (and `replay_node_outputs`) call it
+///   `image`. Rewrite it to the public id, so replay declares and sends the same
+///   id. Left as-is, `send_output("op/image", ..)` is rejected by
+///   `validate_output` and every message is dropped (dora-rs/dora#2893).
+/// - Drop internal parameters, notably the daemon's `_wire_size` stamp. It
+///   exists only for `dora topic info`'s bandwidth accounting on the debug
+///   path; stored in the recording, replay would forward it into every
+///   downstream node's input metadata.
+fn prepare_proxy_event(
+    event: &mut InterDaemonEvent,
+    nodes: &HashMap<NodeId, &Node>,
+) -> Option<(String, String)> {
+    match event {
+        InterDaemonEvent::Output {
+            node_id,
+            output_id,
+            metadata,
+            ..
+        } => {
+            if let Some(node) = nodes.get(node_id) {
+                *output_id = public_topic_output_id(node, output_id);
+            }
+            strip_internal_parameters(&mut metadata.parameters);
+            Some((node_id.to_string(), output_id.to_string()))
+        }
+        // `OutputClosed`, and (`InterDaemonEvent` is `#[non_exhaustive]`)
+        // events this build predates.
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,6 +927,238 @@ mod tests {
             uuid: Uuid::new_v4(),
             name: name.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn invalid_output_id_in_proxy_topics_is_an_error_not_a_panic() {
+        let topics = |n: &str, o: &str| vec![(n.to_string(), o.to_string())];
+        assert!(parse_ws_topics(&topics("n", "bad id")).is_err());
+        assert!(parse_ws_topics(&topics("n", "a//b")).is_err());
+        assert!(parse_ws_topics(&topics("n", "/out")).is_err());
+        let parsed = parse_ws_topics(&topics("n", "op/out")).unwrap();
+        assert_eq!(parsed[0].0.to_string(), "n");
+        assert_eq!(parsed[0].1.to_string(), "op/out");
+    }
+
+    #[test]
+    fn proxy_event_drops_the_debug_wire_size_stamp() {
+        use dora_message::metadata::{Metadata, MetadataParameters, Parameter, WIRE_SIZE};
+
+        // The daemon stamps `_wire_size` on every debug frame for `dora topic
+        // info`. A proxy recording must not keep it: replay would forward it
+        // into every downstream node's input metadata.
+        let mut parameters = MetadataParameters::default();
+        parameters.insert(WIRE_SIZE.to_string(), Parameter::Integer(42));
+        parameters.insert("user_key".to_string(), Parameter::Integer(7));
+        let mut event = InterDaemonEvent::Output {
+            dataflow_id: Uuid::new_v4(),
+            node_id: "camera".parse().unwrap(),
+            output_id: "image".parse().unwrap(),
+            metadata: Metadata::from_parameters(
+                dora_message::uhlc::HLC::default().new_timestamp(),
+                parameters,
+            ),
+            data: None,
+        };
+
+        let key = prepare_proxy_event(&mut event, &HashMap::new());
+
+        assert_eq!(key, Some(("camera".to_string(), "image".to_string())));
+        let InterDaemonEvent::Output { metadata, .. } = event else {
+            unreachable!()
+        };
+        assert!(!metadata.parameters.contains_key(WIRE_SIZE));
+        assert!(metadata.parameters.contains_key("user_key"));
+    }
+
+    fn discovered_topics(yaml: &str) -> Vec<String> {
+        let descriptor: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        discover_descriptor_outputs(&descriptor)
+            .unwrap()
+            .into_iter()
+            .map(|(node, output)| format!("{node}/{output}"))
+            .collect()
+    }
+
+    /// Parse `descriptor_env`'s entries the way the daemon does, `$VAR`
+    /// expansion included.
+    fn expanded_descriptor_env(yaml: &[u8]) -> BTreeMap<String, String> {
+        let env = serde_yaml::Mapping::from_iter(
+            descriptor_env(yaml, true)
+                .unwrap()
+                .into_iter()
+                .map(|(k, v)| (serde_yaml::Value::String(k), serde_yaml::Value::String(v))),
+        );
+        let parsed: BTreeMap<String, dora_message::descriptor::EnvValue> =
+            serde_yaml::from_value(serde_yaml::Value::Mapping(env))
+                .expect("the descriptor env entries must parse as env values");
+        parsed
+            .into_iter()
+            .map(|(k, v)| (k, v.to_string()))
+            .collect()
+    }
+
+    /// The descriptor reaches the record node through `env:` values, which
+    /// are `$VAR`-expanded on every parse. The encoded one must survive that
+    /// unchanged, whatever `$` references the YAML contains, and the raw one
+    /// must then be left out.
+    #[test]
+    fn descriptor_env_value_survives_env_expansion() {
+        let yaml = b"# set $DORA_TEST_SURELY_UNSET_VAR first\nnodes:\n- id: a\n  env:\n    TOKEN: ${HOME}\n";
+        let env = expanded_descriptor_env(yaml);
+        assert_eq!(decoded_descriptor(&env), yaml);
+        assert!(
+            !env.contains_key(dora_recording::LEGACY_DESCRIPTOR_ENV),
+            "a raw descriptor containing `$` must not be passed: {env:?}"
+        );
+    }
+
+    /// Without `$`, the raw descriptor is passed too, unchanged, so a record
+    /// node that predates the encoded variable still records it.
+    #[test]
+    fn descriptor_env_keeps_the_raw_value_for_older_record_nodes() {
+        let yaml = b"nodes:\n- id: a\n  path: ./a\n";
+        let env = expanded_descriptor_env(yaml);
+        assert_eq!(
+            env[dora_recording::LEGACY_DESCRIPTOR_ENV].as_bytes(),
+            yaml.as_slice()
+        );
+        assert_eq!(decoded_descriptor(&env), yaml);
+    }
+
+    /// What the record node gets out of [`dora_recording::DESCRIPTOR_ENV`].
+    fn decoded_descriptor(env: &BTreeMap<String, String>) -> Vec<u8> {
+        use std::io::Read;
+        let compressed = BASE64_STANDARD
+            .decode(&env[dora_recording::DESCRIPTOR_ENV])
+            .expect("valid base64");
+        let mut yaml = Vec::new();
+        flate2::read::DeflateDecoder::new(compressed.as_slice())
+            .read_to_end(&mut yaml)
+            .expect("valid deflate stream");
+        yaml
+    }
+
+    /// `len` bytes of YAML comment that barely compress, with no `$`.
+    fn incompressible_yaml(len: usize) -> Vec<u8> {
+        const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut yaml = b"# ".to_vec();
+        while yaml.len() < len {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            yaml.push(CHARS[(state % CHARS.len() as u64) as usize]);
+        }
+        yaml
+    }
+
+    /// Whether the record node in `submitted` carries the raw legacy copy.
+    fn has_raw_copy(submitted: &str) -> bool {
+        submitted.contains(&format!("{}:", dora_recording::LEGACY_DESCRIPTOR_ENV))
+    }
+
+    fn submitted(yaml: &[u8]) -> eyre::Result<String> {
+        descriptor_with_record_node(
+            serde_yaml::from_str("nodes: []").unwrap(),
+            serde_yaml::Mapping::from_iter([(
+                serde_yaml::Value::String("id".into()),
+                serde_yaml::Value::String("__dora_record__".into()),
+            )]),
+            yaml,
+        )
+    }
+
+    /// The daemon passes the whole submitted descriptor to every node in one
+    /// `DORA_NODE_CONFIG` entry, so the record node's descriptor copies must
+    /// keep it under Linux's per-variable limit: a typical dataflow keeps the
+    /// raw copy for older record nodes, and the descriptor copy adds far less
+    /// than the file itself.
+    #[test]
+    fn submitted_descriptor_keeps_the_raw_copy_when_it_fits() {
+        let yaml = "nodes:\n- id: camera\n  path: ./camera\n  outputs: [image]\n".repeat(400);
+        let submitted = submitted(yaml.as_bytes()).unwrap();
+        assert!(has_raw_copy(&submitted));
+        assert!(
+            submitted.len() < 2 * yaml.len(),
+            "{} bytes submitted for a {}-byte file",
+            submitted.len(),
+            yaml.len()
+        );
+    }
+
+    /// A descriptor too large to also carry the raw copy drops it instead of
+    /// making every node's spawn fail.
+    #[test]
+    fn submitted_descriptor_drops_the_raw_copy_when_it_would_not_fit() {
+        let submitted = submitted(&incompressible_yaml(60 * 1024)).unwrap();
+        assert!(!has_raw_copy(&submitted));
+        assert!(submitted.len() <= MAX_ENV_ENTRY_LEN);
+    }
+
+    /// One that cannot fit even so is refused with a clear error, not left to
+    /// fail every node's spawn with `E2BIG`.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn submitted_descriptor_over_the_env_limit_is_refused() {
+        let err = submitted(&incompressible_yaml(140 * 1024)).unwrap_err();
+        assert!(format!("{err}").contains("too large"), "{err}");
+    }
+
+    #[test]
+    fn discovers_recordable_outputs_from_all_descriptor_node_kinds() {
+        // `custom:` is deliberately absent: `Node` is `deny_unknown_fields` and
+        // has no `custom` field, so such a descriptor cannot deserialize and
+        // `--proxy` (which needs a running dataflow) can never see one.
+        let topics = discovered_topics(concat!(
+            "nodes:\n",
+            "- id: standard\n",
+            "  path: ./source\n",
+            "  outputs:\n",
+            "    - status\n",
+            "- id: single\n",
+            "  operator:\n",
+            "    python: single.py\n",
+            "    outputs:\n",
+            "      - image\n",
+            "- id: runtime\n",
+            "  operators:\n",
+            "  - id: op\n",
+            "    python: runtime.py\n",
+            "    outputs:\n",
+            "      - status\n",
+        ));
+
+        assert_eq!(
+            topics,
+            vec!["standard/status", "single/image", "runtime/op/status"]
+        );
+    }
+
+    #[test]
+    fn build_input_id_map_detects_encoding_collision() {
+        // Node `x` with output `y___z` and node `x___y` with output `z` both
+        // encode to the record-node input id `x___y___z`. Recording both must
+        // fail loudly rather than silently drop one.
+        let err = build_input_id_map([("x/y___z", "x___y___z"), ("x___y/z", "x___y___z")])
+            .expect_err("colliding input ids must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("x___y___z") && msg.contains("x/y___z") && msg.contains("x___y/z"),
+            "error must name the colliding topics and input id: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_input_id_map_accepts_distinct_input_ids() {
+        let map = build_input_id_map([
+            ("cam/frame", "cam___frame"),
+            ("lidar/points", "lidar___points"),
+        ])
+        .expect("distinct input ids must be accepted");
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["cam___frame"], "cam/frame");
+        assert_eq!(map["lidar___points"], "lidar/points");
     }
 
     #[test]
@@ -654,5 +1225,72 @@ mod tests {
         let dfs = vec![make_df(Some("happy-tree")), make_df(Some("sad-rock"))];
         let result = select_dataflow(dfs, None, Some("dataflow")).unwrap();
         assert!(matches!(result, Selection::Many(v) if v.len() == 2));
+    }
+
+    // ---- #3282: the injected record node must not take the real-time defaults ----
+
+    fn record_topic_map() -> BTreeMap<&'static str, &'static str> {
+        BTreeMap::from([
+            ("camera___image", "camera/image"),
+            ("lidar___points", "lidar/points"),
+        ])
+    }
+
+    // The load-bearing assertion of this fix. `queue_policy: backpressure` looks
+    // like the obvious way to make a recorder lossless, and it is what #3282
+    // proposed, but `input_is_backpressure` in the daemon's `output_routing`
+    // pins the *producer's whole output* to the daemon path — every consumer of
+    // that output leaves the zero-copy direct-zenoh path, and the 64 MiB daemon
+    // message limit starts applying. Recording a dataflow would then change the
+    // transport of the dataflow being recorded, which is exactly what a recorder
+    // must not do. Raising `queue_size` alone has no routing effect.
+    #[test]
+    fn record_inputs_do_not_declare_a_queue_policy() {
+        let inputs = build_record_inputs(&record_topic_map(), DEFAULT_RECORD_QUEUE_SIZE);
+
+        for input_id in ["camera___image", "lidar___points"] {
+            let input = &inputs[serde_yaml::Value::String(input_id.to_string())];
+            assert!(
+                input.get("queue_policy").is_none(),
+                "`{input_id}` must not declare a queue_policy: `backpressure` would pin \
+                 the producer's output to the daemon path for every consumer, changing \
+                 the transport of the dataflow being recorded (#3282)"
+            );
+        }
+    }
+
+    #[test]
+    fn record_inputs_honor_a_custom_queue_size() {
+        let inputs = build_record_inputs(&record_topic_map(), 4096);
+        assert_eq!(
+            inputs[serde_yaml::Value::String("camera___image".to_string())]["queue_size"].as_u64(),
+            Some(4096)
+        );
+    }
+
+    // The generated YAML has to survive the round trip back through the type the
+    // daemon actually reads, or the keys could be right and the effect wrong.
+    // Stronger than checking the raw mapping keys: a bare `node/output` string
+    // still parses here, and would show up as `queue_size: None`.
+    #[test]
+    fn generated_record_inputs_deserialize_to_the_intended_capacity() {
+        let inputs = build_record_inputs(&record_topic_map(), DEFAULT_RECORD_QUEUE_SIZE);
+        let yaml = serde_yaml::to_string(&inputs).unwrap();
+        let parsed: BTreeMap<String, dora_message::config::Input> =
+            serde_yaml::from_str(&yaml).unwrap();
+
+        assert_eq!(parsed.len(), 2);
+        for input_id in ["camera___image", "lidar___points"] {
+            let input = &parsed[input_id];
+            assert_eq!(input.queue_size, Some(DEFAULT_RECORD_QUEUE_SIZE as usize));
+            assert_eq!(input.queue_policy, None);
+        }
+        assert_eq!(
+            parsed["camera___image"].mapping,
+            dora_message::config::InputMapping::User(dora_message::config::UserInputMapping {
+                source: "camera".parse().unwrap(),
+                output: "image".parse().unwrap(),
+            })
+        );
     }
 }

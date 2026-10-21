@@ -74,17 +74,34 @@ struct LogLine {
 /// a single multi-GB stdout/stderr line.
 const MAX_LOG_LINE_BYTES: usize = 1024 * 1024;
 
+/// Exponential restart backoff: `base_delay * 2^(window_count - 1)`, with the
+/// exponent capped at 16 and the result capped at `max_delay`.
+///
+/// Saturating, so a huge (but descriptor-valid) `restart_delay` cannot panic
+/// the restart loop: `Duration::mul_f64` panics once the product exceeds
+/// `Duration::MAX`, which a `restart_delay` above ~2.8e14 s reached within the
+/// first 16 restarts even when `max_restart_delay` would have capped it.
+fn restart_backoff(
+    base_delay: Duration,
+    window_count: u32,
+    max_delay: Option<Duration>,
+) -> Duration {
+    let exp = window_count.saturating_sub(1).min(16);
+    let backoff = base_delay.saturating_mul(1u32 << exp);
+    max_delay.map_or(backoff, |max| backoff.min(max))
+}
+
 /// Truncate a log line to `MAX_LOG_LINE_BYTES`, respecting UTF-8 char boundaries.
+///
+/// The cut drops the line's `\n`, so the marker ends with one: otherwise the
+/// stderr ring would join this line with the next when it builds a node's
+/// error cause.
 fn truncate_log_line(content: &mut String) {
     if content.len() > MAX_LOG_LINE_BYTES {
-        // Find the last valid UTF-8 char boundary at or before MAX_LOG_LINE_BYTES.
-        // This is equivalent to str::floor_char_boundary (stable in 1.91).
-        let mut boundary = MAX_LOG_LINE_BYTES;
-        while boundary > 0 && !content.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
-        content.truncate(boundary);
-        content.push_str("... [truncated]");
+        // Truncate at the last valid UTF-8 char boundary at or before
+        // MAX_LOG_LINE_BYTES so the retained prefix stays valid UTF-8.
+        content.truncate(content.floor_char_boundary(MAX_LOG_LINE_BYTES));
+        content.push_str("... [truncated]\n");
     }
 }
 
@@ -151,6 +168,35 @@ where
     Ok(false)
 }
 
+/// The forward-or-skip decision shared by the stdout/stderr reader tasks and
+/// their tests: given the `raw` bytes [`read_capped_line`] just produced,
+/// return the line to forward downstream, or `None` to skip it.
+///
+/// `read_capped_line` leaves `raw` empty **only** on the final EOF read — a
+/// real blank line is `"\n"`, which is non-empty — so an empty `raw` is that
+/// EOF marker and is dropped. Forwarding it would emit a spurious empty log
+/// line, and under `send_stdout_as` a spurious empty-string Arrow output the
+/// node never produced (dora-rs/dora#3228). Keeping this in one function means
+/// the tasks and the regression test exercise the same guard.
+fn line_to_forward(raw: Vec<u8>) -> Option<Vec<u8>> {
+    (!raw.is_empty()).then_some(raw)
+}
+
+/// The value of the in-process `dora run` parent marker on `command`, if any.
+///
+/// `bind_nodes_to_parent` injects `DORA_RUN_PARENT_PID` only on the in-process
+/// `dora run` / `Daemon::run_dataflow` spawn path, never on the
+/// coordinator-attached `dora up` path. The Linux `PR_SET_PDEATHSIG` arm and the
+/// Windows kill-on-close Job Object both key off it, so a daemon restart does
+/// not take `dora up`'s nodes down (dora-rs/dora#2029, dora-rs/dora#3474).
+#[cfg(any(target_os = "linux", windows, test))]
+fn run_parent_marker(command: &std::process::Command) -> Option<&std::ffi::OsStr> {
+    command
+        .get_envs()
+        .find(|(key, _)| *key == std::ffi::OsStr::new(dora_core::topics::DORA_RUN_PARENT_PID_ENV))
+        .and_then(|(_, value)| value)
+}
+
 #[derive(Clone, Default)]
 struct RestartConfig {
     max_restarts: u32,
@@ -182,6 +228,8 @@ pub struct PreparedNode {
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub(super) node_stderr_most_recent: Arc<ArrayQueue<String>>,
     pub(super) last_activity: Arc<AtomicU64>,
+    pub(super) spawned_at: Arc<AtomicU64>,
+    pub(super) startup_kill_sent: Arc<AtomicBool>,
     pub(super) ft_stats: Arc<crate::FaultToleranceStats>,
 }
 
@@ -229,7 +277,10 @@ impl PreparedNode {
                 }
             },
             last_activity: self.last_activity.clone(),
+            spawned_at: self.spawned_at.clone(),
+            startup_kill_sent: self.startup_kill_sent.clone(),
             health_check_timeout: self.health_check_timeout(),
+            startup_timeout: self.startup_timeout(),
             finish_grace_secs: self.finish_grace_secs(),
         };
 
@@ -248,41 +299,41 @@ impl PreparedNode {
         Ok(running_node)
     }
 
-    fn restart_policy(&self) -> RestartPolicy {
+    fn custom(&self) -> Option<&dora_core::descriptor::CustomNode> {
         match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
+            dora_core::descriptor::CoreNodeKind::Custom(n) => Some(n),
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
         }
+    }
+
+    fn restart_policy(&self) -> RestartPolicy {
+        self.custom()
+            .map_or(RestartPolicy::Never, |n| n.restart_policy)
     }
 
     fn health_check_timeout(&self) -> Option<Duration> {
-        match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => {
-                n.health_check_timeout.map(Duration::from_secs_f64)
-            }
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
-        }
+        self.custom()
+            .and_then(|n| n.health_check_timeout.map(Duration::from_secs_f64))
+    }
+
+    fn startup_timeout(&self) -> Option<Duration> {
+        self.custom()
+            .and_then(|n| n.startup_timeout.map(Duration::from_secs_f64))
     }
 
     fn finish_grace_secs(&self) -> Option<Duration> {
-        match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => {
-                n.finish_grace_secs.map(Duration::from_secs_f64)
-            }
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
-        }
+        self.custom()
+            .and_then(|n| n.finish_grace_secs.map(Duration::from_secs_f64))
     }
 
     fn restart_config(&self) -> RestartConfig {
-        match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => RestartConfig {
+        self.custom()
+            .map_or_else(RestartConfig::default, |n| RestartConfig {
                 max_restarts: n.max_restarts,
                 restart_delay: n.restart_delay.map(Duration::from_secs_f64),
                 max_restart_delay: n.max_restart_delay.map(Duration::from_secs_f64),
                 restart_window: n.restart_window.map(Duration::from_secs_f64),
-            },
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartConfig::default(),
-        }
+            })
     }
 
     /// Settle the daemon's restart debt when the loop aborts after having
@@ -350,6 +401,11 @@ impl PreparedNode {
                     .await;
                 break;
             };
+
+            // Process has exited; reset spawn timestamp and kill latch for the backoff period.
+            self.spawned_at.store(0, atomic::Ordering::Release);
+            self.startup_kill_sent
+                .store(false, atomic::Ordering::Release);
 
             // Consume the one-shot `force_restart_next` flag set by
             // `restart_single_node` (operator-requested `dora node
@@ -437,11 +493,8 @@ impl PreparedNode {
             if restart {
                 // Exponential backoff
                 if let Some(base_delay) = config.restart_delay {
-                    let exp = (window_count - 1).min(16); // cap exponent to avoid overflow
-                    let backoff = base_delay.mul_f64(2f64.powi(exp as i32));
-                    let backoff = config
-                        .max_restart_delay
-                        .map_or(backoff, |max| backoff.min(max));
+                    let backoff =
+                        restart_backoff(base_delay, window_count, config.max_restart_delay);
                     logger
                         .log(
                             LogLevel::Info,
@@ -676,6 +729,78 @@ impl PreparedNode {
                     }
                 }
 
+                // Close the pre-`init` orphan window on Linux (dora-rs/dora#3473).
+                //
+                // The in-node orphan guard (`apis/rust/node/src/orphan_guard.rs`)
+                // only arms once the node reaches `DoraNode::init`. A node
+                // SIGKILL-orphaned before that — a Python node still in `import
+                // torch`, a `path: shell` command that never runs any dora code
+                // (dora-rs/dora#3472) — is stranded with `ppid 1` exactly as
+                // before #3018. Ask the kernel to SIGKILL the child when its
+                // parent (this in-process `dora run` daemon) dies, which needs no
+                // dora code in the child and so covers that window.
+                //
+                // Gated on the same signal as the in-node guard: the presence of
+                // `DORA_RUN_PARENT_PID`, set only on the in-process `dora run` /
+                // `Daemon::run_dataflow` spawn path (`bind_nodes_to_parent`). The
+                // coordinator-attached path (`dora up` + `dora start`) must inject
+                // nothing, so a daemon restart does not take its nodes down
+                // (dora-rs/dora#2029, `tests/daemon-reconnect-e2e.rs`).
+                //
+                // Bounded on purpose: `PR_SET_PDEATHSIG` keys off the parent
+                // *thread*, and reaches only the direct child (under `--uv` that
+                // is the `uv` wrapper, not the interpreter). It is a complement
+                // for the startup window, never the post-`init` mechanism — the
+                // node clears it and hands over to the poll guard at `init`.
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::unix::process::CommandExt as _;
+
+                    let run_parent_pid: Option<libc::pid_t> = run_parent_marker(&std_command)
+                        .and_then(|value| value.to_str())
+                        .and_then(|value| value.trim().parse::<libc::pid_t>().ok());
+
+                    if let Some(parent) = run_parent_pid {
+                        // SAFETY: `prctl`, `getppid` and `_exit` are all
+                        // async-signal-safe, so they are sound to call in the
+                        // forked child before `exec`; the closure allocates
+                        // nothing and captures only a `Copy` pid.
+                        unsafe {
+                            std_command.pre_exec(move || {
+                                let ret = libc::prctl(
+                                    libc::PR_SET_PDEATHSIG,
+                                    libc::SIGKILL as libc::c_ulong,
+                                );
+                                // Best effort: a failure here only loses the
+                                // pre-`init` cover, and the in-node poll guard
+                                // still contains the node once it reaches `init`.
+                                if ret != 0 {
+                                    return Ok(());
+                                }
+                                // Close the fork/prctl race: if the parent already
+                                // died in the window between `fork` and the line
+                                // above, `PDEATHSIG` will never fire (the death it
+                                // waits for has passed), so this child would be the
+                                // very orphan the signal exists to prevent. A
+                                // reparented child reads a different `getppid`.
+                                if libc::getppid() != parent {
+                                    libc::_exit(0);
+                                }
+                                Ok(())
+                            });
+                        }
+                    }
+                }
+
+                // The marker the spawner injects only on the in-process
+                // `dora run` / `Daemon::run_dataflow` spawn path
+                // (`bind_nodes_to_parent`), never on the coordinator-attached
+                // `dora up` path. The Linux `PR_SET_PDEATHSIG` arm above reads
+                // it too; the Windows Job Object limit below is gated on it so
+                // a daemon restart does not take its nodes down (#2029).
+                #[cfg(windows)]
+                let bind_to_run_parent = run_parent_marker(&std_command).is_some();
+
                 let mut command = CommandWrap::from(tokio::process::Command::from(std_command));
 
                 #[cfg(unix)]
@@ -692,6 +817,20 @@ impl PreparedNode {
                             windows::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP,
                         ))
                         .wrap(process_wrap::tokio::JobObject);
+
+                    // On the in-process `dora run` path, make the Job Object
+                    // kill-on-close. Closing the daemon's job handle — which is
+                    // what a hard kill (`taskkill /F`, Task Manager
+                    // end-process, supervisor timeout) does — then terminates
+                    // the whole tree, where `dora run` otherwise strands every
+                    // node it spawned. `KillOnDrop` is what makes process-wrap
+                    // set `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; it is added only
+                    // under this gate, so the coordinator-attached `dora up`
+                    // path keeps its nodes across a daemon restart (#2029,
+                    // dora-rs/dora#3474).
+                    if bind_to_run_parent {
+                        command.wrap(process_wrap::tokio::KillOnDrop);
+                    }
                 }
 
                 command.spawn().wrap_err(self.spawn_error_msg)?
@@ -704,6 +843,11 @@ impl PreparedNode {
         let pid = child.id().context(
             "Could not get the pid for the just spawned node and indicate that there is an error",
         )?;
+        let now = crate::node_communication::current_millis();
+        self.spawned_at.store(now, atomic::Ordering::Release);
+        self.startup_kill_sent
+            .store(false, atomic::Ordering::Release);
+        self.last_activity.store(now, atomic::Ordering::Release);
         logger
             .log(
                 LogLevel::Debug,
@@ -720,13 +864,15 @@ impl PreparedNode {
             std::fs::create_dir_all(&dataflow_dir).context("could not create dataflow_dir")?;
         }
         let (tx, mut rx) = mpsc::channel::<LogLine>(100);
-        let mut file = File::create(log::log_path(
+        // Append rather than truncate: on a restart this path holds the
+        // previous incarnation's output, including why it crashed.
+        let (mut file, mut bytes_written) = log::open_log_file_for_append(&log::log_path(
             &self.node_working_dir,
             &self.dataflow_id,
             &self.node.id,
         ))
         .await
-        .context("failed to create log file")?;
+        .context("failed to open log file")?;
         let mut child_stdout = tokio::io::BufReader::new(
             child
                 .stdout()
@@ -756,6 +902,12 @@ impl PreparedNode {
                         // (which would busy-spin and flood the log channel).
                         true
                     }
+                };
+
+                // Drop the empty final EOF read rather than forwarding a
+                // spurious empty log line — see `line_to_forward`.
+                let Some(raw) = line_to_forward(raw) else {
+                    continue;
                 };
 
                 let mut content = match String::from_utf8(raw) {
@@ -817,6 +969,12 @@ impl PreparedNode {
                         tracing::warn!("{err:?}");
                         true
                     }
+                };
+
+                // Drop the empty final EOF read rather than forwarding a
+                // spurious empty log line — see `line_to_forward`.
+                let Some(raw) = line_to_forward(raw) else {
+                    continue;
                 };
 
                 let mut content = match String::from_utf8(raw) {
@@ -927,7 +1085,6 @@ impl PreparedNode {
         let quiet = std::env::var_os("DORA_QUIET").is_some();
         // Log to file stream.
         tokio::spawn(async move {
-            let mut bytes_written: u64 = 0;
             while let Some(log_line) = rx.recv().await {
                 let LogLine { content, stream } = log_line;
                 let stream_str = match stream {
@@ -1115,7 +1272,10 @@ impl PreparedNode {
                                     format!("Could not create new log file after rotation: {err}"),
                                 )
                                 .await;
-                            break;
+                            // The old file was already flushed and dropped
+                            // above, so there is nothing left to flush.
+                            let _ = log_finish_tx.send(());
+                            return;
                         }
                     };
                     bytes_written = 0;
@@ -1129,16 +1289,29 @@ impl PreparedNode {
                 // Note: no per-line sync_all() — OS write-back is sufficient
                 // for log data. Avoids 1000+ fsync/s for high-frequency loggers.
             }
-            // Note: file may have been rotated (drop+recreate) inside the loop.
-            // No explicit flush needed here — the file is flushed during rotation
-            // and will be flushed on drop when this task ends.
-            let _ = log_finish_tx.send(()).map_err(|_| {
-                logger_c.log(
-                    LogLevel::Error,
-                    Some("daemon".into()),
-                    "Could not inform that log file thread finished".to_string(),
-                )
-            });
+            // `tokio::fs::File::write_all` can return before the bytes reach
+            // the OS (the last write may still be in flight on the blocking
+            // pool), and dropping the handle does not wait for it. Flush before
+            // signalling, so the log file is complete by the time the
+            // exit-waiter reports the node as finished.
+            if let Err(err) = file.flush().await {
+                logger_c
+                    .log(
+                        LogLevel::Error,
+                        Some("daemon".into()),
+                        format!("Could not flush log file: {err}"),
+                    )
+                    .await;
+            }
+            if log_finish_tx.send(()).is_err() {
+                logger_c
+                    .log(
+                        LogLevel::Error,
+                        Some("daemon".into()),
+                        "Could not inform that log file thread finished".to_string(),
+                    )
+                    .await;
+            }
         });
         Ok(NodeKind::Spawned { pid })
     }
@@ -1172,6 +1345,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn restart_backoff_doubles_and_caps() {
+        let base = Duration::from_millis(100);
+        assert_eq!(restart_backoff(base, 1, None), base);
+        assert_eq!(restart_backoff(base, 2, None), base * 2);
+        assert_eq!(restart_backoff(base, 4, None), base * 8);
+        // Exponent is capped at 16.
+        assert_eq!(restart_backoff(base, 17, None), base * 65536);
+        assert_eq!(restart_backoff(base, 100, None), base * 65536);
+        let max = Duration::from_secs(1);
+        assert_eq!(restart_backoff(base, 5, Some(max)), max);
+    }
+
+    /// A `restart_delay` the descriptor validator accepts (anything up to
+    /// `Duration::MAX`) must not panic once the backoff doubles it: this used
+    /// to go through `Duration::mul_f64`, which panics on overflow, even with a
+    /// `max_restart_delay` that would have capped the result.
+    #[test]
+    fn restart_backoff_saturates_on_huge_delay() {
+        let base = Duration::from_secs_f64(1e15);
+        let max = Duration::from_secs(1);
+        assert_eq!(restart_backoff(base, 16, Some(max)), max);
+        assert_eq!(restart_backoff(base, 16, None), Duration::MAX);
+        assert_eq!(restart_backoff(Duration::MAX, 2, None), Duration::MAX);
+    }
+
+    #[test]
+    fn truncated_log_line_keeps_a_line_terminator() {
+        let mut long = "x".repeat(MAX_LOG_LINE_BYTES + 1);
+        truncate_log_line(&mut long);
+        assert!(long.ends_with("... [truncated]\n"));
+        let next = "Error: boom\n".to_string();
+        assert_eq!(
+            crate::extract_err_from_stderr::extract_err_from_stderr(vec![long, next]),
+            "Error: boom\n"
+        );
+    }
+
+    #[test]
     fn strip_trailing_newline_matches_lines_for_single_line() {
         // The previous implementation was
         // `content.lines().fold(String::new(), |mut o, l| { o.push_str(l); o })`.
@@ -1201,6 +1412,26 @@ mod tests {
                 "mismatch for {case:?}"
             );
         }
+    }
+
+    #[test]
+    fn run_parent_marker_reads_only_the_in_process_run_signal() {
+        // `bind_nodes_to_parent` sets this marker; the coordinator-attached
+        // path does not. Kept in one place so the Linux `PR_SET_PDEATHSIG` arm
+        // and the Windows kill-on-close gate cannot drift apart.
+        let mut absent = std::process::Command::new("noop");
+        assert_eq!(run_parent_marker(&absent), None);
+
+        absent.env(dora_core::topics::DORA_RUN_PARENT_PID_ENV, "4242");
+        assert_eq!(
+            run_parent_marker(&absent),
+            Some(std::ffi::OsStr::new("4242"))
+        );
+
+        // A different env var must not be mistaken for the marker.
+        let mut other = std::process::Command::new("noop");
+        other.env("DORA_SOME_OTHER_MARKER", "4242");
+        assert_eq!(run_parent_marker(&other), None);
     }
 
     /// Deserialize from YAML (mirroring `dora_core::build` tests) to avoid
@@ -1251,6 +1482,8 @@ mod tests {
             daemon_tx,
             node_stderr_most_recent: Arc::new(ArrayQueue::new(4)),
             last_activity: Arc::new(AtomicU64::new(0)),
+            spawned_at: Arc::new(AtomicU64::new(0)),
+            startup_kill_sent: Arc::new(AtomicBool::new(false)),
             ft_stats: Arc::new(crate::FaultToleranceStats::default()),
         }
     }
@@ -1298,6 +1531,51 @@ mod tests {
             daemon_rx.try_recv().is_err(),
             "an unregistered restart loop must terminate without emitting events"
         );
+    }
+
+    /// A respawn runs `spawn_inner` again on the same log path. It must
+    /// append, not truncate: the previous incarnation's output is what
+    /// explains why the node was restarted.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_respawn_keeps_the_previous_incarnations_log() {
+        use clonable_command::{Command, Stdio};
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        for marker in ["first-incarnation", "second-incarnation"] {
+            let (daemon_tx, _daemon_rx) = tokio::sync::mpsc::channel(64);
+            let mut node = test_prepared_node(daemon_tx, 0, 0.0);
+            node.node_working_dir = tmp.path().to_path_buf();
+            node.command = Some(
+                Command::new("sh")
+                    .arg("-c")
+                    .arg(format!("echo {marker}"))
+                    .stdin(Stdio::Null)
+                    .stdout(Stdio::Piped)
+                    .stderr(Stdio::Piped),
+            );
+            let (_op_tx, op_rx) = flume::bounded(2);
+            let (finished_tx, finished_rx) = oneshot::channel();
+            let kind = node
+                .spawn_inner(&mut test_logger().await, op_rx, finished_tx)
+                .await
+                .expect("spawn test node");
+            assert!(matches!(kind, NodeKind::Spawned { .. }));
+            // Sent only after the log writer has flushed and finished.
+            finished_rx.await.expect("node finished");
+        }
+
+        let log = std::fs::read_to_string(log::log_path(
+            tmp.path(),
+            &uuid::Uuid::nil(),
+            &NodeId::from("test".to_string()),
+        ))
+        .expect("read node log");
+        assert!(
+            log.contains("first-incarnation"),
+            "the respawn truncated the previous incarnation's log: {log}"
+        );
+        assert!(log.contains("second-incarnation"), "{log}");
     }
 
     /// The incarnation that crashes in the abort-path tests below.
@@ -1457,6 +1735,39 @@ mod tests {
             read_all_lines(b"a\nno-newline").await,
             vec![b"a\n".to_vec(), b"no-newline".to_vec()]
         );
+    }
+
+    /// Drive the reader loop through the **same** `line_to_forward` guard the
+    /// production stdout/stderr tasks use, collecting whatever it forwards.
+    /// Because it calls the production function (not a private copy), removing
+    /// the guard there fails the assertions below.
+    async fn forwarded_lines(input: &[u8]) -> Vec<Vec<u8>> {
+        let mut reader = tokio::io::BufReader::new(input).take(MAX_LOG_LINE_BYTES as u64);
+        let mut forwarded = Vec::new();
+        let mut finished = false;
+        while !finished {
+            let mut raw = Vec::new();
+            finished = read_capped_line(&mut reader, &mut raw).await.unwrap();
+            if let Some(raw) = super::line_to_forward(raw) {
+                forwarded.push(raw);
+            }
+        }
+        forwarded
+    }
+
+    #[tokio::test]
+    async fn empty_eof_read_is_not_forwarded() {
+        // Normal case: output ends in a newline. The trailing EOF read is
+        // empty and must not be forwarded as a spurious empty log line
+        // (dora-rs/dora#3228).
+        assert_eq!(
+            forwarded_lines(b"line1\nline2\n").await,
+            vec![b"line1\n".to_vec(), b"line2\n".to_vec()]
+        );
+        // A node that prints nothing at all forwards no line.
+        assert!(forwarded_lines(b"").await.is_empty());
+        // A genuine blank line ("\n") is non-empty `raw`, so it is preserved.
+        assert_eq!(forwarded_lines(b"\n").await, vec![b"\n".to_vec()]);
     }
 
     #[tokio::test]

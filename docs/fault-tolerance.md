@@ -7,7 +7,7 @@ Dora provides built-in fault tolerance for robotic and AI dataflows. Nodes can a
 | Feature | Scope | Config |
 |---------|-------|--------|
 | Restart policies | Per-node | `restart_policy`, `max_restarts`, `restart_delay`, ... |
-| Health monitoring | Per-node | `health_check_timeout`, `health_check_interval` (dataflow-level) |
+| Health monitoring | Per-node | `health_check_timeout`, `startup_timeout`, `health_check_interval` (dataflow-level) |
 | Input timeouts | Per-input | `input_timeout` |
 | Circuit breaker | Automatic | Triggered by `input_timeout`, auto-recovers |
 | NodeRestarted event | Downstream nodes | Automatic when upstream restarts |
@@ -160,10 +160,29 @@ unescapable restart loop.
 
 The tradeoff is that a node that hangs **before** it ever subscribes -- a
 deadlock in import or init code that never reaches `Node::init` -- is not
-reaped by this watchdog, and the dataflow stays in its pending state waiting
-for that node. Slow-but-legitimate startup and hung startup are
-indistinguishable before the node connects, so bounding them needs a separate
-startup deadline rather than this timeout.
+reaped by `health_check_timeout`. To bound startup time and recover from
+deadlocks before initialization, set `startup_timeout`.
+
+### Startup Deadline (`startup_timeout`)
+
+While `health_check_timeout` monitors nodes after they connect, `startup_timeout`
+bounds the time from process spawn until the node connects (subscribes to events)
+with the daemon.
+
+If an unconnected node process does not connect within `startup_timeout` seconds
+after being spawned, the daemon logs a warning, SIGKILLs the process, increments
+the `startup_timeout_kills` counter, and evaluates `restart_policy`.
+
+```yaml
+nodes:
+  - id: worker
+    path: ./target/debug/worker
+    startup_timeout: 10.0       # kill if not subscribed within 10s of spawn
+    health_check_timeout: 30.0  # kill if silent for 30s after connecting
+    restart_policy: on-failure
+```
+
+Like `health_check_timeout`, `startup_timeout` is evaluated on each `health_check_interval` tick.
 
 ### What Counts as "Activity"
 
@@ -333,6 +352,7 @@ The daemon tracks fault tolerance events with atomic counters (`FaultToleranceSt
 |---------|------|-----------------|
 | `restarts` | `AtomicU64` | A node restart is initiated (in spawn lifecycle) |
 | `health_check_kills` | `AtomicU64` | A node is killed by the health check (unresponsive) |
+| `startup_timeout_kills` | `AtomicU64` | A node is killed by the startup watchdog (failed to connect before init) |
 | `input_timeouts` | `AtomicU64` | An input timeout fires (circuit breaker trips) |
 | `circuit_breaker_recoveries` | `AtomicU64` | Data arrives on a broken input (auto-recovery) |
 

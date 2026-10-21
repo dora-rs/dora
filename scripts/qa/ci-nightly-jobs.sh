@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # scripts/qa/ci-nightly-jobs.sh -- local driver for the GHA nightly jobs.
 #
-# The GHA nightly workflow (.github/workflows/nightly.yml) has 26 test jobs
+# The GHA nightly workflow (.github/workflows/nightly.yml) has 27 test jobs
 # (re-counted in #2999: the previous 23 counted neither hub-smoke nor the two
 # ros2-zenoh-* jobs, and multi-daemon-late-subscriber is new)
-# (post-#1716, plus cluster-record-replay from #2013 and kani-proofs).
+# (post-#1716, plus cluster-record-replay from #2013, kani-proofs, and
+# wheel-smoke, which has no local driver entry here -- it needs maturin and
+# two interpreters).
 # `cargo test -p dora-examples --test example-smoke` (run by qa-nightly's
 # example-smoke step)
 # covers 4 of them (smoke-suite + log-sinks + service-action + streaming).
@@ -1021,7 +1023,8 @@ EOF
 #      the deterministic fastrand::seed(42) random-value sequence committed in
 #      tests/sample-inputs/expected-outputs-rust-status-node.jsonl.
 #
-# The descriptor embedded in the .drec (DORA_RECORD_DESCRIPTOR) is the
+# The descriptor embedded in the .drec (passed to the record node as
+# DORA_RECORD_DESCRIPTOR_DEFLATE_BASE64) is the
 # deploy-free `plain.yml`, because local `dora run`/`dora replay` reject
 # `deploy`; the cluster-started descriptor is that same plain.yml
 # with `deploy.machine` injected per node. The record node is
@@ -1177,11 +1180,23 @@ EOF
   # `dora replay` runs a local single-daemon `dora run` from the deploy-free
   # descriptor stored in the .drec. The recorded source nodes (rust-node and
   # rust-status-node) are swapped for replay nodes; rust-sink reprocesses the
-  # replayed status strings. `--speed 0` replays as fast as possible. Invoked
-  # from the repo root so the replay-node binary resolves under target/debug;
-  # the run's working_dir is the .drec's parent ($WORK), so node logs land in
-  # $WORK/out/.
-  echo "=== dora replay $DREC (local single-daemon run) ==="
+  # replayed status strings. Invoked from the repo root so the replay-node
+  # binary resolves under target/debug; the run's working_dir is the .drec's
+  # parent ($WORK), so node logs land in $WORK/out/.
+  #
+  # Unpaced (`--speed 0`) on purpose: the validation below asserts that every
+  # recorded message reaches the sink, and a full-speed burst is the case
+  # that used to break that. In the 2026-09-01 nightly (dora-rs/dora#3372) 99
+  # of 100 values reached the sink while the recording and the replay node
+  # both reported a clean 100 — a drop on the direct node-to-node zenoh
+  # path, declared `CongestionControl::Drop`. #3376 worked around it by
+  # pacing the replay (`--speed 1`), which also removed the only coverage of
+  # full-speed faithfulness. Since #3429 every replayed input is a
+  # `backpressure` input, which pins its producer to the daemon path, and
+  # since #3397 the daemon path holds the producer instead of dropping when
+  # the receiver's channel is full, so a full-speed pass must be lossless —
+  # and `dora replay` now exits non-zero if the daemon dropped anything.
+  echo "=== dora replay $DREC --speed 0 (local single-daemon run) ==="
   rm -rf "$WORK/out"
   if ! timeout -k 30s 120s dora replay "$DREC" --speed 0; then
     echo "ERROR: dora replay failed or exceeded 120s"
@@ -1206,10 +1221,11 @@ EOF
   fi
 
   # Validate that the replayed random-value sequence exactly reproduces the
-  # committed seed(42) baseline. dora's transport delivers every recorded
-  # output (reliable, ordered), so the replayed sink must see the full
-  # baseline sequence in order -- any drop, reorder, or value change is a
-  # genuine record/replay regression, not expected noise.
+  # committed seed(42) baseline. dora delivers every recorded output in
+  # order, even at the unpaced `--speed 0` used above (see the note on the
+  # replay invocation), so the replayed sink must see the full baseline
+  # sequence -- any drop, reorder, or value change is a genuine record/replay
+  # regression, not expected noise.
   echo "=== validate replayed state against seed(42) baseline ==="
   local baseline="tests/sample-inputs/expected-outputs-rust-status-node.jsonl"
   if ! python3 - "$sink_log" "$baseline" <<'PY'; then

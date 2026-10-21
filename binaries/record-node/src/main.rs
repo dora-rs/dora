@@ -1,6 +1,12 @@
-use std::{collections::HashMap, fs::File, time::SystemTime};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs::File,
+    io::{Read, Write},
+    time::{Duration, Instant, SystemTime},
+};
 
 use aligned_vec::{AVec, ConstAlign};
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dora_message::{
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
@@ -40,19 +46,316 @@ fn build_reverse_map(topics_json: &str) -> eyre::Result<HashMap<String, (NodeId,
     Ok(reverse_map)
 }
 
+/// Flush the recording's `BufWriter` after this many records. Bounds crash
+/// loss by record *count* on a high-rate stream.
+const FLUSH_EVERY_N_RECORDS: u64 = 100;
+
+/// Flush the recording's `BufWriter` at least this often. Bounds crash loss by
+/// wall-clock *time*: the count bound alone lets a stream below
+/// `FLUSH_EVERY_N_RECORDS / FLUSH_INTERVAL` (~100 Hz) sit unflushed for up to
+/// `FLUSH_EVERY_N_RECORDS / rate` seconds (a 2 Hz stream ≈ 50 s), which a
+/// SIGKILL would lose. Also used as the event loop's idle poll interval so a
+/// stream that goes quiet still gets its tail flushed.
+const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Decides when to flush buffered records to disk so an abrupt termination
+/// (SIGKILL, or SIGINT/Ctrl-C without a clean `Stop`) can only lose the records
+/// written since the last flush, keeping the on-disk file within the reader's
+/// torn-tail recovery model (see `dora_recording::RecordingReader`). Two
+/// independent bounds cap the loss window: a record *count* bound and a
+/// wall-clock *time* bound. Both are enforced on the write path (in
+/// [`after_write`](Self::after_write)) so the time bound actually binds on an
+/// active stream — an idle-only timeout never fires while events keep arriving.
+/// [`on_idle`](Self::on_idle) additionally flushes the tail of a stream that has
+/// gone quiet without closing.
+///
+/// (`flush()` reaches the OS page cache, not the platter, so this bounds loss on
+/// process death — SIGKILL/SIGINT — not on power loss, which would need
+/// `sync_data`.)
+struct FlushPolicy {
+    records_since_flush: u64,
+    last_flush: Instant,
+}
+
+impl FlushPolicy {
+    fn new() -> Self {
+        Self {
+            records_since_flush: 0,
+            last_flush: Instant::now(),
+        }
+    }
+
+    /// Whether any records are buffered that a crash right now would lose.
+    fn has_buffered(&self) -> bool {
+        self.records_since_flush > 0
+    }
+
+    /// Call after each record is written. Flushes when *either* bound trips:
+    /// `FLUSH_EVERY_N_RECORDS` records have accumulated, or `FLUSH_INTERVAL` has
+    /// elapsed since the last flush. Checking the time bound here, on the write
+    /// path, is what makes it bind on an active stream.
+    fn after_write<W: Write>(&mut self, writer: &mut RecordingWriter<W>) -> eyre::Result<()> {
+        self.records_since_flush += 1;
+        if self.records_since_flush >= FLUSH_EVERY_N_RECORDS
+            || self.last_flush.elapsed() >= FLUSH_INTERVAL
+        {
+            self.flush(writer)?;
+        }
+        Ok(())
+    }
+
+    /// Call on an idle tick (no event within `FLUSH_INTERVAL`): flush anything
+    /// still buffered so a stream that goes quiet doesn't leave its last few
+    /// records unflushed indefinitely.
+    fn on_idle<W: Write>(&mut self, writer: &mut RecordingWriter<W>) -> eyre::Result<()> {
+        if self.has_buffered() {
+            self.flush(writer)?;
+        }
+        Ok(())
+    }
+
+    fn flush<W: Write>(&mut self, writer: &mut RecordingWriter<W>) -> eyre::Result<()> {
+        writer.flush()?;
+        self.records_since_flush = 0;
+        self.last_flush = Instant::now();
+        Ok(())
+    }
+}
+
 /// Nanoseconds since the Unix epoch, saturating to 0 when the wall clock reads
 /// a pre-epoch time.
 ///
 /// `SystemTime::duration_since(UNIX_EPOCH)` returns `Err` whenever the clock is
 /// set before 1970 — common on battery-less embedded/robotics hardware that
-/// boots at (or before) the epoch until NTP/GPS sync lands. This runs once per
-/// recorded message, so an `.unwrap()` here would abort the recorder mid-capture.
-/// Saturating to 0 matches the `saturating_sub` already used when computing the
-/// per-entry offset from `start_nanos`.
+/// boots at (or before) the epoch until NTP/GPS sync lands, so an `.unwrap()`
+/// here would abort the recorder at startup. Only the header's `start_nanos`
+/// uses it; entry offsets come from [`dora_recording::offset_since`].
 fn unix_nanos(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
+}
+
+/// Running total of messages the node API dropped before the writer saw them.
+///
+/// Recorded messages can be lost in two places the recorder cannot control: the
+/// scheduler's per-input queue, and the shared zenoh ingress channel that
+/// zero-copy payloads arrive on. `EventStream::drain_drop_counts` reports both,
+/// but it *resets on read*, so the totals have to be accumulated here or every
+/// drain but the last is forgotten.
+///
+/// Without this the run ends with a confident `Messages: N` that counts only
+/// what was written, and a short `.drec` is indistinguishable from a complete
+/// one (#3282).
+#[derive(Debug, Default)]
+struct DropTally {
+    per_input: BTreeMap<DataId, u64>,
+}
+
+impl DropTally {
+    /// Fold one `drain_drop_counts()` result into the running total.
+    fn absorb(&mut self, counts: HashMap<DataId, u64>) {
+        for (id, n) in counts {
+            *self.per_input.entry(id).or_insert(0) += n;
+        }
+    }
+
+    /// Drops on ids the recorder actually writes, i.e. the ones that make the
+    /// `.drec` short.
+    ///
+    /// Anything else the scheduler counted — most often its single
+    /// `dora.non_input_event` bucket for control events — is real, but it is not
+    /// *recording* loss: those events are never written to the file. Counting
+    /// them toward completeness would report a capture that got every message as
+    /// INCOMPLETE, and point the reader at `--queue-size`, which cannot resize
+    /// that queue anyway (its cap is a node-API constant).
+    fn recorded_total(&self, reverse_map: &HashMap<String, (NodeId, DataId)>) -> u64 {
+        self.per_input
+            .iter()
+            .filter(|(id, _)| reverse_map.contains_key(&***id))
+            .map(|(_, n)| *n)
+            .sum()
+    }
+
+    /// Render the end-of-run report, or `None` when nothing was dropped.
+    ///
+    /// Recorded topics are listed by the `node/output` name the user asked for,
+    /// under the INCOMPLETE banner. Ids the recorder does not write are listed
+    /// separately, so nothing counted silently disappears but a control-event
+    /// overflow does not accuse the recording of being short.
+    fn report(&self, reverse_map: &HashMap<String, (NodeId, DataId)>) -> Option<String> {
+        use std::fmt::Write as _;
+
+        let mut recorded_lines = String::new();
+        let mut other_lines = String::new();
+        let mut recorded = 0u64;
+        for (id, n) in &self.per_input {
+            match reverse_map.get(&**id) {
+                Some((node, output)) => {
+                    recorded += n;
+                    let _ = writeln!(recorded_lines, "              {node}/{output}: {n}");
+                }
+                None => {
+                    let _ = writeln!(other_lines, "              {id}: {n}");
+                }
+            }
+        }
+        if recorded_lines.is_empty() && other_lines.is_empty() {
+            return None;
+        }
+
+        let mut out = String::new();
+        if !recorded_lines.is_empty() {
+            let _ = write!(
+                out,
+                "  WARNING:  {recorded} message(s) were dropped before reaching the recorder.\n\
+                 \x20           THIS RECORDING IS INCOMPLETE.\n{recorded_lines}\
+                 \x20           Raise the recorder's queue depth with \
+                 `dora record --queue-size <N>`.\n"
+            );
+        }
+        if !other_lines.is_empty() {
+            let _ = write!(
+                out,
+                "  NOTE:     dropped events the recorder does not write (no recorded \
+                 messages lost):\n{other_lines}"
+            );
+        }
+        Some(out)
+    }
+}
+
+/// Everything the end-of-run report is built from: queue/ingress drops
+/// ([`DropTally`]), the number of frames skipped for exceeding the per-record
+/// size limit, and the number of records written. Owning all three in one place
+/// lets [`is_incomplete`](Self::is_incomplete) and the [`report`](Self::report)
+/// text be unit-tested directly, rather than only through `main`'s event loop —
+/// the report headline, the drop breakdown and the oversized warning are then
+/// pinned the same way `DropTally`'s report already is.
+#[derive(Debug, Default)]
+struct RunSummary {
+    drops: DropTally,
+    oversized_dropped: u64,
+    msg_count: u64,
+}
+
+impl RunSummary {
+    /// One record was written to the file.
+    fn note_written(&mut self) {
+        self.msg_count += 1;
+    }
+
+    /// One frame was skipped for exceeding `MAX_RECORD_BYTES`. Counted apart
+    /// from queue drops because no `--queue-size` can rescue it.
+    fn note_oversized(&mut self) {
+        self.oversized_dropped += 1;
+    }
+
+    /// Whether the capture fell short of the source stream — a drop on an id the
+    /// recorder writes, or a skipped oversized frame. Either leaves the `.drec`
+    /// incomplete.
+    fn is_incomplete(&self, reverse_map: &HashMap<String, (NodeId, DataId)>) -> bool {
+        self.drops.recorded_total(reverse_map) > 0 || self.oversized_dropped > 0
+    }
+
+    /// The full end-of-run report printed to stderr: the completeness headline,
+    /// the `Messages`/`Bytes`/`File` lines, the per-topic drop breakdown, and a
+    /// warning for any oversized frames that were skipped (with the reminder
+    /// that `--queue-size` cannot help). Built as one string so its exact
+    /// wording — including the INCOMPLETE-vs-clean headline — stays under test.
+    fn report(
+        &self,
+        reverse_map: &HashMap<String, (NodeId, DataId)>,
+        total_bytes: u64,
+        output_file: &str,
+    ) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        if self.is_incomplete(reverse_map) {
+            out.push_str("dora-record-node: recording finished INCOMPLETE\n");
+        } else {
+            out.push_str("dora-record-node: recording finished, no dropped messages detected\n");
+        }
+        let _ = writeln!(out, "  Messages: {}", self.msg_count);
+        let _ = writeln!(out, "  Bytes:    {total_bytes}");
+        let _ = writeln!(out, "  File:     {output_file}");
+        if let Some(report) = self.drops.report(reverse_map) {
+            out.push_str(&report);
+        }
+        if self.oversized_dropped > 0 {
+            let _ = writeln!(
+                out,
+                "  WARNING:  {} message(s) exceeded the per-record size limit and were \
+                 skipped.\n\
+                 \x20           THIS RECORDING IS INCOMPLETE. Such frames cannot be recorded in \
+                 the `.drec` format regardless of `--queue-size`.",
+                self.oversized_dropped
+            );
+        }
+        out
+    }
+}
+
+/// Write one entry, skipping it when it exceeds `MAX_RECORD_BYTES`. Returns the
+/// skipped frame's encoded length (`Some`) so the caller can warn about it with
+/// context, or `None` once the entry was written. Updates `summary` either way
+/// — the written count or the oversized count — so the same counting path
+/// `main` relies on is exercised directly by tests. Genuine I/O errors
+/// propagate.
+fn record_entry<W: Write>(
+    writer: &mut RecordingWriter<W>,
+    entry: &RecordEntry,
+    summary: &mut RunSummary,
+) -> eyre::Result<Option<usize>> {
+    match writer.write_entry_skip_oversized(entry)? {
+        Some(oversized_len) => {
+            summary.note_oversized();
+            Ok(Some(oversized_len))
+        }
+        None => {
+            summary.note_written();
+            Ok(None)
+        }
+    }
+}
+
+/// The original descriptor YAML, from [`dora_recording::DESCRIPTOR_ENV`]
+/// (compressed and base64-encoded, because `env:` values are `$VAR`-expanded
+/// on the way here) or, from an older CLI, the raw
+/// [`dora_recording::LEGACY_DESCRIPTOR_ENV`].
+fn descriptor_from_env(var: impl Fn(&str) -> Option<String>) -> eyre::Result<Vec<u8>> {
+    use dora_recording::{DESCRIPTOR_ENV, LEGACY_DESCRIPTOR_ENV};
+    match var(DESCRIPTOR_ENV) {
+        Some(encoded) => {
+            let compressed = BASE64_STANDARD
+                .decode(encoded)
+                .wrap_err_with(|| format!("{DESCRIPTOR_ENV} is not valid base64"))?;
+            let mut yaml = Vec::new();
+            flate2::read::DeflateDecoder::new(compressed.as_slice())
+                .read_to_end(&mut yaml)
+                .wrap_err_with(|| format!("{DESCRIPTOR_ENV} is not a valid deflate stream"))?;
+            Ok(yaml)
+        }
+        None => Ok(var(LEGACY_DESCRIPTOR_ENV).unwrap_or_default().into_bytes()),
+    }
+}
+
+/// The header of the recording `node` makes.
+///
+/// It carries the id of the dataflow `node` runs in, which is the one being
+/// recorded, as `dora record --proxy` does, so `dora recording export` names
+/// a dataflow `dora list` knows.
+fn recording_header(
+    node: &DoraNode,
+    start_nanos: u64,
+    descriptor_yaml: Vec<u8>,
+) -> RecordingHeader {
+    RecordingHeader {
+        version: dora_recording::FORMAT_VERSION,
+        start_nanos,
+        dataflow_id: *node.dataflow_id(),
+        descriptor_yaml,
+    }
 }
 
 fn main() -> eyre::Result<()> {
@@ -60,30 +363,48 @@ fn main() -> eyre::Result<()> {
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
     let topics_json =
         std::env::var("DORA_RECORD_TOPICS").wrap_err("DORA_RECORD_TOPICS env var not set")?;
-    let descriptor_yaml = std::env::var("DORA_RECORD_DESCRIPTOR").unwrap_or_default();
+    let descriptor_yaml = descriptor_from_env(|name| std::env::var(name).ok())?;
 
     // Build reverse map: input_id -> (source_node_id, source_output_id).
     let reverse_map = build_reverse_map(&topics_json)?;
 
-    let (_node, mut events) = DoraNode::init_from_env()?;
+    let (node, mut events) = DoraNode::init_from_env()?;
 
+    // The header keeps the wall-clock start (it says *when* the capture
+    // began); entry offsets use this monotonic base instead (see
+    // `dora_recording::offset_since`).
     let start_nanos = unix_nanos(SystemTime::now());
+    let start = Instant::now();
 
-    let header = RecordingHeader {
-        version: dora_recording::FORMAT_VERSION,
-        start_nanos,
-        dataflow_id: uuid::Uuid::new_v4(),
-        descriptor_yaml: descriptor_yaml.into_bytes(),
-    };
+    let header = recording_header(&node, start_nanos, descriptor_yaml);
 
     let file =
         File::create(&output_file).wrap_err_with(|| format!("failed to create {output_file}"))?;
     let mut writer = RecordingWriter::new(file, &header)?;
-    let mut msg_count: u64 = 0;
+    let mut flush_policy = FlushPolicy::new();
+    // Queue/ingress drops, oversized skips, and the written-record count — the
+    // data the end-of-run report is built from. See the write site below for why
+    // an oversized skip is tracked apart from queue drops (no queue depth fixes
+    // it).
+    let mut summary = RunSummary::default();
+    let mut warned_about_drops = false;
+    let mut warned_about_oversized = false;
 
     eprintln!("dora-record-node: recording to {output_file}");
 
-    while let Some(event) = events.recv() {
+    loop {
+        // Only arm the idle-flush timer when records are buffered that a crash
+        // would lose; when everything is already flushed there is nothing to
+        // rescue on a timeout, so block on `recv()` and pay no per-event timer
+        // setup. `recv_timeout` returns `None` only on stream close and yields
+        // `Event::Error` on an idle timeout, which falls through to the `_` arm
+        // and drives a time-based flush of the buffered tail.
+        let event = if flush_policy.has_buffered() {
+            events.recv_timeout(FLUSH_INTERVAL)
+        } else {
+            events.recv()
+        };
+        let Some(event) = event else { break };
         match event {
             Event::Input { id, metadata, data } => {
                 let (source_node, source_output) = match reverse_map.get(&*id) {
@@ -151,35 +472,358 @@ fn main() -> eyre::Result<()> {
                 };
                 let event_bytes = timestamped.serialize()?;
 
-                let now_nanos = unix_nanos(SystemTime::now());
-
                 let entry = RecordEntry {
                     node_id: source_node.to_string(),
                     output_id: source_output.to_string(),
-                    timestamp_offset_nanos: now_nanos.saturating_sub(start_nanos),
+                    timestamp_offset_nanos: dora_recording::offset_since(start),
                     event_bytes,
                 };
-                writer.write_entry(&entry)?;
-                msg_count += 1;
+                // A recorder attaches to a live dataflow whose direct
+                // node-to-node zero-copy path has no per-message size cap (unlike
+                // the 64 MiB daemon transport limit). A single frame larger than
+                // the recording format's `MAX_RECORD_BYTES` — a big image or point
+                // cloud — must not abort a capture that is otherwise succeeding, so
+                // skip it and note the recording is incomplete rather than
+                // propagating the error out of `main` (which would lose every
+                // later message too). Genuine I/O errors still propagate.
+                if let Some(oversized_len) = record_entry(&mut writer, &entry, &mut summary)? {
+                    if !warned_about_oversized {
+                        warned_about_oversized = true;
+                        eprintln!(
+                            "dora-record-node: WARNING: skipping a {oversized_len}-byte message \
+                             from {source_node}/{source_output} that exceeds the per-record \
+                             limit — this recording will be incomplete."
+                        );
+                    }
+                    continue;
+                }
+                flush_policy.after_write(&mut writer)?;
+
+                // Poll for drops periodically rather than per event. The final
+                // drain after the loop is what makes the totals exact; this
+                // exists only so a multi-hour capture says something before it
+                // ends.
+                if summary.msg_count.is_multiple_of(FLUSH_EVERY_N_RECORDS) {
+                    summary.drops.absorb(events.drain_drop_counts());
+                    if !warned_about_drops && summary.drops.recorded_total(&reverse_map) > 0 {
+                        warned_about_drops = true;
+                        eprintln!(
+                            "dora-record-node: WARNING: dropping messages — this recording \
+                             will be incomplete. Raise `dora record --queue-size <N>`."
+                        );
+                    }
+                }
             }
-            Event::Stop(_) => break,
-            _ => {}
+            // `Event::Stop` is deliberately NOT a `break`. The node API gives
+            // `Stop` strict priority over inputs that were already queued behind
+            // it and re-delivers those inputs on the following `recv()`s before
+            // closing (see `EventStream` docs and the
+            // `recv_drains_buffered_scheduler_inputs_after_stop` test). Breaking
+            // here would drop that tail of already-produced messages — exactly
+            // what a recorder must not do. Falling through records nothing for
+            // the Stop itself but flushes the buffered tail; the stream then
+            // drains its queued inputs and returns `None`, ending the loop.
+            //
+            // The same `_` arm handles an idle-timeout tick and any other
+            // ignored control event: flush the buffered records so the
+            // durability window stays time-bounded.
+            _ => flush_policy.on_idle(&mut writer)?,
         }
     }
 
+    // Final drain: everything dropped since the last flush boundary, plus any
+    // drop on a run too short to have flushed at all.
+    summary.drops.absorb(events.drain_drop_counts());
+
     let footer = writer.finish()?;
-    eprintln!("dora-record-node: recording complete");
-    eprintln!("  Messages: {msg_count}");
-    eprintln!("  Bytes:    {}", footer.total_bytes);
-    eprintln!("  File:     {output_file}");
+    // Claim only what was measured. `Messages:` counts what was written, so on
+    // its own it reads as a confident total even for a truncated capture — but
+    // "complete" would overclaim in the other direction: the producer's direct
+    // zenoh publisher is declared `CongestionControl::Drop`, so a message can
+    // be discarded in zenoh's egress and never reach this node's counters at
+    // all. Zero drops here means "nothing was dropped on any path this node can
+    // see", which is the honest statement.
+    eprint!(
+        "{}",
+        summary.report(&reverse_map, footer.total_bytes, &output_file)
+    );
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_reverse_map, unix_nanos};
-    use std::time::{Duration, SystemTime};
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[test]
+    fn recording_header_carries_the_recorded_dataflow_id() {
+        use dora_node_api::integration_testing::{
+            IntegrationTestInput, TestingInput, TestingOptions, TestingOutput, output_channel,
+        };
+        let (output, _outputs) = output_channel();
+        let (node, _events) = DoraNode::init_testing(
+            TestingInput::Input(IntegrationTestInput::new(
+                "record".parse().unwrap(),
+                Vec::new(),
+            )),
+            TestingOutput::ToChannel(output),
+            TestingOptions::default(),
+        )
+        .unwrap();
+        let dataflow_id = *node.dataflow_id();
+        let header = recording_header(&node, 42, b"nodes: []".to_vec());
+
+        let mut buf = Vec::new();
+        RecordingWriter::new(&mut buf, &header).unwrap();
+        let reader = dora_recording::RecordingReader::open(std::io::Cursor::new(buf)).unwrap();
+
+        assert_eq!(reader.header().dataflow_id, dataflow_id);
+        assert_eq!(reader.header().start_nanos, 42);
+        assert_eq!(reader.header().descriptor_yaml, b"nodes: []");
+    }
+
+    // ---- #3282: an incomplete recording must say so ----
+
+    fn tally_with(counts: &[(&str, u64)]) -> DropTally {
+        let mut tally = DropTally::default();
+        tally.absorb(
+            counts
+                .iter()
+                .map(|(id, n)| (DataId::from((*id).to_string()), *n))
+                .collect(),
+        );
+        tally
+    }
+
+    fn camera_lidar_map() -> HashMap<String, (NodeId, DataId)> {
+        HashMap::from([
+            (
+                "camera___image".to_string(),
+                ("camera".parse().unwrap(), "image".parse().unwrap()),
+            ),
+            (
+                "lidar___points".to_string(),
+                ("lidar".parse().unwrap(), "points".parse().unwrap()),
+            ),
+        ])
+    }
+
+    #[test]
+    fn a_clean_run_reports_nothing() {
+        assert!(DropTally::default().report(&camera_lidar_map()).is_none());
+    }
+
+    // A frame one byte past the per-record size limit must be skipped.
+    const OVER_LIMIT_PAYLOAD: usize = dora_recording::MAX_RECORD_BYTES + 1;
+
+    fn writer_over_vec() -> RecordingWriter<Vec<u8>> {
+        let header = RecordingHeader {
+            version: dora_recording::FORMAT_VERSION,
+            start_nanos: 0,
+            dataflow_id: uuid::Uuid::nil(),
+            descriptor_yaml: Vec::new(),
+        };
+        RecordingWriter::new(Vec::new(), &header).expect("in-memory writer")
+    }
+
+    fn entry(node: &str, output: &str, payload: Vec<u8>) -> RecordEntry {
+        RecordEntry {
+            node_id: node.to_string(),
+            output_id: output.to_string(),
+            timestamp_offset_nanos: 0,
+            event_bytes: payload,
+        }
+    }
+
+    #[test]
+    fn record_entry_counts_written_and_oversized_frames_separately() {
+        // Drives the same write path `main` uses, so the counting — not just the
+        // helpers — is under test: a written frame bumps `msg_count`, an
+        // oversized one bumps `oversized_dropped` and writes nothing.
+        let mut writer = writer_over_vec();
+        let mut summary = RunSummary::default();
+
+        assert_eq!(
+            record_entry(
+                &mut writer,
+                &entry("camera", "image", vec![1, 2, 3]),
+                &mut summary
+            )
+            .unwrap(),
+            None,
+        );
+        assert_eq!(summary.msg_count, 1);
+        assert_eq!(summary.oversized_dropped, 0);
+
+        let big = entry("camera", "image", vec![0u8; OVER_LIMIT_PAYLOAD]);
+        assert_eq!(
+            record_entry(&mut writer, &big, &mut summary).unwrap(),
+            Some(big.encoded_len()),
+        );
+        assert_eq!(
+            summary.msg_count, 1,
+            "an oversized frame must not count as written"
+        );
+        assert_eq!(summary.oversized_dropped, 1);
+    }
+
+    #[test]
+    fn report_is_clean_when_nothing_was_lost() {
+        let summary = RunSummary {
+            msg_count: 5,
+            ..Default::default()
+        };
+        let report = summary.report(&camera_lidar_map(), 1234, "out.drec");
+        assert!(
+            report.contains("no dropped messages detected"),
+            "got: {report}"
+        );
+        assert!(!report.contains("INCOMPLETE"), "got: {report}");
+        assert!(!report.contains("WARNING"), "got: {report}");
+        assert!(report.contains("Messages: 5"), "got: {report}");
+        assert!(report.contains("Bytes:    1234"), "got: {report}");
+        assert!(report.contains("out.drec"), "got: {report}");
+    }
+
+    #[test]
+    fn report_flags_incomplete_and_warns_for_an_oversized_only_run() {
+        // Zero queue drops, one oversized skip: the report `main` actually prints
+        // must still say INCOMPLETE and carry the oversized warning. A test of a
+        // pure `a > 0 || b > 0` helper would pass even if `main` never wired the
+        // count in — this asserts the rendered output instead.
+        let mut summary = RunSummary {
+            msg_count: 2,
+            ..Default::default()
+        };
+        summary.note_oversized();
+        let report = summary.report(&camera_lidar_map(), 0, "out.drec");
+        assert!(
+            report.contains("recording finished INCOMPLETE"),
+            "got: {report}"
+        );
+        assert!(
+            !report.contains("no dropped messages detected"),
+            "got: {report}"
+        );
+        assert!(
+            report.contains("1 message(s) exceeded the per-record size limit"),
+            "got: {report}"
+        );
+        // The reader must not be pointed at `--queue-size`, which cannot resize
+        // the hard per-record cap.
+        assert!(
+            report.contains("regardless of `--queue-size`"),
+            "got: {report}"
+        );
+    }
+
+    #[test]
+    fn report_flags_incomplete_on_recorded_drops_without_an_oversized_warning() {
+        let mut summary = RunSummary {
+            msg_count: 3,
+            ..Default::default()
+        };
+        summary.drops.absorb(HashMap::from([(
+            DataId::from("camera___image".to_string()),
+            4,
+        )]));
+        let report = summary.report(&camera_lidar_map(), 0, "out.drec");
+        assert!(
+            report.contains("recording finished INCOMPLETE"),
+            "got: {report}"
+        );
+        // The drop breakdown names the source topic, not the mangled input id.
+        assert!(report.contains("camera/image"), "got: {report}");
+        // No oversized frames, so no per-record-limit warning.
+        assert!(!report.contains("per-record size limit"), "got: {report}");
+    }
+
+    #[test]
+    fn drops_accumulate_across_drains() {
+        // `drain_drop_counts` resets on read, so the recorder has to keep the
+        // running total itself or every drain but the last is forgotten.
+        let mut tally = tally_with(&[("camera___image", 3)]);
+        tally.absorb(HashMap::from([(
+            DataId::from("camera___image".to_string()),
+            4,
+        )]));
+        assert_eq!(tally.per_input.values().sum::<u64>(), 7);
+    }
+
+    #[test]
+    fn report_names_the_source_topic_not_the_mangled_input_id() {
+        // The user asked to record `camera/image`; `camera___image` is our
+        // internal encoding and means nothing to them.
+        let tally = tally_with(&[("camera___image", 193)]);
+        let report = tally
+            .report(&camera_lidar_map())
+            .expect("drops must report");
+
+        assert!(report.contains("camera/image: 193"), "got: {report}");
+        assert!(!report.contains("camera___image"), "got: {report}");
+        assert!(
+            report.contains("INCOMPLETE"),
+            "the report must say the recording is incomplete: {report}"
+        );
+    }
+
+    #[test]
+    fn report_lists_every_affected_topic() {
+        let tally = tally_with(&[("camera___image", 2), ("lidar___points", 5)]);
+        let report = tally
+            .report(&camera_lidar_map())
+            .expect("drops must report");
+        assert!(report.contains("camera/image: 2"), "got: {report}");
+        assert!(report.contains("lidar/points: 5"), "got: {report}");
+        assert_eq!(tally.per_input.values().sum::<u64>(), 7);
+    }
+
+    /// Control events share one scheduler queue (`dora.non_input_event`) whose
+    /// cap is a node-API constant. Overflowing it is real, but the recorder
+    /// never writes those events, so the `.drec` is not short — and
+    /// `--queue-size` cannot resize that queue. Report it, but do not call the
+    /// recording incomplete over it.
+    #[test]
+    fn control_event_drops_do_not_make_the_recording_incomplete() {
+        let tally = tally_with(&[("dora.non_input_event", 1)]);
+        let map = camera_lidar_map();
+
+        assert_eq!(tally.per_input.values().sum::<u64>(), 1);
+        assert_eq!(tally.recorded_total(&map), 0);
+
+        let report = tally.report(&map).expect("the drop must still be reported");
+        assert!(report.contains("dora.non_input_event: 1"), "got: {report}");
+        assert!(
+            !report.contains("INCOMPLETE"),
+            "a control-event drop must not accuse the recording: {report}"
+        );
+        assert!(
+            !report.contains("--queue-size"),
+            "must not advise a flag that cannot affect the control queue: {report}"
+        );
+    }
+
+    /// Mixed run: recorded-topic loss drives the verdict, and the control-event
+    /// drop is still reported below it rather than folded into the headline.
+    #[test]
+    fn report_separates_recorded_loss_from_control_drops() {
+        let tally = tally_with(&[("camera___image", 7), ("dora.non_input_event", 2)]);
+        let map = camera_lidar_map();
+
+        assert_eq!(tally.per_input.values().sum::<u64>(), 9);
+        assert_eq!(tally.recorded_total(&map), 7);
+
+        let report = tally.report(&map).expect("drops must report");
+        assert!(
+            report.contains("7 message(s) were dropped"),
+            "the headline counts recorded loss only: {report}"
+        );
+        assert!(report.contains("INCOMPLETE"), "got: {report}");
+        assert!(report.contains("camera/image: 7"), "got: {report}");
+        assert!(report.contains("dora.non_input_event: 2"), "got: {report}");
+    }
 
     #[test]
     fn unix_nanos_saturates_on_pre_epoch_clock() {
@@ -225,6 +869,205 @@ mod tests {
         assert!(
             format!("{err:#}").contains("invalid source output id"),
             "unexpected error: {err:#}"
+        );
+    }
+
+    /// A `Write` sink that records how many bytes have actually reached it.
+    /// `RecordingWriter` buffers through a `BufWriter`, so bytes land here only
+    /// when that buffer is flushed — letting a test observe flush behaviour
+    /// without touching the filesystem.
+    #[derive(Clone, Default)]
+    struct ProbeSink(Rc<RefCell<Vec<u8>>>);
+
+    impl std::io::Write for ProbeSink {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.borrow_mut().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl ProbeSink {
+        /// Bytes that have been flushed through to the sink so far.
+        fn flushed_len(&self) -> usize {
+            self.0.borrow().len()
+        }
+    }
+
+    fn test_writer() -> (ProbeSink, RecordingWriter<ProbeSink>) {
+        let sink = ProbeSink::default();
+        let header = RecordingHeader {
+            version: dora_recording::FORMAT_VERSION,
+            start_nanos: 0,
+            dataflow_id: uuid::Uuid::nil(),
+            descriptor_yaml: Vec::new(),
+        };
+        let writer = RecordingWriter::new(sink.clone(), &header).expect("build writer");
+        (sink, writer)
+    }
+
+    fn sample_entry() -> RecordEntry {
+        RecordEntry {
+            node_id: "src".to_string(),
+            output_id: "out".to_string(),
+            timestamp_offset_nanos: 0,
+            event_bytes: vec![1, 2, 3, 4],
+        }
+    }
+
+    #[test]
+    fn records_below_both_bounds_stay_buffered() {
+        // A handful of records written back-to-back: below the count bound, and
+        // `last_flush.elapsed()` is far below `FLUSH_INTERVAL`, so neither bound
+        // trips and nothing reaches the sink yet. (This is the lower edge the
+        // count bound is supposed to hold; the time-bound and idle tests below
+        // pin what rescues these records before a crash.)
+        let (sink, mut writer) = test_writer();
+        let mut policy = FlushPolicy::new();
+        for _ in 0..3 {
+            writer.write_entry(&sample_entry()).unwrap();
+            policy.after_write(&mut writer).unwrap();
+        }
+        assert_eq!(
+            sink.flushed_len(),
+            0,
+            "records below both bounds must remain buffered (unflushed)"
+        );
+    }
+
+    #[test]
+    fn time_bound_flushes_on_the_write_path_below_the_count_bound() {
+        // The core of the fix: on a stream faster than 1 Hz the idle timeout
+        // never fires, so the time bound must bind on the *write* path. Backdate
+        // `last_flush` past `FLUSH_INTERVAL`, then write a single record (well
+        // under the count bound): `after_write` must flush it. Without the
+        // write-path time check (count bound only) this record would sit
+        // buffered and a SIGKILL would lose it.
+        let (sink, mut writer) = test_writer();
+        let mut policy = FlushPolicy::new();
+        policy.last_flush = Instant::now()
+            .checked_sub(FLUSH_INTERVAL + Duration::from_millis(50))
+            .expect("monotonic clock is younger than FLUSH_INTERVAL");
+
+        writer.write_entry(&sample_entry()).unwrap();
+        policy.after_write(&mut writer).unwrap();
+
+        assert!(
+            sink.flushed_len() > 0,
+            "the elapsed time bound must flush on the write path, below the count bound"
+        );
+        assert_eq!(
+            policy.records_since_flush, 0,
+            "flush must reset the record counter"
+        );
+    }
+
+    #[test]
+    fn idle_tick_flushes_records_the_count_bound_would_hold() {
+        let (sink, mut writer) = test_writer();
+        let mut policy = FlushPolicy::new();
+        for _ in 0..3 {
+            writer.write_entry(&sample_entry()).unwrap();
+            policy.after_write(&mut writer).unwrap();
+        }
+        assert_eq!(sink.flushed_len(), 0, "precondition: still buffered");
+
+        // The idle tick (what the event loop drives on a `recv_timeout` timeout)
+        // must push the buffered records to the sink.
+        policy.on_idle(&mut writer).unwrap();
+        assert!(
+            sink.flushed_len() > 0,
+            "idle flush must persist buffered records so a slow stream is time-bounded"
+        );
+
+        // A second idle tick with nothing buffered must not re-flush.
+        let after_first = sink.flushed_len();
+        policy.on_idle(&mut writer).unwrap();
+        assert_eq!(
+            sink.flushed_len(),
+            after_first,
+            "idle flush with nothing buffered must be a no-op"
+        );
+    }
+
+    #[test]
+    fn count_bound_flushes_every_n_records() {
+        let (sink, mut writer) = test_writer();
+        let mut policy = FlushPolicy::new();
+
+        // One short of the count bound. The writes run back-to-back, so
+        // `last_flush.elapsed()` stays far below `FLUSH_INTERVAL` and the time
+        // bound does not fire; the 99 × ~30-byte records also stay well under
+        // `BufWriter`'s 8 KiB default, so none reach the sink on their own.
+        for _ in 0..(FLUSH_EVERY_N_RECORDS - 1) {
+            writer.write_entry(&sample_entry()).unwrap();
+            policy.after_write(&mut writer).unwrap();
+        }
+        assert_eq!(
+            policy.records_since_flush,
+            FLUSH_EVERY_N_RECORDS - 1,
+            "no flush before {FLUSH_EVERY_N_RECORDS} records"
+        );
+        assert_eq!(
+            sink.flushed_len(),
+            0,
+            "must not flush before {FLUSH_EVERY_N_RECORDS} records"
+        );
+
+        // The Nth record trips the count bound.
+        writer.write_entry(&sample_entry()).unwrap();
+        policy.after_write(&mut writer).unwrap();
+        assert_eq!(
+            policy.records_since_flush, 0,
+            "count bound must reset the counter on the {FLUSH_EVERY_N_RECORDS}th record"
+        );
+        assert!(
+            sink.flushed_len() > 0,
+            "count bound must flush every {FLUSH_EVERY_N_RECORDS} records"
+        );
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let pairs: BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name| pairs.get(name).cloned()
+    }
+
+    #[test]
+    fn descriptor_prefers_the_encoded_variable() {
+        let mut deflate = flate2::write::DeflateEncoder::new(Vec::new(), Default::default());
+        deflate.write_all(b"a: $X").unwrap();
+        let encoded = BASE64_STANDARD.encode(deflate.finish().unwrap());
+        let descriptor = descriptor_from_env(vars(&[
+            (dora_recording::DESCRIPTOR_ENV, &encoded),
+            (dora_recording::LEGACY_DESCRIPTOR_ENV, "stale"),
+        ]))
+        .unwrap();
+        assert_eq!(descriptor, b"a: $X");
+    }
+
+    #[test]
+    fn descriptor_falls_back_to_the_raw_variable_of_an_older_cli() {
+        let descriptor = descriptor_from_env(vars(&[(
+            dora_recording::LEGACY_DESCRIPTOR_ENV,
+            "nodes: []",
+        )]))
+        .unwrap();
+        assert_eq!(descriptor, b"nodes: []");
+        assert!(descriptor_from_env(vars(&[])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_base64_descriptor_is_an_error() {
+        let err = descriptor_from_env(vars(&[(dora_recording::DESCRIPTOR_ENV, "not base64!")]))
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains(dora_recording::DESCRIPTOR_ENV),
+            "{err:#}"
         );
     }
 }

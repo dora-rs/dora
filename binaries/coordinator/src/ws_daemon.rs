@@ -23,6 +23,7 @@ use uuid::Uuid;
 pub(crate) async fn handle_daemon_ws(
     socket: WebSocket,
     event_tx: mpsc::Sender<Event>,
+    topic_debug_tx: mpsc::Sender<Event>,
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
     peer_addr: std::net::SocketAddr,
@@ -40,6 +41,7 @@ pub(crate) async fn handle_daemon_ws(
     // Track daemon_id and connection_id from incoming events for cleanup on disconnect
     let mut tracked_daemon_id: Option<DaemonId> = None;
     let mut tracked_connection_id: Option<Uuid> = None;
+    let mut dropped_debug_frames = DroppedDebugFrames::default();
 
     loop {
         tokio::select! {
@@ -78,6 +80,8 @@ pub(crate) async fn handle_daemon_ws(
                     if !handle_daemon_request(
                         &text,
                         &event_tx,
+                        &topic_debug_tx,
+                        &mut dropped_debug_frames,
                         &clock,
                         &cmd_tx,
                         &pending_replies,
@@ -119,6 +123,57 @@ pub(crate) async fn handle_daemon_ws(
     }
 }
 
+/// Hand a daemon event to the main loop. Returns false if the connection
+/// should close, on its channel closing.
+///
+/// A topic debug frame goes on its own channel and is dropped if that is full,
+/// never waited for: waiting would stop this connection from reading the
+/// socket, the daemon's next stop reply included, whenever the main loop falls
+/// behind (dora-rs/dora#3535).
+async fn forward_daemon_event(
+    event: Event,
+    event_tx: &mpsc::Sender<Event>,
+    topic_debug_tx: &mpsc::Sender<Event>,
+    dropped_debug_frames: &mut DroppedDebugFrames,
+) -> bool {
+    match event {
+        Event::TopicDebugData { .. } => match topic_debug_tx.try_send(event) {
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                dropped_debug_frames.record();
+                true
+            }
+            result => result.is_ok(),
+        },
+        event => event_tx.send(event).await.is_ok(),
+    }
+}
+
+/// Topic debug frames a daemon connection had to drop, warned about at most
+/// once per interval with the count since the last warning.
+#[derive(Default)]
+struct DroppedDebugFrames {
+    count: u64,
+    last_log: Option<std::time::Instant>,
+}
+
+impl DroppedDebugFrames {
+    fn record(&mut self) {
+        self.count += 1;
+        let now = std::time::Instant::now();
+        if self
+            .last_log
+            .is_none_or(|last| now - last >= std::time::Duration::from_secs(5))
+        {
+            tracing::warn!(
+                "dropped {} topic debug frame(s): the coordinator's topic debug queue is full",
+                self.count,
+            );
+            self.count = 0;
+            self.last_log = Some(now);
+        }
+    }
+}
+
 /// A helper struct to deserialize `Timestamped<CoordinatorRequest>` directly
 /// from the raw JSON text, so the payload is parsed once into its real type
 /// instead of going through the `serde_json::Value` used for routing.
@@ -132,11 +187,14 @@ struct DaemonWsRequestRaw {
     >,
 }
 
-/// Handle a daemon request (event or register). Returns false if the event channel closed.
+/// Handle a daemon request (event or register). Returns false if the channel
+/// it belongs on closed: the shared event one, or the topic debug one.
 #[allow(clippy::too_many_arguments)]
 async fn handle_daemon_request(
     raw_text: &str,
     event_tx: &mpsc::Sender<Event>,
+    topic_debug_tx: &mpsc::Sender<Event>,
+    dropped_debug_frames: &mut DroppedDebugFrames,
     clock: &HLC,
     cmd_tx: &mpsc::Sender<String>,
     pending_replies: &Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
@@ -182,12 +240,21 @@ async fn handle_daemon_request(
             let version_check_result = register_request.check_version();
             // capture before the partial moves below consume `register_request`
             let supports_hub_sources = register_request.supports_hub_sources();
+            let zenoh_listen_endpoint = accept_reported_zenoh_endpoint(
+                register_request.zenoh_listen_endpoint,
+                register_request.zenoh_loopback_listen_endpoint,
+                "registering",
+            );
             let labels = register_request.labels;
             let machine_id = register_request.machine_id;
             let mut connection =
                 DaemonConnection::new(cmd_tx.clone(), pending_replies.clone(), labels.clone());
             connection.supports_hub_sources = supports_hub_sources;
             connection.peer_addr = Some(peer_addr);
+            // Recorded here, so it is on the connection before it is added to
+            // the registry — the next daemon's register reply, built later on
+            // the same serial event loop, therefore already contains it.
+            connection.zenoh_listen_endpoint = zenoh_listen_endpoint;
             // Capture the connection_id before moving `connection` into the event.
             let connection_id = connection.connection_id;
             let (daemon_id_tx, daemon_id_rx) = oneshot::channel();
@@ -227,7 +294,13 @@ async fn handle_daemon_request(
             let connection_id = tracked_connection_id.unwrap_or_else(Uuid::new_v4);
             if let Some(coordinator_event) = translate_daemon_event(daemon_id, event, connection_id)
             {
-                event_tx.send(coordinator_event).await.is_ok()
+                forward_daemon_event(
+                    coordinator_event,
+                    event_tx,
+                    topic_debug_tx,
+                    dropped_debug_frames,
+                )
+                .await
             } else {
                 true
             }
@@ -288,6 +361,58 @@ async fn handle_daemon_request(
     }
 }
 
+/// Accept a zenoh endpoint a daemon reported, or drop it.
+///
+/// Both ways a daemon can report one — in its registration, and in the
+/// `ZenohListenEndpoint` correction that follows — end at the same place: the
+/// coordinator stores it and hands it to eligible daemons that register later,
+/// which puts it straight into their zenoh `connect/endpoints`. So both are
+/// checked here, through one function, rather than at each site: a daemon is
+/// not a trusted input just because it registered, and the correction exists
+/// precisely to *replace* the registered value, so validating only the
+/// registration would have left the invariant to whichever path ran last.
+///
+/// A rejected value becomes `None`, which withdraws any endpoint already on
+/// record rather than leaving a stale one standing. Withdrawal is the safe
+/// direction: the daemon simply is not dialed directly and its dataflows fall
+/// back to the daemon-forwarded path. Never fatal — the daemon is otherwise
+/// healthy, and dropping its connection over a malformed endpoint would cost
+/// far more than the direct link is worth.
+fn accept_reported_zenoh_endpoint(
+    endpoint: Option<String>,
+    loopback_endpoint: Option<String>,
+    state: &str,
+) -> Option<String> {
+    let uses_legacy_field = endpoint.is_some();
+    let has_both_fields = uses_legacy_field && loopback_endpoint.is_some();
+    let endpoint = endpoint.or(loopback_endpoint)?;
+    match dora_core::topics::validate_zenoh_endpoint(&endpoint) {
+        Ok(()) => {
+            if uses_legacy_field && dora_message::zenoh::zenoh_endpoint_is_loopback(&endpoint) {
+                // Pre-split daemons used this field for loopback too. Accept
+                // them, but make the old format visible when debugging upgrades.
+                tracing::debug!(
+                    state,
+                    %endpoint,
+                    "daemon reported a loopback zenoh address in the legacy endpoint field"
+                );
+            }
+            if has_both_fields {
+                tracing::debug!(
+                    state,
+                    %endpoint,
+                    "daemon reported both zenoh endpoint fields; preferring the legacy endpoint field"
+                );
+            }
+            Some(endpoint)
+        }
+        Err(err) => {
+            tracing::warn!("ignoring zenoh endpoint reported by {state} daemon: {err}");
+            None
+        }
+    }
+}
+
 fn translate_daemon_event(
     daemon_id: DaemonId,
     event: DaemonEvent,
@@ -314,6 +439,15 @@ fn translate_daemon_event(
         DaemonEvent::Heartbeat { ft_stats } => Some(Event::DaemonHeartbeat {
             daemon_id,
             ft_stats,
+        }),
+        DaemonEvent::ZenohListenEndpoint {
+            endpoint,
+            loopback_endpoint,
+            ..
+        } => Some(Event::DaemonZenohEndpoint {
+            daemon_id,
+            connection_id,
+            endpoint: accept_reported_zenoh_endpoint(endpoint, loopback_endpoint, "connected"),
         }),
         DaemonEvent::Log(message) => Some(Event::Log(message)),
         DaemonEvent::Exit => Some(Event::DaemonExit {
@@ -407,5 +541,138 @@ async fn handle_daemon_response(
         let _ = sender.send(result_json);
     } else {
         tracing::warn!("no pending reply for daemon WS response id {}", response.id);
+    }
+}
+
+#[cfg(test)]
+mod topic_debug_tests {
+    use super::*;
+    use futures::FutureExt;
+
+    /// Regression test for dora-rs/dora#3535: with the main loop's topic debug
+    /// channel full, a daemon connection drops the next frame instead of
+    /// waiting for room, and the daemon's control events still get through.
+    #[test]
+    fn a_full_topic_debug_channel_does_not_hold_up_control_events() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let (topic_debug_tx, mut topic_debug_rx) = mpsc::channel(1);
+        let mut dropped = DroppedDebugFrames::default();
+        let mut forward = |event| {
+            forward_daemon_event(event, &event_tx, &topic_debug_tx, &mut dropped)
+                .now_or_never()
+                .expect("a daemon connection must not wait on the main loop")
+        };
+        let debug_frame = || Event::TopicDebugData {
+            dataflow_id: Uuid::new_v4(),
+            subscription_ids: Vec::new(),
+            payload: Vec::new(),
+        };
+
+        assert!(forward(debug_frame()));
+        assert!(
+            forward(debug_frame()),
+            "dropping a frame keeps the connection"
+        );
+        assert!(forward(Event::DaemonHeartbeat {
+            daemon_id: DaemonId::new(None),
+            ft_stats: None,
+        }));
+
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(Event::DaemonHeartbeat { .. })
+        ));
+        assert!(topic_debug_rx.try_recv().is_ok());
+        assert!(
+            topic_debug_rx.try_recv().is_err(),
+            "the second frame is dropped"
+        );
+    }
+}
+
+#[cfg(test)]
+mod reported_endpoint_tests {
+    use super::*;
+
+    fn endpoint_of(event: Option<Event>) -> Option<String> {
+        match event {
+            Some(Event::DaemonZenohEndpoint { endpoint, .. }) => endpoint,
+            other => panic!("expected a DaemonZenohEndpoint event, got {other:?}"),
+        }
+    }
+
+    fn translate(endpoint: Option<String>) -> Option<String> {
+        endpoint_of(translate_daemon_event(
+            DaemonId::new(Some("A".to_string())),
+            DaemonEvent::zenoh_listen_endpoint(endpoint),
+            Uuid::new_v4(),
+        ))
+    }
+
+    #[test]
+    fn a_loopback_confirmation_is_kept_for_host_filtering() {
+        assert_eq!(
+            translate(Some("tcp/127.0.0.1:5456".into())),
+            Some("tcp/127.0.0.1:5456".to_string())
+        );
+    }
+
+    #[test]
+    fn legacy_loopback_confirmations_are_kept_for_host_filtering() {
+        for endpoint in ["tcp/127.0.0.1:5456", "tcp/localhost:5456#iface=lo"] {
+            // Daemons built before the split advertised loopback in this
+            // field. Decode their frame directly, without the new constructor.
+            let json = serde_json::json!({"ZenohListenEndpoint": {"endpoint": endpoint}});
+            let event: DaemonEvent = serde_json::from_value(json).unwrap();
+            assert_eq!(
+                endpoint_of(translate_daemon_event(
+                    DaemonId::new(Some("A".to_string())),
+                    event,
+                    Uuid::new_v4(),
+                )),
+                Some(endpoint.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn both_endpoint_fields_preserve_the_legacy_precedence() {
+        assert_eq!(
+            accept_reported_zenoh_endpoint(
+                Some("tcp/10.0.2.100:5456".into()),
+                Some("tcp/127.0.0.1:5456".into()),
+                "connected",
+            ),
+            Some("tcp/10.0.2.100:5456".into())
+        );
+    }
+
+    #[test]
+    fn a_valid_reported_endpoint_is_kept() {
+        assert_eq!(
+            translate(Some("tcp/10.0.2.100:5456".into())),
+            Some("tcp/10.0.2.100:5456".to_string())
+        );
+    }
+
+    /// The correction path is the *second* way a daemon can report an endpoint,
+    /// and it is designed to replace the value validated at registration — so
+    /// it has to be checked too, or the invariant holds only until the
+    /// correction arrives.
+    #[test]
+    fn an_invalid_reported_endpoint_is_dropped_on_the_correction_path() {
+        assert_eq!(
+            translate(Some(r#"tcp/1.2.3.4:1","tcp/evil:7447"#.into())),
+            None
+        );
+        assert_eq!(translate(Some("tcp/1.2.3.4:1 rm -rf".into())), None);
+        assert_eq!(translate(Some("a".repeat(300))), None);
+    }
+
+    /// An explicit withdrawal must still reach the coordinator: it is how a
+    /// daemon whose listener failed to bind stops being advertised.
+    #[test]
+    fn an_explicit_withdrawal_passes_through() {
+        assert_eq!(translate(None), None);
     }
 }

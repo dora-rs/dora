@@ -46,7 +46,7 @@ pub struct Start {
     /// Enable hot reloading (Python only)
     #[clap(long, action)]
     hot_reload: bool,
-    // Use UV to run nodes.
+    /// Use `uv` to run nodes
     #[clap(long, action)]
     uv: bool,
     /// Enable debug mode (publishes all messages to Zenoh for topic echo/hz/info)

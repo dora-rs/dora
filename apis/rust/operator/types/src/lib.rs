@@ -141,13 +141,37 @@ pub struct OnEventResult {
     pub status: DoraStatus,
 }
 
+/// What an operator wants the runtime to do after handling an event.
+///
+/// Returned from an operator's `on_event` handler (as part of
+/// [`OnEventResult`]). The discriminants are part of the C ABI, so the
+/// language-neutral runtimes (Python, shared-library) map their integer return
+/// codes onto these values.
+///
+/// ```
+/// use dora_operator_api_types::DoraStatus;
+///
+/// // The discriminants are the stable C-ABI codes the runtimes read back.
+/// assert_eq!(DoraStatus::Continue as u8, 0);
+/// assert_eq!(DoraStatus::Stop as u8, 1);
+/// assert_eq!(DoraStatus::StopAll as u8, 2);
+/// ```
 #[derive_ReprC]
 #[ffi_export]
 #[derive(Debug)]
 #[repr(u8)]
 pub enum DoraStatus {
+    /// Keep the operator running and deliver the next event.
     Continue = 0,
+    /// Stop *this* operator: the runtime finishes it (flushing outputs and
+    /// closing it down) while the rest of the dataflow keeps running.
     Stop = 1,
+    /// Request that the *entire* dataflow stop, not just this operator.
+    ///
+    /// Note: this is not yet implemented — an operator that returns `StopAll`
+    /// currently causes its runtime to report an error rather than tearing
+    /// down the dataflow. Return [`Stop`](Self::Stop) to shut down just this
+    /// operator.
     StopAll = 2,
 }
 
@@ -159,17 +183,79 @@ pub fn dora_read_input_id(input: &Input) -> char_p_boxed {
 #[ffi_export]
 pub fn dora_free_input_id(_input_id: char_p_boxed) {}
 
+/// Read an input's data payload as a freshly-owned byte vector.
+///
+/// # Consume-on-read
+///
+/// This **mutates** `input`: the first successful call moves the payload out of
+/// `input`, so a second call on the same `input` returns `None` (and logs a
+/// "double read?" note to stderr) rather than the same bytes again. Read the
+/// data at most once per event.
+///
+/// # `None` cases
+///
+/// `None` is returned — never an error type — in every non-success case:
+/// - the data was already taken by a previous call (see above);
+/// - the Arrow FFI import of the payload failed;
+/// - the payload's Arrow type is unsupported by this raw-byte API, which reads
+///   only `UInt8` payloads (a zero-length `UInt8` array reads back as an empty
+///   vector). A payload of any other Arrow type — including a metadata-only
+///   `()` payload, which is a null array, and an `Int32`/`Float` array from
+///   another node — yields `None`, so a `None` result is not by itself proof
+///   that the message carried no data.
+///
+/// Each of these logs a diagnostic to stderr.
+///
+/// # Ownership
+///
+/// The returned vector is an owned copy of the payload; free it with
+/// [`dora_free_data`] when it is no longer needed. A `None` result reaches C
+/// as a vector whose `ptr` is `NULL`; passing it to [`dora_free_data`] is a
+/// no-op, so a caller may free every result unconditionally.
 #[ffi_export]
 pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
-    let data_array = input.data_array.take()?;
-    let data = unsafe { arrow::ffi::from_ffi(data_array, &input.schema).ok()? };
+    // `eprintln!`, not `tracing::error!`: this function is compiled into the
+    // user's operator `.so`, which statically links its own copy of the
+    // `tracing` crate — a separate `GLOBAL_DISPATCH` from the one the dora
+    // binary initializes in its own process image. Without dynamic symbol
+    // export (which dora's build does not set up), events raised here would
+    // hit an uninitialized dispatcher and be silently dropped by tracing's
+    // no-subscriber default, defeating the point of this diagnostic.
+    // `eprintln!` writes straight to the process's stderr fd, unaffected by
+    // which copy of `tracing` compiled it in.
+    let Some(data_array) = input.data_array.take() else {
+        eprintln!("dora_read_data: input data already taken (double read?)");
+        return None;
+    };
+    let data = match unsafe { arrow::ffi::from_ffi(data_array, &input.schema) } {
+        Ok(data) => data,
+        Err(err) => {
+            eprintln!("dora_read_data: arrow FFI import failed: {err}");
+            return None;
+        }
+    };
     let array = dora_arrow_convert::internal::from_array_data(data);
-    let bytes: &[u8] = TryFrom::try_from(&array).ok()?;
+    let bytes: &[u8] = match TryFrom::try_from(&array) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("dora_read_data: unsupported input arrow type: {err}");
+            return None;
+        }
+    };
     Some(bytes.to_owned().into())
 }
 
+/// Free a vector returned by [`dora_read_data`].
+///
+/// Like `free(NULL)`, a vector whose `ptr` is `NULL` (the `None` result of
+/// [`dora_read_data`]) is accepted and ignored.
+//
+// The parameter is an `Option` so that the null case is a valid value: as a
+// plain `Vec`, `ffi_export` treats a null `ptr` as an invalid bit pattern,
+// which panics (an abort across the C boundary) in debug builds and is
+// undefined behavior in release builds. The C layout is the same either way.
 #[ffi_export]
-pub fn dora_free_data(_data: safer_ffi::Vec<u8>) {}
+pub fn dora_free_data(_data: Option<safer_ffi::Vec<u8>>) {}
 
 /// Send an output from a C/C++ operator.
 ///
@@ -235,4 +321,70 @@ pub fn generate_headers(target_file: &Path) -> ::std::io::Result<()> {
     ::safer_ffi::headers::builder()
         .to_file(target_file)?
         .generate()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::Int32Array;
+
+    fn test_input(array: arrow::array::ArrayRef) -> Input {
+        let (data_array, schema) = arrow::ffi::to_ffi(&array.to_data()).unwrap();
+        Input {
+            id: "my_input".to_owned().into(),
+            data_array: Some(data_array),
+            schema,
+            metadata: Metadata {
+                open_telemetry_context: String::new().into(),
+            },
+        }
+    }
+
+    /// Regression test for the C/C++ operator API twin of #2030: a
+    /// non-`UInt8` input (e.g. Int32 from another node) must not abort the
+    /// process or panic. The caller should instead observe `None`.
+    #[test]
+    fn dora_read_data_non_uint8_returns_none() {
+        let array: arrow::array::ArrayRef = std::sync::Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let mut input = test_input(array);
+
+        assert!(dora_read_data(&mut input).is_none());
+    }
+
+    /// A second read on the same `Input` (its `data_array` already taken)
+    /// must not panic either.
+    #[test]
+    fn dora_read_data_double_read_returns_none() {
+        let array: arrow::array::ArrayRef =
+            std::sync::Arc::new(arrow::array::UInt8Array::from(vec![1u8, 2, 3]));
+        let mut input = test_input(array);
+
+        assert!(dora_read_data(&mut input).is_some());
+        assert!(dora_read_data(&mut input).is_none());
+    }
+    /// C code frees every `dora_read_data` result, including the `None` one
+    /// (a `NULL` `ptr`) returned for a timer tick or a non-`UInt8` payload.
+    /// That must be a no-op through the exported C symbol, not an invalid
+    /// argument (an abort in debug builds, UB in release builds).
+    #[test]
+    fn dora_free_data_accepts_the_none_result() {
+        type CVec = safer_ffi::layout::CLayoutOf<Option<safer_ffi::Vec<u8>>>;
+        unsafe extern "C" {
+            #[link_name = "dora_free_data"]
+            fn c_dora_free_data(data: CVec);
+        }
+
+        let array: arrow::array::ArrayRef = std::sync::Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let none = dora_read_data(&mut test_input(array));
+        assert!(none.is_none());
+        let some = dora_read_data(&mut test_input(std::sync::Arc::new(
+            arrow::array::UInt8Array::from(vec![1u8, 2, 3]),
+        )));
+        assert!(some.is_some());
+
+        unsafe {
+            c_dora_free_data(safer_ffi::layout::into_raw(none));
+            c_dora_free_data(safer_ffi::layout::into_raw(some));
+        }
+    }
 }

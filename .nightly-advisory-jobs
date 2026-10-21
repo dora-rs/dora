@@ -1,0 +1,13 @@
+# Nightly jobs deliberately allowed to carry job-level `continue-on-error: true`
+# while they are listed in `file-issue-on-failure`'s `needs`.
+#
+# Checked by scripts/qa/ci-nightly-reporting.sh (`make qa-ci-reporting`).
+#
+# An entry here means: this job CANNOT report a failure. `needs.<job>.result`
+# reads `success` for a continue-on-error job, so the nightly issue will never
+# name it. That is a real monitoring hole — the point of this file is that the
+# hole is explicit, attributable, and shows up in a grep, instead of being an
+# invisible property of a flag buried in the job definition.
+#
+# Every entry needs a reason and the issue tracking its removal. Entries are
+# meant to be deleted, not accumulated.

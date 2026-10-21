@@ -1051,7 +1051,7 @@ done
 # --- PyPI ownership ---
 # Both upstream and fork publish to the same two PyPI package names:
 #   `dora-rs`      (node API — from apis/python/node/pyproject.toml)
-#   `dora-rs-cli`  (CLI      — from binaries/cli/pyproject.toml)
+#   `dora-rs-cli`  (CLI      — from apis/python/cli/pyproject.toml)
 # So there's no old-vs-new collision to detect; the real question is whether
 # the PyPI account that currently owns each name is the same entity that
 # will publish 1.0. Verify existence + owner for both:

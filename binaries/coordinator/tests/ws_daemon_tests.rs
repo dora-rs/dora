@@ -5,7 +5,9 @@
 mod common;
 
 use dora_message::{
-    daemon_to_coordinator::{CoordinatorRequest, DaemonRegisterRequest, Timestamped},
+    common::DaemonId,
+    coordinator_to_daemon::RegisterResult,
+    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, DaemonRegisterRequest, Timestamped},
     ws_protocol::{WsRequest, WsResponse},
 };
 use futures::{SinkExt, StreamExt};
@@ -41,10 +43,15 @@ async fn connect_control(
 /// `dora_daemon::coordinator::register`, so the test exercises the real wire
 /// format rather than a `serde_json::Value` re-encoding of it.
 fn make_register_request() -> (Uuid, String) {
+    make_register_request_for("test-machine", None)
+}
+
+fn make_register_request_for(machine: &str, zenoh_endpoint: Option<&str>) -> (Uuid, String) {
     let id = Uuid::new_v4();
-    let register = CoordinatorRequest::Register(DaemonRegisterRequest::new(
-        Some("test-machine".into()),
+    let register = CoordinatorRequest::Register(DaemonRegisterRequest::with_zenoh_endpoint(
+        Some(machine.into()),
         Default::default(),
+        zenoh_endpoint.map(str::to_owned),
     ));
     let timestamped = Timestamped {
         inner: register,
@@ -83,6 +90,37 @@ async fn control_request_reply(
                 return resp;
             }
         }
+    }
+}
+
+/// Register a daemon and return the peer zenoh endpoints its register reply
+/// carries — what the daemon would dial.
+async fn register_and_read_peers(
+    port: u16,
+    machine: &str,
+    zenoh_endpoint: Option<&str>,
+) -> (
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    Vec<String>,
+    DaemonId,
+) {
+    let mut ws = connect_daemon(port).await;
+    let (_id, json) = make_register_request_for(machine, zenoh_endpoint);
+    ws.send(Message::Text(json.into())).await.unwrap();
+    // The reply is a `daemon_event` request carrying `Timestamped<RegisterResult>`,
+    // as `dora_daemon::coordinator::register` reads it.
+    loop {
+        let msg = ws.next().await.expect("stream ended").expect("ws error");
+        let Message::Text(text) = msg else { continue };
+        let Ok(req) = serde_json::from_str::<WsRequest>(&text) else {
+            continue;
+        };
+        if req.method != "daemon_event" {
+            continue;
+        }
+        let reply: Timestamped<RegisterResult> = serde_json::from_value(req.params).unwrap();
+        let (daemon_id, peers) = reply.inner.into_parts().expect("registration accepted");
+        return (ws, peers, daemon_id);
     }
 }
 
@@ -193,5 +231,71 @@ async fn daemon_heartbeat_pong() {
     match msg {
         Message::Pong(data) => assert_eq!(data.as_ref(), &[42]),
         other => panic!("expected Pong, got {other:?}"),
+    }
+}
+
+/// Two daemons that both reach the coordinator over loopback run on its
+/// host, so the second one's register reply must carry the first one's
+/// loopback zenoh endpoint: that is how two same-host daemons link without
+/// multicast (the `multiple-daemons` example, `dora up` plus a second daemon).
+/// The first daemon, registering into an empty registry, is handed nothing.
+#[tokio::test]
+async fn same_host_daemons_are_handed_each_others_loopback_endpoints() {
+    let (port, _handle) = common::start_test_coordinator().await;
+
+    let (_ws_a, peers_a, _) = register_and_read_peers(port, "A", Some("tcp/127.0.0.1:45001")).await;
+    assert!(
+        peers_a.is_empty(),
+        "first daemon has no peers yet: {peers_a:?}"
+    );
+
+    let (_ws_b, peers_b, _) = register_and_read_peers(port, "B", Some("tcp/127.0.0.1:45002")).await;
+    assert_eq!(peers_b, ["tcp/127.0.0.1:45001"]);
+
+    let (_ws_c, mut peers_c, _) =
+        register_and_read_peers(port, "C", Some("tcp/127.0.0.1:45003")).await;
+    peers_c.sort();
+    assert_eq!(peers_c, ["tcp/127.0.0.1:45001", "tcp/127.0.0.1:45002"]);
+}
+
+/// A loopback correction replaces the reserved listener, and a withdrawal
+/// removes it. Ping/pong orders the correction ahead of the next registration
+/// without relying on a sleep: the WS handler enqueues the event before pong.
+#[tokio::test]
+async fn loopback_listener_corrections_and_withdrawals_reach_later_daemons() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let (mut ws_a, _, daemon_id) =
+        register_and_read_peers(port, "A", Some("tcp/127.0.0.1:45001")).await;
+
+    for (endpoint, joining) in [(Some("tcp/127.0.0.1:45004"), "B"), (None, "C")] {
+        let stamped = Timestamped {
+            inner: CoordinatorRequest::Event {
+                daemon_id: daemon_id.clone(),
+                event: DaemonEvent::zenoh_listen_endpoint(endpoint.map(str::to_owned)),
+            },
+            timestamp: dora_message::uhlc::HLC::default().new_timestamp(),
+        };
+        let params = serde_json::to_string(&stamped).unwrap();
+        let id = Uuid::new_v4();
+        let json = format!(r#"{{"id":"{id}","method":"daemon_event","params":{params}}}"#);
+        ws_a.send(Message::Text(json.into())).await.unwrap();
+        ws_a.send(Message::Ping(vec![42].into())).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Message::Pong(_) = ws_a.next().await.unwrap().unwrap() {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("coordinator must acknowledge the ping after the correction");
+
+        // The observer contributes no listener, even if its disconnect has
+        // not yet been processed at the next step.
+        let (_observer, peers, _) = register_and_read_peers(port, joining, None).await;
+        assert_eq!(
+            peers,
+            endpoint.into_iter().map(str::to_owned).collect::<Vec<_>>()
+        );
     }
 }

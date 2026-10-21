@@ -76,8 +76,6 @@ fn basic_type(s: &str) -> IResult<&str, BasicType> {
             tag("int16"),
             tag("int32"),
             tag("int64"),
-            tag("int64"),
-            tag("int64"),
             tag("float32"),
             tag("float64"),
             tag("bool"),

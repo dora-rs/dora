@@ -75,6 +75,13 @@ dora reads exactly two fields: `namespace`, to pick an extension, and
 `target_machine`, to drop a dataflow-scope broadcast on daemons it does not
 name. The payload is bytes it never parses.
 
+That drop happens only after delivery, so a targeted message still crosses the
+network to every subscribed daemon. An extension that sends bulk data can route
+a targeted message on its own key below `dataflow_extension_topic`. Only the
+target daemon subscribes to that key. The tensor-pool extension does this with
+a per-machine key (`…/machine/<machine>`), so a relayed frame reaches only the
+pool's mirror (#3689).
+
 ## What dora deliberately does not provide
 
 No shared-memory helpers, no CUDA, no wire vocabulary for any particular
@@ -122,6 +129,8 @@ uses exactly these four operations. It is opt-in (`--features tensor-pool`, off
 by default) and **outside the 1.0 compatibility guarantees** — that combination
 is the point: a transport can ship in-tree, be built and used, and still not
 freeze anything into dora's stable surface.
+
+`dora-tensor-pool` is on crates.io even so, because `dora-daemon` is, and cargo will not publish a crate whose dependency is missing from the registry ([#3304](https://github.com/dora-rs/dora/issues/3304)). That changes where the crate is downloaded from and nothing about what it promises; the stability tiers are in [`docs/api-rust.md`](api-rust.md#stability-scope-at-10).
 
 Its daemon half — mirror segments, the DORADMA header, the seqlock, the
 direct-TCP data plane, CUDA IPC — lives in that same crate, behind its own

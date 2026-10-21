@@ -113,6 +113,10 @@ ArrowInputInfo event_as_arrow_input_with_info(
 
 // Downcast to a NodeFailed payload. Throws if the event is not NodeFailed.
 DoraNodeFailed event_as_node_failed(rust::Box<DoraEvent> event);
+
+// Id of the upstream node that restarted. Throws if the event is not
+// NodeRestarted.
+rust::String event_as_node_restarted(rust::Box<DoraEvent> event);
 ```
 
 ### DoraEventType
@@ -129,6 +133,7 @@ enum class DoraEventType : uint8_t {
     Timeout,          // next_event_timeout deadline elapsed without an event
     NodeFailed,       // an upstream node failed (use event_as_node_failed to inspect)
     Reload,           // hot-reload notification for an operator
+    NodeRestarted,    // an upstream node restarted (use event_as_node_restarted for its id)
 };
 ```
 
@@ -193,6 +198,14 @@ struct DoraResult {
 ### OutputSender
 
 Opaque Rust type. All methods take `rust::Box<OutputSender>&` as the first argument (the sender from `DoraNode::send_output`).
+
+#### Threading contract
+
+`OutputSender` is **not** shareable across threads. Most functions below take it by mutable reference, and handing two threads a mutable reference to the same box is undefined behavior on the Rust side no matter what the box contains. Keep the `rust::Box<OutputSender>` on the thread that owns the event loop.
+
+To send from other threads, clone a [`SafeOutputSender`](#safeoutputsender) handle. Both handles share one node behind one lock, so a worker's send and a main-thread send can never overlap — they serialize instead.
+
+`DoraNode::events` is independent: draining events on the main thread while workers send through a `SafeOutputSender` is safe and is the intended pattern. `Events` itself is single-threaded, exactly like `OutputSender`.
 
 #### send_output
 
@@ -282,6 +295,41 @@ DoraResult log_message(
     rust::String message);
 ```
 
+### SafeOutputSender
+
+Opaque Rust type: a sending handle that may be moved into, or shared by reference across, worker threads. It exposes only [`safe_send_output`](#safe_send_output) — for anything else, use the `OutputSender` on the main thread.
+
+See `examples/cxx-thread-safe-output` for a worked example, and its README for when this pattern is the right choice (usually it is not — splitting the work into a second node is both faster and more idiomatic; reach for a worker thread when the work must share in-process state).
+
+#### clone_output_sender
+
+Clone the node handle into a `SafeOutputSender`.
+
+```cpp
+rust::Box<SafeOutputSender> clone_output_sender(
+    const rust::Box<OutputSender>& sender);
+```
+
+This *borrows* the sender — `dora_node.send_output` stays valid and keeps the full API listed above. Call it as often as needed, e.g. once per worker thread.
+
+Because the handles share one node, the node is only torn down (and its outputs reported as finished to the daemon) when the **last** handle is dropped. Join your workers, or otherwise drop their handles, before letting the node go out of scope; a handle parked in a detached thread keeps the node alive indefinitely.
+
+#### safe_send_output
+
+Send raw bytes on a named output from any thread.
+
+```cpp
+DoraResult safe_send_output(
+    const SafeOutputSender& sender,
+    rust::String id,
+    rust::Slice<const uint8_t> data,
+    rust::Box<Metadata> metadata);
+```
+
+Blocks until the shared node lock is free, so concurrent callers serialize rather than race. Since the whole send happens under the lock, a send is as long as the underlying publish — do the expensive work *before* calling this, not while holding it.
+
+**Fail-stop on poison.** If a previous operation panicked while holding the lock, the daemon control channel may be mid-frame (a request written, its reply not yet consumed). Reusing it would desynchronize the framing and silently corrupt every later send, so instead the node is left poisoned and *every* subsequent operation — through either handle — returns a `DoraResult` whose `error` mentions `poisoned`. There is no recovery; the node must be restarted.
+
 ### Metadata
 
 Opaque Rust type for attaching typed key-value pairs to outputs.
@@ -295,7 +343,7 @@ rust::Box<Metadata> new_metadata();
 #### Reading
 
 ```cpp
-uint64_t     Metadata::timestamp() const;
+uint64_t     Metadata::timestamp() const;                         // NTP64, not nanoseconds (see below)
 
 bool         Metadata::get_bool(const rust::Str key) const;        // throws on missing/wrong type
 int64_t      Metadata::get_int(const rust::Str key) const;
@@ -308,6 +356,14 @@ rust::Vec<rust::String> Metadata::get_list_string(const rust::Str key) const;
 
 int64_t      Metadata::get_timestamp(const rust::Str key) const;   // nanoseconds since epoch
 rust::String Metadata::get_json(const rust::Str key) const;        // single value as JSON string
+```
+
+`Metadata::timestamp()` is the message's hybrid logical clock timestamp in NTP64 format: a 32.32 fixed-point number whose upper 32 bits are whole seconds since the UNIX epoch and whose lower 32 bits are the fraction of a second in units of 2^-32 s. Unlike `get_timestamp`, it is not nanoseconds; convert it before comparing it with a wall-clock reading:
+
+```cpp
+uint64_t ts = metadata->timestamp();
+uint64_t nanos_since_epoch =
+    (ts >> 32) * 1000000000ull + (((ts & 0xFFFFFFFFull) * 1000000000ull) >> 32);
 ```
 
 #### Writing
@@ -452,7 +508,7 @@ DoraOnInputResult on_input_parse_error(Operator& op, rust::Str id, rust::Str err
 ```
 
 - `new_operator()` -- called once at startup; returns the operator instance.
-- `on_input()` -- called for every input event; process data and optionally send outputs.
+- `on_input()` -- called for every input event; process data and optionally send outputs. `data` is empty for metadata-only inputs such as `dora/timer/...` ticks or outputs sent as `()`, so check `data.empty()` / `data.size()` before indexing it.
 - `on_input_closed()` -- called when an upstream input stream closes (the daemon delivers `Event::InputClosed { id }`). Operator can log, flush per-input state, or `send_output(output_sender, ...)` to emit a final/status message in response. Set `result.stop = true` to request shutdown.
 - `on_stop()` -- called on graceful shutdown (the daemon delivers `Event::Stop`). Operator can drain output queues, persist final state, or `send_output(output_sender, ...)` to flush buffered data before returning.
 - `on_input_parse_error()` -- called when an input's Arrow data fails to deserialize (`Event::InputParseError { id, error }`). `id` identifies the affected input; `error` is the deserialization error string. Operator can log the error, surface it as health state, or request shutdown. Previously these events were silently dropped.

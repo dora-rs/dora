@@ -39,6 +39,8 @@ merge:
     - Audit (cargo-audit + cargo-deny)
     - Unwrap budget
     - License check
+    - Breaking changes
+    - Nightly reporting wiring
     # Expensive (run on trunk-merge/* batches)
     - Test (ubuntu-latest)
     - E2E Tests

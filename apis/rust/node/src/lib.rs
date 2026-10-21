@@ -38,7 +38,9 @@
 //!
 //! ### Receiving Events
 //!
-//! The [`EventStream`] is an [`AsyncIterator`][std::async_iter::AsyncIterator] that yields the incoming [`Event`]s.
+//! The [`EventStream`] implements the [`Stream`](futures::Stream) trait, yielding the incoming
+//! [`Event`]s. Iterate it asynchronously with [`StreamExt::next`](futures::StreamExt::next), or use
+//! the synchronous [`recv`](EventStream::recv) loop.
 //!
 //! Nodes should iterate over this event stream and react to events that they are interested in.
 //! Typically, the most important event type is [`Event::Input`].
@@ -151,8 +153,6 @@ pub use event_stream::{
     input_tracker::{InputState, InputTracker},
     merged,
 };
-pub use flume;
-pub use flume::Receiver;
 pub use futures;
 #[cfg(feature = "tracing")]
 pub use node::init_tracing;
