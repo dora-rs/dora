@@ -1052,8 +1052,10 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
   `send_goal`, `get_result`, and `cancel_goal` service endpoints at startup
   (10 retries, 2 seconds each). It joins the Dora dataflow before waiting, so
   the server can be another node in the same dataflow. A Dora Stop interrupts
-  the wait. If an endpoint remains unavailable, the bridge reports the
-  endpoint name, `ROS_DOMAIN_ID`, and remote server request/reply topics.
+  the wait. The bridge retains at most 64 Dora events during this wait and
+  exits with an error if that limit is exceeded. If an endpoint remains
+  unavailable, it reports the endpoint name, `ROS_DOMAIN_ID`, and remote
+  server request/reply topics.
 - **Native action server discovery (ros2-client#4)**: a Dora-hosted *action* server is not discoverable by a real `rcl`-based client; pair it with a Dora client. Service servers are unaffected.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
 - **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable.

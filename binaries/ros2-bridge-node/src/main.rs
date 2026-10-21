@@ -44,6 +44,8 @@ use futures::{StreamExt, task::SpawnExt};
 
 /// Maximum pending service requests before dropping new ones.
 const MAX_PENDING_REQUESTS: usize = 64;
+/// Cap Dora events held while the action client waits for ROS2 services.
+const MAX_PENDING_ACTION_STARTUP_EVENTS: usize = 64;
 static INVALID_ROS_DOMAIN_ID_WARNED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -2505,6 +2507,7 @@ enum ActionWaitOutcome {
     Ready,
     TimedOut,
     Stopped,
+    BufferFull,
 }
 
 async fn wait_for_ready_or_stop<F, S>(
@@ -2534,7 +2537,12 @@ where
             futures::future::Either::Right((Some(Event::Stop(_)) | None, _)) => {
                 return ActionWaitOutcome::Stopped;
             }
-            futures::future::Either::Right((Some(event), _)) => pending.push(event),
+            futures::future::Either::Right((Some(event), _)) => {
+                if pending.len() >= MAX_PENDING_ACTION_STARTUP_EVENTS {
+                    return ActionWaitOutcome::BufferFull;
+                }
+                pending.push(event);
+            }
         }
     }
 }
@@ -2567,6 +2575,10 @@ fn wait_for_action_client_services(
                         break;
                     }
                     ActionWaitOutcome::Stopped => return Ok(false),
+                    ActionWaitOutcome::BufferFull => eyre::bail!(
+                        "action client received more than {MAX_PENDING_ACTION_STARTUP_EVENTS} \
+                         Dora events while waiting for ROS2 action service"
+                    ),
                     ActionWaitOutcome::TimedOut => tracing::debug!(
                         action = action_name,
                         endpoint = $endpoint,
@@ -3528,7 +3540,7 @@ mod bridge_config_tests {
 
 #[cfg(test)]
 mod action_wait_tests {
-    use super::{ActionWaitOutcome, wait_for_ready_or_stop};
+    use super::{ActionWaitOutcome, MAX_PENDING_ACTION_STARTUP_EVENTS, wait_for_ready_or_stop};
     use dora_node_api::Event;
     use dora_node_api::event_stream::StopCause;
     use futures::StreamExt;
@@ -3561,5 +3573,40 @@ mod action_wait_tests {
         ));
         assert_eq!(outcome, ActionWaitOutcome::Ready);
         assert_eq!(pending.len(), 1);
+    }
+
+    #[test]
+    fn action_startup_buffer_stops_at_capacity() {
+        let updates = (0..=MAX_PENDING_ACTION_STARTUP_EVENTS).map(|index| Event::ParamUpdate {
+            key: index.to_string(),
+            value: serde_json::json!(index),
+        });
+        let mut events = futures::stream::iter(updates).chain(futures::stream::pending());
+        let mut pending = Vec::new();
+        let outcome = futures::executor::block_on(wait_for_ready_or_stop(
+            futures::future::pending(),
+            &mut events,
+            &mut pending,
+        ));
+        assert_eq!(outcome, ActionWaitOutcome::BufferFull);
+        assert_eq!(pending.len(), MAX_PENDING_ACTION_STARTUP_EVENTS);
+    }
+
+    #[test]
+    fn stop_still_interrupts_with_full_startup_buffer() {
+        let updates = (0..MAX_PENDING_ACTION_STARTUP_EVENTS).map(|index| Event::ParamUpdate {
+            key: index.to_string(),
+            value: serde_json::json!(index),
+        });
+        let mut events =
+            futures::stream::iter(updates.chain(std::iter::once(Event::Stop(StopCause::Manual))));
+        let mut pending = Vec::new();
+        let outcome = futures::executor::block_on(wait_for_ready_or_stop(
+            futures::future::pending(),
+            &mut events,
+            &mut pending,
+        ));
+        assert_eq!(outcome, ActionWaitOutcome::Stopped);
+        assert_eq!(pending.len(), MAX_PENDING_ACTION_STARTUP_EVENTS);
     }
 }
