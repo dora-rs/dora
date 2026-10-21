@@ -568,6 +568,45 @@ async fn logs_for_unknown_dataflow_replies_with_an_error() {
     }
 }
 
+/// The coordinator stops a dataflow's daemons one after another, so the
+/// dataflow can finish on a later daemon before that daemon's stop arrives.
+/// The stop must then succeed rather than fail `dora stop` / `dora cluster
+/// restart` with "no running dataflow" (dora-rs/dora#3888), while a stop for
+/// a dataflow the daemon never ran still fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn stop_of_a_just_finished_dataflow_succeeds() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let finished = Uuid::new_v4();
+    daemon.running.insert(finished, test_dataflow());
+    daemon
+        .finish_dataflow(finished)
+        .await
+        .expect("the report is queued for the writer");
+
+    for (dataflow_id, expect_ok) in [(finished, true), (Uuid::new_v4(), false)] {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        daemon
+            .handle_coordinator_event(
+                DaemonCoordinatorEvent::StopDataflow {
+                    dataflow_id,
+                    grace_duration: None,
+                    force: false,
+                },
+                reply_tx,
+            )
+            .await
+            .expect("StopDataflow must not fail the daemon loop");
+        match reply_rx.await.expect("a reply must be sent") {
+            Some(DaemonCoordinatorReply::StopResult(result)) => {
+                assert_eq!(result.is_ok(), expect_ok, "{dataflow_id}: {result:?}");
+            }
+            other => panic!("expected a StopResult reply, got {other:?}"),
+        }
+    }
+}
+
 /// A finish report the WS writer accepted can still be lost with the
 /// connection — a failing socket write drops it, a half-open link swallows
 /// it. It is resent on the next connection, ahead of the `StatusReport`, so
