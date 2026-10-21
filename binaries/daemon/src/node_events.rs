@@ -1579,7 +1579,7 @@ mod tests {
             .remote_output_queue_handles
             .insert(output.clone(), old_handle);
         dataflow.forget_node_bookkeeping(&output.0);
-        assert!(dataflow.remote_output_queues.get(&output).is_none());
+        assert!(!dataflow.remote_output_queues.contains_key(&output));
         let mut create = Box::pin(remote_output_publish_queue(&mut dataflow, &output));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(10), &mut create)
