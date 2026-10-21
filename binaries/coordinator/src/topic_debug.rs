@@ -189,11 +189,11 @@ pub(crate) async fn start_topic_debug_stream(
                 match reply {
                     DaemonCoordinatorReply::StartTopicDebugStreamResult(Ok(())) => Ok(()),
                     DaemonCoordinatorReply::StartTopicDebugStreamResult(Err(err)) => {
-                        Err(eyre!(err))
+                        Err(StartFailure::Rejected(eyre!(err)))
                     }
-                    other => Err(eyre!(
-                        "unexpected start-topic-debug-stream reply: {other:?}"
-                    )),
+                    other => {
+                        Err(eyre!("unexpected start-topic-debug-stream reply: {other:?}").into())
+                    }
                 }
             }
             .await;
@@ -210,16 +210,26 @@ pub(crate) async fn start_topic_debug_stream(
         .topic_subscribers
         .insert(subscription_id, subscriber);
 
-    let mut started_daemons = Vec::new();
+    // Every daemon that didn't explicitly reject the start may be streaming:
+    // one whose reply timed out or got lost can still have registered the
+    // watcher. The daemon treats a stop for an unknown subscription as a
+    // no-op, so stopping those too is safe.
+    let mut daemons_to_stop = Vec::new();
     let mut first_error = None;
     for (daemon_id, result) in join_all(start_requests).await {
-        match result {
-            Ok(()) => started_daemons.push(daemon_id),
-            Err(err) => {
-                if first_error.is_none() {
-                    first_error = Some(err);
-                }
+        let err = match result {
+            Ok(()) => {
+                daemons_to_stop.push(daemon_id);
+                continue;
             }
+            Err(StartFailure::Rejected(err)) => err,
+            Err(StartFailure::Other(err)) => {
+                daemons_to_stop.push(daemon_id);
+                err
+            }
+        };
+        if first_error.is_none() {
+            first_error = Some(err);
         }
     }
 
@@ -229,79 +239,181 @@ pub(crate) async fn start_topic_debug_stream(
             daemon_connections,
             dataflow_id,
             subscription_id,
-            &started_daemons,
+            daemons_to_stop,
             clock,
-        )
-        .await?;
+        );
         return Err(err);
     }
 
     Ok(subscription_id)
 }
 
-pub(crate) async fn rollback_topic_debug_stream(
+/// Why a daemon's `StartTopicDebugStream` request failed.
+enum StartFailure {
+    /// The daemon answered with an error, so it did not start the stream.
+    Rejected(eyre::Report),
+    /// The request or its reply failed, so the daemon may have started it.
+    Other(eyre::Report),
+}
+
+impl From<eyre::Report> for StartFailure {
+    fn from(err: eyre::Report) -> Self {
+        Self::Other(err)
+    }
+}
+
+/// Stop the daemon streams of a subscription whose start failed part-way.
+///
+/// Every daemon in `daemon_ids` gets a stop, even if another one can't be
+/// reached: the subscriber is removed first, so nothing could tear a leftover
+/// stream down later. The stops are sent without waiting for their replies
+/// (see [`spawn_topic_debug_teardown`]). A failure is only logged, so that the
+/// caller can return the daemon's reason for rejecting the subscription.
+pub(crate) fn rollback_topic_debug_stream(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     daemon_connections: &mut DaemonConnections,
     dataflow_id: DataflowId,
     subscription_id: Uuid,
-    started_daemons: &[DaemonId],
+    daemon_ids: Vec<DaemonId>,
     clock: &HLC,
-) -> eyre::Result<()> {
+) {
     let Some(_) = running_dataflows
         .get_mut(&dataflow_id)
         .and_then(|dataflow| dataflow.topic_subscribers.remove(&subscription_id))
     else {
-        return Ok(());
+        return;
     };
 
-    for daemon_id in started_daemons {
-        let Some(connection) = daemon_connections.get_mut(daemon_id).cloned() else {
-            continue;
-        };
-        let message = serde_json::to_vec(&Timestamped {
-            inner: DaemonCoordinatorEvent::StopTopicDebugStream {
-                dataflow_id,
-                subscription_id,
-            },
-            timestamp: clock.new_timestamp(),
-        })?;
-        let reply_raw = connection
-            .send_and_receive(&message)
-            .await
-            .wrap_err("failed to roll back start-topic-debug-stream message")?;
-        let reply: DaemonCoordinatorReply = serde_json::from_slice(&reply_raw)
-            .wrap_err("failed to deserialize rollback stop-topic-debug-stream reply")?;
-        match reply {
-            DaemonCoordinatorReply::StopTopicDebugStreamResult(Ok(())) => {}
-            DaemonCoordinatorReply::StopTopicDebugStreamResult(Err(err)) => {
-                tracing::warn!(%daemon_id, %subscription_id, "failed to roll back topic debug stream: {err}");
-            }
-            other => {
-                tracing::warn!(%daemon_id, %subscription_id, "unexpected rollback reply: {other:?}");
-            }
-        }
+    if let Err(err) = spawn_topic_debug_teardown(
+        daemon_connections,
+        dataflow_id,
+        subscription_id,
+        daemon_ids,
+        clock,
+    ) {
+        tracing::warn!(
+            %subscription_id,
+            "failed to roll back topic debug stream: {err:?}"
+        );
     }
-    Ok(())
 }
 
-pub(crate) async fn stop_topic_debug_stream(
+/// Remove a CLI topic subscription and stop its daemon streams.
+///
+/// The stops are sent without waiting for their replies (see
+/// [`spawn_topic_debug_teardown`]); once the subscriber is removed no further
+/// frames reach the CLI, so there is nothing left to wait for.
+pub(crate) fn stop_topic_debug_stream(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     daemon_connections: &mut DaemonConnections,
     subscription_id: Uuid,
     clock: &HLC,
 ) -> eyre::Result<()> {
-    let Some((dataflow_id, outputs_by_daemon)) =
-        running_dataflows.iter_mut().find_map(|(id, df)| {
-            df.topic_subscribers
-                .remove(&subscription_id)
-                .map(|subscriber| (*id, subscriber.outputs_by_daemon().clone()))
-        })
-    else {
+    let Some((dataflow_id, subscriber)) = running_dataflows.iter_mut().find_map(|(id, df)| {
+        df.topic_subscribers
+            .remove(&subscription_id)
+            .map(|subscriber| (*id, subscriber))
+    }) else {
         return Ok(());
     };
+    spawn_topic_debug_teardown(
+        daemon_connections,
+        dataflow_id,
+        subscription_id,
+        subscriber.outputs_by_daemon().keys().cloned(),
+        clock,
+    )
+}
 
+/// Forward a daemon's topic debug frame to its CLI subscribers.
+///
+/// A subscriber that got closed on the way (its CLI went away, or it stayed
+/// too slow for too long) is removed from the dataflow by
+/// [`send_topic_frames`](crate::handlers::send_topic_frames); stop its daemon
+/// streams here too. Otherwise the daemons keep serializing and shipping every
+/// matching output to the coordinator until the dataflow ends, and a later
+/// `TopicUnsubscribe` for the id no longer finds anything to tear down.
+pub(crate) async fn forward_topic_frames(
+    running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    daemon_connections: &mut DaemonConnections,
+    dataflow_id: DataflowId,
+    subscription_ids: Vec<Uuid>,
+    payload: Vec<u8>,
+    clock: &HLC,
+) {
+    let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) else {
+        return;
+    };
+    let evicted = crate::handlers::send_topic_frames(
+        &mut dataflow.topic_subscribers,
+        subscription_ids,
+        payload,
+    )
+    .await;
+    for (subscription_id, subscriber) in evicted {
+        if let Err(err) = spawn_topic_debug_teardown(
+            daemon_connections,
+            dataflow_id,
+            subscription_id,
+            subscriber.outputs_by_daemon().keys().cloned(),
+            clock,
+        ) {
+            tracing::warn!(
+                %subscription_id,
+                "failed to stop topic debug stream of a closed subscriber: {err:?}"
+            );
+        }
+    }
+}
+
+/// Send `StopTopicDebugStream` for `subscription_id` to every daemon in
+/// `daemon_ids`, and log failed replies from a spawned task. The subscriber
+/// must already be removed from the dataflow's `topic_subscribers`.
+///
+/// Don't wait for the replies: this runs inside the serial coordinator event
+/// loop, and a daemon still streaming frames for the subscription may have
+/// its WS task blocked on a full event channel. That task can then neither
+/// forward the stop nor read the reply, so awaiting it would stall the whole
+/// coordinator until `TCP_READ_TIMEOUT`.
+fn spawn_topic_debug_teardown(
+    daemon_connections: &mut DaemonConnections,
+    dataflow_id: DataflowId,
+    subscription_id: Uuid,
+    daemon_ids: impl IntoIterator<Item = DaemonId>,
+    clock: &HLC,
+) -> eyre::Result<()> {
+    let stop_requests = topic_stop_requests(
+        daemon_connections,
+        dataflow_id,
+        subscription_id,
+        daemon_ids,
+        clock,
+    )?;
+    tokio::spawn(async move {
+        for (daemon_id, result) in join_all(stop_requests).await {
+            if let Err(err) = result {
+                tracing::warn!(
+                    %daemon_id,
+                    %subscription_id,
+                    "failed to stop topic debug stream on daemon: {err}"
+                );
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Build one `StopTopicDebugStream` request per daemon in `daemon_ids`. Each
+/// future owns its connection handle, so it can be spawned.
+fn topic_stop_requests(
+    daemon_connections: &mut DaemonConnections,
+    dataflow_id: DataflowId,
+    subscription_id: Uuid,
+    daemon_ids: impl IntoIterator<Item = DaemonId>,
+    clock: &HLC,
+) -> eyre::Result<Vec<impl Future<Output = (DaemonId, eyre::Result<()>)> + Send + 'static>> {
     let mut stop_requests = Vec::new();
-    for (daemon_id, _) in outputs_by_daemon {
+    for daemon_id in daemon_ids {
         let Some(connection) = daemon_connections.get_mut(&daemon_id).cloned() else {
             tracing::warn!(
                 %daemon_id,
@@ -335,26 +447,7 @@ pub(crate) async fn stop_topic_debug_stream(
             (daemon_id, result)
         });
     }
-
-    let mut first_error = None;
-    for (daemon_id, result) in join_all(stop_requests).await {
-        if let Err(err) = result {
-            tracing::warn!(
-                %daemon_id,
-                %subscription_id,
-                "failed to stop topic debug stream on daemon: {err}"
-            );
-            if first_error.is_none() {
-                first_error = Some(err);
-            }
-        }
-    }
-
-    if let Some(err) = first_error {
-        return Err(err);
-    }
-
-    Ok(())
+    Ok(stop_requests)
 }
 
 /// Close every CLI topic-subscriber channel on a finished dataflow so the

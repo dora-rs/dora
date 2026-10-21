@@ -157,9 +157,6 @@ pub(crate) struct ZenohRegistration {
 /// it on the next reconnect would hand that dead port to every daemon that
 /// registers afterwards.
 pub(crate) enum AdvertiseListener {
-    /// Nothing — a loopback bind, which would point a remote daemon at its own
-    /// host.
-    Never,
     /// Whatever `register` reserves. The first connect, where no session exists
     /// yet and the reserved endpoint is the only candidate.
     Reserved,

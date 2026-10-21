@@ -58,17 +58,45 @@ typedef struct DoraInitOperator {
     DoraInitResult_t (*init_operator)(void);
 } DoraInitOperator_t;
 
-/** <No documentation available> */
+/** \brief
+ *  What an operator wants the runtime to do after handling an event.
+ *
+ *  Returned from an operator's `on_event` handler (as part of
+ *  [`OnEventResult`]). The discriminants are part of the C ABI, so the
+ *  language-neutral runtimes (Python, shared-library) map their integer return
+ *  codes onto these values.
+ *
+ *  ```
+ *  use dora_operator_api_types::DoraStatus;
+ *
+ *  // The discriminants are the stable C-ABI codes the runtimes read back.
+ *  assert_eq!(DoraStatus::Continue as u8, 0);
+ *  assert_eq!(DoraStatus::Stop as u8, 1);
+ *  assert_eq!(DoraStatus::StopAll as u8, 2);
+ *  ```
+ */
 /** \remark Has the same ABI as `uint8_t` **/
 #ifdef DOXYGEN
 typedef
 #endif
 enum DoraStatus {
-    /** <No documentation available> */
+    /** \brief
+     *  Keep the operator running and deliver the next event.
+     */
     DORA_STATUS_CONTINUE = 0,
-    /** <No documentation available> */
+    /** \brief
+     *  Stop *this* operator: the runtime finishes it (flushing outputs and
+     *  closing it down) while the rest of the dataflow keeps running.
+     */
     DORA_STATUS_STOP = 1,
-    /** <No documentation available> */
+    /** \brief
+     *  Request that the *entire* dataflow stop, not just this operator.
+     *
+     *  Note: this is not yet implemented — an operator that returns `StopAll`
+     *  currently causes its runtime to report an error rather than tearing
+     *  down the dataflow. Return [`Stop`](Self::Stop) to shut down just this
+     *  operator.
+     */
     DORA_STATUS_STOP_ALL = 2,
 }
 #ifndef DOXYGEN
@@ -144,7 +172,12 @@ typedef struct Metadata {
     Vec_uint8_t open_telemetry_context;
 } Metadata_t;
 
-/** <No documentation available> */
+/** \brief
+ *  Free a vector returned by [`dora_read_data`].
+ *
+ *  Like `free(NULL)`, a vector whose `ptr` is `NULL` (the `None` result of
+ *  [`dora_read_data`]) is accepted and ignored.
+ */
 void
 dora_free_data (
     Vec_uint8_t _data);
@@ -181,7 +214,9 @@ dora_free_input_id (
  *  # Ownership
  *
  *  The returned vector is an owned copy of the payload; free it with
- *  [`dora_free_data`] when it is no longer needed.
+ *  [`dora_free_data`] when it is no longer needed. A `None` result reaches C
+ *  as a vector whose `ptr` is `NULL`; passing it to [`dora_free_data`] is a
+ *  no-op, so a caller may free every result unconditionally.
  */
 Vec_uint8_t
 dora_read_data (

@@ -2,16 +2,37 @@
 # (cargo-deny enforces the same policy; both run in `make qa-audit`).
 [advisories]
 ignore = [
+    # owned-alloc 0.2 double-free if a value's Drop panics inside
+    # OwnedAlloc::drop_in_place. Transitive via zenoh-transport -> lockfree's
+    # shared-memory queue; lockfree does not call either affected
+    # drop_in_place API. No fixed release; waiting for Zenoh to replace the
+    # abandoned dependency chain. Review: 2026-12.
+    "RUSTSEC-2026-0291",
+    # owned-alloc unmaintained: no release since 2018 and the maintainer is
+    # unresponsive. Same abandoned crate as RUSTSEC-2026-0291 above, reached
+    # through the same zenoh-transport -> lockfree SHM queue; no safe upgrade
+    # exists. Waiting for Zenoh to replace the dependency chain. Review: 2026-12.
+    "RUSTSEC-2026-0299",
     # lz4_flex 0.10 uninitialized-memory leak on invalid input. Transitive
     # via zenoh-transport (pins ^0.10); dora does not enable zenoh's
     # compression, so the decompression path is not reachable. Waiting for
-    # upstream zenoh bump. Review: 2026-09.
+    # upstream zenoh bump. Review: 2026-12.
     "RUSTSEC-2026-0041",
     # quick-xml <0.41 quadratic attribute check / NsReader memory-exhaustion
     # DoS. Our own parser (ros2 msg-gen) is on fixed 0.41; remaining copies
     # are transitive via self_update (parses release listings during explicit
     # `dora self update`) and mavlink-bindgen (build-time codegen over local
-    # MAVLink XML). Waiting for upstream bumps. Review: 2026-09.
+    # MAVLink XML). Waiting for upstream bumps. Review: 2026-12.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
+    # zip <9: ZipArchive::extract / ZipStreamReader::extract keep SUID/SGID
+    # bits (0367), create symlinks that escape the destination (0368) and
+    # apply permissions through them (0369). zip comes in only through
+    # self_update, whose Windows `dora self update` path reads the one entry
+    # it needs with by_name/by_index and io::copy into a new file; it never
+    # calls extract(). The latest self_update (1.3.0) still pins zip ^8, so
+    # there is no upgrade yet. Review: 2027-01.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]

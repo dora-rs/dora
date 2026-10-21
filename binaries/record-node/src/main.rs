@@ -1,11 +1,12 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
-    io::Write,
+    io::{Read, Write},
     time::{Duration, Instant, SystemTime},
 };
 
 use aligned_vec::{AVec, ConstAlign};
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dora_message::{
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
@@ -126,10 +127,9 @@ impl FlushPolicy {
 ///
 /// `SystemTime::duration_since(UNIX_EPOCH)` returns `Err` whenever the clock is
 /// set before 1970 — common on battery-less embedded/robotics hardware that
-/// boots at (or before) the epoch until NTP/GPS sync lands. This runs once per
-/// recorded message, so an `.unwrap()` here would abort the recorder mid-capture.
-/// Saturating to 0 matches the `saturating_sub` already used when computing the
-/// per-entry offset from `start_nanos`.
+/// boots at (or before) the epoch until NTP/GPS sync lands, so an `.unwrap()`
+/// here would abort the recorder at startup. Only the header's `start_nanos`
+/// uses it; entry offsets come from [`dora_recording::offset_since`].
 fn unix_nanos(now: SystemTime) -> u64 {
     now.duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
@@ -225,34 +225,170 @@ impl DropTally {
     }
 }
 
+/// Everything the end-of-run report is built from: queue/ingress drops
+/// ([`DropTally`]), the number of frames skipped for exceeding the per-record
+/// size limit, and the number of records written. Owning all three in one place
+/// lets [`is_incomplete`](Self::is_incomplete) and the [`report`](Self::report)
+/// text be unit-tested directly, rather than only through `main`'s event loop —
+/// the report headline, the drop breakdown and the oversized warning are then
+/// pinned the same way `DropTally`'s report already is.
+#[derive(Debug, Default)]
+struct RunSummary {
+    drops: DropTally,
+    oversized_dropped: u64,
+    msg_count: u64,
+}
+
+impl RunSummary {
+    /// One record was written to the file.
+    fn note_written(&mut self) {
+        self.msg_count += 1;
+    }
+
+    /// One frame was skipped for exceeding `MAX_RECORD_BYTES`. Counted apart
+    /// from queue drops because no `--queue-size` can rescue it.
+    fn note_oversized(&mut self) {
+        self.oversized_dropped += 1;
+    }
+
+    /// Whether the capture fell short of the source stream — a drop on an id the
+    /// recorder writes, or a skipped oversized frame. Either leaves the `.drec`
+    /// incomplete.
+    fn is_incomplete(&self, reverse_map: &HashMap<String, (NodeId, DataId)>) -> bool {
+        self.drops.recorded_total(reverse_map) > 0 || self.oversized_dropped > 0
+    }
+
+    /// The full end-of-run report printed to stderr: the completeness headline,
+    /// the `Messages`/`Bytes`/`File` lines, the per-topic drop breakdown, and a
+    /// warning for any oversized frames that were skipped (with the reminder
+    /// that `--queue-size` cannot help). Built as one string so its exact
+    /// wording — including the INCOMPLETE-vs-clean headline — stays under test.
+    fn report(
+        &self,
+        reverse_map: &HashMap<String, (NodeId, DataId)>,
+        total_bytes: u64,
+        output_file: &str,
+    ) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        if self.is_incomplete(reverse_map) {
+            out.push_str("dora-record-node: recording finished INCOMPLETE\n");
+        } else {
+            out.push_str("dora-record-node: recording finished, no dropped messages detected\n");
+        }
+        let _ = writeln!(out, "  Messages: {}", self.msg_count);
+        let _ = writeln!(out, "  Bytes:    {total_bytes}");
+        let _ = writeln!(out, "  File:     {output_file}");
+        if let Some(report) = self.drops.report(reverse_map) {
+            out.push_str(&report);
+        }
+        if self.oversized_dropped > 0 {
+            let _ = writeln!(
+                out,
+                "  WARNING:  {} message(s) exceeded the per-record size limit and were \
+                 skipped.\n\
+                 \x20           THIS RECORDING IS INCOMPLETE. Such frames cannot be recorded in \
+                 the `.drec` format regardless of `--queue-size`.",
+                self.oversized_dropped
+            );
+        }
+        out
+    }
+}
+
+/// Write one entry, skipping it when it exceeds `MAX_RECORD_BYTES`. Returns the
+/// skipped frame's encoded length (`Some`) so the caller can warn about it with
+/// context, or `None` once the entry was written. Updates `summary` either way
+/// — the written count or the oversized count — so the same counting path
+/// `main` relies on is exercised directly by tests. Genuine I/O errors
+/// propagate.
+fn record_entry<W: Write>(
+    writer: &mut RecordingWriter<W>,
+    entry: &RecordEntry,
+    summary: &mut RunSummary,
+) -> eyre::Result<Option<usize>> {
+    match writer.write_entry_skip_oversized(entry)? {
+        Some(oversized_len) => {
+            summary.note_oversized();
+            Ok(Some(oversized_len))
+        }
+        None => {
+            summary.note_written();
+            Ok(None)
+        }
+    }
+}
+
+/// The original descriptor YAML, from [`dora_recording::DESCRIPTOR_ENV`]
+/// (compressed and base64-encoded, because `env:` values are `$VAR`-expanded
+/// on the way here) or, from an older CLI, the raw
+/// [`dora_recording::LEGACY_DESCRIPTOR_ENV`].
+fn descriptor_from_env(var: impl Fn(&str) -> Option<String>) -> eyre::Result<Vec<u8>> {
+    use dora_recording::{DESCRIPTOR_ENV, LEGACY_DESCRIPTOR_ENV};
+    match var(DESCRIPTOR_ENV) {
+        Some(encoded) => {
+            let compressed = BASE64_STANDARD
+                .decode(encoded)
+                .wrap_err_with(|| format!("{DESCRIPTOR_ENV} is not valid base64"))?;
+            let mut yaml = Vec::new();
+            flate2::read::DeflateDecoder::new(compressed.as_slice())
+                .read_to_end(&mut yaml)
+                .wrap_err_with(|| format!("{DESCRIPTOR_ENV} is not a valid deflate stream"))?;
+            Ok(yaml)
+        }
+        None => Ok(var(LEGACY_DESCRIPTOR_ENV).unwrap_or_default().into_bytes()),
+    }
+}
+
+/// The header of the recording `node` makes.
+///
+/// It carries the id of the dataflow `node` runs in, which is the one being
+/// recorded, as `dora record --proxy` does, so `dora recording export` names
+/// a dataflow `dora list` knows.
+fn recording_header(
+    node: &DoraNode,
+    start_nanos: u64,
+    descriptor_yaml: Vec<u8>,
+) -> RecordingHeader {
+    RecordingHeader {
+        version: dora_recording::FORMAT_VERSION,
+        start_nanos,
+        dataflow_id: *node.dataflow_id(),
+        descriptor_yaml,
+    }
+}
+
 fn main() -> eyre::Result<()> {
     let output_file =
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
     let topics_json =
         std::env::var("DORA_RECORD_TOPICS").wrap_err("DORA_RECORD_TOPICS env var not set")?;
-    let descriptor_yaml = std::env::var("DORA_RECORD_DESCRIPTOR").unwrap_or_default();
+    let descriptor_yaml = descriptor_from_env(|name| std::env::var(name).ok())?;
 
     // Build reverse map: input_id -> (source_node_id, source_output_id).
     let reverse_map = build_reverse_map(&topics_json)?;
 
-    let (_node, mut events) = DoraNode::init_from_env()?;
+    let (node, mut events) = DoraNode::init_from_env()?;
 
+    // The header keeps the wall-clock start (it says *when* the capture
+    // began); entry offsets use this monotonic base instead (see
+    // `dora_recording::offset_since`).
     let start_nanos = unix_nanos(SystemTime::now());
+    let start = Instant::now();
 
-    let header = RecordingHeader {
-        version: dora_recording::FORMAT_VERSION,
-        start_nanos,
-        dataflow_id: uuid::Uuid::new_v4(),
-        descriptor_yaml: descriptor_yaml.into_bytes(),
-    };
+    let header = recording_header(&node, start_nanos, descriptor_yaml);
 
     let file =
         File::create(&output_file).wrap_err_with(|| format!("failed to create {output_file}"))?;
     let mut writer = RecordingWriter::new(file, &header)?;
-    let mut msg_count: u64 = 0;
     let mut flush_policy = FlushPolicy::new();
-    let mut drops = DropTally::default();
+    // Queue/ingress drops, oversized skips, and the written-record count — the
+    // data the end-of-run report is built from. See the write site below for why
+    // an oversized skip is tracked apart from queue drops (no queue depth fixes
+    // it).
+    let mut summary = RunSummary::default();
     let mut warned_about_drops = false;
+    let mut warned_about_oversized = false;
 
     eprintln!("dora-record-node: recording to {output_file}");
 
@@ -336,25 +472,40 @@ fn main() -> eyre::Result<()> {
                 };
                 let event_bytes = timestamped.serialize()?;
 
-                let now_nanos = unix_nanos(SystemTime::now());
-
                 let entry = RecordEntry {
                     node_id: source_node.to_string(),
                     output_id: source_output.to_string(),
-                    timestamp_offset_nanos: now_nanos.saturating_sub(start_nanos),
+                    timestamp_offset_nanos: dora_recording::offset_since(start),
                     event_bytes,
                 };
-                writer.write_entry(&entry)?;
-                msg_count += 1;
+                // A recorder attaches to a live dataflow whose direct
+                // node-to-node zero-copy path has no per-message size cap (unlike
+                // the 64 MiB daemon transport limit). A single frame larger than
+                // the recording format's `MAX_RECORD_BYTES` — a big image or point
+                // cloud — must not abort a capture that is otherwise succeeding, so
+                // skip it and note the recording is incomplete rather than
+                // propagating the error out of `main` (which would lose every
+                // later message too). Genuine I/O errors still propagate.
+                if let Some(oversized_len) = record_entry(&mut writer, &entry, &mut summary)? {
+                    if !warned_about_oversized {
+                        warned_about_oversized = true;
+                        eprintln!(
+                            "dora-record-node: WARNING: skipping a {oversized_len}-byte message \
+                             from {source_node}/{source_output} that exceeds the per-record \
+                             limit — this recording will be incomplete."
+                        );
+                    }
+                    continue;
+                }
                 flush_policy.after_write(&mut writer)?;
 
                 // Poll for drops periodically rather than per event. The final
                 // drain after the loop is what makes the totals exact; this
                 // exists only so a multi-hour capture says something before it
                 // ends.
-                if msg_count.is_multiple_of(FLUSH_EVERY_N_RECORDS) {
-                    drops.absorb(events.drain_drop_counts());
-                    if !warned_about_drops && drops.recorded_total(&reverse_map) > 0 {
+                if summary.msg_count.is_multiple_of(FLUSH_EVERY_N_RECORDS) {
+                    summary.drops.absorb(events.drain_drop_counts());
+                    if !warned_about_drops && summary.drops.recorded_total(&reverse_map) > 0 {
                         warned_about_drops = true;
                         eprintln!(
                             "dora-record-node: WARNING: dropping messages — this recording \
@@ -382,7 +533,7 @@ fn main() -> eyre::Result<()> {
 
     // Final drain: everything dropped since the last flush boundary, plus any
     // drop on a run too short to have flushed at all.
-    drops.absorb(events.drain_drop_counts());
+    summary.drops.absorb(events.drain_drop_counts());
 
     let footer = writer.finish()?;
     // Claim only what was measured. `Messages:` counts what was written, so on
@@ -392,17 +543,10 @@ fn main() -> eyre::Result<()> {
     // be discarded in zenoh's egress and never reach this node's counters at
     // all. Zero drops here means "nothing was dropped on any path this node can
     // see", which is the honest statement.
-    if drops.recorded_total(&reverse_map) == 0 {
-        eprintln!("dora-record-node: recording finished, no dropped messages detected");
-    } else {
-        eprintln!("dora-record-node: recording finished INCOMPLETE");
-    }
-    eprintln!("  Messages: {msg_count}");
-    eprintln!("  Bytes:    {}", footer.total_bytes);
-    eprintln!("  File:     {output_file}");
-    if let Some(report) = drops.report(&reverse_map) {
-        eprint!("{report}");
-    }
+    eprint!(
+        "{}",
+        summary.report(&reverse_map, footer.total_bytes, &output_file)
+    );
 
     Ok(())
 }
@@ -412,6 +556,33 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[test]
+    fn recording_header_carries_the_recorded_dataflow_id() {
+        use dora_node_api::integration_testing::{
+            IntegrationTestInput, TestingInput, TestingOptions, TestingOutput, output_channel,
+        };
+        let (output, _outputs) = output_channel();
+        let (node, _events) = DoraNode::init_testing(
+            TestingInput::Input(IntegrationTestInput::new(
+                "record".parse().unwrap(),
+                Vec::new(),
+            )),
+            TestingOutput::ToChannel(output),
+            TestingOptions::default(),
+        )
+        .unwrap();
+        let dataflow_id = *node.dataflow_id();
+        let header = recording_header(&node, 42, b"nodes: []".to_vec());
+
+        let mut buf = Vec::new();
+        RecordingWriter::new(&mut buf, &header).unwrap();
+        let reader = dora_recording::RecordingReader::open(std::io::Cursor::new(buf)).unwrap();
+
+        assert_eq!(reader.header().dataflow_id, dataflow_id);
+        assert_eq!(reader.header().start_nanos, 42);
+        assert_eq!(reader.header().descriptor_yaml, b"nodes: []");
+    }
 
     // ---- #3282: an incomplete recording must say so ----
 
@@ -442,6 +613,131 @@ mod tests {
     #[test]
     fn a_clean_run_reports_nothing() {
         assert!(DropTally::default().report(&camera_lidar_map()).is_none());
+    }
+
+    // A frame one byte past the per-record size limit must be skipped.
+    const OVER_LIMIT_PAYLOAD: usize = dora_recording::MAX_RECORD_BYTES + 1;
+
+    fn writer_over_vec() -> RecordingWriter<Vec<u8>> {
+        let header = RecordingHeader {
+            version: dora_recording::FORMAT_VERSION,
+            start_nanos: 0,
+            dataflow_id: uuid::Uuid::nil(),
+            descriptor_yaml: Vec::new(),
+        };
+        RecordingWriter::new(Vec::new(), &header).expect("in-memory writer")
+    }
+
+    fn entry(node: &str, output: &str, payload: Vec<u8>) -> RecordEntry {
+        RecordEntry {
+            node_id: node.to_string(),
+            output_id: output.to_string(),
+            timestamp_offset_nanos: 0,
+            event_bytes: payload,
+        }
+    }
+
+    #[test]
+    fn record_entry_counts_written_and_oversized_frames_separately() {
+        // Drives the same write path `main` uses, so the counting — not just the
+        // helpers — is under test: a written frame bumps `msg_count`, an
+        // oversized one bumps `oversized_dropped` and writes nothing.
+        let mut writer = writer_over_vec();
+        let mut summary = RunSummary::default();
+
+        assert_eq!(
+            record_entry(
+                &mut writer,
+                &entry("camera", "image", vec![1, 2, 3]),
+                &mut summary
+            )
+            .unwrap(),
+            None,
+        );
+        assert_eq!(summary.msg_count, 1);
+        assert_eq!(summary.oversized_dropped, 0);
+
+        let big = entry("camera", "image", vec![0u8; OVER_LIMIT_PAYLOAD]);
+        assert_eq!(
+            record_entry(&mut writer, &big, &mut summary).unwrap(),
+            Some(big.encoded_len()),
+        );
+        assert_eq!(
+            summary.msg_count, 1,
+            "an oversized frame must not count as written"
+        );
+        assert_eq!(summary.oversized_dropped, 1);
+    }
+
+    #[test]
+    fn report_is_clean_when_nothing_was_lost() {
+        let summary = RunSummary {
+            msg_count: 5,
+            ..Default::default()
+        };
+        let report = summary.report(&camera_lidar_map(), 1234, "out.drec");
+        assert!(
+            report.contains("no dropped messages detected"),
+            "got: {report}"
+        );
+        assert!(!report.contains("INCOMPLETE"), "got: {report}");
+        assert!(!report.contains("WARNING"), "got: {report}");
+        assert!(report.contains("Messages: 5"), "got: {report}");
+        assert!(report.contains("Bytes:    1234"), "got: {report}");
+        assert!(report.contains("out.drec"), "got: {report}");
+    }
+
+    #[test]
+    fn report_flags_incomplete_and_warns_for_an_oversized_only_run() {
+        // Zero queue drops, one oversized skip: the report `main` actually prints
+        // must still say INCOMPLETE and carry the oversized warning. A test of a
+        // pure `a > 0 || b > 0` helper would pass even if `main` never wired the
+        // count in — this asserts the rendered output instead.
+        let mut summary = RunSummary {
+            msg_count: 2,
+            ..Default::default()
+        };
+        summary.note_oversized();
+        let report = summary.report(&camera_lidar_map(), 0, "out.drec");
+        assert!(
+            report.contains("recording finished INCOMPLETE"),
+            "got: {report}"
+        );
+        assert!(
+            !report.contains("no dropped messages detected"),
+            "got: {report}"
+        );
+        assert!(
+            report.contains("1 message(s) exceeded the per-record size limit"),
+            "got: {report}"
+        );
+        // The reader must not be pointed at `--queue-size`, which cannot resize
+        // the hard per-record cap.
+        assert!(
+            report.contains("regardless of `--queue-size`"),
+            "got: {report}"
+        );
+    }
+
+    #[test]
+    fn report_flags_incomplete_on_recorded_drops_without_an_oversized_warning() {
+        let mut summary = RunSummary {
+            msg_count: 3,
+            ..Default::default()
+        };
+        summary.drops.absorb(HashMap::from([(
+            DataId::from("camera___image".to_string()),
+            4,
+        )]));
+        let report = summary.report(&camera_lidar_map(), 0, "out.drec");
+        assert!(
+            report.contains("recording finished INCOMPLETE"),
+            "got: {report}"
+        );
+        // The drop breakdown names the source topic, not the mangled input id.
+        assert!(report.contains("camera/image"), "got: {report}");
+        // No oversized frames, so no per-record-limit warning.
+        assert!(!report.contains("per-record size limit"), "got: {report}");
     }
 
     #[test]
@@ -730,6 +1026,48 @@ mod tests {
         assert!(
             sink.flushed_len() > 0,
             "count bound must flush every {FLUSH_EVERY_N_RECORDS} records"
+        );
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let pairs: BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name| pairs.get(name).cloned()
+    }
+
+    #[test]
+    fn descriptor_prefers_the_encoded_variable() {
+        let mut deflate = flate2::write::DeflateEncoder::new(Vec::new(), Default::default());
+        deflate.write_all(b"a: $X").unwrap();
+        let encoded = BASE64_STANDARD.encode(deflate.finish().unwrap());
+        let descriptor = descriptor_from_env(vars(&[
+            (dora_recording::DESCRIPTOR_ENV, &encoded),
+            (dora_recording::LEGACY_DESCRIPTOR_ENV, "stale"),
+        ]))
+        .unwrap();
+        assert_eq!(descriptor, b"a: $X");
+    }
+
+    #[test]
+    fn descriptor_falls_back_to_the_raw_variable_of_an_older_cli() {
+        let descriptor = descriptor_from_env(vars(&[(
+            dora_recording::LEGACY_DESCRIPTOR_ENV,
+            "nodes: []",
+        )]))
+        .unwrap();
+        assert_eq!(descriptor, b"nodes: []");
+        assert!(descriptor_from_env(vars(&[])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_base64_descriptor_is_an_error() {
+        let err = descriptor_from_env(vars(&[(dora_recording::DESCRIPTOR_ENV, "not base64!")]))
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains(dora_recording::DESCRIPTOR_ENV),
+            "{err:#}"
         );
     }
 }

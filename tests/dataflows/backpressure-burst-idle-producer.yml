@@ -1,0 +1,45 @@
+# `backpressure-burst-delivery.yml` plus a second, sporadic producer: while
+# the burst has the consumer's channel full (the consumer stalls 3 s on its
+# first message; the burst is done well inside that), `sporadic` sends a
+# single message on its own backpressure edge 1.5 s in and then stays
+# alive and idle. The daemon has to hold that message, and it must arrive
+# as the consumer makes room — not when the producer next sends (it never
+# does) or exits at `stop_after` (PR #3590 review).
+nodes:
+  - id: burst-source
+    build: cargo build -p burst-source-node
+    path: ../../target/debug/burst-source-node
+    env:
+      DORA_TEST_BURST_COUNT: "6000"
+    inputs:
+      tick: dora/timer/millis/200
+    outputs:
+      - value
+
+  - id: sporadic
+    build: cargo build -p burst-source-node
+    path: ../../target/debug/burst-source-node
+    env:
+      DORA_TEST_BURST_COUNT: "1"
+      DORA_TEST_BURST_LINGER: "1"
+      # The first timer tick fires at once; wait it out into the stall.
+      DORA_TEST_BURST_AFTER_MS: "1500"
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - value
+
+  - id: slow-sink
+    build: cargo build -p slow-sequence-sink-node
+    path: ../../target/debug/slow-sequence-sink-node
+    env:
+      DORA_TEST_SINK_STALL_MS: "3000"
+      DORA_TEST_SINK_RECORD: /tmp/dora-backpressure-burst-idle-producer.log
+    inputs:
+      value:
+        source: burst-source/value
+        queue_size: 1000
+        queue_policy: backpressure
+      ping:
+        source: sporadic/value
+        queue_policy: backpressure

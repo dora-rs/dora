@@ -54,6 +54,8 @@
 //! ```
 
 use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::ops::Range;
+use std::time::Instant;
 
 use eyre::Context;
 use uuid::Uuid;
@@ -69,6 +71,19 @@ const FOOTER_MAGIC: &[u8; 8] = b"DORAEND\x00";
 /// Writers must stamp [`RecordingHeader::version`] with this rather than a
 /// literal, or they produce files their own reader rejects.
 pub const FORMAT_VERSION: u16 = 2;
+/// Env var through which `dora record` hands the recorded dataflow's
+/// descriptor YAML to the record node: raw-deflate compressed, then
+/// base64-encoded.
+///
+/// Every `env:` value is `$VAR`-expanded each time the descriptor is parsed,
+/// so the raw YAML cannot travel as one; the base64 alphabet has no `$`.
+/// It is compressed because the daemon also hands the whole submitted
+/// descriptor, this value included, to every node in `DORA_NODE_CONFIG`.
+pub const DESCRIPTOR_ENV: &str = "DORA_RECORD_DESCRIPTOR_DEFLATE_BASE64";
+/// The raw descriptor env var that record nodes before
+/// [`DESCRIPTOR_ENV`] read. `dora record` still sets it when that is safe,
+/// so an older record node keeps writing the descriptor.
+pub const LEGACY_DESCRIPTOR_ENV: &str = "DORA_RECORD_DESCRIPTOR";
 /// Oldest `.drec` version this build can read.
 ///
 /// The entry payloads are opaque to the container, so a version that only the
@@ -80,9 +95,13 @@ const MIN_SUPPORTED_FORMAT_VERSION: u16 = 2;
 /// A bump that leaves the writers stamping a version below the reader's floor
 /// would make every freshly written recording unreadable by the same build.
 const _: () = assert!(FORMAT_VERSION >= MIN_SUPPORTED_FORMAT_VERSION);
-/// Maximum size for a single record or YAML descriptor in a `.drec` file.
-/// Guards against OOM from crafted files with `u32::MAX` length fields.
-const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024; // 64 MB
+/// Maximum size for a single record body (see [`RecordEntry::encoded_len`]) or
+/// YAML descriptor in a `.drec` file.
+///
+/// The writer refuses anything larger and the reader rejects a length prefix
+/// above it, which guards against OOM from crafted files with `u32::MAX`
+/// length fields.
+pub const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024; // 64 MB
 
 /// Header written at the start of a `.drec` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,6 +110,29 @@ pub struct RecordingHeader {
     pub start_nanos: u64,
     pub dataflow_id: Uuid,
     pub descriptor_yaml: Vec<u8>,
+}
+
+/// The [`RecordEntry::timestamp_offset_nanos`] of an entry recorded now, for a
+/// capture that started at the monotonic instant `start`.
+///
+/// Offsets are measured on the monotonic clock, not as wall-clock now minus
+/// [`RecordingHeader::start_nanos`]: an NTP/GPS sync landing mid-capture steps
+/// the wall clock, which would make every later offset jump by up to decades
+/// (a board booting at 1970) or collapse to 0, and stall or scramble replay
+/// pacing. Saturates at `u64::MAX` (~584 years).
+///
+/// ```
+/// use std::time::{Duration, Instant};
+///
+/// let start = Instant::now();
+/// std::thread::sleep(Duration::from_millis(5));
+/// let offset = dora_recording::offset_since(start);
+/// assert!(offset >= 5_000_000);
+/// // Offsets never go backwards.
+/// assert!(dora_recording::offset_since(start) >= offset);
+/// ```
+pub fn offset_since(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// A single recorded message entry.
@@ -103,20 +145,38 @@ pub struct RecordEntry {
 }
 
 impl RecordEntry {
-    /// Assemble an owned entry from the borrowed fields produced by
-    /// `parse_record`, copying the ids and payload out of the record buffer.
-    fn owned(
-        node_id: &str,
-        output_id: &str,
-        timestamp_offset_nanos: u64,
-        event_bytes: &[u8],
-    ) -> Self {
-        Self {
-            node_id: node_id.to_string(),
-            output_id: output_id.to_string(),
-            timestamp_offset_nanos,
-            event_bytes: event_bytes.to_vec(),
+    /// The on-disk length of this entry's record body — the value stored in the
+    /// 4-byte record-length prefix, i.e. everything after that prefix: the two
+    /// length-prefixed ids, the 8-byte timestamp, the 4-byte payload length, and
+    /// the payload itself.
+    ///
+    /// Callers use this to check an entry against [`MAX_RECORD_BYTES`] *before*
+    /// writing, so an oversized message can be skipped rather than aborting the
+    /// whole recording (see [`RecordingWriter::write_entry_skip_oversized`]).
+    pub fn encoded_len(&self) -> usize {
+        2 + self.node_id.len() + 2 + self.output_id.len() + 8 + 4 + self.event_bytes.len()
+    }
+
+    /// Parse a record body into an owned entry, or `None` when `only_node` is
+    /// set and the record belongs to another node (nothing is allocated for
+    /// it). The payload keeps the record's own allocation (its bytes are
+    /// shifted to the front) instead of being copied into a fresh one, which
+    /// for a multi-megabyte payload costs far more than the move.
+    fn from_record(mut record_buf: Vec<u8>, only_node: Option<&str>) -> eyre::Result<Option<Self>> {
+        let (node_id, output_id, timestamp_offset_nanos, payload) = parse_record(&record_buf)?;
+        if only_node.is_some_and(|node| node != node_id) {
+            return Ok(None);
         }
+        let node_id = node_id.to_string();
+        let output_id = output_id.to_string();
+        record_buf.truncate(payload.end);
+        record_buf.drain(..payload.start);
+        Ok(Some(Self {
+            node_id,
+            output_id,
+            timestamp_offset_nanos,
+            event_bytes: record_buf,
+        }))
     }
 }
 
@@ -161,8 +221,7 @@ impl<W: Write> RecordingWriter<W> {
         let node_id_bytes = entry.node_id.as_bytes();
         let output_id_bytes = entry.output_id.as_bytes();
         // Compute as usize first to avoid u32 truncation before the cap check.
-        let record_len_usize =
-            2 + node_id_bytes.len() + 2 + output_id_bytes.len() + 8 + 4 + entry.event_bytes.len();
+        let record_len_usize = entry.encoded_len();
         if record_len_usize > MAX_RECORD_BYTES {
             eyre::bail!(
                 "record too large to write: {record_len_usize} bytes (max {MAX_RECORD_BYTES})"
@@ -200,6 +259,33 @@ impl<W: Write> RecordingWriter<W> {
         self.total_messages += 1;
         self.total_bytes += record_len as u64 + 4; // +4 for record_len field itself
         Ok(())
+    }
+
+    /// Append an entry, but tolerate one that is too large to encode instead of
+    /// failing the whole recording.
+    ///
+    /// Returns `Ok(None)` when the entry was written, or `Ok(Some(len))` — with
+    /// `len` its [`RecordEntry::encoded_len`] — when it exceeded
+    /// [`MAX_RECORD_BYTES`] and was skipped. Nothing is written in the skip case
+    /// and the writer stays usable for subsequent entries. Genuine I/O errors
+    /// still propagate as `Err`.
+    ///
+    /// Recorders attach to a live dataflow whose direct node-to-node zero-copy
+    /// path has no per-message size cap, so a single oversized frame (a large
+    /// image or point cloud) must not abort a capture that is otherwise
+    /// succeeding — the same skip-and-continue resilience the reader and
+    /// `replay-node` already apply. The caller should count the skip and report
+    /// the recording as incomplete.
+    pub fn write_entry_skip_oversized(
+        &mut self,
+        entry: &RecordEntry,
+    ) -> eyre::Result<Option<usize>> {
+        let record_len = entry.encoded_len();
+        if record_len > MAX_RECORD_BYTES {
+            return Ok(Some(record_len));
+        }
+        self.write_entry(entry)?;
+        Ok(None)
     }
 
     /// Write the footer (message/byte totals), flush, and consume the writer.
@@ -247,28 +333,22 @@ impl<R: Read> RecordingReader<R> {
         let Some(record_buf) = self.read_next_record()? else {
             return Ok(None);
         };
-        let (node_id, output_id, timestamp_offset_nanos, event_bytes) = parse_record(&record_buf)?;
-        Ok(Some(RecordEntry::owned(
-            node_id,
-            output_id,
-            timestamp_offset_nanos,
-            event_bytes,
-        )))
+        RecordEntry::from_record(record_buf, None)
     }
 
-    /// Read the next entry's metadata, *without* copying its event payload out
-    /// of the record buffer. Returns `None` at EOF or footer.
+    /// Read the next entry's metadata, *without* its event payload. Returns
+    /// `None` at EOF or footer.
     ///
     /// Every length field is still bounds-checked and both ids are still
     /// validated as UTF-8, so a corrupt record is rejected exactly as by
-    /// [`next_entry`](Self::next_entry); only the payload `.to_vec()` is
-    /// skipped. Use this when the caller needs the entry's ids or timing but
+    /// [`next_entry`](Self::next_entry); only the payload is dropped instead
+    /// of returned. Use this when the caller needs the entry's ids or timing but
     /// not the payload — e.g. counting how many messages each output recorded.
     pub fn next_entry_header(&mut self) -> eyre::Result<Option<RecordEntryHeader>> {
         let Some(record_buf) = self.read_next_record()? else {
             return Ok(None);
         };
-        let (node_id, output_id, timestamp_offset_nanos, _event_bytes) = parse_record(&record_buf)?;
+        let (node_id, output_id, timestamp_offset_nanos, _payload) = parse_record(&record_buf)?;
         Ok(Some(RecordEntryHeader {
             node_id: node_id.to_string(),
             output_id: output_id.to_string(),
@@ -285,26 +365,16 @@ impl<R: Read> RecordingReader<R> {
     /// (potentially multi-megabyte) event payload nor the ids. `dora replay`
     /// spawns one replay process per node, each scanning the whole recording
     /// and keeping only its own node's entries; using
-    /// [`next_entry`](Self::next_entry) there makes every process heap-copy
-    /// every *other* node's payloads just to discard them.
+    /// [`next_entry`](Self::next_entry) there makes every process build an
+    /// entry for every *other* node's payload just to discard it.
     pub fn next_entry_for_node(&mut self, node: &str) -> eyre::Result<Option<RecordEntry>> {
         loop {
             let Some(record_buf) = self.read_next_record()? else {
                 return Ok(None);
             };
-            let (node_id, output_id, timestamp_offset_nanos, event_bytes) =
-                parse_record(&record_buf)?;
-            if node_id != node {
-                // Validated above; skip without allocating the ids or copying
-                // the payload (all borrowed from `record_buf`).
-                continue;
+            if let Some(entry) = RecordEntry::from_record(record_buf, Some(node))? {
+                return Ok(Some(entry));
             }
-            return Ok(Some(RecordEntry::owned(
-                node_id,
-                output_id,
-                timestamp_offset_nanos,
-                event_bytes,
-            )));
         }
     }
 
@@ -356,12 +426,13 @@ impl<R: Read> RecordingReader<R> {
 }
 
 /// Parse a record body into its `(node_id, output_id, timestamp_offset_nanos,
-/// event_bytes)` fields, all **borrowed** from `record_buf`. Callers copy out
-/// only the fields they keep — [`RecordingReader::next_entry_for_node`] compares
-/// the borrowed node id and skips foreign records without allocating anything.
+/// payload)` fields: the ids **borrowed** from `record_buf`, the payload as its
+/// byte range there. Callers copy out only the fields they keep —
+/// [`RecordEntry::from_record`] compares the borrowed node id and skips a
+/// foreign record without allocating anything.
 /// Every length field is bounds-checked via [`read_array`] / [`read_slice`], so
 /// a corrupt or crafted record fails gracefully rather than panicking.
-fn parse_record(record_buf: &[u8]) -> eyre::Result<(&str, &str, u64, &[u8])> {
+fn parse_record(record_buf: &[u8]) -> eyre::Result<(&str, &str, u64, Range<usize>)> {
     let mut pos = 0;
 
     let node_id_len = u16::from_le_bytes(read_array(record_buf, &mut pos)?) as usize;
@@ -374,9 +445,25 @@ fn parse_record(record_buf: &[u8]) -> eyre::Result<(&str, &str, u64, &[u8])> {
 
     let timestamp_offset_nanos = u64::from_le_bytes(read_array(record_buf, &mut pos)?);
     let event_bytes_len = u32::from_le_bytes(read_array(record_buf, &mut pos)?) as usize;
-    let event_bytes = read_slice(record_buf, &mut pos, event_bytes_len)?;
+    let payload_start = pos;
+    read_slice(record_buf, &mut pos, event_bytes_len)?;
 
-    Ok((node_id, output_id, timestamp_offset_nanos, event_bytes))
+    // The fields fully determine the body length, so a length prefix that
+    // claims more is corrupt. Accepting it would swallow the start of the
+    // records that follow as unread trailing bytes, dropping them silently.
+    if pos != record_buf.len() {
+        eyre::bail!(
+            "record length {} disagrees with its fields ({pos} bytes)",
+            record_buf.len()
+        );
+    }
+
+    Ok((
+        node_id,
+        output_id,
+        timestamp_offset_nanos,
+        payload_start..pos,
+    ))
 }
 
 fn read_array<const N: usize>(buf: &[u8], pos: &mut usize) -> eyre::Result<[u8; N]> {
@@ -671,6 +758,38 @@ mod tests {
         );
     }
 
+    /// A length prefix larger than its record's fields must return `Err`, not
+    /// read on into the next record and silently drop it as trailing bytes.
+    #[test]
+    fn overlong_record_len_returns_err_not_dropped_records() {
+        let header = sample_header();
+        let entries = [
+            sample_entry("n", "o", 0, b"first"),
+            sample_entry("n", "o", 1, b"second"),
+            sample_entry("n", "o", 2, b"third"),
+        ];
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        for e in &entries {
+            writer.write_entry(e).unwrap();
+        }
+        writer.finish().unwrap();
+
+        // Stretch the first record's prefix to cover the whole second record.
+        let mut header_bytes = Vec::new();
+        write_header(&mut header_bytes, &header).unwrap();
+        let prefix = header_bytes.len();
+        let stretched = (entries[0].encoded_len() + 4 + entries[1].encoded_len()) as u32;
+        buf[prefix..prefix + 4].copy_from_slice(&stretched.to_le_bytes());
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        let result = reader.next_entry();
+        assert!(
+            result.is_err(),
+            "overlong record length must return Err, got: {result:?}"
+        );
+    }
+
     #[test]
     fn raw_bytes_survive_roundtrip() {
         let header = sample_header();
@@ -727,6 +846,65 @@ mod tests {
             err.to_string().contains("too large"),
             "expected 'too large' error, got: {err}"
         );
+    }
+
+    #[test]
+    fn write_entry_skip_oversized_skips_and_keeps_writing() {
+        let header = sample_header();
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+
+        // A normal entry is written and reported as such.
+        let small = sample_entry("n", "o", 0, b"hello");
+        assert_eq!(writer.write_entry_skip_oversized(&small).unwrap(), None);
+
+        // An oversized entry is skipped (not written), returning its length,
+        // and the writer stays usable.
+        let big = sample_entry("n", "o", 1, &vec![0u8; MAX_RECORD_BYTES + 1]);
+        assert_eq!(
+            writer.write_entry_skip_oversized(&big).unwrap(),
+            Some(big.encoded_len())
+        );
+
+        // A second normal entry still writes after the skip.
+        let small2 = sample_entry("n", "o", 2, b"world");
+        assert_eq!(writer.write_entry_skip_oversized(&small2).unwrap(), None);
+
+        let footer = writer.finish().unwrap();
+        assert_eq!(
+            footer.total_messages, 2,
+            "the oversized entry is not counted"
+        );
+
+        // The recording reads back with exactly the two small entries.
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        let first = reader.next_entry().unwrap().unwrap();
+        assert_eq!(first.event_bytes, b"hello");
+        let second = reader.next_entry().unwrap().unwrap();
+        assert_eq!(second.event_bytes, b"world");
+        assert!(reader.next_entry().unwrap().is_none());
+    }
+
+    #[test]
+    fn encoded_len_matches_written_record_body() {
+        // `encoded_len` must equal the record-body length the writer stamps into
+        // the 4-byte length prefix, so the pre-write size check is exact.
+        let header = sample_header();
+        let entry = sample_entry("node", "output", 7, b"payload-bytes");
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        writer.write_entry(&entry).unwrap();
+        writer.finish().unwrap();
+
+        // The record-body length prefix sits right after the header.
+        let header_len = {
+            let mut cursor = std::io::Cursor::new(&buf);
+            read_header(&mut cursor).unwrap();
+            cursor.position() as usize
+        };
+        let stamped =
+            u32::from_le_bytes(buf[header_len..header_len + 4].try_into().unwrap()) as usize;
+        assert_eq!(stamped, entry.encoded_len());
     }
 
     #[test]

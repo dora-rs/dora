@@ -18,7 +18,7 @@ use dora_message::{
     coordinator_to_cli::{DataflowResult, LogMessage},
     coordinator_to_daemon::{BuildDataflowNodes, DaemonCoordinatorEvent, Timestamped},
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
-    descriptor::{Descriptor, ResolvedNode},
+    descriptor::Descriptor,
 };
 use eyre::{ContextCompat, WrapErr, bail, eyre};
 use futures::future::join_all;
@@ -64,6 +64,27 @@ pub(crate) fn resolve_name(
         Ok(*uuid)
     } else {
         bail!("multiple dataflows found with name `{name}`");
+    }
+}
+
+/// Register `subscriber` and replay the logs buffered before it attached.
+///
+/// `found_tx` is answered *before* the replay. The WS task that owns the
+/// subscriber's receiver waits on it and only resumes draining that receiver
+/// once it fires, so replaying first let the bounded channel fill up: every
+/// further message then took `send_log_message`'s 100 ms timeout, which
+/// stalled the coordinator's event loop and finally evicted the subscriber
+/// with the rest of the backlog lost.
+pub(crate) async fn attach_log_subscriber(
+    log_subscribers: &mut Vec<LogSubscriber>,
+    buffered_log_messages: &mut Vec<LogMessage>,
+    subscriber: LogSubscriber,
+    found_tx: tokio::sync::oneshot::Sender<bool>,
+) {
+    log_subscribers.push(subscriber);
+    let _ = found_tx.send(true);
+    for message in std::mem::take(buffered_log_messages) {
+        send_log_message(log_subscribers, &message).await;
     }
 }
 
@@ -113,18 +134,24 @@ pub(crate) async fn send_log_message(
     log_subscribers.retain(|s| !s.is_closed());
 }
 
+/// Forward a topic debug frame to its subscribers, then remove every closed
+/// subscriber and return them.
+///
+/// The daemons keep streaming to a removed subscriber until they get a
+/// `StopTopicDebugStream`, so the caller must tear the returned subscriptions
+/// down — see [`crate::topic_debug::forward_topic_frames`].
 pub(crate) async fn send_topic_frames(
     topic_subscribers: &mut BTreeMap<Uuid, TopicSubscriber>,
     subscription_ids: Vec<Uuid>,
     payload: Vec<u8>,
-) {
+) -> Vec<(Uuid, TopicSubscriber)> {
     if payload.len() > MAX_TOPIC_DEBUG_PAYLOAD_BYTES {
         tracing::warn!(
             "dropping oversized topic debug payload ({} bytes) for {} subscription(s)",
             payload.len(),
             subscription_ids.len()
         );
-        return;
+        return Vec::new();
     }
     let shared_payload: std::sync::Arc<[u8]> = payload.into();
     const MAX_CONSECUTIVE_TOPIC_SEND_TIMEOUTS: usize = 100;
@@ -164,7 +191,9 @@ pub(crate) async fn send_topic_frames(
             }
         }
     }
-    topic_subscribers.retain(|_, s| !s.is_closed());
+    topic_subscribers
+        .extract_if(.., |_, s| s.is_closed())
+        .collect()
 }
 
 pub(crate) fn dataflow_result(
@@ -476,26 +505,35 @@ pub(crate) async fn stop_node(
 /// "multiple matching daemon connections", making `dora logs` unavailable for
 /// a node that is definitely running on one specific daemon.
 ///
-/// Archived dataflows keep no `node_to_daemon` map, so they still fall back to
-/// the machine-based derivation. Archived takes priority when a dataflow id is
-/// somehow present in both, matching the previous behavior.
+/// An archived dataflow keeps the `node_to_daemon` map it had when it
+/// finished, so a node placed by `deploy.labels` or added at runtime with
+/// `dora node add` resolves to the daemon that actually ran it. That daemon is
+/// used while it is still connected. If it has disconnected since, a daemon
+/// that re-registered for the same machine is used instead; a node that was
+/// never assigned falls back to its `deploy.machine`. Archived takes priority
+/// when a dataflow id is somehow present in both, matching the previous
+/// behavior.
 fn resolve_log_daemon_id(
     running_node_to_daemon: Option<&BTreeMap<NodeId, DaemonId>>,
-    archived_nodes: Option<&BTreeMap<NodeId, ResolvedNode>>,
+    archived: Option<&ArchivedDataflow>,
     dataflow_id: Uuid,
     node_id: &NodeId,
     daemon_connections: &DaemonConnections,
 ) -> eyre::Result<DaemonId> {
-    if let Some(nodes) = archived_nodes {
-        // `nodes` is keyed by `NodeId` and every `ResolvedNode.id` equals its map
-        // key (see `resolve_aliases_and_set_defaults_in_topology`, which also
-        // rejects duplicate ids), so a direct lookup is equivalent to — and
-        // cheaper than — scanning every entry for a matching `id`. The previous
-        // `Vec` scan additionally carried an "more than one machine" arm that the
-        // map key uniqueness made unreachable.
-        let machine_id = match nodes.get(node_id) {
-            Some(node) => node.deploy.as_ref().and_then(|d| d.machine.clone()),
-            None => bail!("No machine contains {}/{}", dataflow_id, node_id),
+    if let Some(archived) = archived {
+        let machine_id = match archived.node_to_daemon.get(node_id) {
+            Some(daemon_id) if daemon_connections.get(daemon_id).is_some() => {
+                return Ok(daemon_id.clone());
+            }
+            Some(daemon_id) => daemon_id.machine_id().map(str::to_owned),
+            // `nodes` is keyed by `NodeId` and every `ResolvedNode.id` equals its
+            // map key (see `resolve_aliases_and_set_defaults_in_topology`, which
+            // also rejects duplicate ids), so a direct lookup is equivalent to —
+            // and cheaper than — scanning every entry for a matching `id`.
+            None => match archived.nodes.get(node_id) {
+                Some(node) => node.deploy.as_ref().and_then(|d| d.machine.clone()),
+                None => bail!("No machine contains {}/{}", dataflow_id, node_id),
+            },
         };
 
         let daemon_ids: Vec<_> = match &machine_id {
@@ -549,7 +587,7 @@ pub(crate) async fn retrieve_logs(
         running_dataflows
             .get(&dataflow_id)
             .map(|d| &d.node_to_daemon),
-        archived_dataflows.get(&dataflow_id).map(|d| &d.nodes),
+        archived_dataflows.get(&dataflow_id),
         dataflow_id,
         &node_id,
         daemon_connections,
@@ -696,17 +734,16 @@ pub(crate) async fn build_dataflow(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Start `dataflow` as described by `launch`, which the returned
+/// `RunningDataflow` keeps so that `dora restart` can relaunch it the same
+/// way.
 pub(crate) async fn start_dataflow(
-    build_id: Option<BuildId>,
-    session_id: SessionId,
     dataflow: Descriptor,
-    local_working_dir: Option<PathBuf>,
+    launch: state::LaunchContext,
     name: Option<String>,
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
     uv: bool,
-    write_events_to: Option<PathBuf>,
 ) -> eyre::Result<RunningDataflow> {
     let SpawnedDataflow {
         uuid,
@@ -714,14 +751,14 @@ pub(crate) async fn start_dataflow(
         nodes,
         node_to_daemon,
     } = spawn_dataflow(
-        build_id,
-        session_id,
+        launch.build_id,
+        launch.session_id,
         dataflow.clone(),
-        local_working_dir,
+        launch.local_working_dir.clone(),
         daemon_connections,
         clock,
         uv,
-        write_events_to,
+        launch.write_events_to.clone(),
     )
     .await?;
     Ok(RunningDataflow {
@@ -758,8 +795,8 @@ pub(crate) async fn start_dataflow(
         created_at: state::now_millis(),
         store_generation: 0,
         last_recovery_attempt: BTreeMap::new(),
-        last_replay_attempt: BTreeMap::new(),
         uv,
+        launch,
         state_log_sequence: 0,
         state_log: Vec::new(),
     })
@@ -887,6 +924,67 @@ mod tests {
         assert!(err.to_string().contains("ghost"), "got: {err}");
     }
 
+    fn archived(node_to_daemon: BTreeMap<NodeId, DaemonId>) -> ArchivedDataflow {
+        ArchivedDataflow {
+            name: None,
+            nodes: BTreeMap::new(),
+            node_to_daemon,
+            spawn_error: None,
+        }
+    }
+
+    #[test]
+    fn archived_logs_use_the_daemon_the_node_ran_on() {
+        // The node was placed on the named daemon `gpu-box` (by
+        // `deploy.labels` or `dora node add`), not by `deploy.machine`. The
+        // machine-based derivation would pick the unnamed daemon instead.
+        let node = NodeId::from("detector".to_string());
+        let gpu_box = DaemonId::new(Some("gpu-box".to_string()));
+        let unnamed = DaemonId::new(None);
+
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(gpu_box.clone(), dummy_connection());
+        daemon_connections.add(unnamed.clone(), dummy_connection());
+
+        let archived = archived(BTreeMap::from([(node.clone(), gpu_box.clone())]));
+        let resolved = resolve_log_daemon_id(
+            None,
+            Some(&archived),
+            Uuid::nil(),
+            &node,
+            &daemon_connections,
+        )
+        .expect("archived node must resolve to the daemon it ran on");
+        assert_eq!(resolved, gpu_box);
+    }
+
+    #[test]
+    fn archived_logs_follow_a_daemon_that_reconnected() {
+        // The daemon that ran the node disconnected after the dataflow
+        // finished and re-registered for the same machine under a new id. Its
+        // stale id must not be returned, and the node's `deploy.machine` (none
+        // here) must not send the request to the unnamed daemon.
+        let node = NodeId::from("detector".to_string());
+        let gone = DaemonId::new(Some("gpu-box".to_string()));
+        let reconnected = DaemonId::new(Some("gpu-box".to_string()));
+        let unnamed = DaemonId::new(None);
+
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(reconnected.clone(), dummy_connection());
+        daemon_connections.add(unnamed, dummy_connection());
+
+        let archived = archived(BTreeMap::from([(node.clone(), gone)]));
+        let resolved = resolve_log_daemon_id(
+            None,
+            Some(&archived),
+            Uuid::nil(),
+            &node,
+            &daemon_connections,
+        )
+        .expect("the reconnected daemon must be found");
+        assert_eq!(resolved, reconnected);
+    }
+
     #[test]
     fn unknown_dataflow_errors() {
         let daemon_connections = DaemonConnections::default();
@@ -993,8 +1091,8 @@ mod tests {
             created_at: 0,
             store_generation: 0,
             last_recovery_attempt: BTreeMap::new(),
-            last_replay_attempt: BTreeMap::new(),
             uv: false,
+            launch: state::LaunchContext::unknown(),
             state_log_sequence: 0,
             state_log: Vec::new(),
             daemon_ack_sequence: BTreeMap::new(),
@@ -1210,6 +1308,160 @@ mod tests {
             subscribers[0].record_timeout(),
             3,
             "a filtered message must not reset the timeout streak"
+        );
+    }
+
+    /// Attaching to a dataflow that buffered more logs than the subscriber's
+    /// channel holds must deliver the whole backlog. The WS task only drains
+    /// the channel after `found_tx` fires, so answering it after the replay
+    /// left the channel full: the replay hit 100 send timeouts, stalled the
+    /// event loop and evicted the subscriber with most of the backlog lost.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn attach_log_subscriber_delivers_backlog_larger_than_channel() {
+        const BACKLOG: usize = 200;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let (found_tx, found_rx) = tokio::sync::oneshot::channel::<bool>();
+
+        // Mirrors `ws_control`: wait for the subscribe answer, then drain.
+        let drain = tokio::spawn(async move {
+            assert!(found_rx.await.expect("found_tx dropped"));
+            let mut received = 0;
+            while rx.recv().await.is_some() {
+                received += 1;
+            }
+            received
+        });
+
+        let mut subscribers = Vec::new();
+        let mut buffered = vec![test_log_message(); BACKLOG];
+        attach_log_subscriber(
+            &mut subscribers,
+            &mut buffered,
+            LogSubscriber::new(log::LevelFilter::Info, tx),
+            found_tx,
+        )
+        .await;
+
+        assert!(buffered.is_empty(), "the backlog is handed over once");
+        assert_eq!(subscribers.len(), 1, "subscriber must not be evicted");
+        drop(subscribers); // close the channel so the drain task finishes
+        assert_eq!(drain.await.unwrap(), BACKLOG);
+    }
+
+    /// A topic subscriber that got closed (its CLI went away) is evicted when
+    /// the next frame arrives; its daemon streams must be stopped at the same
+    /// time. Evicting it silently left the daemons streaming until the
+    /// dataflow ended, and a later `TopicUnsubscribe` found nothing to stop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn closed_topic_subscriber_stops_its_daemon_streams() {
+        let dataflow_uuid = Uuid::new_v4();
+        let daemon = DaemonId::new(Some("healthy".to_string()));
+        let mut daemon_connections = DaemonConnections::default();
+        let (conn, received) = healthy_daemon();
+        daemon_connections.add(daemon.clone(), conn);
+
+        let subscription_id = Uuid::new_v4();
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        drop(rx); // the CLI side is gone
+        let subscriber = TopicSubscriber::new(
+            BTreeMap::from([(
+                daemon.clone(),
+                vec![(NodeId::from("sender".to_string()), "message".into())],
+            )]),
+            tx,
+        );
+        let mut dataflow = dataflow_on(dataflow_uuid, [daemon]);
+        dataflow
+            .topic_subscribers
+            .insert(subscription_id, subscriber);
+        let mut running_dataflows = HashMap::from([(dataflow_uuid, dataflow)]);
+
+        crate::topic_debug::forward_topic_frames(
+            &mut running_dataflows,
+            &mut daemon_connections,
+            dataflow_uuid,
+            vec![subscription_id],
+            vec![1, 2, 3],
+            &HLC::default(),
+        )
+        .await;
+
+        assert!(
+            running_dataflows[&dataflow_uuid]
+                .topic_subscribers
+                .is_empty(),
+            "the closed subscriber must be evicted"
+        );
+        // The stop is sent from a spawned task; give it a moment to arrive.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while received.lock().await.is_empty() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let received = received.lock().await;
+        assert_eq!(received.len(), 1, "expected one stop request: {received:?}");
+        assert!(
+            received[0].contains("StopTopicDebugStream")
+                && received[0].contains(&subscription_id.to_string()),
+            "daemon must be told to stop the evicted stream, got {}",
+            received[0]
+        );
+    }
+
+    /// Evicting a subscriber must not wait for the daemon's reply. The daemon
+    /// streaming the frames may have its WS task blocked on the full event
+    /// channel, where it can neither forward the stop nor read the reply;
+    /// awaiting it inside the event loop would stall the whole coordinator
+    /// until `TCP_READ_TIMEOUT`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn evicting_a_topic_subscriber_does_not_wait_for_the_daemon() {
+        let dataflow_uuid = Uuid::new_v4();
+        let daemon = DaemonId::new(Some("stalled".to_string()));
+        // Accepts outgoing commands but never replies, like a daemon WS task
+        // that is blocked on `event_tx.send`.
+        let (tx, _stalled_rx) = tokio::sync::mpsc::channel::<String>(8);
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(
+            daemon.clone(),
+            DaemonConnection::new(
+                tx,
+                std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+                BTreeMap::new(),
+            ),
+        );
+
+        let subscription_id = Uuid::new_v4();
+        let (sub_tx, sub_rx) = tokio::sync::mpsc::channel(4);
+        drop(sub_rx);
+        let subscriber = TopicSubscriber::new(
+            BTreeMap::from([(
+                daemon.clone(),
+                vec![(NodeId::from("sender".to_string()), "message".into())],
+            )]),
+            sub_tx,
+        );
+        let mut dataflow = dataflow_on(dataflow_uuid, [daemon]);
+        dataflow
+            .topic_subscribers
+            .insert(subscription_id, subscriber);
+        let mut running_dataflows = HashMap::from([(dataflow_uuid, dataflow)]);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            crate::topic_debug::forward_topic_frames(
+                &mut running_dataflows,
+                &mut daemon_connections,
+                dataflow_uuid,
+                vec![subscription_id],
+                vec![1, 2, 3],
+                &HLC::default(),
+            ),
+        )
+        .await
+        .expect("frame forwarding must not block on the evicted subscriber's teardown");
+        assert!(
+            running_dataflows[&dataflow_uuid]
+                .topic_subscribers
+                .is_empty()
         );
     }
 }

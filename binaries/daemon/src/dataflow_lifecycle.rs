@@ -4,7 +4,7 @@ use crate::log::DataflowLogger;
 use crate::spawn::Spawner;
 use crate::{
     CoreNodeKindExt, Daemon, DebugSchemaCache, Event, InputDeadline, OutputId, RunningDataflow,
-    STDERR_LOG_LINES_MAX, node_inputs, output_routing, rebuild_debug_topic_stream,
+    STDERR_LOG_LINES_MAX, node_inputs, output_routing, prepare_debug_topic_frame,
     retain_debug_schema, spawn,
 };
 use crossbeam::queue::ArrayQueue;
@@ -165,6 +165,21 @@ impl Daemon {
         uv: bool,
         write_events_to: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
+        // Before anything below touches state keyed by the dataflow id (the
+        // pool subscriber, the endpoint queryable), all of which belongs to the
+        // live dataflow.
+        if self.running.contains_key(&dataflow_id) {
+            bail!("there is already a running dataflow with ID `{dataflow_id}`")
+        }
+        // The coordinator validates this too; check again here, where a bad
+        // value would panic `Duration::from_secs_f64`, so an older coordinator
+        // cannot crash this daemon (same as `AddNode` / `ReplaceNode`).
+        // Operator ids likewise: they become `DataId`s via the panicking
+        // `DataId::from`.
+        for node in nodes.values() {
+            dora_core::descriptor::validate::check_node_timing_values(node)?;
+            dora_core::descriptor::validate::check_operator_ids(node)?;
+        }
         // Reclaim `/dev/shm` segments a previous crash of this dataflow's
         // nodes left behind. Scoped to the nodes this daemon spawns, since
         // a co-located daemon may be starting the other half of the same
@@ -212,32 +227,34 @@ impl Daemon {
         // stalling the event loop on its own. Same reason the memory-pool
         // subscriber above runs off the loop: a degraded inter-daemon link must
         // not wedge this spawn handler and every event queued behind it.
-        let wanted = crate::spawn::remote_sources_of_local_nodes(&nodes, &spawn_nodes);
+        let wanted = crate::spawn::wanted_remote_sources(&nodes, &spawn_nodes);
         let local_endpoints: BTreeMap<NodeId, String> = listeners
             .iter()
             .filter_map(|(id, l)| Some((id.clone(), l.routable()?.to_string())))
             .collect();
-        let endpoint_exchange = (!wanted.is_empty() || !local_endpoints.is_empty()).then(|| {
+        // Every daemon of a dataflow that spans more than one takes part, even
+        // with nothing to announce or ask: its reply is what tells the others
+        // they can reach it at all (see `endpoint_exchange`). A daemon with no
+        // upstream elsewhere declares and returns at once.
+        let peers = crate::spawn::remote_placements(&nodes, &spawn_nodes);
+        let mut endpoint_exchange = None;
+        if crate::spawn::spans_daemons(&nodes, &spawn_nodes) {
             let session = self.zenoh_session.clone();
             let daemon_id = self.daemon_id.clone();
-            tokio::spawn(crate::spawn::endpoint_exchange::exchange(
+            let exchange_logger = logger.try_clone().await.ok();
+            endpoint_exchange = Some(tokio::spawn(crate::spawn::endpoint_exchange::exchange(
                 session,
                 dataflow_id,
                 daemon_id,
                 local_endpoints,
                 wanted,
-            ))
-        });
-        let dataflow = match self.running.entry(dataflow_id) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                self.working_dir
-                    .insert(dataflow_id, base_working_dir.clone());
-                entry.insert(dataflow)
-            }
-            std::collections::hash_map::Entry::Occupied(_) => {
-                bail!("there is already a running dataflow with ID `{dataflow_id}`")
-            }
-        };
+                peers,
+                exchange_logger,
+            )));
+        }
+        self.working_dir
+            .insert(dataflow_id, base_working_dir.clone());
+        let dataflow = self.running.entry(dataflow_id).or_insert(dataflow);
 
         let mut stopped = Vec::new();
 
@@ -408,6 +425,7 @@ impl Daemon {
                     let clock = self.clock.clone();
                     let node_id = node.id.clone();
                     let mut finished_rx = dataflow.finished_tx.subscribe();
+                    let watched_outputs = dataflow.debug_watched_outputs.clone();
                     tokio::spawn(async move {
                         // Keep the `@schema` subscriber alive for the task's life.
                         let _schema_subscriber = schema_subscriber;
@@ -421,7 +439,7 @@ impl Daemon {
                                     // Node publishes raw payload + encoded metadata
                                     // attachment (see `DoraNode::zenoh_publish`).
                                     use dora_message::metadata::Metadata;
-                                    let Some(mut metadata) = sample.attachment().and_then(|a| {
+                                    let Some(metadata) = sample.attachment().and_then(|a| {
                                         dora_message::decode::<Metadata>(&a.to_bytes()).ok()
                                     }) else {
                                         continue;
@@ -435,48 +453,22 @@ impl Daemon {
                                     if metadata.is_startup_marker() {
                                         continue;
                                     }
+                                    let output = OutputId(node_id.clone(), output_id.clone());
+                                    // Borrows contiguous (heap or SHM) payloads;
+                                    // the frame below copies only when watched.
                                     let payload = sample.payload().to_bytes();
-                                    let data = {
-                                        let mut cached =
-                                            schema_cache.lock().unwrap_or_else(|e| e.into_inner());
-                                        rebuild_debug_topic_stream(
-                                            &mut cached,
-                                            &metadata.parameters,
-                                            &payload[..],
-                                        )
-                                    };
-                                    let Some(data) = data else {
-                                        // schema-once batch whose schema hasn't been
-                                        // cached yet — drop this inspection frame
-                                        // (transient, recovers once `@schema` or the
-                                        // producer's next full-stream refresh arrives).
+                                    let frame = prepare_debug_topic_frame(
+                                        &mut schema_cache.lock().unwrap_or_else(|e| e.into_inner()),
+                                        watched_outputs.contains(&output),
+                                        metadata,
+                                        &payload[..],
+                                    );
+                                    let Some((metadata, data)) = frame else {
                                         continue;
                                     };
-                                    // `data` is now always a full self-describing
-                                    // stream, so drop the internal wire keys — a
-                                    // `_schema_hash` here would contradict the
-                                    // rebuilt payload for any consumer applying the
-                                    // wire rule "hash present => schema-less batch".
-                                    dora_message::metadata::strip_internal_parameters(
-                                        &mut metadata.parameters,
-                                    );
-                                    // Record the true on-wire size so `dora topic
-                                    // info` measures the schema-less batch that
-                                    // actually travelled, not the rebuilt stream
-                                    // (which prepends the schema to every frame even
-                                    // though it ships once). For a full
-                                    // self-describing frame this equals `data.len()`;
-                                    // for a schema-once batch it excludes the
-                                    // prepended schema block (dora-rs/dora#2584).
-                                    metadata.parameters.insert(
-                                        dora_message::metadata::WIRE_SIZE.to_string(),
-                                        dora_message::metadata::Parameter::Integer(
-                                            payload.len() as i64
-                                        ),
-                                    );
                                     let event = Event::DebugTopicData {
                                         dataflow_id,
-                                        output_id: OutputId(node_id.clone(), output_id.clone()),
+                                        output_id: output,
                                         metadata,
                                         data: Some(data),
                                     };
@@ -503,7 +495,7 @@ impl Daemon {
         // before nodes spawn, and a node reads its dial list once at startup.
         // A task that panicked or was cancelled resolves to "no remote
         // endpoints", which is the same degradation as an expired deadline.
-        let (remote_endpoints, endpoint_queryable) = match endpoint_exchange {
+        let (remote_endpoints, exchange_handle) = match endpoint_exchange {
             Some(task) => task.await.unwrap_or_else(|err| {
                 tracing::warn!("zenoh node-endpoint exchange failed: {err}");
                 Default::default()
@@ -516,7 +508,7 @@ impl Daemon {
             self.zenoh_listen_endpoint.as_deref(),
             &remote_endpoints,
         ));
-        dataflow.endpoint_queryable = endpoint_queryable;
+        dataflow.endpoint_exchange = exchange_handle;
 
         let spawner = Spawner {
             dataflow_id,
@@ -547,6 +539,18 @@ impl Daemon {
             .collect();
         let mut output_routing =
             output_routing::compute_output_routing(&nodes, &spawn_nodes, &routable_producers);
+        let mut backpressured_outputs = output_routing::backpressured_outputs(&nodes, |_| true);
+        dataflow.remote_backpressured_outputs =
+            output_routing::backpressured_outputs(&nodes, |consumer| {
+                !spawn_nodes.contains(consumer)
+            })
+            .into_iter()
+            .flat_map(|(producer, outputs)| {
+                outputs
+                    .into_iter()
+                    .map(move |output| OutputId(producer.clone(), output))
+            })
+            .collect();
 
         let mut tasks = Vec::new();
 
@@ -630,6 +634,7 @@ impl Daemon {
                         node_stderr_most_recent,
                         node_write_events_to,
                         output_routing.remove(&node_id).unwrap_or_default(),
+                        backpressured_outputs.remove(&node_id).unwrap_or_default(),
                         &mut logger,
                     )
                     .await

@@ -17,7 +17,7 @@ use dora_core::{
         validate,
     },
     topics::{
-        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, MulticastScouting,
+        DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST, MulticastScouting,
         open_zenoh_session_with_listen, validate_zenoh_listen, zenoh_bind_address_for,
     },
     uhlc::{self, HLC},
@@ -27,7 +27,9 @@ use dora_message::{
     common::{DaemonId, DataMessage, LogLevel, NodeError},
     coordinator_to_cli::DataflowResult,
     coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes},
-    daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent},
+    daemon_to_coordinator::{
+        CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DataflowDaemonResult,
+    },
     daemon_to_node::NodeEvent,
     descriptor::NodeSource,
     node_to_daemon::Timestamped,
@@ -133,6 +135,7 @@ pub mod bench_support {
             clock,
             None,
             false, // bench: no remote receivers
+            None,
         )
         .await;
     }
@@ -143,6 +146,7 @@ mod coordinator_events;
 mod dataflow_lifecycle;
 mod debug_topic;
 mod dora_events;
+mod dynamic_peering;
 pub(crate) mod event_types;
 mod extension_table;
 mod extract_err_from_stderr;
@@ -161,10 +165,12 @@ mod shutdown;
 mod socket_stream_utils;
 mod spawn;
 #[cfg(test)]
+mod test_tracing;
+#[cfg(test)]
 mod tests;
 mod zenoh_bind;
 
-pub(crate) use debug_topic::{DebugSchemaCache, rebuild_debug_topic_stream, retain_debug_schema};
+pub(crate) use debug_topic::{DebugSchemaCache, prepare_debug_topic_frame, retain_debug_schema};
 pub(crate) use event_types::{
     CONTROL_EVENT_HEADROOM, DaemonNodeEvent, DoraEvent, Event, InterDaemonEvent,
     NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound, send_with_timestamp,
@@ -216,6 +222,18 @@ const COORDINATOR_RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
 /// (dora-rs/dora#1998). A coordinator that stays gone past this window is
 /// treated as permanently gone -> exit rather than orphan (dora-rs/dora#1996).
 const COORDINATOR_RECONNECT_RETRY_WINDOW: Duration = Duration::from_secs(30);
+/// How long the coordinator may stay silent before the daemon treats the
+/// connection as dead and reconnects.
+const COORDINATOR_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a connection must stay up after a finish report was queued on it
+/// before the report counts as delivered. A report the connection lost —
+/// dropped by a failing writer, or swallowed by a half-open link — ends the
+/// connection on this side only once the coordinator has been silent for
+/// [`COORDINATOR_HEARTBEAT_TIMEOUT`]. If only the daemon→coordinator
+/// direction is dead, the coordinator keeps sending heartbeats (every 3 s)
+/// until its own 30 s daemon timeout, so the worst case is 30 s + 3 s + 20 s
+/// plus one watchdog tick (5 s): 58 s. This leaves margin above that.
+const FINISH_REPORT_CONFIRM_AFTER: Duration = Duration::from_secs(75);
 
 /// Records a failed reconnect attempt and reports whether the retry window has
 /// elapsed (so the daemon should give up and exit). `deadline` tracks the
@@ -339,9 +357,27 @@ pub struct RunDataflowOptions {
     /// (dora-rs/dora#2920). Off by default: for a long-lived dataflow the
     /// timer is exactly what keeps it alive.
     pub exit_when_nodes_finish: Option<bool>,
+    /// Fail the run if the daemon dropped a data message on an input that
+    /// declared `queue_policy: backpressure` — a promise not to drop that
+    /// the daemon could not keep (`FaultToleranceStats::
+    /// lost_backpressure_messages`).
+    ///
+    /// Off by default: a `warn!` per drop is the right level for a live
+    /// dataflow. `dora replay` turns it on, because every replayed input is
+    /// a backpressure input and a replay that did not deliver every recorded
+    /// message is not the reproduction it claims to be (dora-rs/dora#3397).
+    /// Drops on `drop_oldest` inputs never fail a run: those receivers chose
+    /// to lose messages over stalling their producer.
+    pub fail_on_lost_backpressure_messages: bool,
 }
 
 impl RunDataflowOptions {
+    /// Sets [`Self::fail_on_lost_backpressure_messages`].
+    pub fn fail_on_lost_backpressure_messages(mut self, fail: bool) -> Self {
+        self.fail_on_lost_backpressure_messages = fail;
+        self
+    }
+
     /// Sets [`Self::exit_when_nodes_finish`].
     ///
     /// A setter rather than a struct literal because the type is
@@ -390,6 +426,14 @@ pub struct Daemon {
     pub(crate) exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     pub(crate) exit_when_all_finished: bool,
     pub(crate) dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
+    pub(crate) pending_finished_dataflows: BTreeMap<Uuid, DataflowDaemonResult>,
+    /// Finish reports handed to the current coordinator connection, with when.
+    /// A successful `send_event` only means the report was queued for the WS
+    /// writer: a writer that fails its socket write drops it, and a half-open
+    /// link swallows it, so it is kept until the connection has outlived
+    /// [`FINISH_REPORT_CONFIRM_AFTER`], and resent on reconnect otherwise
+    /// (dora-rs/dora#3602).
+    pub(crate) unconfirmed_finished_dataflows: BTreeMap<Uuid, (DataflowDaemonResult, Instant)>,
     pub(crate) clock: Arc<uhlc::HLC>,
     pub(crate) ft_stats: Arc<FaultToleranceStats>,
     pub(crate) zenoh_session: zenoh::Session,
@@ -623,12 +667,6 @@ impl Daemon {
         } else {
             None
         };
-        // Only a routable listener is worth advertising — handing `127.0.0.1`
-        // to a daemon on another machine would point it at its own loopback,
-        // and dialing it would cost that daemon its multicast fallback for
-        // nothing. A single-machine deployment therefore advertises nothing and
-        // keeps exactly the behavior it has today.
-        let advertise_listen_endpoint = !zenoh_bind.addr().is_loopback();
         let clock = Arc::new(HLC::default());
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
         // Tracks whether we've ever connected to the coordinator. The initial
@@ -680,9 +718,15 @@ impl Daemon {
                         // On a reconnect the session is already open, so the
                         // endpoint it *bound* is the truth — not the one we
                         // reserved, which may be a port we lost.
-                        advertise: if !advertise_listen_endpoint {
-                            AdvertiseListener::Never
-                        } else if let Some(d) = daemon.as_ref() {
+                        //
+                        // A loopback listener is advertised like any other.
+                        // The coordinator hands it only to daemons that
+                        // reached it over loopback themselves — i.e. on this
+                        // host — so a daemon elsewhere is never pointed at
+                        // its own loopback, and two daemons on one machine
+                        // link without multicast scouting
+                        // (`DaemonConnections::zenoh_endpoints_for`).
+                        advertise: if let Some(d) = daemon.as_ref() {
                             AdvertiseListener::Bound(d.zenoh_listen_endpoint.clone())
                         } else {
                             AdvertiseListener::Reserved
@@ -930,6 +974,7 @@ impl Daemon {
     ) -> eyre::Result<DataflowResult> {
         let RunDataflowOptions {
             exit_when_nodes_finish,
+            fail_on_lost_backpressure_messages,
         } = options;
         let working_dir = dora_core::descriptor::canonicalize_working_dir(
             working_dir_override.as_deref(),
@@ -979,12 +1024,12 @@ impl Daemon {
             .iter()
             .any(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic());
         if has_dynamic_nodes {
-            // Spawn local listener for dynamic nodes
-            let _listen_port = local_listener::spawn_listener_loop(
-                (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
-                events_tx,
-            )
-            .await?;
+            let port = local_listener::run_listen_port(
+                std::env::var(DORA_DAEMON_LOCAL_LISTEN_PORT_ENV)
+                    .ok()
+                    .as_deref(),
+            )?;
+            local_listener::spawn_run_listener(port, events_tx).await?;
         }
         let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
             inner: Event::DynamicNode(e.inner),
@@ -1103,7 +1148,8 @@ impl Daemon {
                 }
             });
 
-        let (mut dataflow_results, ()) = future::try_join(run_result, spawn_result).await?;
+        let ((mut dataflow_results, ft_stats), ()) =
+            future::try_join(run_result, spawn_result).await?;
 
         let node_results = match dataflow_results.remove(&dataflow_id) {
             Some(results) => results,
@@ -1116,6 +1162,23 @@ impl Daemon {
                 return Err(eyre::eyre!("no node results for dataflow_id {dataflow_id}"));
             }
         };
+
+        // A node failure is the better diagnosis of a run that also lost
+        // messages (the loss is usually its consequence), so it is reported
+        // first and the loss only fails an otherwise clean run.
+        let lost = ft_stats
+            .lost_backpressure_messages
+            .load(atomic::Ordering::Relaxed);
+        if fail_on_lost_backpressure_messages
+            && lost > 0
+            && node_results.values().all(Result::is_ok)
+        {
+            bail!(
+                "{lost} message(s) on inputs with queue_policy: backpressure were dropped \
+                 (see the daemon's `dropping message` warnings above), so not every \
+                 output reached its consumer"
+            );
+        }
 
         Ok(DataflowResult {
             uuid: dataflow_id,
@@ -1138,7 +1201,7 @@ impl Daemon {
         health_check_interval_duration: Option<Duration>,
         inter_daemon_peer: Option<String>,
         disable_multicast: bool,
-    ) -> eyre::Result<DaemonRunResult> {
+    ) -> eyre::Result<(DaemonRunResult, Arc<FaultToleranceStats>)> {
         // Single-shot path (`dora run`): build the daemon and run one event
         // loop. The reconnecting daemon binary instead builds the daemon once
         // and reuses it across reconnects (see `run_inner_with_builds`), so that node
@@ -1171,13 +1234,15 @@ impl Daemon {
             bind_nodes_to_parent,
         )
         .await?;
-        daemon
+        let ft_stats = daemon.ft_stats.clone();
+        let results = daemon
             .run_inner(
                 external_events,
                 &mut dora_events_rx,
                 health_check_interval_duration,
             )
-            .await
+            .await?;
+        Ok((results, ft_stats))
     }
 
     /// Construct the node-serving daemon state: open the zenoh session, spawn
@@ -1261,7 +1326,6 @@ impl Daemon {
                 } else {
                     MulticastScouting::Allowed
                 },
-                ..Default::default()
             })
             .await
             .wrap_err("failed to open zenoh session")?;
@@ -1303,6 +1367,8 @@ impl Daemon {
             exit_when_done,
             exit_when_all_finished: false,
             dataflow_node_results: BTreeMap::new(),
+            pending_finished_dataflows: BTreeMap::new(),
+            unconfirmed_finished_dataflows: BTreeMap::new(),
             warned_late_outputs: HashSet::new(),
             clock,
             ft_stats: Default::default(),
@@ -1325,6 +1391,70 @@ impl Daemon {
         };
 
         Ok((daemon, dora_events_rx))
+    }
+
+    /// Sends the finish reports that may not have reached the coordinator:
+    /// those that failed to send, and those sent on a connection that has
+    /// since been replaced. Called at the start of every coordinator
+    /// connection, before the `StatusReport`, so the coordinator learns that
+    /// a dataflow finished here before it could read the dataflow's absence
+    /// from the report as a crash and auto-recover it. The coordinator
+    /// ignores a report for a dataflow it already saw finish.
+    pub(crate) async fn report_pending_finished_dataflows(&mut self) -> eyre::Result<()> {
+        let Some(sender) = &self.coordinator_sender else {
+            return Ok(());
+        };
+        let unconfirmed = std::mem::take(&mut self.unconfirmed_finished_dataflows);
+        for (dataflow_id, (result, _sent_at)) in unconfirmed {
+            self.pending_finished_dataflows
+                .entry(dataflow_id)
+                .or_insert(result);
+        }
+
+        let pending: Vec<_> = self
+            .pending_finished_dataflows
+            .iter()
+            .map(|(dataflow_id, result)| (*dataflow_id, result.clone()))
+            .collect();
+        for (dataflow_id, result) in pending {
+            self.send_all_nodes_finished(sender, dataflow_id, &result)
+                .await
+                .wrap_err("failed to retry dataflow finish report to dora-coordinator")?;
+            self.pending_finished_dataflows.remove(&dataflow_id);
+            self.unconfirmed_finished_dataflows
+                .insert(dataflow_id, (result, Instant::now()));
+        }
+
+        Ok(())
+    }
+
+    /// Forgets the finish reports whose connection has stayed up for
+    /// [`FINISH_REPORT_CONFIRM_AFTER`] since they were sent.
+    pub(crate) fn confirm_finished_dataflow_reports(&mut self) {
+        self.unconfirmed_finished_dataflows
+            .retain(|_, (_, sent_at)| sent_at.elapsed() < FINISH_REPORT_CONFIRM_AFTER);
+    }
+
+    pub(crate) async fn send_all_nodes_finished(
+        &self,
+        sender: &coordinator::CoordinatorSender,
+        dataflow_id: Uuid,
+        result: &DataflowDaemonResult,
+    ) -> eyre::Result<()> {
+        let msg = serde_json::to_vec(&Timestamped {
+            inner: CoordinatorRequest::Event {
+                daemon_id: self.daemon_id.clone(),
+                event: DaemonEvent::AllNodesFinished {
+                    dataflow_id,
+                    result: result.clone(),
+                },
+            },
+            timestamp: self.clock.new_timestamp(),
+        })?;
+        sender
+            .send_event(&msg)
+            .await
+            .wrap_err("failed to report dataflow finish to dora-coordinator")
     }
 
     /// Run the daemon event loop for one coordinator connection.
@@ -1365,7 +1495,7 @@ impl Daemon {
         // and let the coordinator's `restore_topic_debug_streams_for_daemon`
         // re-install the still-active subscriptions.
         for dataflow in self.running.values_mut() {
-            dataflow.debug_topic_watchers.clear();
+            dataflow.clear_debug_topic_watchers();
         }
 
         let watchdog_clock = self.clock.clone();
@@ -1411,6 +1541,9 @@ impl Daemon {
             .merge();
 
         // Send status report to coordinator so it can reconcile dataflow state.
+        if let Err(err) = self.report_pending_finished_dataflows().await {
+            tracing::warn!("failed to retry pending dataflow finish reports: {err:#}");
+        }
         if let Some(sender) = &self.coordinator_sender {
             let running_dataflows: Vec<_> = self
                 .running
@@ -1448,27 +1581,19 @@ impl Daemon {
             // say so, or the coordinator hands that dead endpoint to every
             // daemon that registers afterwards.
             //
-            // Skipped entirely when nothing was advertised (`zenoh_routable_addr`
-            // is `None` for a loopback bind — a single-machine deployment), since
-            // there is then nothing to confirm or withdraw.
-            //
             // Re-sent on every reconnect, so a coordinator that restarted and
             // lost the registry relearns this daemon's endpoint.
-            if self.zenoh_routable_addr.is_some() {
-                let stamped = Timestamped {
-                    inner: CoordinatorRequest::Event {
-                        daemon_id: self.daemon_id.clone(),
-                        event: DaemonEvent::ZenohListenEndpoint {
-                            endpoint: self.zenoh_listen_endpoint.clone(),
-                        },
-                    },
-                    timestamp: self.clock.new_timestamp(),
-                };
-                if let Ok(bytes) = serde_json::to_vec(&stamped)
-                    && let Err(err) = sender.send_event(&bytes).await
-                {
-                    tracing::warn!("failed to report zenoh listen endpoint to coordinator: {err}");
-                }
+            let stamped = Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::zenoh_listen_endpoint(self.zenoh_listen_endpoint.clone()),
+                },
+                timestamp: self.clock.new_timestamp(),
+            };
+            if let Ok(bytes) = serde_json::to_vec(&stamped)
+                && let Err(err) = sender.send_event(&bytes).await
+            {
+                tracing::warn!("failed to report zenoh listen endpoint to coordinator: {err}");
             }
         }
 
@@ -1579,15 +1704,20 @@ impl Daemon {
                             .await
                             .wrap_err("failed to send watchdog message to dora-coordinator")?;
 
-                        if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
+                        if self.last_coordinator_heartbeat.elapsed() > COORDINATOR_HEARTBEAT_TIMEOUT
+                        {
                             // Return error to trigger the reconnection loop in
                             // `run_inner_with_builds`. Because `run_inner` borrows
                             // `&mut self`, this error does NOT drop the daemon:
                             // running nodes and their `ProcessHandle`s survive,
                             // and the next reconnect re-adopts them
                             // (dora-rs/dora#2029).
-                            bail!("coordinator heartbeat timeout (20s)")
+                            bail!(
+                                "coordinator heartbeat timeout ({COORDINATOR_HEARTBEAT_TIMEOUT:?})"
+                            )
                         }
+                        // Only on a connection still known to be alive.
+                        self.confirm_finished_dataflow_reports();
                     }
                 }
                 Event::MetricsInterval => {
@@ -1613,6 +1743,14 @@ impl Daemon {
                             cb_recoveries = self
                                 .ft_stats
                                 .circuit_breaker_recoveries
+                                .load(atomic::Ordering::Relaxed),
+                            dropped_messages = self
+                                .ft_stats
+                                .dropped_messages
+                                .load(atomic::Ordering::Relaxed),
+                            lost_backpressure_messages = self
+                                .ft_stats
+                                .lost_backpressure_messages
                                 .load(atomic::Ordering::Relaxed),
                             "fault tolerance stats",
                         );
@@ -1946,6 +2084,9 @@ impl Daemon {
                         &self.clock,
                         Some(&self.ft_stats),
                         false, // WS topic publish: no Zenoh forwarding
+                        // No producer on this daemon to stall: a full
+                        // backpressure receiver drops (and counts) here.
+                        None,
                     )
                     .await?;
                     Result::<_, eyre::Report>::Ok(())

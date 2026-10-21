@@ -28,8 +28,21 @@ use crate::{OFFICIAL_INDEX_PATH, config::IndexConfig};
 /// Marker written into a clone once `clone_index` completes. Its absence means
 /// the clone was interrupted (e.g. a SIGKILL mid-checkout) and should be
 /// re-cloned; its presence means the clone is sound even if it happens not to
-/// contain the catalog subpath.
-const CLONE_COMPLETE_MARKER: &str = ".dora-clone-complete";
+/// contain the catalog subpath. Lives under `.git/` (see [`marker_path`]).
+const CLONE_COMPLETE_MARKER: &str = "dora-clone-complete";
+
+/// Path of a dora-owned marker file inside a cached clone.
+///
+/// Markers live in the clone's `.git/` directory rather than the working
+/// tree: checkout materializes whatever the index repo tracks at its root
+/// (cone-mode sparse checkout always includes root files), so a tracked
+/// symlink named like a marker would make writing the marker truncate or
+/// overwrite the symlink's target — any user-writable file. Git never
+/// checks tracked content out into `.git/`, and a tracked regular file can
+/// no longer shadow a marker on `git reset --hard` either.
+fn marker_path(clone_dir: &Path, marker: &str) -> PathBuf {
+    clone_dir.join(".git").join(marker)
+}
 
 /// Fetches and caches index catalogs for one CLI invocation.
 #[derive(Debug)]
@@ -110,7 +123,13 @@ impl IndexFetcher {
                     index.alias
                 );
             }
-            self.reclone(index, git_url, &clone_dir, catalog_subpath)?;
+            self.reclone(
+                index,
+                git_url,
+                &clone_dir,
+                catalog_subpath,
+                "is for a different source than configured",
+            )?;
         } else if !self.offline
             && self.refreshed.insert(index.alias.clone())
             && let Err(refresh_err) = self.refresh_index(&index.alias, &clone_dir)
@@ -119,7 +138,7 @@ impl IndexFetcher {
             // broken .git); genuine network errors propagate so a flaky
             // connection cannot wipe a cache that offline runs rely on
             if git(Some(&clone_dir), &["rev-parse", "HEAD"]).is_err() {
-                self.reclone(index, git_url, &clone_dir, catalog_subpath)?;
+                self.reclone(index, git_url, &clone_dir, catalog_subpath, "is corrupt")?;
             } else {
                 return Err(refresh_err)
                     .with_context(|| format!("failed to refresh index `{}`", index.alias));
@@ -132,9 +151,15 @@ impl IndexFetcher {
             // to self-heal) from a sound clone whose repository simply does not
             // contain the catalog subpath (a real configuration/bootstrap error
             // — must NOT be re-cloned on every invocation).
-            let mut incomplete = !clone_dir.join(CLONE_COMPLETE_MARKER).exists();
+            let mut incomplete = !marker_path(&clone_dir, CLONE_COMPLETE_MARKER).exists();
             if incomplete && !self.offline {
-                self.reclone(index, git_url, &clone_dir, catalog_subpath)?;
+                self.reclone(
+                    index,
+                    git_url,
+                    &clone_dir,
+                    catalog_subpath,
+                    "was incomplete",
+                )?;
                 incomplete = false; // reclone() writes CLONE_COMPLETE_MARKER on success
             }
             if !catalog.is_dir() {
@@ -169,20 +194,22 @@ impl IndexFetcher {
         Ok(catalog)
     }
 
-    /// Replace a corrupt or incomplete cached clone with a fresh one.
+    /// Replace a stale, corrupt or incomplete cached clone with a fresh one.
+    /// `reason` completes "cached index `<alias>` …" in the warning.
     fn reclone(
         &mut self,
         index: &IndexConfig,
         git_url: &str,
         clone_dir: &Path,
         catalog_subpath: &str,
+        reason: &str,
     ) -> eyre::Result<()> {
         self.warnings.push(format!(
-            "cached index `{}` was incomplete — re-cloning",
+            "cached index `{}` {reason} — re-cloning",
             index.alias
         ));
         std::fs::remove_dir_all(clone_dir)
-            .with_context(|| format!("failed to remove corrupt cache `{}`", clone_dir.display()))?;
+            .with_context(|| format!("failed to remove cache `{}`", clone_dir.display()))?;
         self.clone_index(git_url, clone_dir, catalog_subpath)
             .with_context(|| format!("failed to re-clone index `{}`", index.alias))?;
         self.refreshed.insert(index.alias.clone());
@@ -244,12 +271,12 @@ impl IndexFetcher {
         // re-points the alias forces a re-clone instead of fetching the stale
         // origin (see `cached_source_differs`)
         let _ = std::fs::write(
-            clone_dir.join(SOURCE_MARKER),
+            marker_path(clone_dir, SOURCE_MARKER),
             format!("{git_url}\n{catalog_subpath}"),
         );
         // mark the clone sound so a later missing catalog subpath is treated
         // as a config error, not an interrupted clone to re-fetch
-        let _ = std::fs::write(clone_dir.join(CLONE_COMPLETE_MARKER), b"");
+        let _ = std::fs::write(marker_path(clone_dir, CLONE_COMPLETE_MARKER), b"");
         Ok(())
     }
 
@@ -309,13 +336,14 @@ fn short(commit: &str) -> &str {
 
 /// Marker file recording the `git_url` + catalog subpath a cached clone was
 /// made from, so a config change that re-points the alias is detected.
-const SOURCE_MARKER: &str = ".dora-index-source";
+/// Lives under `.git/` (see [`marker_path`]).
+const SOURCE_MARKER: &str = "dora-index-source";
 
 /// Whether the cached clone was made from a different source than now
 /// configured. A missing/unreadable marker counts as "differs" so an old
 /// cache (or a tampered one) is re-cloned rather than trusted.
 fn cached_source_differs(clone_dir: &Path, git_url: &str, catalog_subpath: &str) -> bool {
-    match std::fs::read_to_string(clone_dir.join(SOURCE_MARKER)) {
+    match std::fs::read_to_string(marker_path(clone_dir, SOURCE_MARKER)) {
         Ok(recorded) => recorded != format!("{git_url}\n{catalog_subpath}"),
         Err(_) => true,
     }
@@ -515,7 +543,7 @@ source:
         // never written
         let clone_dir = cache_dir.path().join("test");
         std::fs::remove_dir_all(clone_dir.join("node-index")).unwrap();
-        let _ = std::fs::remove_file(clone_dir.join(".dora-clone-complete"));
+        let _ = std::fs::remove_file(marker_path(&clone_dir, CLONE_COMPLETE_MARKER));
 
         // offline cannot repair — fails with a clear "incomplete cache" error
         let mut offline = IndexFetcher::with_cache_root(cache_dir.path().into(), true);
@@ -595,7 +623,7 @@ source:
         )
         .unwrap();
         std::fs::write(
-            clone_dir.join(SOURCE_MARKER),
+            marker_path(&clone_dir, SOURCE_MARKER),
             format!("{}\nnode-index", remote_dir.path().to_str().unwrap()),
         )
         .unwrap();
@@ -626,5 +654,74 @@ source:
         let mut fetcher = IndexFetcher::with_cache_root(tmp.path().join("cache"), true);
         let dir = fetcher.catalog_dir(&index, tmp.path()).unwrap();
         assert_eq!(dir, catalog);
+    }
+
+    /// #3654: the index repo controls the checked-out working tree, so a
+    /// root-level symlink named like a dora marker must not let marker writes
+    /// clobber the symlink's target.
+    #[cfg(unix)]
+    #[test]
+    fn marker_named_symlinks_in_index_do_not_clobber_targets() {
+        let remote_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        let victims = tempfile::tempdir().unwrap();
+        let mut targets = Vec::new();
+        for name in [
+            ".dora-clone-complete",
+            ".dora-index-source",
+            CLONE_COMPLETE_MARKER,
+            SOURCE_MARKER,
+        ] {
+            let victim = victims.path().join(format!("victim{name}"));
+            std::fs::write(&victim, "precious").unwrap();
+            std::os::unix::fs::symlink(&victim, remote_dir.path().join(name)).unwrap();
+            targets.push(victim);
+        }
+        make_remote(remote_dir.path());
+        let index = remote_index(remote_dir.path());
+
+        let mut fetcher = IndexFetcher::with_cache_root(cache_dir.path().into(), false);
+        fetcher.catalog_dir(&index, Path::new(".")).unwrap();
+        for victim in &targets {
+            assert_eq!(
+                std::fs::read_to_string(victim).unwrap(),
+                "precious",
+                "marker write followed a symlink from the index repo to `{}`",
+                victim.display()
+            );
+        }
+
+        // the tracked entries must not shadow the markers either: a second
+        // invocation refreshes in place instead of re-cloning every time
+        let mut second = IndexFetcher::with_cache_root(cache_dir.path().into(), false);
+        second.catalog_dir(&index, Path::new(".")).unwrap();
+        assert!(second.warnings.is_empty(), "{:?}", second.warnings);
+    }
+
+    #[test]
+    fn reclone_on_source_change_names_the_real_cause() {
+        let remote_a = tempfile::tempdir().unwrap();
+        let remote_b = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        make_remote(remote_a.path());
+        make_remote(remote_b.path());
+
+        let mut fetcher = IndexFetcher::with_cache_root(cache_dir.path().into(), false);
+        fetcher
+            .catalog_dir(&remote_index(remote_a.path()), Path::new("."))
+            .unwrap();
+
+        // `hub.toml` re-points the same alias at another source
+        let mut second = IndexFetcher::with_cache_root(cache_dir.path().into(), false);
+        second
+            .catalog_dir(&remote_index(remote_b.path()), Path::new("."))
+            .unwrap();
+        assert_eq!(second.warnings.len(), 1, "{:?}", second.warnings);
+        assert!(
+            second.warnings[0].contains("different source")
+                && !second.warnings[0].contains("incomplete"),
+            "{:?}",
+            second.warnings
+        );
     }
 }

@@ -172,12 +172,14 @@ pub mod daemon_to_coordinator;
 pub mod daemon_to_daemon;
 
 pub mod daemon_to_node;
+pub mod dynamic_node;
 pub mod node_to_daemon;
 
 pub mod cli_to_coordinator;
 pub mod coordinator_to_cli;
 
 pub mod ws_protocol;
+pub mod zenoh;
 
 pub mod integration_testing_format;
 

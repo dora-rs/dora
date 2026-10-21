@@ -757,6 +757,7 @@ WIRE_DIR = "libraries/message/src"
 # - WebSocket protocol modules (*_to_*.rs, ws_protocol.rs) use serde_json framing
 #   with named keys, so additive fields are backward- and forward-compatible.
 NON_POSTCARD_MODULES = {
+    "dynamic_node",  # additive JSON bootstrap envelope; ordinary node IPC stays postcard
     "descriptor",
     "daemon_to_coordinator",
     "coordinator_to_daemon",

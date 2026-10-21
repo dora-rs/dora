@@ -22,11 +22,12 @@ use dora_core::{
 use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig, OutputRouting},
+    dynamic_node::{DynamicNodeConfigReply, DynamicNodePeering},
     metadata::{
         FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter,
         SCHEMA_HASH, SEGMENT_ID, SEQ, SESSION_ID,
     },
-    node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
+    node_to_daemon::{DaemonRequest, DataMessage},
 };
 use eyre::WrapErr;
 use is_terminal::IsTerminal;
@@ -49,6 +50,7 @@ use tracing::{debug, error, info, warn};
 
 pub mod arrow_utils;
 mod control_channel;
+mod peering;
 
 /// Runtime type checking mode, controlled by `DORA_RUNTIME_TYPE_CHECK` env var.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -788,6 +790,9 @@ pub struct DoraNode {
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
     interactive: bool,
+    /// Outputs an `interactive` node closed via `close_outputs`. Such a node
+    /// has no static output declaration to remove them from.
+    closed_interactive_outputs: BTreeSet<DataId>,
     restart_count: u32,
 
     /// Runtime type checking state. `None` when off (zero overhead).
@@ -962,9 +967,16 @@ impl DoraNode {
 
     /// Dynamic initialization function for nodes that are sometimes used as dynamic nodes.
     ///
-    /// This function first tries initializing the traditional way through
-    /// [`init_from_env`][Self::init_from_env]. If this fails, it falls back to
+    /// If the `DORA_NODE_CONFIG` environment variable is set (the node was
+    /// spawned by a dora daemon), this initializes through
+    /// [`init_from_env`][Self::init_from_env] and ignores `node_id`. Otherwise
+    /// it connects as a dynamic node through
     /// [`init_from_node_id`][Self::init_from_node_id].
+    ///
+    /// The choice is made only on whether the variable is present: if
+    /// `init_from_env` fails (for example on a malformed `DORA_NODE_CONFIG` or
+    /// an unreachable daemon), that error is returned as is, with no fallback
+    /// to `init_from_node_id`.
     pub fn init_flexible(node_id: NodeId) -> NodeResult<(Self, EventStream)> {
         if std::env::var("DORA_NODE_CONFIG").is_ok() {
             info!(
@@ -1025,9 +1037,11 @@ impl DoraNode {
     /// We see that both the `stdout` output of the node and also the output messages that it sends
     /// are printed to the terminal. Then we get another prompt for the next input.
     ///
-    /// If you want to send an input with data, you can either send it as text (for string data)
-    /// or as a JSON object (for struct, string, or array data). Other data types are not supported
-    /// currently.
+    /// If you want to send an input with data, enter it in one of these forms:
+    ///
+    /// - plain text (for string data) or JSON (for struct, string, or array data);
+    /// - `FILE:<path.arrow>` to send the single column of the first batch of an Arrow IPC file;
+    /// - `HEX:<hexbytes>` to send raw bytes as a `UInt8` array (e.g. `HEX:deadbeef`).
     ///
     /// Empty input IDs are interpreted as stop instructions:
     ///
@@ -1132,7 +1146,7 @@ impl DoraNode {
             output,
             options,
         };
-        let (mut node, events) = Self::init_with_options(node_config, Some(testing_comm))?;
+        let (mut node, events) = Self::init_with_options(node_config, Some(testing_comm), None)?;
         node.interactive = true;
         Ok((node, events))
     }
@@ -1141,13 +1155,14 @@ impl DoraNode {
     #[doc(hidden)]
     #[tracing::instrument]
     pub fn init(node_config: NodeConfig) -> NodeResult<(Self, EventStream)> {
-        Self::init_with_options(node_config, None)
+        Self::init_with_options(node_config, None, None)
     }
 
     #[tracing::instrument(skip(testing_communication))]
     fn init_with_options(
         node_config: NodeConfig,
         testing_communication: Option<TestingCommunication>,
+        dynamic_peering: Option<DynamicNodePeering>,
     ) -> NodeResult<(Self, EventStream)> {
         // Before anything that can fail or block: a node spawned by `dora run`
         // must not outlive the CLI even if the rest of this initialization
@@ -1278,7 +1293,7 @@ impl DoraNode {
             // current-thread runtimes).
             let session = std::thread::scope(|s| {
                 match s
-                    .spawn(|| handle.block_on(dora_core::topics::open_zenoh_session(None)))
+                    .spawn(|| handle.block_on(peering::open_session(dynamic_peering.as_ref())))
                     .join()
                 {
                     Ok(Ok(session)) => Ok(session),
@@ -1424,6 +1439,7 @@ impl DoraNode {
             large_send_diag_count: 0,
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
+            closed_interactive_outputs: BTreeSet::new(),
             interactive: false,
             restart_count,
             runtime_type_checks,
@@ -1466,12 +1482,18 @@ impl DoraNode {
     /// Check whether `output_id` is declared as an output of this node.
     ///
     /// Returns `true` if the output is declared (or this node is `interactive`,
-    /// which has no static output declaration); `false` and emits a one-time
+    /// which has no static output declaration, and has not closed it); `false`
+    /// and emits a one-time
     /// warning if the output is unknown. Public so callers building higher-level
     /// send helpers (e.g. the Python `send_output_raw` zero-copy path) can
     /// validate before allocating a buffer.
     pub fn validate_output(&mut self, output_id: &DataId) -> bool {
-        if !self.node_config.outputs.contains(output_id) && !self.interactive {
+        let declared = if self.interactive {
+            !self.closed_interactive_outputs.contains(output_id)
+        } else {
+            self.node_config.outputs.contains(output_id)
+        };
+        if !declared {
             if !self.warned_unknown_output.contains(output_id) {
                 warn!("Ignoring output `{output_id}` not in node's output list.");
                 self.warned_unknown_output.insert(output_id.clone());
@@ -1540,7 +1562,7 @@ impl DoraNode {
             FRAMING.to_string(),
             Parameter::String(FRAMING_ARROW_IPC.to_string()),
         );
-        self.send_output_sample(output_id, parameters, Some(sample))
+        self.send_output_sample_unchecked(output_id, parameters, Some(sample))
     }
 
     /// Sends the given Arrow array as an output message.
@@ -1635,7 +1657,7 @@ impl DoraNode {
             Parameter::String(FRAMING_ARROW_IPC.to_string()),
         );
 
-        self.send_output_sample(output_id, parameters, Some(sample))
+        self.send_output_sample_unchecked(output_id, parameters, Some(sample))
             .wrap_err("failed to send output")?;
 
         Ok(())
@@ -1736,6 +1758,21 @@ impl DoraNode {
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
     pub fn send_output_sample(
+        &mut self,
+        output_id: DataId,
+        parameters: MetadataParameters,
+        sample: Option<DataSample>,
+    ) -> NodeResult<()> {
+        if !self.validate_output(&output_id) {
+            return Ok(());
+        }
+        self.send_output_sample_unchecked(output_id, parameters, sample)
+    }
+
+    /// [`send_output_sample`](Self::send_output_sample) without the
+    /// declared-output check, for internal callers that already ran
+    /// [`validate_output`](Self::validate_output).
+    fn send_output_sample_unchecked(
         &mut self,
         output_id: DataId,
         mut parameters: MetadataParameters,
@@ -1908,19 +1945,26 @@ impl DoraNode {
     /// Returns [`NodeError::Output`] if any id is not a declared output of this node. Unlike
     /// [`send_output`](Self::send_output), which silently ignores unknown outputs, this validates
     /// the whole batch *before* closing any output, so on error none of them are closed.
+    /// A node in interactive or testing mode has no output declaration, so it accepts any id,
+    /// as its `send_output*` methods do.
     pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> NodeResult<()> {
-        // Validate the whole batch before mutating any local state. Removing
-        // outputs eagerly would leave the node's local output set out of sync
-        // with the daemon if a later id is unknown: the early ones would be
-        // gone locally, yet `report_closed_outputs` is skipped on error so the
-        // daemon never learns about them.
-        for output_id in &outputs_ids {
-            if !self.node_config.outputs.contains(output_id) {
-                return Err(NodeError::Output(format!("unknown output {output_id}")));
+        if self.interactive {
+            self.closed_interactive_outputs
+                .extend(outputs_ids.iter().cloned());
+        } else {
+            // Validate the whole batch before mutating any local state. Removing
+            // outputs eagerly would leave the node's local output set out of sync
+            // with the daemon if a later id is unknown: the early ones would be
+            // gone locally, yet `report_closed_outputs` is skipped on error so the
+            // daemon never learns about them.
+            for output_id in &outputs_ids {
+                if !self.node_config.outputs.contains(output_id) {
+                    return Err(NodeError::Output(format!("unknown output {output_id}")));
+                }
             }
-        }
-        for output_id in &outputs_ids {
-            self.node_config.outputs.remove(output_id);
+            for output_id in &outputs_ids {
+                self.node_config.outputs.remove(output_id);
+            }
         }
 
         self.control_channel
@@ -2025,7 +2069,9 @@ impl DoraNode {
                 }
                 publisher
                     .put(sbuf)
-                    .attachment(&metadata_bytes[..])
+                    // Move the encoded metadata in: `ZBytes::from(&[u8])`
+                    // copies, `ZBytes::from(Vec<u8>)` takes ownership.
+                    .attachment(metadata_bytes)
                     .wait()
                     .map_err(|e| eyre::eyre!("zenoh SHM publish failed: {e}"))?;
                 Ok(PublishOutcome::Published)
@@ -2082,11 +2128,7 @@ impl DoraNode {
                                          copied SHM buffer (dora-rs/dora#2742 diagnostic)"
                                     );
                                 }
-                                return match publisher
-                                    .put(sbuf)
-                                    .attachment(&metadata_bytes[..])
-                                    .wait()
-                                {
+                                return match publisher.put(sbuf).attachment(metadata_bytes).wait() {
                                     Ok(()) => Ok(PublishOutcome::Published),
                                     Err(e) => {
                                         tracing::warn!(
@@ -2159,9 +2201,6 @@ impl DoraNode {
                 // schema change at a segment boundary is just the one-time
                 // re-prime window any schema-once output has, not the per-message
                 // alternation that makes service/action lossy.
-                //
-                // `schema_once` is bound here, not inside the match, so its
-                // attachment bytes outlive the `put` below.
                 let schema_once = if schema_once_eligible(
                     avec.len(),
                     self.sample_allocator.zero_copy_threshold,
@@ -2190,22 +2229,20 @@ impl DoraNode {
                 // pairing is chosen by `select_zenoh_put` (unit-tested pure
                 // decision) — mispairing here silently drops messages at the
                 // receiver (dora-rs/dora#2366).
-                let choice = select_zenoh_put(
-                    schema_once.as_deref(),
-                    arrow_utils::ipc_encode::batch_slice(&avec),
-                );
-                let fallback_meta;
-                let (payload, attachment): (&[u8], &[u8]) = match choice {
+                let choice =
+                    select_zenoh_put(schema_once, arrow_utils::ipc_encode::batch_slice(&avec));
+                // Both attachments are encoded per message, so move them in:
+                // a borrowed `&[u8]` would make zenoh copy them again.
+                let (payload, attachment): (&[u8], zenoh::bytes::ZBytes) = match choice {
                     ZenohPutChoice::SchemaOnce {
                         payload,
                         attachment,
-                    } => (payload, attachment),
+                    } => (payload, attachment.into()),
                     ZenohPutChoice::FullStream => {
                         let Some(bytes) = encode_metadata() else {
                             return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)));
                         };
-                        fallback_meta = bytes;
-                        (&avec[..], &fallback_meta[..])
+                        (&avec[..], bytes.into())
                     }
                 };
                 match publisher.put(payload).attachment(attachment).wait() {
@@ -2292,15 +2329,32 @@ impl DoraNode {
     /// Outputs a JSONL line to stdout that the daemon parses automatically.
     /// Works with `min_log_level` filtering and `send_logs_as` routing.
     ///
-    /// `level` should be one of: `"error"`, `"warn"`, `"info"`, `"debug"`, `"trace"`.
-    /// Unknown levels default to `"info"`.
+    /// `level` is matched case-insensitively and should be one of `"error"`,
+    /// `"warn"` (or `"warning"`), `"info"`, `"debug"`, or `"trace"`. Any other
+    /// value is treated as `"info"`. For the common levels, prefer the
+    /// dedicated helpers ([`log_error`](Self::log_error),
+    /// [`log_warn`](Self::log_warn), [`log_info`](Self::log_info),
+    /// [`log_debug`](Self::log_debug), [`log_trace`](Self::log_trace)).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    ///
+    /// let (node, _events) = DoraNode::init_from_env()?;
+    ///
+    /// // `target` groups related messages; pass `None` to omit it.
+    /// node.log("info", "node started", Some("startup"));
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
     pub fn log(&self, level: &str, message: &str, target: Option<&str>) {
         self.log_with_fields(level, message, target, None);
     }
 
     /// Maximum serialized size of the log `fields` object before it is
-    /// dropped (60 KB). Matches the downstream 64 KB parse limit with headroom
-    /// for the message envelope. Measured on the serialized JSON (see
+    /// dropped (60 KB). Keeps a structured entry far below the daemon's 1 MiB
+    /// per-line limit, past which the JSON line would be cut and no longer
+    /// parse as structured. Measured on the serialized JSON (see
     /// [`log_fields_within_budget`]), not the raw key/value byte sum.
     const MAX_LOG_FIELDS_BYTES: usize = 60 * 1024;
 
@@ -2423,6 +2477,25 @@ impl DoraNode {
     /// # Errors
     ///
     /// Propagates any error from [`send_output`](Self::send_output).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dora_node_api::{DoraNode, MetadataParameters};
+    /// use dora_core::config::DataId;
+    ///
+    /// let (mut node, _events) = DoraNode::init_from_env()?;
+    ///
+    /// // Keep the returned id to correlate the eventual response (see
+    /// // [`EventStream::recv_service_response`](dora_node_api::EventStream::recv_service_response)).
+    /// let request_id = node.send_service_request(
+    ///     DataId::from("request".to_owned()),
+    ///     MetadataParameters::default(),
+    ///     vec![1u8, 2, 3],
+    /// )?;
+    /// let _ = request_id;
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
     pub fn send_service_request(
         &mut self,
         output_id: DataId,
@@ -2444,7 +2517,31 @@ impl DoraNode {
     /// Send a service response. This is a semantic alias for [`send_output`](Self::send_output).
     ///
     /// The caller is expected to pass through the `request_id` parameter from
-    /// the incoming request's metadata.
+    /// the incoming request's metadata — that echo is what lets the client
+    /// correlate the response back to its request.
+    ///
+    /// # Example
+    ///
+    /// A server echoes the incoming request's `request_id` into the response:
+    ///
+    /// ```no_run
+    /// use dora_node_api::{DoraNode, Event, MetadataParameters};
+    /// use dora_core::config::DataId;
+    /// use dora_message::metadata::{Parameter, REQUEST_ID, get_string_param};
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env()?;
+    ///
+    /// while let Some(event) = events.recv() {
+    ///     if let Event::Input { metadata, .. } = event {
+    ///         let mut params = MetadataParameters::default();
+    ///         if let Some(request_id) = get_string_param(&metadata.parameters, REQUEST_ID) {
+    ///             params.insert(REQUEST_ID.to_string(), Parameter::String(request_id.to_owned()));
+    ///         }
+    ///         node.send_service_response(DataId::from("reply".to_owned()), params, vec![0u8])?;
+    ///     }
+    /// }
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
     pub fn send_service_response(
         &mut self,
         output_id: DataId,
@@ -2568,12 +2665,12 @@ impl DoraNode {
 
 /// Return the serialized log `fields` object when it fits `limit`, else `None`.
 ///
-/// The budget guards a downstream JSON-line parse limit, so it must measure
-/// the *serialized* size: `"fields":{...}` adds structural bytes (quotes,
+/// The budget keeps the structured entry well under the daemon's 1 MiB
+/// per-line limit, past which the line is cut and no longer parses as
+/// structured, so it must measure the *serialized* size: `"fields":{...}` adds structural bytes (quotes,
 /// colons, commas) and JSON escaping — a value full of `"`/`\` doubles and
 /// control characters expand ~6x via `\uXXXX`. Summing raw key/value byte
-/// lengths can pass a map whose serialized form is well over the limit, which
-/// the downstream parser then drops or truncates whole.
+/// lengths can pass a map whose serialized form is well over the budget.
 fn log_fields_within_budget(
     fields: &std::collections::BTreeMap<String, String>,
     limit: usize,
@@ -2658,23 +2755,22 @@ impl DoraNodeBuilder {
         let clock = Arc::new(uhlc::HLC::default());
 
         let reply = channel
-            .request(&Timestamped {
-                inner: DaemonRequest::NodeConfig { node_id },
-                timestamp: clock.new_timestamp(),
-            })
+            .dynamic_node_config(node_id, clock.new_timestamp())
             .wrap_err("failed to request node config from daemon")?;
 
         match reply {
-            DaemonReply::NodeConfig {
+            DynamicNodeConfigReply::NodeConfig {
                 result: Ok(node_config),
-            } => DoraNode::init(node_config),
-            DaemonReply::NodeConfig { result: Err(error) } => {
+                zenoh,
+            } => DoraNode::init_with_options(node_config, None, zenoh),
+            DynamicNodeConfigReply::NodeConfig {
+                result: Err(error), ..
+            } => {
                 let capped: String = error.chars().take(512).collect();
                 Err(NodeError::Init(format!(
                     "failed to get node config from daemon: {capped}"
                 )))
             }
-            _ => Err(NodeError::Init("unexpected reply from daemon".into())),
         }
     }
 }
@@ -3354,9 +3450,12 @@ enum ZenohPutChoice<'a> {
     /// schema-tagged `attachment` from [`publish_schema_once`]. No metadata is
     /// re-encoded — the receiver primes its decoder from the `@schema` subtopic
     /// and matches this batch by the schema hash carried in the attachment.
+    ///
+    /// The attachment is owned so it moves into zenoh's `ZBytes` without a
+    /// copy.
     SchemaOnce {
         payload: &'a [u8],
-        attachment: &'a [u8],
+        attachment: Vec<u8>,
     },
     /// Fallback: send the whole IPC payload as a self-describing stream, with
     /// the caller-encoded [`Metadata`] blob as the attachment, so the message
@@ -3372,10 +3471,7 @@ enum ZenohPutChoice<'a> {
 /// schema-tagged blob for this message) and a schema-less `batch_slice` could
 /// be taken. If either is absent the message must go out as a full
 /// self-describing stream so it decodes standalone at the receiver.
-fn select_zenoh_put<'a>(
-    schema_att: Option<&'a [u8]>,
-    batch_slice: Option<&'a [u8]>,
-) -> ZenohPutChoice<'a> {
+fn select_zenoh_put(schema_att: Option<Vec<u8>>, batch_slice: Option<&[u8]>) -> ZenohPutChoice<'_> {
     match (schema_att, batch_slice) {
         (Some(attachment), Some(payload)) => ZenohPutChoice::SchemaOnce {
             payload,
@@ -3468,10 +3564,12 @@ pub fn init_tracing(
     #[cfg(feature = "metrics")]
     if let Ok(endpoint) = std::env::var("DORA_OTLP_ENDPOINT") {
         let id = format!("{dataflow_id}/{node_id}");
+        // the bare node id, as the node's tracing uses for its service name
+        let service_name = node_id.to_string();
         let monitor_task = async move {
             use dora_metrics::run_metrics_monitor;
 
-            if let Err(e) = run_metrics_monitor(id.clone(), &endpoint)
+            if let Err(e) = run_metrics_monitor(&service_name, id, &endpoint)
                 .await
                 .wrap_err("metrics monitor exited unexpectedly")
             {
@@ -3648,8 +3746,8 @@ mod tests {
         // budget by the old raw-sum measure — but made entirely of control
         // characters, each of which JSON-escapes to `` (6 bytes). Its
         // serialized form is ~120 KB, over the budget, so it must be dropped.
-        // The pre-fix raw-byte check would have let it through and blown the
-        // downstream parse limit.
+        // The pre-fix raw-byte check would have let it through, well past the
+        // budget.
         let mut big = BTreeMap::new();
         big.insert("k".to_string(), "\u{1}".repeat(20 * 1024));
         assert!(big.values().map(String::len).sum::<usize>() < limit);
@@ -4081,6 +4179,68 @@ mod tests {
         );
     }
 
+    /// `send_output_sample` must honor its documented contract and ignore an
+    /// output that is not declared — including one closed via
+    /// `close_outputs` — like every other `send_output*` entry point does.
+    #[test]
+    fn send_output_sample_ignores_undeclared_and_closed_outputs() {
+        let (mut node, events, mut rx) = test_node();
+        // The testing node is interactive (accepts any output id); make it
+        // enforce a real output declaration.
+        node.interactive = false;
+        let declared: DataId = "out".into();
+        node.node_config.outputs.insert(declared.clone());
+
+        node.send_output_sample("undeclared".into(), Default::default(), None)
+            .unwrap();
+        node.send_output_sample(declared.clone(), Default::default(), None)
+            .unwrap();
+        node.close_outputs(vec![declared.clone()]).unwrap();
+        node.send_output_sample(declared, Default::default(), None)
+            .unwrap();
+
+        drop(node);
+        drop(events);
+        let outputs = drain_outputs(&mut rx);
+        assert_eq!(
+            outputs.len(),
+            1,
+            "only the send to the open, declared output may go out: {outputs:?}"
+        );
+        assert_eq!(outputs[0]["id"], "out");
+    }
+
+    /// A testing/interactive node has no static output declaration, so every
+    /// `send_output*` accepts any id. `close_outputs` must accept them too —
+    /// otherwise a node that closes an output early works under a daemon but
+    /// fails in `init_testing` with "unknown output" — and a closed output
+    /// must then be ignored, as it is for a daemon-run node.
+    #[test]
+    fn interactive_node_can_close_outputs() {
+        let (mut node, events, mut rx) = test_node();
+        assert!(node.interactive);
+        let out: DataId = "out".into();
+
+        node.send_output_sample(out.clone(), Default::default(), None)
+            .unwrap();
+        node.close_outputs(vec![out.clone()])
+            .expect("an interactive node must be able to close any output");
+        node.send_output_sample(out.clone(), Default::default(), None)
+            .unwrap();
+        node.send_output_sample("other".into(), Default::default(), None)
+            .unwrap();
+
+        drop(node);
+        drop(events);
+        let outputs = drain_outputs(&mut rx);
+        let ids: Vec<_> = outputs.iter().map(|o| o["id"].clone()).collect();
+        assert_eq!(
+            ids,
+            ["out", "other"],
+            "the send after closing `out` must be dropped"
+        );
+    }
+
     /// `close_outputs` must be atomic: if any id in the batch is unknown, the
     /// call fails *without* removing the valid ids from the local output set.
     /// Otherwise the daemon (never notified, because `report_closed_outputs` is
@@ -4089,6 +4249,8 @@ mod tests {
     #[test]
     fn close_outputs_is_atomic_on_unknown_id() {
         let (mut node, events, _rx) = test_node();
+        // Enforce a real output declaration (the testing node is interactive).
+        node.interactive = false;
         let valid: DataId = "valid".into();
         node.node_config.outputs.insert(valid.clone());
 
@@ -4340,7 +4502,7 @@ mod tests {
 
     #[test]
     fn select_zenoh_put_takes_fast_path_only_when_primed_and_sliceable() {
-        let schema_att: &[u8] = b"schema-tagged-attachment";
+        let schema_att = b"schema-tagged-attachment".to_vec();
         let batch: &[u8] = b"schema-less-batch";
 
         // Primed (schema attachment present) AND a batch slice could be taken →
@@ -4348,10 +4510,10 @@ mod tests {
         // the attachment; pinning this pairing guards against the silent-drop
         // swap of dora-rs/dora#2366.
         assert_eq!(
-            select_zenoh_put(Some(schema_att), Some(batch)),
+            select_zenoh_put(Some(schema_att.clone()), Some(batch)),
             ZenohPutChoice::SchemaOnce {
                 payload: batch,
-                attachment: schema_att,
+                attachment: schema_att.clone(),
             }
         );
 

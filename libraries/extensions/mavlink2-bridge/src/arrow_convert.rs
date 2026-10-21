@@ -74,7 +74,16 @@ pub trait MavlinkArrow: Sized {
     /// `to_record_batch` runs once per decoded MAVLink frame on the telemetry
     /// read path, so rebuilding the schema there was pure per-frame allocation.
     fn schema() -> SchemaRef;
+
+    /// Encode this message as a single-row [`RecordBatch`] matching
+    /// [`schema`](Self::schema) — one column per MAVLink field, exactly one row.
     fn to_record_batch(&self) -> BridgeResult<RecordBatch>;
+
+    /// Decode a message from a single-row [`RecordBatch`], the inverse of
+    /// [`to_record_batch`](Self::to_record_batch).
+    ///
+    /// Errors if the batch does not hold exactly one row, if a required column
+    /// is missing or has the wrong Arrow type, or if the single value is null.
     fn from_record_batch(batch: &RecordBatch) -> BridgeResult<Self>;
 }
 

@@ -40,8 +40,8 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 ///
 /// A dataflow consists of:
 /// - **Nodes**: The computational units that process data
-/// - **Deployment**: Optional deployment configuration (unstable)
-/// - **Debug options**: Optional development and debugging settings (unstable)
+/// - **Deployment**: Optional deployment configuration
+/// - **Debug options**: Optional development and debugging settings
 ///
 /// ## Example
 ///
@@ -99,12 +99,12 @@ pub struct Descriptor {
     pub nodes: Vec<Node>,
 
     /// Deployment configuration (optional).
-    #[schemars(skip)]
     pub deploy: Option<Deploy>,
 
     /// Debug options (optional).
-    #[schemars(skip)]
     #[serde(default)]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<Debug>")]
     pub debug: Debug,
 
     /// How often the daemon checks node health (in seconds).
@@ -165,6 +165,8 @@ pub struct Descriptor {
     ///     to: myproject/SensorV2
     /// ```
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<Vec<TypeRuleDef>>")]
     pub type_rules: Vec<TypeRuleDef>,
 
     /// Global environment variables inherited by every node.
@@ -293,6 +295,8 @@ pub struct Deploy {
     /// Labels for label-based scheduling (e.g. `gpu: "true"`, `arch: arm64`).
     /// The coordinator matches these against daemon labels reported at registration.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<BTreeMap<String, String>>")]
     pub labels: BTreeMap<String, String>,
     /// How built binaries are distributed to remote daemons.
     #[serde(default)]
@@ -351,12 +355,13 @@ pub struct Debug {
 // `#[non_exhaustive]` types on its own.
 #[non_exhaustive]
 pub struct Node {
-    /// Unique node identifier. Must not contain `/` characters.
+    /// Unique node identifier.
     ///
-    /// Node IDs can be arbitrary strings with the following limitations:
+    /// Node IDs may only contain ASCII letters, digits, `_`, `.` and `-`
+    /// (no `/`, no whitespace), with the following further limitations:
     ///
-    /// - They must not contain any `/` characters (slashes).
-    /// - We do not recommend using whitespace characters (e.g. spaces) in IDs
+    /// - They must not be empty or start with `.`.
+    /// - They must not be the reserved id `dora`.
     ///
     /// Each node must have an ID field.
     ///
@@ -548,6 +553,8 @@ pub struct Node {
     ///       - metadata
     /// ```
     #[serde(default)]
+    // An empty `outputs:` is YAML `null`, which deserializes to an empty set.
+    #[schemars(with = "Option<BTreeSet<DataId>>")]
     pub outputs: BTreeSet<DataId>,
 
     /// Optional type annotations for outputs.
@@ -555,6 +562,8 @@ pub struct Node {
     /// Maps output identifiers to type URNs (e.g. `std/media/v1/Image`).
     /// Only annotated outputs are type-checked; unannotated outputs remain dynamic.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<BTreeMap<DataId, String>>")]
     pub output_types: BTreeMap<DataId, String>,
 
     /// Per-output framing overrides (default: Raw for all).
@@ -562,6 +571,8 @@ pub struct Node {
     /// Maps output identifiers to their wire framing mode.
     /// Outputs not listed here use the default `Raw` framing.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<BTreeMap<DataId, OutputFraming>>")]
     pub output_framing: BTreeMap<DataId, OutputFraming>,
 
     /// Input data connections from other nodes.
@@ -597,6 +608,8 @@ pub struct Node {
     ///         my_input: example-node/two
     /// ```
     #[serde(default)]
+    // Like `outputs`: an empty `inputs:` is `null`, which deserializes to an empty map.
+    #[schemars(with = "Option<BTreeMap<DataId, Input>>")]
     pub inputs: BTreeMap<DataId, Input>,
 
     /// Optional type annotations for inputs.
@@ -604,6 +617,8 @@ pub struct Node {
     /// Maps input identifiers to expected type URNs. Used by `dora validate`
     /// to check that upstream output types match expectations.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<BTreeMap<DataId, String>>")]
     pub input_types: BTreeMap<DataId, String>,
 
     /// Required metadata keys per output.
@@ -618,6 +633,8 @@ pub struct Node {
     ///   response: [request_id]
     /// ```
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<BTreeMap<DataId, Vec<String>>>")]
     pub output_metadata: BTreeMap<DataId, Vec<String>>,
 
     /// Communication pattern shorthand (e.g. `service-server`).
@@ -987,6 +1004,8 @@ pub struct Node {
     ///       mode: turbo
     /// ```
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<BTreeMap<String, String>>")]
     pub params: BTreeMap<String, String>,
 
     /// CPU cores to pin this node's process to (Linux only, ignored on other platforms).
@@ -1003,7 +1022,6 @@ pub struct Node {
     pub cpu_affinity: Option<Vec<usize>>,
 
     /// Machine deployment configuration.
-    #[schemars(skip)]
     pub deploy: Option<Deploy>,
 
     /// Startup connection deadline in seconds.
@@ -1234,6 +1252,9 @@ pub struct OperatorConfig {
     pub description: Option<String>,
 
     /// Input data connections
+    // Unlike on `Node`, an empty key here is rejected: `OperatorConfig` is
+    // `#[serde(flatten)]`ed, and flattened fields don't turn `null` into an
+    // empty collection. So the schema keeps requiring an object/array.
     #[serde(default)]
     pub inputs: BTreeMap<DataId, Input>,
     /// Output data identifiers
@@ -1580,18 +1601,76 @@ pub enum GitRepoRev {
     Rev(String),
 }
 
+// The value of an `env:` entry. (A plain comment, not a doc comment:
+// schemars would publish a doc comment as the `EnvValue` description in
+// `dora-schema.json`.)
+//
+// A native YAML/JSON bool or number keeps its type. A string has its
+// `$VAR` / `${VAR}` references expanded and is then typed as a bool or
+// number only when that is lossless, i.e. when the typed value prints
+// back as exactly the same text. `"8080"` and `${PORT}` (= 8080) still
+// become `Integer(8080)`, as in every 1.x release, but `"1.10"`, `"007"`
+// and `"1e3"` stay strings instead of reaching the node as `1.1`, `7` and
+// `1000`.
 #[allow(missing_docs)]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum EnvValue {
-    #[serde(deserialize_with = "with_expand_envs")]
     Bool(bool),
-    #[serde(deserialize_with = "with_expand_envs")]
     Integer(i64),
-    #[serde(deserialize_with = "with_expand_envs")]
     Float(f64),
-    #[serde(deserialize_with = "with_expand_envs")]
     String(String),
+}
+
+impl<'de> Deserialize<'de> for EnvValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Integer(i64),
+            Float(f64),
+            #[serde(deserialize_with = "with_expand_envs")]
+            String(String),
+        }
+        Ok(match Raw::deserialize(deserializer)? {
+            Raw::Bool(b) => EnvValue::Bool(b),
+            Raw::Integer(i) => EnvValue::Integer(i),
+            Raw::Float(f) if f.is_finite() => EnvValue::Float(f),
+            // A non-finite native float (`.inf`, `.nan`, or a literal such as
+            // `1e400` that overflows): JSON has no encoding for it (serde_json
+            // writes `null`), so a `Float` would not survive the CLI ->
+            // coordinator hop. Keep the text that `Float` prints as (`inf`,
+            // `-inf`, `NaN`), i.e. what the node's env var would have held.
+            Raw::Float(f) => EnvValue::String(f.to_string()),
+            Raw::String(s) => EnvValue::from_string_lossless(s),
+        })
+    }
+}
+
+impl EnvValue {
+    /// Type `s` as a bool or number if that prints back as exactly `s`,
+    /// and keep it a string otherwise. `inf` and `NaN` stay strings: JSON
+    /// has no encoding for a non-finite float (serde_json writes `null`),
+    /// so the descriptor would not survive the coordinator -> daemon hop.
+    fn from_string_lossless(s: String) -> Self {
+        let typed = if let Ok(b) = s.parse() {
+            EnvValue::Bool(b)
+        } else if let Ok(i) = s.parse() {
+            EnvValue::Integer(i)
+        } else if let Ok(f) = s.parse::<f64>()
+            && f.is_finite()
+        {
+            EnvValue::Float(f)
+        } else {
+            return EnvValue::String(s);
+        };
+        if typed.to_string() == s {
+            typed
+        } else {
+            EnvValue::String(s)
+        }
+    }
 }
 
 impl fmt::Display for EnvValue {
@@ -1667,6 +1746,8 @@ pub struct Ros2BridgeConfig {
 
     /// QoS policies applied to all topics (can be overridden per-topic).
     #[serde(default)]
+    // An empty key is YAML `null`, which deserializes to the default.
+    #[schemars(with = "Option<Ros2QosConfig>")]
     pub qos: Ros2QosConfig,
 
     /// ROS2 namespace (default: "/").
@@ -1891,6 +1972,93 @@ pub struct Ros2QosConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A quoted `env:` value must reach the node verbatim. The derived
+    /// untagged enum parsed strings into the first matching variant, so
+    /// `"1.10"` became `1.1` and `"007"` became `7`.
+    #[test]
+    fn env_value_keeps_quoted_strings_verbatim() {
+        for quoted in [
+            "1.10",
+            "007",
+            "+5",
+            "1e3",
+            "1.0",
+            "12345678901234567890",
+            "inf",
+            "-inf",
+            "NaN",
+        ] {
+            let yaml = format!("\"{quoted}\"");
+            let value: EnvValue = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(value, EnvValue::String(quoted.into()), "yaml {yaml}");
+
+            // ...and survives the JSON hops CLI -> coordinator -> daemon.
+            let json = serde_json::to_string(&value).unwrap();
+            let value: EnvValue = serde_json::from_str(&json).unwrap();
+            assert_eq!(value.to_string(), quoted, "json {json}");
+        }
+    }
+
+    /// Strings that type losslessly keep the bool/number type every 1.x
+    /// release gave them, so `dataflow_descriptor()` consumers see no change.
+    #[test]
+    fn env_value_types_lossless_strings() {
+        let parse = |yaml: &str| serde_yaml::from_str::<EnvValue>(yaml).unwrap();
+        assert_eq!(parse("\"true\""), EnvValue::Bool(true));
+        assert_eq!(parse("\"8080\""), EnvValue::Integer(8080));
+        assert_eq!(parse("\"-3\""), EnvValue::Integer(-3));
+        assert_eq!(parse("\"1.5\""), EnvValue::Float(1.5));
+    }
+
+    #[test]
+    fn env_value_keeps_native_types() {
+        let parse = |yaml: &str| serde_yaml::from_str::<EnvValue>(yaml).unwrap();
+        assert_eq!(parse("true"), EnvValue::Bool(true));
+        assert_eq!(parse("8080"), EnvValue::Integer(8080));
+        assert_eq!(parse("-3"), EnvValue::Integer(-3));
+        assert_eq!(parse("1.5"), EnvValue::Float(1.5));
+        assert_eq!(parse("hello"), EnvValue::String("hello".into()));
+    }
+
+    /// A native YAML `.inf` / `.nan` has no JSON encoding (serde_json
+    /// writes `null`), so as a `Float` it made the coordinator reject the
+    /// whole `dora start`. It must stay the string the node would have seen
+    /// and survive the JSON hops CLI -> coordinator -> daemon.
+    #[test]
+    fn env_value_keeps_non_finite_native_floats_as_strings() {
+        for (yaml, text) in [(".inf", "inf"), ("-.inf", "-inf"), (".nan", "NaN")] {
+            let value: EnvValue = serde_yaml::from_str(yaml).unwrap();
+            assert_eq!(value, EnvValue::String(text.into()), "yaml {yaml}");
+
+            let json = serde_json::to_string(&value).unwrap();
+            let value: EnvValue = serde_json::from_str(&json).unwrap();
+            assert_eq!(value.to_string(), text, "json {json}");
+        }
+    }
+
+    /// Strings still expand `$VAR` references, quoted or not, and the result
+    /// is typed by the same lossless rule.
+    #[test]
+    fn env_value_expands_variables_in_strings() {
+        let parse = |yaml: &str| serde_yaml::from_str::<EnvValue>(yaml).unwrap();
+        for unquoted in [false, true] {
+            let q = if unquoted { "" } else { "\"" };
+            let parse_ref = |default: &str| {
+                parse(&format!(
+                    "{q}${{DORA_TEST_ENV_VALUE_UNSET_VAR:-{default}}}{q}"
+                ))
+            };
+            assert_eq!(parse_ref("1.10"), EnvValue::String("1.10".into()));
+            assert_eq!(parse_ref("8080"), EnvValue::Integer(8080));
+            assert_eq!(parse_ref("true"), EnvValue::Bool(true));
+        }
+        assert_eq!(
+            parse("\"v${DORA_TEST_ENV_VALUE_UNSET_VAR:-2}\""),
+            EnvValue::String("v2".into())
+        );
+        assert!(serde_yaml::from_str::<EnvValue>("\"$DORA_TEST_ENV_VALUE_UNSET_VAR\"").is_err());
+    }
 
     /// Assert that `constructed` serializes to exactly what `yaml`
     /// deserializes to — that a hand-written constructor agrees with the
@@ -2186,6 +2354,152 @@ debug:
             let serialized = serde_yaml::to_string(&cfg).unwrap();
             let reparsed: OperatorConfig = serde_yaml::from_str(&serialized).unwrap();
             assert_eq!(cfg.source.runtime_name(), reparsed.source.runtime_name());
+        }
+    }
+
+    /// The schema must agree with the parser on every empty key. An empty
+    /// key is YAML `null`, which serde maps to the field's default wherever
+    /// the field has one, so the schema has to accept `null` exactly there.
+    ///
+    /// Every property of every struct a dataflow spells out as a YAML mapping
+    /// is checked at a real location. A struct definition this test doesn't
+    /// know about fails it, so a new field or struct cannot drift unseen.
+    #[test]
+    fn empty_keys_schema_matches_parser() {
+        fn schema_accepts_null(property: &serde_json::Value) -> bool {
+            property["type"]
+                .as_array()
+                .is_some_and(|t| t.contains(&"null".into()))
+                || property["anyOf"]
+                    .as_array()
+                    .is_some_and(|v| v.iter().any(|s| s["type"] == "null"))
+        }
+        /// The properties of a definition, including those of its variants.
+        fn properties(
+            definition: &serde_json::Value,
+        ) -> serde_json::Map<String, serde_json::Value> {
+            let mut properties = serde_json::Map::new();
+            let variants = ["oneOf", "anyOf"]
+                .iter()
+                .filter_map(|k| definition[k].as_array())
+                .flatten();
+            for variant in std::iter::once(definition).chain(variants) {
+                if let Some(p) = variant["properties"].as_object() {
+                    properties.extend(p.clone());
+                }
+            }
+            properties
+        }
+
+        let schema = serde_json::to_value(schemars::schema_for!(Descriptor)).unwrap();
+        let node = "nodes:\n  - id: a\n    path: x\n";
+        let ros2 =
+            "nodes:\n  - id: a\n    ros2:\n      topic: /x\n      message_type: std_msgs/String\n";
+        // (definition, a dataflow with `{key}` where the empty key goes, keys
+        // that dataflow already sets). `""` is the dataflow itself.
+        let locations: &[(&str, String, &[&str])] = &[
+            ("", format!("{node}{{key}}:\n"), &["nodes"]),
+            ("Node", format!("{node}    {{key}}:\n"), &["id", "path"]),
+            ("Debug", format!("{node}debug:\n  {{key}}:\n"), &[]),
+            ("Deploy", format!("{node}    deploy:\n      {{key}}:\n"), &[]),
+            (
+                "Input",
+                format!("{node}    inputs:\n      i:\n        source: b/o\n        {{key}}:\n"),
+                &["source"],
+            ),
+            (
+                "PythonSource",
+                "nodes:\n  - id: a\n    operator:\n      python:\n        source: x.py\n        {key}:\n"
+                    .to_owned(),
+                &["source"],
+            ),
+            (
+                "Ros2BridgeConfig",
+                format!("{ros2}      {{key}}:\n"),
+                &["topic", "message_type"],
+            ),
+            ("Ros2QosConfig", format!("{ros2}      qos:\n        {{key}}:\n"), &[]),
+            (
+                "Ros2TopicConfig",
+                "nodes:\n  - id: a\n    ros2:\n      topics:\n        - topic: /x\n          message_type: std_msgs/String\n          {key}:\n"
+                    .to_owned(),
+                &["topic", "message_type"],
+            ),
+            (
+                "Ros2TransportConfig",
+                format!("{ros2}      transport:\n        kind: zenoh\n        compatibility: humble\n        {{key}}:\n"),
+                &["kind", "compatibility"],
+            ),
+        ];
+        // serde_yaml reads `null` into a plain `String` as "", not as the
+        // field's default (`namespace` would be "" instead of "/"), so the
+        // schema rejects an empty key there on purpose.
+        let null_is_not_the_default = [("Ros2BridgeConfig", "namespace")];
+
+        for (definition, template, preset) in locations {
+            let def = if definition.is_empty() {
+                &schema
+            } else {
+                &schema["$defs"][definition]
+            };
+            let without_key: String = template
+                .lines()
+                .filter(|l| !l.contains("{key}"))
+                .map(|l| format!("{l}\n"))
+                .collect();
+            serde_yaml::from_str::<Descriptor>(&without_key)
+                .unwrap_or_else(|e| panic!("template for `{definition}` must parse: {e}"));
+            for (key, property) in properties(def) {
+                if preset.contains(&key.as_str()) {
+                    continue;
+                }
+                let yaml = template.replace("{key}", &key);
+                let parses = serde_yaml::from_str::<Descriptor>(&yaml).is_ok();
+                let expected = parses && !null_is_not_the_default.contains(&(definition, &key));
+                assert_eq!(schema_accepts_null(&property), expected, "{yaml}{property}");
+            }
+        }
+
+        // Not written as YAML mappings, so there is no empty key to check:
+        // input mappings and their parts are strings (`node/output`,
+        // `dora/timer/millis/100`, `dora/logs/...`).
+        // `TypeRuleDef`: both fields are required strings, and an empty one
+        // reads as "" (like `namespace`), so the schema rejects it on purpose.
+        // Operators are checked below.
+        let not_walked = [
+            "InputMapping",
+            "UserInputMapping",
+            "LogSubscriptionFilter",
+            "Duration",
+            "TypeRuleDef",
+            "OperatorDefinition",
+            "SingleOperatorDefinition",
+        ];
+        for (name, def) in schema["$defs"].as_object().unwrap() {
+            if properties(def).is_empty() || not_walked.contains(&name.as_str()) {
+                continue;
+            }
+            assert!(
+                locations.iter().any(|(d, ..)| d == name),
+                "new struct `{name}` in the schema: add a location for it to this test"
+            );
+        }
+
+        // Operators are `#[serde(flatten)]`ed, and flattened fields don't
+        // map `null` to a default, so there the schema must reject it.
+        let operators = "nodes:\n  - id: a\n    operators:\n      - id: op\n        python: x.py\n        inputs:\n";
+        let operator = "nodes:\n  - id: a\n    operator:\n      python: x.py\n      outputs:\n";
+        for yaml in [operators, operator] {
+            assert!(serde_yaml::from_str::<Descriptor>(yaml).is_err(), "{yaml}");
+        }
+        for definition in ["OperatorDefinition", "SingleOperatorDefinition"] {
+            for key in ["inputs", "outputs", "input_types", "output_types"] {
+                let property = &schema["$defs"][definition]["properties"][key];
+                assert!(
+                    !schema_accepts_null(property),
+                    "{definition}.{key}: {property}"
+                );
+            }
         }
     }
 }

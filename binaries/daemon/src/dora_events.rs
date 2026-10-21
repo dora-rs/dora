@@ -11,15 +11,15 @@ use crate::{
 use dora_core::config::NodeId;
 use dora_message::{
     common::{DataMessage, LogLevel, NodeError, NodeErrorCause, NodeExitStatus},
-    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, DataflowDaemonResult},
+    daemon_to_coordinator::DataflowDaemonResult,
     daemon_to_node::NodeEvent,
     metadata::{self, MetadataParameters},
     node_to_daemon::Timestamped,
 };
-use eyre::Context;
 use std::{
     collections::BTreeSet,
     sync::{Arc, atomic},
+    time::Instant,
 };
 use uuid::Uuid;
 
@@ -220,27 +220,17 @@ impl Daemon {
             )
             .await;
 
-        if let Some(sender) = &self.coordinator_sender {
-            let msg = serde_json::to_vec(&Timestamped {
-                inner: CoordinatorRequest::Event {
-                    daemon_id: self.daemon_id.clone(),
-                    event: DaemonEvent::AllNodesFinished {
-                        dataflow_id,
-                        result,
-                    },
-                },
-                timestamp: self.clock.new_timestamp(),
-            })?;
-            sender
-                .send_event(&msg)
-                .await
-                .wrap_err("failed to report dataflow finish to dora-coordinator")?;
-        }
         // Signal all listener loops for this dataflow to shut down
         if let Some(df) = self.running.get(&dataflow_id) {
             let _ = df.listener_shutdown_tx.send(true);
         }
-        self.running.remove(&dataflow_id);
+        if let Some(exchange) = self
+            .running
+            .remove(&dataflow_id)
+            .and_then(|df| df.endpoint_exchange)
+        {
+            exchange.linger();
+        }
 
         // The memory-pool subscriber task has no shutdown branch of its
         // own — terminate it, releasing its session clone and event
@@ -248,6 +238,25 @@ impl Daemon {
         // tasks and can create duplicate consumers.
         #[cfg(feature = "tensor-pool")]
         self.pool_cleanup_dataflow(dataflow_id).await;
+
+        if let Some(sender) = &self.coordinator_sender {
+            match self
+                .send_all_nodes_finished(sender, dataflow_id, &result)
+                .await
+            {
+                // Queued, not yet known to be delivered: kept for a resend
+                // should this connection turn out to have lost it.
+                Ok(()) => {
+                    self.unconfirmed_finished_dataflows
+                        .insert(dataflow_id, (result, Instant::now()));
+                }
+                Err(err) => {
+                    self.pending_finished_dataflows.insert(dataflow_id, result);
+                    return Err(err);
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -309,11 +318,13 @@ impl Daemon {
                 };
 
                 let Some(subscribers) = dataflow.mappings.get(&output_id) else {
-                    tracing::warn!(
-                        "No subscribers found for {:?} in {:?}",
-                        output_id,
-                        dataflow.mappings
-                    );
+                    // A node with `send_stdout_as`/`send_stderr_as` emits a
+                    // `Logs` event for every log line regardless of whether
+                    // anyone subscribes to the resulting output, so an output
+                    // with no consumer is a normal configuration — not a
+                    // warning. Return silently (previously this logged a WARN
+                    // per log line and `Debug`-formatted the entire edge map
+                    // on that hot path).
                     return Ok(());
                 };
 
@@ -322,7 +333,14 @@ impl Daemon {
                 let mut closed = Vec::new();
                 for (receiver_id, input_id) in subscribers {
                     let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
-                        tracing::warn!("No subscriber channel found for {:?}", output_id);
+                        // A subscriber is mapped to this output but has no live
+                        // channel (e.g. not yet connected, or already gone).
+                        // Diagnosable at debug level without the per-log-line
+                        // WARN spam the previous `warn!` here produced.
+                        tracing::debug!(
+                            "no subscriber channel for `{receiver_id}` on {output_id:?}; \
+                             dropping log line"
+                        );
                         continue;
                     };
 
@@ -357,7 +375,14 @@ impl Daemon {
                     return Ok(());
                 };
 
-                if dataflow.log_subscribers.is_empty() {
+                // Skip the encode below unless some subscriber is connected:
+                // a subscriber that exited keeps its entry (its `dora/logs`
+                // edge) but has no channel until it is restarted.
+                if !dataflow
+                    .log_subscribers
+                    .iter()
+                    .any(|sub| dataflow.subscribe_channels.contains_key(&sub.node_id))
+                {
                     return Ok(());
                 }
 
@@ -445,13 +470,15 @@ impl Daemon {
                         }
                     }
                 }
+                // Drop only the dead channel, like the timer path does. The
+                // `log_subscribers` entry is the node's `dora/logs` edge, which
+                // only spawn and `dora node add` ever create: pruning it here
+                // would leave a node that crashed and restarted (and so
+                // re-subscribed) without logs for the rest of the run.
+                // `dora node remove` drops the entry when the edge really goes.
                 for id in &closed {
                     dataflow.subscribe_channels.remove(id);
                 }
-                // Prune stale log subscribers whose channels were just removed
-                dataflow
-                    .log_subscribers
-                    .retain(|sub| !closed.contains(&sub.node_id));
             }
             DoraEvent::SpawnedNodeResult {
                 dataflow_id,
@@ -697,31 +724,13 @@ impl Daemon {
                     }
                 };
 
-                // Drop the consumed kill marker. `grace_duration_kills` is
-                // keyed by `(node_id, generation)`, so a successor can no
-                // longer inherit its predecessor's marker structurally —
-                // removal here is hygiene for this incarnation's own entry
-                // (it was consumed classifying this exit), not the
-                // cross-incarnation leak protection it used to be. Same for
-                // the drain clock: a respawned node under the same id must
-                // start fresh.
-                // (`finish_escalated` is NOT cleared here — it is read
-                // and consumed by `handle_node_stop_inner` below to keep
-                // the coordinator-facing `clean_stop` flag honest; an
-                // escalated node never restarts, so it cannot leak into
-                // a next incarnation.)
+                // Reset per-incarnation bookkeeping so a respawn under the same
+                // id starts fresh (kill markers, drain clock, connected marker,
+                // and the deliberate-drop marker). See
+                // `RunningDataflow::reset_incarnation_state` for the rationale
+                // and why `finish_escalated` is left for `handle_node_stop_inner`.
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    dataflow
-                        .grace_duration_kills
-                        .remove(&(node_id.clone(), generation));
-                    dataflow
-                        .startup_timeout_kills
-                        .remove(&(node_id.clone(), generation));
-                    dataflow.all_inputs_closed_at.remove(&node_id);
-                    // a respawned node must re-subscribe before it counts as
-                    // connected, else a slow restart could be silence-escalated
-                    // mid-startup (dora-rs/dora#2270).
-                    dataflow.connected_nodes.remove(&node_id);
+                    dataflow.reset_incarnation_state(&node_id, generation);
                 }
 
                 // A node that crashed cannot withdraw its own descriptors.

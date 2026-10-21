@@ -258,6 +258,9 @@ impl Daemon {
             }) => {
                 let base_working_dir = self.base_working_dir(local_working_dir, session_id)?;
 
+                // A duplicate spawn bails on the existing entry, which belongs
+                // to the live dataflow and must survive the cleanup below.
+                let already_running = self.running.contains_key(&dataflow_id);
                 let result = self
                     .spawn_dataflow(
                         build_id,
@@ -273,14 +276,22 @@ impl Daemon {
                 let (trigger_result, result_task) = match result {
                     Ok(result_task) => (Ok(()), Some(result_task)),
                     Err(err) => {
-                        // The spawn failed after the memory-pool subscriber
-                        // task was started (it is spawned before the node
-                        // build): the dataflow never reaches `self.running`,
-                        // so `finish_dataflow` will not run — terminate the
-                        // subscriber here or it leaks for the daemon's
-                        // lifetime.
-                        #[cfg(feature = "tensor-pool")]
-                        self.pool.abort_subscriber(&dataflow_id);
+                        // `finish_dataflow` never runs for a spawn that failed,
+                        // so whatever `spawn_dataflow` registered before it
+                        // bailed is released here: the memory-pool subscriber
+                        // task (started before the node build), and the
+                        // `RunningDataflow` entry with its endpoint queryable
+                        // and pending link check (inserted before the per-node checks
+                        // that can still fail — no node has been spawned by
+                        // then). Left in place, the entry would answer and
+                        // probe for a dataflow the coordinator already
+                        // considers failed.
+                        if !already_running {
+                            #[cfg(feature = "tensor-pool")]
+                            self.pool.abort_subscriber(&dataflow_id);
+                            self.running.remove(&dataflow_id);
+                            self.working_dir.remove(&dataflow_id);
+                        }
                         (Err(format!("{err:?}")), None)
                     }
                 };
@@ -324,6 +335,11 @@ impl Daemon {
                 )).await;
                 match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
+                        // Every daemon of the dataflow has spawned by now, so
+                        // one that still does not answer has no zenoh link.
+                        if let Some(exchange) = &mut dataflow.endpoint_exchange {
+                            exchange.check_link();
+                        }
                         // The verdict must fold in this daemon's local
                         // `exited_before_subscribe`, not just the coordinator's
                         // external list: a cohort member that died before
@@ -410,10 +426,15 @@ impl Daemon {
                     }
                     None => {
                         tracing::warn!("received Logs for unknown dataflow (ID `{dataflow_id}`)");
-                        let _ = reply_tx.send(None).map_err(|_| {
-                            error!(
-                                "could not send `AllNodesReady` reply from daemon to coordinator"
-                            )
+                        // Reply with an error rather than `None`: the WS layer
+                        // drops a `None` reply, so the coordinator would wait out
+                        // its 30s reply timeout for a request it sent with
+                        // `send_and_receive` (same bug class as `AddMapping`).
+                        let reply = DaemonCoordinatorReply::Logs(Err(format!(
+                            "no dataflow with ID `{dataflow_id}` on this daemon"
+                        )));
+                        let _ = reply_tx.send(Some(reply)).map_err(|_| {
+                            error!("could not send Logs reply from daemon to coordinator")
                         });
                     }
                 }
@@ -596,6 +617,11 @@ impl Daemon {
                 tracing::info!(%dataflow_id, %node_id, "adding node to running dataflow");
 
                 let result: eyre::Result<()> = async {
+                    // The coordinator validates this too; check again here, where
+                    // a bad value would panic `Duration::from_secs_f64`, so an
+                    // older coordinator cannot crash this daemon.
+                    dora_core::descriptor::validate::check_node_timing(&node)?;
+                    dora_core::descriptor::validate::check_operator_ids(&node)?;
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -671,6 +697,8 @@ impl Daemon {
                     // node restarts reuse the same venv that `dora build` prepared.
                     let python_env_dir =
                         dora_core::build::managed_python_env_dir(&node, &base_working_dir);
+                    let backpressured_outputs = dataflow
+                        .backpressured_outputs_of(&node_id, &node.kind.run_config().outputs);
                     let task = spawner
                         .spawn_node(
                             node.clone(),
@@ -680,6 +708,7 @@ impl Daemon {
                             node_stderr,
                             None,
                             output_routing,
+                            backpressured_outputs,
                             &mut logger,
                         )
                         .await
@@ -695,6 +724,11 @@ impl Daemon {
                         .running
                         .get_mut(&dataflow_id)
                         .ok_or_else(|| eyre!("dataflow disappeared during spawn"))?;
+
+                    // A re-added id may still hold the `dora/logs` entries of
+                    // an earlier incarnation that exited without `RemoveNode`
+                    // (they are kept across a crash for its restart).
+                    dataflow.unsubscribe_node_from_logs(&node_id);
 
                     // Register inputs (open_inputs, mappings, timers, deadlines)
                     for (input_id, input) in &inputs {
@@ -860,16 +894,21 @@ impl Daemon {
                     // Cancels the timer task of any interval left with no
                     // subscribers (#2585); see the method for details.
                     dataflow.unsubscribe_node_from_timers(&node_id);
-                    dataflow
-                        .log_subscribers
-                        .retain(|sub| sub.node_id != node_id);
+                    dataflow.unsubscribe_node_from_logs(&node_id);
 
                     // Clean up remaining state for this node.
-                    dataflow.running_nodes.remove(&node_id);
+                    if dataflow
+                        .running_nodes
+                        .remove(&node_id)
+                        .is_some_and(|node| node.node_config.dynamic)
+                    {
+                        Arc::make_mut(&mut dataflow.zenoh_peering).remove(&node_id);
+                    }
                     dataflow.open_inputs.remove(&node_id);
                     dataflow.data_inputs.remove(&node_id);
                     dataflow.subscribe_channels.remove(&node_id);
                     dataflow.pending_messages.remove(&node_id);
+                    dataflow.drain_signals.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
                     // clear the connected marker too, else a re-added node ID
                     // would look already-connected before its new incarnation
@@ -984,6 +1023,9 @@ impl Daemon {
                 tracing::info!(%dataflow_id, %node_id, "replacing node in running dataflow");
 
                 let result: eyre::Result<()> = async {
+                    // See the matching check in `AddNode`.
+                    dora_core::descriptor::validate::check_node_timing(&node)?;
+                    dora_core::descriptor::validate::check_operator_ids(&node)?;
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -1179,6 +1221,8 @@ impl Daemon {
                         .context("failed to clone logger")?;
                     let python_env_dir =
                         dora_core::build::managed_python_env_dir(&node, &base_working_dir);
+                    let backpressured_outputs = dataflow
+                        .backpressured_outputs_of(&node_id, &node.kind.run_config().outputs);
                     let task = spawner
                         .spawn_node(
                             node.clone(),
@@ -1188,6 +1232,7 @@ impl Daemon {
                             node_stderr.clone(),
                             None,
                             output_routing,
+                            backpressured_outputs,
                             &mut logger,
                         )
                         .await
@@ -1247,6 +1292,7 @@ impl Daemon {
                     //   descriptor holds the authoritative new definition).
                     dataflow.subscribe_channels.remove(&node_id);
                     dataflow.pending_messages.remove(&node_id);
+                    dataflow.drain_signals.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
@@ -1405,10 +1451,7 @@ impl Daemon {
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     for (node_id, data_id) in outputs {
                         dataflow
-                            .debug_topic_watchers
-                            .entry(OutputId(node_id, data_id))
-                            .or_default()
-                            .insert(subscription_id);
+                            .add_debug_topic_watcher(OutputId(node_id, data_id), subscription_id);
                     }
                     Ok(())
                 } else {
@@ -1424,15 +1467,7 @@ impl Daemon {
                 subscription_id,
             } => {
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    // Scan watchers rather than maintain an inverse map. Unsubscribe
-                    // is rare; scan is bounded by the count of outputs with active
-                    // subscribers. retain() drops empty entries in one pass.
-                    dataflow
-                        .debug_topic_watchers
-                        .retain(|_output_id, watchers| {
-                            watchers.remove(&subscription_id);
-                            !watchers.is_empty()
-                        });
+                    dataflow.remove_debug_topic_subscription(subscription_id);
                     Ok(())
                 } else {
                     Err(format!("no running dataflow with ID `{dataflow_id}`"))

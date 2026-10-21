@@ -153,11 +153,11 @@ mod tests {
             .find(|l| l.starts_with("ExecStart="))
             .expect("unit has an ExecStart line");
         assert!(
-            exec_start.contains("--zenoh-listen 100.64.0.2:5456"),
+            exec_start.contains("--zenoh-listen '100.64.0.2:5456'"),
             "ExecStart must listen on the machine's own endpoint: {exec_start}"
         );
         assert!(
-            exec_start.contains("--zenoh-connect tcp/100.64.0.3:5456"),
+            exec_start.contains("--zenoh-connect 'tcp/100.64.0.3:5456'"),
             "ExecStart must dial the other machine: {exec_start}"
         );
     }

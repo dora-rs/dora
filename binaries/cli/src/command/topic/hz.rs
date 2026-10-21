@@ -1,4 +1,4 @@
-use crossterm::event::{Event, KeyCode, KeyModifiers};
+use crossterm::event::{Event, KeyCode};
 use dora_core::descriptor::Descriptor;
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use itertools::Itertools;
@@ -150,9 +150,16 @@ fn run_hz_oneshot(
 
     let topic_index = build_topic_index(&stats, descriptor);
 
-    let deadline = Instant::now() + Duration::from_secs(seconds);
-    while Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(Instant::now());
+    // Track the window as a start instant plus elapsed comparison rather than
+    // `Instant::now() + Duration::from_secs(seconds)`: `seconds` comes straight
+    // from `--duration`, which clap bounds only from below (`range(1..)`), so a
+    // large-but-valid `u64` (e.g. `--duration 10000000000000000000`) would make
+    // `Instant + Duration` overflow the monotonic clock and panic. This mirrors
+    // the sibling `topic info` sampler, which measures the window the same way.
+    let duration = Duration::from_secs(seconds);
+    let start = Instant::now();
+    while start.elapsed() < duration {
+        let remaining = duration.saturating_sub(start.elapsed());
         match data_rx.recv_timeout(remaining) {
             Ok(Ok(payload)) => {
                 let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
@@ -183,12 +190,10 @@ fn run_hz_oneshot(
 
     println!("topic\tavg_ms\tavg_hz\tmin_ms\tmax_ms\tstd_ms\tsamples");
     for (label, hz_stats) in &stats {
-        let samples = hz_stats
-            .samples
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len();
-        match hz_stats.calculate() {
+        // Read the count and the stats from one pruned snapshot so they always
+        // describe the same set of samples (dora-rs/dora#3568).
+        let (samples, computed) = hz_stats.report_snapshot();
+        match computed {
             Some(s) => println!(
                 "{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}",
                 label, s.avg_ms, s.avg_hz, s.min_ms, s.max_ms, s.std_ms, samples
@@ -268,22 +273,58 @@ impl HzStats {
     fn intervals_ms_at(&self, now: Instant) -> Vec<f64> {
         let mut samples = self.samples.lock().unwrap_or_else(|e| e.into_inner());
         self.prune(&mut samples, now);
-        samples
+        Self::intervals_from(&samples)
+    }
+
+    /// Producer-stamp intervals (ms) between consecutive stamps, skipping any
+    /// zero delta (duplicate stamps).
+    ///
+    /// Samples are kept in *arrival* order (pruning needs that), but the relay
+    /// can deliver frames out of producer order -- across topics in the `ALL`
+    /// aggregate, which interleaves several publishers, and occasionally within
+    /// one topic. Taking deltas in arrival order would drop the negative delta
+    /// and then measure the next one from the stale stamp, inflating it, so the
+    /// stamps are sorted first.
+    fn intervals_from(samples: &VecDeque<Sample>) -> Vec<f64> {
+        let mut stamps: Vec<Duration> = samples.iter().map(|s| s.producer_stamp).collect();
+        stamps.sort_unstable();
+        stamps
             .iter()
             .tuple_windows()
             .filter_map(|(a, b)| {
-                let dt = b
-                    .producer_stamp
-                    .saturating_sub(a.producer_stamp)
-                    .as_secs_f64()
-                    * 1000.0;
+                let dt = b.saturating_sub(*a).as_secs_f64() * 1000.0;
                 if dt > 0.0 { Some(dt) } else { None }
             })
             .collect()
     }
 
     fn calculate(&self) -> Option<Stats> {
-        let intervals = self.intervals_ms();
+        Self::stats_from_intervals(&self.intervals_ms())
+    }
+
+    /// Summary snapshot for the non-interactive (`--duration`) report.
+    ///
+    /// The live TUI's [`calculate`](Self::calculate) prunes relative to
+    /// `Instant::now()`, so a stalled publisher decays to 0 Hz — the right
+    /// behavior for the interactive gauge. The oneshot report instead
+    /// summarizes the whole run, so it anchors the prune to the *last arrival*
+    /// (which the record-time pruning already applied): samples observed before
+    /// a mid-run stall are kept rather than dropped just because the report is
+    /// printed more than one window after the last frame.
+    ///
+    /// Returns the sample count and the stats computed from the **same** pruned
+    /// snapshot, so the printed count can never contradict the statistics — a
+    /// positive count with all-dash stats (dora-rs/dora#3568) is impossible.
+    fn report_snapshot(&self) -> (usize, Option<Stats>) {
+        let mut samples = self.samples.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&last) = samples.back() {
+            self.prune(&mut samples, last.arrived_at);
+        }
+        let intervals = Self::intervals_from(&samples);
+        (samples.len(), Self::stats_from_intervals(&intervals))
+    }
+
+    fn stats_from_intervals(intervals: &[f64]) -> Option<Stats> {
         if intervals.is_empty() {
             return None;
         }
@@ -433,9 +474,7 @@ fn run_hz(
         if crossterm::event::poll(Duration::from_millis(50))?
             && let Event::Key(key) = crossterm::event::read()?
         {
-            if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
-            {
+            if crate::common::is_quit_key(&key) {
                 break;
             }
 
@@ -743,6 +782,29 @@ mod tests {
         assert!((stats.intervals_ms()[0] - 200.0).abs() < 1.0);
     }
 
+    // The `ALL` aggregate interleaves several publishers, and the relay can
+    // deliver their frames out of producer order. Intervals must follow the
+    // producer stamps, not arrival order: arrival-order deltas would drop the
+    // negative one and inflate the next.
+    #[test]
+    fn intervals_follow_stamp_order_when_frames_arrive_out_of_order() {
+        let stats = HzStats::new(10);
+        let now = Instant::now();
+        // Topic A stamps 0/100/200 ms, topic B 50/150 ms, B delayed ~60 ms.
+        for (i, stamp_ms) in [0u64, 100, 50, 200, 150].into_iter().enumerate() {
+            stats.record(
+                Duration::from_millis(1_000 + stamp_ms),
+                now + Duration::from_millis(i as u64),
+            );
+        }
+        let intervals = stats.intervals_ms();
+        assert_eq!(intervals.len(), 4, "{intervals:?}");
+        assert!(
+            intervals.iter().all(|dt| (dt - 50.0).abs() < 1.0),
+            "{intervals:?}"
+        );
+    }
+
     // The live gauge anchors to wall-clock arrivals, not producer stamps: a
     // publisher that stops publishing decays to 0 Hz instead of freezing at the
     // last displayed rate.
@@ -785,5 +847,77 @@ mod tests {
                 .intervals_ms_at(base + Duration::from_secs(2))
                 .is_empty()
         );
+    }
+
+    // Regression for dora-rs/dora#3568: the oneshot (`--duration`) report must
+    // never print a positive sample count with all-dash statistics. The count
+    // and the stats come from one snapshot anchored to the *last arrival*, so a
+    // publisher that stalled well before the report is printed still yields
+    // stats consistent with the reported count — unlike the live gauge, which
+    // (correctly) prunes to `now` and would report nothing.
+    #[test]
+    fn report_snapshot_count_and_stats_stay_consistent_after_stall() {
+        let stats = HzStats::new(1); // 1 s window
+        let base = Instant::now();
+        // Two frames 100 ms apart (producer timeline), arriving ~50 ms apart.
+        stats.record(Duration::from_millis(1_000), base);
+        stats.record(
+            Duration::from_millis(1_100),
+            base + Duration::from_millis(50),
+        );
+
+        // The oneshot report keeps both samples (anchored to the last arrival),
+        // so the count and the stats agree: no "2 samples, dash stats" row.
+        let (count, computed) = stats.report_snapshot();
+        assert_eq!(count, 2);
+        let s = computed.expect("stats must be present when samples remain");
+        assert!((s.avg_ms - 100.0).abs() < 1.0, "avg_ms = {}", s.avg_ms);
+
+        // For contrast, the live path anchored to a `now` past the window prunes
+        // everything (the decaying TUI gauge) — the exact report-time prune that
+        // made the oneshot summary self-contradictory before the fix.
+        assert!(
+            stats
+                .intervals_ms_at(base + Duration::from_secs(5))
+                .is_empty()
+        );
+    }
+
+    // With a single frame there is no interval to compute, so dash stats with a
+    // sample count of 1 is honest (not the #3568 contradiction): the count and
+    // the empty stat set describe the same one-sample snapshot.
+    #[test]
+    fn report_snapshot_single_sample_reports_one_with_dash_stats() {
+        let stats = HzStats::new(10);
+        stats.record(Duration::from_millis(1_000), Instant::now());
+        let (count, computed) = stats.report_snapshot();
+        assert_eq!(count, 1);
+        assert!(computed.is_none());
+    }
+
+    // `--duration` is bounded only from below (`range(1..)`), so a large-but-
+    // valid `u64` must not abort the non-interactive sampler. Previously
+    // `Instant::now() + Duration::from_secs(seconds)` overflowed the monotonic
+    // clock and panicked before the sampling loop even started. A disconnected
+    // receiver makes the loop break out immediately, so the only thing under
+    // test is that setting up the (huge) window does not panic.
+    #[test]
+    fn run_hz_oneshot_does_not_panic_on_oversized_duration() {
+        use dora_core::descriptor::DescriptorExt;
+        use std::collections::BTreeSet;
+
+        let descriptor = Descriptor::parse(b"nodes: []".to_vec()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<eyre::Result<Vec<u8>>>();
+        drop(tx); // disconnect so the sampler breaks out immediately
+
+        // 10^19 s is a valid u64 but overflows `Instant + Duration`.
+        run_hz_oneshot(
+            10,
+            BTreeSet::new(),
+            &descriptor,
+            rx,
+            10_000_000_000_000_000_000,
+        )
+        .expect("oversized --duration must not panic or error");
     }
 }

@@ -5,8 +5,9 @@ use crate::coordinator_events::{
 use crate::node_exit::{DEFAULT_FINISH_DRAIN_GRACE, parse_finish_drain_grace};
 use crate::pending::DataflowStatus;
 use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
+use crate::test_tracing::LevelCapture;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
-use std::sync::{Arc, Mutex};
 
 use aligned_vec::AVec;
 use crossbeam::queue::ArrayQueue;
@@ -168,6 +169,514 @@ async fn barrier_completion_does_not_start_a_stopping_dataflow() {
     assert!(!df.should_start_on_barrier_completion(&DataflowStatus::AllNodesReady));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn finish_dataflow_cleans_local_state_when_coordinator_send_fails() {
+    let (coordinator_sender, coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    drop(coordinator_rx);
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let dataflow_id = Uuid::new_v4();
+    let dataflow = test_dataflow();
+    let mut listener_shutdown = dataflow.listener_shutdown_tx.subscribe();
+    daemon.running.insert(dataflow_id, dataflow);
+
+    #[cfg(feature = "tensor-pool")]
+    {
+        unsafe { std::env::set_var("DORA_MEMORY_POOL_CROSS_MACHINE", "1") };
+        daemon.pool_subscribe_dataflow(dataflow_id);
+        unsafe { std::env::remove_var("DORA_MEMORY_POOL_CROSS_MACHINE") };
+        assert!(
+            daemon.pool.has_subscriber(&dataflow_id),
+            "test setup must create a memory-pool subscriber"
+        );
+    }
+
+    let result = daemon.finish_dataflow(dataflow_id).await;
+
+    assert!(
+        result.is_err(),
+        "closed coordinator sender should still report the send failure"
+    );
+    assert!(
+        !daemon.running.contains_key(&dataflow_id),
+        "finished dataflow must be removed locally even if coordinator reporting fails"
+    );
+    assert!(
+        daemon.pending_finished_dataflows.contains_key(&dataflow_id),
+        "failed finish report must be retained for reconnect retry"
+    );
+    listener_shutdown
+        .changed()
+        .await
+        .expect("finish_dataflow should signal listener shutdown");
+    assert!(*listener_shutdown.borrow());
+    #[cfg(feature = "tensor-pool")]
+    assert!(
+        !daemon.pool.has_subscriber(&dataflow_id),
+        "memory-pool subscriber must be removed even when coordinator reporting fails"
+    );
+
+    let (coordinator_sender, mut coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    daemon.coordinator_sender = Some(coordinator_sender);
+    daemon
+        .report_pending_finished_dataflows()
+        .await
+        .expect("retrying pending finish report should succeed");
+    assert!(
+        !daemon.pending_finished_dataflows.contains_key(&dataflow_id),
+        "pending finish report should be removed after successful retry"
+    );
+
+    let retried = coordinator_rx
+        .recv()
+        .await
+        .expect("retry should send an event to the coordinator");
+    assert!(retried.contains("AllNodesFinished"), "{retried}");
+    assert!(retried.contains(&dataflow_id.to_string()), "{retried}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn failed_pending_finish_retry_does_not_abort_reconnect_cycle() {
+    let (coordinator_sender, coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    drop(coordinator_rx);
+
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+
+    let dataflow_id = Uuid::new_v4();
+    daemon.pending_finished_dataflows.insert(
+        dataflow_id,
+        DataflowDaemonResult {
+            timestamp: clock.new_timestamp(),
+            node_results: BTreeMap::new(),
+        },
+    );
+
+    let external_events = futures::stream::iter([Timestamped {
+        inner: Event::CtrlC,
+        timestamp: clock.new_timestamp(),
+    }]);
+    let (_dora_events_tx, mut dora_events_rx) = mpsc::channel(1);
+
+    let result = daemon
+        .run_inner(external_events, &mut dora_events_rx, None)
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "a failed pending finish retry must not abort the reconnect cycle: {result:?}"
+    );
+    assert!(
+        daemon.pending_finished_dataflows.contains_key(&dataflow_id),
+        "failed retry must keep the finish report pending for the next reconnect"
+    );
+}
+
+/// A `Spawn` from a coordinator that predates `dora start` validation must
+/// not reach `Duration::from_secs_f64` with a bad timing value, which would
+/// panic the daemon and every dataflow on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn spawn_rejects_invalid_timing_fields() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let descriptor: Descriptor = serde_json::from_str(
+        r#"{ "nodes": [ { "id": "node", "path": "/tmp/dummy", "restart_delay": -1.0 } ] }"#,
+    )
+    .unwrap();
+    let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+    let spawn_nodes = nodes.keys().cloned().collect();
+    let dataflow_id = Uuid::new_v4();
+    let err = daemon
+        .spawn_dataflow(
+            None,
+            dataflow_id,
+            std::env::temp_dir(),
+            nodes,
+            descriptor,
+            spawn_nodes,
+            false,
+            None,
+        )
+        .await
+        .err()
+        .expect("spawn must reject a negative restart_delay");
+    assert!(format!("{err:#}").contains("restart_delay"), "{err:#}");
+    assert!(!daemon.running.contains_key(&dataflow_id));
+}
+
+/// Same for an operator id that is not a valid `DataId` segment: the daemon
+/// would panic in `DataId::from` building the runtime node's input/output ids.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn spawn_rejects_invalid_operator_id() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let descriptor: Descriptor = serde_json::from_str(
+        r#"{ "nodes": [ { "id": "rt", "operators": [
+            { "id": "op", "python": "op.py", "outputs": ["out"] }
+        ] } ] }"#,
+    )
+    .unwrap();
+    // Current resolution rejects the bad id, so plant it after resolving, as
+    // an older coordinator's `Spawn` could carry it.
+    let mut nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+    for node in nodes.values_mut() {
+        if let dora_core::descriptor::CoreNodeKind::Runtime(runtime) = &mut node.kind {
+            runtime.operators[0].id = "my op".to_string().into();
+        }
+    }
+    let spawn_nodes = nodes.keys().cloned().collect();
+    let dataflow_id = Uuid::new_v4();
+    let err = daemon
+        .spawn_dataflow(
+            None,
+            dataflow_id,
+            std::env::temp_dir(),
+            nodes,
+            descriptor,
+            spawn_nodes,
+            false,
+            None,
+        )
+        .await
+        .err()
+        .expect("spawn must reject an invalid operator id");
+    assert!(
+        format!("{err:#}").contains("invalid operator id"),
+        "{err:#}"
+    );
+    assert!(!daemon.running.contains_key(&dataflow_id));
+}
+
+/// A daemon whose coordinator connection is `coordinator_sender`. The one
+/// place these tests call `build_daemon`, so a signature change touches only
+/// this.
+async fn daemon_reporting_to(
+    coordinator_sender: coordinator::CoordinatorSender,
+    clock: Arc<HLC>,
+) -> Daemon {
+    daemon_and_events_rx(coordinator_sender, clock).await.0
+}
+
+/// Like [`daemon_reporting_to`], but also returns the receiver half of the
+/// daemon's internal event channel (`events_tx`), which `run_inner` drains.
+async fn daemon_and_events_rx(
+    coordinator_sender: coordinator::CoordinatorSender,
+    clock: Arc<HLC>,
+) -> (Daemon, mpsc::Receiver<Timestamped<Event>>) {
+    Daemon::build_daemon(
+        None,
+        Some(coordinator_sender),
+        DaemonId::new(None),
+        None,
+        clock,
+        None,
+        BTreeMap::new(),
+        LogDestination::Tracing,
+        None,
+        Vec::new(),
+        None,
+        Vec::new(),
+        ZenohBind::Derived(LOCALHOST),
+        false,
+        false,
+    )
+    .await
+    .expect("daemon should build")
+}
+
+/// `handle_node_stop` runs on the daemon's main loop, which is the only
+/// reader of `events_tx`. If that channel is full (e.g. chatty nodes filling
+/// it with `LogBroadcast` events while the loop was busy), awaiting a send of
+/// `NodeStopped` into it would wait forever for a slot only the waiting task
+/// can free, hanging the whole daemon.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn node_stop_does_not_block_on_a_full_event_channel() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let (mut daemon, mut events_rx) = daemon_and_events_rx(coordinator_sender, clock.clone()).await;
+
+    let filler = || Timestamped {
+        inner: Event::NodeStopped {
+            dataflow_id: Uuid::new_v4(),
+            node_id: NodeId::from("filler".to_string()),
+        },
+        timestamp: clock.new_timestamp(),
+    };
+    let mut queued = 0;
+    while daemon.events_tx.try_send(filler()).is_ok() {
+        queued += 1;
+    }
+
+    let dataflow_id = Uuid::new_v4();
+    let node_id = NodeId::from("node".to_string());
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        daemon.handle_node_stop(dataflow_id, &node_id, false, true),
+    )
+    .await
+    .expect("handle_node_stop must not wait for the main loop to drain its own channel")
+    .expect("an unknown dataflow is benign");
+
+    // The `NodeStopped` notification is still delivered once the loop drains.
+    for _ in 0..queued {
+        events_rx.recv().await.expect("filler event");
+    }
+    let event = tokio::time::timeout(Duration::from_secs(5), events_rx.recv())
+        .await
+        .expect("NodeStopped must still be delivered")
+        .expect("channel open");
+    assert!(
+        matches!(
+            event.inner,
+            Event::NodeStopped { dataflow_id: id, node_id: ref n } if id == dataflow_id && *n == node_id
+        ),
+        "unexpected event: {}",
+        event.inner.kind()
+    );
+}
+
+/// A `dora/logs` subscriber whose channel closed (its node crashed) must keep
+/// its subscription: once the restarted node re-subscribes it has to receive
+/// log inputs again. The broadcast used to prune the subscriber entry along
+/// with the dead channel, and nothing ever re-added it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn log_subscriber_receives_logs_again_after_restart() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let mut dataflow = test_dataflow();
+    let dataflow_id = dataflow.id;
+    let monitor = NodeId::from("monitor".to_string());
+    dataflow
+        .log_subscribers
+        .push(crate::running_dataflow::LogSubscriber {
+            node_id: monitor.clone(),
+            input_id: DataId::from("logs".to_string()),
+            filter: dora_message::config::LogSubscriptionFilter {
+                min_level: None,
+                node_filter: None,
+            },
+        });
+    // The crashed incarnation's listener is gone, but its sender is still
+    // registered until the restarted node subscribes again.
+    let (dead_tx, dead_rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    drop(dead_rx);
+    dataflow.subscribe_channels.insert(monitor.clone(), dead_tx);
+    daemon.running.insert(dataflow_id, dataflow);
+
+    let log_message = || dora_message::common::LogMessage {
+        build_id: None,
+        dataflow_id: Some(dataflow_id),
+        node_id: Some(NodeId::from("other".to_string())),
+        daemon_id: None,
+        level: dora_core::build::LogLevelOrStdout::LogLevel(LogLevel::Info),
+        target: None,
+        module_path: None,
+        file: None,
+        line: None,
+        message: "hello".into(),
+        timestamp: chrono::Utc::now(),
+        fields: None,
+    };
+    daemon
+        .handle_dora_event(DoraEvent::LogBroadcast {
+            dataflow_id,
+            log_message: log_message(),
+        })
+        .await
+        .unwrap();
+
+    // The restarted incarnation re-subscribes.
+    let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    let dataflow = daemon.running.get_mut(&dataflow_id).unwrap();
+    Daemon::subscribe(dataflow, monitor.clone(), tx, &clock).await;
+    daemon
+        .handle_dora_event(DoraEvent::LogBroadcast {
+            dataflow_id,
+            log_message: log_message(),
+        })
+        .await
+        .unwrap();
+
+    let event = rx.try_recv().map(|event| event.inner);
+    assert!(
+        matches!(event, Ok(NodeEvent::Input { .. })),
+        "restarted log subscriber received {event:?}"
+    );
+}
+
+/// `AddNode` re-registers a node's `dora/logs` inputs. An entry left by an
+/// earlier incarnation (kept across a crash, see the test above) must be
+/// replaced, not duplicated, or every log line reaches the node twice.
+#[test]
+fn unsubscribe_node_from_logs_drops_only_that_nodes_entries() {
+    let subscriber = |node: &str, input: &str| crate::running_dataflow::LogSubscriber {
+        node_id: NodeId::from(node.to_string()),
+        input_id: DataId::from(input.to_string()),
+        filter: dora_message::config::LogSubscriptionFilter {
+            min_level: None,
+            node_filter: None,
+        },
+    };
+    let mut dataflow = test_dataflow();
+    dataflow.log_subscribers = vec![
+        subscriber("monitor", "logs"),
+        subscriber("monitor", "old_logs"),
+        subscriber("other", "logs"),
+    ];
+
+    dataflow.unsubscribe_node_from_logs(&NodeId::from("monitor".to_string()));
+
+    let remaining: Vec<_> = dataflow
+        .log_subscribers
+        .iter()
+        .map(|sub| (sub.node_id.to_string(), sub.input_id.to_string()))
+        .collect();
+    assert_eq!(remaining, [("other".to_string(), "logs".to_string())]);
+}
+
+/// The coordinator sends `Logs` with `send_and_receive`, and the WS layer
+/// drops a `None` reply, so a `Logs` request for a dataflow this daemon does
+/// not know must still get an explicit error reply instead of leaving the
+/// coordinator to hit its 30s reply timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn logs_for_unknown_dataflow_replies_with_an_error() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let dataflow_id = Uuid::new_v4();
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _status = daemon
+        .handle_coordinator_event(
+            DaemonCoordinatorEvent::Logs {
+                dataflow_id,
+                node_id: NodeId::from("node".to_string()),
+                tail: None,
+            },
+            reply_tx,
+        )
+        .await
+        .expect("Logs must not fail the daemon loop");
+
+    match reply_rx.await.expect("a reply must be sent") {
+        Some(DaemonCoordinatorReply::Logs(Err(err))) => {
+            assert!(err.contains(&dataflow_id.to_string()), "{err}");
+        }
+        other => panic!("expected a Logs error reply, got {other:?}"),
+    }
+}
+
+/// A finish report the WS writer accepted can still be lost with the
+/// connection — a failing socket write drops it, a half-open link swallows
+/// it. It is resent on the next connection, ahead of the `StatusReport`, so
+/// the coordinator never reads the dataflow's absence as a crash and
+/// re-spawns a dataflow that finished normally (dora-rs/dora#3602).
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn finish_report_queued_on_a_lost_connection_is_resent_before_the_status_report() {
+    let (coordinator_sender, lost_link) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let dataflow_id = Uuid::new_v4();
+    daemon.running.insert(dataflow_id, test_dataflow());
+    daemon
+        .finish_dataflow(dataflow_id)
+        .await
+        .expect("the report is queued for the writer");
+    // The writer dies with the frame still queued.
+    drop(lost_link);
+    assert!(
+        daemon.pending_finished_dataflows.is_empty(),
+        "a queued report is not a failed one"
+    );
+    assert!(
+        daemon
+            .unconfirmed_finished_dataflows
+            .contains_key(&dataflow_id),
+        "but it is not known to be delivered either"
+    );
+
+    // Reconnect.
+    let (coordinator_sender, mut coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    daemon.coordinator_sender = Some(coordinator_sender);
+    let clock = daemon.clock.clone();
+    let external_events = futures::stream::iter([Timestamped {
+        inner: Event::CtrlC,
+        timestamp: clock.new_timestamp(),
+    }]);
+    let (_dora_events_tx, mut dora_events_rx) = mpsc::channel(1);
+    daemon
+        .run_inner(external_events, &mut dora_events_rx, None)
+        .await
+        .expect("run the new connection");
+
+    let mut sent = Vec::new();
+    while let Ok(message) = coordinator_rx.try_recv() {
+        sent.push(message);
+    }
+    let finished = sent
+        .iter()
+        .position(|m| m.contains("AllNodesFinished") && m.contains(&dataflow_id.to_string()))
+        .unwrap_or_else(|| panic!("the finish report must be resent: {sent:#?}"));
+    let status = sent
+        .iter()
+        .position(|m| m.contains("StatusReport"))
+        .unwrap_or_else(|| panic!("the connection starts with a status report: {sent:#?}"));
+    assert!(
+        finished < status,
+        "the resent finish report must precede the status report: {sent:#?}"
+    );
+    assert!(
+        daemon
+            .unconfirmed_finished_dataflows
+            .contains_key(&dataflow_id),
+        "resent on a fresh connection, it is unconfirmed again"
+    );
+}
+
+/// A finish report whose connection stayed up well past the heartbeat
+/// timeout reached the coordinator, and is not resent on a later reconnect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn finish_report_is_confirmed_once_its_connection_outlives_the_heartbeat_timeout() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+    let clock = daemon.clock.clone();
+    let result = || DataflowDaemonResult {
+        timestamp: clock.new_timestamp(),
+        node_results: BTreeMap::new(),
+    };
+    let (old, recent) = (Uuid::new_v4(), Uuid::new_v4());
+    let Some(long_ago) = Instant::now().checked_sub(FINISH_REPORT_CONFIRM_AFTER) else {
+        return; // Monotonic clock too close to its origin to go back that far.
+    };
+    daemon
+        .unconfirmed_finished_dataflows
+        .insert(old, (result(), long_ago));
+    daemon
+        .unconfirmed_finished_dataflows
+        .insert(recent, (result(), Instant::now()));
+
+    daemon.confirm_finished_dataflow_reports();
+    assert!(!daemon.unconfirmed_finished_dataflows.contains_key(&old));
+    assert!(daemon.unconfirmed_finished_dataflows.contains_key(&recent));
+
+    let (coordinator_sender, mut coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    daemon.coordinator_sender = Some(coordinator_sender);
+    daemon
+        .report_pending_finished_dataflows()
+        .await
+        .expect("resend");
+    let resent = coordinator_rx
+        .try_recv()
+        .expect("the recent report is resent");
+    assert!(resent.contains(&recent.to_string()), "{resent}");
+    assert!(
+        coordinator_rx.try_recv().is_err(),
+        "the confirmed report is not resent"
+    );
+}
+
 fn test_running_node() -> RunningNode {
     RunningNode {
         process: None,
@@ -198,6 +707,169 @@ fn test_running_node() -> RunningNode {
         startup_timeout: None,
         finish_grace_secs: None,
     }
+}
+
+fn add_input(df: &mut RunningDataflow, consumer: &str, input: &str, source: &str) {
+    df.running_nodes
+        .get_mut(&NodeId::from(consumer.to_owned()))
+        .unwrap()
+        .node_config
+        .run_config
+        .inputs
+        .insert(input.to_owned().into(), user_input(source, "out", None));
+}
+
+#[test]
+fn dynamic_join_dials_both_local_producers_and_consumers() {
+    let mut df = test_dataflow();
+    for name in ["producer", "joining", "consumer", "unrelated"] {
+        let id = NodeId::from(name.to_owned());
+        let mut node = test_running_node();
+        node.node_config.node_id = id.clone();
+        node.node_config.dynamic = name == "joining";
+        df.running_nodes.insert(id, node);
+    }
+    let joining = NodeId::from("joining".to_owned());
+    add_input(&mut df, "joining", "in", "producer");
+    add_input(&mut df, "consumer", "in", "joining");
+    // A remote producer is deliberately absent from the local running set.
+    add_input(&mut df, "joining", "remote", "remote");
+    for (name, port) in [
+        ("producer", 12001),
+        ("consumer", 12002),
+        ("unrelated", 12003),
+        ("remote", 12004),
+    ] {
+        Arc::make_mut(&mut df.zenoh_peering).insert(
+            name.to_owned().into(),
+            crate::spawn::NodeZenohPeering {
+                listen: vec![format!("tcp/127.0.0.1:{port}")],
+                connect: vec![],
+                routable: false,
+            },
+        );
+    }
+    let (_, plan) = df
+        .dynamic_node_config(&joining, Some("tcp/127.0.0.1:12000"))
+        .unwrap();
+    assert_eq!(
+        plan.connect,
+        [
+            "tcp/127.0.0.1:12000",
+            "tcp/127.0.0.1:12001",
+            "tcp/127.0.0.1:12002"
+        ]
+    );
+    assert!(plan.listen.starts_with("tcp/127.0.0.1:"));
+    let again = df.dynamic_node_config(&joining, None).unwrap().1;
+    assert_ne!(
+        again.listen, plan.listen,
+        "a restarted node must not inherit a port nothing held while it was down"
+    );
+    assert_eq!(df.zenoh_peering[&joining].listen, [again.listen]);
+}
+
+#[test]
+fn dynamic_join_publishes_listener_before_next_configuration_request() {
+    let mut df = test_dataflow();
+    let a = NodeId::from("a".to_owned());
+    let b = NodeId::from("b".to_owned());
+    for id in [&a, &b] {
+        let mut node = test_running_node();
+        node.node_config.node_id = id.clone();
+        node.node_config.dynamic = true;
+        df.running_nodes.insert(id.clone(), node);
+    }
+    add_input(&mut df, "b", "in", "a");
+    let first = df.dynamic_node_config(&a, None).unwrap().1;
+    let second = df.dynamic_node_config(&b, None).unwrap().1;
+    assert_eq!(
+        second.connect.as_slice(),
+        std::slice::from_ref(&first.listen)
+    );
+    assert_ne!(first.listen, second.listen);
+    // Once both have asked, either order of reconnect has explicit endpoints.
+    assert_eq!(
+        df.dynamic_node_config(&a, None).unwrap().1.connect,
+        [second.listen]
+    );
+}
+
+#[test]
+fn dynamic_join_rejects_static_nodes_and_stopping_dataflows() {
+    let mut df = test_dataflow();
+    let id = NodeId::from("test".to_owned());
+    df.running_nodes.insert(id.clone(), test_running_node());
+    assert!(
+        df.dynamic_node_config(&id, None)
+            .unwrap_err()
+            .to_string()
+            .contains("not dynamic")
+    );
+    assert!(df.zenoh_peering.is_empty());
+    df.running_nodes.get_mut(&id).unwrap().node_config.dynamic = true;
+    df.stop_sent = true;
+    assert!(
+        df.dynamic_node_config(&id, None)
+            .unwrap_err()
+            .to_string()
+            .contains("stopping")
+    );
+    assert!(df.zenoh_peering.is_empty());
+}
+
+fn dataflow_with_node(id: Uuid, node: &NodeId, dynamic: bool) -> RunningDataflow {
+    let mut df = RunningDataflow::new(id, DaemonId::new(None), Descriptor::new(vec![]));
+    let mut running = test_running_node();
+    running.node_config.node_id = node.clone();
+    running.node_config.dynamic = dynamic;
+    df.running_nodes.insert(node.clone(), running);
+    df
+}
+
+#[test]
+fn dynamic_join_ignores_a_static_node_with_the_same_id_elsewhere() {
+    use crate::node_events::dataflow_for_dynamic_node;
+    let camera = NodeId::from("camera".to_owned());
+    let (static_id, dynamic_id) = (Uuid::new_v4(), Uuid::new_v4());
+    let mut running = HashMap::new();
+    running.insert(static_id, dataflow_with_node(static_id, &camera, false));
+    running.insert(dynamic_id, dataflow_with_node(dynamic_id, &camera, true));
+    // Whatever the map's iteration order, the dynamic declaration wins.
+    let picked = dataflow_for_dynamic_node(&mut running, &camera).unwrap();
+    assert_eq!(picked.id, dynamic_id);
+
+    // Two dynamic declarations are still ambiguous.
+    let other = Uuid::new_v4();
+    running.insert(other, dataflow_with_node(other, &camera, true));
+    let err = dataflow_for_dynamic_node(&mut running, &camera)
+        .err()
+        .unwrap();
+    assert!(err.contains("multiple dataflows"), "{err}");
+
+    // ... unless one of them is already stopping.
+    running.get_mut(&other).unwrap().stop_sent = true;
+    let picked = dataflow_for_dynamic_node(&mut running, &camera).unwrap();
+    assert_eq!(picked.id, dynamic_id);
+    running.remove(&other);
+
+    // Only static declarations: hand one back so the caller reports it is
+    // not dynamic, rather than calling it ambiguous.
+    running.retain(|id, _| *id == static_id);
+    running.insert(other, dataflow_with_node(other, &camera, false));
+    let picked = dataflow_for_dynamic_node(&mut running, &camera).unwrap();
+    assert!(
+        picked
+            .dynamic_node_config(&camera, None)
+            .unwrap_err()
+            .to_string()
+            .contains("not dynamic")
+    );
+
+    let err = dataflow_for_dynamic_node(&mut running, &NodeId::from("lidar".to_owned()))
+        .err()
+        .unwrap();
+    assert!(err.contains("no node with ID"), "{err}");
 }
 
 fn user_input(
@@ -628,20 +1300,22 @@ fn stop_debug_stream_scan_cleans_up_watchers() {
     let sub_b = uuid::Uuid::new_v4();
 
     // Two subs, both watching out_1; only sub_a watches out_2.
-    df.debug_topic_watchers
-        .entry(OutputId(node_a.clone(), out_1.clone()))
-        .or_default()
-        .extend([sub_a, sub_b]);
-    df.debug_topic_watchers
-        .entry(OutputId(node_a.clone(), out_2.clone()))
-        .or_default()
-        .insert(sub_a);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_1.clone()), sub_a);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_1.clone()), sub_b);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_2.clone()), sub_a);
 
-    // Mirror the production stop path exactly.
-    df.debug_topic_watchers.retain(|_output_id, watchers| {
-        watchers.remove(&sub_a);
-        !watchers.is_empty()
-    });
+    df.remove_debug_topic_subscription(sub_a);
+
+    // The set shared with the debug subscriber tasks mirrors the map's keys,
+    // so out_2 samples are dropped before they are copied (dora-rs/dora#3781).
+    assert!(
+        df.debug_watched_outputs
+            .contains(&OutputId(node_a.clone(), out_1.clone()))
+    );
+    assert!(
+        !df.debug_watched_outputs
+            .contains(&OutputId(node_a.clone(), out_2.clone()))
+    );
 
     // out_1 still has sub_b → entry retained with just sub_b.
     let out_1_watchers = df
@@ -997,6 +1671,83 @@ async fn restart_clears_connected_marker() {
         !df.connected_nodes.contains(&node_a),
         "restart must clear the connected marker so the new incarnation re-subscribes"
     );
+}
+
+/// When a node's process exit is observed for a restart, the exit handler
+/// resets the incarnation's bookkeeping via `reset_incarnation_state`. That
+/// must clear the `dropped_event_streams` marker the exiting incarnation set on
+/// its clean `EventStream::drop` — otherwise the respawned node that never
+/// re-subscribes would have its upstream deliveries silenced as an intentional
+/// drop instead of surfacing the #3201 "failed to re-subscribe" warning.
+///
+/// The marker is set first (mirroring the real order: the old process only
+/// drops its stream after being told to stop, so `EventStreamDropped` runs
+/// before the exit is observed), then the exit-path reset runs and must clear
+/// it (dora-rs/dora#3558). This exercises the shared exit-handler path, which
+/// covers both a `restart_policy` respawn and `dora node restart`.
+#[test]
+fn restart_exit_reset_clears_dropped_event_stream_marker() {
+    let capture = LevelCapture::new();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            let mut df = test_dataflow();
+            let clock = test_clock();
+            let sender: NodeId = "sender".to_string().into();
+            let output: DataId = "output".to_string().into();
+            let node_a: NodeId = "node_a".to_string().into();
+            let input: DataId = "input".to_string().into();
+
+            // The node is still a live process (in `running_nodes`) and its old
+            // incarnation cleanly dropped its stream before exit — set the
+            // marker via the same handler bookkeeping.
+            df.running_nodes.insert(node_a.clone(), test_running_node());
+            let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+            df.subscribe_channels.insert(node_a.clone(), tx);
+            df.mark_event_stream_dropped(&node_a);
+            df.mappings.insert(
+                OutputId(sender.clone(), output.clone()),
+                BTreeSet::from([(node_a.clone(), input.clone())]),
+            );
+
+            // The process exit is observed and the node will be restarted: the
+            // exit handler resets the incarnation state.
+            df.reset_incarnation_state(&node_a, 0);
+
+            assert!(
+                !df.dropped_event_streams.contains(&node_a),
+                "the restart exit reset must clear the deliberate-drop marker so \
+                 a fresh incarnation that fails to re-subscribe is diagnosed"
+            );
+
+            // The node is still in `running_nodes` (restart keeps it) but has no
+            // channel and is no longer marked as a deliberate drop, so an
+            // upstream delivery must WARN — the #3201 case the marker would
+            // otherwise hide.
+            let metadata = metadata::Metadata::new(clock.new_timestamp());
+            let output_id = OutputId(sender, output);
+            send_output_to_local_receivers(
+                &output_id, &mut df, &metadata, None, &clock, None, false, None,
+            )
+            .await
+            .unwrap();
+
+            let warns = capture
+                .levels
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|level| **level == tracing::Level::WARN)
+                .count();
+            assert_eq!(
+                warns, 1,
+                "a restarted node that never re-subscribed must WARN on delivery"
+            );
+        });
+    });
 }
 
 #[test]
@@ -1602,9 +2353,10 @@ async fn circuit_breaker_recovery() {
     let metadata = metadata::Metadata::new(clock.new_timestamp());
 
     let output_id = OutputId(sender, output);
-    let result =
-        send_output_to_local_receivers(&output_id, &mut df, &metadata, None, &clock, None, false)
-            .await;
+    let result = send_output_to_local_receivers(
+        &output_id, &mut df, &metadata, None, &clock, None, false, None,
+    )
+    .await;
     assert!(result.is_ok());
 
     // Assert: broken input recovered
@@ -1655,6 +2407,7 @@ async fn data_bytes_returned_with_and_without_local_receivers() {
         &clock,
         None,
         true,
+        None,
     )
     .await
     .unwrap();
@@ -1682,6 +2435,7 @@ async fn data_bytes_returned_with_and_without_local_receivers() {
         &clock,
         None,
         true,
+        None,
     )
     .await
     .unwrap();
@@ -1694,27 +2448,354 @@ async fn data_bytes_returned_with_and_without_local_receivers() {
 // -- Regression tests for dora-rs/dora#3201: a receiver whose event
 //    stream is gone must not be silently starved. --
 
-/// Minimal `tracing::Subscriber` that records the level of every event it
-/// receives, so a test can assert whether (and how often) a warning fires.
-#[derive(Clone, Default)]
-struct LevelCapture {
-    levels: Arc<Mutex<Vec<tracing::Level>>>,
+/// With the receiver's event channel full, a `backpressure` input's message
+/// is handed back for the producer's listener to deliver once there is room,
+/// while a `drop_oldest` input's is dropped, warned about and counted — and
+/// with no listener to hand it to (a remote forward), the backpressure one is
+/// dropped and counted as well (dora-rs/dora#3397).
+#[test]
+fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
+    use dora_message::config::QueuePolicy;
+    let capture = LevelCapture::new();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            let mut df = test_dataflow();
+            let clock = test_clock();
+            let sender: NodeId = "sender".to_string().into();
+            let output: DataId = "output".to_string().into();
+            let input: DataId = "input".to_string().into();
+            let patient: NodeId = "patient".to_string().into();
+            let hasty: NodeId = "hasty".to_string().into();
+
+            df.mappings.insert(
+                OutputId(sender.clone(), output.clone()),
+                BTreeSet::from([
+                    (patient.clone(), input.clone()),
+                    (hasty.clone(), input.clone()),
+                ]),
+            );
+            let mut receivers = Vec::new();
+            for (receiver, policy) in [
+                (&patient, QueuePolicy::Backpressure),
+                (&hasty, QueuePolicy::DropOldest),
+            ] {
+                let inputs =
+                    BTreeMap::from([(input.clone(), user_input("sender", "output", Some(policy)))]);
+                df.running_nodes
+                    .insert(receiver.clone(), running_node_with(inputs, None));
+                let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+                // Leave fewer free slots than the control-event headroom.
+                for _ in 0..NODE_EVENT_CHANNEL_CAPACITY - CONTROL_EVENT_HEADROOM + 1 {
+                    tx.try_send(Timestamped {
+                        inner: NodeEvent::Stop,
+                        timestamp: clock.new_timestamp(),
+                    })
+                    .unwrap();
+                }
+                df.subscribe_channels.insert(receiver.clone(), tx);
+                df.pending_messages
+                    .insert(receiver.clone(), Arc::new(AtomicU64::new(0)));
+                df.drain_signals
+                    .insert(receiver.clone(), Default::default());
+                receivers.push(rx);
+            }
+
+            let ft_stats = FaultToleranceStats::default();
+            let metadata = metadata::Metadata::new(clock.new_timestamp());
+            let output_id = OutputId(sender, output);
+
+            let mut deferred = Vec::new();
+            send_output_to_local_receivers(
+                &output_id,
+                &mut df,
+                &metadata,
+                None,
+                &clock,
+                Some(&ft_stats),
+                false,
+                Some(&mut deferred),
+            )
+            .await
+            .unwrap();
+            assert_eq!(deferred.len(), 1, "only the backpressure edge is deferred");
+            assert_eq!(deferred[0].receiver, patient);
+            assert!(deferred[0].pending.is_some());
+            assert_eq!(
+                ft_stats.dropped_messages.load(atomic::Ordering::Relaxed),
+                1,
+                "the drop_oldest edge's message is dropped and counted"
+            );
+            assert_eq!(
+                ft_stats
+                    .lost_backpressure_messages
+                    .load(atomic::Ordering::Relaxed),
+                0,
+                "nothing promised was lost"
+            );
+            assert_eq!(
+                df.pending_messages[&patient].load(atomic::Ordering::Relaxed),
+                0,
+                "a deferred delivery is not pending until it lands"
+            );
+
+            // No one to wait for room: both are dropped and counted.
+            send_output_to_local_receivers(
+                &output_id,
+                &mut df,
+                &metadata,
+                None,
+                &clock,
+                Some(&ft_stats),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(ft_stats.dropped_messages.load(atomic::Ordering::Relaxed), 3);
+            assert_eq!(
+                ft_stats
+                    .lost_backpressure_messages
+                    .load(atomic::Ordering::Relaxed),
+                1,
+                "only the backpressure edge's drop breaks a promise"
+            );
+
+            let levels = capture.levels.lock().unwrap();
+            let warns = levels
+                .iter()
+                .filter(|level| **level == tracing::Level::WARN)
+                .count();
+            assert_eq!(
+                warns, 3,
+                "one warning per drop, none for the deferral: {levels:?}"
+            );
+        });
+    });
 }
 
-impl tracing::Subscriber for LevelCapture {
-    fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-        true
-    }
-    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-        tracing::span::Id::from_u64(1)
-    }
-    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-    fn event(&self, event: &tracing::Event<'_>) {
-        self.levels.lock().unwrap().push(*event.metadata().level());
-    }
-    fn enter(&self, _span: &tracing::span::Id) {}
-    fn exit(&self, _span: &tracing::span::Id) {}
+/// A backpressure receiver that already let a held delivery run into the
+/// stall limit is not waited for again until it drains: the next message to
+/// its full channel is dropped and counted instead of holding the producer
+/// for another stall limit (dora-rs/dora#3601).
+#[test]
+fn full_channel_of_a_given_up_receiver_is_a_counted_drop() {
+    use dora_message::config::QueuePolicy;
+    let capture = LevelCapture::new();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            let mut df = test_dataflow();
+            let clock = test_clock();
+            let sender: NodeId = "sender".to_string().into();
+            let output: DataId = "output".to_string().into();
+            let input: DataId = "input".to_string().into();
+            let receiver: NodeId = "receiver".to_string().into();
+
+            df.mappings.insert(
+                OutputId(sender.clone(), output.clone()),
+                BTreeSet::from([(receiver.clone(), input.clone())]),
+            );
+            let inputs = BTreeMap::from([(
+                input.clone(),
+                user_input("sender", "output", Some(QueuePolicy::Backpressure)),
+            )]);
+            df.running_nodes
+                .insert(receiver.clone(), running_node_with(inputs, None));
+            let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+            for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
+                tx.try_send(Timestamped {
+                    inner: NodeEvent::Stop,
+                    timestamp: clock.new_timestamp(),
+                })
+                .unwrap();
+            }
+            df.subscribe_channels.insert(receiver.clone(), tx);
+            let signal = Arc::new(crate::local_delivery::DrainSignal::default());
+            df.drain_signals.insert(receiver.clone(), signal.clone());
+
+            let ft_stats = FaultToleranceStats::default();
+            let metadata = metadata::Metadata::new(clock.new_timestamp());
+            let output_id = OutputId(sender, output);
+            let mut send = async |deferred: &mut Vec<_>| {
+                send_output_to_local_receivers(
+                    &output_id,
+                    &mut df,
+                    &metadata,
+                    None,
+                    &clock,
+                    Some(&ft_stats),
+                    false,
+                    Some(deferred),
+                )
+                .await
+                .unwrap();
+            };
+
+            let mut deferred = Vec::new();
+            send(&mut deferred).await;
+            assert_eq!(deferred.len(), 1, "a live receiver holds the producer");
+
+            signal.gave_up.store(true, atomic::Ordering::Relaxed);
+            let mut deferred = Vec::new();
+            send(&mut deferred).await;
+            assert!(deferred.is_empty(), "a given-up receiver does not");
+            assert_eq!(
+                ft_stats
+                    .lost_backpressure_messages
+                    .load(atomic::Ordering::Relaxed),
+                1,
+                "the message is dropped and counted as lost"
+            );
+        });
+
+        let levels = capture.levels.lock().unwrap();
+        let warns = levels
+            .iter()
+            .filter(|level| **level == tracing::Level::WARN)
+            .count();
+        assert_eq!(warns, 1, "one warning for the dropped message: {levels:?}");
+    });
+}
+
+/// A message to a live receiver with no event stream (the #3201 mode: mid-
+/// restart, or failed to re-subscribe) is a counted drop — and a lost one on
+/// a backpressure input — so `fail_on_lost_backpressure_messages` sees it.
+/// A receiver that finished and dropped its stream on purpose is not.
+#[test]
+fn missing_event_stream_drops_are_counted_per_message() {
+    use dora_message::config::QueuePolicy;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        df.mappings.insert(
+            OutputId(sender.clone(), output.clone()),
+            BTreeSet::from([(receiver.clone(), input.clone())]),
+        );
+        let inputs = BTreeMap::from([(
+            input.clone(),
+            user_input("sender", "output", Some(QueuePolicy::Backpressure)),
+        )]);
+        df.running_nodes
+            .insert(receiver.clone(), running_node_with(inputs, None));
+
+        let ft_stats = FaultToleranceStats::default();
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
+        let output_id = OutputId(sender, output);
+        for _ in 0..2 {
+            send_output_to_local_receivers(
+                &output_id,
+                &mut df,
+                &metadata,
+                None,
+                &clock,
+                Some(&ft_stats),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(ft_stats.dropped_messages.load(atomic::Ordering::Relaxed), 2);
+        assert_eq!(
+            ft_stats
+                .lost_backpressure_messages
+                .load(atomic::Ordering::Relaxed),
+            2,
+            "every message to the streamless receiver is a lost promise, not just the warned one"
+        );
+
+        // Finished normally: not a drop anyone promised against.
+        df.dropped_event_streams.insert(receiver.clone());
+        send_output_to_local_receivers(
+            &output_id,
+            &mut df,
+            &metadata,
+            None,
+            &clock,
+            Some(&ft_stats),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ft_stats.dropped_messages.load(atomic::Ordering::Relaxed), 2);
+    });
+}
+
+/// A receiver whose event channel is still registered but closed (its
+/// listener died without `EventStreamDropped`, which would have unregistered
+/// it first) loses the message that finds it closed. That message is a
+/// counted drop like the ones after it, so `fail_on_lost_backpressure_messages`
+/// sees it even when it is the last one on the edge (dora-rs/dora#3620).
+#[test]
+fn closed_event_channel_drop_is_counted() {
+    use dora_message::config::QueuePolicy;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        df.mappings.insert(
+            OutputId(sender.clone(), output.clone()),
+            BTreeSet::from([(receiver.clone(), input.clone())]),
+        );
+        let inputs = BTreeMap::from([(
+            input.clone(),
+            user_input("sender", "output", Some(QueuePolicy::Backpressure)),
+        )]);
+        df.running_nodes
+            .insert(receiver.clone(), running_node_with(inputs, None));
+        let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(receiver.clone(), tx);
+        drop(rx);
+
+        let ft_stats = FaultToleranceStats::default();
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
+        let output_id = OutputId(sender, output);
+        send_output_to_local_receivers(
+            &output_id,
+            &mut df,
+            &metadata,
+            None,
+            &clock,
+            Some(&ft_stats),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !df.subscribe_channels.contains_key(&receiver),
+            "the closed channel is unregistered"
+        );
+        assert_eq!(ft_stats.dropped_messages.load(atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            ft_stats
+                .lost_backpressure_messages
+                .load(atomic::Ordering::Relaxed),
+            1,
+            "the message that found the channel closed is a lost promise"
+        );
+    });
 }
 
 /// A receiver recorded in `mappings` but missing from
@@ -1724,7 +2805,7 @@ impl tracing::Subscriber for LevelCapture {
 /// of silently starving the consumer (dora-rs/dora#3201).
 #[test]
 fn receiver_missing_channel_is_skipped_with_once_per_edge_warning() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -1753,13 +2834,13 @@ fn receiver_missing_channel_is_skipped_with_once_per_edge_warning() {
             let metadata = metadata::Metadata::new(clock.new_timestamp());
             let output_id = OutputId(sender, output);
             send_output_to_local_receivers(
-                &output_id, &mut df, &metadata, None, &clock, None, false,
+                &output_id, &mut df, &metadata, None, &clock, None, false, None,
             )
             .await
             .unwrap();
             // And again: the *second* drop of the same edge must not warn.
             send_output_to_local_receivers(
-                &output_id, &mut df, &metadata, None, &clock, None, false,
+                &output_id, &mut df, &metadata, None, &clock, None, false, None,
             )
             .await
             .unwrap();
@@ -1782,7 +2863,7 @@ fn receiver_missing_channel_is_skipped_with_once_per_edge_warning() {
 /// one is warned about exactly once.
 #[test]
 fn healthy_receiver_still_receives_when_peer_channel_is_missing() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -1815,7 +2896,7 @@ fn healthy_receiver_still_receives_when_peer_channel_is_missing() {
             let metadata = metadata::Metadata::new(clock.new_timestamp());
             let output_id = OutputId(sender, output);
             send_output_to_local_receivers(
-                &output_id, &mut df, &metadata, None, &clock, None, false,
+                &output_id, &mut df, &metadata, None, &clock, None, false, None,
             )
             .await
             .unwrap();
@@ -1845,7 +2926,7 @@ fn healthy_receiver_still_receives_when_peer_channel_is_missing() {
 /// is an expected dead edge, not #3201 symptomatology — it must NOT WARN.
 #[test]
 fn finished_receiver_does_not_warn() {
-    let capture = LevelCapture::default();
+    let capture = LevelCapture::new();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
@@ -1870,7 +2951,7 @@ fn finished_receiver_does_not_warn() {
             let metadata = metadata::Metadata::new(clock.new_timestamp());
             let output_id = OutputId(sender, output);
             send_output_to_local_receivers(
-                &output_id, &mut df, &metadata, None, &clock, None, false,
+                &output_id, &mut df, &metadata, None, &clock, None, false, None,
             )
             .await
             .unwrap();
@@ -1883,6 +2964,80 @@ fn finished_receiver_does_not_warn() {
             assert_eq!(
                 warns, 0,
                 "a finished (no longer running) receiver must not WARN, got {levels:?}"
+            );
+        });
+    });
+}
+
+/// A consumer that finished normally sends `EventStreamDropped`, which removes
+/// its `subscribe_channels` entry but leaves it in `running_nodes` until its
+/// process exit is observed. In that window an upstream still producing to it
+/// must NOT WARN — it is a deliberate drop, not the silent-routing-loss of
+/// #3201. This is the gap `finished_receiver_does_not_warn` misses: there the
+/// node is already out of `running_nodes`, so it never exercises the
+/// still-running window (dora-rs/dora#3556).
+#[test]
+fn finished_but_still_running_receiver_does_not_warn() {
+    let capture = LevelCapture::new();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            let mut df = test_dataflow();
+            let clock = test_clock();
+            let sender: NodeId = "sender".to_string().into();
+            let output: DataId = "output".to_string().into();
+            let finished: NodeId = "finished".to_string().into();
+            let input: DataId = "input".to_string().into();
+
+            df.mappings.insert(
+                OutputId(sender.clone(), output.clone()),
+                BTreeSet::from([(finished.clone(), input.clone())]),
+            );
+            // The node is still a live process (in `running_nodes`) and had an
+            // event stream, then dropped it. Drive the real bookkeeping the
+            // `EventStreamDropped` handler runs so this test covers that path
+            // rather than reproducing its effect by hand.
+            df.running_nodes
+                .insert(finished.clone(), test_running_node());
+            let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+            df.subscribe_channels.insert(finished.clone(), tx);
+            let drained = Arc::new(crate::local_delivery::DrainSignal::default());
+            df.drain_signals.insert(finished.clone(), drained.clone());
+            df.mark_event_stream_dropped(&finished);
+            assert!(
+                !df.subscribe_channels.contains_key(&finished)
+                    && df.dropped_event_streams.contains(&finished),
+                "mark_event_stream_dropped must drop the channel and set the marker"
+            );
+            // The drain signal the node subscribed with is the one a held
+            // delivery reads: a close after this is not a lost message.
+            assert!(
+                drained
+                    .stream_dropped
+                    .load(std::sync::atomic::Ordering::Acquire),
+                "mark_event_stream_dropped must mark the subscribed drain signal"
+            );
+
+            let metadata = metadata::Metadata::new(clock.new_timestamp());
+            let output_id = OutputId(sender, output);
+            send_output_to_local_receivers(
+                &output_id, &mut df, &metadata, None, &clock, None, false, None,
+            )
+            .await
+            .unwrap();
+
+            let levels = capture.levels.lock().unwrap();
+            let warns = levels
+                .iter()
+                .filter(|level| **level == tracing::Level::WARN)
+                .count();
+            assert_eq!(
+                warns, 0,
+                "a consumer that dropped its stream but is still running must \
+                 not WARN, got {levels:?}"
             );
         });
     });
@@ -1949,9 +3104,10 @@ async fn full_circuit_breaker_cycle() {
     let metadata = metadata::Metadata::new(clock.new_timestamp());
 
     let output_id = OutputId(sender, output);
-    let result =
-        send_output_to_local_receivers(&output_id, &mut df, &metadata, None, &clock, None, false)
-            .await;
+    let result = send_output_to_local_receivers(
+        &output_id, &mut df, &metadata, None, &clock, None, false, None,
+    )
+    .await;
     assert!(result.is_ok());
 
     // Verify recovered state

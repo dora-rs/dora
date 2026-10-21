@@ -14,6 +14,17 @@ pub struct GraphEntity {
     pub token: LivelinessKey,
 }
 
+impl GraphEntity {
+    /// Clone a cache entry into an owned `GraphEntity`. Shared by `snapshot`
+    /// (clone-everything) and `matching_services` (clone-only-the-matches).
+    fn from_entry(key: &str, entry: &Entry) -> Self {
+        Self {
+            key: key.to_owned(),
+            token: entry.token.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GraphSnapshot {
     pub generation: u64,
@@ -167,35 +178,40 @@ impl GraphCache {
             entities: state
                 .entities
                 .iter()
-                .map(|(key, entry)| GraphEntity {
-                    key: key.clone(),
-                    token: entry.token.clone(),
-                })
+                .map(|(key, entry)| GraphEntity::from_entry(key, entry))
                 .collect(),
             initialized: state.initialized,
             closed: state.closed,
         }
     }
 
+    /// Services advertised under `name` with this type identity. QoS is not
+    /// part of the match, as in rmw_zenoh's `service_server_is_available`:
+    /// a client finds a server whatever QoS either side declared.
     pub fn matching_services(
         &self,
         name: &str,
         type_name: &str,
         type_hash: &str,
-        qos: &str,
     ) -> Vec<GraphEntity> {
-        self.snapshot()
+        // Filter while holding the lock and clone only the matches. Going
+        // through `snapshot()` would first deep-clone every entry in the
+        // cache (up to `MAX_GRAPH_ENTITIES` = 16k entities, each an owned key
+        // plus a full `LivelinessKey`) into a `Vec` and then discard all but
+        // the matches — an allocation of the whole cache on every query.
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state
             .entities
-            .into_iter()
-            .filter(|entity| {
-                entity.token.kind == EntityKind::Service
-                    && entity.token.topic.as_ref().is_some_and(|topic| {
+            .iter()
+            .filter(|(_, entry)| {
+                entry.token.kind == EntityKind::Service
+                    && entry.token.topic.as_ref().is_some_and(|topic| {
                         topic.name == name
                             && topic.type_name == type_name
                             && topic.type_hash == type_hash
-                            && topic.qos == qos
                     })
             })
+            .map(|(key, entry)| GraphEntity::from_entry(key, entry))
             .collect()
     }
 

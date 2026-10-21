@@ -156,6 +156,70 @@ pub(crate) fn disk_rate_bytes_per_sec(bytes: u64, window: Option<Duration>) -> O
     Some((bytes as f64 / secs) as u64)
 }
 
+/// Process attributes `dora top` samples for each node.
+///
+/// `without_tasks` keeps a node's threads out of the process list. On Linux,
+/// sysinfo reports every thread as its own process parented to the node's pid
+/// while `tasks` is enabled, and `ProcessRefreshKind::nothing()` leaves it
+/// enabled — it resets every other attribute. The descendant walk would then
+/// sum each thread's `memory()`, which reports the whole process's resident
+/// set, so a node's reported memory grew with its thread count instead of its
+/// RSS (#3546).
+fn metrics_refresh_kind() -> sysinfo::ProcessRefreshKind {
+    sysinfo::ProcessRefreshKind::nothing()
+        .with_cpu()
+        .with_memory()
+        .with_disk_usage()
+        .without_tasks()
+}
+
+/// Parent -> children edges for every process in `sys`.
+fn child_process_map(sys: &sysinfo::System) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
+    let mut children_map: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
+    for (pid, process) in sys.processes() {
+        if let Some(parent) = process.parent() {
+            children_map.entry(parent).or_default().push(*pid);
+        }
+    }
+    children_map
+}
+
+/// CPU and memory of `pid` plus every descendant in `children_map`, together
+/// with the disk deltas of the same set. Returns `None` when `sys` holds no
+/// entry for `pid`.
+///
+/// CPU and memory are instantaneous readings, so every process contributes;
+/// disk I/O is a delta, so [`DiskDelta`] decides which ones may.
+fn aggregate_process_tree(
+    sys: &sysinfo::System,
+    children_map: &HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
+    previous_processes: &HashMap<sysinfo::Pid, u64>,
+    pid: sysinfo::Pid,
+) -> Option<(f32, u64, DiskDelta)> {
+    let process = sys.process(pid)?;
+    let mut cpu_usage = process.cpu_usage();
+    let mut memory_bytes = process.memory();
+    let mut disk = DiskDelta::default();
+    disk.add(previous_processes, pid, process);
+
+    // Recursively aggregate all descendants.
+    let mut stack = vec![pid];
+    while let Some(parent) = stack.pop() {
+        if let Some(kids) = children_map.get(&parent) {
+            for &child_pid in kids {
+                if let Some(child) = sys.processes().get(&child_pid) {
+                    cpu_usage += child.cpu_usage();
+                    memory_bytes += child.memory();
+                    disk.add(previous_processes, child_pid, child);
+                }
+                stack.push(child_pid);
+            }
+        }
+    }
+
+    Some((cpu_usage, memory_bytes, disk))
+}
+
 /// Collect and send metrics in the background. Errors are returned to the
 /// caller (the spawned task logs them).
 pub(crate) async fn collect_and_send_metrics_bg(
@@ -166,7 +230,7 @@ pub(crate) async fn collect_and_send_metrics_bg(
     clock: Arc<uhlc::HLC>,
 ) -> eyre::Result<()> {
     use dora_message::daemon_to_coordinator::NodeMetrics;
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate};
+    use sysinfo::{Pid, ProcessesToUpdate};
 
     let has_any_running = dataflows
         .iter()
@@ -196,10 +260,7 @@ pub(crate) async fn collect_and_send_metrics_bg(
                 return Ok(());
             }
         };
-        let refresh_kind = ProcessRefreshKind::nothing()
-            .with_cpu()
-            .with_memory()
-            .with_disk_usage();
+        let refresh_kind = metrics_refresh_kind();
         match tokio::task::spawn_blocking(move || {
             let mut system = system;
             system.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
@@ -242,41 +303,15 @@ pub(crate) async fn collect_and_send_metrics_bg(
         if let Some(state) = &refreshed_state {
             let sys = &state.system;
             // Pre-build parent->children map once per refresh.
-            let mut children_map: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
-            for (pid, proc_info) in sys.processes() {
-                if let Some(parent) = proc_info.parent() {
-                    children_map.entry(parent).or_default().push(*pid);
-                }
-            }
+            let children_map = child_process_map(sys);
 
             for node in &df.nodes {
                 if let Some(pid_arc) = node.pid.as_ref() {
                     let pid = pid_arc.load(atomic::Ordering::Acquire);
                     let sys_pid = Pid::from_u32(pid);
-                    if let Some(process) = sys.process(sys_pid) {
-                        let mut cpu_usage = process.cpu_usage();
-                        let mut memory_bytes = process.memory();
-                        // CPU and memory are instantaneous readings, so every
-                        // process contributes; disk I/O is a delta, so `DiskDelta`
-                        // decides which ones may.
-                        let mut disk = DiskDelta::default();
-                        disk.add(&previous_processes, sys_pid, process);
-
-                        // Recursively aggregate all descendants.
-                        let mut stack = vec![sys_pid];
-                        while let Some(parent) = stack.pop() {
-                            if let Some(kids) = children_map.get(&parent) {
-                                for &child_pid in kids {
-                                    if let Some(child) = sys.processes().get(&child_pid) {
-                                        cpu_usage += child.cpu_usage();
-                                        memory_bytes += child.memory();
-                                        disk.add(&previous_processes, child_pid, child);
-                                    }
-                                    stack.push(child_pid);
-                                }
-                            }
-                        }
-
+                    if let Some((cpu_usage, memory_bytes, disk)) =
+                        aggregate_process_tree(sys, &children_map, &previous_processes, sys_pid)
+                    {
                         let disk_window = disk.window(refresh_window);
 
                         let restart_count = node.restart_count.load(atomic::Ordering::Acquire);
@@ -564,5 +599,175 @@ mod disk_rate_tests {
         assert!(!has_disk_baseline(&HashMap::new(), pid, start_time));
         // Having now been recorded, the *next* refresh's delta is a real one.
         assert!(has_disk_baseline(&snapshot, pid, start_time));
+    }
+}
+
+/// Regression tests for #3546: on Linux, sysinfo reports every thread of a
+/// process as its own process parented to it unless the refresh says
+/// otherwise, so the descendant walk counted a node's RSS once per thread.
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod process_tree_tests {
+    use super::*;
+    use std::{
+        process::{Command, Stdio},
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering as AtomicOrdering},
+        },
+        thread,
+        time::{Duration, Instant},
+    };
+
+    /// The Linux thread ids of the current process, from `/proc/self/task`.
+    fn own_thread_ids() -> Vec<sysinfo::Pid> {
+        std::fs::read_dir("/proc/self/task")
+            .expect("read /proc/self/task")
+            .map(|entry| {
+                let tid = entry
+                    .expect("read a thread entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .parse()
+                    .expect("thread id is numeric");
+                sysinfo::Pid::from_u32(tid)
+            })
+            .collect()
+    }
+
+    fn refresh_all() -> sysinfo::System {
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::All,
+            true,
+            metrics_refresh_kind(),
+        );
+        system
+    }
+
+    /// Run `body` while `count` extra threads of this process spin. Spawning
+    /// them explicitly keeps the test independent of the harness's own thread
+    /// count — `--test-threads=1` runs tests on the main thread alone — and
+    /// gives the process a non-zero CPU delta between two refreshes.
+    fn with_busy_threads<F: FnOnce()>(count: usize, body: F) {
+        let stop = Arc::new(AtomicBool::new(false));
+        let handles: Vec<_> = (0..count)
+            .map(|_| {
+                let stop = stop.clone();
+                thread::spawn(move || {
+                    let mut spin = 0u64;
+                    while !stop.load(AtomicOrdering::Relaxed) {
+                        spin = std::hint::black_box(spin.wrapping_add(1));
+                    }
+                })
+            })
+            .collect();
+
+        // Wait for the threads to exist before refreshing, so the refresh
+        // cannot race their creation.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while own_thread_ids().len() <= count {
+            assert!(Instant::now() < deadline, "the extra threads did not start");
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        body();
+
+        stop.store(true, AtomicOrdering::Relaxed);
+        for handle in handles {
+            handle.join().expect("busy thread panicked");
+        }
+    }
+
+    #[test]
+    fn a_node_is_counted_once_however_many_threads_it_runs() {
+        with_busy_threads(3, || {
+            let own_pid = sysinfo::Pid::from_u32(std::process::id());
+            let thread_ids = own_thread_ids();
+            assert!(thread_ids.len() > 1, "expected a multi-threaded process");
+
+            // `cpu_usage()` is a delta against the previous refresh, and sysinfo
+            // skips it while both previous tick counts are still zero — it needs
+            // a first sample to subtract. A freshly spawned process can report
+            // 0.0 for its first one or two refreshes, so keep sampling instead
+            // of assuming one interval is enough.
+            let mut system = refresh_all();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                // The node itself is still sampled: excluding threads must not
+                // take CPU or memory with it.
+                let process = system.process(own_pid).expect("the node is refreshed");
+                assert!(process.memory() > 0, "the node's memory is still reported");
+                if process.cpu_usage() > 0.0 {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the node's CPU was never reported"
+                );
+                thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+                system.refresh_processes_specifics(
+                    sysinfo::ProcessesToUpdate::All,
+                    true,
+                    metrics_refresh_kind(),
+                );
+            }
+
+            // Every thread is a task of this process, not a process of its own,
+            // so the descendant walk cannot add the node's RSS once per thread.
+            let children = child_process_map(&system);
+            let kids = children.get(&own_pid).cloned().unwrap_or_default();
+            for tid in &thread_ids {
+                assert!(
+                    !kids.contains(tid),
+                    "thread {tid:?} of {own_pid:?} is reported as its own process"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn a_single_threaded_node_is_aggregated_once() {
+        let mut child = Command::new("sleep")
+            .arg("300")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn sleep");
+        let pid = sysinfo::Pid::from_u32(child.id());
+
+        // `sleep` is single-threaded and spawns nothing, so its process tree is
+        // exactly one process and the aggregate is that process's own RSS.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut system = sysinfo::System::new();
+        let measured = loop {
+            system.refresh_processes_specifics(
+                sysinfo::ProcessesToUpdate::All,
+                true,
+                metrics_refresh_kind(),
+            );
+            let children = child_process_map(&system);
+            if let Some((cpu_usage, memory_bytes, _disk)) =
+                aggregate_process_tree(&system, &children, &HashMap::new(), pid)
+            {
+                let own = system.process(pid).expect("the node is refreshed").memory();
+                break (cpu_usage, memory_bytes, own);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "sysinfo never saw the sleep process"
+            );
+            thread::sleep(Duration::from_millis(10));
+        };
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let (_cpu_usage, memory_bytes, own_memory) = measured;
+        assert!(own_memory > 0, "the node's memory is reported");
+        assert_eq!(
+            memory_bytes, own_memory,
+            "a single-threaded node must be counted exactly once"
+        );
     }
 }

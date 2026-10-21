@@ -58,13 +58,19 @@ pub(crate) fn resolve_single_node(
     // `Descriptor::new`'s defaults, as before.
     let mut tmp_desc = Descriptor::new(vec![node]);
     tmp_desc.env = running_descriptor.env.clone();
-    dora_core::descriptor::resolve_aliases_and_set_defaults_in_topology(
+    let resolved = dora_core::descriptor::resolve_aliases_and_set_defaults_in_topology(
         &tmp_desc,
         &running_descriptor.nodes,
     )
     .map_err(|e| eyre!("failed to resolve node: {e}"))?
     .pop_first()
-    .ok_or_else(|| eyre!("node descriptor resolved to empty map"))
+    .ok_or_else(|| eyre!("node descriptor resolved to empty map"))?;
+    // A joining node never goes through whole-dataflow validation, so check
+    // its timing fields here: the daemon feeds them to
+    // `Duration::from_secs_f64`, which panics on a negative, non-finite, or
+    // overflowing value.
+    dora_core::descriptor::validate::check_node_timing(&resolved.1)?;
+    Ok(resolved)
 }
 
 /// Validate that the daemon's reply to `DaemonCoordinatorEvent::ReplaceNode`

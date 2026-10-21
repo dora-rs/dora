@@ -12,4 +12,3 @@ license.workspace = true
 [dependencies]
 dora-node-api = { workspace = true, features = ["arrow-v59", "tracing"] }
 eyre = { workspace = true }
-chrono = "0.4"

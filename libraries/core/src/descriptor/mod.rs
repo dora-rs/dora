@@ -317,6 +317,12 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
             );
         }
         let mut resolved_node = ResolvedNode::from_node(node, kind);
+        // Checked here on the resolution path rather than in `validate` alone:
+        // the coordinator's `dora start`, `dora node add/replace` and recovery
+        // paths resolve without validating, and an invalid operator id makes
+        // `DataId::from` panic in the coordinator and the daemon.
+        validate::check_operator_ids(&resolved_node)?;
+        validate::check_runtime_operator_count(&resolved_node)?;
         // Merge the dataflow-level `env` into the per-node `env`. Per-node keys
         // win on conflict so a node can override a shared default (e.g. global
         // `RUST_LOG=info` with one verbose node setting `RUST_LOG=debug`).
@@ -531,6 +537,11 @@ fn merge_env(
     (!merged.is_empty()).then_some(merged)
 }
 
+/// Async counterpart of [`DescriptorExt::blocking_read`]: read a descriptor
+/// from the YAML file at `path` and [`parse`](DescriptorExt::parse) it.
+///
+/// Like `blocking_read`, this only reads and deserializes — it neither expands
+/// modules nor validates the dataflow (use [`DescriptorExt::check`] for that).
 pub async fn read_as_descriptor(path: &Path) -> eyre::Result<Descriptor> {
     let buf = tokio::fs::read(path)
         .await
@@ -592,12 +603,30 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     // Otherwise resolve against the `uv`-managed environment first (when `uv`
     // is available), then fall back to the system `$PATH`.
     } else if which::which("uv").is_ok() {
-        resolve_path_via_uv(&path)
+        or_on_system_path(resolve_path_via_uv(&path), &path)
     } else if let Ok(abs_path) = which::which(&path) {
         Ok(abs_path)
     } else {
         bail!("Could not find source path {}", path.display())
     }
+}
+
+/// Fall back to the ambient `$PATH` when the `uv` lookup failed. If the binary
+/// is not on `$PATH` either, the error names both searches, with the `uv`
+/// failure as its cause.
+///
+/// `uv run` fails for reasons unrelated to the binary (a project whose
+/// dependencies do not resolve, no network, no `which` binary on the host),
+/// and none of those should hide a binary that `$PATH` provides.
+fn or_on_system_path(uv_result: Result<PathBuf>, path: &Path) -> Result<PathBuf> {
+    uv_result.or_else(|uv_err| {
+        which::which(path).map_err(|_| {
+            uv_err.wrap_err(format!(
+                "Could not find source path {} in the uv environment or on $PATH",
+                path.display()
+            ))
+        })
+    })
 }
 
 /// Resolve a hub node's entrypoint under **confined** rules (spec §11): the
@@ -782,7 +811,7 @@ impl NodeExt for Node {
         ) {
             (None, None, None, None, None) => {
                 eyre::bail!(
-                    "node `{}` requires a `path`, `operators`, `ros2`, or `module` field",
+                    "node `{}` requires a `path`, `operators`, `operator`, `ros2`, or `module` field",
                     self.id
                 )
             }
@@ -1471,6 +1500,21 @@ nodes:
         );
     }
 
+    /// A failed `uv` lookup must not hide a binary that is on `$PATH`: with
+    /// `uv` installed, `resolve_path` used to return the `uv` error as-is.
+    #[test]
+    #[cfg(unix)]
+    fn failed_uv_lookup_falls_back_to_system_path() {
+        let resolved = or_on_system_path(Err(eyre::eyre!("uv failed")), Path::new("sh"))
+            .expect("`sh` is on $PATH");
+        assert!(resolved.is_absolute(), "{}", resolved.display());
+
+        let missing = Path::new("dora_nonexistent_binary_2016_regression");
+        let err = or_on_system_path(Err(eyre::eyre!("uv failed")), missing).unwrap_err();
+        assert!(err.to_string().contains("or on $PATH"), "{err:?}");
+        assert_eq!(err.root_cause().to_string(), "uv failed");
+    }
+
     #[test]
     fn descriptor_without_global_env_preserves_per_node_env() {
         // Regression guard: no top-level `env:` must leave per-node env
@@ -1520,9 +1564,8 @@ nodes:
     /// Every `CustomNode` field name, taken from its JSON schema.
     ///
     /// A field marked `#[schemars(skip)]` would never appear in `properties`
-    /// and would slip past the carried-through tests below. `Node::deploy` is
-    /// exactly such a field, and the classify test compensates with a
-    /// hardcoded insert — do the same here if `CustomNode` ever gains one.
+    /// and would slip past the carried-through tests below; if `CustomNode` ever
+    /// gains one, add it here by hand.
     fn custom_node_field_names() -> BTreeSet<String> {
         let schema = schemars::schema_for!(dora_message::descriptor::CustomNode);
         let schema = serde_json::to_value(schema).expect("schema should serialize");
@@ -1753,12 +1796,6 @@ nodes:
           tick: dora/timer/millis/100
         outputs:
           - bbox
-      - id: track
-        python: track.py
-        inputs:
-          bbox: camera.front/detect/bbox
-        outputs:
-          - tracks
 "#;
         let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
         let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
@@ -1855,6 +1892,27 @@ nodes:
         let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
         desc.resolve_aliases_and_set_defaults().expect(
             "a multi-topic config mapping declared ports (explicit and derived) must resolve",
+        );
+    }
+
+    /// A node that sets none of its mutually exclusive implementation fields is
+    /// rejected, and the error must list every valid kind — including the
+    /// single-`operator` form. The message previously named only `path`,
+    /// `operators`, `ros2`, and `module`, silently omitting `operator` and so
+    /// steering a user who mistyped an `operator:` key away from the correct
+    /// fix (the sibling "multiple fields" error and the trait doc both list it).
+    #[test]
+    fn node_kind_error_lists_the_operator_field() {
+        let descriptor: Descriptor =
+            serde_yaml::from_str("nodes:\n  - id: lonely\n").expect("parse");
+        let node = descriptor.nodes.first().expect("one node");
+        let err = node
+            .kind()
+            .expect_err("a node with no implementation field must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("`operator`"),
+            "the error must list the single-`operator` kind, got: {msg}"
         );
     }
 }

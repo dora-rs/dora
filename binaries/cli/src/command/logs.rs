@@ -8,7 +8,7 @@ use super::{Executable, default_tracing};
 use crate::common::parse_duration;
 use crate::{
     common::{
-        CoordinatorOptions, error_indicates_dataflow_finished, expect_reply,
+        CoordinatorOptions, coordinator_rejected, error_indicates_dataflow_finished, expect_reply,
         resolve_dataflow_identifier_interactive, send_control_request,
     },
     output::{
@@ -32,7 +32,8 @@ pub struct LogsArgs {
     /// Deprecated positional node name. Use --node instead.
     #[clap(value_name = "NAME", hide = true, conflicts_with_all = ["node", "all_nodes"])]
     pub legacy_node: Option<NodeId>,
-    /// Show logs for the given node
+    /// Show logs for the given node.
+    /// Streams from coordinator by default, falls back to local out/ directory.
     #[clap(long, short = 'n', value_name = "NAME", conflicts_with = "all_nodes")]
     pub node: Option<NodeId>,
     /// Show logs from all nodes merged by timestamp.
@@ -103,29 +104,37 @@ impl Executable for LogsArgs {
 
         // --local always uses local file path
         if self.local {
-            if self.follow {
-                return follow_local_logs(&self);
-            }
-            return read_local_logs(&self);
+            return dispatch_local_logs(&self);
         }
 
-        // Single node via coordinator
+        // Single node: try the coordinator first, then fall back to the local
+        // `out/` directory when it is unavailable. This mirrors the all-nodes
+        // path below so that after a plain `dora run` (which never binds a
+        // coordinator) `dora logs --node <N>` works without forcing the user to
+        // discover `--local`; the local readers already honor `--node` through
+        // `find_node_log_files`.
         if let Some(ref node) = self.node {
             let node = node.clone();
-            let config = build_log_config(&self)?;
-            let session = self.coordinator.connect()?;
-            let uuid = resolve_logs_dataflow_identifier(&session, self.dataflow.as_deref(), None)?;
-            return logs(
-                &session,
-                uuid,
-                node,
-                self.tail,
-                self.follow,
-                self.grep.as_deref(),
-                self.since,
-                self.until,
-                &config,
-            );
+            return match self.coordinator.connect() {
+                Ok(session) => {
+                    let config = build_log_config(&self)?;
+                    let uuid =
+                        resolve_logs_dataflow_identifier(&session, self.dataflow.as_deref(), None)?;
+                    logs(
+                        &session,
+                        uuid,
+                        node,
+                        self.tail,
+                        self.follow,
+                        self.grep.as_deref(),
+                        self.since,
+                        self.until,
+                        &config,
+                    )
+                }
+                Err(err) if coordinator_rejected(&err) => local_logs_after_rejection(&self, err),
+                Err(_) => dispatch_local_logs(&self),
+            };
         }
 
         // All nodes (explicit --all-nodes or no node specified):
@@ -152,12 +161,46 @@ impl Executable for LogsArgs {
                     &config,
                 )
             }
+            Err(err) if coordinator_rejected(&err) => local_logs_after_rejection(&self, err),
             Err(_) => {
                 // Coordinator unavailable, fall back to local
-                read_local_logs(&self)
+                dispatch_local_logs(&self)
             }
         }
     }
+}
+
+/// Read logs from the local `out/` directory, streaming when `--follow` is set.
+///
+/// Shared by the explicit `--local` path and by every coordinator-unavailable
+/// fallback, so all three honor `--follow` identically. Only `follow_local_logs`
+/// streams; `read_local_logs` prints once and returns, so dispatching here (not
+/// calling `read_local_logs` directly) is what keeps `--follow` working on the
+/// fallback paths.
+fn dispatch_local_logs(args: &LogsArgs) -> Result<()> {
+    if args.follow {
+        follow_local_logs(args)
+    } else {
+        read_local_logs(args)
+    }
+}
+
+/// Fall back to the local `out/` logs after a coordinator refused this CLI
+/// (rejected `--auth` token or version handshake).
+///
+/// The coordinator that refused us is not necessarily the one that ran the
+/// dataflow: a plain `dora run` never uses one, yet still finds it on the
+/// port, for example an older `dora up` left running across a CLI upgrade, or
+/// another user's `--auth` coordinator. So the local logs are still the right
+/// source, but say why the coordinator wasn't used. Without an `out/`
+/// directory there is nothing local to show, and the rejection, with its hint,
+/// is the useful error.
+fn local_logs_after_rejection(args: &LogsArgs, rejection: eyre::Report) -> Result<()> {
+    if !Path::new("out").exists() {
+        return Err(rejection);
+    }
+    eprintln!("warning: reading local logs from out/ instead: {rejection:#}\n");
+    dispatch_local_logs(args)
 }
 
 fn reject_legacy_node_arg(args: &LogsArgs) -> Result<()> {
@@ -871,9 +914,13 @@ fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf
 }
 
 fn read_log_file(path: &Path) -> Result<Vec<LogMessage>> {
-    let content = std::fs::read_to_string(path)
-        .wrap_err_with(|| format!("failed to read {}", path.display()))?;
-    Ok(parse_log_content(path, &content))
+    // Decode lossily, like `read_log_file_tracked`: a file whose tail ends
+    // inside a multi-byte UTF-8 sequence (a line the daemon is still writing,
+    // or one cut short by a crash) or a legacy `.txt` log holding raw console
+    // bytes must not make every log of the dataflow unreadable.
+    let bytes =
+        std::fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
+    Ok(parse_log_content(path, &String::from_utf8_lossy(&bytes)))
 }
 
 /// Read a log file for follow mode: the messages to print plus the follow state
@@ -2011,6 +2058,29 @@ mod tests {
         // Only the newline-terminated prefix is consumed; the partial tail waits
         // for a later poll, and the stored offset is the raw byte offset.
         assert_eq!(state.offset, complete.len() as u64);
+    }
+
+    #[test]
+    fn read_log_file_tolerates_invalid_utf8() {
+        // `dora logs` without `--follow` used strict decoding, so one partial
+        // multi-byte character made the whole command fail.
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("log_n.jsonl");
+        let mut raw = jsonl("日本語").into_bytes();
+        raw.extend_from_slice(b"{\"ts\":\"\xe4\xbd");
+        std::fs::write(&path, &raw).unwrap();
+        let msgs = read_log_file(&path).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].message, "日本語");
+
+        // A legacy raw-text log keeps its lines, with the bad byte replaced.
+        let path = dir.path().join("log_n.txt");
+        std::fs::write(&path, b"before\nbad \xff byte\nafter").unwrap();
+        let msgs = read_log_file(&path).unwrap();
+        let lines: Vec<_> = msgs.iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(lines, ["before", "bad \u{fffd} byte", "after"]);
     }
 
     fn snap_from(path: &Path, size: u64, content: &str) -> LogFileSnapshot {

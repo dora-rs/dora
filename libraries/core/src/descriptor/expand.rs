@@ -1,6 +1,6 @@
 use super::classify;
 use dora_message::{
-    config::{Input, InputMapping, UserInputMapping},
+    config::{Input, InputMapping, LogSubscriptionFilter, UserInputMapping},
     descriptor::{
         DYNAMIC_SOURCE, Descriptor, EnvValue, Node, OperatorConfig, OperatorSource, SHELL_SOURCE,
     },
@@ -956,7 +956,11 @@ fn resolve_inner_node_paths(
     project_root: &Path,
 ) -> eyre::Result<()> {
     let owner = node.id.to_string();
-    if let Some(ref mut path) = node.path {
+    // A `git:` node's `path` is relative to its clone (the node's working dir
+    // at build and spawn), not to the module file, so leave it untouched.
+    if node.git.is_none()
+        && let Some(ref mut path) = node.path
+    {
         resolve_module_relative_path(path, module_dir, project_root, &owner)?;
     }
     if let Some(ref mut operators) = node.operators {
@@ -1200,6 +1204,19 @@ fn rewrite_module_input(
     optional_inputs: &BTreeSet<String>,
 ) -> eyre::Result<Option<Input>> {
     match &input.mapping {
+        // `dora/logs/<level>/<node>` naming a sibling: prefix the node filter
+        // like a sibling data source, or it would match no node after
+        // expansion and the sink would silently receive nothing.
+        InputMapping::Logs(LogSubscriptionFilter {
+            min_level,
+            node_filter: Some(node),
+        }) if inner_node_ids.contains(node.as_ref()) => Ok(Some(Input {
+            mapping: InputMapping::Logs(LogSubscriptionFilter {
+                min_level: min_level.clone(),
+                node_filter: Some(format!("{module_id}.{node}").into()),
+            }),
+            ..input.clone()
+        })),
         InputMapping::Timer { .. } | InputMapping::Logs(_) => Ok(Some(input.clone())),
         InputMapping::User(user_mapping) => {
             let source_str = user_mapping.source.to_string();
@@ -4045,6 +4062,61 @@ nodes:
         );
     }
 
+    /// A `git:` inner node's `path` names a file inside its clone, which is
+    /// the node's working dir at build and spawn. Re-rooting it to the module
+    /// directory made the daemon look for `<clone>/<module_dir>/<path>`.
+    #[test]
+    fn expand_keeps_git_inner_node_path_relative_to_the_clone() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join("modules")).unwrap();
+
+        write_file(
+            &base.join("modules"),
+            "git_module.yml",
+            r#"
+module:
+  name: git_module
+  outputs: [from_git, local]
+
+nodes:
+  - id: fromgit
+    git: https://github.com/example/x.git
+    path: ../bin/x
+    outputs:
+      - from_git
+  - id: sibling
+    path: worker.py
+    outputs:
+      - local
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: modules/git_module.yml
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let path_of = |id: &str| {
+            expanded
+                .nodes
+                .iter()
+                .find(|n| n.id.to_string() == id)
+                .and_then(|n| n.path.clone())
+                .unwrap()
+        };
+        assert_eq!(path_of("m.fromgit"), "../bin/x");
+        // A plain `path:` sibling is still re-rooted to the module directory.
+        assert_eq!(
+            Path::new(&path_of("m.sibling")),
+            Path::new("modules").join("worker.py")
+        );
+    }
+
     #[test]
     fn reject_inner_node_path_traversal_via_dotdot() {
         let tmp = TempDir::new().unwrap();
@@ -4082,6 +4154,66 @@ nodes:
             msg.contains("resolves outside the project directory"),
             "got: {msg}"
         );
+    }
+
+    /// A `dora/logs/<level>/<node>` input naming a sibling inside a module must
+    /// follow the sibling's prefixed id, or the daemon's exact node-id filter
+    /// matches nothing and the sink silently receives no logs.
+    #[test]
+    fn expand_prefixes_sibling_log_filter() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "logs_module.yml",
+            r#"
+module:
+  name: logs_module
+  outputs: []
+
+nodes:
+  - id: worker
+    path: worker.py
+  - id: sink
+    path: sink.py
+    inputs:
+      sibling: dora/logs/info/worker
+      external: dora/logs/warn/outside
+      all: dora/logs/info
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: logs_module.yml
+  - id: outside
+    path: outside.py
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let sink = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.sink")
+            .unwrap();
+        let filter_of = |input: &str| match &sink.inputs[&DataId::from(input.to_string())].mapping {
+            InputMapping::Logs(filter) => filter.clone(),
+            other => panic!("expected a logs mapping, got {other:?}"),
+        };
+
+        let sibling = filter_of("sibling");
+        assert_eq!(sibling.node_filter.unwrap().to_string(), "m.worker");
+        assert!(sibling.min_level.is_some(), "level must be preserved");
+        // A node outside the module and an unfiltered subscription are left as is.
+        assert_eq!(
+            filter_of("external").node_filter.unwrap().to_string(),
+            "outside"
+        );
+        assert!(filter_of("all").node_filter.is_none());
     }
 
     #[test]

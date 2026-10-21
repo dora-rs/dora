@@ -5,8 +5,8 @@ use crate::local_listener::DynamicNodeEventWrapper;
 use crate::{
     Daemon, DaemonNodeEvent, Event, InterDaemonEvent, OutputId, RunningDataflow,
     ZENOH_OUTPUT_QUEUE_CAPACITY, ZENOH_PUBLISH_TIMEOUT, ZenohOutbound, close_inputs_best_effort,
-    drop_extension_and_notify, extension_table::ExtensionKey, note_output_sent_to_local_receivers,
-    send_output_to_local_receivers, send_with_timestamp,
+    drop_extension_and_notify, extension_table::ExtensionKey, local_delivery::DeferredDelivery,
+    note_output_sent_to_local_receivers, send_output_to_local_receivers, send_with_timestamp,
 };
 use dora_core::{
     config::{DataId, NodeId, OperatorId},
@@ -17,17 +17,18 @@ use dora_message::{
     DataflowId,
     common::{DataMessage, LogLevel},
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
-    daemon_to_node::{DaemonReply, NodeConfig, NodeEvent},
+    daemon_to_node::{DaemonReply, NodeEvent},
     descriptor::RestartPolicy,
+    dynamic_node::DynamicNodeConfigReply,
     node_to_daemon::{DynamicNodeEvent, Timestamped},
 };
-use eyre::{Context, ContextCompat, Result, bail, eyre};
+use eyre::{Context, ContextCompat, Result, eyre};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, atomic},
     time::Instant,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::error;
 use uuid::Uuid;
 use zenoh::qos::{CongestionControl, Priority};
@@ -40,6 +41,46 @@ use zenoh::qos::{CongestionControl, Priority};
 /// stale-node case that is the reason it is a warning at all.
 pub(crate) const MAX_WARNED_LATE_OUTPUT_NODES: usize = 1024;
 
+/// Picks the running dataflow a connecting dynamic node `node_id` belongs to.
+///
+/// Only a live dataflow that declares `node_id` as dynamic counts: a static
+/// node with the same id in another dataflow, or a dataflow that is already
+/// stopping, must not make the join ambiguous. If no dataflow qualifies, any
+/// dataflow with that id is returned so that `dynamic_node_config` reports
+/// why (not dynamic, or stopping).
+pub(crate) fn dataflow_for_dynamic_node<'a>(
+    running: &'a mut HashMap<DataflowId, RunningDataflow>,
+    node_id: &NodeId,
+) -> Result<&'a mut RunningDataflow, String> {
+    let no_node = || format!("no node with ID `{node_id}`");
+    let mut dynamic = running
+        .iter()
+        .filter(|(_, df)| {
+            !df.stop_sent
+                && df
+                    .running_nodes
+                    .get(node_id)
+                    .is_some_and(|node| node.node_config.dynamic)
+        })
+        .map(|(id, _)| *id);
+    let id = match (dynamic.next(), dynamic.next()) {
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "multiple dataflows contain dynamic node id {node_id}. \
+                Please only have one running dataflow with the specified \
+                node id if you want to use dynamic node",
+            ));
+        }
+        (Some(id), None) => id,
+        (None, _) => running
+            .iter()
+            .find(|(_, df)| df.running_nodes.contains_key(node_id))
+            .map(|(id, _)| *id)
+            .ok_or_else(no_node)?,
+    };
+    running.get_mut(&id).ok_or_else(no_node)
+}
+
 impl Daemon {
     pub(crate) async fn handle_dynamic_node_event(
         &mut self,
@@ -50,50 +91,22 @@ impl Daemon {
                 event: DynamicNodeEvent::NodeConfig { node_id },
                 reply_tx,
             } => {
-                let number_node_id = self
-                    .running
-                    .iter()
-                    .filter(|(_id, dataflow)| dataflow.running_nodes.contains_key(&node_id))
-                    .count();
+                let node_config =
+                    dataflow_for_dynamic_node(&mut self.running, &node_id).and_then(|dataflow| {
+                        dataflow
+                            .dynamic_node_config(&node_id, self.zenoh_listen_endpoint.as_deref())
+                            .map_err(|err| {
+                                format!(
+                                    "failed to get dynamic node config within given dataflow: {err}"
+                                )
+                            })
+                    });
 
-                let node_config = match number_node_id {
-                    2.. => Err(format!(
-                        "multiple dataflows contain dynamic node id {node_id}. \
-                        Please only have one running dataflow with the specified \
-                        node id if you want to use dynamic node",
-                    )),
-                    1 => self
-                        .running
-                        .iter()
-                        .filter(|(_id, dataflow)| dataflow.running_nodes.contains_key(&node_id))
-                        .map(|(id, dataflow)| -> Result<NodeConfig> {
-                            let node_config = dataflow
-                                .running_nodes
-                                .get(&node_id)
-                                .with_context(|| {
-                                    format!("no node with ID `{node_id}` within the given dataflow")
-                                })?
-                                .node_config
-                                .clone();
-                            if !node_config.dynamic {
-                                bail!("node with ID `{node_id}` in {id} is not dynamic");
-                            }
-                            Ok(node_config)
-                        })
-                        .next()
-                        .ok_or_else(|| eyre!("no node with ID `{node_id}`"))
-                        .and_then(|r| r)
-                        .map_err(|err| {
-                            format!(
-                                "failed to get dynamic node config within given dataflow: {err}"
-                            )
-                        }),
-                    0 => Err(format!("no node with ID `{node_id}`")),
+                let (result, zenoh) = match node_config {
+                    Ok((config, peering)) => (Ok(config), Some(peering)),
+                    Err(err) => (Err(err), None),
                 };
-
-                let reply = DaemonReply::NodeConfig {
-                    result: node_config,
-                };
+                let reply = DynamicNodeConfigReply::NodeConfig { result, zenoh };
                 let _ = reply_tx.send(Some(reply)).map_err(|_| {
                     error!("could not send node info reply from daemon to coordinator")
                 });
@@ -121,6 +134,7 @@ impl Daemon {
             DaemonNodeEvent::Subscribe {
                 event_sender,
                 pending_counter,
+                drained,
                 reply_sender,
             } => {
                 let mut logger = self.logger.for_dataflow(dataflow_id);
@@ -145,6 +159,7 @@ impl Daemon {
                         dataflow
                             .pending_messages
                             .insert(node_id.clone(), pending_counter);
+                        dataflow.drain_signals.insert(node_id.clone(), drained);
                         Self::subscribe(dataflow, node_id.clone(), event_sender, &self.clock).await;
 
                         let status = dataflow
@@ -221,8 +236,16 @@ impl Daemon {
                 output_id,
                 metadata,
                 data,
+                deferred_reply,
             } => self
-                .send_out(dataflow_id, node_id, output_id, metadata, data)
+                .send_out(
+                    dataflow_id,
+                    node_id,
+                    output_id,
+                    metadata,
+                    data,
+                    deferred_reply,
+                )
                 .await
                 .context("failed to send out")?,
             DaemonNodeEvent::OutputSent {
@@ -295,7 +318,12 @@ impl Daemon {
                         .running
                         .get_mut(&dataflow_id)
                         .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
-                    dataflow.subscribe_channels.remove(&node_id);
+                    // Remove the send channel and mark this as a deliberate drop
+                    // on normal shutdown, so an upstream still producing to this
+                    // consumer in the window before its process exit is observed
+                    // does not trigger the "failed to re-subscribe" warning
+                    // (dora-rs/dora#3556).
+                    dataflow.mark_event_stream_dropped(&node_id);
                     Result::<_, eyre::Error>::Ok(())
                 };
 
@@ -435,6 +463,10 @@ impl Daemon {
         }
     }
 
+    /// `deferred_reply`, when given, receives the deliveries local routing
+    /// could not complete (see `DeferredDelivery`). Dropping it unanswered —
+    /// the dataflow is gone, delivery failed — tells the waiting listener
+    /// there is nothing to wait for.
     pub(crate) async fn send_out(
         &mut self,
         dataflow_id: Uuid,
@@ -442,6 +474,7 @@ impl Daemon {
         output_id: DataId,
         metadata: dora_message::metadata::Metadata,
         data: Option<DataMessage>,
+        deferred_reply: Option<oneshot::Sender<Vec<DeferredDelivery>>>,
     ) -> Result<(), eyre::ErrReport> {
         let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
             self.log_late_node_output(&dataflow_id, &node_id, &output_id, "send out");
@@ -457,6 +490,7 @@ impl Daemon {
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
             || dataflow.enable_debug_inspection;
         let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
+        let mut deferred = Vec::new();
         let data_bytes = send_output_to_local_receivers(
             &output_id_key,
             dataflow,
@@ -465,8 +499,25 @@ impl Daemon {
             &self.clock,
             Some(&self.ft_stats),
             remote_receivers || has_debug_watchers,
+            deferred_reply.is_some().then_some(&mut deferred),
         )
         .await?;
+        if let Some(reply) = deferred_reply
+            && let Err(deferred) = reply.send(deferred)
+        {
+            // The producer's listener went away with its node before it could
+            // take these over: they are lost, on edges that were promised not
+            // to lose anything.
+            for delivery in &deferred {
+                tracing::warn!(
+                    node = %delivery.receiver,
+                    "producer `{}` exited while `{}` was waiting for room: dropping message",
+                    output_id_key.0,
+                    output_id_key.1,
+                );
+            }
+            self.ft_stats.record_drop(deferred.len() as u64, true);
+        }
 
         if !remote_receivers && !has_debug_watchers {
             return Ok(());
@@ -594,25 +645,28 @@ impl Daemon {
         let subscription_ids: Vec<_> = subscription_ids.iter().copied().collect();
         let subscription_count = subscription_ids.len();
 
-        let message = serde_json::to_vec(&Timestamped {
-            inner: CoordinatorRequest::Event {
-                daemon_id: self.daemon_id.clone(),
-                event: DaemonEvent::TopicDebugData {
-                    dataflow_id,
-                    subscription_ids,
-                    payload: serialized_event,
-                },
-            },
-            timestamp: self.clock.new_timestamp(),
-        })?;
-        match sender.try_send_event(&message) {
+        match sender.try_send_topic_debug_frame(
+            &self.daemon_id,
+            &self.clock,
+            dataflow_id,
+            subscription_ids,
+            serialized_event,
+        ) {
             Ok(()) => {}
             Err(crate::coordinator::TrySendEventError::Full) => {
                 tracing::warn!(
                     %dataflow_id,
                     output = %format!("{}/{}", output_id.0, output_id.1),
                     subscriptions = subscription_count,
-                    "dropping topic debug frame because coordinator WS send channel is full"
+                    "dropping topic debug frame because the topic debug queue is full"
+                );
+            }
+            Err(err @ crate::coordinator::TrySendEventError::TooLarge { .. }) => {
+                tracing::warn!(
+                    %dataflow_id,
+                    output = %format!("{}/{}", output_id.0, output_id.1),
+                    subscriptions = subscription_count,
+                    "dropping topic debug frame: {err}"
                 );
             }
             Err(crate::coordinator::TrySendEventError::Closed) => {
@@ -623,7 +677,10 @@ impl Daemon {
                     "dropping topic debug frame because coordinator WS send channel is closed"
                 );
             }
-            Err(crate::coordinator::TrySendEventError::InvalidUtf8(err)) => {
+            Err(
+                err @ (crate::coordinator::TrySendEventError::InvalidUtf8(_)
+                | crate::coordinator::TrySendEventError::Encode(_)),
+            ) => {
                 return Err(eyre!(
                     "failed to encode topic debug frame for coordinator: {err}"
                 ));
@@ -782,10 +839,13 @@ impl Daemon {
 
         // The receiver is back: forget its stale missing-stream markers so a
         // later drop of the newly-installed channel warns again (dora-rs/
-        // dora#3201).
+        // dora#3201), and clear any deliberate-drop marker so a genuine later
+        // starvation of this fresh channel is diagnosed, not silenced
+        // (dora-rs/dora#3556).
         dataflow
             .missing_channel_warned
             .retain(|(node, _)| node != &node_id);
+        dataflow.dropped_event_streams.remove(&node_id);
         dataflow.subscribe_channels.insert(node_id, event_sender);
     }
 
@@ -836,16 +896,22 @@ impl Daemon {
         let result = self
             .handle_node_stop_inner(dataflow_id, node_id, dynamic_node, exit_clean)
             .await;
-        let _ = self
-            .events_tx
-            .send(Timestamped {
-                inner: Event::NodeStopped {
-                    dataflow_id,
-                    node_id: node_id.clone(),
-                },
-                timestamp: self.clock.new_timestamp(),
-            })
-            .await;
+        let event = Timestamped {
+            inner: Event::NodeStopped {
+                dataflow_id,
+                node_id: node_id.clone(),
+            },
+            timestamp: self.clock.new_timestamp(),
+        };
+        // This runs on the main loop, the only reader of `events_tx`, so
+        // awaiting a free slot in a full channel would wait forever. Hand
+        // the send to a task instead when the channel is full.
+        if let Err(mpsc::error::TrySendError::Full(event)) = self.events_tx.try_send(event) {
+            let events_tx = self.events_tx.clone();
+            tokio::spawn(async move {
+                let _ = events_tx.send(event).await;
+            });
+        }
         result
     }
 

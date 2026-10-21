@@ -163,11 +163,10 @@ fn cleanup_stale(dora: &str) {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    let _ = Command::new(dora)
-        .arg("destroy")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    // `dora destroy` is an alias of `dora down` (cli-surface.txt), so the
+    // teardown runs once. Issuing it twice used to cost an extra 5s here and
+    // again after every test: `dora down` retries the coordinator connection
+    // for 5s before giving up, and this runs while nothing is listening.
     let _ = Command::new(dora)
         .arg("down")
         .stdout(Stdio::null())
@@ -175,6 +174,31 @@ fn cleanup_stale(dora: &str) {
         .status();
     // Wait for port 6013 to be fully released (TCP TIME_WAIT)
     std::thread::sleep(Duration::from_secs(1));
+}
+
+/// `cleanup_stale` runs before every networked test, when no coordinator is
+/// up. `dora down` retries the coordinator connection for 5s before giving
+/// up, so a teardown that is issued twice costs ~10s instead of ~5s. This
+/// guards the pre-test cleanup against dropping back to two teardowns (or
+/// more): at ~60 networked tests that is a ten-minute swing in the suite.
+#[test]
+fn cleanup_stale_pays_the_coordinator_retry_at_most_once() {
+    ensure_cli_built();
+
+    let start = std::time::Instant::now();
+    cleanup_stale(&dora_bin());
+    let elapsed = start.elapsed();
+
+    // One `dora down` against a dead coordinator is ~5s (its retry deadline)
+    // plus the 1s TIME_WAIT sleep; two of them is ~11s. The bound sits
+    // between the two so it fails loudly if the teardown is duplicated and
+    // does not fire on a slow runner.
+    assert!(
+        elapsed < Duration::from_secs(8),
+        "cleanup_stale took {elapsed:?}; it should issue one coordinator \
+         teardown, not several (each `dora down`/`dora destroy` retries the \
+         connection for 5s when nothing is listening)"
+    );
 }
 
 /// Detect whether a dataflow YAML uses Python nodes (needs --uv).
@@ -188,7 +212,7 @@ fn needs_uv(yaml_path: &Path) -> bool {
 ///
 /// 1. `dora up` -- start coordinator + daemon
 /// 2. `dora start <yaml> --detach` -- launch the dataflow
-/// 3. Poll `dora list --json` until "Running" disappears or timeout
+/// 3. Poll `dora list --format json` until "Running" disappears or timeout
 /// 4. `dora stop --all` + `dora down` -- clean up
 fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
     ensure_cli_built();
@@ -251,7 +275,7 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
 
         // Check if any dataflows are still running
         let list_result = Command::new(&dora)
-            .args(["list", "--json"])
+            .args(["list", "--format", "json"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
@@ -1298,8 +1322,12 @@ fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
     }
 
     // ---- Step 2: replay ----
+    // Unpaced (`--speed 0`): the shape that used to drop on the direct
+    // zenoh path (dora-rs/dora#3397). A full-speed pass must deliver every
+    // recorded message, and `dora replay` exits non-zero if the daemon
+    // dropped any, so this also covers the flag CI lost in #3376.
     let rep = Command::new(dora)
-        .args(["replay", drec.to_str().unwrap()])
+        .args(["replay", drec.to_str().unwrap(), "--speed", "0"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()

@@ -150,7 +150,6 @@ pub(crate) unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok:
 /// machine and can only be leftovers of this daemon's own dead dataflows.
 #[cfg(target_os = "linux")]
 pub(crate) fn cleanup_orphan_mirrors(machine_id: &str) -> usize {
-    let prefix = format!("dora_pool_{machine_id}_");
     let Ok(entries) = std::fs::read_dir("/dev/shm") else {
         return 0;
     };
@@ -158,7 +157,7 @@ pub(crate) fn cleanup_orphan_mirrors(machine_id: &str) -> usize {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with(&prefix) {
+        if is_machine_segment(&name, machine_id) {
             match std::fs::remove_file(entry.path()) {
                 Ok(()) => {
                     tracing::info!("memory pool: removed orphan mirror segment {name}");
@@ -172,6 +171,29 @@ pub(crate) fn cleanup_orphan_mirrors(machine_id: &str) -> usize {
         tracing::info!("memory pool: cleaned {removed} orphan mirror segment(s)");
     }
     removed
+}
+
+/// Whether `name` is a segment owned by `machine_id`, i.e. shaped
+/// `dora_pool_{machine_id}_{dataflow uuid}_...`.
+///
+/// Machine ids are free-form and may contain `_`, so the bare
+/// `dora_pool_{machine_id}_` prefix is not enough: for machine `robot` it
+/// also matches `dora_pool_robot_2_{uuid}_...`, a live segment of a sibling
+/// daemon `robot_2` on the same host. Every machine-qualified name puts the
+/// dataflow UUID right after the machine id, so require that too.
+#[cfg(target_os = "linux")]
+fn is_machine_segment(name: &str, machine_id: &str) -> bool {
+    const UUID_LEN: usize = 36;
+    let Some(rest) = name
+        .strip_prefix("dora_pool_")
+        .and_then(|rest| rest.strip_prefix(machine_id))
+        .and_then(|rest| rest.strip_prefix('_'))
+    else {
+        return false;
+    };
+    rest.get(..UUID_LEN)
+        .is_some_and(|dataflow_id| uuid::Uuid::try_parse(dataflow_id).is_ok())
+        && rest.as_bytes().get(UUID_LEN) == Some(&b'_')
 }
 
 /// The pool descriptor replicated into this daemon's extension table when

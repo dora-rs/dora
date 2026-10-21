@@ -424,6 +424,9 @@ mod ffi {
         ) -> ArrowInputInfo;
 
         fn new_metadata() -> Box<Metadata>;
+        /// The message's hybrid logical clock timestamp in NTP64 format, not
+        /// nanoseconds: the upper 32 bits are seconds since the UNIX epoch,
+        /// the lower 32 bits the fraction of a second in units of 2^-32 s.
         fn timestamp(self: &Metadata) -> u64;
         fn get_bool(self: &Metadata, key: &str) -> Result<bool>;
         fn get_float(self: &Metadata, key: &str) -> Result<f64>;
@@ -881,6 +884,7 @@ impl Metadata {
         }
     }
 
+    /// NTP64, not nanoseconds — see the bridge declaration.
     pub fn timestamp(&self) -> u64 {
         self.timestamp
     }
@@ -1573,8 +1577,7 @@ unsafe fn send_arrow_output_impl(
         Ok(array_data) => {
             let arrow_array = arrow::array::make_array(array_data);
             let parameters: DoraMetadataParameters = metadata
-                .as_ref()
-                .map(|metadata| metadata.parameters.clone())
+                .map(|metadata| metadata.into_parameters())
                 .unwrap_or_default();
             let output_id = match parse_output_id(&id) {
                 Ok(parsed) => parsed,
@@ -1680,6 +1683,28 @@ mod tests {
 
         let result = event_as_input(event);
         assert!(result.is_err(), "expected Err for non-UInt8 input, got Ok");
+    }
+
+    /// Pins the shape `Metadata::to_json` hands to C++ (documented in the
+    /// README): the raw HLC `timestamp` as a number, and `parameters` as a
+    /// map of externally tagged values.
+    #[test]
+    fn metadata_to_json_shape() {
+        let mut metadata = Metadata::empty();
+        metadata.timestamp = 42;
+        metadata.set_int("count", 3).unwrap();
+        metadata.set_string("frame", "base".into()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&metadata.to_json()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "timestamp": 42,
+                "parameters": {
+                    "count": { "Integer": 3 },
+                    "frame": { "String": "base" },
+                },
+            })
+        );
     }
 
     #[test]

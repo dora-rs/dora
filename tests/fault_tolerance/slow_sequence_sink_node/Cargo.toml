@@ -1,0 +1,23 @@
+[package]
+name = "slow-sequence-sink-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: consumes numbered `value` inputs, stalling for
+# `$DORA_TEST_SINK_STALL_MS` on the first one so an unpaced producer fills
+# every buffer in between, and records how many it received, how many
+# sequence gaps it saw and how long everything took to arrive to
+# `$DORA_TEST_SINK_RECORD` on exit (dora-rs/dora#3397).
+
+[[bin]]
+name = "slow-sequence-sink-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false, features = ["arrow-v59"] }
+eyre = { workspace = true }

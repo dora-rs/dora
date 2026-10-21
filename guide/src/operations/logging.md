@@ -523,10 +523,9 @@ Set `max_rotated_files: 0` to keep no history at all: the active log is rotated 
 
 ### Runtime Node Restrictions
 
-For runtime nodes (operators), only one of each logging field is allowed per runtime:
+A runtime node (`operator:` / `operators:`) holds exactly one operator, so its logging fields come from that operator:
 
 ```yaml
-# OK -- single operator
 nodes:
   - id: runtime-node
     operator:
@@ -534,20 +533,9 @@ nodes:
       send_logs_as: logs
       min_log_level: info
       max_log_size: "100MB"
-
-# ERROR -- multiple operators with conflicting configs
-nodes:
-  - id: runtime-node
-    operators:
-      - id: op1
-        python: a.py
-        send_logs_as: logs1
-      - id: op2
-        python: b.py
-        send_logs_as: logs2    # Error: multiple send_logs_as
 ```
 
-When a single operator in a runtime sets these fields, the output name is prefixed with the operator ID (e.g., `op1/logs`).
+When the operator sets `send_logs_as`, the output name is prefixed with the operator ID (e.g., `op1/logs` for an operator with `id: op1`).
 
 ---
 
@@ -580,7 +568,7 @@ fields.insert("reading".to_string(), "42.5".to_string());
 node.log_with_fields("info", "reading acquired", None, Some(&fields));
 ```
 
-The `level` parameter accepts `"error"`, `"warn"` (or `"warning"`), `"info"`, `"debug"`, `"trace"`. Unknown levels default to `"info"`. Fields are capped at 60 KB total to match the downstream 64 KB parse limit.
+The `level` parameter accepts `"error"`, `"warn"` (or `"warning"`), `"info"`, `"debug"`, `"trace"`. Unknown levels default to `"info"`. Fields are capped at 60 KB total (serialized), which keeps an entry well below the daemon's 1 MiB per-line limit.
 
 ### Python
 

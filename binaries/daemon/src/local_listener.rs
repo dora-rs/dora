@@ -1,6 +1,10 @@
 use crate::socket_stream_utils::{socket_stream_receive_with_header_timeout, socket_stream_send};
+use dora_core::topics::{
+    DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST,
+};
 use dora_message::{
     daemon_to_node::DaemonReply,
+    dynamic_node::DynamicNodeConfigReply,
     node_to_daemon::{DaemonRequest, DynamicNodeEvent, Timestamped},
 };
 use eyre::Context;
@@ -13,7 +17,7 @@ use tokio::{
 #[derive(Debug)]
 pub struct DynamicNodeEventWrapper {
     pub event: DynamicNodeEvent,
-    pub reply_tx: oneshot::Sender<Option<DaemonReply>>,
+    pub reply_tx: oneshot::Sender<Option<DynamicNodeConfigReply>>,
 }
 
 pub async fn spawn_listener_loop(
@@ -44,6 +48,43 @@ pub async fn spawn_listener_loop(
     });
 
     Ok(Some(listen_port))
+}
+
+/// The dynamic-node port for `dora run`: `DORA_DAEMON_LOCAL_LISTEN_PORT` when
+/// set, else the default. Dynamic nodes look the port up the same way, so
+/// setting the variable for both moves them to a free port together.
+pub fn run_listen_port(env_value: Option<&str>) -> eyre::Result<u16> {
+    let Some(value) = env_value else {
+        return Ok(DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT);
+    };
+    match value.parse::<u16>() {
+        // Port 0 would bind an ephemeral port no dynamic node could find.
+        Ok(0) | Err(_) => eyre::bail!(
+            "invalid {DORA_DAEMON_LOCAL_LISTEN_PORT_ENV}={value:?}: expected a port number between 1 and 65535"
+        ),
+        Ok(port) => Ok(port),
+    }
+}
+
+/// Binds the dynamic-node listener of a `dora run` dataflow.
+///
+/// Unlike the long-lived daemon, `dora run` must own the port: if another
+/// daemon holds it, the dataflow's dynamic nodes would connect to that daemon
+/// instead, and could even receive the config of one of its dataflows that
+/// uses the same node id (dora-rs/dora#3814).
+pub async fn spawn_run_listener(
+    port: u16,
+    events_tx: flume::Sender<Timestamped<DynamicNodeEventWrapper>>,
+) -> eyre::Result<()> {
+    match spawn_listener_loop((LOCALHOST, port).into(), events_tx).await? {
+        Some(_) => Ok(()),
+        None => eyre::bail!(
+            "port {port} for dynamic nodes is already in use, probably by another dora daemon \
+            (e.g. from `dora up`). Its dynamic nodes would connect to that daemon instead of \
+            this dataflow. Stop it (`dora down`), or set {DORA_DAEMON_LOCAL_LISTEN_PORT_ENV} \
+            to a free port for both `dora run` and the dynamic nodes."
+        ),
+    }
 }
 
 async fn listener_loop(
@@ -201,7 +242,7 @@ async fn handle_connection_loop(
 /// `ExtensionRequest` carry multi-MB byte vectors, so Debug-formatting the
 /// whole request (`{req:?}`) would amplify one request into a huge string —
 /// both in the log and in the reply body that is then written back.
-fn request_kind(request: &DaemonRequest) -> &'static str {
+pub(crate) fn request_kind(request: &DaemonRequest) -> &'static str {
     match request {
         DaemonRequest::Register(_) => "Register",
         DaemonRequest::Subscribe => "Subscribe",
@@ -273,6 +314,39 @@ mod tests {
         socket_stream_send(client, &encoded)
             .await
             .expect("failed to send request");
+    }
+
+    #[test]
+    fn run_listen_port_honours_env_and_rejects_bad_values() {
+        assert_eq!(
+            run_listen_port(None).unwrap(),
+            DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT
+        );
+        assert_eq!(run_listen_port(Some("40123")).unwrap(), 40123);
+        for bad in ["0", "", "abc", "70000", "-1"] {
+            assert!(run_listen_port(Some(bad)).is_err(), "{bad:?} accepted");
+        }
+    }
+
+    /// `dora run` must not start when another daemon already listens on its
+    /// dynamic-node port: that daemon would take its dynamic nodes (#3814).
+    #[tokio::test]
+    async fn run_listener_fails_when_port_is_taken() {
+        let taken = TcpListener::bind((LOCALHOST, 0)).await.unwrap();
+        let port = taken.local_addr().unwrap().port();
+        let (events_tx, _events_rx) = flume::unbounded();
+        let err = spawn_run_listener(port, events_tx)
+            .await
+            .expect_err("bind on a taken port must fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains(&port.to_string()), "{msg}");
+        assert!(msg.contains(DORA_DAEMON_LOCAL_LISTEN_PORT_ENV), "{msg}");
+
+        drop(taken);
+        let (events_tx, _events_rx) = flume::unbounded();
+        spawn_run_listener(port, events_tx)
+            .await
+            .expect("a free port must bind");
     }
 
     /// A well-formed binary-reply request this listener does not implement must
