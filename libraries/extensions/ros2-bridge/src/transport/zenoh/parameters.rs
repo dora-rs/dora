@@ -472,19 +472,34 @@ async fn serve(
     stopped: flume::Receiver<()>,
 ) {
     let mut stopped = stopped.recv_async().fuse();
+    // `select_all` takes the first ready request in list order, so each
+    // round starts after the service served last: the services take turns
+    // and a busy one can't starve the others.
+    let mut first = 0;
     loop {
-        let next = futures::future::select_all(servers.iter().map(|(service, server)| {
-            async move { (*service, server, server.recv().await) }.boxed()
-        }))
+        let next = futures::future::select_all(
+            servers
+                .iter()
+                .enumerate()
+                .cycle()
+                .skip(first)
+                .take(servers.len())
+                .map(|(index, (service, server))| {
+                    async move { (index, *service, server, server.recv().await) }.boxed()
+                }),
+        )
         .fuse();
         futures::pin_mut!(next);
         select_biased! {
             _ = stopped => break,
-            ((service, server, request), _, _) = next => match request {
-                Ok(request) => shared.answer(service, server, request).await,
-                Err(ServiceError::TransportClosed) => break,
-                Err(error) => tracing::warn!("ROS 2 parameter request failed: {error}"),
-            },
+            ((index, service, server, request), _, _) = next => {
+                first = (index + 1) % servers.len();
+                match request {
+                    Ok(request) => shared.answer(service, server, request).await,
+                    Err(ServiceError::TransportClosed) => break,
+                    Err(error) => tracing::warn!("ROS 2 parameter request failed: {error}"),
+                }
+            }
         }
     }
 }

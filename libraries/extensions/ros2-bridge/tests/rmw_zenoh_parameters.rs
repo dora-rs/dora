@@ -594,3 +594,89 @@ async fn declare_forces_use_sim_time_and_queues_a_burst() {
         call.await.unwrap().unwrap();
     }
 }
+
+/// The services take turns: a `set_parameters` request queued behind a burst
+/// of `get_parameters` requests is answered long before the burst is done,
+/// so a busy service can't starve the others.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_set_is_answered_during_a_get_burst() {
+    let context = Context::open(ContextOptions {
+        domain_id: 47,
+        config_uri: None,
+    })
+    .await
+    .unwrap();
+    let node = context
+        .create_node("zid", "nid", "/", "/robot", "turns")
+        .await
+        .unwrap();
+    let types = ParameterTypes::resolve(RmwZenohCompatibility::Humble, &resolver()).unwrap();
+    let _server = ParameterServer::declare(
+        &node,
+        &NodeName::new("/robot", "turns").unwrap(),
+        &types,
+        vec![("speed".into(), ParameterValue::Double(1.0))],
+        None,
+    )
+    .await
+    .unwrap();
+    let identity = resolve_service(
+        RmwZenohCompatibility::Humble,
+        "rcl_interfaces",
+        "GetParameters",
+        &resolver(),
+    )
+    .unwrap();
+    let name = "/robot/turns/get_parameters".to_owned();
+    let key = DataKey::new(node.domain(), &name, &identity).unwrap();
+    let client = Arc::new(
+        NodeServiceClient::declare(
+            &node,
+            key.as_str(),
+            TopicToken {
+                name,
+                type_name: identity.dds_name.clone(),
+                type_hash: identity.key_hash_component(),
+                qos: "::,1000:,:,:,,".into(),
+            },
+            1024,
+        )
+        .await
+        .unwrap(),
+    );
+    let request = serialize_cdr(&GetParametersRequest {
+        names: vec!["speed".into()],
+    })
+    .unwrap();
+    let answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let gets: Vec<_> = (0..900)
+        .map(|_| {
+            let (client, request, answered) = (client.clone(), request.clone(), answered.clone());
+            tokio::spawn(async move {
+                client.call(request, Duration::from_secs(20)).await.unwrap();
+                answered.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            })
+        })
+        .collect();
+    let set: SetParametersResponse = call_on(
+        &node,
+        "/robot/turns",
+        "set_parameters",
+        "SetParameters",
+        &SetParametersRequest {
+            parameter: vec![parameter("speed", ParameterValue::Double(2.0))],
+        },
+    )
+    .await;
+    let gets_before_set = answered.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(set.results[0].successful);
+    for get in gets {
+        get.await.unwrap();
+    }
+    // Waiting for the whole burst would mean ~900; taking turns answers the
+    // set right after the get being served when it arrived.
+    assert!(
+        gets_before_set < 450,
+        "{gets_before_set} of 900 gets answered before the set"
+    );
+}
