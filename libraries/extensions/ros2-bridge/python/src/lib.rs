@@ -542,12 +542,9 @@ impl Ros2Node {
                 },
             ) => {
                 let qos = qos.map(Into::into).unwrap_or(*topic_qos);
-                PublisherBackend::Zenoh(futures::executor::block_on(NodePublisher::declare(
-                    node,
-                    key,
-                    token.clone(),
-                    &qos,
-                ))?)
+                PublisherBackend::Zenoh(std::sync::Mutex::new(futures::executor::block_on(
+                    NodePublisher::declare(node, key, token.clone(), &qos),
+                )?))
             }
             _ => eyre::bail!("topic belongs to a different ROS2 transport"),
         };
@@ -827,6 +824,7 @@ impl Ros2Node {
     // ---- SPIKE: action constructors (issue #1170 Phase 2) ----
     pub fn create_action_client(
         &mut self,
+        py: Python<'_>,
         action_name: &str,
         action_type: String,
         qos: qos::Ros2QosPolicies,
@@ -882,11 +880,14 @@ impl Ros2Node {
                     &neutral_qos,
                     64 * 1024 * 1024,
                 ))?;
-                futures::executor::block_on(wait_for_action_server(
-                    node.graph(),
-                    &readiness,
-                    Instant::now() + Duration::from_secs(20),
-                ))?;
+                // Waits up to 20 s for the server: don't hold the GIL meanwhile.
+                py.detach(|| {
+                    futures::executor::block_on(wait_for_action_server(
+                        node.graph(),
+                        &readiness,
+                        Instant::now() + Duration::from_secs(20),
+                    ))
+                })?;
                 ActionClientBackend::Zenoh(Box::new(client))
             }
         };
@@ -1306,7 +1307,10 @@ pub struct Ros2Publisher {
 
 enum PublisherBackend {
     Dds(ros2_client::Publisher<TypedValue<'static>>),
-    Zenoh(NodePublisher),
+    /// Locked for each publish: the attachment's sequence number is taken
+    /// before the put, so two puts at once could go out of order, which
+    /// rmw_zenoh counts as lost messages. rmw_zenoh locks each publisher too.
+    Zenoh(std::sync::Mutex<NodePublisher>),
 }
 
 #[pymethods]
@@ -1334,6 +1338,13 @@ impl Ros2Publisher {
     ///
     pub fn publish(&self, data: Bound<'_, PyAny>) -> eyre::Result<()> {
         let value = pyarrow_to_array_data(&data)?;
+        self.publish_array_data(data.py(), value)
+    }
+}
+
+impl Ros2Publisher {
+    /// `publish` once the pyarrow array is converted.
+    fn publish_array_data(&self, py: Python<'_>, value: ArrayData) -> eyre::Result<()> {
         //// add type info to ensure correct serialization (e.g. struct types
         //// and map types need to be serialized differently)
         let typed_value = TypedValue {
@@ -1349,9 +1360,15 @@ impl Ros2Publisher {
             PublisherBackend::Zenoh(publisher) => {
                 let cdr = serialize_raw_cdr(&typed_value)?;
                 // A reliable Zenoh publish can wait for the network: don't
-                // hold the GIL meanwhile.
-                data.py()
-                    .detach(|| futures::executor::block_on(publisher.publish(&cdr)))?;
+                // hold the GIL meanwhile. Take the lock only after releasing
+                // the GIL: a thread waiting for it while holding the GIL would
+                // deadlock with the publish that holds it and needs the GIL back.
+                py.detach(|| {
+                    let publisher = publisher
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    futures::executor::block_on(publisher.publish(&cdr))
+                })?;
             }
         }
         Ok(())
@@ -2233,9 +2250,9 @@ fn publish_python_zenoh_status(
     Ok(())
 }
 
-/// A Zenoh publish can wait (reliable QoS uses `CongestionControl::Block`), so
-/// it must not hold the GIL: every other Python thread would stop until it
-/// returns.
+/// A Zenoh publish can wait (reliable QoS uses `CongestionControl::Block`), and
+/// so can `create_action_client` (for the server): neither may hold the GIL,
+/// or every other Python thread stops until it returns.
 #[cfg(test)]
 mod publish_gil_tests {
     use super::*;
@@ -2297,8 +2314,8 @@ mod publish_gil_tests {
 
         /// Starts a Python thread that tries to release the held-up publish,
         /// and runs `call` while it does. The thread can only run while
-        /// nothing holds the GIL. `pa` (pyarrow) is in the globals.
-        fn run_with_python_thread(&self, call: impl FnOnce(Python, &Bound<PyDict>)) -> bool {
+        /// nothing holds the GIL.
+        fn run_with_python_thread(&self, call: impl FnOnce(Python)) -> bool {
             // Taken before attaching: waiting for it while holding the GIL
             // could deadlock with the other test.
             let _one_at_a_time = ONE_AT_A_TIME
@@ -2306,41 +2323,37 @@ mod publish_gil_tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             Python::attach(|py| {
                 let release = self.release.clone();
-                let poll = PyCFunction::new_closure(py, None, None, move |_, _| {
-                    release.try_send(()).is_ok()
-                })
-                .unwrap();
-                let globals = PyDict::new(py);
-                globals.set_item("poll", poll).unwrap();
-                py.run(
-                    c"import threading, time\n\
-                      import pyarrow as pa\n\
-                      def spin():\n    \
-                          for _ in range(10000):\n        \
-                              if poll():\n            \
-                                  return\n        \
-                              time.sleep(0.001)\n\
-                      thread = threading.Thread(target=spin, daemon=True)\n\
-                      thread.start()",
-                    Some(&globals),
-                    None,
-                )
-                .unwrap();
-                call(py, &globals);
-                py.run(c"thread.join()", Some(&globals), None).unwrap();
+                let thread = start_python_thread(py, move || release.try_send(()).is_ok());
+                call(py);
+                py.run(c"thread.join()", Some(&thread), None).unwrap();
             });
             self.thread_ran.load(Ordering::SeqCst)
         }
     }
 
-    /// The publish methods take pyarrow arrays, and CI's PyO3 unit test job
-    /// has no pyarrow installed.
-    fn pyarrow_missing() -> bool {
-        let missing = Python::attach(|py| py.import("pyarrow").is_err());
-        if missing {
-            eprintln!("skipped: pyarrow is not installed");
-        }
-        missing
+    /// Starts a Python thread that calls `poll` every millisecond until it
+    /// returns true (at most 10 s). Returns the globals holding `thread`.
+    fn start_python_thread<'py>(
+        py: Python<'py>,
+        poll: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Bound<'py, PyDict> {
+        let poll = PyCFunction::new_closure(py, None, None, move |_, _| poll()).unwrap();
+        let globals = PyDict::new(py);
+        globals.set_item("poll", poll).unwrap();
+        py.run(
+            c"import threading, time\n\
+              def spin():\n    \
+                  for _ in range(10000):\n        \
+                      if poll():\n            \
+                          return\n        \
+                      time.sleep(0.001)\n\
+              thread = threading.Thread(target=spin, daemon=True)\n\
+              thread.start()",
+            Some(&globals),
+            None,
+        )
+        .unwrap();
+        globals
     }
 
     /// Peers on this machine (another run of these tests) see the same keys,
@@ -2354,6 +2367,8 @@ mod publish_gil_tests {
     }
 
     /// A Zenoh node that knows `gil_test_msgs/Count`, a message and an action.
+    /// Its session finds no peers (no multicast scouting, loopback only):
+    /// the tests only need the node's own session.
     fn zenoh_test_node(node_name: &str, domain_id: u16) -> (Ros2Context, Ros2Node) {
         let packages = std::env::temp_dir().join(format!(
             "dora-publish-gil-{node_name}-{}",
@@ -2373,12 +2388,18 @@ mod publish_gil_tests {
             "int32 goal\n---\nint32 result\n---\nint32 feedback\n",
         )
         .unwrap();
+        let config = packages.join("zenoh.json5");
+        std::fs::write(
+            &config,
+            r#"{ scouting: { multicast: { enabled: false } }, listen: { endpoints: ["tcp/127.0.0.1:0"] } }"#,
+        )
+        .unwrap();
         let context = Ros2Context::new(
             Some(vec![packages.clone()]),
-            Some(Ros2Transport::zenoh("humble", None).unwrap()),
+            Some(Ros2Transport::zenoh("humble", Some(config)).unwrap()),
             Some(domain_id),
         );
-        // The message definitions are read in `new`.
+        // The message definitions and the config are read in `new`.
         std::fs::remove_dir_all(&packages).unwrap();
         let context = context.unwrap();
         let node = context
@@ -2387,11 +2408,18 @@ mod publish_gil_tests {
         (context, node)
     }
 
+    /// A `gil_test_msgs/Count` message built in Rust: the publish tests start
+    /// after the pyarrow conversion, so they need no pyarrow.
+    fn count_data(data: i32) -> ArrayData {
+        StructArray::from(vec![(
+            Arc::new(Field::new("data", DataType::Int32, false)),
+            Arc::new(Int32Array::from(vec![data])) as ArrayRef,
+        )])
+        .into_data()
+    }
+
     #[test]
     fn zenoh_publish_lets_other_python_threads_run() {
-        if pyarrow_missing() {
-            return;
-        }
         let (_context, mut node) = zenoh_test_node("gil_publisher", 81);
         let topic = node
             .create_topic(&name(), "gil_test_msgs/Count".into(), reliable())
@@ -2402,31 +2430,19 @@ mod publish_gil_tests {
         };
         let hold_up = HoldUp::declare(&node, key);
 
-        let thread_ran = hold_up.run_with_python_thread(|py, globals| {
-            let data = py
-                .eval(
-                    c"pa.array([{'data': 7}], type=pa.struct([('data', pa.int32())]))",
-                    Some(globals),
-                    None,
-                )
-                .unwrap();
-            publisher.publish(data).unwrap();
+        let thread_ran = hold_up.run_with_python_thread(|py| {
+            publisher.publish_array_data(py, count_data(7)).unwrap();
         });
         assert!(thread_ran);
     }
 
-    /// `take_goal` publishes the new goal status on Zenoh after accepting it.
+    /// `take_goal` and `send_result` publish the goal status through
+    /// `publish_python_zenoh_status`.
     #[test]
     fn zenoh_action_status_publish_lets_other_python_threads_run() {
-        if pyarrow_missing() {
-            return;
-        }
         let (_context, mut node) = zenoh_test_node("gil_action", 82);
-        let mut server = node
+        let server = node
             .create_action_server(&name(), "gil_test_msgs/Count".into(), reliable())
-            .unwrap();
-        let client = node
-            .create_action_client(&name(), "gil_test_msgs/Count".into(), reliable())
             .unwrap();
         let (keys, _) = zenoh_action_entities(
             dora_message::descriptor::RmwZenohCompatibility::Humble,
@@ -2438,35 +2454,147 @@ mod publish_gil_tests {
         .unwrap();
         let hold_up = HoldUp::declare(&node, &keys.status);
 
-        let send_goal = move || {
-            let ActionClientBackend::Zenoh(zenoh_client) = &client.client else {
-                panic!("expected a Zenoh action client");
-            };
-            let _guard = TypeInfoGuard::serialize(client.goal_type_info.clone());
-            let goal = StructArray::from(vec![(
-                Arc::new(Field::new("goal", DataType::Int32, false)),
-                Arc::new(Int32Array::from(vec![7])) as ArrayRef,
-            )]);
-            let request = serialize_cdr(&ros2_client::action::SendGoalRequest {
-                goal_id: ros2_client::action::GoalId::new_random(),
-                goal: BridgeMessage(Some(goal.into_data())),
-            })
-            .unwrap();
-            futures::executor::block_on(
-                zenoh_client
-                    .send_goal
-                    .call(request, Duration::from_secs(10)),
-            )
-            .unwrap();
-        };
-
-        let thread_ran = hold_up.run_with_python_thread(|py, _| {
-            // The goal comes from a Rust thread, which needs no GIL.
-            let sender = std::thread::spawn(send_goal);
-            assert!(server.take_goal(py, Some(10.0)).unwrap().is_some());
-            sender.join().unwrap();
+        let thread_ran = hold_up.run_with_python_thread(|py| {
+            publish_python_zenoh_status(py, &server.server, &server.executing).unwrap();
         });
         assert!(thread_ran);
+    }
+
+    /// Two Python threads publishing on one publisher at once still send in
+    /// sequence-number order (rmw_zenoh counts a jump of more than one as a
+    /// lost message), and the second one waits without holding the GIL.
+    #[test]
+    fn concurrent_zenoh_publishes_keep_sequence_order() {
+        let (_context, mut node) = zenoh_test_node("gil_order", 83);
+        let topic = node
+            .create_topic(&name(), "gil_test_msgs/Count".into(), reliable())
+            .unwrap();
+        let publisher = node.create_publisher(&topic, None).unwrap();
+        let TopicBackend::Zenoh { key, .. } = &topic.topic else {
+            panic!("expected a Zenoh topic");
+        };
+        let dora_ros2_bridge::transport::Node::Zenoh(zenoh_node) = &node.node else {
+            panic!("expected a Zenoh node");
+        };
+        // The first sample waits until a Python thread has run, then up to
+        // 1 s for the second sample, so a second publish that doesn't wait
+        // for the first overtakes it. `received` lists the samples' `data`
+        // in the order they were delivered.
+        let (first_waiting, first_is_waiting) = sync_channel(1);
+        let (release, released) = sync_channel(0);
+        let (second_arrived, second_has_arrived) = sync_channel(1);
+        let waits = Mutex::new((released, second_has_arrived));
+        let thread_ran = Arc::new(AtomicBool::new(false));
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let (ran, delivered) = (thread_ran.clone(), received.clone());
+        let samples = std::sync::atomic::AtomicUsize::new(0);
+        let _subscription = futures::executor::block_on(RawSubscription::declare(
+            zenoh_node.session(),
+            key,
+            16,
+            1 << 20,
+            Arc::new(move |payload: &[u8]| -> Result<(), PubSubError> {
+                if samples.fetch_add(1, Ordering::SeqCst) == 0 {
+                    first_waiting.send(()).unwrap();
+                    let waits = waits.lock().unwrap();
+                    let released = waits.0.recv_timeout(Duration::from_secs(5));
+                    ran.store(released.is_ok(), Ordering::SeqCst);
+                    let _ = waits.1.recv_timeout(Duration::from_secs(1));
+                    delivered.lock().unwrap().push(payload[4]);
+                } else {
+                    delivered.lock().unwrap().push(payload[4]);
+                    let _ = second_arrived.try_send(());
+                }
+                Ok(())
+            }),
+        ))
+        .unwrap();
+
+        let _one_at_a_time = ONE_AT_A_TIME
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The Python thread releases the first sample only once the second
+        // publish has started, so it can only run if that publish doesn't
+        // hold the GIL while it waits.
+        let second_started = Arc::new(AtomicBool::new(false));
+        let started = second_started.clone();
+        let thread = Python::attach(|py| {
+            start_python_thread(py, move || {
+                started.load(Ordering::SeqCst) && release.try_send(()).is_ok()
+            })
+            .unbind()
+        });
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                Python::attach(|py| publisher.publish_array_data(py, count_data(1)).unwrap())
+            });
+            first_is_waiting
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            let second = scope.spawn(|| {
+                Python::attach(|py| {
+                    second_started.store(true, Ordering::SeqCst);
+                    publisher.publish_array_data(py, count_data(2)).unwrap()
+                })
+            });
+            first.join().unwrap();
+            second.join().unwrap();
+        });
+        Python::attach(|py| {
+            py.run(c"thread.join()", Some(thread.bind(py)), None)
+                .unwrap()
+        });
+        assert!(thread_ran.load(Ordering::SeqCst));
+        assert_eq!(*received.lock().unwrap(), [1, 2]);
+    }
+
+    /// A Zenoh `create_action_client` waits up to 20 s for the server. The
+    /// server here is only created by a Python thread, so the client finds it
+    /// only if that thread can run while the client waits.
+    #[test]
+    fn zenoh_action_client_wait_lets_other_python_threads_run() {
+        let (context, mut node) = zenoh_test_node("gil_action_client", 84);
+        let server_node = Mutex::new(Some(
+            context
+                .new_node(
+                    "gil_action_server",
+                    "/",
+                    Ros2NodeOptions::new(Some(false)),
+                    None,
+                )
+                .unwrap(),
+        ));
+        let server = Arc::new(Mutex::new(None));
+        let declared = server.clone();
+        // Set under the GIL right before `create_action_client`, so the
+        // thread sees it only once the client's wait has released the GIL.
+        let client_waiting = Arc::new(AtomicBool::new(false));
+        let waiting = client_waiting.clone();
+        let _one_at_a_time = ONE_AT_A_TIME
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let client = Python::attach(|py| {
+            let thread = start_python_thread(py, move || {
+                if !waiting.load(Ordering::SeqCst) {
+                    return false;
+                }
+                let mut node = server_node.lock().unwrap();
+                *declared.lock().unwrap() = Some(
+                    node.as_mut()
+                        .unwrap()
+                        .create_action_server(&name(), "gil_test_msgs/Count".into(), reliable())
+                        .unwrap(),
+                );
+                true
+            });
+            client_waiting.store(true, Ordering::SeqCst);
+            let client =
+                node.create_action_client(py, &name(), "gil_test_msgs/Count".into(), reliable());
+            py.run(c"thread.join()", Some(&thread), None).unwrap();
+            client
+        });
+        assert!(client.is_ok(), "{:#}", client.err().unwrap());
+        assert!(server.lock().unwrap().is_some());
     }
 }
 
