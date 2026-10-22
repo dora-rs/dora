@@ -590,12 +590,7 @@ pub fn source_is_url(source: &str) -> bool {
 /// trusted dataflow files, whereas confined resolution is for untrusted `hub:`
 /// nodes.
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
-    let path = Path::new(&source);
-    let path = if path.extension().is_none() {
-        path.with_extension(EXE_EXTENSION)
-    } else {
-        path.to_owned()
-    };
+    let path = with_exe_extension(source);
 
     // Search path within current working directory.
     let joined = working_dir.join(&path);
@@ -612,20 +607,48 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     }
 }
 
-/// [`resolve_path`] for a node's `path`; when nothing is found there and the
-/// node has a `path_fallback`, resolves that instead. Module expansion sets
-/// it to the name a bare module node `path:` was written as (#3826), so a
-/// file next to the module wins and a command on `$PATH` still runs.
+/// `source` with the platform's executable extension when it has none.
+fn with_exe_extension(source: &str) -> PathBuf {
+    let path = Path::new(source);
+    if path.extension().is_none() {
+        path.with_extension(EXE_EXTENSION)
+    } else {
+        path.to_owned()
+    }
+}
+
+/// [`resolve_path`] for a node's `path`. A node with a `path_fallback` (module
+/// expansion sets it to the name a bare module node `path:` was written as,
+/// #3826) runs the file at `path` if there is one, so a file next to the
+/// module wins, and else the fallback, looked up like a top-level `path`.
+/// `path` itself is not looked up in uv or on `$PATH` then, where a relative
+/// `modules/tool` would be found from the current directory instead.
 pub fn resolve_node_path(
     path: &str,
     fallback: Option<&str>,
     working_dir: &Path,
 ) -> Result<PathBuf> {
-    match (resolve_path(path, working_dir), fallback) {
-        (Err(err), Some(fallback)) => resolve_path(fallback, working_dir)
-            .wrap_err_with(|| format!("{err}, nor its `path_fallback` `{fallback}`")),
-        (result, _) => result,
+    let Some(fallback) = fallback else {
+        return resolve_path(path, working_dir);
+    };
+    let local = working_dir.join(with_exe_extension(path));
+    if local.exists() {
+        return absolutize_preserving_symlinks(&local);
     }
+    resolve_path(fallback, working_dir).wrap_err_with(|| {
+        format!("Could not find source path {path}, nor its `path_fallback` `{fallback}`")
+    })
+}
+
+/// Returns `descriptor` as nodes and the CLI receive it (`NodeConfig`,
+/// `DataflowInfo`): without `path_fallback`, which they never read, and which
+/// a node or CLI built with an older dora rejects as an unknown field.
+pub fn without_path_fallback(descriptor: &Descriptor) -> Descriptor {
+    let mut descriptor = descriptor.clone();
+    for node in &mut descriptor.nodes {
+        node.path_fallback = None;
+    }
+    descriptor
 }
 
 /// Fall back to the ambient `$PATH` when the `uv` lookup failed. If the binary
@@ -1440,6 +1463,48 @@ nodes:
             result.is_err(),
             "a dangling symlink must not resolve (nothing on uv/$PATH matches \
              this name either), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn path_fallbacks_survive_persistence_and_resolution() {
+        let mut descriptor: Descriptor = serde_yaml::from_str(
+            "nodes:\n  - id: module.worker\n    path: modules/worker\n    args: --keep\n",
+        )
+        .unwrap();
+        let fallbacks = BTreeMap::from([("module.worker".parse().unwrap(), "worker".into())]);
+        descriptor.nodes[0].path_fallback = Some("worker".into());
+        let persisted = serde_json::to_vec(&descriptor).unwrap();
+        let restored: Descriptor = serde_json::from_slice(&persisted).unwrap();
+        assert_eq!(restored.path_fallbacks(), fallbacks);
+        let nodes = restored.resolve_aliases_and_set_defaults().unwrap();
+        let CoreNodeKind::Custom(node) = &nodes[&NodeId::from("module.worker".to_owned())].kind
+        else {
+            panic!("expected a custom node");
+        };
+        assert_eq!(node.path_fallback.as_deref(), Some("worker"));
+        assert_eq!(node.args.as_deref(), Some("--keep"));
+    }
+
+    #[test]
+    fn without_path_fallback_clears_it_on_every_node_only() {
+        let nodes =
+            "nodes:\n  - id: a\n    path: modules/a\n  - id: b\n    path: sub/b\n    args: --x\n";
+        let with: Descriptor = serde_yaml::from_str(
+            &nodes
+                .replace(
+                    "path: modules/a\n",
+                    "path: modules/a\n    path_fallback: a\n",
+                )
+                .replace("path: sub/b\n", "path: sub/b\n    path_fallback: b\n"),
+        )
+        .unwrap();
+        assert!(with.nodes.iter().all(|node| node.path_fallback.is_some()));
+        let without: Descriptor = serde_yaml::from_str(nodes).unwrap();
+
+        assert_eq!(
+            serde_yaml::to_value(without_path_fallback(&with)).unwrap(),
+            serde_yaml::to_value(&without).unwrap()
         );
     }
 

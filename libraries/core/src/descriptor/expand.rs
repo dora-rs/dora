@@ -977,7 +977,12 @@ fn resolve_inner_node_paths(
         // keeps meaning the file; the name as written is what spawn falls
         // back to when there is none. A `hub:` node never runs from `path`
         // (hub resolution rejects one that has it), so it gets no fallback.
-        if node.hub.is_none() && *path != as_written && is_bare_name(&as_written) {
+        // A `path_fallback` written in the module is kept.
+        if node.hub.is_none()
+            && node.path_fallback.is_none()
+            && *path != as_written
+            && is_bare_name(&as_written)
+        {
             node.path_fallback = Some(as_written);
         }
     }
@@ -1049,11 +1054,13 @@ fn resolve_module_relative_path(
 /// `dora build` and `dora start` expand alike. A `:` (`C:tool` is a drive
 /// path on Windows) or a `$` (the daemon expands variables in `path`) never
 /// makes one. `worker.py` doesn't either: a script next to the module needs
-/// no fallback, and every node with one sends a field older daemons reject.
-fn is_bare_name(path: &str) -> bool {
+/// no fallback, preserving their existing module-relative meaning.
+/// Nor does a name made only of whitespace.
+pub(super) fn is_bare_name(path: &str) -> bool {
     let name = Path::new(path);
     let mut components = name.components();
-    !path.contains(['/', '\\', ':', '$'])
+    !path.trim().is_empty()
+        && !path.contains(['/', '\\', ':', '$'])
         && name.extension().is_none()
         && matches!(
             (components.next(), components.next()),
@@ -4252,9 +4259,10 @@ nodes:
     /// #3826: a module node's `path:` that is a single extensionless name
     /// keeps meaning the file next to the module (`path`), and the name as
     /// written becomes its `path_fallback`, for a command found like a
-    /// top-level `path:`. Any other `path:` (`worker.py` too), a `git:` or
-    /// `hub:` node and a module in the project root (where nothing is
-    /// rewritten) get none.
+    /// top-level `path:`. Any other `path:` (`worker.py` and a blank one
+    /// too), a `git:` or `hub:` node and a module in the project root (where
+    /// nothing is rewritten) get none. A `path_fallback` written in the
+    /// module is kept.
     #[test]
     fn expand_keeps_a_bare_inner_node_path_as_its_fallback() {
         let tmp = TempDir::new().unwrap();
@@ -4282,6 +4290,11 @@ nodes:
   - id: fromhub
     hub: test/x@^0.1
     path: tool
+  - id: explicit
+    path: worker
+    path_fallback: worker-backup
+  - id: blank
+    path: "  "
 "#,
         );
         write_file(
@@ -4313,6 +4326,11 @@ nodes:
         assert_eq!(node("m.var"), (in_modules("$TOOL"), None));
         assert_eq!(node("m.fromgit"), (Some(PathBuf::from("x")), None));
         assert_eq!(node("m.fromhub"), (in_modules("tool"), None));
+        assert_eq!(
+            node("m.explicit"),
+            (in_modules("worker"), Some("worker-backup"))
+        );
+        assert_eq!(node("m.blank"), (in_modules("  "), None));
         assert_eq!(node("r.echo"), (Some(PathBuf::from("dora-echo")), None));
     }
 

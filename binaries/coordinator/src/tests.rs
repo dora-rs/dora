@@ -6784,3 +6784,49 @@ async fn node_info_reports_the_network_counters_of_the_nodes_own_daemon() {
     assert_eq!(bytes_sent(&sender), Some(1), "{infos:?}");
     assert_eq!(bytes_sent(&receiver), Some(2), "{infos:?}");
 }
+
+/// Module expansion sets `path_fallback`, but only spawning and local
+/// validation read it, and a CLI built with an older dora parses the
+/// `DataflowInfo` descriptor with `deny_unknown_fields` (`dora node info`,
+/// `dora topic echo`), so the reply carries the descriptor without the field.
+#[tokio::test]
+async fn dataflow_info_leaves_out_path_fallback() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let mut df = test_running_dataflow(dataflow_id, daemon_id, "m.sender".to_string().into());
+    let node = r#"{"id": "m.sender", "path": "modules/sender", "outputs": ["message"]}"#;
+    let without: Descriptor =
+        serde_json::from_str(&format!(r#"{{"nodes": [{node}]}}"#)).expect("valid descriptor");
+    df.descriptor = serde_json::from_str(&format!(
+        r#"{{"nodes": [{}]}}"#,
+        node.replace('}', r#", "path_fallback": "sender"}"#)
+    ))
+    .expect("valid descriptor");
+    assert_eq!(
+        df.descriptor.nodes[0].path_fallback.as_deref(),
+        Some("sender")
+    );
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        DaemonConnections::default(),
+        Arc::new(InMemoryStore::new()),
+    );
+
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_control_event(ControlEvent::IncomingRequest {
+            request: Box::new(dora_message::cli_to_coordinator::ControlRequest::Info {
+                dataflow_uuid: dataflow_id,
+            }),
+            reply_sender,
+        })
+        .await
+        .unwrap();
+    let ControlRequestReply::DataflowInfo { descriptor, .. } = reply.await.unwrap().unwrap() else {
+        panic!("expected a DataflowInfo reply");
+    };
+    assert_eq!(
+        serde_json::to_value(&descriptor).unwrap(),
+        serde_json::to_value(&without).unwrap()
+    );
+}

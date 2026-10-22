@@ -289,6 +289,7 @@ pub struct BuildDataflowNodes {
     pub local_working_dir: Option<PathBuf>,
     pub git_sources: BTreeMap<NodeId, GitSource>,
     pub prev_git_sources: BTreeMap<NodeId, GitSource>,
+    #[serde(serialize_with = "crate::descriptor::serialize_without_path_fallback")]
     pub dataflow_descriptor: Descriptor,
     pub nodes_on_machine: BTreeSet<NodeId>,
     pub uv: bool,
@@ -308,6 +309,7 @@ pub struct SpawnDataflowNodes {
     /// the base working dir.
     pub local_working_dir: Option<PathBuf>,
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
+    #[serde(serialize_with = "crate::descriptor::serialize_without_path_fallback")]
     pub dataflow_descriptor: Descriptor,
     pub spawn_nodes: BTreeSet<NodeId>,
     pub uv: bool,
@@ -353,5 +355,57 @@ mod register_result_tests {
     fn an_error_reply_is_an_error_through_both_accessors() {
         assert!(RegisterResult::Err("nope".into()).to_result().is_err());
         assert!(RegisterResult::Err("nope".into()).into_parts().is_err());
+    }
+}
+
+#[cfg(test)]
+mod path_fallback_tests {
+    use super::*;
+    use crate::descriptor::{CoreNodeKind, CustomNode, Node};
+
+    #[test]
+    fn daemon_wire_descriptor_stays_legacy_while_resolved_node_keeps_fallback() {
+        let id: NodeId = "module.worker".parse().unwrap();
+        let mut node = Node::new(id.clone());
+        node.path = Some("modules/worker".into());
+        node.path_fallback = Some("worker".into());
+        let descriptor = Descriptor::new(vec![node]);
+        let mut custom = CustomNode::new("modules/worker".into());
+        custom.path_fallback = Some("worker".into());
+        let resolved = ResolvedNode::new(id.clone(), CoreNodeKind::Custom(custom));
+        let spawn = SpawnDataflowNodes {
+            build_id: None,
+            session_id: SessionId::generate(),
+            dataflow_id: DataflowId::from(uuid::Uuid::new_v4()),
+            local_working_dir: None,
+            nodes: BTreeMap::from([(id.clone(), resolved)]),
+            dataflow_descriptor: descriptor.clone(),
+            spawn_nodes: BTreeSet::from([id]),
+            uv: false,
+            write_events_to: None,
+            artifact_base_url: None,
+        };
+        let build = BuildDataflowNodes {
+            build_id: BuildId::generate(),
+            session_id: SessionId::generate(),
+            local_working_dir: None,
+            git_sources: BTreeMap::new(),
+            prev_git_sources: BTreeMap::new(),
+            dataflow_descriptor: descriptor.clone(),
+            nodes_on_machine: BTreeSet::new(),
+            uv: false,
+        };
+        let spawn_json = serde_json::to_value(&spawn).unwrap();
+        let build_json = serde_json::to_value(&build).unwrap();
+        let mut legacy = descriptor;
+        legacy.nodes[0].path_fallback = None;
+        let legacy = serde_json::to_value(legacy).unwrap();
+        assert_eq!(spawn_json["dataflow_descriptor"], legacy);
+        assert_eq!(build_json["dataflow_descriptor"], legacy);
+        let decoded: SpawnDataflowNodes = serde_json::from_value(spawn_json).unwrap();
+        let CoreNodeKind::Custom(custom) = &decoded.nodes.values().next().unwrap().kind else {
+            panic!("expected a custom node");
+        };
+        assert_eq!(custom.path_fallback.as_deref(), Some("worker"));
     }
 }

@@ -82,8 +82,8 @@ pub(crate) fn send_control_request(
     session: &WsSession,
     request: &ControlRequest,
 ) -> eyre::Result<ControlRequestReply> {
-    let request_bytes =
-        serde_json::to_vec(request).wrap_err("failed to serialize control request")?;
+    let request_bytes = serde_json::to_vec(&request.to_wire_value()?)
+        .wrap_err("failed to serialize control request")?;
     let reply_raw = session
         .request(&request_bytes)
         .wrap_err("failed to send control request")?;

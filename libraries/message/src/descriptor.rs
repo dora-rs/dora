@@ -191,7 +191,36 @@ pub struct Descriptor {
     pub env: Option<BTreeMap<String, EnvValue>>,
 }
 
+// Wire descriptors must remain readable by peers whose strict `Node` schema
+// predates `path_fallback`. Control requests carry it separately; daemon spawn
+// requests already carry it in the permissive resolved `CustomNode`.
+pub(crate) fn serialize_without_path_fallback<S>(
+    descriptor: &Descriptor,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let mut descriptor = descriptor.clone();
+    for node in &mut descriptor.nodes {
+        node.path_fallback = None;
+    }
+    descriptor.serialize(serializer)
+}
+
 impl Descriptor {
+    /// Fallback commands keyed by expanded node id, for the control protocol.
+    pub fn path_fallbacks(&self) -> BTreeMap<NodeId, String> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                node.path_fallback
+                    .as_ref()
+                    .map(|name| (node.id.clone(), name.clone()))
+            })
+            .collect()
+    }
+
     /// A dataflow of `nodes` with every dataflow-level option left at its
     /// default (the state a YAML file with only a `nodes:` key deserializes
     /// to).
