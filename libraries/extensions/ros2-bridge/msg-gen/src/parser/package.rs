@@ -9,19 +9,22 @@ use glob::glob;
 use super::{action::parse_action_file, message::parse_message_file, service::parse_service_file};
 use crate::types::Package;
 
-fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Package>> {
+fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs_in: &[P]) -> Result<Vec<Package>> {
     let mut map: HashMap<String, Package> = HashMap::new();
 
     let ros_formats = ["msg", "srv", "action"];
 
     // An empty entry, as a leading, trailing or doubled `:` in
     // AMENT_PREFIX_PATH leaves, names no prefix. Skip it rather than
-    // discarding the packages found under the other entries.
-    let root_dirs: Vec<&Path> = root_dirs
-        .iter()
-        .map(AsRef::as_ref)
-        .filter(|root_dir| *root_dir != Path::new(""))
-        .collect();
+    // discarding the packages found under the other entries. A prefix listed
+    // twice is scanned once: its packages would otherwise pass the
+    // first-prefix check below and have every message parsed twice.
+    let mut root_dirs: Vec<&Path> = Vec::new();
+    for root_dir in root_dirs_in.iter().map(AsRef::as_ref) {
+        if root_dir != Path::new("") && !root_dirs.contains(&root_dir) {
+            root_dirs.push(root_dir);
+        }
+    }
     if root_dirs.is_empty() {
         println!("cargo::warning=AMENT_PREFIX_PATH pointed to ''");
         return Ok(Vec::new());
@@ -296,6 +299,15 @@ mod tests {
         assert!(a.path.starts_with(&overlay), "path: {}", a.path.display());
         std::fs::remove_dir_all(overlay).unwrap();
         std::fs::remove_dir_all(underlay).unwrap();
+    }
+
+    #[test]
+    fn a_prefix_listed_twice_is_parsed_once() {
+        let root = prefix("twice", &[("a", &[])]);
+        let packages = get_ros_msgs_each_package(&[&root, &root]).unwrap();
+        let a = packages.iter().find(|p| p.name == "a").unwrap();
+        assert_eq!(a.messages.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
