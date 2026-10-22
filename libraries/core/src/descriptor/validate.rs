@@ -604,16 +604,30 @@ fn check_input(
     input_id_str: &str,
 ) -> Result<(), eyre::ErrReport> {
     match &input.mapping {
-        // The daemon matches a log filter's node id exactly, so a filter
-        // naming no node (a typo, or a module node, which expansion replaces
-        // with its prefixed inner nodes) would silently deliver nothing.
+        // The daemon matches a log filter's node id exactly. A filter naming
+        // a module node can never match: expansion replaced that node with
+        // its prefixed `<module>.<inner>` nodes. Any other unknown id may
+        // still be a node added later with `dora node add`, so only warn.
         InputMapping::Logs(LogSubscriptionFilter {
             node_filter: Some(node),
             ..
-        }) if !nodes.contains_key(node) => bail!(
-            "log filter on input `{input_id_str}` names node `{node}`, which does not exist \
-             (the nodes of a module `m` are named `m.<inner-node>`)"
-        ),
+        }) if !nodes.contains_key(node) => {
+            let module_prefix = format!("{node}.");
+            if let Some(inner) = nodes
+                .keys()
+                .find(|id| id.as_ref().starts_with(&module_prefix))
+            {
+                bail!(
+                    "log filter on input `{input_id_str}` names `{node}`, which is not a node \
+                     but the prefix of node `{inner}`; a module's nodes are named \
+                     `<module>.<inner-node>`, so name one of them instead"
+                );
+            }
+            tracing::warn!(
+                "log filter on input `{input_id_str}` names node `{node}`, which is not in \
+                 the dataflow; it delivers nothing unless a node with that id is added later"
+            );
+        }
         InputMapping::Timer { interval: _ } | InputMapping::Logs(_) => {}
         InputMapping::User(UserInputMapping { source, output }) => {
             // `nodes` is keyed by each node's own id (see
@@ -3270,22 +3284,28 @@ nodes:
     }
 
     #[test]
-    fn wiring_rejects_log_filter_naming_no_node() {
+    fn wiring_log_filter_rejects_a_module_but_allows_a_later_node() {
+        // `nav.worker` is what a module node `nav` expands to.
         let yaml = r#"
 nodes:
-  - id: camera
-    path: camera.py
+  - id: nav.worker
+    path: worker.py
   - id: sink
     path: sink.py
     inputs:
-      ok: dora/logs/info/camera
+      ok: dora/logs/info/nav.worker
       all: dora/logs/info
-      typo: dora/logs/info/cmaera
+      later: dora/logs/info/plugin
 "#;
         let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        // A node that may still be added with `dora node add` is only warned about.
+        check_wiring(&descriptor).unwrap();
+
+        let descriptor: Descriptor =
+            serde_yaml::from_str(&format!("{yaml}      module: dora/logs/info/nav\n")).unwrap();
         let err = check_wiring(&descriptor).unwrap_err().to_string();
         assert!(
-            err.contains("`sink/typo`") && err.contains("`cmaera`, which does not exist"),
+            err.contains("`sink/module`") && err.contains("prefix of node `nav.worker`"),
             "got: {err}"
         );
     }
