@@ -154,8 +154,7 @@ pub(crate) use spawn_build::{
 };
 pub(crate) use topic_debug::{
     close_topic_subscribers_on_finish, restore_topic_debug_streams_for_daemon,
-    start_topic_debug_stream, stop_topic_debug_stream, topic_debug_enabled,
-    topic_outputs_by_daemon,
+    start_topic_debug_stream, stop_topic_debug_stream, topic_publish_output_id,
 };
 pub(crate) use topology::{
     ensure_add_mapping_applied, ensure_add_node_applied, ensure_remove_mapping_applied,

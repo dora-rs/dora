@@ -1256,8 +1256,7 @@ fn run_topic_mode(
 
         let ros_topic = ros_node
             .create_topic(
-                &ros2_client::Name::new("/", topic_config.topic.trim_start_matches('/'))
-                    .map_err(|e| eyre!("failed to create ROS2 topic name: {e}"))?,
+                &absolute_ros2_name(&topic_config.topic)?,
                 ros2_client::MessageTypeName::new(&package, &msg_name),
                 &qos,
             )
@@ -1350,8 +1349,7 @@ fn run_service_mode(
             let client = ros_node
                 .create_client::<BridgeServiceType>(
                     dora_ros2_bridge::detect_service_mapping(),
-                    &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
-                        .map_err(|e| eyre!("failed to create service name: {e}"))?,
+                    &absolute_ros2_name(service_name)?,
                     &ros2_client::ServiceTypeName::new(&package, &type_name),
                     service_qos.clone(),
                     service_qos,
@@ -1367,8 +1365,7 @@ fn run_service_mode(
             let server = ros_node
                 .create_server::<BridgeServiceType>(
                     dora_ros2_bridge::detect_service_mapping(),
-                    &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
-                        .map_err(|e| eyre!("failed to create service name: {e}"))?,
+                    &absolute_ros2_name(service_name)?,
                     &ros2_client::ServiceTypeName::new(&package, &type_name),
                     service_qos.clone(),
                     service_qos,
@@ -1588,8 +1585,7 @@ fn run_action_mode(
 
     let (mut ros_node, _pool) = create_ros_node(&config)?;
     let qos = config.qos.to_rustdds_qos();
-    let action_ros2_name = ros2_client::Name::new("/", action_name.trim_start_matches('/'))
-        .map_err(|e| eyre!("failed to create action name: {e}"))?;
+    let action_ros2_name = absolute_ros2_name(action_name)?;
     let action_type_name = ros2_client::ActionTypeName::new(&package, &type_name);
 
     match role {
@@ -2379,6 +2375,17 @@ fn load_messages() -> eyre::Result<Arc<HashMap<String, HashMap<String, Message>>
     Ok(Arc::new(messages))
 }
 
+/// Parse a configured topic, service or action name such as `/turtle1/cmd_vel`
+/// into an absolute ROS 2 name, with a leading `/` optional.
+///
+/// Every segment but the last goes into the namespace: `ros2_client::Name::new`
+/// rejects a `/` in the base name, so passing the whole name as the base name
+/// would fail for any name with more than one segment.
+fn absolute_ros2_name(name: &str) -> eyre::Result<ros2_client::Name> {
+    ros2_client::Name::parse(&format!("/{}", name.trim_start_matches('/')))
+        .map_err(|e| eyre!("invalid ROS 2 name `{name}`: {e}"))
+}
+
 fn parse_type_str(type_str: &str) -> eyre::Result<(String, String)> {
     let (pkg, type_name) = type_str
         .split_once('/')
@@ -2519,6 +2526,34 @@ mod dds_call_failure_tests {
     #[test]
     fn a_successful_call_passes_its_value_through() {
         assert_eq!(dds_call_or_warn(Ok(7), "test").unwrap(), Some(7));
+    }
+}
+
+#[cfg(test)]
+mod ros2_name_tests {
+    use super::{absolute_ros2_name, ros2_client::NodeName};
+
+    #[test]
+    fn a_namespaced_name_keeps_every_segment() {
+        let node = NodeName::new("/", "bridge").unwrap();
+        for (configured, dds) in [
+            ("/turtle1/cmd_vel", "rt/turtle1/cmd_vel"),
+            ("camera/image_raw", "rt/camera/image_raw"),
+            ("/a/b/c", "rt/a/b/c"),
+            ("/chatter", "rt/chatter"),
+            ("chatter", "rt/chatter"),
+        ] {
+            let name = absolute_ros2_name(configured).unwrap();
+            assert!(name.is_absolute(), "{configured}");
+            assert_eq!(name.to_dds_name("rt", &node, ""), dds);
+        }
+    }
+
+    #[test]
+    fn a_malformed_name_is_rejected() {
+        for bad in ["", "/", "/a//b", "/a/", "/a/1b"] {
+            assert!(absolute_ros2_name(bad).is_err(), "{bad:?} must be rejected");
+        }
     }
 }
 
