@@ -272,18 +272,23 @@ fn info(
     Ok(())
 }
 
-/// Decode just the schema/data type from a self-describing Arrow IPC stream.
-/// Returns `None` for a malformed or empty stream (the type is left unknown).
+/// Read the data type from the schema message of a self-describing Arrow IPC
+/// stream. Returns `None` for a malformed schema or one that is not a single
+/// column (the type is left unknown).
+///
+/// Only the schema is parsed: decoding the record batch would copy the whole
+/// payload, for every sampled frame, just to read a type the schema already
+/// names.
 fn decode_ipc_data_type(bytes: &[u8]) -> Option<DataType> {
     use arrow::ipc::reader::StreamReader;
     use std::io::Cursor;
 
-    let mut reader = StreamReader::try_new(Cursor::new(bytes), None).ok()?;
-    let batch = reader.next()?.ok()?;
-    if batch.num_columns() != 1 {
-        return None;
+    let reader = StreamReader::try_new(Cursor::new(bytes), None).ok()?;
+    let schema = reader.schema();
+    match schema.fields().as_ref() {
+        [field] => Some(field.data_type().clone()),
+        _ => None,
     }
-    Some(batch.column(0).data_type().clone())
 }
 
 /// Compute the average bandwidth in Mbps over the actual collection window.
@@ -388,6 +393,32 @@ fn format_arrow_type(data_type: &DataType) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ipc_stream(columns: Vec<(&str, arrow::array::ArrayRef)>) -> Vec<u8> {
+        let batch = arrow::record_batch::RecordBatch::try_from_iter(columns).unwrap();
+        let mut writer =
+            arrow::ipc::writer::StreamWriter::try_new(Vec::new(), &batch.schema()).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        writer.into_inner().unwrap()
+    }
+
+    #[test]
+    fn data_type_is_read_from_the_schema_alone() {
+        let array: arrow::array::ArrayRef =
+            std::sync::Arc::new(arrow::array::UInt8Array::from(vec![0u8; 4096]));
+        let bytes = ipc_stream(vec![("data", array.clone())]);
+        assert_eq!(decode_ipc_data_type(&bytes), Some(DataType::UInt8));
+
+        // The record batch is never decoded: a stream cut off inside the
+        // body still yields the schema's type.
+        let truncated = &bytes[..bytes.len() - 2048];
+        assert_eq!(decode_ipc_data_type(truncated), Some(DataType::UInt8));
+
+        let two_columns = ipc_stream(vec![("a", array.clone()), ("b", array)]);
+        assert_eq!(decode_ipc_data_type(&two_columns), None);
+        assert_eq!(decode_ipc_data_type(b"not arrow"), None);
+    }
 
     #[test]
     fn calculate_hz_does_not_panic_on_oversized_window() {
