@@ -205,13 +205,10 @@ async fn run(
     // operator's first `send_output` already has somewhere to encode into.
     let _ = allocator.set(node.sample_allocator());
     let (daemon_events_tx, daemon_event_stream) = flume::bounded(1);
-    tokio::task::spawn_blocking(move || {
-        while let Some(event) = daemon_events.recv() {
-            if daemon_events_tx.send(RuntimeEvent::Event(event)).is_err() {
-                break;
-            }
-        }
-    });
+    tokio::spawn(forward_daemon_events(
+        async move || daemon_events.recv_async().await,
+        daemon_events_tx,
+    ));
     let mut events = (operator_events, daemon_event_stream.into_stream()).merge();
 
     let mut open_operator_inputs: HashMap<_, BTreeSet<_>> = operators
@@ -517,6 +514,26 @@ where
     }
 }
 
+/// Feed the daemon's events into the main loop.
+///
+/// This must be an async task, not `spawn_blocking` around the blocking
+/// `recv`: when `run` returns early (an operator error or panic, or every
+/// operator finishing) while the node's inputs are quiet, the forwarder is
+/// parked waiting for the next event. Dropping the tokio runtime cancels an
+/// async task, but waits forever for a blocking one, so the process neither
+/// exited nor reported the error until the daemon happened to send another
+/// event.
+async fn forward_daemon_events(
+    mut next_event: impl AsyncFnMut() -> Option<Event>,
+    tx: flume::Sender<RuntimeEvent>,
+) {
+    while let Some(event) = next_event().await {
+        if tx.send_async(RuntimeEvent::Event(event)).await.is_err() {
+            break;
+        }
+    }
+}
+
 fn operator_output_id(operator_id: &OperatorId, output_id: &DataId) -> DataId {
     DataId::from(format!("{operator_id}/{output_id}"))
 }
@@ -570,6 +587,32 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod forward_daemon_events_tests {
+    use super::*;
+
+    /// Dropping the runtime must not wait for a daemon event that never
+    /// comes; otherwise an operator error leaves the process hanging.
+    #[test]
+    fn a_quiet_event_stream_does_not_block_runtime_shutdown() {
+        let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+        let (tx, _rx) = flume::bounded(1);
+        runtime.spawn(forward_daemon_events(
+            async || std::future::pending().await,
+            tx,
+        ));
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(runtime);
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("dropping the runtime hung on the event forwarder");
+    }
 }
 
 #[cfg(test)]
