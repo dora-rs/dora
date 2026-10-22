@@ -1187,7 +1187,13 @@ impl EventStream {
                         "Stop",
                         None,
                     )),
-                    NodeEvent::Reload { .. } => None,
+                    // Not representable in the replay format (`IncomingEvent`
+                    // has no such variants): recording `InputRecovered` or
+                    // `NodeRestarted` made the whole `clean` recording fail to
+                    // load with "unknown variant".
+                    NodeEvent::Reload { .. }
+                    | NodeEvent::InputRecovered { .. }
+                    | NodeEvent::NodeRestarted { .. } => None,
                     NodeEvent::Input { id, metadata, data } => {
                         let mut event_json = convert_output_to_json(
                             id,
@@ -1203,18 +1209,6 @@ impl EventStream {
                         &self.clock,
                         &self.start_timestamp,
                         "InputClosed",
-                        Some(id.to_string()),
-                    )),
-                    NodeEvent::InputRecovered { id } => Some(control_event_json(
-                        &self.clock,
-                        &self.start_timestamp,
-                        "InputRecovered",
-                        Some(id.to_string()),
-                    )),
-                    NodeEvent::NodeRestarted { id } => Some(control_event_json(
-                        &self.clock,
-                        &self.start_timestamp,
-                        "NodeRestarted",
                         Some(id.to_string()),
                     )),
                     NodeEvent::AllInputsClosed => Some(control_event_json(
@@ -1660,8 +1654,8 @@ fn representable_wait_deadline(timeout: Duration) -> Instant {
 /// Build the JSON for a "control" event that carries only a type tag, an
 /// optional input/node id, and the elapsed time offset since the node started.
 ///
-/// Shared by the `Stop` / `InputClosed` / `InputRecovered` / `NodeRestarted` /
-/// `AllInputsClosed` arms of [`EventStream::record_event`], which differ only in
+/// Shared by the `Stop` / `InputClosed` / `AllInputsClosed` arms of
+/// [`EventStream::record_event`], which differ only in
 /// the `"type"` string and whether an `"id"` field is present. A free function
 /// (rather than a `&self` method) so it can take the `clock` and
 /// `start_timestamp` fields by reference while `record_event` holds a mutable
@@ -2992,6 +2986,38 @@ mod tests {
         let recorded = v["events"].as_array().unwrap();
         assert_eq!(recorded.len(), 1, "the Stop must be recorded: {v}");
         assert_eq!(recorded[0]["type"], "Stop");
+    }
+
+    /// `InputRecovered` and `NodeRestarted` have no `IncomingEvent` variant, so
+    /// recording them produced a `clean` recording that the replay loader
+    /// rejected as a whole ("unknown variant `NodeRestarted`").
+    #[test]
+    fn recording_with_restart_and_recovery_events_stays_replayable() {
+        let (_node, mut events) = test_event_stream();
+        let (w, path) = write_events_to_with_tempfile();
+        events.write_events_to = Some(w);
+
+        for event in [
+            NodeEvent::InputRecovered {
+                id: "image".parse().unwrap(),
+            },
+            NodeEvent::NodeRestarted {
+                id: "camera".parse().unwrap(),
+            },
+            NodeEvent::Stop,
+        ] {
+            events
+                .record_event(&EventItem::NodeEvent { event })
+                .unwrap();
+        }
+        drop(events);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let recording: IntegrationTestInput = serde_json::from_str(&text)
+            .unwrap_or_else(|err| panic!("recording must load for replay: {err}\n{text}"));
+        assert_eq!(recording.events.len(), 1, "{text}");
+        assert_eq!(recording.events[0].event, IncomingEvent::Stop);
     }
 
     /// Twin of `stream_path_records_events` for the other recording site:
