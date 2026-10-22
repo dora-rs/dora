@@ -191,8 +191,8 @@ fn info(
                                 data.as_deref(),
                             );
                             // The payload is a self-describing Arrow IPC stream;
-                            // read its data type from the decoded array (best
-                            // effort — a malformed stream just leaves it unknown).
+                            // read its data type from the schema (best effort —
+                            // a malformed schema just leaves it unknown).
                             let data_type =
                                 data.as_ref().and_then(|bytes| decode_ipc_data_type(bytes));
                             stats_clone.record(data_size, data_type, Instant::now());
