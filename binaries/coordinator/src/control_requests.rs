@@ -15,7 +15,7 @@ use crate::{
     log_subscriber::LogSubscriber,
     resolve_param_target, resolve_single_node, start_topic_debug_stream,
     state::{LaunchContext, ParamTarget, RunningDataflow},
-    stop_topic_debug_stream, topic_debug_enabled, topic_outputs_by_daemon,
+    stop_topic_debug_stream, topic_publish_output_id,
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
 use dora_message::{
@@ -578,13 +578,16 @@ impl Coordinator {
             }
             ControlEvent::TopicCheck {
                 dataflow_id,
-                topics,
+                node_id,
+                output_id,
                 found_tx,
             } => {
-                let found = topic_outputs_by_daemon(&self.running_dataflows, dataflow_id, &topics)
-                    .is_ok()
-                    && topic_debug_enabled(&self.running_dataflows, dataflow_id).unwrap_or(false);
-                let _ = found_tx.send(found);
+                let _ = found_tx.send(topic_publish_output_id(
+                    &self.running_dataflows,
+                    dataflow_id,
+                    node_id,
+                    output_id,
+                ));
             }
             ControlEvent::TopicUnsubscribe {
                 subscription_id,

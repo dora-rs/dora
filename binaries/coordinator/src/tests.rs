@@ -1,5 +1,6 @@
 use super::*;
 use crate::state::ParamTarget;
+use crate::topic_debug::topic_outputs_by_daemon;
 use crate::{
     daemon_liveness::{
         DisconnectAction, HeartbeatSendOutcome, MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS,
@@ -573,6 +574,56 @@ fn topic_outputs_by_daemon_normalizes_single_operator_outputs() {
         .expect("nested outputs should resolve to their daemon");
 
     assert_eq!(outputs[&daemon_id], expected_topics);
+}
+
+/// `dora topic pub` must publish under the id the daemons subscribe to: a
+/// single-operator runtime node's bare `image` went out unresolved, as
+/// `.../control/single/image`, so the check passed and the message was lost.
+#[test]
+fn topic_publish_resolves_a_single_operator_output_id() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let descriptor: Descriptor = serde_json::from_value(serde_json::json!({
+        "nodes": [{
+            "id": "single",
+            "operator": { "python": "single.py", "outputs": ["image"] },
+        }],
+    }))
+    .expect("valid test descriptor");
+    let single_node: dora_core::config::NodeId = "single".to_string().into();
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, single_node.clone());
+    dataflow.descriptor = descriptor;
+    dataflow.nodes = dataflow
+        .descriptor
+        .resolve_aliases_and_set_defaults()
+        .expect("test descriptor should resolve");
+    let mut running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+    let publish = |running_dataflows: &HashMap<_, _>, output: &str| {
+        topic_publish_output_id(
+            running_dataflows,
+            dataflow_id,
+            single_node.clone(),
+            output.to_string().into(),
+        )
+    };
+
+    // Debug publishing is off by default.
+    assert_eq!(publish(&running_dataflows, "image"), None);
+
+    running_dataflows
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .descriptor
+        .debug
+        .enable_debug_inspection = true;
+    let resolved = publish(&running_dataflows, "image").expect("bare output resolves");
+    assert_eq!(resolved.to_string(), "op/image");
+    assert!(
+        dora_core::topics::zenoh_daemon_control_topic(dataflow_id, &single_node, &resolved)
+            .ends_with("/control/single/op/image")
+    );
+    assert_eq!(publish(&running_dataflows, "op/image"), Some(resolved));
+    assert_eq!(publish(&running_dataflows, "missing"), None);
 }
 
 #[tokio::test]

@@ -176,18 +176,21 @@ pub(super) fn record_ssh_result(
     result: eyre::Result<bool>,
     ok_msg: &str,
 ) {
+    match ssh_failure("ssh command", result) {
+        None => println!("  OK: {ok_msg}"),
+        Some(msg) => {
+            eprintln!("  FAILED: {msg}");
+            failures.push((machine_id.to_owned(), msg));
+        }
+    }
+}
+
+/// `None` if the remote command succeeded, else a message naming `step`.
+pub(super) fn ssh_failure(step: &str, result: eyre::Result<bool>) -> Option<String> {
     match result {
-        Ok(true) => println!("  OK: {ok_msg}"),
-        Ok(false) => {
-            let msg = "ssh command failed".to_string();
-            eprintln!("  FAILED: {msg}");
-            failures.push((machine_id.to_owned(), msg));
-        }
-        Err(err) => {
-            let msg = format!("{err}");
-            eprintln!("  FAILED: {msg}");
-            failures.push((machine_id.to_owned(), msg));
-        }
+        Ok(true) => None,
+        Ok(false) => Some(format!("{step} failed")),
+        Err(e) => Some(format!("{step} failed: {e:#}")),
     }
 }
 
@@ -237,6 +240,17 @@ mod tests {
             yaml.push_str(&format!("user: {user}\n"));
         }
         serde_yaml::from_str(&yaml).expect("valid machine config")
+    }
+
+    #[test]
+    fn ssh_failure_names_the_step_and_keeps_the_cause() {
+        assert_eq!(ssh_failure("installing the binary", Ok(true)), None);
+        assert_eq!(
+            ssh_failure("installing the binary", Ok(false)).as_deref(),
+            Some("installing the binary failed")
+        );
+        let msg = ssh_failure("installing the binary", Err(eyre::eyre!("ssh not found"))).unwrap();
+        assert!(msg.contains("ssh not found"), "{msg}");
     }
 
     #[test]

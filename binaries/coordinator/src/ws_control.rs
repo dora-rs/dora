@@ -436,11 +436,11 @@ pub(crate) async fn handle_control_ws(
                         let (found_tx, found_rx) = oneshot::channel();
                         let _ = event_tx.send(Event::Control(ControlEvent::TopicCheck {
                             dataflow_id: *dataflow_id,
-                            topics: vec![(node_id.clone(), output_id.clone())],
+                            node_id: node_id.clone(),
+                            output_id: output_id.clone(),
                             found_tx,
                         })).await;
-                        let found = found_rx.await.unwrap_or(false);
-                        if !found {
+                        let Some(resolved_output_id) = found_rx.await.ok().flatten() else {
                             let resp = WsResponse::err(
                                 req.id,
                                 format!(
@@ -449,12 +449,12 @@ pub(crate) async fn handle_control_ws(
                             );
                             let _ = send_ws_response(&mut ws_tx, &resp).await;
                             continue;
-                        }
+                        };
 
                         let resp = match publish_topic(
                             *dataflow_id,
                             node_id,
-                            output_id,
+                            &resolved_output_id,
                             data_json,
                             &clock,
                             &mut publish_session,
