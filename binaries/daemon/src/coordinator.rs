@@ -733,8 +733,9 @@ fn encode_reply(request_id: Uuid, reply: &DaemonCoordinatorReply) -> Option<Stri
     let too_large = |bytes| {
         let hint = match reply {
             DaemonCoordinatorReply::Logs(_) => {
-                "; pass `--tail <lines>` to fetch fewer lines, or `--local` on the machine \
-                 that ran the node"
+                "; run `dora logs --local` on the machine that ran the node, or fetch \
+                 fewer lines with `--node <name> --tail <lines>` and no `--since`, \
+                 `--until`, `--grep` or `--level` filter"
             }
             _ => "",
         };
