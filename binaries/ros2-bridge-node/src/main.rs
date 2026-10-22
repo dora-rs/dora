@@ -1256,7 +1256,7 @@ fn run_topic_mode(
 
         let ros_topic = ros_node
             .create_topic(
-                &ros2_client::Name::new("/", topic_config.topic.trim_start_matches('/'))
+                &absolute_ros2_name(&topic_config.topic)
                     .map_err(|e| eyre!("failed to create ROS2 topic name: {e}"))?,
                 ros2_client::MessageTypeName::new(&package, &msg_name),
                 &qos,
@@ -1350,7 +1350,7 @@ fn run_service_mode(
             let client = ros_node
                 .create_client::<BridgeServiceType>(
                     dora_ros2_bridge::detect_service_mapping(),
-                    &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
+                    &absolute_ros2_name(service_name)
                         .map_err(|e| eyre!("failed to create service name: {e}"))?,
                     &ros2_client::ServiceTypeName::new(&package, &type_name),
                     service_qos.clone(),
@@ -1367,7 +1367,7 @@ fn run_service_mode(
             let server = ros_node
                 .create_server::<BridgeServiceType>(
                     dora_ros2_bridge::detect_service_mapping(),
-                    &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
+                    &absolute_ros2_name(service_name)
                         .map_err(|e| eyre!("failed to create service name: {e}"))?,
                     &ros2_client::ServiceTypeName::new(&package, &type_name),
                     service_qos.clone(),
@@ -1588,8 +1588,8 @@ fn run_action_mode(
 
     let (mut ros_node, _pool) = create_ros_node(&config)?;
     let qos = config.qos.to_rustdds_qos();
-    let action_ros2_name = ros2_client::Name::new("/", action_name.trim_start_matches('/'))
-        .map_err(|e| eyre!("failed to create action name: {e}"))?;
+    let action_ros2_name =
+        absolute_ros2_name(action_name).map_err(|e| eyre!("failed to create action name: {e}"))?;
     let action_type_name = ros2_client::ActionTypeName::new(&package, &type_name);
 
     match role {
@@ -2393,6 +2393,53 @@ fn parse_type_str(type_str: &str) -> eyre::Result<(String, String)> {
         }
     }
     Ok((pkg.to_string(), type_name.to_string()))
+}
+
+/// Build an absolute `ros2_client::Name` from a topic, service or action name
+/// as written in the dataflow, with or without the leading `/`. A multi-level
+/// name such as `/robot/pose` is split at the last `/` into namespace
+/// `/robot` and base name `pose`.
+fn absolute_ros2_name(name: &str) -> Result<ros2_client::Name, ros2_client::names::NameError> {
+    ros2_client::Name::parse(&format!("/{}", name.trim_start_matches('/')))
+}
+
+#[cfg(test)]
+mod ros2_name_tests {
+    use super::{absolute_ros2_name, ros2_client};
+
+    #[test]
+    fn a_single_level_name_has_the_root_namespace() {
+        // With or without the leading `/`, a single-level name is absolute
+        // and lives in the root namespace.
+        for name in ["/clock", "clock"] {
+            assert_eq!(
+                absolute_ros2_name(name).unwrap(),
+                ros2_client::Name::new("/", "clock").unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn a_multi_level_name_keeps_its_namespace() {
+        for name in ["/robot/pose", "robot/pose"] {
+            assert_eq!(
+                absolute_ros2_name(name).unwrap(),
+                ros2_client::Name::new("/robot", "pose").unwrap(),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            absolute_ros2_name("/a/b/c").unwrap(),
+            ros2_client::Name::new("/a/b", "c").unwrap()
+        );
+    }
+
+    #[test]
+    fn an_empty_or_malformed_name_is_rejected() {
+        for name in ["", "/", "/rob/", "/rob//x", "/rob/1bad", "/rob/bad-name"] {
+            assert!(absolute_ros2_name(name).is_err(), "{name}");
+        }
+    }
 }
 
 /// Flatten either topic mode into the per-topic list the bridge binds from.
