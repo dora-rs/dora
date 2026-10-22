@@ -271,8 +271,8 @@ impl ClusterConfig {
                         *id,
                         format!(
                             " --zenoh-listen {} --zenoh-connect {}",
-                            SocketAddr::new(*addr, *port),
-                            peers.join(",")
+                            super::quote_endpoint(SocketAddr::new(*addr, *port)),
+                            super::quote_endpoint(peers.join(","))
                         ),
                     )
                 })
@@ -701,11 +701,11 @@ mod tests {
         };
         assert_eq!(
             args.get("a").map(String::as_str),
-            Some(" --zenoh-listen 100.64.0.2:5456 --zenoh-connect tcp/100.64.0.3:5456")
+            Some(" --zenoh-listen '100.64.0.2:5456' --zenoh-connect 'tcp/100.64.0.3:5456'")
         );
         assert_eq!(
             args.get("b").map(String::as_str),
-            Some(" --zenoh-listen 100.64.0.3:5456 --zenoh-connect tcp/100.64.0.2:5456")
+            Some(" --zenoh-listen '100.64.0.3:5456' --zenoh-connect 'tcp/100.64.0.2:5456'")
         );
     }
 
@@ -723,9 +723,9 @@ mod tests {
         let ZenohMesh::Derived(args) = config.zenoh_mesh_args() else {
             panic!("both machines have addresses, so the mesh must derive");
         };
-        assert!(args["a"].contains("--zenoh-listen 100.64.0.2:5456"));
-        assert!(args["a"].contains("--zenoh-connect tcp/100.64.0.2:5457"));
-        assert!(args["b"].contains("--zenoh-listen 100.64.0.2:5457"));
+        assert!(args["a"].contains("--zenoh-listen '100.64.0.2:5456'"));
+        assert!(args["a"].contains("--zenoh-connect 'tcp/100.64.0.2:5457'"));
+        assert!(args["b"].contains("--zenoh-listen '100.64.0.2:5457'"));
     }
 
     // A machine dora cannot address leaves the cluster unmeshed rather than
@@ -794,10 +794,10 @@ mod tests {
         let ZenohMesh::Derived(args) = config.zenoh_mesh_args() else {
             panic!("distinct ports must derive");
         };
-        assert!(args["a"].contains("--zenoh-listen 100.64.0.2:5456"));
-        assert!(args["a"].contains("--zenoh-connect tcp/100.64.0.2:5457"));
-        assert!(args["b"].contains("--zenoh-listen 100.64.0.2:5457"));
-        assert!(args["b"].contains("--zenoh-connect tcp/100.64.0.2:5456"));
+        assert!(args["a"].contains("--zenoh-listen '100.64.0.2:5456'"));
+        assert!(args["a"].contains("--zenoh-connect 'tcp/100.64.0.2:5457'"));
+        assert!(args["b"].contains("--zenoh-listen '100.64.0.2:5457'"));
+        assert!(args["b"].contains("--zenoh-connect 'tcp/100.64.0.2:5456'"));
     }
 
     // The rendezvous and the mesh answer the same question two ways; setting

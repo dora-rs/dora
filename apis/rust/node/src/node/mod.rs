@@ -967,9 +967,16 @@ impl DoraNode {
 
     /// Dynamic initialization function for nodes that are sometimes used as dynamic nodes.
     ///
-    /// This function first tries initializing the traditional way through
-    /// [`init_from_env`][Self::init_from_env]. If this fails, it falls back to
+    /// If the `DORA_NODE_CONFIG` environment variable is set (the node was
+    /// spawned by a dora daemon), this initializes through
+    /// [`init_from_env`][Self::init_from_env] and ignores `node_id`. Otherwise
+    /// it connects as a dynamic node through
     /// [`init_from_node_id`][Self::init_from_node_id].
+    ///
+    /// The choice is made only on whether the variable is present: if
+    /// `init_from_env` fails (for example on a malformed `DORA_NODE_CONFIG` or
+    /// an unreachable daemon), that error is returned as is, with no fallback
+    /// to `init_from_node_id`.
     pub fn init_flexible(node_id: NodeId) -> NodeResult<(Self, EventStream)> {
         if std::env::var("DORA_NODE_CONFIG").is_ok() {
             info!(
@@ -1030,9 +1037,11 @@ impl DoraNode {
     /// We see that both the `stdout` output of the node and also the output messages that it sends
     /// are printed to the terminal. Then we get another prompt for the next input.
     ///
-    /// If you want to send an input with data, you can either send it as text (for string data)
-    /// or as a JSON object (for struct, string, or array data). Other data types are not supported
-    /// currently.
+    /// If you want to send an input with data, enter it in one of these forms:
+    ///
+    /// - plain text (for string data) or JSON (for struct, string, or array data);
+    /// - `FILE:<path.arrow>` to send the single column of the first batch of an Arrow IPC file;
+    /// - `HEX:<hexbytes>` to send raw bytes as a `UInt8` array (e.g. `HEX:deadbeef`).
     ///
     /// Empty input IDs are interpreted as stop instructions:
     ///
@@ -3555,10 +3564,12 @@ pub fn init_tracing(
     #[cfg(feature = "metrics")]
     if let Ok(endpoint) = std::env::var("DORA_OTLP_ENDPOINT") {
         let id = format!("{dataflow_id}/{node_id}");
+        // the bare node id, as the node's tracing uses for its service name
+        let service_name = node_id.to_string();
         let monitor_task = async move {
             use dora_metrics::run_metrics_monitor;
 
-            if let Err(e) = run_metrics_monitor(id.clone(), &endpoint)
+            if let Err(e) = run_metrics_monitor(&service_name, id, &endpoint)
                 .await
                 .wrap_err("metrics monitor exited unexpectedly")
             {

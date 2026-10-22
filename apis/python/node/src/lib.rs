@@ -1268,8 +1268,11 @@ impl Node {
 ///
 /// :rtype: None
 #[pyfunction]
-pub fn start_runtime() -> eyre::Result<()> {
-    dora_runtime_python::main().wrap_err("Dora Runtime raised an error.")
+pub fn start_runtime(py: Python<'_>) -> eyre::Result<()> {
+    // The runtime blocks this thread for the operator's whole life and takes
+    // the GIL only where it calls into Python, so operator threads keep running.
+    py.detach(dora_runtime_python::main)
+        .wrap_err("Dora Runtime raised an error.")
 }
 
 /// Build a Dataflow, exactly the same way as `dora build` command line tool.

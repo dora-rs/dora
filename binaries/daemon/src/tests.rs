@@ -568,6 +568,45 @@ async fn logs_for_unknown_dataflow_replies_with_an_error() {
     }
 }
 
+/// The coordinator stops a dataflow's daemons one after another, so the
+/// dataflow can finish on a later daemon before that daemon's stop arrives.
+/// The stop must then succeed rather than fail `dora stop` / `dora cluster
+/// restart` with "no running dataflow" (dora-rs/dora#3888), while a stop for
+/// a dataflow the daemon never ran still fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn stop_of_a_just_finished_dataflow_succeeds() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let finished = Uuid::new_v4();
+    daemon.running.insert(finished, test_dataflow());
+    daemon
+        .finish_dataflow(finished)
+        .await
+        .expect("the report is queued for the writer");
+
+    for (dataflow_id, expect_ok) in [(finished, true), (Uuid::new_v4(), false)] {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _status = daemon
+            .handle_coordinator_event(
+                DaemonCoordinatorEvent::StopDataflow {
+                    dataflow_id,
+                    grace_duration: None,
+                    force: false,
+                },
+                reply_tx,
+            )
+            .await
+            .expect("StopDataflow must not fail the daemon loop");
+        match reply_rx.await.expect("a reply must be sent") {
+            Some(DaemonCoordinatorReply::StopResult(result)) => {
+                assert_eq!(result.is_ok(), expect_ok, "{dataflow_id}: {result:?}");
+            }
+            other => panic!("expected a StopResult reply, got {other:?}"),
+        }
+    }
+}
+
 /// A finish report the WS writer accepted can still be lost with the
 /// connection — a failing socket write drops it, a half-open link swallows
 /// it. It is resent on the next connection, ahead of the `StatusReport`, so
@@ -816,6 +855,60 @@ fn dynamic_join_rejects_static_nodes_and_stopping_dataflows() {
             .contains("stopping")
     );
     assert!(df.zenoh_peering.is_empty());
+}
+
+fn dataflow_with_node(id: Uuid, node: &NodeId, dynamic: bool) -> RunningDataflow {
+    let mut df = RunningDataflow::new(id, DaemonId::new(None), Descriptor::new(vec![]));
+    let mut running = test_running_node();
+    running.node_config.node_id = node.clone();
+    running.node_config.dynamic = dynamic;
+    df.running_nodes.insert(node.clone(), running);
+    df
+}
+
+#[test]
+fn dynamic_join_ignores_a_static_node_with_the_same_id_elsewhere() {
+    use crate::node_events::dataflow_for_dynamic_node;
+    let camera = NodeId::from("camera".to_owned());
+    let (static_id, dynamic_id) = (Uuid::new_v4(), Uuid::new_v4());
+    let mut running = HashMap::new();
+    running.insert(static_id, dataflow_with_node(static_id, &camera, false));
+    running.insert(dynamic_id, dataflow_with_node(dynamic_id, &camera, true));
+    // Whatever the map's iteration order, the dynamic declaration wins.
+    let picked = dataflow_for_dynamic_node(&mut running, &camera).unwrap();
+    assert_eq!(picked.id, dynamic_id);
+
+    // Two dynamic declarations are still ambiguous.
+    let other = Uuid::new_v4();
+    running.insert(other, dataflow_with_node(other, &camera, true));
+    let err = dataflow_for_dynamic_node(&mut running, &camera)
+        .err()
+        .unwrap();
+    assert!(err.contains("multiple dataflows"), "{err}");
+
+    // ... unless one of them is already stopping.
+    running.get_mut(&other).unwrap().stop_sent = true;
+    let picked = dataflow_for_dynamic_node(&mut running, &camera).unwrap();
+    assert_eq!(picked.id, dynamic_id);
+    running.remove(&other);
+
+    // Only static declarations: hand one back so the caller reports it is
+    // not dynamic, rather than calling it ambiguous.
+    running.retain(|id, _| *id == static_id);
+    running.insert(other, dataflow_with_node(other, &camera, false));
+    let picked = dataflow_for_dynamic_node(&mut running, &camera).unwrap();
+    assert!(
+        picked
+            .dynamic_node_config(&camera, None)
+            .unwrap_err()
+            .to_string()
+            .contains("not dynamic")
+    );
+
+    let err = dataflow_for_dynamic_node(&mut running, &NodeId::from("lidar".to_owned()))
+        .err()
+        .unwrap();
+    assert!(err.contains("no node with ID"), "{err}");
 }
 
 fn user_input(

@@ -235,6 +235,12 @@ pub unsafe extern "C" fn read_dora_input_data(
 ///
 /// Returns `0` if the given event is not an input event.
 ///
+/// The value is the hybrid logical clock timestamp in NTP64 format, **not**
+/// nanoseconds: a 32.32 fixed-point number whose upper 32 bits are whole
+/// seconds since the UNIX epoch and whose lower 32 bits are the fraction of
+/// a second in units of 2^-32 s. In nanoseconds since the epoch it is
+/// `(ts >> 32) * 1e9 + (((ts & 0xFFFFFFFF) * 1e9) >> 32)` (integer math).
+///
 /// ## Safety
 ///
 /// The `event` argument must be a dora event received through
@@ -405,6 +411,29 @@ mod tests {
         uhlc::HLC,
     };
     use std::sync::Arc;
+
+    /// `read_dora_input_timestamp` returns NTP64, not nanoseconds; the
+    /// integer conversion documented on it (and in `node_api.h`,
+    /// `docs/api-c.md`) must match uhlc's own conversion of the same value.
+    #[test]
+    fn read_dora_input_timestamp_converts_to_nanos_as_documented() {
+        let timestamp = HLC::default().new_timestamp();
+        let event = Event::Input {
+            id: "my_input".into(),
+            metadata: Metadata::new(timestamp),
+            data: DoraArray::from(Arc::new(UInt8Array::from(vec![1u8])) as ArrayRef),
+        };
+        let ts = unsafe { read_dora_input_timestamp((&event as *const Event).cast()) };
+
+        let nanos = (ts >> 32) * 1_000_000_000 + (((ts & 0xFFFF_FFFF) * 1_000_000_000) >> 32);
+        let expected = timestamp.get_time().to_duration().as_nanos() as u64;
+        // uhlc rounds the sub-second part up, the documented formula down.
+        assert!(expected.abs_diff(nanos) <= 1, "{nanos} vs {expected}");
+        // And it is a plausible wall-clock time (after 2020), unlike the raw
+        // value read as nanoseconds (~2^62, i.e. year 2116+).
+        assert!(nanos > 1_577_836_800_000_000_000);
+        assert!(ts > nanos);
+    }
 
     /// Regression test for #2030: a non-UInt8 input (e.g. Int32 from another
     /// node) must not abort the process. The caller should instead observe

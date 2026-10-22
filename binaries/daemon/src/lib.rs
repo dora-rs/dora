@@ -17,7 +17,7 @@ use dora_core::{
         validate,
     },
     topics::{
-        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, MulticastScouting,
+        DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST, MulticastScouting,
         open_zenoh_session_with_listen, validate_zenoh_listen, zenoh_bind_address_for,
     },
     uhlc::{self, HLC},
@@ -1020,12 +1020,12 @@ impl Daemon {
             .iter()
             .any(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic());
         if has_dynamic_nodes {
-            // Spawn local listener for dynamic nodes
-            let _listen_port = local_listener::spawn_listener_loop(
-                (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
-                events_tx,
-            )
-            .await?;
+            let port = local_listener::run_listen_port(
+                std::env::var(DORA_DAEMON_LOCAL_LISTEN_PORT_ENV)
+                    .ok()
+                    .as_deref(),
+            )?;
+            local_listener::spawn_run_listener(port, events_tx).await?;
         }
         let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
             inner: Event::DynamicNode(e.inner),

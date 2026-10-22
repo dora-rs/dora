@@ -378,10 +378,6 @@ mod lifecycle {
             self.ids.allocate()
         }
 
-        pub fn allocate_gid(&self) -> [u8; 16] {
-            self.ids.allocate().gid
-        }
-
         pub async fn declare_endpoint<D: Send + Sync + 'static>(
             &self,
             data_entity: D,
