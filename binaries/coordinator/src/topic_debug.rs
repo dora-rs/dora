@@ -127,6 +127,27 @@ pub(crate) fn runtime_node_outputs(node: &RuntimeNode) -> BTreeSet<DataId> {
         .collect()
 }
 
+/// The output id `dora topic pub` must publish `node_id/output_id` under, or
+/// `None` if the dataflow has no such output or doesn't allow debug
+/// publishing.
+///
+/// The daemons subscribe under the resolved id, so a single-operator runtime
+/// node's bare `image` has to go out as `op/image`, as for `dora topic echo`.
+pub(crate) fn topic_publish_output_id(
+    running_dataflows: &HashMap<DataflowId, RunningDataflow>,
+    dataflow_id: DataflowId,
+    node_id: dora_message::id::NodeId,
+    output_id: DataId,
+) -> Option<DataId> {
+    if !topic_debug_enabled(running_dataflows, dataflow_id).unwrap_or(false) {
+        return None;
+    }
+    let outputs =
+        topic_outputs_by_daemon(running_dataflows, dataflow_id, &[(node_id, output_id)]).ok()?;
+    let (_, resolved) = outputs.into_values().flatten().next()?;
+    Some(resolved)
+}
+
 pub(crate) fn topic_debug_enabled(
     running_dataflows: &HashMap<DataflowId, RunningDataflow>,
     dataflow_id: DataflowId,
