@@ -405,7 +405,7 @@ pub(crate) async fn handle_control_ws(
                             let resp = WsResponse::err(
                                 req.id,
                                 format!(
-                                    "no topic subscription with id {subscription_id} on this connection"
+                                    "no active topic subscription with id {subscription_id} on this connection (it may already have ended)"
                                 ),
                             );
                             let _ = send_ws_response(&mut ws_tx, &resp).await;
