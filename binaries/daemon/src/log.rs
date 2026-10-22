@@ -522,6 +522,16 @@ impl Logger {
                 return;
             }
         };
+        if msg.len() > MAX_COORDINATOR_MESSAGE_BYTES - EVENT_ENVELOPE_RESERVE {
+            // Too large even after cutting its text: the coordinator would
+            // close the daemon connection on it.
+            tracing::warn!(
+                "not forwarding a {}-byte log message to dora-coordinator: \
+                 it exceeds the coordinator's message limit",
+                msg.len()
+            );
+            return;
+        }
         match sender
             .send_event(&msg)
             .await
@@ -544,7 +554,7 @@ const EVENT_ENVELOPE_RESERVE: usize = 256;
 /// or more, while the coordinator closes the daemon connection on any
 /// message past [`MAX_COORDINATOR_MESSAGE_BYTES`]. When even an empty text
 /// would not fit (the excess is elsewhere in the event), the event is left
-/// as is for [`CoordinatorSender::send_event`] to refuse.
+/// as is and `log_to_coordinator` drops it.
 fn encode_log_event(message: &mut Timestamped<CoordinatorRequest>) -> serde_json::Result<Vec<u8>> {
     const BUDGET: usize = MAX_COORDINATOR_MESSAGE_BYTES - EVENT_ENVELOPE_RESERVE;
     const NOTE_RESERVE: usize = 64;
