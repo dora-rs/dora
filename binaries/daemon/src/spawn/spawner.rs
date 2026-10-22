@@ -10,7 +10,7 @@ use crossbeam::queue::ArrayQueue;
 use dora_core::{
     build::managed_python_bin_dir,
     config::{Input, InputMapping, NodeId},
-    descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
+    descriptor::{CoreNodeKind, Descriptor, ResolvedNode, without_path_fallback},
     topics::{
         DORA_RUN_PARENT_PID_ENV, DORA_ZENOH_CONFIG_OVERLAY_ENV, DORA_ZENOH_CONNECT_ENV,
         DORA_ZENOH_LISTEN_ENV, DORA_ZENOH_LISTEN_EXTRA_ENV, DORA_ZENOH_MULTICAST_ENV,
@@ -715,6 +715,12 @@ impl Spawner {
         self.maybe_inject_machine_id(command)
     }
 
+    /// The descriptor a node gets in its `NodeConfig`.
+    fn descriptor_for_nodes(&self) -> eyre::Result<serde_yaml::Value> {
+        serde_yaml::to_value(without_path_fallback(&self.dataflow_descriptor))
+            .context("failed to serialize dataflow descriptor to YAML")
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn spawn_node(
         self,
@@ -772,8 +778,7 @@ impl Spawner {
             node_id: node_id.clone(),
             run_config: node.kind.run_config(),
             daemon_communication: Some(daemon_communication),
-            dataflow_descriptor: serde_yaml::to_value(&self.dataflow_descriptor)
-                .context("failed to serialize dataflow descriptor to YAML")?,
+            dataflow_descriptor: self.descriptor_for_nodes()?,
             dynamic: node.kind.dynamic(),
             write_events_to,
             restart_count: 0,
@@ -1057,6 +1062,36 @@ mod tests {
             injected_multicast(&spawner_for(Some("tcp/127.0.0.1:7447"), false)),
             None,
             "a daemon still scouting must not disable it for its nodes"
+        );
+    }
+
+    /// Module expansion sets `path_fallback` on a module's inner node, but a
+    /// node built with an older node API parses the descriptor with
+    /// `deny_unknown_fields` and would fail on that key, so a node gets the
+    /// descriptor it gets for the same YAML without the field.
+    #[test]
+    fn nodes_get_the_descriptor_without_path_fallback() {
+        let nodes =
+            "nodes:\n  - id: m.tool\n    path: modules/tool\n  - id: plain\n    path: ./plain\n";
+        let mut spawner = spawner_for(None, false);
+        spawner.dataflow_descriptor = serde_yaml::from_str(&nodes.replace(
+            "path: modules/tool\n",
+            "path: modules/tool\n    path_fallback: tool\n",
+        ))
+        .expect("parse descriptor");
+        assert_eq!(
+            spawner.dataflow_descriptor.nodes[0]
+                .path_fallback
+                .as_deref(),
+            Some("tool")
+        );
+        let without: Descriptor = serde_yaml::from_str(nodes).expect("parse descriptor");
+
+        assert_eq!(
+            spawner
+                .descriptor_for_nodes()
+                .expect("serialize descriptor"),
+            serde_yaml::to_value(&without).expect("serialize descriptor")
         );
     }
 

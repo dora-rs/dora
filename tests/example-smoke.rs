@@ -819,6 +819,35 @@ fn smoke_local_module_bare_path() {
     run_smoke_test_local("local-module-bare-path", yaml.to_str().unwrap(), 4);
 }
 
+/// Exercise the issue's PATH-only case and prove messages reach a downstream
+/// node, rather than accepting a process that merely starts successfully.
+#[test]
+fn contract_module_bare_path_delivers_messages() {
+    ensure_cli_built();
+    let dir = write_module_bare_path_fixture();
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir(&bin_dir).unwrap();
+    let filename = format!("my-node-3826{}", std::env::consts::EXE_SUFFIX);
+    std::fs::rename(dir.path().join(&filename), bin_dir.join(&filename)).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin_dir).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let output = Command::new(dora_bin())
+        .env("PATH", path)
+        .current_dir(dir.path())
+        .args(["run", "dataflow.yml", "--stop-after", "5s"])
+        .output()
+        .expect("run the PATH-only module");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "module failed: {stdout}\n{stderr}");
+    assert!(
+        stdout.contains("sink received message:"),
+        "no downstream delivery: {stdout}\n{stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Service example
 // ---------------------------------------------------------------------------

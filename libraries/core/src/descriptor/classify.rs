@@ -357,6 +357,18 @@ fn check_standard(node: &Node) -> Result<()> {
             node.id
         );
     }
+    // Expansion only writes a single file name, looked up in the working
+    // directory, uv and on `$PATH`; a path like `bin/x` would also be searched
+    // from the current directory, and `$X` is not expanded.
+    if let Some(fallback) = &node.path_fallback
+        && !super::expand::is_bare_name(fallback)
+    {
+        bail!(
+            "node `{}` has `path_fallback` `{fallback}`, which must be a single file \
+             name without `/`, `\\`, `:`, `$` or an extension",
+            node.id
+        );
+    }
     Ok(())
 }
 
@@ -632,6 +644,33 @@ hub: dora-yolo@^0.5
             "id: x\npath: modules/node\npath_fallback: node\n",
         ))
         .unwrap();
+    }
+
+    /// Module expansion only writes a single file name; anything else would
+    /// also be searched from the current directory (`bin/x`) or isn't a name.
+    #[test]
+    fn path_fallback_must_be_a_single_name() {
+        for fallback in [
+            "bin/x",
+            "../x",
+            "x.py",
+            "https://example.com/x",
+            "$X",
+            "C:x",
+            "''",
+            "'  '",
+        ] {
+            let yaml = format!("id: x\npath: modules/node\npath_fallback: {fallback}\n");
+            let err = classify(&parse_node(&yaml)).expect_err(&yaml).to_string();
+            let fallback = fallback.trim_matches('\'');
+            assert_eq!(
+                err,
+                format!(
+                    "node `x` has `path_fallback` `{fallback}`, which must be a single \
+                     file name without `/`, `\\`, `:`, `$` or an extension"
+                )
+            );
+        }
     }
 
     #[test]
