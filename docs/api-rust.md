@@ -459,8 +459,9 @@ impl DoraArray {
 
 Data from `Event::Input` arrives as `DoraArray`. Use the `TryFrom<&DoraArray>`
 conversions (`bool`, the primitive integer/float types, `String`, `&str`, the
-`chrono` date/time types, `&[T]`, `Vec<T>`) or `into_vec::<T>()` to extract
-typed values without naming an Arrow type.
+`chrono` date/time types, `&[T]` and `Vec<T>` of the primitive types,
+`Vec<bool>`, `Vec<String>`) or `into_vec::<T>()` to extract typed values
+without naming an Arrow type.
 
 To reach the Arrow array itself, enable the feature naming your Arrow major —
 see [Arrow version policy](#arrow-version-policy).
