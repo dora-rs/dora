@@ -33,6 +33,9 @@ redb-backend = ["dora-coordinator/redb-backend", "dep:fs2", "dep:libc"]
 [dependencies]
 arrow = { workspace = true, features = ["ipc"] }
 arrow-schema = { workspace = true }
+# To read Arrow IPC message headers with a size limit in `topic echo` (the
+# `VerifierOptions` arrow-ipc's generated code takes); same 25.x as arrow-ipc.
+flatbuffers = "25"
 base64 = "0.22"
 flate2 = "1.1"
 clap = { version = "4.6.1", features = ["derive", "string", "env"] }

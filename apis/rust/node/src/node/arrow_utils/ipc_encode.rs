@@ -170,9 +170,9 @@ fn build_layout_rec(array: &ArrayData, layout: &mut Layout, off: &mut usize) -> 
     } else {
         array.null_count()
     };
-    layout
-        .nodes
-        .push(FieldNode::new(len as i64, null_count as i64));
+    // A length that doesn't fit in an i64 goes to the fallback, which refuses it.
+    let node = FieldNode::new(i64::try_from(len).ok()?, i64::try_from(null_count).ok()?);
+    layout.nodes.push(node);
 
     // Validity bitmap (every type except `Null` carries one in IPC V5; the
     // fast-path set excludes the other no-validity types — Union/RunEndEncoded).
@@ -380,6 +380,12 @@ fn build_record_batch_message(
 
 fn prepare(array: &ArrayData) -> Option<Prepared> {
     let layout = build_layout(array)?;
+    // Decline what every receiver refuses (more than MAX_IPC_ROWS rows in the
+    // written columns together; the first is `array` itself), so the fallback
+    // encoder reports it.
+    if super::sum_of_rows(layout.nodes.iter().map(|node| node.length())) > super::MAX_IPC_ROWS {
+        return None;
+    }
     let schema_message = build_schema_message(array.data_type()).ok()?;
     let record_batch_message = build_record_batch_message(
         array.len(),
@@ -933,6 +939,11 @@ impl InputDecoder {
     /// Same, for dora-internal callers that already hold an Arrow buffer.
     pub(crate) fn set_schema_raw(&mut self, hash: u64, schema: ArrowBuffer) -> eyre::Result<()> {
         check_ipc_size(schema.len())?;
+        // The `@schema` payload comes from a peer: priming from anything but one
+        // complete schema message would leave arrow holding partial state (or a
+        // batch) that a later call completes, past every check.
+        let schema = super::align_for_decode(schema);
+        check_single_schema_message(schema.as_slice())?;
         if self.schema_hash == Some(hash) {
             return Ok(());
         }
@@ -993,7 +1004,9 @@ impl InputDecoder {
                 None => return Ok(None),
             }
         }
-        match decode_one_batch(&mut self.decoder, super::align_for_decode(buffer)) {
+        let buffer = super::align_for_decode(buffer);
+        super::check_row_counts(buffer.as_slice())?;
+        match decode_one_batch(&mut self.decoder, buffer) {
             Ok(array) => {
                 // `decode_one_batch` yields a non-empty batch *before* the
                 // trailing end-of-stream marker is consumed, and a 0-row batch
@@ -1020,6 +1033,24 @@ impl InputDecoder {
             }
         }
     }
+}
+
+/// Accept only a payload that is exactly one complete IPC schema message (what
+/// dora's `@schema` publisher and in-band priming send): no partial message,
+/// nothing after it, and a schema arrow can parse.
+fn check_single_schema_message(schema: &[u8]) -> eyre::Result<()> {
+    const ERROR: &str = "a schema payload must be exactly one complete IPC schema message";
+    if schema_block_len(schema) != Some(schema.len()) {
+        bail!(ERROR);
+    }
+    let message =
+        super::read_message_header(&schema[PREFIX_LEN..]).map_err(|e| eyre!("{ERROR}: {e}"))?;
+    let (Some(schema), 0) = (message.header_as_schema(), message.bodyLength()) else {
+        bail!(ERROR);
+    };
+    // Priming doesn't parse the schema (arrow waits for the next message), so
+    // parse it here: one arrow can't parse would be kept and fail every batch.
+    super::catch_arrow_panic(|| Ok(arrow::ipc::convert::fb_to_schema(schema))).map(drop)
 }
 
 /// Reject an IPC payload larger than [`super::MAX_IPC_BYTES`] before decoding.
@@ -2106,7 +2137,18 @@ mod tests {
         );
         let mut decoder = InputDecoder::new();
         let err = decoder
-            .set_schema_raw(1, Buffer::from(corrupt))
+            .set_schema_raw(1, Buffer::from(corrupt.as_slice()))
+            .unwrap_err()
+            .to_string();
+        // It has a byte after the schema message, so it is rejected before
+        // arrow reads it (without that rule, arrow panics on it).
+        assert!(err.contains("exactly one"), "got: {err}");
+        assert!(!decoder.knows_schema(1));
+
+        // The same schema message without that byte: arrow's panic is the error,
+        // and the schema is not kept (else every batch would fail on it).
+        let err = decoder
+            .set_schema_raw(1, Buffer::from(&corrupt[..corrupt.len() - 1]))
             .unwrap_err()
             .to_string();
         assert!(err.contains("the decoder panicked: "), "got: {err}");
@@ -2154,6 +2196,556 @@ mod tests {
         assert_eq!(decoded, data);
     }
 
+    /// A schema-less batch claiming 2^57 rows (a struct with a non-nullable
+    /// `Null` child) is rejected before arrow validates it: arrow would
+    /// allocate a bitmap for every claimed row and abort the process (#3863).
+    #[test]
+    fn a_batch_claiming_a_huge_row_count_is_an_error() {
+        let rows = 0x0102_0304_usize;
+        let child = unsafe {
+            arrow::array::ArrayData::new_unchecked(
+                DataType::Null,
+                rows,
+                Some(rows),
+                None,
+                0,
+                vec![],
+                vec![],
+            )
+        };
+        let ty = DataType::Struct(vec![Field::new("x", DataType::Null, false)].into());
+        let parent = unsafe {
+            arrow::array::ArrayData::new_unchecked(ty, rows, Some(0), None, 0, vec![], vec![child])
+        };
+        let mut full = crate::arrow_utils::encode_arrow_ipc_data(&parent).unwrap();
+        let (from, to) = ((rows as u64).to_le_bytes(), (1u64 << 57).to_le_bytes());
+        let mut at = 0;
+        while at + 8 <= full.len() {
+            if full[at..at + 8] == from {
+                full[at..at + 8].copy_from_slice(&to);
+                at += 8;
+            } else {
+                at += 1;
+            }
+        }
+        let block = schema_block_len(&full).unwrap();
+        let mut decoder = InputDecoder::new();
+        decoder
+            .set_schema_raw(1, Buffer::from(&full[..block]))
+            .unwrap();
+        let err = decoder
+            .decode_batch_raw(Buffer::from(batch_slice(&full).unwrap()), 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("rows"), "got: {err}");
+
+        // The same batch appended to a schema published on the `@schema`
+        // subtopic: priming accepts only the schema message, so it is rejected
+        // before arrow validates the batch.
+        let mut fresh = InputDecoder::new();
+        let err = fresh
+            .set_schema_raw(2, Buffer::from(full.as_slice()))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("exactly one"), "got: {err}");
+        assert!(!fresh.knows_schema(2));
+    }
+
+    /// A delta dictionary would add to the dictionary this decoder keeps
+    /// between messages, so a peer could grow it without limit; it is rejected
+    /// (dora's encoders never send one) (#3863).
+    #[test]
+    fn a_delta_dictionary_is_rejected() {
+        use arrow::array::{DictionaryArray, UInt8Array};
+        use arrow::ipc::writer::{DictionaryHandling, IpcWriteOptions, StreamWriter};
+
+        let ty = DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8));
+        let schema = Arc::new(arrow_schema::Schema::new(vec![Field::new(
+            "data", ty, false,
+        )]));
+        let options =
+            IpcWriteOptions::default().with_dictionary_handling(DictionaryHandling::Delta);
+        let mut stream = Vec::new();
+        let mut writer = StreamWriter::try_new_with_options(&mut stream, &schema, options).unwrap();
+        for values in [vec!["a"], vec!["a", "b"]] {
+            let keys = UInt8Array::from(vec![values.len() as u8 - 1]);
+            let column = DictionaryArray::new(keys, Arc::new(StringArray::from(values)));
+            let batch =
+                arrow::record_batch::RecordBatch::try_new(schema.clone(), vec![Arc::new(column)])
+                    .unwrap();
+            writer.write(&batch).unwrap();
+        }
+        writer.finish().unwrap();
+        drop(writer);
+
+        let block = schema_block_len(&stream).unwrap();
+        let mut decoder = InputDecoder::new();
+        decoder
+            .set_schema_raw(1, Buffer::from(&stream[..block]))
+            .unwrap();
+        let err = decoder
+            .decode_batch_raw(Buffer::from(&stream[block..]), 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("delta"), "got: {err}");
+    }
+
+    /// A schema payload must be exactly one complete schema message: priming
+    /// from a partial message, or one with more bytes after it, would leave
+    /// arrow holding partial state that a later batch completes (#3863, Codex).
+    #[test]
+    fn a_schema_payload_must_be_exactly_one_schema_message() {
+        let data = Int32Array::from(vec![1, 2, 3]).into_data();
+        let mut full = vec![0u8; ipc_fast_path_len_data(&data).unwrap()];
+        encode_ipc_into_data(&data, &mut full).unwrap();
+        let block = schema_block_len(&full).unwrap();
+
+        for (hash, payload) in [(1u64, &full[..block - 1]), (2, &full[..block + 12])] {
+            let mut decoder = InputDecoder::new();
+            let err = decoder
+                .set_schema_raw(hash, Buffer::from(payload))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("exactly one"), "got: {err}");
+            assert!(!decoder.knows_schema(hash));
+        }
+
+        let mut decoder = InputDecoder::new();
+        decoder
+            .set_schema_raw(3, Buffer::from(&full[..block]))
+            .unwrap();
+        assert!(decoder.knows_schema(3));
+    }
+
+    /// An array with more rows than a payload can hold (2^31) is not encoded,
+    /// since no decoder would accept it; 2^31 rows still are (#3863, Codex).
+    #[test]
+    fn arrays_with_too_many_rows_are_not_encoded() {
+        let too_many = NullArray::new((1 << 31) + 1).into_data();
+        // The send path: the fast path declines, the fallback refuses.
+        let Err(err) = crate::SampleAllocator::heap().encode_arrow_data(&too_many) else {
+            panic!("the send path encoded an array with too many rows");
+        };
+        let claims = "cannot send this array: Arrow IPC message claims 2147483649 rows";
+        assert!(err.to_string().contains(claims), "got: {err}");
+        assert!(PreparedIpc::from_data(&too_many).is_none());
+        assert!(ipc_fast_path_len_data(&too_many).is_none());
+        assert!(batch_fast_path_len_data(&too_many).is_none());
+        let err = crate::arrow_utils::encode_arrow_ipc_data(&too_many).unwrap_err();
+        assert!(format!("{err:#}").starts_with(claims), "got: {err:#}");
+        for encode in [encode_ipc_into_data, encode_batch_into_data] {
+            let err = encode(&too_many, &mut []).unwrap_err().to_string();
+            assert_eq!(err, "array is not Arrow IPC fast-path eligible");
+        }
+
+        // A length that doesn't fit in an i64 (a Null array needs no memory)
+        // is refused too, not sent as a negative count. Only on 64-bit, where
+        // such a length exists.
+        #[cfg(target_pointer_width = "64")]
+        {
+            let huge = NullArray::new(1 << 63).into_data();
+            assert!(PreparedIpc::from_data(&huge).is_none());
+            let Err(err) = crate::SampleAllocator::heap().encode_arrow_data(&huge) else {
+                panic!("an array whose length doesn't fit in an i64 was sent");
+            };
+            let claims =
+                "cannot send this array: Arrow IPC message claims -9223372036854775808 rows";
+            assert!(err.to_string().contains(claims), "got: {err}");
+        }
+
+        let most = NullArray::new(1 << 31).into_data();
+        let encoded = crate::arrow_utils::encode_arrow_ipc_data(&most).unwrap();
+        assert_eq!(
+            decode_arrow_ipc_zero_copy_raw(Buffer::from(encoded)).unwrap(),
+            most
+        );
+    }
+
+    /// The row limit applies to what is sent, not to the parent of a slice: a
+    /// one-row list slice whose parent's values are longer than 2^31 still
+    /// encodes, because only the values the slice uses are written (#3863).
+    #[test]
+    fn a_list_slice_of_a_long_list_is_still_sent() {
+        let values = NullArray::new((1 << 31) + 2).into_data();
+        let field = Arc::new(Field::new_list_field(DataType::Null, true));
+        let large_list = ArrayData::builder(DataType::LargeList(field.clone()))
+            .len(2)
+            .add_buffer(Buffer::from_slice_ref([0i64, 1, (1 << 31) + 2]))
+            .add_child_data(values.clone())
+            .build()
+            .unwrap();
+        let list = ArrayData::builder(DataType::List(field.clone()))
+            .len(1)
+            .add_buffer(Buffer::from_slice_ref([0i32, 1]))
+            .add_child_data(values.clone())
+            .build()
+            .unwrap();
+        // 2^30 + 1 rows of 2 values: the values node has 2^31 + 2 rows.
+        let fixed_size_list = ArrayData::builder(DataType::FixedSizeList(field.clone(), 2))
+            .len((1 << 30) + 1)
+            .add_child_data(values.clone())
+            .build()
+            .unwrap();
+        let Err(err) = crate::SampleAllocator::heap().encode_arrow_data(&fixed_size_list) else {
+            panic!("a fixed-size list with too many values was sent");
+        };
+        assert!(
+            err.to_string().contains("claims 2147483650 rows"),
+            "got: {err}"
+        );
+        for array in [large_list.slice(0, 1), list, fixed_size_list.slice(0, 1)] {
+            let sample = crate::SampleAllocator::heap()
+                .encode_arrow_data(&array)
+                .unwrap()
+                .sample;
+            let decoded = decode_arrow_ipc_zero_copy_raw(Buffer::from(&sample[..])).unwrap();
+            assert_eq!(decoded, array);
+            let encoded = crate::arrow_utils::encode_arrow_ipc_data(&array).unwrap();
+            assert_eq!(
+                decode_arrow_ipc_zero_copy_raw(Buffer::from(encoded)).unwrap(),
+                array
+            );
+        }
+    }
+
+    /// A stream (Int32 schema, one batch, end marker) whose batch says its body
+    /// is zstd-compressed and that its one value decompresses to 2^57 bytes.
+    fn compressed_int32_stream() -> Vec<u8> {
+        let mut fbb = flatbuffers::FlatBufferBuilder::new();
+        let buffers = fbb.create_vector(&[IpcBuffer::new(0, 0), IpcBuffer::new(0, 16)]);
+        let nodes = fbb.create_vector(&[FieldNode::new(1, 0)]);
+        let compression = {
+            let mut builder = arrow::ipc::BodyCompressionBuilder::new(&mut fbb);
+            builder.add_codec(arrow::ipc::CompressionType::ZSTD);
+            builder.finish()
+        };
+        let batch = {
+            let mut builder = arrow::ipc::RecordBatchBuilder::new(&mut fbb);
+            builder.add_length(1);
+            builder.add_nodes(nodes);
+            builder.add_buffers(buffers);
+            builder.add_compression(compression);
+            builder.finish()
+        };
+        let message = {
+            let mut builder = arrow::ipc::MessageBuilder::new(&mut fbb);
+            builder.add_version(MetadataVersion::V5);
+            builder.add_header_type(MessageHeader::RecordBatch);
+            builder.add_bodyLength(16);
+            builder.add_header(batch.as_union_value());
+            builder.finish()
+        };
+        fbb.finish(message, None);
+        let mut stream = encode_schema_message_for(&DataType::Int32).unwrap();
+        let at = stream.len();
+        let block = round_up(PREFIX_LEN + fbb.finished_data().len(), ALIGN);
+        stream.resize(at + block, 0);
+        write_framed_message(&mut stream, at, fbb.finished_data());
+        stream.extend_from_slice(&(1i64 << 57).to_le_bytes());
+        stream.extend_from_slice(&[0; 8]);
+        stream.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]);
+        stream
+    }
+
+    /// A compressed batch is an error on every path. If any crate in the build
+    /// enables arrow's compression, arrow reserves the size a compressed buffer
+    /// claims before reading it (an abort for a fake size); dora never
+    /// compresses (#3863, Codex).
+    #[test]
+    fn a_compressed_batch_is_rejected() {
+        const ERROR: &str = "compressed Arrow IPC messages are not supported";
+        let stream = compressed_int32_stream();
+        let err = decode_arrow_ipc_zero_copy_raw(Buffer::from(stream.as_slice())).unwrap_err();
+        assert_eq!(err.to_string(), ERROR);
+        let block = schema_block_len(&stream).unwrap();
+        let mut decoder = InputDecoder::new();
+        decoder
+            .set_schema_raw(1, Buffer::from(&stream[..block]))
+            .unwrap();
+        let err = decoder
+            .decode_batch_raw(Buffer::from(&stream[block..]), 1)
+            .unwrap_err();
+        assert_eq!(err.to_string(), ERROR);
+    }
+
+    /// Arrow IPC stream of `array` written by arrow's own writer, so tests can
+    /// build payloads dora's encoders refuse to send.
+    fn arrow_writer_stream(array: ArrayData) -> Vec<u8> {
+        let array = arrow::array::make_array(array);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            array.data_type().clone(),
+            true,
+        )]));
+        let batch = arrow::record_batch::RecordBatch::try_new(schema.clone(), vec![array]).unwrap();
+        let mut stream = Vec::new();
+        let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut stream, &schema).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        drop(writer);
+        stream
+    }
+
+    /// The rows of all columns together get the 2^31 limit too: arrow can build
+    /// a bitmap per row for each column (a union keeps one per child), so many
+    /// columns each under the limit could still need far more memory than the
+    /// payload. Sending such an array is refused the same way (#3863, Codex).
+    #[test]
+    fn rows_of_all_columns_together_are_limited() {
+        use arrow::array::{RunArray, UnionArray};
+        use arrow::datatypes::Int32Type;
+        use arrow_schema::{Fields, UnionFields};
+
+        // Codex's shape: a non-nullable struct field holding a dense union of
+        // run-end-encoded children, each one null run of 2^31 - 1 rows. With
+        // 128 children arrow built ~32 GiB of null bitmaps from ~50 KB.
+        let children: Vec<ArrayRef> = (0..2)
+            .map(|_| {
+                let run_ends = Int32Array::from(vec![i32::MAX]);
+                let values = Int32Array::from(vec![None]);
+                Arc::new(RunArray::<Int32Type>::try_new(&run_ends, &values).unwrap()) as ArrayRef
+            })
+            .collect();
+        let fields = UnionFields::try_new(
+            [0, 1],
+            children
+                .iter()
+                .enumerate()
+                .map(|(i, child)| Field::new(format!("c{i}"), child.data_type().clone(), true)),
+        )
+        .unwrap();
+        let union = UnionArray::try_new(fields, vec![0].into(), Some(vec![0].into()), children)
+            .unwrap()
+            .into_data();
+        let field = Field::new("u", union.data_type().clone(), false);
+        // Built unchecked: arrow's own check would build those bitmaps here.
+        let data = unsafe {
+            ArrayData::builder(DataType::Struct(Fields::from(vec![field])))
+                .len(1)
+                .add_child_data(union)
+                .build_unchecked()
+        };
+        let err = decode_arrow_ipc_zero_copy_raw(Buffer::from(arrow_writer_stream(data)))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("rows across its columns"), "got: {err}");
+
+        // Two Null columns of 2^30 rows: 3 * 2^30 rows with the struct's own.
+        let null = || NullArray::new(1 << 30).into_data();
+        let nulls = |n: usize| {
+            let fields: Vec<Field> = (0..n)
+                .map(|i| Field::new(format!("n{i}"), DataType::Null, true))
+                .collect();
+            ArrayData::builder(DataType::Struct(fields.into()))
+                .len(1 << 30)
+                .child_data((0..n).map(|_| null()).collect())
+                .build()
+                .unwrap()
+        };
+        let claims = "claims 3221225472 rows across its columns";
+        let err = decode_arrow_ipc_zero_copy_raw(Buffer::from(arrow_writer_stream(nulls(2))))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(claims), "got: {err}");
+        let Err(err) = crate::SampleAllocator::heap().encode_arrow_data(&nulls(2)) else {
+            panic!("an array with too many rows in all was sent");
+        };
+        assert!(err.to_string().contains(claims), "got: {err}");
+        assert!(PreparedIpc::from_data(&nulls(2)).is_none());
+
+        // One Null column of 2^30 rows: 2^31 in all, still sent and decoded.
+        let sample = crate::SampleAllocator::heap()
+            .encode_arrow_data(&nulls(1))
+            .unwrap()
+            .sample;
+        let decoded = decode_arrow_ipc_zero_copy_raw(Buffer::from(&sample[..])).unwrap();
+        assert_eq!(decoded, nulls(1));
+    }
+
+    /// A framed schema message whose one struct column lists the same child
+    /// field (with a `name_len`-byte name) `copies` times. Flatbuffers allows
+    /// such shared references, and arrow builds a copy of the child for each.
+    fn schema_with_shared_children(copies: usize, name_len: usize) -> Vec<u8> {
+        use arrow::ipc::{FieldBuilder, NullBuilder, SchemaBuilder, Struct_Builder, Type};
+        let mut fbb = flatbuffers::FlatBufferBuilder::new();
+        let name = fbb.create_string(&"x".repeat(name_len));
+        let null = NullBuilder::new(&mut fbb).finish();
+        let child = {
+            let mut builder = FieldBuilder::new(&mut fbb);
+            builder.add_name(name);
+            builder.add_nullable(true);
+            builder.add_type_type(Type::Null);
+            builder.add_type_(null.as_union_value());
+            builder.finish()
+        };
+        let children = fbb.create_vector(&vec![child; copies]);
+        let struct_ = Struct_Builder::new(&mut fbb).finish();
+        let name = fbb.create_string("data");
+        let column = {
+            let mut builder = FieldBuilder::new(&mut fbb);
+            builder.add_name(name);
+            builder.add_nullable(true);
+            builder.add_type_type(Type::Struct_);
+            builder.add_type_(struct_.as_union_value());
+            builder.add_children(children);
+            builder.finish()
+        };
+        let fields = fbb.create_vector(&[column]);
+        let schema = {
+            let mut builder = SchemaBuilder::new(&mut fbb);
+            builder.add_fields(fields);
+            builder.finish()
+        };
+        let message = {
+            let mut builder = arrow::ipc::MessageBuilder::new(&mut fbb);
+            builder.add_version(MetadataVersion::V5);
+            builder.add_header_type(MessageHeader::Schema);
+            builder.add_header(schema.as_union_value());
+            builder.finish()
+        };
+        fbb.finish(message, None);
+        let mut framed = vec![0; round_up(PREFIX_LEN + fbb.finished_data().len(), ALIGN)];
+        write_framed_message(&mut framed, 0, fbb.finished_data());
+        framed
+    }
+
+    /// A message header that grows to more than 4 times its size when read
+    /// (one long name referenced many times) is rejected before arrow copies
+    /// it for every reference; a 1 MB schema could otherwise make arrow
+    /// allocate 1 GB (#3863, Codex). Headers dora and arrow write grow less
+    /// than 2 times (shared vtables), so they still decode.
+    #[test]
+    fn a_message_header_that_grows_when_read_is_rejected() {
+        let schema = schema_with_shared_children(8, 4096);
+        let mut decoder = InputDecoder::new();
+        let err = decoder
+            .set_schema_raw(1, Buffer::from(schema.as_slice()))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("invalid Arrow IPC message header"),
+            "got: {err}"
+        );
+        let mut stream = schema;
+        stream.extend_from_slice(&[0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]);
+        let err = decode_arrow_ipc_zero_copy_raw(Buffer::from(stream))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("invalid Arrow IPC message header"),
+            "got: {err}"
+        );
+
+        decoder
+            .set_schema_raw(2, Buffer::from_vec(schema_with_shared_children(1, 4096)))
+            .unwrap();
+        // 5000 columns: arrow's own header grows ~1.8 times.
+        let fields: Vec<Field> = (0..5000)
+            .map(|i| Field::new(format!("f{i}"), DataType::Int8, true))
+            .collect();
+        let columns: Vec<ArrayRef> = (0..5000)
+            .map(|_| Arc::new(arrow::array::Int8Array::from(vec![1])) as ArrayRef)
+            .collect();
+        let wide = StructArray::new(fields.into(), columns, None).into_data();
+        let full = crate::arrow_utils::encode_arrow_ipc_data(&wide).unwrap();
+        assert_eq!(
+            decode_arrow_ipc_zero_copy_raw(Buffer::from(full.as_slice())).unwrap(),
+            wide
+        );
+        let block = schema_block_len(&full).unwrap();
+        decoder
+            .set_schema_raw(3, Buffer::from(&full[..block]))
+            .unwrap();
+        let batch = Buffer::from(batch_slice(&full).unwrap());
+        assert_eq!(decoder.decode_batch_raw(batch, 3).unwrap().unwrap(), wide);
+    }
+
+    /// A run-end-encoded array whose run end was changed in transit passes
+    /// every check and arrow's validation, so it decodes; sending it on (what
+    /// `dora replay` and forwarding nodes do) makes arrow's writer panic, which
+    /// must be an error, not a crash (#3863).
+    #[test]
+    fn sending_a_corrupted_run_end_array_is_an_error() {
+        use arrow::array::RunArray;
+        use arrow::datatypes::Int32Type;
+        let array =
+            RunArray::<Int32Type>::try_new(&Int32Array::from(vec![2]), &Int32Array::from(vec![42]))
+                .unwrap();
+        let mut bytes = crate::arrow_utils::encode_arrow_ipc_data(&array.to_data()).unwrap();
+        // The body holds the run end (2) and then the value (42).
+        let value = bytes.windows(4).rposition(|w| w == [42, 0, 0, 0]).unwrap();
+        let run_end = bytes[..value]
+            .windows(4)
+            .rposition(|w| w == [2, 0, 0, 0])
+            .unwrap();
+        bytes[run_end] = 1;
+        let decoded = decode_arrow_ipc_zero_copy_raw(Buffer::from(bytes)).unwrap();
+        assert_eq!(decoded.len(), 2);
+
+        let Err(err) = crate::SampleAllocator::heap().encode_arrow_data(&decoded) else {
+            panic!("a corrupted run-end array was sent");
+        };
+        assert!(err.to_string().contains("arrow panicked"), "got: {err}");
+    }
+
+    /// A valid empty union (no fields) primes the schema-once decoder and its
+    /// batch decodes (#3863, Codex: an empty-batch check refused this schema).
+    #[test]
+    fn an_empty_union_decodes_through_the_schema_once_decoder() {
+        use arrow::array::UnionArray;
+        use arrow_schema::UnionFields;
+        for offsets in [None, Some(Vec::<i32>::new().into())] {
+            let union = UnionArray::try_new(
+                UnionFields::empty(),
+                Vec::<i8>::new().into(),
+                offsets,
+                vec![],
+            )
+            .unwrap()
+            .into_data();
+            let full = crate::arrow_utils::encode_arrow_ipc_data(&union).unwrap();
+            let block = schema_block_len(&full).unwrap();
+            let mut decoder = InputDecoder::new();
+            decoder
+                .set_schema_raw(1, Buffer::from(&full[..block]))
+                .unwrap();
+            let batch = Buffer::from(batch_slice(&full).unwrap());
+            assert_eq!(decoder.decode_batch_raw(batch, 1).unwrap().unwrap(), union);
+        }
+    }
+
+    /// A batch that passes every header check and still makes arrow panic (its
+    /// schema says a negative width) is an error, and the decoder still decodes
+    /// valid batches afterwards (#3863).
+    #[test]
+    fn a_batch_arrow_panics_on_after_the_checks_is_an_error() {
+        use arrow::array::FixedSizeBinaryArray;
+        let values = FixedSizeBinaryArray::try_from_iter([[1u8, 2, 3], [4, 5, 6]].into_iter())
+            .unwrap()
+            .into_data();
+        let mut batch = vec![0u8; batch_fast_path_len_data(&values).unwrap()];
+        encode_batch_into_data(&values, &mut batch).unwrap();
+        let mut decoder = InputDecoder::new();
+        let schema = encode_schema_message_for(&DataType::FixedSizeBinary(-3)).unwrap();
+        decoder.set_schema_raw(9, Buffer::from_vec(schema)).unwrap();
+        let err = decoder
+            .decode_batch_raw(Buffer::from(batch.as_slice()), 9)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the decoder panicked: "), "got: {err}");
+
+        let data = Int32Array::from(vec![1, 2, 3]).into_data();
+        let schema = encode_schema_message_for(&DataType::Int32).unwrap();
+        decoder.set_schema_raw(1, Buffer::from_vec(schema)).unwrap();
+        let mut batch = vec![0u8; batch_fast_path_len_data(&data).unwrap()];
+        encode_batch_into_data(&data, &mut batch).unwrap();
+        let decoded = decoder
+            .decode_batch_raw(Buffer::from(batch), 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded, data);
+    }
+
     /// A schema-less batch from a peer that makes arrow-ipc panic is an error,
     /// not a panic (which the zenoh callback would turn into a fatal error),
     /// and the next valid batch still decodes (#3863). Found by fuzzing.
@@ -2175,7 +2767,9 @@ mod tests {
             .decode_batch_raw(Buffer::from(corrupt), 1)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("the decoder panicked: "), "got: {err}");
+        // Its buffers don't fit in its body, so the header check rejects it
+        // before arrow reads it; without that check, arrow panics on it.
+        assert!(err.contains("buffers don't fit"), "got: {err}");
 
         let mut batch = vec![0u8; batch_fast_path_len_data(&data).unwrap()];
         encode_batch_into_data(&data, &mut batch).unwrap();

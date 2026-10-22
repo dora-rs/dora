@@ -133,12 +133,13 @@ pub(crate) fn encode_arrow_ipc_data(arrow_array: &ArrayData) -> eyre::Result<Vec
     )]);
     let schema_ref = Arc::new(schema);
 
-    let array_ref = arrow::array::make_array(arrow_array.clone());
-    let batch = RecordBatch::try_new(schema_ref.clone(), vec![array_ref])
-        .context("failed to create RecordBatch for IPC encoding")?;
-
-    let mut buf = Vec::new();
-    {
+    // A received array arrow accepted can still make its writer panic (a
+    // corrupted run-end-encoded array), and nodes send received data on.
+    let buf = catch_panic("failed to encode Arrow IPC stream: arrow panicked", || {
+        let array_ref = arrow::array::make_array(arrow_array.clone());
+        let batch = RecordBatch::try_new(schema_ref.clone(), vec![array_ref])
+            .context("failed to create RecordBatch for IPC encoding")?;
+        let mut buf = Vec::new();
         let mut writer = StreamWriter::try_new(&mut buf, &schema_ref)
             .context("failed to create Arrow IPC StreamWriter")?;
         writer
@@ -147,7 +148,9 @@ pub(crate) fn encode_arrow_ipc_data(arrow_array: &ArrayData) -> eyre::Result<Vec
         writer
             .finish()
             .context("failed to finish Arrow IPC stream")?;
-    }
+        drop(writer);
+        Ok(buf)
+    })?;
 
     // Fail loudly at the producer instead of emitting a stream that every
     // receive path will unconditionally reject. `decode_arrow_ipc`,
@@ -164,6 +167,9 @@ pub(crate) fn encode_arrow_ipc_data(arrow_array: &ArrayData) -> eyre::Result<Vec
             buf.len()
         );
     }
+    // Same for row counts: the receivers' own check, run on what was written
+    // (a slice writes only the values it uses, not its parent's).
+    check_row_counts(&buf).context("cannot send this array")?;
     Ok(buf)
 }
 
@@ -301,7 +307,146 @@ pub(crate) fn decode_arrow_ipc_zero_copy_raw(
         );
     }
     let buffer = align_for_decode(buffer);
+    check_row_counts(buffer.as_slice())?;
     catch_arrow_panic(|| decode_single_batch(buffer))
+}
+
+/// Most rows an array in an accepted payload can have: one per bit of the
+/// largest accepted payload. Most arrays store at least one bit per row; the
+/// compact ones (a `Null` array, a run-end-encoded array with long runs) can
+/// claim more, so the limit is also enforced when encoding.
+const MAX_IPC_ROWS: i64 = MAX_IPC_BYTES as i64 * 8;
+
+/// Read an IPC message header, refusing one that grows to more than 4 times
+/// its size when read. Flatbuffers lets one string or table be referenced many
+/// times and arrow builds a copy for each reference, so a small header could
+/// otherwise make arrow allocate far more than the payload; the headers dora
+/// and arrow write grow less than 2 times (shared vtables).
+pub(crate) fn read_message_header(metadata: &[u8]) -> eyre::Result<arrow::ipc::Message<'_>> {
+    let options = flatbuffers::VerifierOptions {
+        max_apparent_size: metadata.len().saturating_mul(4),
+        ..Default::default()
+    };
+    arrow::ipc::root_as_message_with_opts(&options, metadata)
+        .map_err(|e| eyre::eyre!("invalid Arrow IPC message header: {e}"))
+}
+
+/// Rows of all columns of one message together, saturating.
+fn sum_of_rows(rows: impl Iterator<Item = i64>) -> i64 {
+    rows.fold(0, i64::saturating_add)
+}
+
+/// Reject a record batch (or dictionary batch) in `stream` that claims a row
+/// or null count below 0 or above [`MAX_IPC_ROWS`], overall, in any column or
+/// in all columns together, whose buffers don't fit in its body, or that is
+/// compressed, and reject a delta dictionary batch.
+///
+/// arrow validates some arrays by allocating per claimed row before it can see
+/// that the data doesn't back the claim (a struct with a non-nullable `Null`
+/// child allocates a bitmap for every row), and a failed allocation aborts the
+/// process, which no panic catch can stop. So a crafted row count must be
+/// rejected before arrow sees the message. Anything else malformed is left to
+/// the decoder, which reports it.
+pub(crate) fn check_row_counts(stream: &[u8]) -> eyre::Result<()> {
+    let read_i32 = |at: usize| -> Option<i32> {
+        Some(i32::from_le_bytes(stream.get(at..at + 4)?.try_into().ok()?))
+    };
+    let mut at = 0usize;
+    loop {
+        // A message is an optional 0xFFFFFFFF continuation marker, the metadata
+        // length, the metadata (a flatbuffer) and the body.
+        let Some(mut metadata_len) = read_i32(at) else {
+            return Ok(());
+        };
+        if metadata_len == -1 {
+            at += 4;
+            let Some(len) = read_i32(at) else {
+                return Ok(());
+            };
+            metadata_len = len;
+        }
+        let Ok(metadata_len) = usize::try_from(metadata_len) else {
+            return Ok(());
+        };
+        if metadata_len == 0 {
+            return Ok(()); // end-of-stream marker
+        }
+        let start = at + 4;
+        let Some(metadata) = start
+            .checked_add(metadata_len)
+            .and_then(|end| stream.get(start..end))
+        else {
+            return Ok(());
+        };
+        // A header arrow would also refuse is an error either way.
+        let message = read_message_header(metadata)?;
+        let dictionary = message.header_as_dictionary_batch();
+        if dictionary.is_some_and(|dictionary| dictionary.isDelta()) {
+            // A delta adds to the dictionary a decoder keeps between messages,
+            // so it could grow without limit; dora never sends one.
+            eyre::bail!("Arrow IPC delta dictionary batches are not supported");
+        }
+        let batch = message
+            .header_as_record_batch()
+            .or_else(|| dictionary.and_then(|dictionary| dictionary.data()));
+        if let Some(batch) = batch {
+            if batch.compression().is_some() {
+                // arrow reserves the size a compressed buffer claims before
+                // reading it (when a crate enables arrow's compression), and
+                // dora never compresses.
+                eyre::bail!("compressed Arrow IPC messages are not supported");
+            }
+            // arrow casts these to `usize`, so a negative one is as bad as a
+            // huge one.
+            let columns = batch.nodes().into_iter().flatten();
+            let counts = std::iter::once(batch.length())
+                .chain(columns.flat_map(|node| [node.length(), node.null_count()]));
+            for rows in counts {
+                if !(0..=MAX_IPC_ROWS).contains(&rows) {
+                    eyre::bail!(
+                        "Arrow IPC message claims {rows} rows, outside the 0..={MAX_IPC_ROWS} \
+                         rows a payload of at most {MAX_IPC_BYTES} bytes can hold"
+                    );
+                }
+            }
+            // arrow can build a bitmap per row for each column (a union keeps
+            // one per child), so all columns together get the limit too.
+            let rows = sum_of_rows(
+                batch
+                    .nodes()
+                    .into_iter()
+                    .flatten()
+                    .map(|node| node.length()),
+            );
+            if rows > MAX_IPC_ROWS {
+                eyre::bail!(
+                    "Arrow IPC message claims {rows} rows across its columns, more than the \
+                     {MAX_IPC_ROWS} a payload of at most {MAX_IPC_BYTES} bytes can hold"
+                );
+            }
+            // Each buffer must lie inside the body, and together they may not be
+            // longer than it: arrow copies an unaligned buffer once for every
+            // column that points at it, so buffers sharing bytes would make a
+            // small message allocate many times its size.
+            let body = message.bodyLength();
+            let mut total = 0i64;
+            for buffer in batch.buffers().into_iter().flatten() {
+                let (offset, length) = (buffer.offset(), buffer.length());
+                let end = offset.checked_add(length);
+                total = total.saturating_add(length);
+                if offset < 0 || length < 0 || end.is_none_or(|end| end > body) || total > body {
+                    eyre::bail!("Arrow IPC message buffers don't fit in its {body}-byte body");
+                }
+            }
+        }
+        let Ok(body_len) = usize::try_from(message.bodyLength()) else {
+            return Ok(());
+        };
+        match (start + metadata_len).checked_add(body_len) {
+            Some(next) if next <= stream.len() => at = next,
+            _ => return Ok(()),
+        }
+    }
 }
 
 /// Copy `buffer` into a new aligned buffer if it does not start on an 8-byte
@@ -328,13 +473,21 @@ pub(crate) fn align_for_decode(buffer: arrow::buffer::Buffer) -> arrow::buffer::
 /// peer or a file, so a corrupt payload must be an error, not a crash. This
 /// needs the default `panic = "unwind"`.
 pub(crate) fn catch_arrow_panic<T>(decode: impl FnOnce() -> eyre::Result<T>) -> eyre::Result<T> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)).unwrap_or_else(|panic| {
+    catch_panic(
+        "failed to decode Arrow IPC stream: the decoder panicked",
+        decode,
+    )
+}
+
+/// Run `f`, turning a panic into the error `"{what}: {reason}"`.
+fn catch_panic<T>(what: &str, f: impl FnOnce() -> eyre::Result<T>) -> eyre::Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
         let reason = panic
             .downcast_ref::<&str>()
             .copied()
             .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
             .unwrap_or("unknown reason");
-        eyre::bail!("failed to decode Arrow IPC stream: the decoder panicked: {reason}")
+        eyre::bail!("{what}: {reason}")
     })
 }
 
