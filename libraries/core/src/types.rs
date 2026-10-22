@@ -378,6 +378,11 @@ struct Edge {
     to_base: String,
     /// Parameters of the rule's `to` URN.
     to_params: BTreeMap<String, String>,
+    /// Whether the source's parameters survive the conversion. True only for
+    /// the built-in widening within one numeric family (`Int32[unit=s]` is an
+    /// `Int64[unit=s]`); across a user rule between two types the same key
+    /// may mean something else, so only the rule's own `to` parameters hold.
+    keeps_params: bool,
 }
 
 /// Split a URN into base and parameters, treating an unparseable one as a
@@ -393,13 +398,14 @@ impl CompatibilityGraph {
     /// Create a new compatibility graph with hardcoded rules + optional user rules.
     pub fn new(user_rules: &[TypeRule]) -> Self {
         let mut edges: BTreeMap<String, Vec<Edge>> = BTreeMap::new();
-        let mut add = |from: &str, to: &str| {
+        let mut add = |from: &str, to: &str, keeps_params: bool| {
             let (from_base, from_params) = base_and_params(from);
             let (to_base, to_params) = base_and_params(to);
             edges.entry(from_base).or_default().push(Edge {
                 from_params,
                 to_base,
                 to_params,
+                keeps_params,
             });
         };
 
@@ -411,14 +417,14 @@ impl CompatibilityGraph {
             ("std/core/v1/Float32", "std/core/v1/Float64"),
         ];
         for (from, to) in builtins {
-            add(from, to);
+            add(from, to, true);
         }
 
         // User-defined rules. A rule endpoint may carry parameters
         // (`acme/Image[encoding=jpeg]`): edges are keyed by base, and the
         // parameters are matched with the same agreement rule as `types_match`.
         for rule in user_rules {
-            add(&rule.from, &rule.to);
+            add(&rule.from, &rule.to, false);
         }
 
         Self { edges }
@@ -465,15 +471,18 @@ impl CompatibilityGraph {
         let (from_base, from_params) = base_and_params(from);
         let (to_base, to_params) = base_and_params(to);
 
-        // Same base — check params via the shared agreement rule.
-        if from_base == to_base {
-            return params_agree(&from_params, &to_params);
+        // Same base — check params via the shared agreement rule. Disagreeing
+        // params can still be bridged by a rule that names the target's
+        // params (`Image[encoding=bgr8]` -> `Image[encoding=rgb8]`).
+        let same_base = from_base == to_base;
+        if same_base && params_agree(&from_params, &to_params) {
+            return true;
         }
 
         // BFS with depth limit 3. Each state carries the parameters known so
         // far: a rule applies when they agree with its `from` parameters, and
-        // its `to` parameters override them (`Int32[unit=s]` widens to
-        // `Int64[unit=s]`, not to an unconstrained `Int64`).
+        // the next state holds the rule's `to` parameters (plus the source's,
+        // for a built-in widening; see `Edge::keeps_params`).
         let mut queue = std::collections::VecDeque::new();
         let mut visited = std::collections::BTreeSet::new();
         queue.push_back((from_base.as_str(), from_params, 0u32));
@@ -489,9 +498,17 @@ impl CompatibilityGraph {
                 if !params_agree(&edge.from_params, &params) {
                     continue;
                 }
-                let mut next_params = params.clone();
+                let mut next_params = if edge.keeps_params {
+                    params.clone()
+                } else {
+                    BTreeMap::new()
+                };
                 next_params.extend(edge.to_params.iter().map(|(k, v)| (k.clone(), v.clone())));
-                if edge.to_base == to_base && params_agree(&next_params, &to_params) {
+                // back on the source's base, only a rule that names params may
+                // convert between them: a parameter-free cycle (`A -> B -> A`)
+                // must not make every `A[..]` compatible with every other
+                let bridges = !same_base || !edge.to_params.is_empty();
+                if edge.to_base == to_base && bridges && params_agree(&next_params, &to_params) {
                     return true;
                 }
                 if visited.insert((edge.to_base.as_str(), next_params.clone())) {
@@ -1183,6 +1200,35 @@ mod tests {
         assert!(g.is_compatible("std/core/v1/Int32[unit=m]", "acme/Meters"));
         assert!(!g.is_compatible("std/core/v1/Int32[unit=s]", "acme/Meters"));
         assert!(!g.is_compatible("std/core/v1/Int32[unit=s]", "std/core/v1/Int64[unit=m]"));
+    }
+
+    #[test]
+    fn compat_user_rule_does_not_carry_source_params() {
+        // a parameter-free rule between two types matches on base alone, as
+        // before: `encoding` on `Raw` says nothing about `encoding` on `Compressed`
+        let g = CompatibilityGraph::new(&[TypeRule {
+            from: "acme/Raw".into(),
+            to: "acme/Compressed".into(),
+        }]);
+        assert!(g.is_compatible("acme/Raw[encoding=rgb8]", "acme/Compressed[encoding=jpeg]"));
+    }
+
+    #[test]
+    fn compat_rule_between_params_of_one_type() {
+        let rule = |from: &str, to: &str| TypeRule {
+            from: from.into(),
+            to: to.into(),
+        };
+        let g = CompatibilityGraph::new(&[
+            rule("acme/Image[encoding=bgr8]", "acme/Image[encoding=rgb8]"),
+            rule("acme/A", "acme/B"),
+            rule("acme/B", "acme/A"),
+        ]);
+        assert!(g.is_compatible("acme/Image[encoding=bgr8]", "acme/Image[encoding=rgb8]"));
+        assert!(!g.is_compatible("acme/Image[encoding=rgb8]", "acme/Image[encoding=bgr8]"));
+        assert!(!g.is_compatible("acme/Image[encoding=yuv]", "acme/Image[encoding=rgb8]"));
+        // a parameter-free cycle does not convert between params of one type
+        assert!(!g.is_compatible("acme/A[x=1]", "acme/A[x=2]"));
     }
 
     // --- Phase 5: metadata pattern tests ---
