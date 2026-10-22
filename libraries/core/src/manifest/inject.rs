@@ -12,7 +12,10 @@
 //! first-message type check or `dora graph`, which read the descriptor
 //! through paths that don't inject (deliberate for now; see plan §6.2).
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use crate::descriptor::normalize_path;
 
@@ -23,7 +26,7 @@ use dora_message::{
 };
 
 use super::{
-    MANIFEST_FILENAME, NodeManifest,
+    MANIFEST_FILENAME, NodeManifest, PortDef,
     validate::{check_shipped_type_urn, sanitize},
 };
 use crate::{descriptor::source_is_url, types::TypeRegistry};
@@ -302,37 +305,49 @@ pub fn apply_manifest_contracts(
     // Only ports the dataflow wires get one: the type check flags a
     // `*_types` key with no matching input/output, so a type for an optional
     // input left unwired would fail a valid dataflow under `--strict-types`.
-    let mut injected = 0;
-    let wired_inputs: Vec<DataId> = node.inputs.keys().cloned().collect();
-    let wired_outputs: Vec<DataId> = node.outputs.iter().cloned().collect();
-    let port_sets = [
-        (&manifest.inputs, &wired_inputs, &mut node.input_types),
-        (&manifest.outputs, &wired_outputs, &mut node.output_types),
-    ];
-    for (ports, wired, annotations) in port_sets {
-        for (name, def) in ports {
-            let Some(urn) = &def.r#type else {
-                continue;
-            };
-            // manifest validation guarantees port names parse as DataId
-            let Ok(id) = name.parse::<DataId>() else {
-                continue;
-            };
-            if !wired.contains(&id) {
-                continue;
-            }
-            if let std::collections::btree_map::Entry::Vacant(entry) = annotations.entry(id) {
-                entry.insert(urn.clone());
-                injected += 1;
-            }
-        }
-    }
+    let injected = inject_port_types(
+        &manifest.inputs,
+        |id| node.inputs.contains_key(id),
+        &mut node.input_types,
+    ) + inject_port_types(
+        &manifest.outputs,
+        |id| node.outputs.contains(id),
+        &mut node.output_types,
+    );
     if injected > 0 {
         result.notes.push(sanitize(&format!(
             "node \"{}\": injected {injected} contract type(s) from {}",
             node.id, source_label
         )));
     }
+}
+
+/// Copy each typed port's contract type into `annotations`, for ports the
+/// dataflow wires (`is_wired`) and has not annotated itself. Returns how many
+/// types were added.
+fn inject_port_types(
+    ports: &BTreeMap<String, PortDef>,
+    is_wired: impl Fn(&DataId) -> bool,
+    annotations: &mut BTreeMap<DataId, String>,
+) -> usize {
+    let mut injected = 0;
+    for (name, def) in ports {
+        let Some(urn) = &def.r#type else {
+            continue;
+        };
+        // manifest validation guarantees port names parse as DataId
+        let Ok(id) = name.parse::<DataId>() else {
+            continue;
+        };
+        if !is_wired(&id) {
+            continue;
+        }
+        if let std::collections::btree_map::Entry::Vacant(entry) = annotations.entry(id) {
+            entry.insert(urn.clone());
+            injected += 1;
+        }
+    }
+    injected
 }
 
 #[cfg(test)]
