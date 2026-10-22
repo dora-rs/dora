@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use dora_core::manifest::{MANIFEST_FILENAME, NodeManifest};
 use dora_core::types::TypeRegistry;
+use dora_message::descriptor::{DYNAMIC_SOURCE, SHELL_SOURCE};
 use eyre::{Context, bail};
 
 use crate::command::Executable;
@@ -28,7 +29,9 @@ fn fallback_entrypoint(node: &DetectedNode) -> String {
         _ => name.to_owned(),
     };
     match entrypoint(&node.name) {
-        reserved if reserved == "shell" || reserved == "dynamic" => entrypoint(FALLBACK_NAME),
+        reserved if reserved == SHELL_SOURCE || reserved == DYNAMIC_SOURCE => {
+            entrypoint(FALLBACK_NAME)
+        }
         derived => derived,
     }
 }
