@@ -273,14 +273,14 @@ pub(crate) fn decode_arrow_ipc_data(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
     array_from_single_column_batch(batch)
 }
 
-/// Decode an Arrow IPC stream from an Arrow [`Buffer`] **without copying** the
+/// Decode an Arrow IPC stream from an Arrow [`Buffer`](arrow::buffer::Buffer) **without copying** the
 /// payload buffers when they are properly aligned.
 ///
 /// Unlike [`decode_arrow_ipc`], which reads from a byte slice through
 /// `StreamReader` (and therefore allocates a fresh buffer and copies every
 /// array buffer out of the stream), this uses
 /// [`arrow::ipc::reader::StreamDecoder`], which slices the array buffers
-/// directly out of the provided [`Buffer`]. When the input buffer is suitably
+/// directly out of the provided `Buffer`. When the input buffer is suitably
 /// aligned — as Dora's shared-memory payloads always are (128-byte `AVec` /
 /// page-aligned Zenoh SHM) — the decoded array aliases the input and no payload
 /// copy happens.

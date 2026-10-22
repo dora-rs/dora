@@ -61,7 +61,7 @@ pub enum DaemonRequest {
         remove: bool,
     },
     /// Drop an opaque value. Every node that stored or loaded the key is sent
-    /// [`NodeEvent::ExtensionDropped`] so it can release whatever the value
+    /// [`NodeEvent::ExtensionDropped`](crate::daemon_to_node::NodeEvent::ExtensionDropped) so it can release whatever the value
     /// referred to.
     ExtensionDrop {
         namespace: String,

@@ -87,7 +87,7 @@ fn validate_data_id(id: &str) -> Result<(), InvalidId> {
 /// Error returned when a string fails validation as a [`NodeId`] or
 /// [`DataId`].
 ///
-/// Produced by their [`FromStr`](std::str::FromStr) implementations. The
+/// Produced by their [`FromStr`] implementations. The
 /// wrapped `String` is a human-readable explanation of why the id was
 /// rejected (empty, a reserved name, a disallowed character, an empty path
 /// segment, …); its [`Display`](std::fmt::Display) forwards to that message.
@@ -122,7 +122,7 @@ impl std::error::Error for InvalidId {}
 ///
 /// # Parsing vs. conversion (panic footgun)
 ///
-/// Use [`str::parse`] / [`FromStr`](std::str::FromStr) for untrusted input: it
+/// Use [`str::parse`] / [`FromStr`] for untrusted input: it
 /// returns `Result<NodeId, InvalidId>`. The `From<String>` conversion — and
 /// therefore `.into()` and the auto-derived `TryFrom<String>` — **panics** on
 /// an invalid id.
@@ -270,7 +270,7 @@ impl AsRef<str> for OperatorId {
 ///
 /// # Parsing vs. conversion (panic footgun)
 ///
-/// Use [`str::parse`] / [`FromStr`](std::str::FromStr) for untrusted input: it
+/// Use [`str::parse`] / [`FromStr`] for untrusted input: it
 /// returns `Result<DataId, InvalidId>`. The `From<String>` / `From<&str>`
 /// conversions — and therefore `.into()` and the auto-derived `TryFrom` —
 /// **panic** on an invalid id.

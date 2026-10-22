@@ -10,7 +10,7 @@
 //! bump. `encoding_is_unchanged_from_the_seq_form` pins that, including at the
 //! varint length-prefix boundaries. In self-describing formats the two forms
 //! also agree: serde_json renders both as an array of numbers, and the visitor
-//! below accepts that shape back via [`Visitor::visit_seq`].
+//! below accepts that shape back via [`Visitor::visit_seq`](serde::de::Visitor::visit_seq).
 //!
 //! Deserialization preserves the 128-byte alignment the Arrow zero-copy decode
 //! path depends on — see `daemon_path_ipc_roundtrip_preserves_payload_and_alignment`.
