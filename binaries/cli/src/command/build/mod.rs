@@ -120,9 +120,10 @@ pub struct Build {
     offline: bool,
     /// Substitute a local checkout for a hub package (UC11 inner loop):
     /// `--hub-override <namespace>/<name>=<path>`. The manifest is read from
-    /// the checkout, contracts are still validated, and the node builds + runs
-    /// from local source — no index resolution for that package. Repeatable;
-    /// local builds only.
+    /// the checkout and must declare the same `namespace` and `name`;
+    /// contracts are still validated, and the node builds + runs from local
+    /// source — no index resolution for that package. Repeatable; local builds
+    /// only.
     #[clap(long = "hub-override", value_name = "PKG=PATH")]
     hub_override: Vec<String>,
 }
