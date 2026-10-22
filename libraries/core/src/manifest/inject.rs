@@ -16,7 +16,11 @@ use std::path::{Path, PathBuf};
 
 use crate::descriptor::normalize_path;
 
-use dora_message::{config::InputMapping, descriptor::Descriptor, id::NodeId};
+use dora_message::{
+    config::InputMapping,
+    descriptor::Descriptor,
+    id::{DataId, NodeId},
+};
 
 use super::{
     MANIFEST_FILENAME, NodeManifest,
@@ -294,21 +298,29 @@ pub fn apply_manifest_contracts(
         }
     }
 
-    // inject contract types; the dataflow author's own annotations win
+    // inject contract types; the dataflow author's own annotations win.
+    // Only ports the dataflow wires get one: the type check flags a
+    // `*_types` key with no matching input/output, so a type for an optional
+    // input left unwired would fail a valid dataflow under `--strict-types`.
     let mut injected = 0;
+    let wired_inputs: Vec<DataId> = node.inputs.keys().cloned().collect();
+    let wired_outputs: Vec<DataId> = node.outputs.iter().cloned().collect();
     let port_sets = [
-        (&manifest.inputs, &mut node.input_types),
-        (&manifest.outputs, &mut node.output_types),
+        (&manifest.inputs, &wired_inputs, &mut node.input_types),
+        (&manifest.outputs, &wired_outputs, &mut node.output_types),
     ];
-    for (ports, annotations) in port_sets {
+    for (ports, wired, annotations) in port_sets {
         for (name, def) in ports {
             let Some(urn) = &def.r#type else {
                 continue;
             };
             // manifest validation guarantees port names parse as DataId
-            let Ok(id) = name.parse() else {
+            let Ok(id) = name.parse::<DataId>() else {
                 continue;
             };
+            if !wired.contains(&id) {
+                continue;
+            }
             if let std::collections::btree_map::Entry::Vacant(entry) = annotations.entry(id) {
                 entry.insert(urn.clone());
                 injected += 1;
@@ -384,6 +396,73 @@ nodes:
                 .get(&"bbox".parse::<dora_message::id::DataId>().unwrap()),
             Some(&"std/vision/v1/BoundingBox".to_string())
         );
+    }
+
+    /// A typed port the dataflow leaves unwired gets no injected type: the
+    /// type check would flag it as a `*_types` key with no matching port, and
+    /// `--strict-types` would reject a dataflow the manifest allows.
+    #[test]
+    fn unwired_optional_ports_get_no_type() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_manifest(
+            &tmp.path().join("yolo"),
+            r#"
+apiVersion: 1
+name: dora-yolo
+namespace: dora-rs
+runtime: rust
+entrypoint: target/release/dora-yolo
+inputs:
+  image:
+    type: std/media/v1/Image
+  config:
+    type: std/core/v1/Bytes
+    required: false
+outputs:
+  bbox:
+    type: std/vision/v1/BoundingBox
+  debug:
+    type: std/core/v1/Bytes
+"#,
+        );
+        let mut df = dataflow(
+            r#"
+nodes:
+  - id: camera
+    path: cam
+    outputs: [image]
+    output_types:
+      image: std/media/v1/Image
+  - id: detector
+    path: yolo/target/release/dora-yolo
+    inputs:
+      image: camera/image
+    outputs: [bbox]
+"#,
+        );
+        let mut registry = TypeRegistry::new();
+        let result = inject_adjacent_manifests(&mut df, tmp.path(), &mut registry);
+        assert_eq!(result.warnings, Vec::<String>::new());
+        let detector = &df.nodes[1];
+        assert_eq!(
+            detector
+                .input_types
+                .keys()
+                .map(|k| k.as_str())
+                .collect::<Vec<_>>(),
+            ["image"]
+        );
+        assert_eq!(
+            detector
+                .output_types
+                .keys()
+                .map(|k| k.as_str())
+                .collect::<Vec<_>>(),
+            ["bbox"]
+        );
+
+        let check = crate::descriptor::validate::check_type_annotations_full(&df, &registry, true);
+        assert!(check.warnings.is_empty(), "{:?}", check.warnings);
     }
 
     #[test]
