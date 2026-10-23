@@ -124,6 +124,36 @@ pub(super) fn should_warn_drop(count: u64) -> bool {
     count.is_power_of_two()
 }
 
+/// Record an input's metadata parameters in a `write_events_to` recording, so
+/// a replay hands them back to the node (`IncomingEvent::Input::metadata`).
+///
+/// Dora's internal framing keys only describe how this one delivery was
+/// encoded, so they are left out. A non-finite float has no JSON
+/// representation (it would be written as `null`, which the replay loader
+/// rejects, making the whole recording unloadable), so a parameter holding one
+/// is left out too.
+fn insert_recorded_metadata(
+    event_json: &mut serde_json::Map<String, serde_json::Value>,
+    parameters: &dora_message::metadata::MetadataParameters,
+) -> eyre::Result<()> {
+    use dora_message::metadata::Parameter;
+
+    let mut parameters = parameters.clone();
+    dora_message::metadata::strip_internal_parameters(&mut parameters);
+    parameters.retain(|_, value| match value {
+        Parameter::Float(f) => f.is_finite(),
+        Parameter::ListFloat(list) => list.iter().all(|f| f.is_finite()),
+        _ => true,
+    });
+    if !parameters.is_empty() {
+        event_json.insert(
+            "metadata".into(),
+            serde_json::to_value(&parameters).context("failed to serialize input metadata")?,
+        );
+    }
+    Ok(())
+}
+
 /// Asynchronous iterator over the incoming [`Event`]s destined for this node.
 ///
 /// This struct [implements](#impl-Stream-for-EventStream) the [`Stream`] trait,
@@ -1232,6 +1262,7 @@ impl EventStream {
                             false,
                         )?;
                         event_json.insert("type".into(), "Input".into());
+                        insert_recorded_metadata(&mut event_json, &metadata.parameters)?;
                         Some(event_json.into())
                     }
                     NodeEvent::InputClosed { id } => Some(control_event_json(
@@ -1263,6 +1294,7 @@ impl EventStream {
                         false,
                     )?;
                     event_json.insert("type".into(), "Input".into());
+                    insert_recorded_metadata(&mut event_json, &metadata.parameters)?;
                     Some(event_json.into())
                 }
                 _ => None,
@@ -3143,6 +3175,73 @@ mod tests {
             .unwrap_or_else(|err| panic!("recording must load for replay: {err}\n{text}"));
         assert_eq!(recording.events.len(), 1, "{text}");
         assert_eq!(recording.events[0].event, IncomingEvent::Stop);
+    }
+
+    /// A recorded input keeps its user metadata parameters, so a replay hands
+    /// a node the same `request_id`, `width`, ... the recorded run saw.
+    /// Internal framing keys and unrepresentable floats are left out.
+    #[test]
+    fn recording_keeps_input_metadata_parameters() {
+        use dora_message::metadata::{FRAMING, FRAMING_ARROW_IPC, MetadataParameters, Parameter};
+
+        let (_node, mut events) = test_event_stream();
+        let (w, path) = write_events_to_with_tempfile();
+        events.write_events_to = Some(w);
+
+        let hlc = dora_core::uhlc::HLC::default();
+        let mut metadata = Metadata::new(hlc.new_timestamp());
+        metadata
+            .parameters
+            .insert("width".to_string(), Parameter::Integer(640));
+        metadata.parameters.insert(
+            FRAMING.to_string(),
+            Parameter::String(FRAMING_ARROW_IPC.to_string()),
+        );
+        metadata
+            .parameters
+            .insert("gain".to_string(), Parameter::Float(f64::NAN));
+        let metadata = Arc::new(metadata);
+        for item in [
+            EventItem::NodeEvent {
+                event: NodeEvent::Input {
+                    id: "daemon".parse().unwrap(),
+                    metadata: metadata.clone(),
+                    data: None,
+                },
+            },
+            EventItem::ZenohInput {
+                id: "zenoh".parse().unwrap(),
+                metadata,
+                data: {
+                    use arrow::array::Array;
+                    arrow::array::Int32Array::from(vec![1]).into_data()
+                },
+            },
+            EventItem::NodeEvent {
+                event: NodeEvent::Stop,
+            },
+        ] {
+            events.record_event(&item).unwrap();
+        }
+        drop(events);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let recording: IntegrationTestInput = serde_json::from_str(&text)
+            .unwrap_or_else(|err| panic!("recording must load for replay: {err}\n{text}"));
+        let expected = MetadataParameters::from([("width".to_string(), Parameter::Integer(640))]);
+        let inputs: Vec<_> = recording
+            .events
+            .iter()
+            .filter_map(|event| match &event.event {
+                IncomingEvent::Input { id, metadata, .. } => Some((id.to_string(), metadata)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(inputs.len(), 2, "{text}");
+        for (id, metadata) in inputs {
+            assert_eq!(metadata.as_ref(), Some(&expected), "input `{id}`: {text}");
+        }
     }
 
     /// Twin of `stream_path_records_events` for the other recording site:
