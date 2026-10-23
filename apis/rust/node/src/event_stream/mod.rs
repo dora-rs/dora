@@ -96,7 +96,7 @@ fn send_or_count_ingress_drop(
             // restoring the once-per-drain-window cadence. The count itself is
             // never rate-limited — that is what the counter is for.
             let count = dropped.fetch_add(1, Ordering::Relaxed) + 1;
-            if should_warn_ingress_drop(count) {
+            if should_warn_drop(count) {
                 tracing::warn!(
                     input = %input_id,
                     drops = count,
@@ -112,13 +112,15 @@ fn send_or_count_ingress_drop(
     }
 }
 
-/// Whether a zenoh ingress drop that brings the running drop count to `count`
+/// Whether a dropped event that brings the running drop count to `count`
 /// should be logged.
 ///
 /// Power-of-two cadence (1, 2, 4, 8, …): drain-independent so it recurs while a
 /// node keeps losing input, but only O(log N) times for N drops so the log cost
-/// on the zenoh IO worker stays bounded. See `send_or_count_ingress_drop`.
-fn should_warn_ingress_drop(count: u64) -> bool {
+/// stays bounded — on the zenoh IO worker (see `send_or_count_ingress_drop`)
+/// and on the thread receiving events, where a full `drop_oldest` queue is the
+/// steady state of a consumer slower than its producer.
+pub(super) fn should_warn_drop(count: u64) -> bool {
     count.is_power_of_two()
 }
 
@@ -1524,25 +1526,35 @@ impl EventStream {
             return;
         };
 
+        let drops = match bucket {
+            PassthroughBucket::Input(id) => self.scheduler.record_drop(id),
+            PassthroughBucket::NonInput => self.scheduler.record_non_input_drop(),
+        };
         // Log before removing; the immutable borrow ends with the `match`.
+        // Ordinary drops log on the scheduler's power-of-two cadence.
         match self.pending_passthrough.get(evict_at) {
             Some(Event::Input { id, metadata, .. })
                 if carries_pattern_correlation(&metadata.parameters) =>
             {
                 scheduler::log_correlation_drop_params(id, &metadata.parameters);
             }
-            Some(Event::Input { id, .. }) => {
-                tracing::warn!(input = %id, "discarding buffered input due to queue size limit");
+            Some(Event::Input { id, .. }) if should_warn_drop(drops) => {
+                tracing::warn!(
+                    input = %id,
+                    drops,
+                    "discarding buffered input due to queue size limit"
+                );
             }
-            _ => {
-                tracing::warn!("discarding buffered control event due to passthrough buffer limit");
+            Some(Event::Input { .. }) => {}
+            _ if should_warn_drop(drops) => {
+                tracing::warn!(
+                    drops,
+                    "discarding buffered control event due to passthrough buffer limit"
+                );
             }
+            _ => {}
         }
         self.pending_passthrough.remove(evict_at);
-        match bucket {
-            PassthroughBucket::Input(id) => self.scheduler.record_drop(id),
-            PassthroughBucket::NonInput => self.scheduler.record_non_input_drop(),
-        }
     }
 
     /// Core loop for the pattern-aware helpers. Waits up to `timeout`
@@ -4008,17 +4020,17 @@ mod tests {
     #[test]
     fn ingress_drop_warning_recurs_without_draining() {
         // First drop always warns…
-        assert!(should_warn_ingress_drop(1));
+        assert!(should_warn_drop(1));
         // …and it must keep warning as loss continues, even though the counter
         // is never reset by a drain call. Before the fix only count 1 warned.
-        assert!(should_warn_ingress_drop(2));
-        assert!(should_warn_ingress_drop(4));
-        assert!(should_warn_ingress_drop(1024));
+        assert!(should_warn_drop(2));
+        assert!(should_warn_drop(4));
+        assert!(should_warn_drop(1024));
         // But not on every drop — the cadence is logarithmic so the ~1.6 us
         // `warn!` cannot amplify the backlog it reports on the IO worker.
-        assert!(!should_warn_ingress_drop(3));
-        assert!(!should_warn_ingress_drop(5));
-        assert!(!should_warn_ingress_drop(1000));
+        assert!(!should_warn_drop(3));
+        assert!(!should_warn_drop(5));
+        assert!(!should_warn_drop(1000));
     }
 
     /// A closed channel is ordinary shutdown, not data loss — counting it would
