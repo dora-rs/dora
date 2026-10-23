@@ -6286,3 +6286,61 @@ async fn node_topology_changes_are_persisted() {
     drop(coordinator);
     daemon_task.await.unwrap();
 }
+
+/// `dora clean` must leave a dataflow alone while it waits for a daemon to
+/// reconnect. Once one daemon of a multi-daemon dataflow has finished, the
+/// dataflow has partial `dataflow_results`; if the remaining daemon then drops
+/// off, the orphan reclaim removes it from `running_dataflows` and persists
+/// `Recovering`. `clean` used to take the partial results for a finished
+/// dataflow and delete the stored record, so the reconnecting daemon found
+/// nothing to reconcile and its nodes kept running unmanaged.
+#[tokio::test]
+async fn clean_keeps_a_dataflow_awaiting_reclaim() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let finished_daemon = DaemonId::new(Some("a".to_string()));
+    let remaining_daemon = DaemonId::new(Some("b".to_string()));
+    let df = test_running_dataflow(dataflow_id, remaining_daemon, "sender".to_string().into());
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        Default::default(),
+        store.clone(),
+    );
+    coordinator.dataflow_results.insert(
+        dataflow_id,
+        BTreeMap::from([(
+            finished_daemon,
+            DataflowDaemonResult {
+                timestamp: coordinator.clock.new_timestamp(),
+                node_results: BTreeMap::new(),
+            },
+        )]),
+    );
+    crate::daemon_liveness::begin_orphaned_dataflow_reclaim(
+        dataflow_id,
+        &mut coordinator.running_dataflows,
+        &coordinator.clock,
+        store.as_ref(),
+    )
+    .await;
+    assert!(matches!(
+        store.get_dataflow(&dataflow_id).unwrap().map(|r| r.status),
+        Some(StoreDataflowStatus::Recovering)
+    ));
+
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator.handle_clean(reply_sender).await.unwrap();
+    let Ok(ControlRequestReply::CleanResult { cleaned, failed }) = reply.await.unwrap() else {
+        panic!("expected a clean result");
+    };
+    assert!(failed.is_empty());
+    assert!(
+        cleaned.0.iter().all(|entry| entry.id.uuid != dataflow_id),
+        "a dataflow awaiting reclaim must not be cleaned: {cleaned:?}"
+    );
+    assert!(
+        store.get_dataflow(&dataflow_id).unwrap().is_some(),
+        "the Recovering record must survive `dora clean`"
+    );
+    assert!(coordinator.dataflow_results.contains_key(&dataflow_id));
+}
