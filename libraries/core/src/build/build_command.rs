@@ -107,16 +107,10 @@ pub async fn run_build_command(
                 .take()
                 .ok_or_else(|| eyre!("failed to capture stderr pipe from build command"))?,
         );
-        let stdout_tx = stdout_tx.clone();
-
-        tokio::spawn(async move {
-            forward_build_output(child_stdout, child_stderr, stdout_tx).await;
-        });
-
-        let exit_status = child
-            .wait()
-            .await
-            .wrap_err_with(|| format!("failed to run `{build}`"))?;
+        let exit_status =
+            wait_forwarding_output(&mut child, child_stdout, child_stderr, stdout_tx.clone())
+                .await
+                .wrap_err_with(|| format!("failed to run `{build}`"))?;
         if !exit_status.success() {
             return Err(eyre!("build command `{build_line}` returned {exit_status}"));
         }
@@ -219,16 +213,12 @@ pub async fn prepare_managed_python_env(
                 .take()
                 .ok_or_else(|| eyre!("failed to take stderr pipe from uv venv child"))?,
         );
-        let stdout_tx_clone = stdout_tx.clone();
-
-        tokio::spawn(async move {
-            forward_build_output(child_stdout, child_stderr, stdout_tx_clone).await;
-        });
-
-        let exit_status = child
-            .wait()
-            .await
-            .wrap_err_with(|| format!("failed to run `uv venv {}`", python_env_dir.display()))?;
+        let exit_status =
+            wait_forwarding_output(&mut child, child_stdout, child_stderr, stdout_tx.clone())
+                .await
+                .wrap_err_with(|| {
+                    format!("failed to run `uv venv {}`", python_env_dir.display())
+                })?;
         if !exit_status.success() {
             return Err(eyre!(
                 "managed Python env preparation `{}` returned {exit_status}",
@@ -301,16 +291,14 @@ async fn ensure_managed_python_runtime(
             .ok_or_else(|| eyre!("failed to capture stderr pipe from Dora runtime install"))?,
     );
 
-    tokio::spawn(async move {
-        forward_build_output(child_stdout, child_stderr, stdout_tx).await;
-    });
-
-    let exit_status = child.wait().await.wrap_err_with(|| {
-        format!(
-            "failed to install Dora runtime into `{}`",
-            python_env_dir.display()
-        )
-    })?;
+    let exit_status = wait_forwarding_output(&mut child, child_stdout, child_stderr, stdout_tx)
+        .await
+        .wrap_err_with(|| {
+            format!(
+                "failed to install Dora runtime into `{}`",
+                python_env_dir.display()
+            )
+        })?;
     if !exit_status.success() {
         let mut err = eyre!(
             "managed Python runtime installation `{}` returned {exit_status}",
@@ -503,16 +491,14 @@ async fn ensure_local_dora_python_wheel(
             .ok_or_else(|| eyre!("failed to capture stderr pipe from local Dora wheel build"))?,
     );
 
-    tokio::spawn(async move {
-        forward_build_output(child_stdout, child_stderr, stdout_tx).await;
-    });
-
-    let exit_status = child.wait().await.wrap_err_with(|| {
-        format!(
-            "failed to build local Dora Python wheel from `{}`",
-            source.package_dir.display()
-        )
-    })?;
+    let exit_status = wait_forwarding_output(&mut child, child_stdout, child_stderr, stdout_tx)
+        .await
+        .wrap_err_with(|| {
+            format!(
+                "failed to build local Dora Python wheel from `{}`",
+                source.package_dir.display()
+            )
+        })?;
     if !exit_status.success() {
         return Err(eyre!(
             "local Dora Python wheel build `{}` returned {exit_status}",
@@ -756,7 +742,48 @@ fn hash_fingerprint_bytes(hash: &mut u64, bytes: &[u8]) {
     }
 }
 
+/// How long the forwarder may wait, in total, for more output once the build
+/// command itself exited. Output still buffered in the pipes is read without
+/// waiting, however slowly the logger takes it; waiting past this budget means
+/// the pipes are held open by a background process the command left behind.
+const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(1);
+
+/// Waits for `child` to exit while forwarding its output to `stdout_tx`.
+///
+/// The output pipes close only once every process holding them has exited,
+/// and a build command that starts a background process (`server &`, a
+/// compiler server, ...) hands them to it. Forwarding until they close would
+/// then hang the build until that process exits, possibly never, because the
+/// caller waits for every clone of `stdout_tx` to drop. So after the command
+/// exited, forwarding stops once [`OUTPUT_DRAIN_GRACE`] has been spent
+/// waiting for output; the pipes are still drained in the background, so the
+/// leftover process never blocks or gets `SIGPIPE` writing to them.
+async fn wait_forwarding_output<R1, R2>(
+    child: &mut tokio::process::Child,
+    child_stdout: R1,
+    child_stderr: R2,
+    stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
+) -> std::io::Result<std::process::ExitStatus>
+where
+    R1: AsyncBufRead + Unpin + Send + 'static,
+    R2: AsyncBufRead + Unpin + Send + 'static,
+{
+    let (exited_tx, exited_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(forward_build_output_until(
+        child_stdout,
+        child_stderr,
+        stdout_tx,
+        async move {
+            let _ = exited_rx.await;
+        },
+    ));
+    let exit_status = child.wait().await;
+    let _ = exited_tx.send(());
+    exit_status
+}
+
 /// Forwards stdout and stderr to the build logger until both streams close.
+#[cfg(test)]
 async fn forward_build_output<R1, R2>(
     child_stdout: R1,
     child_stderr: R2,
@@ -765,14 +792,71 @@ async fn forward_build_output<R1, R2>(
     R1: AsyncBufRead + Unpin,
     R2: AsyncBufRead + Unpin,
 {
+    forward_build_output_until(
+        child_stdout,
+        child_stderr,
+        stdout_tx,
+        std::future::pending(),
+    )
+    .await;
+}
+
+/// Forwards stdout and stderr to the build logger until both streams close,
+/// or, once `exited` completed, until [`OUTPUT_DRAIN_GRACE`] has been spent
+/// waiting for the next line. In that case `stdout_tx` is dropped and the
+/// streams are drained without forwarding.
+async fn forward_build_output_until<R1, R2>(
+    child_stdout: R1,
+    child_stderr: R2,
+    stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
+    exited: impl std::future::Future<Output = ()>,
+) where
+    R1: AsyncBufRead + Unpin,
+    R2: AsyncBufRead + Unpin,
+{
     let mut merged =
         LinesStream::new(child_stdout.lines()).merge(LinesStream::new(child_stderr.lines()));
+    let mut exited = std::pin::pin!(exited);
+    // `None` until the command exited; then the read-wait time left.
+    let mut budget: Option<Duration> = None;
 
-    while let Some(line) = merged.next().await {
-        if stdout_tx.send(line).await.is_err() {
-            break;
+    loop {
+        let line = match budget {
+            None => tokio::select! {
+                line = merged.next() => line,
+                () = &mut exited => {
+                    budget = Some(OUTPUT_DRAIN_GRACE);
+                    continue;
+                }
+            },
+            Some(left) => {
+                let started = std::time::Instant::now();
+                match tokio::time::timeout(left, merged.next()).await {
+                    Ok(line) => {
+                        budget = Some(left.saturating_sub(started.elapsed()));
+                        line
+                    }
+                    Err(_) => break,
+                }
+            }
+        };
+        match line {
+            Some(line) => {
+                if stdout_tx.send(line).await.is_err() {
+                    return;
+                }
+            }
+            None => return,
         }
     }
+
+    let _ = stdout_tx.try_send(Ok(
+        "build command exited, but a process it started still holds its output; \
+         no longer forwarding that output"
+            .to_owned(),
+    ));
+    drop(stdout_tx);
+    while merged.next().await.is_some() {}
 }
 
 #[cfg(test)]
@@ -1029,6 +1113,64 @@ mod tests {
         write_local_runtime_marker(&env_dir, "fingerprint-a").unwrap();
         assert!(local_runtime_marker_matches(&env_dir, "fingerprint-a"));
         assert!(!local_runtime_marker_matches(&env_dir, "fingerprint-b"));
+    }
+
+    /// A build command that leaves a background process holding its output
+    /// pipes must not hang the build until that process exits; the output it
+    /// printed before exiting is still forwarded.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn background_process_holding_output_does_not_hang_the_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<std::io::Result<String>>(16);
+        let collect_task = tokio::spawn(async move {
+            let mut lines = Vec::new();
+            while let Some(line) = rx.recv().await {
+                lines.push(line.expect("unexpected line forwarding error"));
+            }
+            lines
+        });
+
+        tokio::time::timeout(Duration::from_secs(20), async {
+            super::run_build_command(
+                "sh -c \"echo before; sleep 60 &\"",
+                dir.path(),
+                false,
+                None,
+                &None,
+                tx,
+            )
+            .await
+            .expect("build command failed");
+            collect_task.await.expect("collector task failed")
+        })
+        .await
+        .map(|lines| assert_eq!(lines.first().map(String::as_str), Some("before")))
+        .expect("the build must finish while the background process still runs");
+    }
+
+    /// The grace only counts time spent waiting for output: a logger slower
+    /// than the drain grace still receives everything the command printed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn slow_logger_still_receives_all_output_after_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<std::io::Result<String>>(1);
+        let collect_task = tokio::spawn(async move {
+            let mut lines = Vec::new();
+            while let Some(line) = rx.recv().await {
+                lines.push(line.expect("unexpected line forwarding error"));
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            lines
+        });
+
+        super::run_build_command("seq 1 300", dir.path(), false, None, &None, tx)
+            .await
+            .expect("build command failed");
+        let lines = collect_task.await.expect("collector task failed");
+        assert_eq!(lines.len(), 300);
+        assert_eq!(lines.last().map(String::as_str), Some("300"));
     }
 
     #[tokio::test]
