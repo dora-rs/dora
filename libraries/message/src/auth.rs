@@ -2,7 +2,9 @@
 //!
 //! On startup the coordinator generates a random hex token and writes it to
 //! a well-known file. The CLI and daemons read this file before connecting
-//! and append `?token=<hex>` to the WebSocket URL.
+//! and send the token in an `Authorization: Bearer <hex>` header on the
+//! WebSocket upgrade request. The coordinator ignores a `?token=<hex>` query
+//! parameter, so a client that passes the token in the URL is rejected.
 
 use std::{
     fmt, fs,
