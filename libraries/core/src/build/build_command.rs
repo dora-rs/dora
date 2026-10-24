@@ -756,8 +756,9 @@ const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(1);
 /// then hang the build until that process exits, possibly never, because the
 /// caller waits for every clone of `stdout_tx` to drop. So after the command
 /// exited, forwarding stops once [`OUTPUT_DRAIN_GRACE`] has been spent
-/// waiting for output; the pipes are still drained in the background, so the
-/// leftover process never blocks or gets `SIGPIPE` writing to them.
+/// waiting for output. The pipes are still drained in the background for as
+/// long as the runtime runs, so the leftover process does not block or get
+/// `SIGPIPE` writing to them.
 async fn wait_forwarding_output<R1, R2>(
     child: &mut tokio::process::Child,
     child_stdout: R1,
@@ -769,7 +770,7 @@ where
     R2: AsyncBufRead + Unpin + Send + 'static,
 {
     let (exited_tx, exited_rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(forward_build_output_until(
+    tokio::spawn(forward_build_output(
         child_stdout,
         child_stderr,
         stdout_tx,
@@ -782,30 +783,11 @@ where
     exit_status
 }
 
-/// Forwards stdout and stderr to the build logger until both streams close.
-#[cfg(test)]
-async fn forward_build_output<R1, R2>(
-    child_stdout: R1,
-    child_stderr: R2,
-    stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
-) where
-    R1: AsyncBufRead + Unpin,
-    R2: AsyncBufRead + Unpin,
-{
-    forward_build_output_until(
-        child_stdout,
-        child_stderr,
-        stdout_tx,
-        std::future::pending(),
-    )
-    .await;
-}
-
 /// Forwards stdout and stderr to the build logger until both streams close,
 /// or, once `exited` completed, until [`OUTPUT_DRAIN_GRACE`] has been spent
 /// waiting for the next line. In that case `stdout_tx` is dropped and the
 /// streams are drained without forwarding.
-async fn forward_build_output_until<R1, R2>(
+async fn forward_build_output<R1, R2>(
     child_stdout: R1,
     child_stderr: R2,
     stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
@@ -850,11 +832,13 @@ async fn forward_build_output_until<R1, R2>(
         }
     }
 
-    let _ = stdout_tx.try_send(Ok(
-        "build command exited, but a process it started still holds its output; \
+    let _ = stdout_tx
+        .send(Ok(
+            "build command exited, but a process it started still holds its output; \
          no longer forwarding that output"
-            .to_owned(),
-    ));
+                .to_owned(),
+        ))
+        .await;
     drop(stdout_tx);
     while merged.next().await.is_some() {}
 }
@@ -1192,6 +1176,7 @@ mod tests {
             BufReader::new(stdout_reader),
             BufReader::new(stderr_reader),
             tx,
+            std::future::pending(),
         ));
 
         let writer_task = tokio::spawn(async move {
