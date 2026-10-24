@@ -1461,15 +1461,18 @@ impl Daemon {
         dataflow_id: Uuid,
         result: &DataflowDaemonResult,
     ) -> eyre::Result<()> {
-        let msg = serde_json::to_vec(&Timestamped {
-            inner: CoordinatorRequest::Event {
-                daemon_id: self.daemon_id.clone(),
-                event: DaemonEvent::AllNodesFinished {
-                    dataflow_id,
-                    result: result.clone(),
+        let timestamp = self.clock.new_timestamp();
+        let msg = extract_err_from_stderr::encode_bounded_finish_report(result, |result| {
+            Ok(serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::AllNodesFinished {
+                        dataflow_id,
+                        result: result.clone(),
+                    },
                 },
-            },
-            timestamp: self.clock.new_timestamp(),
+                timestamp,
+            })?)
         })?;
         sender
             .send_event(&msg)
