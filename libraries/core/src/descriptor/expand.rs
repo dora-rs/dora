@@ -961,7 +961,21 @@ fn resolve_inner_node_paths(
     if node.git.is_none()
         && let Some(ref mut path) = node.path
     {
+        let as_written = path.clone();
         resolve_module_relative_path(path, module_dir, project_root, &owner)?;
+        // A single extensionless name like `dora-echo` may also be a command
+        // on `$PATH` rather than a file next to the module (#3826). `path`
+        // keeps meaning the file; the name as written is what spawn falls
+        // back to when there is none. A `hub:` node never runs from `path`
+        // (hub resolution rejects one that has it), so it gets no fallback.
+        // A `path_fallback` written in the module is kept.
+        if node.hub.is_none()
+            && node.path_fallback.is_none()
+            && *path != as_written
+            && is_bare_name(&as_written)
+        {
+            node.path_fallback = Some(as_written);
+        }
     }
     if let Some(ref mut operators) = node.operators {
         for op in &mut operators.operators {
@@ -1024,6 +1038,25 @@ fn resolve_module_relative_path(
     })?;
     *path = relative.to_string_lossy().into_owned();
     Ok(())
+}
+
+/// One plain file name without an extension, the form a command on `$PATH`
+/// is written in (a console script, a binary). Reads only the string, so
+/// `dora build` and `dora start` expand alike. A `:` (`C:tool` is a drive
+/// path on Windows) or a `$` (the daemon expands variables in `path`) never
+/// makes one. `worker.py` doesn't either: a script next to the module needs
+/// no fallback, preserving their existing module-relative meaning.
+/// Nor does a name made only of whitespace.
+pub(super) fn is_bare_name(path: &str) -> bool {
+    let name = Path::new(path);
+    let mut components = name.components();
+    !path.trim().is_empty()
+        && !path.contains(['/', '\\', ':', '$'])
+        && name.extension().is_none()
+        && matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        )
 }
 
 fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
@@ -4115,6 +4148,84 @@ nodes:
             Path::new(&path_of("m.sibling")),
             Path::new("modules").join("worker.py")
         );
+    }
+
+    /// #3826: a module node's `path:` that is a single extensionless name
+    /// keeps meaning the file next to the module (`path`), and the name as
+    /// written becomes its `path_fallback`, for a command found like a
+    /// top-level `path:`. Any other `path:` (`worker.py` and a blank one
+    /// too), a `git:` or `hub:` node and a module in the project root (where
+    /// nothing is rewritten) get none. A `path_fallback` written in the
+    /// module is kept.
+    #[test]
+    fn expand_keeps_a_bare_inner_node_path_as_its_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        write_file(
+            &base.join("modules"),
+            "m.yml",
+            r#"
+module:
+  name: m
+nodes:
+  - id: echo
+    path: dora-echo
+  - id: script
+    path: worker.py
+  - id: nested
+    path: bin/tool
+  - id: current
+    path: ./tool
+  - id: var
+    path: $TOOL
+  - id: fromgit
+    git: https://github.com/example/x.git
+    path: x
+  - id: fromhub
+    hub: test/x@^0.1
+    path: tool
+  - id: explicit
+    path: worker
+    path_fallback: worker-backup
+  - id: blank
+    path: "  "
+"#,
+        );
+        write_file(
+            base,
+            "root.yml",
+            "module:\n  name: root\nnodes:\n  - id: echo\n    path: dora-echo\n",
+        );
+        let desc = parse_descriptor(
+            "nodes:\n  - id: m\n    module: modules/m.yml\n  - id: r\n    module: root.yml\n",
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let node = |id: &str| {
+            let node = expanded
+                .nodes
+                .iter()
+                .find(|n| n.id.to_string() == id)
+                .unwrap();
+            (
+                node.path.as_deref().map(PathBuf::from),
+                node.path_fallback.as_deref(),
+            )
+        };
+        let in_modules = |name: &str| Some(Path::new("modules").join(name));
+        assert_eq!(node("m.echo"), (in_modules("dora-echo"), Some("dora-echo")));
+        assert_eq!(node("m.script"), (in_modules("worker.py"), None));
+        assert_eq!(node("m.nested"), (in_modules("bin/tool"), None));
+        assert_eq!(node("m.current"), (in_modules("tool"), None));
+        assert_eq!(node("m.var"), (in_modules("$TOOL"), None));
+        assert_eq!(node("m.fromgit"), (Some(PathBuf::from("x")), None));
+        assert_eq!(node("m.fromhub"), (in_modules("tool"), None));
+        assert_eq!(
+            node("m.explicit"),
+            (in_modules("worker"), Some("worker-backup"))
+        );
+        assert_eq!(node("m.blank"), (in_modules("  "), None));
+        assert_eq!(node("r.echo"), (Some(PathBuf::from("dora-echo")), None));
     }
 
     #[test]

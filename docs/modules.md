@@ -260,8 +260,8 @@ A module node references a sub-dataflow, so it has no source or per-node runtime
 configuration of its own. Only `module`, `inputs`, `params`, `env`, `build`, and
 `deploy` are meaningful on it. Every other node field is rejected at expansion
 time rather than silently dropped -- both the source/kind fields (`path`, `args`,
-`path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`, `operator`,
-`ros2`) and per-node runtime fields (`outputs`, `output_types`, `cpu_affinity`,
+`path_sha256`, `path_fallback`, `git`, `hub`, `branch`, `tag`, `rev`,
+`operators`, `operator`, `ros2`) and per-node runtime fields (`outputs`, `output_types`, `cpu_affinity`,
 `restart_policy`, `send_stdout_as`, ...). The same whitelist applies at every
 nesting level, so a nested module node is validated identically to a top-level
 one.
@@ -289,3 +289,17 @@ See [`examples/module-dataflow/`](../examples/module-dataflow/) for a complete w
 ```bash
 dora run examples/module-dataflow/dataflow.yml
 ```
+
+## Commands inside modules
+
+For an inner `path: dora-echo`, Dora first tries `dora-echo` beside the module
+file. If it is missing, Dora looks up the original name in the dataflow
+directory, the uv environment, then `$PATH`. Expansion records the name as
+`path_fallback` without checking the filesystem, so building an executable
+cannot change expansion or its fingerprint.
+
+Automatic fallback applies only to a single extensionless name. Paths with
+folders and dotted names such as `worker.py`, `node.v2` and `tool.exe` retain
+module-relative lookup. Use updated CLI, coordinator and daemon binaries for
+fallback; older components ignore the optional control metadata and keep their
+original lookup behavior. Descriptors sent to nodes and `dora info` omit it.

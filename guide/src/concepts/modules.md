@@ -264,6 +264,25 @@ declaring `python: op.py` refers to `modules/nested/op.py`.
 Exempt from the rewrite: URLs, absolute paths, and the `dynamic` and `shell`
 sentinels (which the daemon matches verbatim).
 
+An inner node's `path:` that is a single name without an extension, such as
+`path: dora-echo`, still means the file next to the module (`modules/dora-echo`).
+If no such file exists
+when the node starts, the name is looked up like a top-level `path:` instead
+(the dataflow directory, the uv environment, then `$PATH`), so a command that a
+`build:` step installs or that is on `$PATH` runs from a module in any
+directory. `dora expand` shows that name as the node's `path_fallback`.
+A name with a dot after its first character, such as `worker.py` or
+`node.v2`, counts as having an extension, so it gets no `path_fallback` and
+only means the file next to the module.
+
+Use updated CLI, coordinator and daemon binaries for fallback lookup. On the
+control plane, fallback names travel separately from the strict descriptor;
+older components ignore them and retain their original lookup behavior. An
+existing module-local executable still works with those components, but a
+command available only through fallback requires the updated components.
+Descriptors sent to node APIs and `dora info` omit this internal metadata, so
+existing node binaries and clients can continue reading them.
+
 Two consequences worth knowing:
 
 - A resolved path that escapes the dataflow directory is rejected. A module
