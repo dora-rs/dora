@@ -585,7 +585,9 @@ exported as with `arrow`. An output counts as an image when:
   camera's metadata onto outputs that aren't images, so undeclared raw pixels
   stay Arrow; declare them in `output_types` to export them as images.
 
-An output declared as any other type is never treated as an image. A topic's
+An output declared as any other type is never treated as an image. If the
+descriptor stored in the recording can't be read, the export prints a warning
+and converts only undeclared compressed frames. A topic's
 first message decides its channel. On an image channel, a message that can't
 be converted (pixel data that doesn't fit `width` x `height` or the encoding,
 compressed data that isn't the format it claims, a damaged payload) is dropped

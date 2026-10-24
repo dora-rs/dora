@@ -88,6 +88,8 @@ enum Declared {
 }
 
 /// Which outputs are images, from the dataflow descriptor in the recording.
+/// The default declares nothing.
+#[derive(Default)]
 pub(super) struct Mapper {
     /// node id -> output id -> declared image type, keyed the way outputs are
     /// recorded: a single `operator:` node's outputs by their bare id, the
@@ -97,14 +99,10 @@ pub(super) struct Mapper {
 
 impl Mapper {
     /// Reads the `output_types` of each node and of its operators from the
-    /// recorded descriptor (the user's YAML). A descriptor that does not parse
-    /// just declares nothing: export still works, converting only
-    /// undeclared compressed frames.
-    pub(super) fn from_descriptor_yaml(yaml: &str) -> Self {
+    /// recorded descriptor (the user's YAML).
+    pub(super) fn from_descriptor_yaml(yaml: &str) -> Result<Self, serde_yaml::Error> {
         let mut declared: HashMap<String, HashMap<String, Declared>> = HashMap::new();
-        let Ok(descriptor) = serde_yaml::from_str::<DescriptorTypes>(yaml) else {
-            return Self { declared };
-        };
+        let descriptor = serde_yaml::from_str::<DescriptorTypes>(yaml)?;
         for node in descriptor.nodes {
             let outputs = declared.entry(node.id).or_default();
             add_declared(outputs, node.output_types, None);
@@ -114,13 +112,13 @@ impl Mapper {
             if let Some(operator) = node.operator {
                 add_declared(outputs, operator.output_types, None);
             }
-            for operator in node.operators {
+            for operator in node.operators.into_iter().flatten() {
                 if let Some(operator_id) = operator.id {
                     add_declared(outputs, operator.output_types, Some(&operator_id));
                 }
             }
         }
-        Self { declared }
+        Ok(Self { declared })
     }
 
     pub(super) fn convert(
@@ -261,8 +259,8 @@ struct NodeTypes {
     #[serde(default)]
     output_types: BTreeMap<String, serde_yaml::Value>,
     operator: Option<OperatorTypes>,
-    #[serde(default)]
-    operators: Vec<OperatorTypes>,
+    /// Optional like dora's own `operators`, so `operators: null` parses.
+    operators: Option<Vec<OperatorTypes>>,
 }
 
 #[derive(serde::Deserialize)]
@@ -522,10 +520,12 @@ fn detect_format(data: &[u8]) -> Option<&'static str> {
 ///
 /// `StreamDecoder` only ever takes the bytes that are there, so a corrupt
 /// `bodyLength` can't make it allocate that much (`StreamReader` allocates it
-/// up front). Other damage that makes arrow-ipc panic is caught in
-/// [`Mapper::convert`].
+/// up front). The other sizes arrow allocates from are checked first
+/// ([`check_claimed_sizes`]). Other damage that makes arrow-ipc panic is
+/// caught in [`Mapper::convert`].
 fn decode(data: Option<&[u8]>) -> Result<ArrayRef, String> {
     let data = data.ok_or_else(|| "message has no payload".to_string())?;
+    check_claimed_sizes(data)?;
     let invalid =
         |err: arrow::error::ArrowError| format!("payload is not an Arrow IPC stream: {err}");
     let mut decoder = StreamDecoder::new();
@@ -546,6 +546,86 @@ fn decode(data: Option<&[u8]>) -> Result<ArrayRef, String> {
         return Err(format!("expected one column, got {}", batch.num_columns()));
     }
     Ok(batch.column(0).clone())
+}
+
+/// arrow builds some arrays from the sizes a message claims before checking
+/// them against its bytes: a damaged row count of 2^57 makes it allocate a
+/// 2^54-byte bitmap, and a failed allocation aborts the process, which the
+/// `catch_unwind` in [`Mapper::convert`] can't stop. No payload this export
+/// converts uses a dictionary, has more rows (all columns together) than it
+/// has bytes, or buffers longer (all together) than their message body, so
+/// such a payload is refused before arrow reads it.
+///
+/// Messages are framed the way `StreamDecoder` reads them. Where the framing
+/// breaks, the decoder never gets to decode a batch either and reports the
+/// error itself.
+fn check_claimed_sizes(data: &[u8]) -> Result<(), String> {
+    fn take_u32(rest: &mut &[u8]) -> Option<u32> {
+        let (word, tail) = rest.split_first_chunk::<4>()?;
+        *rest = tail;
+        Some(u32::from_le_bytes(*word))
+    }
+    let limit = i64::try_from(data.len()).unwrap_or(i64::MAX);
+    let mut rest = data;
+    loop {
+        // An optional 0xFFFFFFFF marker, the metadata length, the metadata (a
+        // flatbuffer), then the body. The end-of-stream marker (length 0) has
+        // no metadata to parse, which ends the loop.
+        let Some(mut len) = take_u32(&mut rest) else {
+            return Ok(());
+        };
+        if len == u32::MAX {
+            let Some(after_marker) = take_u32(&mut rest) else {
+                return Ok(());
+            };
+            len = after_marker;
+        }
+        let Some((metadata, tail)) = rest.split_at_checked(len as usize) else {
+            return Ok(());
+        };
+        let Ok(message) = arrow::ipc::root_as_message(metadata) else {
+            return Ok(());
+        };
+        let Some((_body, tail)) = usize::try_from(message.bodyLength())
+            .ok()
+            .and_then(|body| tail.split_at_checked(body))
+        else {
+            return Ok(());
+        };
+        rest = tail;
+        if message.header_as_dictionary_batch().is_some() {
+            return Err("a dictionary-encoded payload is not an image".to_string());
+        }
+        let Some(batch) = message.header_as_record_batch() else {
+            continue;
+        };
+        // The row count of each column. arrow casts it to `usize`, so a
+        // negative one is as bad as a huge one.
+        let rows = non_negative_sum(batch.nodes().into_iter().flatten().map(|n| n.length()));
+        if !rows.is_some_and(|rows| rows <= limit) {
+            return Err(format!(
+                "the payload has more rows than its {} bytes can hold",
+                data.len()
+            ));
+        }
+        // arrow copies a misaligned buffer once for every column that points
+        // at it, so buffers sharing bytes could make it allocate many times
+        // the payload size.
+        let body = message.bodyLength();
+        let total = non_negative_sum(batch.buffers().into_iter().flatten().map(|b| b.length()));
+        if !total.is_some_and(|total| total <= body) {
+            return Err(format!(
+                "the payload's buffers are longer than its {body}-byte message body"
+            ));
+        }
+    }
+}
+
+/// The sum of `values`, or `None` if one is negative or the sum overflows.
+fn non_negative_sum(mut values: impl Iterator<Item = i64>) -> Option<i64> {
+    values.try_fold(0i64, |sum, value| {
+        (value >= 0).then(|| sum.checked_add(value)).flatten()
+    })
 }
 
 /// The bytes of a one-value binary array, or the value buffer of a flat
@@ -735,7 +815,8 @@ mod tests {
             .insert("encoding".into(), Parameter::String("jpeg".into()));
         let mapper = Mapper::from_descriptor_yaml(
             "nodes:\n  - id: cam\n    output_types:\n      image: std/media/v1/Image\n",
-        );
+        )
+        .unwrap();
         for payload in &payloads {
             for at in 0..payload.len() {
                 for flip in [0x01u8, 0x80, 0xFF] {
@@ -755,6 +836,229 @@ mod tests {
         }
         // A caught panic must not leave the hook quiet for later panics.
         assert!(!super::CONVERTING.get());
+    }
+
+    /// A payload whose only column is a struct with a non-nullable `Null`
+    /// child, its row counts (batch length, both field-node lengths and the
+    /// child's null count) set to `rows`. With `dictionary`, that struct is the
+    /// value array of a dictionary instead. arrow's writer can't write such
+    /// counts, so the payload is written with an easy-to-find count and patched.
+    fn claiming_rows(rows: i64, dictionary: bool) -> Vec<u8> {
+        use arrow::array::{Array, ArrayData, DictionaryArray, Int8Array, StructArray};
+        use arrow::datatypes::Int8Type;
+        use arrow_schema::{DataType, Field};
+        use std::sync::Arc;
+        let marker = 0x0001_0203_usize;
+        let child = unsafe {
+            ArrayData::new_unchecked(
+                DataType::Null,
+                marker,
+                Some(marker),
+                None,
+                0,
+                vec![],
+                vec![],
+            )
+        };
+        let ty = DataType::Struct(vec![Field::new("x", DataType::Null, false)].into());
+        let parent =
+            unsafe { ArrayData::new_unchecked(ty, marker, Some(0), None, 0, vec![], vec![child]) };
+        let values = Arc::new(StructArray::from(parent));
+        let mut payload = if dictionary {
+            let keys = Int8Array::from(vec![0]);
+            ipc(Arc::new(
+                DictionaryArray::<Int8Type>::try_new(keys, values).unwrap(),
+            ))
+        } else {
+            let schema = Arc::new(arrow_schema::Schema::new(vec![Field::new(
+                "c",
+                values.data_type().clone(),
+                true,
+            )]));
+            let batch = unsafe {
+                arrow::record_batch::RecordBatch::new_unchecked(schema, vec![values], marker)
+            };
+            let mut payload = Vec::new();
+            let mut writer =
+                arrow::ipc::writer::StreamWriter::try_new(&mut payload, &batch.schema()).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+            drop(writer);
+            payload
+        };
+        let from = (marker as u64).to_le_bytes();
+        let mut patched = 0;
+        let mut at = 0;
+        while at + 8 <= payload.len() {
+            if payload[at..at + 8] == from {
+                payload[at..at + 8].copy_from_slice(&rows.to_le_bytes());
+                patched += 1;
+                at += 8;
+            } else {
+                at += 1;
+            }
+        }
+        assert_eq!(patched, 4);
+        payload
+    }
+
+    /// The same stream in arrow's older framing, without the 0xFFFFFFFF
+    /// marker before each message; arrow still reads it.
+    fn legacy_framing(modern: &[u8]) -> Vec<u8> {
+        let mut legacy = Vec::new();
+        let mut at = 0;
+        loop {
+            assert_eq!(modern[at..at + 4], [0xff; 4]);
+            let len = u32::from_le_bytes(modern[at + 4..at + 8].try_into().unwrap()) as usize;
+            if len == 0 {
+                legacy.extend_from_slice(&[0; 4]);
+                return legacy;
+            }
+            let message = arrow::ipc::root_as_message(&modern[at + 8..at + 8 + len]).unwrap();
+            let end = at + 8 + len + message.bodyLength() as usize;
+            legacy.extend_from_slice(&modern[at + 4..end]);
+            at = end;
+        }
+    }
+
+    fn jpeg_metadata() -> dora_message::metadata::Metadata {
+        let mut metadata = dora_message::metadata::Metadata::new(
+            dora_message::uhlc::HLC::default().new_timestamp(),
+        );
+        metadata.parameters.insert(
+            "encoding".into(),
+            dora_message::metadata::Parameter::String("jpeg".into()),
+        );
+        metadata
+    }
+
+    /// arrow builds the struct above by allocating a bitmap for every claimed
+    /// row (2^54 bytes for 2^57 rows; a negative count becomes close to 2^64),
+    /// and a failed allocation aborts the process, which `catch_unwind` can't
+    /// stop. Such a record is dropped like any other damaged one.
+    #[test]
+    fn a_record_claiming_a_huge_row_count_is_dropped_not_an_abort() {
+        use super::Recognition;
+        let mapper = Mapper::from_descriptor_yaml(
+            "nodes:\n  - id: cam\n    output_types:\n      image: std/media/v1/Image\n",
+        )
+        .unwrap();
+        let jpeg = jpeg_metadata();
+        for rows in [1 << 57, -1] {
+            let modern = claiming_rows(rows, false);
+            for payload in [legacy_framing(&modern), modern] {
+                let expected = format!(
+                    "the payload has more rows than its {} bytes can hold",
+                    payload.len()
+                );
+                match mapper.convert("cam", "image", &jpeg, Some(&payload)) {
+                    Recognition::Failed(Kind::CompressedImage, reason) => {
+                        assert_eq!(reason, expected)
+                    }
+                    _ => panic!("{rows} rows: not dropped"),
+                }
+                assert!(matches!(
+                    mapper.convert("cam", "other", &jpeg, Some(&payload)),
+                    Recognition::NotRecognised
+                ));
+            }
+        }
+    }
+
+    /// A dictionary's values are built the same way, and no image this export
+    /// converts is dictionary-encoded.
+    #[test]
+    fn a_dictionary_payload_is_dropped_not_an_abort() {
+        use super::Recognition;
+        let mapper = Mapper::from_descriptor_yaml(
+            "nodes:\n  - id: cam\n    output_types:\n      image: std/media/v1/CompressedImage\n",
+        )
+        .unwrap();
+        let payload = claiming_rows(1 << 57, true);
+        match mapper.convert("cam", "image", &jpeg_metadata(), Some(&payload)) {
+            Recognition::Failed(Kind::CompressedImage, reason) => {
+                assert_eq!(reason, "a dictionary-encoded payload is not an image")
+            }
+            _ => panic!("not dropped"),
+        }
+    }
+
+    /// `payload` with buffer `index` of its record batch moved to
+    /// (`offset`, `length`).
+    fn with_buffer(mut payload: Vec<u8>, index: usize, offset: i64, length: i64) -> Vec<u8> {
+        // The record batch message follows the schema message.
+        let schema_len = u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
+        let schema = arrow::ipc::root_as_message(&payload[8..8 + schema_len]).unwrap();
+        let at = 8 + schema_len + schema.bodyLength() as usize;
+        let len = u32::from_le_bytes(payload[at + 4..at + 8].try_into().unwrap()) as usize;
+        let message = arrow::ipc::root_as_message(&payload[at + 8..at + 8 + len]).unwrap();
+        let buffer = message
+            .header_as_record_batch()
+            .unwrap()
+            .buffers()
+            .unwrap()
+            .get(index);
+        let mut old = buffer.offset().to_le_bytes().to_vec();
+        old.extend_from_slice(&buffer.length().to_le_bytes());
+        let found: Vec<_> = (at..at + 8 + len - 16)
+            .filter(|&i| payload[i..i + 16] == old[..])
+            .collect();
+        let [found] = found[..] else {
+            panic!("buffer {index} is not unique in the header");
+        };
+        payload[found..found + 8].copy_from_slice(&offset.to_le_bytes());
+        payload[found + 8..found + 16].copy_from_slice(&length.to_le_bytes());
+        payload
+    }
+
+    /// Together the buffers may not be longer than their message body: arrow
+    /// copies a misaligned buffer once for every column that points at it, so
+    /// buffers sharing bytes could make a small payload allocate many times its
+    /// size.
+    #[test]
+    fn buffers_longer_than_the_body_are_dropped() {
+        use super::Recognition;
+        use arrow::array::BinaryArray;
+        use std::sync::Arc;
+        let mapper = Mapper::from_descriptor_yaml(
+            "nodes:\n  - id: cam\n    output_types:\n      image: std/media/v1/CompressedImage\n",
+        )
+        .unwrap();
+        let jpeg = [0xFFu8, 0xD8, 0xFF, 0xE0];
+        let payload = ipc(Arc::new(BinaryArray::from(vec![jpeg.as_slice()])));
+        assert!(matches!(
+            mapper.convert("cam", "image", &jpeg_metadata(), Some(&payload)),
+            Recognition::Converted(Kind::CompressedImage, _)
+        ));
+        // arrow writes the buffers 64-byte aligned: validity (0, 1), offsets
+        // (64, 8), values (128, 4), in a 192-byte body. A longer values buffer
+        // that keeps the total within the body still converts.
+        let longer = with_buffer(payload.clone(), 2, 128, 64);
+        assert!(matches!(
+            mapper.convert("cam", "image", &jpeg_metadata(), Some(&longer)),
+            Recognition::Converted(Kind::CompressedImage, _)
+        ));
+        // 1 + 8 + 184 = 193 bytes; the whole body again; a negative length.
+        for (offset, length) in [(8, 184), (0, 192), (128, -4)] {
+            let damaged = with_buffer(payload.clone(), 2, offset, length);
+            match mapper.convert("cam", "image", &jpeg_metadata(), Some(&damaged)) {
+                Recognition::Failed(Kind::CompressedImage, reason) => assert_eq!(
+                    reason, "the payload's buffers are longer than its 192-byte message body",
+                    "({offset}, {length})"
+                ),
+                _ => panic!("({offset}, {length}): not dropped"),
+            }
+        }
+    }
+
+    /// The export then warns and converts only undeclared compressed frames.
+    #[test]
+    fn a_descriptor_that_does_not_parse_is_an_error() {
+        let err = Mapper::from_descriptor_yaml("nodes: 3").err().unwrap();
+        assert_eq!(
+            err.to_string(),
+            "nodes: invalid type: integer `3`, expected a sequence at line 1 column 8"
+        );
     }
 
     #[test]

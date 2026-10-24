@@ -1,14 +1,17 @@
-//! Rewrite a dora recording (`.drec`) as an MCAP (`.mcap`) file, remuxing the
-//! recorded payload bytes without decoding or re-encoding them.
+//! Rewrite a dora recording (`.drec`) as an MCAP (`.mcap`) file. With the
+//! default `--schema arrow`, the recorded payload bytes are remuxed without
+//! decoding or re-encoding them; `--schema foxglove` re-encodes image outputs
+//! as JSON Foxglove images (see the `foxglove` module).
 //!
 //! Each recorded `Output` entry becomes one MCAP message on an `arrow-ipc`
-//! channel named `{node_id}/{output_id}`:
+//! channel (or a JSON one for a Foxglove image) named `{node_id}/{output_id}`:
 //! - `log_time`     = the recording wall clock:
 //!   `header.start_nanos + entry.timestamp_offset_nanos`,
 //! - `publish_time` = the producer HLC stamp (`metadata.timestamp()`), the same
 //!   source `dora topic hz` reports for that topic,
 //! - `sequence`     = per-channel monotonic 1-based counter,
-//! - `data`         = the recorded Arrow IPC payload bytes verbatim.
+//! - `data`         = the recorded Arrow IPC payload bytes verbatim (the JSON
+//!   message on a Foxglove image channel).
 //!
 //! # Limits
 //!
@@ -185,8 +188,17 @@ fn write_mcap<W: Write + Seek>(
         )
     };
 
-    let foxglove = (schema == ExportSchema::Foxglove)
-        .then(|| foxglove::Mapper::from_descriptor_yaml(&descriptor_yaml));
+    // A descriptor that does not parse declares nothing: export still works,
+    // converting only undeclared compressed frames.
+    let foxglove = (schema == ExportSchema::Foxglove).then(|| {
+        foxglove::Mapper::from_descriptor_yaml(&descriptor_yaml).unwrap_or_else(|err| {
+            eprintln!(
+                "warning: could not read the image types declared in the recorded descriptor \
+                 ({err}); only undeclared compressed frames will be converted"
+            );
+            foxglove::Mapper::default()
+        })
+    });
     let mut writer = Writer::new(out).wrap_err("failed to initialise MCAP writer")?;
     writer
         .write_metadata(&Metadata {
@@ -1822,7 +1834,8 @@ mod tests {
 
     /// Outputs of `operators:` are recorded as `<operator>/<output>`; a single
     /// `operator:` node's outputs under the bare output id, by `dora record`
-    /// and by `--proxy` alike, whatever the operator's id.
+    /// and by `--proxy` alike, whatever the operator's id. dora reads
+    /// `operators: null` as no operators.
     #[test]
     fn foxglove_reads_operator_output_types() {
         let descriptor = "nodes:
@@ -1844,6 +1857,12 @@ mod tests {
       outputs: [image]
       output_types:
         image: std/media/v1/Image
+  - id: plain
+    path: cam.py
+    operators: null
+    outputs: [image]
+    output_types:
+      image: std/media/v1/Image
 ";
         let image = ipc_bytes(image_struct(2, 2, "rgb8", &[0; 12]));
         let messages = export_messages(
@@ -1852,9 +1871,10 @@ mod tests {
                 event("runtime", "cam/image", &image, &[]),
                 event("node", "image", &image, &[]),
                 event("named", "image", &image, &[]),
+                event("plain", "image", &image, &[]),
             ],
         );
-        assert_eq!(messages.len(), 3);
+        assert_eq!(messages.len(), 4);
         for message in &messages {
             assert_eq!(
                 message.2.as_deref(),
