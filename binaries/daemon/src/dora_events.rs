@@ -312,10 +312,6 @@ impl Daemon {
                 message,
                 metadata,
             } => {
-                if !self.running.contains_key(&dataflow_id) {
-                    tracing::warn!("Logs event for unknown dataflow `{dataflow_id}`");
-                    return Ok(());
-                }
                 // The daemon produces `send_stdout_as`/`send_logs_as` outputs
                 // on the node's behalf, so route them like any node output:
                 // local receivers (with their deadline and circuit-breaker
