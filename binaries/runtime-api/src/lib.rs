@@ -200,7 +200,7 @@ async fn run(
         .wrap_err("failed to init an operator")?;
     tracing::info!("All operators are ready, starting runtime");
 
-    let (mut node, mut daemon_events) = DoraNode::init(config)?;
+    let (mut node, daemon_events) = DoraNode::init(config)?;
     // Publish the allocator before any input can reach an operator, so an
     // operator's first `send_output` already has somewhere to encode into.
     let _ = allocator.set(node.sample_allocator());
