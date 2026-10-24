@@ -437,13 +437,15 @@ fn main() -> eyre::Result<()> {
                     // previous code always went through the official writer
                     // (which stages the body in an internal `Vec`, ~2 payload
                     // copies) and then copied the result a third time into the
-                    // `AVec`, on every recorded message.
+                    // `AVec`, on every recorded message. `PreparedIpc` sizes
+                    // and encodes from one layout + header build.
                     let encoded: AVec<u8, ConstAlign<128>> =
-                        match arrow_utils::ipc_encode::ipc_fast_path_len(arrow_data) {
-                            Some(len) => {
+                        match arrow_utils::ipc_encode::PreparedIpc::new(arrow_data) {
+                            Some(prepared) => {
                                 let mut buf: AVec<u8, ConstAlign<128>> =
-                                    AVec::__from_elem(128, 0, len);
-                                arrow_utils::ipc_encode::encode_ipc_into(arrow_data, &mut buf)
+                                    AVec::__from_elem(128, 0, prepared.byte_len());
+                                prepared
+                                    .encode_into(&mut buf)
                                     .wrap_err("failed to Arrow-IPC-encode recorded output")?;
                                 buf
                             }

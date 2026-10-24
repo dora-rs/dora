@@ -967,9 +967,16 @@ impl DoraNode {
 
     /// Dynamic initialization function for nodes that are sometimes used as dynamic nodes.
     ///
-    /// This function first tries initializing the traditional way through
-    /// [`init_from_env`][Self::init_from_env]. If this fails, it falls back to
+    /// If the `DORA_NODE_CONFIG` environment variable is set (the node was
+    /// spawned by a dora daemon), this initializes through
+    /// [`init_from_env`][Self::init_from_env] and ignores `node_id`. Otherwise
+    /// it connects as a dynamic node through
     /// [`init_from_node_id`][Self::init_from_node_id].
+    ///
+    /// The choice is made only on whether the variable is present: if
+    /// `init_from_env` fails (for example on a malformed `DORA_NODE_CONFIG` or
+    /// an unreachable daemon), that error is returned as is, with no fallback
+    /// to `init_from_node_id`.
     pub fn init_flexible(node_id: NodeId) -> NodeResult<(Self, EventStream)> {
         if std::env::var("DORA_NODE_CONFIG").is_ok() {
             info!(
@@ -1030,9 +1037,11 @@ impl DoraNode {
     /// We see that both the `stdout` output of the node and also the output messages that it sends
     /// are printed to the terminal. Then we get another prompt for the next input.
     ///
-    /// If you want to send an input with data, you can either send it as text (for string data)
-    /// or as a JSON object (for struct, string, or array data). Other data types are not supported
-    /// currently.
+    /// If you want to send an input with data, enter it in one of these forms:
+    ///
+    /// - plain text (for string data) or JSON (for struct, string, or array data);
+    /// - `FILE:<path.arrow>` to send the single column of the first batch of an Arrow IPC file;
+    /// - `HEX:<hexbytes>` to send raw bytes as a `UInt8` array (e.g. `HEX:deadbeef`).
     ///
     /// Empty input IDs are interpreted as stop instructions:
     ///
@@ -1542,7 +1551,9 @@ impl DoraNode {
         // it — avoids rebuilding the layout + IPC headers for the length query.
         let prepared = ipc_encode::PreparedUint8Ipc::new(data_len)
             .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-        let mut sample = self.allocate_data_sample(prepared.byte_len())?;
+        let mut sample = self
+            .sample_allocator
+            .allocate_for_path(prepared.byte_len(), self.output_direct_ready(&output_id))?;
         let offset = prepared
             .encode_header_into(&mut sample)
             .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
@@ -1563,8 +1574,11 @@ impl DoraNode {
     /// …) and dora moves it into shared memory for an efficient, near-zero-copy
     /// transfer to downstream nodes.
     ///
-    /// Uses shared memory for efficient data transfer if suitable. This method
-    /// might copy the message once to move it to shared memory.
+    /// Payloads of at least [`ZERO_COPY_THRESHOLD`] bytes on an output that
+    /// publishes directly to its consumers are encoded into shared memory.
+    /// An output pinned to the daemon path (e.g. a `backpressure` or
+    /// cross-machine consumer) is encoded into a heap buffer instead, since
+    /// that path sends a heap buffer without a further copy.
     ///
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
@@ -1602,7 +1616,9 @@ impl DoraNode {
         let arrow_array = dora_arrow_convert::internal::array_ref(&data).to_data();
         self.check_output_type(&output_id, arrow_array.data_type(), &parameters)?;
 
-        let encoded = self.sample_allocator.encode_arrow_data(&arrow_array)?;
+        let encoded = self
+            .sample_allocator
+            .encode_arrow_data_for_path(&arrow_array, self.output_direct_ready(&output_id))?;
         self.send_encoded_unchecked(output_id, parameters, encoded.sample)
     }
 
@@ -2979,7 +2995,26 @@ impl SampleAllocator {
     /// heap-allocated, 128-byte-aligned buffer; the SHM provider is
     /// page-aligned, so dedicating a full page to a small message is pure waste.
     pub fn allocate(&self, data_len: usize) -> NodeResult<DataSample> {
-        if data_len >= self.zero_copy_threshold
+        self.allocate_for_path(data_len, true)
+    }
+
+    /// [`allocate`](Self::allocate) for a sample whose delivery path is
+    /// already known: `direct` is whether it will be published straight to
+    /// zenoh ([`DoraNode::output_direct_ready`]).
+    ///
+    /// An SHM buffer only pays off on the direct path, where it is moved into
+    /// zenoh's `put`. An output pinned to the daemon path (a `backpressure` or
+    /// cross-machine consumer, or a handshake frozen at init) copies every
+    /// sample out into a `DataMessage::Vec` anyway, so an SHM buffer would only
+    /// add that copy and take pool space from the direct outputs; it gets a
+    /// heap buffer, which the daemon path sends without a copy.
+    pub(crate) fn allocate_for_path(
+        &self,
+        data_len: usize,
+        direct: bool,
+    ) -> NodeResult<DataSample> {
+        if direct
+            && data_len >= self.zero_copy_threshold
             && let Some(provider) = &self.shm_provider
         {
             use zenoh::Wait;
@@ -3056,11 +3091,21 @@ impl SampleAllocator {
 
     /// Same, for dora-internal callers that already hold an [`ArrayData`].
     pub(crate) fn encode_arrow_data(&self, array: &ArrayData) -> NodeResult<EncodedSample> {
+        self.encode_arrow_data_for_path(array, true)
+    }
+
+    /// [`encode_arrow_data`](Self::encode_arrow_data) into a sample allocated
+    /// for a known delivery path — see [`allocate_for_path`](Self::allocate_for_path).
+    pub(crate) fn encode_arrow_data_for_path(
+        &self,
+        array: &ArrayData,
+        direct: bool,
+    ) -> NodeResult<EncodedSample> {
         let sample = match ipc_encode::PreparedIpc::from_data(array) {
             Some(prepared) => {
                 // Prepare once: size the sample from the prepared layout, then
                 // encode into it — avoids rebuilding the layout + IPC headers.
-                let mut sample = self.allocate(prepared.byte_len())?;
+                let mut sample = self.allocate_for_path(prepared.byte_len(), direct)?;
                 prepared
                     .encode_into(&mut sample)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
@@ -3069,7 +3114,7 @@ impl SampleAllocator {
             None => {
                 let bytes = ipc_encode::encode_ipc_to_vec_data(array)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-                let mut sample = self.allocate(bytes.len())?;
+                let mut sample = self.allocate_for_path(bytes.len(), direct)?;
                 sample.copy_from_slice(&bytes);
                 sample
             }
@@ -3211,12 +3256,8 @@ impl FinalizedSample {
     fn into_data_message(self) -> DataMessage {
         match self {
             FinalizedSample::Vec(v) => DataMessage::Vec(v),
-            FinalizedSample::Shm(sbuf) => {
-                let bytes = sbuf.as_ref();
-                let mut avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, bytes.len());
-                avec.copy_from_slice(bytes);
-                DataMessage::Vec(avec)
-            }
+            // One copy, without zero-filling the buffer first.
+            FinalizedSample::Shm(sbuf) => DataMessage::Vec(AVec::from_slice(128, sbuf.as_ref())),
         }
     }
 }
@@ -3555,10 +3596,12 @@ pub fn init_tracing(
     #[cfg(feature = "metrics")]
     if let Ok(endpoint) = std::env::var("DORA_OTLP_ENDPOINT") {
         let id = format!("{dataflow_id}/{node_id}");
+        // the bare node id, as the node's tracing uses for its service name
+        let service_name = node_id.to_string();
         let monitor_task = async move {
             use dora_metrics::run_metrics_monitor;
 
-            if let Err(e) = run_metrics_monitor(id.clone(), &endpoint)
+            if let Err(e) = run_metrics_monitor(&service_name, id, &endpoint)
                 .await
                 .wrap_err("metrics monitor exited unexpectedly")
             {
@@ -4758,6 +4801,48 @@ mod operator_boundary_tests {
             .expect("the sample must be a well-formed Arrow IPC stream");
 
         assert_eq!(decoded, array);
+    }
+
+    /// A sample bound for the daemon path must come from the heap even when an
+    /// SHM provider exists: that path copies an SHM sample out into a
+    /// `DataMessage::Vec` (the heap one moves without a copy), and the SHM
+    /// buffer would take pool space from the direct-path outputs. The direct
+    /// path keeps SHM for payloads at or above the threshold.
+    #[test]
+    fn daemon_path_samples_skip_shared_memory() {
+        use zenoh::Wait;
+        use zenoh::shm::{AllocAlignment, MemoryLayout, ShmProviderBuilder};
+
+        let layout = MemoryLayout::new(
+            1 << 20,
+            AllocAlignment::new(crate::arrow_utils::ARROW_BUFFER_ALIGNMENT_EXPONENT).unwrap(),
+        )
+        .unwrap();
+        let Ok(provider) = ShmProviderBuilder::default_backend(layout).wait() else {
+            eprintln!("skipping: no zenoh SHM provider on this host");
+            return;
+        };
+        let allocator = SampleAllocator {
+            shm_provider: Some(Arc::new(provider)),
+            zero_copy_threshold: ZERO_COPY_THRESHOLD,
+        };
+        let is_shm = |sample: &DataSample| matches!(sample.storage, SampleStorage::Shm(_));
+        let len = ZERO_COPY_THRESHOLD * 2;
+
+        assert!(is_shm(&allocator.allocate_for_path(len, true).unwrap()));
+        assert!(!is_shm(&allocator.allocate_for_path(len, false).unwrap()));
+        assert!(is_shm(&allocator.allocate(len).unwrap()));
+
+        let (array, _released) = foreign_owned_array(len);
+        let direct = allocator.encode_arrow_data_for_path(&array, true).unwrap();
+        let daemon = allocator.encode_arrow_data_for_path(&array, false).unwrap();
+        assert!(is_shm(&direct.sample));
+        assert!(!is_shm(&daemon.sample));
+        assert_eq!(direct.as_bytes(), daemon.as_bytes());
+
+        // The daemon-path copy of an SHM sample is byte-identical.
+        let DataMessage::Vec(copied) = direct.sample.finalize().into_data_message();
+        assert_eq!(&copied[..], daemon.as_bytes());
     }
 
     /// The allocator is handed to operator threads, so it has to cross thread

@@ -13,7 +13,7 @@ use dora_message::{
     },
 };
 
-use super::thread::EventItem;
+use super::{should_warn_drop, thread::EventItem};
 
 /// The metadata parameters carried by an input-bearing event, or `None` for
 /// events with no metadata (Stop, reload, input-closed, ...).
@@ -47,6 +47,32 @@ fn is_correlated(event: &EventItem) -> bool {
     // silently dropping service/action messages if a new correlation key were
     // added to only one copy.
     event_parameters(event).is_some_and(carries_pattern_correlation)
+}
+
+/// The input id of an input-bearing event, or `None` for control events.
+fn input_id(event: &EventItem) -> Option<&DataId> {
+    match event {
+        EventItem::NodeEvent {
+            event: NodeEvent::Input { id, .. },
+            ..
+        }
+        | EventItem::ZenohInput { id, .. } => Some(id),
+        _ => None,
+    }
+}
+
+/// The input id whose stale queued chunks `event` asks to discard, i.e. the
+/// event's own id when it is an input carrying the streaming pattern's
+/// `flush: true` metadata, or `None` otherwise.
+///
+/// Shared by the scheduler's own flush and the `EventStream`'s flush of its
+/// `pending_passthrough` buffer, so both agree on what a flush is
+/// (dora-rs/dora#3834).
+pub(crate) fn flush_target(event: &EventItem) -> Option<&DataId> {
+    let id = input_id(event)?;
+    let params = event_parameters(event)?;
+    (dora_message::metadata::get_bool_param(params, dora_message::metadata::FLUSH) == Some(true))
+        .then_some(id)
 }
 
 /// Returns `true` if the event is the daemon's [`Stop`][NodeEvent::Stop]
@@ -104,6 +130,17 @@ fn select_eviction(queue: &VecDeque<EventItem>, incoming: &EventItem) -> Evictio
         Some(idx) => Eviction::DropCorrelatedLoud(idx),
         None => Eviction::DropIncoming,
     }
+}
+
+/// Count one dropped event on `id`, returning its count since the last drain.
+/// Clones the key only for the first drop of an input in a drain window.
+fn bump_drop_count(dropped: &mut HashMap<DataId, u64>, id: &DataId) -> u64 {
+    let count = match dropped.get_mut(id) {
+        Some(count) => count,
+        None => dropped.entry(id.clone()).or_insert(0),
+    };
+    *count += 1;
+    *count
 }
 
 /// Emit a loud error when a correlated event has to be dropped because
@@ -290,39 +327,25 @@ impl Scheduler {
     /// scheduler (the passthrough bound) still shows up in
     /// [`drain_drop_counts`](Self::drain_drop_counts) exactly like an in-queue
     /// `drop_oldest` eviction (dora-rs/dora#3197).
-    pub(crate) fn record_drop(&mut self, id: &DataId) {
-        *self.dropped.entry(id.clone()).or_insert(0) += 1;
+    ///
+    /// Returns the drop count of `id` since the last drain.
+    pub(crate) fn record_drop(&mut self, id: &DataId) -> u64 {
+        bump_drop_count(&mut self.dropped, id)
     }
 
     /// Account for one dropped non-input (control) event, under the same
     /// `NON_INPUT_EVENT` key the scheduler itself uses when its non-input queue
     /// overflows — so a passthrough-bound drop of a control event is reported
     /// consistently with an in-queue one (dora-rs/dora#3197).
-    pub(crate) fn record_non_input_drop(&mut self) {
-        *self.dropped.entry(NON_INPUT_EVENT_ID.clone()).or_insert(0) += 1;
+    ///
+    /// Returns the non-input drop count since the last drain.
+    pub(crate) fn record_non_input_drop(&mut self) -> u64 {
+        bump_drop_count(&mut self.dropped, &NON_INPUT_EVENT_ID)
     }
 
     pub(crate) fn add_event(&mut self, event: EventItem) {
-        let (event_id, should_flush) = match &event {
-            EventItem::NodeEvent {
-                event: NodeEvent::Input { id, metadata, .. },
-                ..
-            } => {
-                let flush = dora_message::metadata::get_bool_param(
-                    &metadata.parameters,
-                    dora_message::metadata::FLUSH,
-                ) == Some(true);
-                (Some(id), flush)
-            }
-            EventItem::ZenohInput { id, metadata, .. } => {
-                let flush = dora_message::metadata::get_bool_param(
-                    &metadata.parameters,
-                    dora_message::metadata::FLUSH,
-                ) == Some(true);
-                (Some(id), flush)
-            }
-            _ => (None, false),
-        };
+        let event_id = input_id(&event);
+        let should_flush = flush_target(&event).is_some();
         // Control events have no input id; they go to their own queue so that no
         // user input can ever share it (dora-rs/dora#3632).
         let Some(event_id) = event_id else {
@@ -383,15 +406,24 @@ impl Scheduler {
 
         let cap = policy.effective_cap(*size);
         if queue.len() >= cap {
-            if policy == QueuePolicy::Backpressure {
-                tracing::error!(
-                    "Backpressure input `{event_id}` hit hard cap ({cap}), \
-                     dropping oldest to prevent OOM"
-                );
-            } else {
-                tracing::warn!("Discarding event for input `{event_id}` due to queue size limit");
+            // A `drop_oldest` queue overflowing is the steady state of a
+            // consumer slower than its producer, so log on a power-of-two
+            // cadence rather than per dropped event; the count is exact.
+            let drops = bump_drop_count(&mut self.dropped, event_id);
+            if should_warn_drop(drops) {
+                if policy == QueuePolicy::Backpressure {
+                    tracing::error!(
+                        drops,
+                        "Backpressure input `{event_id}` hit hard cap ({cap}), \
+                         dropping oldest to prevent OOM"
+                    );
+                } else {
+                    tracing::warn!(
+                        drops,
+                        "Discarding event for input `{event_id}` due to queue size limit"
+                    );
+                }
             }
-            *self.dropped.entry(event_id.clone()).or_insert(0) += 1;
             match select_eviction(queue, &event) {
                 Eviction::RemoveAt(idx) => {
                     queue.remove(idx);
@@ -419,8 +451,10 @@ impl Scheduler {
     /// signal (dora-rs/dora#2887).
     fn add_non_input_event(&mut self, event: EventItem) {
         if self.non_input.len() >= NON_INPUT_EVENT_QUEUE_SIZE {
-            tracing::warn!("Discarding non-input event due to queue size limit");
-            self.record_non_input_drop();
+            let drops = self.record_non_input_drop();
+            if should_warn_drop(drops) {
+                tracing::warn!(drops, "Discarding non-input event due to queue size limit");
+            }
             match select_eviction(&self.non_input, &event) {
                 Eviction::RemoveAt(idx) => {
                     self.non_input.remove(idx);
@@ -567,6 +601,54 @@ mod tests {
 
         // The flush message should survive (queue was cleared to 0, then inserted)
         assert_eq!(sched.event_queues[&id].1.len(), 1);
+    }
+
+    /// Counts the `WARN`-or-louder events emitted while it is the default
+    /// subscriber.
+    struct WarnCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl tracing::Subscriber for WarnCounter {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if *event.metadata().level() <= tracing::Level::WARN {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// A full `drop_oldest` queue is the steady state of a slow consumer, so
+    /// dropping must not log once per event: the count stays exact, but the
+    /// warning follows a power-of-two cadence.
+    #[test]
+    fn steady_drops_warn_logarithmically() {
+        // A scoped capture alone races with the other tests in this binary:
+        // a callsite first hit on a thread without a subscriber caches
+        // "never" for the whole process. A global subscriber that is
+        // interested in everything makes it resolve to "always" (see
+        // `binaries/daemon/src/test_tracing.rs`).
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(WarnCounter(Default::default()));
+        });
+        let (mut sched, id) = make_scheduler(1);
+        let warnings = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        tracing::subscriber::with_default(WarnCounter(warnings.clone()), || {
+            for _ in 0..1000 {
+                sched.add_event(make_input("audio", MetadataParameters::new()));
+            }
+        });
+        assert_eq!(sched.drain_drop_counts()[&id], 999);
+        // Drop counts 1, 2, 4, ..., 512.
+        assert_eq!(warnings.load(std::sync::atomic::Ordering::Relaxed), 10);
     }
 
     #[test]

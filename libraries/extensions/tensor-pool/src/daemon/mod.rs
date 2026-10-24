@@ -85,8 +85,10 @@ mod cross_pool_write_tests {
     /// Panic-safe cleanup: unlink the test mirror from /dev/shm even when
     /// an assertion fails mid-test (a leaked segment would pollute the
     /// bench host's zero-residue checks).
+    #[cfg(target_os = "linux")]
     struct ShmemCleanup(String);
 
+    #[cfg(target_os = "linux")]
     impl Drop for ShmemCleanup {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(format!("/dev/shm/{}", self.0));
@@ -434,6 +436,7 @@ mod cross_pool_write_tests {
 
     /// Build a direct-TCP frame header (magic + dataflow + pool + seq +
     /// size) with no payload bytes.
+    #[cfg(target_os = "linux")]
     fn build_frame_header(dataflow_id: Uuid, pool_id: &str, seq: u64, size: u64) -> Vec<u8> {
         let mut frame = Vec::new();
         frame.extend_from_slice(&CROSS_DATA_MAGIC.to_be_bytes());
