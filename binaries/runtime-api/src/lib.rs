@@ -16,7 +16,6 @@ use dora_core::{
 };
 use dora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
 use dora_node_api::{DoraNode, Event, StopCause};
-use dora_tracing::TracingBuilder;
 use eyre::{Context, Result, bail};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
@@ -58,7 +57,7 @@ pub fn main(runner: impl OperatorRunner) -> eyre::Result<()> {
     let node_id = config.node_id.clone();
     #[cfg(feature = "tracing")]
     {
-        TracingBuilder::new(node_id.as_ref())
+        dora_tracing::TracingBuilder::new(node_id.as_ref())
             .with_stdout("warn", false)
             .build()
             .wrap_err("failed to set up tracing subscriber")?;
@@ -186,7 +185,7 @@ async fn run(
 
         let meter_id = config.node_id.to_string();
         tokio::spawn(async move {
-            if let Err(e) = run_metrics_monitor(meter_id, &endpoint)
+            if let Err(e) = run_metrics_monitor(&meter_id, meter_id.clone(), &endpoint)
                 .await
                 .wrap_err("metrics monitor exited unexpectedly")
             {

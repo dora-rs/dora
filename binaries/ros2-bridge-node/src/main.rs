@@ -1256,8 +1256,7 @@ fn run_topic_mode(
 
         let ros_topic = ros_node
             .create_topic(
-                &ros2_client::Name::new("/", topic_config.topic.trim_start_matches('/'))
-                    .map_err(|e| eyre!("failed to create ROS2 topic name: {e}"))?,
+                &absolute_ros2_name(&topic_config.topic)?,
                 ros2_client::MessageTypeName::new(&package, &msg_name),
                 &qos,
             )
@@ -1350,8 +1349,7 @@ fn run_service_mode(
             let client = ros_node
                 .create_client::<BridgeServiceType>(
                     dora_ros2_bridge::detect_service_mapping(),
-                    &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
-                        .map_err(|e| eyre!("failed to create service name: {e}"))?,
+                    &absolute_ros2_name(service_name)?,
                     &ros2_client::ServiceTypeName::new(&package, &type_name),
                     service_qos.clone(),
                     service_qos,
@@ -1367,8 +1365,7 @@ fn run_service_mode(
             let server = ros_node
                 .create_server::<BridgeServiceType>(
                     dora_ros2_bridge::detect_service_mapping(),
-                    &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
-                        .map_err(|e| eyre!("failed to create service name: {e}"))?,
+                    &absolute_ros2_name(service_name)?,
                     &ros2_client::ServiceTypeName::new(&package, &type_name),
                     service_qos.clone(),
                     service_qos,
@@ -1588,8 +1585,7 @@ fn run_action_mode(
 
     let (mut ros_node, _pool) = create_ros_node(&config)?;
     let qos = config.qos.to_rustdds_qos();
-    let action_ros2_name = ros2_client::Name::new("/", action_name.trim_start_matches('/'))
-        .map_err(|e| eyre!("failed to create action name: {e}"))?;
+    let action_ros2_name = absolute_ros2_name(action_name)?;
     let action_type_name = ros2_client::ActionTypeName::new(&package, &type_name);
 
     match role {
@@ -1952,11 +1948,12 @@ fn run_action_server(
                                 None => ros2_client::action::GoalEndStatus::Succeeded,
                             };
                             let _guard = TypeInfoGuard::serialize(result_type_info.clone());
-                            let send_result = server.send_result_response(
-                                handle,
+                            let (status, result) = sendable_result_or_abort(
                                 status,
                                 BridgeMessage(Some(array_data)),
+                                &goal_id,
                             );
+                            let send_result = server.send_result_response(handle, status, result);
                             let result = block_on_result_timeout(send_result);
                             match result {
                                 Some(Err(e)) => {
@@ -2037,6 +2034,32 @@ fn abort_executing_goal(
         Some(Err(e)) => tracing::warn!("failed to send abort for goal {goal_id}: {e:?}"),
         None => tracing::warn!("abort result response timed out for goal {goal_id}"),
         Some(Ok(())) => {}
+    }
+}
+
+/// The end status and result to send for a goal the handler finished.
+///
+/// A result that cannot be serialized ends the goal as Aborted with
+/// [`default_result_message`] instead, as on the Zenoh path. Sending it as is
+/// would fail inside `send_result_response` after ros2-client has already
+/// marked the goal terminal, so the client would never get any result
+/// (dora-rs/dora#3813). Must run under the result type's `TypeInfoGuard`.
+fn sendable_result_or_abort(
+    status: ros2_client::action::GoalEndStatus,
+    result: BridgeMessage,
+    goal_id: &str,
+) -> (ros2_client::action::GoalEndStatus, BridgeMessage) {
+    match serialize_cdr(&result) {
+        Ok(_) => (status, result),
+        Err(e) => {
+            tracing::warn!(
+                "action result for goal {goal_id} cannot be serialized, aborting the goal: {e}"
+            );
+            (
+                ros2_client::action::GoalEndStatus::Aborted,
+                default_result_message(),
+            )
+        }
     }
 }
 
@@ -2352,6 +2375,17 @@ fn load_messages() -> eyre::Result<Arc<HashMap<String, HashMap<String, Message>>
     Ok(Arc::new(messages))
 }
 
+/// Parse a configured topic, service or action name such as `/turtle1/cmd_vel`
+/// into an absolute ROS 2 name, with a leading `/` optional.
+///
+/// Every segment but the last goes into the namespace: `ros2_client::Name::new`
+/// rejects a `/` in the base name, so passing the whole name as the base name
+/// would fail for any name with more than one segment.
+fn absolute_ros2_name(name: &str) -> eyre::Result<ros2_client::Name> {
+    ros2_client::Name::parse(&format!("/{}", name.trim_start_matches('/')))
+        .map_err(|e| eyre!("invalid ROS 2 name `{name}`: {e}"))
+}
+
 fn parse_type_str(type_str: &str) -> eyre::Result<(String, String)> {
     let (pkg, type_name) = type_str
         .split_once('/')
@@ -2492,6 +2526,34 @@ mod dds_call_failure_tests {
     #[test]
     fn a_successful_call_passes_its_value_through() {
         assert_eq!(dds_call_or_warn(Ok(7), "test").unwrap(), Some(7));
+    }
+}
+
+#[cfg(test)]
+mod ros2_name_tests {
+    use super::{absolute_ros2_name, ros2_client::NodeName};
+
+    #[test]
+    fn a_namespaced_name_keeps_every_segment() {
+        let node = NodeName::new("/", "bridge").unwrap();
+        for (configured, dds) in [
+            ("/turtle1/cmd_vel", "rt/turtle1/cmd_vel"),
+            ("camera/image_raw", "rt/camera/image_raw"),
+            ("/a/b/c", "rt/a/b/c"),
+            ("/chatter", "rt/chatter"),
+            ("chatter", "rt/chatter"),
+        ] {
+            let name = absolute_ros2_name(configured).unwrap();
+            assert!(name.is_absolute(), "{configured}");
+            assert_eq!(name.to_dds_name("rt", &node, ""), dds);
+        }
+    }
+
+    #[test]
+    fn a_malformed_name_is_rejected() {
+        for bad in ["", "/", "/a//b", "/a/", "/a/1b"] {
+            assert!(absolute_ros2_name(bad).is_err(), "{bad:?} must be rejected");
+        }
     }
 }
 
@@ -2808,5 +2870,36 @@ mod abort_result_tests {
         let payload = serialize_cdr(&default_result_message()).expect("abort payload");
         // CDR encapsulation header, then the defaulted `int32 code`.
         assert_eq!(&payload[4..], &[0, 0, 0, 0]);
+    }
+
+    /// A DDS result the handler sent but that cannot be serialized must end
+    /// the goal as Aborted with a default result, not fail inside ros2-client
+    /// and leave the client without one (#3813).
+    #[test]
+    fn unserializable_dds_result_becomes_abort() {
+        use ros2_client::action::GoalEndStatus;
+        let _guard = TypeInfoGuard::serialize(result_type_info());
+
+        let (status, result) =
+            sendable_result_or_abort(GoalEndStatus::Succeeded, BridgeMessage(None), "g");
+        assert!(matches!(status, GoalEndStatus::Aborted));
+        serialize_cdr(&result).expect("the abort result must serialize");
+
+        let valid = arrow::array::StructArray::from(vec![(
+            Arc::new(arrow::datatypes::Field::new(
+                "code",
+                arrow::datatypes::DataType::Int32,
+                false,
+            )),
+            Arc::new(arrow::array::Int32Array::from(vec![7])) as arrow::array::ArrayRef,
+        )]);
+        let (status, result) = sendable_result_or_abort(
+            GoalEndStatus::Succeeded,
+            BridgeMessage(Some(arrow::array::Array::into_data(valid))),
+            "g",
+        );
+        assert!(matches!(status, GoalEndStatus::Succeeded));
+        let payload = serialize_cdr(&result).expect("valid result");
+        assert_eq!(&payload[4..], &7i32.to_le_bytes());
     }
 }

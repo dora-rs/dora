@@ -38,7 +38,7 @@ const TOPIC_DEBUG_CHANNEL_CAPACITY: usize = 64;
 /// (`MAX_CONTROL_MESSAGE_BYTES` in its `ws_server`). A larger one makes it
 /// close the connection, so a topic debug frame past it is dropped here
 /// instead of taking the control plane down with it.
-const MAX_COORDINATOR_MESSAGE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_COORDINATOR_MESSAGE_BYTES: usize = 1024 * 1024;
 
 /// Wraps the WS send channels for fire-and-forget daemon events to the coordinator.
 #[derive(Clone)]

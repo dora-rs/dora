@@ -174,15 +174,7 @@ impl TypedValue<'_> {
                             check_not_null(string_array, "LargeStringArray")?;
                             string_array.value(0)
                         };
-                        if let GenericString::BoundedString(max) = t
-                            && string.len() > *max
-                        {
-                            return Err(error(format!(
-                                "string length {} exceeds BoundedString max {}",
-                                string.len(),
-                                max
-                            )));
-                        }
+                        check_string_bound(string, string_bound(t))?;
                         s.serialize_field(string)?;
                     }
                     GenericString::WString | GenericString::BoundedWString(_) => {
@@ -198,17 +190,7 @@ impl TypedValue<'_> {
                             check_not_null(string_array, "LargeStringArray (WString)")?;
                             string_array.value(0)
                         };
-                        if let GenericString::BoundedWString(max) = t {
-                            let utf16_len = string.encode_utf16().count();
-                            if utf16_len > *max {
-                                return Err(error(format!(
-                                    "wstring length {} exceeds BoundedWString max {}",
-                                    utf16_len, max
-                                )));
-                            }
-                        }
-                        let utf16: Vec<u16> = string.encode_utf16().collect();
-                        s.serialize_field(&utf16)?;
+                        s.serialize_field(&encode_wstring(string, string_bound(t))?)?;
                     }
                 },
             },
@@ -276,6 +258,42 @@ fn check_not_null<E: serde::ser::Error>(
         )));
     }
     Ok(())
+}
+
+/// The maximum length of a `string<=N>` (bytes) or `wstring<=N>` (UTF-16
+/// code units), or `None` for an unbounded `string`/`wstring`.
+fn string_bound(ty: &GenericString) -> Option<usize> {
+    match ty {
+        GenericString::BoundedString(max) | GenericString::BoundedWString(max) => Some(*max),
+        GenericString::String | GenericString::WString => None,
+    }
+}
+
+/// Reject a `string<=N>` value longer than `N` bytes.
+///
+/// Applies to a scalar field and to every element of a `string<=N>[]` /
+/// `string<=N>[M]` column alike: ROS bounds each string, wherever it sits.
+fn check_string_bound<E: serde::ser::Error>(string: &str, bound: Option<usize>) -> Result<(), E> {
+    match bound {
+        Some(max) if string.len() > max => Err(error(format!(
+            "string length {} exceeds BoundedString max {max}",
+            string.len()
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Encode a `wstring` as UTF-16, rejecting a `wstring<=N>` value longer than
+/// `N` code units.
+fn encode_wstring<E: serde::ser::Error>(string: &str, bound: Option<usize>) -> Result<Vec<u16>, E> {
+    let utf16: Vec<u16> = string.encode_utf16().collect();
+    match bound {
+        Some(max) if utf16.len() > max => Err(error(format!(
+            "wstring length {} exceeds BoundedWString max {max}",
+            utf16.len()
+        ))),
+        _ => Ok(utf16),
+    }
 }
 
 /// Reject a null element in a ROS2 `string[]`/`string[N]` (or wstring) column.

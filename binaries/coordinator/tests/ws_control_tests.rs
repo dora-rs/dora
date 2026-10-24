@@ -324,6 +324,31 @@ async fn build_log_subscribe_nonexistent() {
     assert!(!err.is_empty(), "error should be descriptive: {err}");
 }
 
+/// #3873: a `TopicUnsubscribe` only acts on this connection's own
+/// subscriptions. An id the connection never subscribed — such as another
+/// client's — is rejected instead of being forwarded to the event loop, which
+/// would tear down that other client's stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn topic_unsubscribe_rejects_unowned_subscription() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = connect_control(port).await;
+
+    let foreign_id = Uuid::new_v4();
+    let params = serde_json::to_value(&ControlRequest::TopicUnsubscribe {
+        subscription_id: foreign_id,
+    })
+    .unwrap();
+    let resp = request_reply(&mut ws, "control", params).await;
+
+    let err = resp
+        .error
+        .expect("unsubscribing an unowned id should be an error");
+    assert!(
+        err.contains(&foreign_id.to_string()),
+        "error should name the subscription id: {err}"
+    );
+}
+
 // -- Phase 2: Node restart/stop error paths --
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

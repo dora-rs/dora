@@ -6,6 +6,7 @@ use crate::{
     broadcast_all_nodes_ready, buffer_log_message, cap_dataflow_results,
     close_topic_subscribers_on_finish, finalize_build, handle_dataflow_spawn_result,
     handlers::{dataflow_result, send_log_message, start_dataflow},
+    replay_all_nodes_ready,
     state::{ArchivedDataflow, CachedResult},
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
@@ -32,6 +33,40 @@ impl Coordinator {
             } => match self.running_dataflows.entry(uuid) {
                 std::collections::hash_map::Entry::Occupied(mut entry) => {
                     let dataflow = entry.get_mut();
+                    // A daemon can report after the barrier released: one
+                    // that reconnected after the disconnect path released it
+                    // (#2028), or one whose nodes auto-recovery re-spawned.
+                    // Answer only that daemon, with the verdict already
+                    // broadcast. Releasing again would re-send a possibly
+                    // different verdict to every daemon, overwrite the stored
+                    // status and re-run the param replay everywhere (#3885).
+                    // Dropping the report instead would park re-spawned nodes
+                    // forever, since nothing else sends them the barrier.
+                    if dataflow.ready_barrier_released {
+                        tracing::debug!(
+                            dataflow = %uuid,
+                            "ReadyOnDaemon from `{daemon_id}` after the ready barrier \
+                             released; replaying the released verdict to it only \
+                             (ignoring its exited before subscribe: \
+                             {exited_before_subscribe:?})"
+                        );
+                        if let Err(e) = replay_all_nodes_ready(
+                            uuid,
+                            dataflow,
+                            &daemon_id,
+                            &self.daemon_connections,
+                            &self.store,
+                            &self.clock,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                "failed to replay ready barrier to daemon \
+                                 `{daemon_id}` for dataflow {uuid}: {e:#}"
+                            );
+                        }
+                        return Ok(());
+                    }
                     dataflow.pending_daemons.remove(&daemon_id);
                     dataflow
                         .exited_before_subscribe

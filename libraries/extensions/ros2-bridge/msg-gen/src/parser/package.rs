@@ -14,20 +14,23 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
 
     let ros_formats = ["msg", "srv", "action"];
 
-    // Return empty vector if root_dir is empty
-    for root_dir in root_dirs {
-        if root_dir.as_ref() == Path::new("") {
-            let empty_vec: Vec<Package> = vec![];
-            println!("cargo::warning=AMENT_PREFIX_PATH pointed to ''");
-            return Ok(empty_vec);
-        }
+    // An empty entry, as a leading, trailing or doubled `:` in
+    // AMENT_PREFIX_PATH leaves, names no prefix. Skip it rather than
+    // discarding the packages found under the other entries.
+    let root_dirs: Vec<&Path> = root_dirs
+        .iter()
+        .map(AsRef::as_ref)
+        .filter(|root_dir| *root_dir != Path::new(""))
+        .collect();
+    if root_dirs.is_empty() {
+        println!("cargo::warning=AMENT_PREFIX_PATH pointed to ''");
+        return Ok(Vec::new());
+    }
 
+    for root_dir in root_dirs {
         for ros_format in ros_formats.iter() {
-            let pattern = root_dir.as_ref().to_string_lossy().to_string()
-                + "/**/"
-                + ros_format
-                + "/*."
-                + ros_format;
+            let pattern =
+                root_dir.to_string_lossy().to_string() + "/**/" + ros_format + "/*." + ros_format;
             let mut visited_files = vec![];
             for entry in glob(&pattern).context("Failed to read glob pattern")? {
                 let path = entry.context("Could not glob given path")?;
@@ -272,6 +275,18 @@ mod tests {
         let packages = get_ros_msgs_each_package(&[&root]).unwrap();
         assert_eq!(dependencies_of(&packages, "a"), ["b"]);
         assert_eq!(dependencies_of(&packages, "b"), ["a"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_empty_prefix_entry_does_not_discard_the_others() {
+        let root = prefix("empty-entry", &[("a", &[])]);
+        let empty = PathBuf::new();
+        for roots in [[&root, &empty], [&empty, &root]] {
+            let packages = get_ros_msgs_each_package(&roots).unwrap();
+            assert_eq!(packages.len(), 1);
+            assert_eq!(packages[0].name, "a");
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

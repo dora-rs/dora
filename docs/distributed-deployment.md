@@ -510,9 +510,10 @@ dora cluster upgrade <PATH>
 
 For each machine sequentially:
 
-1. SCP the local `dora` binary to `/usr/local/bin/dora` on the target machine.
-2. Restart the systemd service via `sudo systemctl restart dora-daemon-<id>`.
-3. Poll the coordinator until the daemon reconnects (30s timeout, 500ms intervals).
+1. SCP the local `dora` binary to a staging file (`~/.dora-upgrade-<id>`) on the target machine.
+2. Install it as `/usr/local/bin/dora` with `sudo install`, then delete the staging file.
+3. Restart the systemd service via `sudo systemctl restart dora-daemon-<id>`.
+4. Poll the coordinator until the daemon reconnects (30s timeout, 500ms intervals).
 
 Nodes on other machines continue running while each machine is being upgraded.
 
@@ -521,14 +522,10 @@ Nodes on other machines continue running while each machine is being upgraded.
 ```bash
 $ dora cluster upgrade cluster.yml
 Upgrading robot (ubuntu@10.0.0.2)...
-  SCP binary... OK
-  Restart service... OK
-  Waiting for reconnect... OK (3.2s)
+  OK: robot upgraded and reconnected
 Upgrading gpu-server (ubuntu@10.0.0.3)...
-  SCP binary... OK
-  Restart service... OK
-  Waiting for reconnect... OK (2.8s)
-2/2 succeeded.
+  OK: gpu-server upgraded and reconnected
+All 2 machine(s) upgraded
 ```
 
 ### dora cluster restart
