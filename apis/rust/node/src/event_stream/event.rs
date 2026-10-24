@@ -30,10 +30,15 @@ pub enum Event {
         /// The actual data in the Apache Arrow data format.
         data: DoraArray,
     },
-    /// An input was closed by the sender.
+    /// An input was closed.
     ///
-    /// The sending node mapped to an input exited, so this input will receive
-    /// no more data.
+    /// Usually the upstream output was closed for good: the sending node
+    /// exited or called [`DoraNode::close_outputs`](crate::DoraNode::close_outputs), or the edge was removed from a
+    /// running dataflow. The input then receives no more data.
+    ///
+    /// The input's `input_timeout` circuit breaker also closes it. In that case
+    /// the input is reopened, announced by [`Event::InputRecovered`], once the
+    /// upstream node produces data again.
     InputClosed {
         /// The ID of the input that was closed, as specified in the YAML file.
         ///
