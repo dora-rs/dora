@@ -11,7 +11,10 @@ use dora_message::{
     ws_protocol::{WsRequest, WsResponse},
 };
 use futures::{SinkExt, StreamExt};
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
@@ -190,6 +193,7 @@ async fn await_reply_forwarding_pushes(
 /// and forward binary frames with `subscription_id ++ payload` format.
 pub(crate) async fn handle_control_ws(
     socket: WebSocket,
+    cli_addr: SocketAddr,
     event_tx: mpsc::Sender<Event>,
     clock: Arc<dora_core::uhlc::HLC>,
 ) {
@@ -517,6 +521,7 @@ pub(crate) async fn handle_control_ws(
                     break;
                 };
 
+                let reply = fill_in_cli_ip(reply, cli_addr);
                 let stop = matches!(reply, ControlRequestReply::CoordinatorStopped);
 
                 let resp_json = format_response_json(req.id, &reply);
@@ -551,6 +556,40 @@ pub(crate) async fn handle_control_ws(
             }))
             .await;
         let _ = done_rx.await;
+    }
+}
+
+/// The IP a peer reached the coordinator from, as compared by
+/// `CliAndDefaultDaemonOnSameMachine`.
+///
+/// Canonicalized, since a dual-stack socket reports an IPv4 peer as
+/// `::ffff:a.b.c.d`, and with every loopback address collapsed to
+/// `127.0.0.1`, so a CLI on `::1` and a daemon on `127.0.0.1` still match.
+pub(crate) fn peer_ip(addr: SocketAddr) -> IpAddr {
+    let ip = addr.ip().to_canonical();
+    if ip.is_loopback() {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    } else {
+        ip
+    }
+}
+
+/// Complete a `CliAndDefaultDaemonIps` reply with the CLI's own address.
+///
+/// The event loop fills in the default daemon's address but cannot know the
+/// CLI's, which only this connection has. The CLI treats equal IPs as "same
+/// machine" and then sends its own working directory for the daemon to run
+/// in, so a CLI on another host must not compare equal.
+fn fill_in_cli_ip(reply: ControlRequestReply, cli_addr: SocketAddr) -> ControlRequestReply {
+    match reply {
+        ControlRequestReply::CliAndDefaultDaemonIps {
+            default_daemon,
+            cli: None,
+        } => ControlRequestReply::CliAndDefaultDaemonIps {
+            default_daemon,
+            cli: Some(peer_ip(cli_addr)),
+        },
+        other => other,
     }
 }
 
@@ -649,6 +688,49 @@ fn encode_topic_ipc(array: &arrow::array::UInt8Array) -> eyre::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// What the CLI's `cli_and_daemon_on_same_machine` concludes from the
+    /// reply, given the addresses the two reached the coordinator from.
+    fn same_machine(cli: &str, daemon: Option<&str>) -> bool {
+        let event_loop_reply = ControlRequestReply::CliAndDefaultDaemonIps {
+            default_daemon: daemon.map(|addr| peer_ip(addr.parse().unwrap())),
+            cli: None,
+        };
+        let ControlRequestReply::CliAndDefaultDaemonIps {
+            default_daemon,
+            cli,
+        } = fill_in_cli_ip(event_loop_reply, cli.parse().unwrap())
+        else {
+            unreachable!()
+        };
+        default_daemon.is_some() && default_daemon == cli
+    }
+
+    /// A CLI on another host must not be told it shares a machine with a
+    /// daemon running next to the coordinator: it would then send its own
+    /// local working directory, which does not exist on the daemon's host.
+    #[test]
+    fn remote_cli_is_not_on_the_default_daemons_machine() {
+        assert!(!same_machine("192.0.2.7:50000", Some("127.0.0.1:40000")));
+        assert!(!same_machine("192.0.2.7:50000", Some("192.0.2.8:40000")));
+    }
+
+    #[test]
+    fn local_cli_is_on_the_default_daemons_machine() {
+        assert!(same_machine("127.0.0.1:50000", Some("127.0.0.1:40000")));
+        // Different loopback spellings are still the same host.
+        assert!(same_machine("[::1]:50000", Some("127.0.0.1:40000")));
+        // A dual-stack listener reports IPv4 peers as IPv4-mapped IPv6.
+        assert!(same_machine(
+            "[::ffff:192.0.2.7]:50000",
+            Some("192.0.2.7:40000")
+        ));
+    }
+
+    #[test]
+    fn no_default_daemon_is_never_the_same_machine() {
+        assert!(!same_machine("127.0.0.1:50000", None));
+    }
+
     /// A request whose reply is held back -- `WaitForBuild` is answered only
     /// when the build ends -- must not stop the connection from forwarding
     /// the log lines pushed to it meanwhile. Before the fix the WS loop sat in
@@ -664,17 +746,23 @@ mod tests {
 
         let (event_tx, mut event_rx) = mpsc::channel(16);
         let clock = Arc::new(dora_core::uhlc::HLC::default());
-        let app =
-            axum::Router::new().route(
-                "/",
-                axum::routing::any(move |ws: axum::extract::WebSocketUpgrade| {
-                    let event_tx = event_tx.clone();
-                    let clock = clock.clone();
-                    async move {
-                        ws.on_upgrade(move |socket| handle_control_ws(socket, event_tx, clock))
-                    }
-                }),
-            );
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::any(move |ws: axum::extract::WebSocketUpgrade| {
+                let event_tx = event_tx.clone();
+                let clock = clock.clone();
+                async move {
+                    ws.on_upgrade(move |socket| {
+                        handle_control_ws(
+                            socket,
+                            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+                            event_tx,
+                            clock,
+                        )
+                    })
+                }
+            }),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await });
