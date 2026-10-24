@@ -3686,6 +3686,40 @@ mod tests {
         assert_eq!(&decoded, &data);
     }
 
+    /// A corrupt full stream from a peer that makes arrow-ipc panic is an error
+    /// for that one message, not a panic (which the subscriber callback would
+    /// turn into a fatal error), and the next valid message still decodes
+    /// (#3863).
+    #[test]
+    fn corrupt_full_stream_on_zenoh_is_an_error_and_decoding_continues() {
+        use crate::arrow_utils::ipc_encode::{
+            InputDecoder, encode_ipc_into_data, ipc_fast_path_len_data,
+        };
+        use arrow::array::{Array, Int32Array};
+
+        let hex = "ffffffff320000001000000000000a0000000000090004000a00000000000000000100000000000000000000000000000000000000000000000000";
+        let corrupt: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let metadata =
+            dora_message::metadata::Metadata::new(dora_core::uhlc::HLC::default().new_timestamp());
+        let mut decoder = InputDecoder::new();
+
+        let err = decode_zenoh_sample(&mut decoder, &metadata, zenoh::bytes::ZBytes::from(corrupt))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the decoder panicked: "), "got: {err}");
+
+        let data = Int32Array::from(vec![1, 2, 3]).into_data();
+        let mut buf = vec![0u8; ipc_fast_path_len_data(&data).unwrap()];
+        encode_ipc_into_data(&data, &mut buf).unwrap();
+        let decoded = decode_zenoh_sample(&mut decoder, &metadata, zenoh::bytes::ZBytes::from(buf))
+            .unwrap()
+            .unwrap();
+        assert_eq!(&decoded, &data);
+    }
+
     /// A full self-describing stream on the data topic must prime the per-input
     /// decoder in-band: the schema-less batches that follow decode against it
     /// without any `@schema`-plane delivery. This is what makes the producer's
