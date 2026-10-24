@@ -31,7 +31,7 @@ use dora_message::{
 };
 use eyre::{Result, bail, eyre};
 use petname::petname;
-use std::{path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 use uuid::Uuid;
 
 type ReplySender = tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>;
@@ -884,28 +884,6 @@ impl Coordinator {
         // `StoreDataflowStatus::Succeeded | Failed` in the
         // startup loop). Per-candidate tuple:
         // (uuid, name, cli-facing status, in_memory).
-        let mut candidates: Vec<(Uuid, Option<String>, DataflowStatus, bool)> = Vec::new();
-
-        for (uuid, results) in self.dataflow_results.iter() {
-            if self.running_dataflows.contains_key(uuid) {
-                // Multi-daemon dataflow still completing —
-                // keep partial results so the final status
-                // is computed correctly when the last daemon
-                // completes.
-                continue;
-            }
-            let name = self
-                .archived_dataflows
-                .get(uuid)
-                .and_then(|d| d.name.clone());
-            let status = if results.values().all(|r| r.is_ok()) {
-                DataflowStatus::Finished
-            } else {
-                DataflowStatus::Failed
-            };
-            candidates.push((*uuid, name, status, true));
-        }
-
         // Hard-fail if we can't enumerate the persisted
         // store. With a partial view we cannot honor the
         // "trim disk state" contract, and silently
@@ -929,6 +907,48 @@ impl Coordinator {
                 return Ok(());
             }
         };
+        // A dataflow whose record is `Recovering` (an orphan reclaim
+        // waiting for a daemon to reconnect) is not finished, whatever
+        // partial `dataflow_results` it has.
+        let recovering: BTreeSet<Uuid> = records
+            .iter()
+            .filter(|record| matches!(record.status, StoreDataflowStatus::Recovering))
+            .map(|record| record.uuid)
+            .collect();
+
+        let mut candidates: Vec<(Uuid, Option<String>, DataflowStatus, bool)> = Vec::new();
+
+        for (uuid, results) in self.dataflow_results.iter() {
+            if self.running_dataflows.contains_key(uuid) {
+                // Multi-daemon dataflow still completing —
+                // keep partial results so the final status
+                // is computed correctly when the last daemon
+                // completes.
+                continue;
+            }
+            if recovering.contains(uuid) {
+                // Every daemon dropped off after some had already
+                // reported their share, so the partial results
+                // outlive the `running_dataflows` entry while the
+                // record waits (`Recovering`) for a daemon to
+                // reconnect and re-report it. Deleting the record
+                // here would leave that daemon's nodes running with
+                // nothing to reconcile them against, and would
+                // drop the partial results the final status needs.
+                continue;
+            }
+            let name = self
+                .archived_dataflows
+                .get(uuid)
+                .and_then(|d| d.name.clone());
+            let status = if results.values().all(|r| r.is_ok()) {
+                DataflowStatus::Finished
+            } else {
+                DataflowStatus::Failed
+            };
+            candidates.push((*uuid, name, status, true));
+        }
+
         for record in records {
             if self.running_dataflows.contains_key(&record.uuid) {
                 continue;
