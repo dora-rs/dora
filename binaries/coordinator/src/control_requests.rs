@@ -907,17 +907,12 @@ impl Coordinator {
                 return Ok(());
             }
         };
-        // Records the store still holds as live (`Recovering` after
-        // an orphan reclaim, or `Pending`/`Running`) are not
-        // finished, whatever partial `dataflow_results` they have.
-        let live_records: BTreeSet<Uuid> = records
+        // A dataflow whose record is `Recovering` (an orphan reclaim
+        // waiting for a daemon to reconnect) is not finished, whatever
+        // partial `dataflow_results` it has.
+        let recovering: BTreeSet<Uuid> = records
             .iter()
-            .filter(|record| {
-                !matches!(
-                    record.status,
-                    StoreDataflowStatus::Succeeded | StoreDataflowStatus::Failed { .. }
-                )
-            })
+            .filter(|record| matches!(record.status, StoreDataflowStatus::Recovering))
             .map(|record| record.uuid)
             .collect();
 
@@ -931,7 +926,7 @@ impl Coordinator {
                 // completes.
                 continue;
             }
-            if live_records.contains(uuid) {
+            if recovering.contains(uuid) {
                 // Every daemon dropped off after some had already
                 // reported their share, so the partial results
                 // outlive the `running_dataflows` entry while the
