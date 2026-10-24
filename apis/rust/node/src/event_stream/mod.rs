@@ -138,6 +138,9 @@ fn insert_recorded_metadata(
 ) -> eyre::Result<()> {
     use dora_message::metadata::Parameter;
 
+    if parameters.is_empty() {
+        return Ok(());
+    }
     let mut parameters = parameters.clone();
     dora_message::metadata::strip_internal_parameters(&mut parameters);
     parameters.retain(|_, value| match value {
