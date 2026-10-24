@@ -507,6 +507,68 @@ async fn log_subscriber_receives_logs_again_after_restart() {
     );
 }
 
+/// A `send_stdout_as` output is produced by the daemon, not the node, and
+/// must be routed like any node output: to local receivers (refreshing their
+/// input deadline) and to consumers on other daemons. The `Logs` handler used
+/// to deliver to local receivers only, so a consumer on another machine never
+/// received anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn stdout_output_reaches_local_and_remote_consumers() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let mut dataflow = test_dataflow();
+    let dataflow_id = dataflow.id;
+    let producer = NodeId::from("producer".to_string());
+    let output_id = OutputId(producer, DataId::from("stdout".to_string()));
+    let local = NodeId::from("local".to_string());
+    let input = DataId::from("logs".to_string());
+    dataflow
+        .mappings
+        .entry(output_id.clone())
+        .or_default()
+        .insert((local.clone(), input.clone()));
+    dataflow.input_deadlines.insert(
+        (local.clone(), input.clone()),
+        InputDeadline {
+            timeout: Duration::from_secs(60),
+            last_received: None,
+        },
+    );
+    let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    dataflow.subscribe_channels.insert(local.clone(), tx);
+    // A consumer of this output runs on another daemon.
+    dataflow.open_external_mappings.insert(output_id.clone());
+    daemon.running.insert(dataflow_id, dataflow);
+
+    daemon
+        .handle_dora_event(DoraEvent::Logs {
+            dataflow_id,
+            output_id: output_id.clone(),
+            message: DataMessage::Vec(AVec::from_slice(128, b"hello")),
+            metadata: metadata::Metadata::new(clock.new_timestamp()),
+        })
+        .await
+        .unwrap();
+
+    let event = rx.try_recv().map(|event| event.inner);
+    assert!(
+        matches!(event, Ok(NodeEvent::Input { ref id, .. }) if *id == input),
+        "local consumer received {event:?}"
+    );
+    let dataflow = &daemon.running[&dataflow_id];
+    assert!(
+        dataflow.input_deadlines[&(local, input)]
+            .last_received
+            .is_some(),
+        "delivery must refresh the consumer's input deadline"
+    );
+    assert!(
+        dataflow.publishers.contains_key(&output_id),
+        "the line must be published for the consumer on the other daemon"
+    );
+}
+
 /// `AddNode` re-registers a node's `dora/logs` inputs. An entry left by an
 /// earlier incarnation (kept across a crash, see the test above) must be
 /// replaced, not duplicated, or every log line reaches the node twice.
