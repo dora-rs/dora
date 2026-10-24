@@ -73,6 +73,13 @@ pub enum Event {
         dataflow_id: uuid::Uuid,
         node_id: NodeId,
     },
+    /// The receiver-side deferred AllInputsClosed was delivered or gave up.
+    DeferredAllInputsClosed {
+        dataflow_id: DataflowId,
+        receiver_id: NodeId,
+        token: u64,
+        delivered: bool,
+    },
     /// A data-plane output observed by the daemon's debug subscriber.
     ///
     /// Only emitted when the dataflow has `enable_debug_inspection` set.
@@ -115,6 +122,7 @@ impl Event {
             Event::BuildDataflowResult { .. } => "BuildDataflowResult",
             Event::SpawnDataflowResult { .. } => "SpawnDataflowResult",
             Event::NodeStopped { .. } => "NodeStopped",
+            Event::DeferredAllInputsClosed { .. } => "DeferredAllInputsClosed",
             Event::DebugTopicData { .. } => "DebugTopicData",
         }
     }
@@ -279,7 +287,10 @@ pub(crate) struct ZenohOutbound {
     pub publisher: Arc<zenoh::pubsub::Publisher<'static>>,
     pub serialized: Vec<u8>,
     pub payload_len: u64,
+    pub timeout: Option<Duration>,
     pub net_bytes_sent: Arc<AtomicU64>,
     pub net_messages_sent: Arc<AtomicU64>,
     pub net_publish_failures: Arc<AtomicU64>,
+    /// Present for lifecycle messages whose caller must observe publication.
+    pub receipt: Option<oneshot::Sender<eyre::Result<()>>>,
 }

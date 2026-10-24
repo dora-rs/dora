@@ -1,7 +1,10 @@
 use super::*;
 use crate::coordinator_events::{
     apply_state_catch_up_entries, deliver_param_delete_strict, deliver_param_update_strict,
+    remove_mapping_and_close,
 };
+use crate::local_delivery::close_input_from_remote;
+use crate::node_events::reload_target;
 use crate::node_exit::{DEFAULT_FINISH_DRAIN_GRACE, parse_finish_drain_grace};
 use crate::pending::DataflowStatus;
 use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
@@ -23,6 +26,19 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 fn test_dataflow() -> RunningDataflow {
     let descriptor = Descriptor::new(vec![]);
     RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor)
+}
+
+#[test]
+fn reload_target_distinguishes_unsubscribed_host_from_other_daemon() {
+    let mut df = test_dataflow();
+    let host = NodeId::from("host".to_string());
+    let other = NodeId::from("other".to_string());
+    df.running_nodes.insert(host.clone(), test_running_node());
+    assert!(reload_target(&df, &host).is_err());
+    assert!(reload_target(&df, &other).unwrap().is_none());
+    let (tx, _rx) = mpsc::channel(1);
+    df.subscribe_channels.insert(host.clone(), tx);
+    assert!(reload_target(&df, &host).unwrap().is_some());
 }
 
 // dora-rs/dora: a node added to an already-running dataflow (via
@@ -434,6 +450,36 @@ async fn node_stop_does_not_block_on_a_full_event_channel() {
         ),
         "unexpected event: {}",
         event.inner.kind()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn failed_output_close_does_not_skip_node_stop_cleanup() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+    let dataflow_id = Uuid::new_v4();
+    let node_id = NodeId::from("source".to_string());
+    let output = OutputId(node_id.clone(), DataId::from("value".to_string()));
+    let mut dataflow = test_dataflow();
+    dataflow
+        .running_nodes
+        .insert(node_id.clone(), test_running_node());
+    dataflow.open_external_mappings.insert(output.clone());
+    let (tx, rx) = mpsc::channel(1);
+    drop(rx);
+    dataflow.remote_output_queues.insert(output, tx);
+    daemon.running.insert(dataflow_id, dataflow);
+
+    daemon
+        .handle_node_stop_inner(dataflow_id, &node_id, false, true)
+        .await
+        .expect("a failed close must not abort node cleanup");
+    assert!(
+        daemon
+            .running
+            .get(&dataflow_id)
+            .is_none_or(|flow| !flow.running_nodes.contains_key(&node_id)),
+        "the stopped node must leave running_nodes"
     );
 }
 
@@ -1394,7 +1440,7 @@ fn close_input_removes_from_open_inputs() {
     df.subscribe_channels.insert(node_a.clone(), tx);
 
     // Act: permanently close input_x
-    close_input(&mut df, &node_a, &input_x, &clock);
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
     // Assert: input_x removed, input_y still open
     let open = df.open_inputs(&node_a);
@@ -1405,6 +1451,390 @@ fn close_input_removes_from_open_inputs() {
     let events = drain_events(&mut rx);
     assert_eq!(events.len(), 1);
     assert!(matches_event(&events[0], "InputClosed"));
+}
+
+#[test]
+fn close_input_returns_error_when_receiver_channel_is_full() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let node_a: NodeId = "node_a".to_string().into();
+    let input_x: DataId = "input_x".to_string().into();
+
+    df.open_inputs
+        .entry(node_a.clone())
+        .or_default()
+        .insert(input_x.clone());
+    df.input_deadlines.insert(
+        (node_a.clone(), input_x.clone()),
+        InputDeadline {
+            timeout: Duration::from_secs(1),
+            last_received: Some(Instant::now()),
+        },
+    );
+    let (tx, mut rx) = mpsc::channel(1);
+    tx.try_send(Timestamped {
+        inner: NodeEvent::AllInputsClosed,
+        timestamp: clock.new_timestamp(),
+    })
+    .unwrap();
+    df.subscribe_channels.insert(node_a.clone(), tx);
+
+    let err = close_input(&mut df, &node_a, &input_x, &clock)
+        .expect_err("full receiver channel must surface a control-delivery error");
+
+    assert!(
+        err.to_string().contains("channel full"),
+        "unexpected error: {err:?}"
+    );
+    assert!(
+        df.open_inputs(&node_a).contains(&input_x),
+        "failed delivery must remain retryable"
+    );
+    assert!(
+        !df.input_deadlines
+            .contains_key(&(node_a.clone(), input_x.clone()))
+    );
+    let events = drain_events(&mut rx);
+    assert_eq!(events.len(), 1);
+    assert!(matches_event(&events[0], "AllInputsClosed"));
+    assert!(close_input(&mut df, &node_a, &input_x, &clock).is_err());
+    assert!(!df.open_inputs(&node_a).contains(&input_x));
+    let events = drain_events(&mut rx);
+    assert_eq!(events.len(), 1);
+    assert!(matches_event(&events[0], "InputClosed"));
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
+}
+
+#[test]
+fn close_input_on_closed_channel_keeps_state_for_subscribe_replay() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let node = NodeId::from("receiver".to_string());
+    let input = DataId::from("value".to_string());
+    df.open_inputs
+        .entry(node.clone())
+        .or_default()
+        .insert(input.clone());
+    let (tx, rx) = mpsc::channel(1);
+    drop(rx);
+    df.subscribe_channels.insert(node.clone(), tx);
+    assert!(close_input(&mut df, &node, &input, &clock).is_err());
+    assert!(!df.open_inputs(&node).contains(&input));
+    assert!(!df.subscribe_channels.contains_key(&node));
+}
+
+#[tokio::test]
+async fn remote_input_closed_waits_for_backpressure_receiver_to_drain() {
+    use dora_message::config::QueuePolicy;
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let receiver = NodeId::from("receiver".to_string());
+    let input = DataId::from("value".to_string());
+    let inputs = BTreeMap::from([(
+        input.clone(),
+        user_input("source", "value", Some(QueuePolicy::Backpressure)),
+    )]);
+    df.running_nodes
+        .insert(receiver.clone(), running_node_with(inputs, None));
+    df.open_inputs
+        .entry(receiver.clone())
+        .or_default()
+        .insert(input.clone());
+    let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
+        tx.try_send(Timestamped {
+            inner: NodeEvent::Stop,
+            timestamp: clock.new_timestamp(),
+        })
+        .unwrap();
+    }
+    df.subscribe_channels.insert(receiver.clone(), tx);
+    let signal = Arc::new(crate::local_delivery::DrainSignal::default());
+    df.drain_signals.insert(receiver.clone(), signal.clone());
+    let stats = FaultToleranceStats::default();
+    let (result, deferred) = close_input_from_remote(&mut df, &receiver, &input, &clock, &stats);
+    result.unwrap();
+    assert!(
+        !deferred.is_empty(),
+        "full control channel must defer the close"
+    );
+    assert_eq!(stats.dropped_messages.load(atomic::Ordering::Relaxed), 0);
+
+    let activity = AtomicU64::new(0);
+    for _ in 0..CONTROL_EVENT_HEADROOM + deferred.len() {
+        assert!(matches!(rx.recv().await.unwrap().inner, NodeEvent::Stop));
+    }
+    signal.notify.notify_waiters();
+    for delivery in deferred {
+        assert!(crate::node_communication::deliver_when_room(delivery, &activity, &stats).await);
+    }
+    assert!(matches!(rx.recv().await.unwrap().inner, NodeEvent::Stop));
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event.inner, NodeEvent::InputClosed { .. }) {
+            return;
+        }
+    }
+    panic!("deferred InputClosed did not reach the receiver");
+}
+
+#[test]
+fn remote_close_without_backpressure_counts_a_full_channel_drop() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let receiver = NodeId::from("receiver".to_string());
+    let input = DataId::from("value".to_string());
+    df.open_inputs
+        .entry(receiver.clone())
+        .or_default()
+        .insert(input.clone());
+    let (tx, _rx) = mpsc::channel(1);
+    tx.try_send(Timestamped {
+        inner: NodeEvent::Stop,
+        timestamp: clock.new_timestamp(),
+    })
+    .unwrap();
+    df.subscribe_channels.insert(receiver.clone(), tx);
+    let stats = FaultToleranceStats::default();
+
+    let (result, deferred) = close_input_from_remote(&mut df, &receiver, &input, &clock, &stats);
+    assert!(result.is_err());
+    assert!(deferred.is_empty());
+    assert_eq!(stats.dropped_messages.load(atomic::Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn broken_remote_input_closes_behind_an_earlier_deferred_close() {
+    use dora_message::config::QueuePolicy;
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let receiver = NodeId::from("receiver".to_string());
+    let input = DataId::from("broken".to_string());
+    let inputs = BTreeMap::from([(
+        input.clone(),
+        user_input("source", "value", Some(QueuePolicy::Backpressure)),
+    )]);
+    df.running_nodes
+        .insert(receiver.clone(), running_node_with(inputs, None));
+    df.broken_inputs
+        .insert((receiver.clone(), input.clone()), Duration::from_secs(1));
+    let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    df.subscribe_channels.insert(receiver.clone(), tx);
+    df.drain_signals
+        .insert(receiver.clone(), Default::default());
+    let (release_tx, release_rx) = oneshot::channel();
+    df.remote_close_delivery_tasks.insert(
+        receiver.clone(),
+        tokio::spawn(async move {
+            let _ = release_rx.await;
+            true
+        }),
+    );
+    let stats = FaultToleranceStats::default();
+
+    let (result, deferred) = close_input_from_remote(&mut df, &receiver, &input, &clock, &stats);
+    result.unwrap();
+    assert!(!df.has_broken_input(&receiver));
+    assert_eq!(deferred.len(), 1);
+    assert!(matches!(
+        deferred[0].event.inner,
+        NodeEvent::AllInputsClosed
+    ));
+    release_tx.send(()).unwrap();
+}
+
+#[test]
+fn deferred_all_inputs_closed_is_recorded_only_after_delivery() {
+    let mut df = test_dataflow();
+    let receiver = NodeId::from("receiver".to_string());
+    df.running_nodes
+        .insert(receiver.clone(), test_running_node());
+    df.mark_deferred_all_inputs_closed(&receiver);
+    let first_token = df.pending_remote_all_inputs_closed[&receiver];
+    assert!(!df.all_inputs_closed_at.contains_key(&receiver));
+    df.note_deferred_all_inputs_closed(&receiver, first_token, false);
+    assert!(!df.pending_remote_all_inputs_closed.contains_key(&receiver));
+    assert!(!df.all_inputs_closed_at.contains_key(&receiver));
+
+    df.mark_deferred_all_inputs_closed(&receiver);
+    let second_token = df.pending_remote_all_inputs_closed[&receiver];
+    df.note_deferred_all_inputs_closed(&receiver, first_token, true);
+    assert_eq!(df.pending_remote_all_inputs_closed[&receiver], second_token);
+    assert!(!df.all_inputs_closed_at.contains_key(&receiver));
+    df.note_deferred_all_inputs_closed(&receiver, second_token, true);
+    assert!(df.all_inputs_closed_at.contains_key(&receiver));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn incoming_output_closed_delivers_after_backpressure_receiver_drains() {
+    use dora_message::config::QueuePolicy;
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let (mut daemon, mut events_rx) = daemon_and_events_rx(coordinator_sender, clock.clone()).await;
+    let dataflow_id = Uuid::new_v4();
+    let source = NodeId::from("source".to_string());
+    let output = DataId::from("value".to_string());
+    let receiver = NodeId::from("receiver".to_string());
+    let input = DataId::from("in".to_string());
+    let mut dataflow = test_dataflow();
+    dataflow.mappings.insert(
+        OutputId(source.clone(), output.clone()),
+        BTreeSet::from([(receiver.clone(), input.clone())]),
+    );
+    dataflow
+        .open_inputs
+        .entry(receiver.clone())
+        .or_default()
+        .insert(input.clone());
+    let inputs = BTreeMap::from([(
+        input.clone(),
+        user_input("source", "value", Some(QueuePolicy::Backpressure)),
+    )]);
+    dataflow
+        .running_nodes
+        .insert(receiver.clone(), running_node_with(inputs, None));
+    let signal = Arc::new(crate::local_delivery::DrainSignal::default());
+    dataflow
+        .drain_signals
+        .insert(receiver.clone(), signal.clone());
+    let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
+        tx.try_send(Timestamped {
+            inner: NodeEvent::Stop,
+            timestamp: clock.new_timestamp(),
+        })
+        .unwrap();
+    }
+    dataflow.subscribe_channels.insert(receiver, tx);
+    daemon.running.insert(dataflow_id, dataflow);
+
+    daemon
+        .handle_inter_daemon_event(InterDaemonEvent::OutputClosed {
+            dataflow_id,
+            node_id: source,
+            output_id: output,
+        })
+        .await
+        .unwrap();
+    for _ in 0..CONTROL_EVENT_HEADROOM + 2 {
+        assert!(matches!(rx.recv().await.unwrap().inner, NodeEvent::Stop));
+    }
+    signal.notify.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if matches!(
+                rx.recv().await.unwrap().inner,
+                NodeEvent::InputClosed { .. }
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("deferred remote InputClosed should reach the receiver");
+    assert!(matches!(
+        rx.recv().await.unwrap().inner,
+        NodeEvent::AllInputsClosed
+    ));
+    let completion = tokio::time::timeout(Duration::from_secs(3), events_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        completion.inner,
+        Event::DeferredAllInputsClosed {
+            delivered: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn failed_mapping_close_keeps_edge_for_retry() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let source = NodeId::from("source".to_string());
+    let receiver = NodeId::from("receiver".to_string());
+    let output = OutputId(source, DataId::from("value".to_string()));
+    let input = DataId::from("value".to_string());
+    df.mappings
+        .entry(output.clone())
+        .or_default()
+        .insert((receiver.clone(), input.clone()));
+    df.open_inputs
+        .entry(receiver.clone())
+        .or_default()
+        .insert(input.clone());
+    let (tx, mut rx) = mpsc::channel(1);
+    tx.try_send(Timestamped {
+        inner: NodeEvent::Stop,
+        timestamp: clock.new_timestamp(),
+    })
+    .unwrap();
+    df.subscribe_channels.insert(receiver.clone(), tx);
+
+    assert!(remove_mapping_and_close(&mut df, &output, &receiver, &input, &clock).is_err());
+    assert!(df.mappings[&output].contains(&(receiver.clone(), input.clone())));
+    assert!(df.open_inputs(&receiver).contains(&input));
+    drain_events(&mut rx);
+    assert!(remove_mapping_and_close(&mut df, &output, &receiver, &input, &clock).is_err());
+    assert!(df.mappings[&output].contains(&(receiver.clone(), input.clone())));
+    drain_events(&mut rx);
+    remove_mapping_and_close(&mut df, &output, &receiver, &input, &clock).unwrap();
+    assert!(!df.mappings[&output].contains(&(receiver, input)));
+}
+
+#[test]
+fn close_inputs_best_effort_continues_after_error() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let node_a: NodeId = "node_a".to_string().into();
+    let node_b: NodeId = "node_b".to_string().into();
+    let input_a: DataId = "input_a".to_string().into();
+    let input_b: DataId = "input_b".to_string().into();
+    let input_b_guard: DataId = "input_b_guard".to_string().into();
+
+    df.open_inputs
+        .entry(node_a.clone())
+        .or_default()
+        .insert(input_a.clone());
+    df.open_inputs
+        .entry(node_b.clone())
+        .or_default()
+        .extend([input_b.clone(), input_b_guard.clone()]);
+
+    let (tx_a, mut rx_a) = mpsc::channel(1);
+    tx_a.try_send(Timestamped {
+        inner: NodeEvent::AllInputsClosed,
+        timestamp: clock.new_timestamp(),
+    })
+    .unwrap();
+    df.subscribe_channels.insert(node_a.clone(), tx_a);
+
+    let (tx_b, mut rx_b) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    df.subscribe_channels.insert(node_b.clone(), tx_b);
+
+    let result = close_inputs_best_effort(
+        &mut df,
+        [
+            (node_a.clone(), input_a.clone()),
+            (node_b.clone(), input_b.clone()),
+        ],
+        &clock,
+        "test",
+    );
+
+    assert!(result.is_err(), "the failed close must reach the caller");
+    assert!(df.open_inputs(&node_a).contains(&input_a));
+    assert!(!df.open_inputs(&node_b).contains(&input_b));
+    assert!(df.open_inputs(&node_b).contains(&input_b_guard));
+
+    let events_a = drain_events(&mut rx_a);
+    assert_eq!(events_a.len(), 1);
+    assert!(matches_event(&events_a[0], "AllInputsClosed"));
+
+    let events_b = drain_events(&mut rx_b);
+    assert_eq!(events_b.len(), 1);
+    assert!(matches_event(&events_b[0], "InputClosed"));
 }
 
 // -- dora#2270: finish-straggler watchdog must spare timer/log-fed nodes --
@@ -1749,7 +2179,7 @@ fn close_input_sends_all_inputs_closed() {
     let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
     df.subscribe_channels.insert(node_a.clone(), tx);
 
-    close_input(&mut df, &node_a, &input_x, &clock);
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
     assert!(df.open_inputs(&node_a).is_empty());
 
@@ -1796,7 +2226,7 @@ fn opt_in_drains_node_with_open_timer_and_disables_its_restart() {
     let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
     df.subscribe_channels.insert(node_a.clone(), tx);
 
-    close_input(&mut df, &node_a, &data_in, &clock);
+    close_input(&mut df, &node_a, &data_in, &clock).unwrap();
 
     assert!(
         df.open_inputs(&node_a).contains(&timer_in),
@@ -1839,7 +2269,7 @@ fn opt_in_still_disables_restart_for_source_nodes() {
     let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
     df.subscribe_channels.insert(node_a.clone(), tx);
 
-    close_input(&mut df, &node_a, &input_x, &clock);
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
     assert!(
         disable_restart.load(atomic::Ordering::Acquire),
@@ -1882,6 +2312,9 @@ fn forget_node_bookkeeping_purges_only_that_node() {
             OutputId(node.clone(), output_m.clone()),
             BTreeSet::from([uuid::Uuid::new_v4()]),
         );
+        let (publish_tx, _publish_rx) = mpsc::channel(1);
+        df.remote_output_queues
+            .insert(OutputId(node.clone(), output_m.clone()), publish_tx);
     }
 
     df.forget_node_bookkeeping(&node_a);
@@ -1914,6 +2347,10 @@ fn forget_node_bookkeeping_purges_only_that_node() {
              every path, so a remove+re-add or ReplaceNode keeps an active \
              debug stream alive"
     );
+    assert!(
+        !df.remote_output_queues
+            .contains_key(&OutputId(node_a.clone(), output_m.clone()))
+    );
 
     // … while node_b's are untouched.
     assert!(
@@ -1931,6 +2368,10 @@ fn forget_node_bookkeeping_purges_only_that_node() {
     );
     assert!(
         df.debug_topic_watchers
+            .contains_key(&OutputId(node_b.clone(), output_m.clone()))
+    );
+    assert!(
+        df.remote_output_queues
             .contains_key(&OutputId(node_b.clone(), output_m.clone()))
     );
 }
@@ -1961,7 +2402,7 @@ fn close_input_deferred_by_broken_inputs() {
     df.subscribe_channels.insert(node_a.clone(), tx);
 
     // Close last open input — but broken input still exists
-    close_input(&mut df, &node_a, &input_x, &clock);
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
     let events = drain_events(&mut rx);
     // Only InputClosed, NO AllInputsClosed (broken input might recover)
@@ -1991,7 +2432,7 @@ fn close_input_on_already_broken_input() {
     df.subscribe_channels.insert(node_a.clone(), tx);
 
     // Permanently close the broken input (upstream exited)
-    close_input(&mut df, &node_a, &input_x, &clock);
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
     // broken_inputs cleaned up
     assert!(
@@ -2033,7 +2474,7 @@ fn close_input_drops_armed_deadline() {
         },
     );
 
-    close_input(&mut df, &node_a, &input_x, &clock);
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
     assert!(
         !df.input_deadlines
@@ -2075,7 +2516,7 @@ fn drained_node_finishes_despite_stale_deadline_timeout() {
     df.subscribe_channels.insert(node_c.clone(), tx);
 
     // 1. Producer of input_a exits.
-    close_input(&mut df, &node_c, &input_a, &clock);
+    close_input(&mut df, &node_c, &input_a, &clock).unwrap();
 
     // 2. Simulate the stale-deadline timeout firing as `check_input_timeouts`
     //    would: it inserts a broken record then calls break_input. With the
@@ -2091,7 +2532,7 @@ fn drained_node_finishes_despite_stale_deadline_timeout() {
     );
 
     // 3. Producer of input_b exits — node is now fully drained.
-    close_input(&mut df, &node_c, &input_b, &clock);
+    close_input(&mut df, &node_c, &input_b, &clock).unwrap();
 
     let events = drain_events(&mut rx);
     assert!(
