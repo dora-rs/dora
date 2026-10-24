@@ -259,6 +259,9 @@ impl Node {
     ///     print(event)
     /// ```
     ///
+    /// While another receive (such as a pending `recv_async`) holds the event
+    /// stream, this reports an empty list instead of waiting for it.
+    ///
     /// :rtype: list[dict]
     #[allow(clippy::should_implement_trait)]
     pub fn drain(&self, py: Python) -> PyResult<Vec<Py<PyDict>>> {
@@ -295,9 +298,12 @@ impl Node {
     ///     print(event)
     /// ```
     ///
+    /// While another receive (such as a pending `recv_async`) holds the event
+    /// stream, this reports `None` instead of waiting for it.
+    ///
     /// :rtype: dict
     #[allow(clippy::should_implement_trait)]
-    pub fn try_recv(&mut self, py: Python) -> Option<Py<PyDict>> {
+    pub fn try_recv(&self, py: Python) -> Option<Py<PyDict>> {
         // Release pools other nodes freed before yielding the next event.
         // Compiles away entirely without the `tensor-pool` feature.
         self.process_pending_tensor_pool_frees(py);
@@ -308,6 +314,9 @@ impl Node {
     }
 
     /// Check if there are any buffered events in the event stream.
+    ///
+    /// While another receive (such as a pending `recv_async`) holds the event
+    /// stream, this reports `True` instead of waiting for it.
     ///
     /// :rtype: bool
     #[allow(clippy::should_implement_trait)]
@@ -1580,6 +1589,20 @@ mod tests {
             assert!(empty);
             assert_eq!(drained, Some(0));
             assert!(matches!(received, Some(TryRecvError::Empty)));
+        });
+    }
+
+    // A pending `recv_async` keeps a shared borrow of the `Node` for as long
+    // as it waits. `try_recv` took `&mut self`, so calling it from another
+    // asyncio task raised "Already borrowed" instead of returning.
+    #[test]
+    fn try_recv_works_while_the_node_is_borrowed() {
+        let node = testing_node();
+        Python::attach(|py| {
+            let node = Py::new(py, node).unwrap();
+            let _pending_receive = node.borrow(py);
+            node.call_method0(py, "try_recv")
+                .expect("try_recv must not need an exclusive borrow");
         });
     }
 
