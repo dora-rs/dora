@@ -622,6 +622,15 @@ mod tests {
     /// warning follows a power-of-two cadence.
     #[test]
     fn steady_drops_warn_logarithmically() {
+        // A scoped capture alone races with the other tests in this binary:
+        // a callsite first hit on a thread without a subscriber caches
+        // "never" for the whole process. A global subscriber that is
+        // interested in everything makes it resolve to "always" (see
+        // `binaries/daemon/src/test_tracing.rs`).
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(WarnCounter(Default::default()));
+        });
         let (mut sched, id) = make_scheduler(1);
         let warnings = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         tracing::subscriber::with_default(WarnCounter(warnings.clone()), || {

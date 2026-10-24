@@ -1538,21 +1538,20 @@ impl EventStream {
             {
                 scheduler::log_correlation_drop_params(id, &metadata.parameters);
             }
-            Some(Event::Input { id, .. }) if should_warn_drop(drops) => {
+            _ if !should_warn_drop(drops) => {}
+            Some(Event::Input { id, .. }) => {
                 tracing::warn!(
                     input = %id,
                     drops,
                     "discarding buffered input due to queue size limit"
                 );
             }
-            Some(Event::Input { .. }) => {}
-            _ if should_warn_drop(drops) => {
+            _ => {
                 tracing::warn!(
                     drops,
                     "discarding buffered control event due to passthrough buffer limit"
                 );
             }
-            _ => {}
         }
         self.pending_passthrough.remove(evict_at);
     }
