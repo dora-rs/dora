@@ -614,6 +614,48 @@ fn hub_override_rejects_remote_coordinator_even_if_unmatched() {
     );
 }
 
+/// `--local` takes precedence over a coordinator address, so `--hub-override`
+/// must not be rejected when `DORA_COORDINATOR_ADDR` is merely exported in the
+/// environment (#3929). `--write-lockfile` stops the build at the next check,
+/// which proves the coordinator check was passed without building the node.
+#[test]
+fn hub_override_local_ignores_coordinator_env() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub override coordinator env test");
+        return;
+    }
+    let fixture = build_fixture();
+    let checkout = fixture.root.join("source/node-hub/hello");
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let out = dora(&fixture)
+        .env("DORA_COORDINATOR_ADDR", "127.0.0.1")
+        .env("DORA_COORDINATOR_PORT", "6013")
+        .args([
+            "build",
+            flow.to_str().unwrap(),
+            "--local",
+            "--write-lockfile",
+            "--hub-override",
+            &format!("test/hub-smoke-hello={}", checkout.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !stderr(&out).contains("remote coordinator"),
+        "--local must skip the remote-coordinator rejection, got: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("write-lockfile"),
+        "expected to reach the write-lockfile rejection, got: {}",
+        stderr(&out)
+    );
+}
+
 /// `dora hub publish --dry-run` validates the manifest and previews the index
 /// entry (the version from Cargo.toml, the resolved git pin + subdir) without
 /// writing anything (P3.1).
