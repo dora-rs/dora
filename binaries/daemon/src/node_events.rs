@@ -485,8 +485,13 @@ impl Daemon {
         // per-message clone of the `NodeId`/`DataId` on this output-dispatch hot
         // path.
         let output_id_key = OutputId(node_id, output_id);
-        let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
-            || dataflow.enable_debug_inspection;
+        // Only remote daemons with a mapped input subscribe to the control
+        // topic `send_to_remote_receivers` publishes on. Debug inspection
+        // (`dora topic echo/hz/info`, `dora record --proxy`) is served by
+        // `has_debug_watchers` below, and only while someone is watching;
+        // forcing the remote path for every output of a `--debug` dataflow
+        // would copy, serialize and publish each payload to no subscriber.
+        let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key);
         let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
         let mut deferred = Vec::new();
         let data_bytes = send_output_to_local_receivers(
