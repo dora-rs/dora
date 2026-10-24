@@ -727,7 +727,7 @@ fn uint8_layout(data_len: usize) -> eyre::Result<Uint8Layout> {
 /// Lets a caller size the sample before constructing the message in place via
 /// [`encode_uint8_ipc_header`].
 ///
-/// Both this and [`encode_uint8_ipc_header`] call [`uint8_layout`] (which builds
+/// Both this and [`encode_uint8_ipc_header`] call `uint8_layout` (which builds
 /// two flatbuffer headers) internally; a caller that does both prefers
 /// [`PreparedUint8Ipc`], which computes the layout once.
 pub fn uint8_ipc_len(data_len: usize) -> eyre::Result<usize> {
@@ -738,7 +738,7 @@ pub fn uint8_ipc_len(data_len: usize) -> eyre::Result<usize> {
 ///
 /// The `UInt8` construct-in-place path (used by `send_output_raw` and the
 /// Python buffer-protocol send) sizes the sample from the layout and then
-/// writes the header into it. Both steps need [`uint8_layout`], which builds
+/// writes the header into it. Both steps need `uint8_layout`, which builds
 /// the schema + record-batch flatbuffer headers. This handle computes the
 /// layout once and reuses it for both, instead of the double build a separate
 /// [`uint8_ipc_len`] + [`encode_uint8_ipc_header`] pair incurs.
@@ -850,7 +850,7 @@ pub fn schema_block_and_hash(stream: &[u8]) -> Option<(u64, &[u8])> {
 /// everything after the schema block, **including** the trailing 8-byte
 /// end-of-stream marker. The marker is what lets the receiver's persistent
 /// decoder flush a 0-row batch (whose body is empty); a non-empty batch never
-/// reads it. `None` if `stream` is malformed. See [`decode_one_batch`].
+/// reads it. `None` if `stream` is malformed. See `decode_one_batch`.
 pub fn batch_slice(stream: &[u8]) -> Option<&[u8]> {
     let block = schema_block_len(stream)?;
     // The stream is [schema block][record-batch block][body][EOS(8)]; keep
