@@ -967,6 +967,16 @@ node.set_parameter("speed", 2.0)
 print(node.get_parameter("speed"), node.list_parameters())
 ```
 
+On native Zenoh, a node created with at least one parameter in `parameters=`
+serves the same six `rcl_interfaces` parameter services and publishes
+`/parameter_events` on a change, as on DDS. A node without any gets neither,
+not even `use_sim_time`, so the `get/set_parameter` calls fail on it. With
+`rep2016` the services need the `rcl_interfaces` type descriptions in
+`AMENT_PREFIX_PATH` (and `rosout=True` needs `rcl_interfaces/msg/Log` there).
+When they can't be set up (those type descriptions are missing or can't be
+read, or the namespace has no valid Zenoh key, like `/a//b`), the node fails
+to start.
+
 The blocking calls (`call`, `take_*`) release the GIL while waiting. See
 `examples/ros2-bridge/python/{service-client,service-server,action-client,action-server,parameter}/`.
 

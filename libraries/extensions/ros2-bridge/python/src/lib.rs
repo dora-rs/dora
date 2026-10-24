@@ -8,6 +8,7 @@ use std::{
 use ::dora_ros2_bridge::transport::zenoh::{
     compatibility::{TypeDescriptionResolver, resolve_action, resolve_message, resolve_service},
     keyexpr::{DataKey, TopicToken},
+    parameters::{ParameterServer, ParameterTypes},
     pubsub::{NodePublisher, NodeSubscription, PubSubError},
     qos::ZenohQosMapping,
     service::{NodeServiceClient, NodeServiceServer, wait_for_service},
@@ -304,14 +305,7 @@ impl Ros2Context {
         // `ros2 param` / rclpy clients see them and `set_parameter` can update
         // them at runtime.
         let mut node_options: ros2_client::NodeOptions = options.into();
-        // Records each declared parameter's value type so the validator below can
-        // enforce type stability on *every* set path (the local `set_parameter`
-        // and the native rcl_interfaces services the spinner serves to remote
-        // `ros2 param` / rclpy clients), not just the Python one.
-        let mut declared_types: HashMap<
-            String,
-            std::mem::Discriminant<ros2_client::ParameterValue>,
-        > = HashMap::new();
+        let mut declared = Vec::new();
         if let Some(parameters) = parameters {
             for (key, value) in parameters.iter() {
                 let key: String = key.extract().wrap_err("parameter name must be a str")?;
@@ -327,38 +321,92 @@ impl Ros2Context {
                 }
                 let value = py_to_parameter_value(&value)
                     .wrap_err_with(|| format!("invalid value for parameter `{key}`"))?;
-                declared_types.insert(key.clone(), std::mem::discriminant(&value));
+                declared.push((key.clone(), value.clone()));
                 node_options = node_options.declare_parameter(&key, value);
             }
         }
-        // Type-stability validator: reject a set whose value type differs from the
-        // declared one. ros2-client invokes this on both the local and the
-        // service-served set paths, and calls it without holding the parameter
-        // lock, so touching only this private map cannot deadlock.
-        let validator_types = declared_types.clone();
-        node_options = node_options.parameter_validator(Box::new(
-            move |name: &str, value: &ros2_client::ParameterValue| match validator_types.get(name) {
+        // Type stability: a validator that rejects a set whose value type differs
+        // from the declared one. ros2-client (DDS) and the Zenoh parameter server
+        // apply it on *every* set path (the local `set_parameter` and the
+        // `rcl_interfaces` services remote `ros2 param` / rclpy clients use). The
+        // Zenoh server calls it while holding its parameter lock, so it must
+        // touch only this private map, never the node's parameters.
+        let declared_types: HashMap<_, _> = declared
+            .iter()
+            .map(|(name, value)| (name.clone(), std::mem::discriminant(value)))
+            .collect();
+        let type_stable = |types: HashMap<_, _>| {
+            move |name: &str, value: &ros2_client::ParameterValue| match types.get(name) {
                 Some(declared) if *declared != std::mem::discriminant(value) => Err(format!(
                     "parameter `{name}` is type-stable; cannot change its declared type"
                 )),
                 _ => Ok(()),
-            },
-        ));
-        if matches!(self.context, dora_ros2_bridge::transport::Context::Zenoh(_))
-            && !declared_types.is_empty()
-        {
-            eyre::bail!("ROS2 parameters are not yet supported by the native Zenoh transport");
-        }
-        if matches!(self.context, dora_ros2_bridge::transport::Context::Zenoh(_))
-            && rosout_requested
-        {
-            eyre::bail!("ROS2 rosout is not yet supported by the native Zenoh transport");
-        }
+            }
+        };
+        node_options =
+            node_options.parameter_validator(Box::new(type_stable(declared_types.clone())));
+        // ros2-client declares a DDS node's `/rosout` publisher itself; a Zenoh
+        // node gets it below. Its type is resolved before the node is created,
+        // so a missing type leaves nothing in the ROS graph.
+        let rosout_type = match &self.transport.config {
+            dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. }
+                if rosout_requested =>
+            {
+                Some(
+                    resolve_message(
+                        *compatibility,
+                        "rcl_interfaces",
+                        "Log",
+                        &TypeDescriptionResolver::from_ament_prefix_path(),
+                    )
+                    .wrap_err("`rosout=True` needs the `rcl_interfaces/msg/Log` type")?,
+                )
+            }
+            _ => None,
+        };
+        // ros2-client serves a DDS node's parameter services itself; a Zenoh
+        // node that declares parameters gets them below. A Zenoh node without
+        // parameters gets none, as before Zenoh parameters existed. Their types
+        // are resolved before the node is created, so a missing type leaves
+        // nothing in the ROS graph.
+        let parameter_types = match &self.transport.config {
+            dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. }
+                if !declared.is_empty() =>
+            {
+                Some(
+                    ParameterTypes::resolve(
+                        *compatibility,
+                        &TypeDescriptionResolver::from_ament_prefix_path(),
+                    )
+                    .wrap_err("ROS2 parameters on Zenoh need the `rcl_interfaces` types")?,
+                )
+            }
+            _ => None,
+        };
         let mut node = futures::executor::block_on(self.context.new_named_node(
             namespace,
             name.base_name(),
             node_options,
         ))?;
+        let rosout = match (&node, &rosout_type) {
+            (dora_ros2_bridge::transport::Node::Zenoh(node), Some(identity)) => {
+                Some(declare_zenoh_rosout(node, identity)?)
+            }
+            _ => None,
+        };
+        let parameters = match (&node, &parameter_types) {
+            (dora_ros2_bridge::transport::Node::Zenoh(node), Some(types)) => Some(
+                futures::executor::block_on(ParameterServer::declare(
+                    node,
+                    &name,
+                    types,
+                    declared,
+                    Some(Box::new(type_stable(declared_types))),
+                ))
+                .wrap_err("failed to serve the ROS2 parameter services")?,
+            ),
+            _ => None,
+        };
 
         // Start a spinner so service/discovery status events are processed.
         // One worker thread is enough (the spinner is a single task); this keeps
@@ -387,8 +435,43 @@ impl Ros2Context {
             transport: self.transport.clone(),
             messages: self.messages.clone(),
             _spinner_pool: spinner_pool,
+            _rosout: rosout,
+            parameters,
         })
     }
+}
+
+/// Declares a Zenoh node's `/rosout` publisher (`rcl_interfaces/msg/Log`).
+fn declare_zenoh_rosout(
+    node: &dora_ros2_bridge::transport::zenoh::Node,
+    identity: &dora_ros2_bridge::transport::zenoh::compatibility::RosTypeIdentity,
+) -> eyre::Result<NodePublisher> {
+    use dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
+    // rcl's `rcl_qos_profile_rosout_default`. Its 10 s lifespan has no
+    // `Ros2Qos` field and doesn't affect which subscribers match.
+    let qos = Ros2Qos {
+        reliability: Reliability::Reliable {
+            max_blocking_time: Duration::ZERO,
+        },
+        durability: Durability::TransientLocal,
+        history: History::KeepLast { depth: 1000 },
+        liveliness: Liveliness::Automatic {
+            lease_duration: None,
+        },
+    };
+    let key = DataKey::new(node.domain(), "/rosout", identity)?;
+    let token = TopicToken {
+        name: "/rosout".into(),
+        type_name: identity.dds_name.clone(),
+        type_hash: identity.key_hash_component(),
+        qos: ZenohQosMapping::from_ros_qos(&qos).to_string(),
+    };
+    Ok(futures::executor::block_on(NodePublisher::declare(
+        node,
+        key.as_str(),
+        token,
+        &qos,
+    ))?)
 }
 
 /// ROS2 Node
@@ -408,9 +491,27 @@ pub struct Ros2Node {
     // requires a running spinner for service/discovery status events
     // (`wait_for_service` panics otherwise).
     _spinner_pool: Option<futures::executor::ThreadPool>,
+    // A Zenoh node's `/rosout` publisher, kept so it stays in the ROS graph.
+    _rosout: Option<NodePublisher>,
+    // A Zenoh node's parameters and their services (`None` on DDS, where the
+    // ros2-client node has them, and on a Zenoh node without parameters).
+    parameters: Option<ParameterServer>,
 }
 
 impl Ros2Node {
+    /// The DDS node that holds the parameters when this node has no Zenoh
+    /// parameter server.
+    fn parameter_dds_node(&self) -> eyre::Result<&ros2_client::Node> {
+        if let dora_ros2_bridge::transport::Node::Zenoh(_) = &self.node {
+            eyre::bail!(
+                "this Zenoh node has no ROS2 parameters (not even `use_sim_time`): on \
+                 Zenoh, only a node created with at least one parameter in `parameters=` \
+                 has them"
+            );
+        }
+        self.dds_node()
+    }
+
     fn dds_node(&self) -> eyre::Result<&ros2_client::Node> {
         match &self.node {
             dora_ros2_bridge::transport::Node::Dds(node) => Ok(node.as_inner()),
@@ -993,13 +1094,21 @@ impl Ros2Node {
     /// :type name: str
     /// :type value: bool | int | float | str | bytes | list
     pub fn set_parameter(&self, name: &str, value: Bound<'_, PyAny>) -> eyre::Result<()> {
+        let py = value.py();
         let value = py_to_parameter_value(&value)
             .wrap_err_with(|| format!("invalid value for parameter `{name}`"))?;
         // Type stability is enforced by the validator registered in `new_node`,
-        // which ros2-client also applies to remote `ros2 param set` calls.
-        self.dds_node()?
-            .set_parameter(name, value)
-            .map_err(|e| eyre!("failed to set parameter `{name}`: {e}"))
+        // which ros2-client and the Zenoh parameter server also apply to remote
+        // `ros2 param set` calls.
+        match &self.parameters {
+            // Releases the GIL while it waits for earlier sets' events and
+            // publishes its own, so other Python threads keep running.
+            Some(parameters) => {
+                py.detach(|| futures::executor::block_on(parameters.set(name, value)))
+            }
+            None => self.parameter_dds_node()?.set_parameter(name, value),
+        }
+        .map_err(|e| eyre!("failed to set parameter `{name}`: {e}"))
     }
 
     /// Get a ROS2 parameter value, or `None` if it is not set.
@@ -1007,7 +1116,11 @@ impl Ros2Node {
     /// :type name: str
     /// :rtype: bool | int | float | str | bytes | list | None
     pub fn get_parameter(&self, py: Python<'_>, name: &str) -> eyre::Result<Py<PyAny>> {
-        match self.dds_node()?.get_parameter(name) {
+        let value = match &self.parameters {
+            Some(parameters) => parameters.get(name),
+            None => self.parameter_dds_node()?.get_parameter(name),
+        };
+        match value {
             Some(value) => parameter_value_to_py(py, &value),
             None => Ok(py.None()),
         }
@@ -1017,9 +1130,13 @@ impl Ros2Node {
     ///
     /// :rtype: list[str]
     pub fn list_parameters(&self) -> Vec<String> {
-        self.dds_node()
-            .map(|node| node.list_parameters())
-            .unwrap_or_default()
+        match &self.parameters {
+            Some(parameters) => parameters.list(),
+            None => self
+                .dds_node()
+                .map(|node| node.list_parameters())
+                .unwrap_or_default(),
+        }
     }
 
     /// Whether a ROS2 parameter with the given name is declared.
@@ -1027,7 +1144,10 @@ impl Ros2Node {
     /// :type name: str
     /// :rtype: bool
     pub fn has_parameter(&self, name: &str) -> bool {
-        self.dds_node().is_ok_and(|node| node.has_parameter(name))
+        match &self.parameters {
+            Some(parameters) => parameters.has(name),
+            None => self.dds_node().is_ok_and(|node| node.has_parameter(name)),
+        }
     }
 }
 
@@ -2589,5 +2709,473 @@ mod transport_tests {
             std::mem::size_of::<Ros2NodeOptions>(),
             std::mem::size_of::<bool>()
         );
+    }
+}
+
+#[cfg(test)]
+mod zenoh_node_feature_tests {
+    use std::time::Duration;
+
+    use dora_ros2_bridge::transport::zenoh::keyexpr::{EntityKind, LivelinessKey};
+    use futures::FutureExt;
+
+    use super::{Ros2Context, Ros2NodeOptions, Ros2Transport};
+
+    /// Waits until the context's graph holds an entity of its own session
+    /// matching `predicate`. Another test process on this host can use the
+    /// same domain and node names, so other sessions' entities don't count.
+    fn wait_for_entity(
+        context: &Ros2Context,
+        predicate: impl Fn(&LivelinessKey) -> bool,
+    ) -> LivelinessKey {
+        let dora_ros2_bridge::transport::Context::Zenoh(zenoh) = &context.context else {
+            panic!("expected a Zenoh context");
+        };
+        let zid = zenoh.zid();
+        let found = async {
+            loop {
+                let snapshot = zenoh.graph.snapshot();
+                if let Some(entity) = snapshot
+                    .entities
+                    .iter()
+                    .find(|e| e.token.zid == zid && predicate(&e.token))
+                {
+                    return entity.token.clone();
+                }
+                zenoh
+                    .graph
+                    .wait_for_change(snapshot.generation)
+                    .await
+                    .expect("graph closed while waiting");
+            }
+        };
+        futures::executor::block_on(async {
+            futures::select! {
+                token = found.fuse() => token,
+                () = futures_timer::Delay::new(Duration::from_secs(10)).fuse() => {
+                    panic!("timed out waiting for the graph entity")
+                }
+            }
+        })
+    }
+
+    /// `rosout=True` gives a Zenoh node a `/rosout` publisher, as ros2-client
+    /// does on DDS, instead of failing.
+    #[test]
+    fn a_zenoh_node_with_rosout_declares_a_rosout_publisher() {
+        let context = Ros2Context::new(
+            Some(Vec::new()),
+            Some(Ros2Transport::zenoh("humble", None).unwrap()),
+            Some(71),
+        )
+        .unwrap();
+        let node = context
+            .new_node("rosout_test", "/", Ros2NodeOptions::new(Some(true)), None)
+            .unwrap();
+        // The node keeps the publisher, so it stays in the graph.
+        assert!(node._rosout.is_some());
+
+        let token = wait_for_entity(&context, |token| {
+            token.kind == EntityKind::Publisher
+                && token
+                    .topic
+                    .as_ref()
+                    .is_some_and(|topic| topic.name == "/rosout")
+        });
+        assert_eq!(token.node_name, "rosout_test");
+        let topic = token.topic.unwrap();
+        assert_eq!(topic.type_name, "rcl_interfaces::msg::dds_::Log_");
+        // rcl's `rosout` QoS: reliable, transient local, keep last 1000.
+        assert_eq!(topic.qos, ":1:,1000:,:,:,,");
+
+        let quiet = context
+            .new_node("quiet_test", "/", Ros2NodeOptions::new(Some(false)), None)
+            .unwrap();
+        assert!(quiet._rosout.is_none());
+    }
+
+    /// `parameters=` works on a Zenoh node, as on DDS: the declared values
+    /// are read back and set through the Python API, and a set that changes a
+    /// declared type is rejected.
+    #[test]
+    fn a_zenoh_node_serves_its_declared_parameters() {
+        use pyo3::IntoPyObject;
+        use pyo3::types::{PyDict, PyDictMethods};
+        let context = Ros2Context::new(
+            Some(Vec::new()),
+            Some(Ros2Transport::zenoh("humble", None).unwrap()),
+            Some(74),
+        )
+        .unwrap();
+        pyo3::Python::attach(|py| {
+            let parameters = PyDict::new(py);
+            parameters.set_item("speed", 1.5).unwrap();
+            let node = context
+                .new_node(
+                    "param_test",
+                    "/",
+                    Ros2NodeOptions::new(Some(false)),
+                    Some(parameters),
+                )
+                .unwrap();
+
+            assert!(node.has_parameter("speed"));
+            let speed: f64 = node
+                .get_parameter(py, "speed")
+                .unwrap()
+                .extract(py)
+                .unwrap();
+            assert_eq!(speed, 1.5);
+            node.set_parameter("speed", 2.5_f64.into_pyobject(py).unwrap().into_any())
+                .unwrap();
+            let speed: f64 = node
+                .get_parameter(py, "speed")
+                .unwrap()
+                .extract(py)
+                .unwrap();
+            assert_eq!(speed, 2.5);
+            assert!(
+                node.set_parameter("speed", "fast".into_pyobject(py).unwrap().into_any())
+                    .is_err()
+            );
+            let mut names = node.list_parameters();
+            names.sort();
+            assert_eq!(names, ["speed", "use_sim_time"]);
+        });
+    }
+
+    /// Only a Zenoh node that declares parameters gets the parameter services
+    /// and `/parameter_events`. A node without them stays as it was before
+    /// Zenoh parameters existed.
+    #[test]
+    fn only_a_zenoh_node_with_parameters_serves_them() {
+        use pyo3::IntoPyObject;
+        use pyo3::types::{PyDict, PyDictMethods};
+        let context = Ros2Context::new(
+            Some(Vec::new()),
+            Some(Ros2Transport::zenoh("humble", None).unwrap()),
+            Some(77),
+        )
+        .unwrap();
+        let dora_ros2_bridge::transport::Context::Zenoh(zenoh) = &context.context else {
+            panic!("expected a Zenoh context");
+        };
+        // Local tokens update the graph synchronously, so the snapshot
+        // already holds everything `new_node` declared. Only this session's
+        // entities count: another test process on this host can use the same
+        // domain and node names.
+        let zid = zenoh.zid();
+        let entities = |node_name: &str| -> Vec<(EntityKind, String)> {
+            let mut entities: Vec<_> = zenoh
+                .graph
+                .snapshot()
+                .entities
+                .iter()
+                .filter(|e| {
+                    e.token.zid == zid
+                        && e.token.node_name == node_name
+                        && e.token.kind != EntityKind::Node
+                })
+                .map(|e| (e.token.kind, e.token.topic.as_ref().unwrap().name.clone()))
+                .collect();
+            entities.sort_by(|a, b| a.1.cmp(&b.1));
+            entities
+        };
+        pyo3::Python::attach(|py| {
+            let parameters = PyDict::new(py);
+            parameters.set_item("speed", 1.5).unwrap();
+            let _with = context
+                .new_node(
+                    "with_parameters",
+                    "/",
+                    Ros2NodeOptions::new(Some(false)),
+                    Some(parameters),
+                )
+                .unwrap();
+            let service = |name: &str| (EntityKind::Service, format!("/with_parameters/{name}"));
+            assert_eq!(
+                entities("with_parameters"),
+                [
+                    (EntityKind::Publisher, "/parameter_events".to_owned()),
+                    service("describe_parameters"),
+                    service("get_parameter_types"),
+                    service("get_parameters"),
+                    service("list_parameters"),
+                    service("set_parameters"),
+                    service("set_parameters_atomically"),
+                ]
+            );
+
+            for (name, parameters) in [("no_parameters", None), ("empty", Some(PyDict::new(py)))] {
+                let node = context
+                    .new_node(name, "/", Ros2NodeOptions::new(Some(false)), parameters)
+                    .unwrap();
+                assert!(node.parameters.is_none());
+                assert_eq!(entities(name), []);
+                assert!(node.list_parameters().is_empty());
+                assert!(!node.has_parameter("use_sim_time"));
+                // Not even `use_sim_time`, which `parameters=` can't declare,
+                // so the error mustn't send the user there for it.
+                for error in [
+                    node.get_parameter(py, "use_sim_time").unwrap_err(),
+                    node.set_parameter(
+                        "use_sim_time",
+                        true.into_pyobject(py).unwrap().to_owned().into_any(),
+                    )
+                    .unwrap_err(),
+                ] {
+                    assert_eq!(
+                        format!("{error:#}"),
+                        "this Zenoh node has no ROS2 parameters (not even `use_sim_time`): on \
+                         Zenoh, only a node created with at least one parameter in \
+                         `parameters=` has them"
+                    );
+                }
+            }
+        });
+    }
+
+    /// If the `rcl_interfaces/msg/Log` type can't be resolved, `new_node`
+    /// fails with an error naming `rosout=True` and declares nothing, so no
+    /// half-built node shows up in the ROS graph.
+    #[test]
+    fn a_rosout_type_failure_declares_no_node() {
+        if std::env::var_os("AMENT_PREFIX_PATH").is_some() {
+            eprintln!("skipped: AMENT_PREFIX_PATH is set, so rep2016 can resolve the type");
+            return;
+        }
+        let context = Ros2Context::new(
+            Some(Vec::new()),
+            Some(Ros2Transport::zenoh("rep2016", None).unwrap()),
+            Some(72),
+        )
+        .unwrap();
+        let dora_ros2_bridge::transport::Context::Zenoh(zenoh) = &context.context else {
+            panic!("expected a Zenoh context");
+        };
+        // Local tokens update the graph synchronously: a node declared and
+        // dropped inside `new_node` would bump the generation twice.
+        let before = zenoh.graph.snapshot().generation;
+
+        let Err(error) =
+            context.new_node("ghost_test", "/", Ros2NodeOptions::new(Some(true)), None)
+        else {
+            panic!("expected `new_node` to fail without the Log type description");
+        };
+
+        assert!(format!("{error:#}").contains("rosout=True"), "{error:#}");
+        assert_eq!(zenoh.graph.snapshot().generation, before);
+    }
+
+    /// Without the `rcl_interfaces` types, a node that declares parameters
+    /// fails before anything is declared, and a node without parameters still
+    /// starts, without a warning.
+    #[test]
+    fn missing_parameter_types_fail_only_a_node_with_parameters() {
+        use pyo3::types::{PyDict, PyDictMethods};
+        if std::env::var_os("AMENT_PREFIX_PATH").is_some() {
+            eprintln!("skipped: AMENT_PREFIX_PATH is set, so rep2016 can resolve the types");
+            return;
+        }
+        let context = Ros2Context::new(
+            Some(Vec::new()),
+            Some(Ros2Transport::zenoh("rep2016", None).unwrap()),
+            Some(75),
+        )
+        .unwrap();
+        let dora_ros2_bridge::transport::Context::Zenoh(zenoh) = &context.context else {
+            panic!("expected a Zenoh context");
+        };
+        pyo3::Python::attach(|py| {
+            let parameters = PyDict::new(py);
+            parameters.set_item("speed", 1.5).unwrap();
+            let before = zenoh.graph.snapshot().generation;
+            let Err(error) = context.new_node(
+                "with_parameters",
+                "/",
+                Ros2NodeOptions::new(Some(false)),
+                Some(parameters),
+            ) else {
+                panic!("expected `new_node` to fail without the rcl_interfaces types");
+            };
+            assert_eq!(
+                format!("{error:#}"),
+                "ROS2 parameters on Zenoh need the `rcl_interfaces` types: type description \
+                 for rcl_interfaces/srv/GetParameters was not found"
+            );
+            assert_eq!(zenoh.graph.snapshot().generation, before);
+
+            // A node without parameters doesn't need the types, so it starts
+            // as before, without a warning: an `error` filter for warnings
+            // naming it doesn't fail it. (Python's filters are process-wide
+            // and other tests warn in parallel, hence the narrow filter.)
+            let warnings = PyDict::new(py);
+            py.run(
+                c"import warnings\n\
+                  recorder = warnings.catch_warnings()\n\
+                  recorder.__enter__()\n\
+                  warnings.filterwarnings('error', message='.*without_parameters')",
+                Some(&warnings),
+                None,
+            )
+            .unwrap();
+            let node = context.new_node(
+                "without_parameters",
+                "/",
+                Ros2NodeOptions::new(Some(false)),
+                None,
+            );
+            py.run(
+                c"recorder.__exit__(None, None, None)",
+                Some(&warnings),
+                None,
+            )
+            .unwrap();
+            let node = node.unwrap_or_else(|error| panic!("`new_node` failed: {error:#}"));
+            assert!(node.parameters.is_none());
+        });
+    }
+
+    /// `/a//b` is a valid ros2-client namespace but no valid Zenoh key, so the
+    /// parameter services can't be declared under it. A node with parameters
+    /// fails; a node without them still starts.
+    #[test]
+    fn undeclarable_parameter_services_fail_only_a_node_with_parameters() {
+        use pyo3::types::{PyDict, PyDictMethods};
+        let context = Ros2Context::new(
+            Some(Vec::new()),
+            Some(Ros2Transport::zenoh("humble", None).unwrap()),
+            Some(76),
+        )
+        .unwrap();
+        pyo3::Python::attach(|py| {
+            let parameters = PyDict::new(py);
+            parameters.set_item("speed", 1.5).unwrap();
+            let Err(error) = context.new_node(
+                "with_parameters",
+                "/a//b",
+                Ros2NodeOptions::new(Some(false)),
+                Some(parameters),
+            ) else {
+                panic!("expected `new_node` to fail for the `/a//b` namespace");
+            };
+            assert_eq!(
+                format!("{error:#}"),
+                "failed to serve the ROS2 parameter services: invalid Zenoh key for \
+                 `/a//b/with_parameters/get_parameters`: invalid rmw_zenoh key expression"
+            );
+
+            // A node without parameters declares no services, so it starts
+            // as before.
+            let node = context
+                .new_node(
+                    "without_parameters",
+                    "/a//b",
+                    Ros2NodeOptions::new(Some(false)),
+                    None,
+                )
+                .unwrap();
+            assert!(node.parameters.is_none());
+        });
+    }
+
+    /// `set_parameter` releases the GIL while it waits: here it waits ~1 s for
+    /// another set, held up by a slow validator, to publish first, and a
+    /// Python thread keeps running meanwhile.
+    #[test]
+    fn set_parameter_lets_other_python_threads_run() {
+        use dora_ros2_bridge::ros2_client::{NodeName, ParameterValue};
+        use dora_ros2_bridge::transport::zenoh::{
+            compatibility::TypeDescriptionResolver,
+            parameters::{ParameterServer, ParameterTypes},
+        };
+        use pyo3::IntoPyObject;
+        use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods};
+        let context = Ros2Context::new(
+            Some(Vec::new()),
+            Some(Ros2Transport::zenoh("humble", None).unwrap()),
+            Some(78),
+        )
+        .unwrap();
+        pyo3::Python::attach(|py| {
+            let parameters = PyDict::new(py);
+            parameters.set_item("speed", 1.0).unwrap();
+            let mut node = context
+                .new_node(
+                    "gil_test",
+                    "/",
+                    Ros2NodeOptions::new(Some(false)),
+                    Some(parameters),
+                )
+                .unwrap();
+            // The same node, but with a validator that makes setting `slow`
+            // take a second while it holds the event order.
+            node.parameters = None;
+            let dora_ros2_bridge::transport::Node::Zenoh(zenoh_node) = &node.node else {
+                panic!("expected a Zenoh node");
+            };
+            let types = ParameterTypes::resolve(
+                dora_message::descriptor::RmwZenohCompatibility::Humble,
+                &TypeDescriptionResolver::from_ament_prefix_path(),
+            )
+            .unwrap();
+            node.parameters = Some(
+                futures::executor::block_on(ParameterServer::declare(
+                    zenoh_node,
+                    &NodeName::new("/", "gil_test").unwrap(),
+                    &types,
+                    vec![
+                        ("speed".into(), ParameterValue::Double(1.0)),
+                        ("slow".into(), ParameterValue::Double(1.0)),
+                    ],
+                    Some(Box::new(|name: &str, _: &ParameterValue| {
+                        if name == "slow" {
+                            std::thread::sleep(Duration::from_secs(1));
+                        }
+                        Ok(())
+                    })),
+                ))
+                .unwrap(),
+            );
+            let globals = PyDict::new(py);
+            py.run(
+                c"import threading, time\n\
+                  ticks = [0]\n\
+                  stop = threading.Event()\n\
+                  def tick():\n    \
+                      while not stop.wait(0.01):\n        \
+                          ticks[0] += 1\n\
+                  thread = threading.Thread(target=tick)\n\
+                  thread.start()",
+                Some(&globals),
+                None,
+            )
+            .unwrap();
+            let ticks = || -> usize {
+                py.eval(c"ticks[0]", Some(&globals), None)
+                    .unwrap()
+                    .extract()
+                    .unwrap()
+            };
+            let server = node.parameters.as_ref().unwrap();
+            let during = std::thread::scope(|scope| {
+                let slow = scope.spawn(|| {
+                    futures::executor::block_on(server.set("slow", ParameterValue::Double(2.0)))
+                });
+                // Let the slow set start first.
+                py.detach(|| std::thread::sleep(Duration::from_millis(200)));
+                let before = ticks();
+                node.set_parameter("speed", 3.0_f64.into_pyobject(py).unwrap().into_any())
+                    .unwrap();
+                let during = ticks() - before;
+                slow.join().unwrap().unwrap();
+                during
+            });
+            py.run(c"stop.set()", Some(&globals), None).unwrap();
+            py.detach(|| std::thread::sleep(Duration::from_millis(50)));
+            py.run(c"thread.join()", Some(&globals), None).unwrap();
+            // ~80 ticks when the GIL is free, ~1 when `set_parameter` holds it.
+            assert!(during >= 10, "the Python thread ticked {during} times");
+        });
     }
 }
