@@ -191,8 +191,8 @@ fn info(
                                 data.as_deref(),
                             );
                             // The payload is a self-describing Arrow IPC stream;
-                            // read its data type from the decoded array (best
-                            // effort — a malformed stream just leaves it unknown).
+                            // read its data type from the schema (best effort —
+                            // a malformed schema just leaves it unknown).
                             let data_type =
                                 data.as_ref().and_then(|bytes| decode_ipc_data_type(bytes));
                             stats_clone.record(data_size, data_type, Instant::now());
@@ -272,18 +272,26 @@ fn info(
     Ok(())
 }
 
-/// Decode just the schema/data type from a self-describing Arrow IPC stream.
-/// Returns `None` for a malformed or empty stream (the type is left unknown).
+/// Read the data type from the schema message of a self-describing Arrow IPC
+/// stream. Returns `None` for a malformed schema or one that is not a single
+/// column (the type is left unknown).
+///
+/// Only the first message's flatbuffer metadata is parsed. Decoding the
+/// record batch would copy the whole payload, for every sampled frame, just
+/// to read a type the schema already names. Going through `StreamReader` is
+/// not safe either: it allocates the message's declared `bodyLength` before
+/// checking it against the input, so a corrupt frame could abort the CLI.
 fn decode_ipc_data_type(bytes: &[u8]) -> Option<DataType> {
-    use arrow::ipc::reader::StreamReader;
-    use std::io::Cursor;
-
-    let mut reader = StreamReader::try_new(Cursor::new(bytes), None).ok()?;
-    let batch = reader.next()?.ok()?;
-    if batch.num_columns() != 1 {
-        return None;
+    // A stream message is an optional 0xFFFFFFFF continuation marker, the
+    // little-endian i32 length of its metadata, then the metadata itself.
+    let bytes = bytes.strip_prefix(&[0xff; 4]).unwrap_or(bytes);
+    let (len, rest) = bytes.split_first_chunk::<4>()?;
+    let len = usize::try_from(i32::from_le_bytes(*len)).ok()?;
+    let schema = arrow::ipc::convert::try_schema_from_flatbuffer_bytes(rest.get(..len)?).ok()?;
+    match schema.fields().as_ref() {
+        [field] => Some(field.data_type().clone()),
+        _ => None,
     }
-    Some(batch.column(0).data_type().clone())
 }
 
 /// Compute the average bandwidth in Mbps over the actual collection window.
@@ -388,6 +396,62 @@ fn format_arrow_type(data_type: &DataType) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ipc_stream(columns: Vec<(&str, arrow::array::ArrayRef)>) -> Vec<u8> {
+        let batch = arrow::record_batch::RecordBatch::try_from_iter(columns).unwrap();
+        let mut writer =
+            arrow::ipc::writer::StreamWriter::try_new(Vec::new(), &batch.schema()).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+        writer.into_inner().unwrap()
+    }
+
+    #[test]
+    fn data_type_is_read_from_the_schema_alone() {
+        let array: arrow::array::ArrayRef =
+            std::sync::Arc::new(arrow::array::UInt8Array::from(vec![0u8; 4096]));
+        let bytes = ipc_stream(vec![("data", array.clone())]);
+        assert_eq!(decode_ipc_data_type(&bytes), Some(DataType::UInt8));
+
+        // The record batch is never decoded: a stream cut off inside the
+        // body still yields the schema's type.
+        let truncated = &bytes[..bytes.len() - 2048];
+        assert_eq!(decode_ipc_data_type(truncated), Some(DataType::UInt8));
+
+        let two_columns = ipc_stream(vec![("a", array.clone()), ("b", array)]);
+        assert_eq!(decode_ipc_data_type(&two_columns), None);
+        assert_eq!(decode_ipc_data_type(b"not arrow"), None);
+        assert_eq!(
+            decode_ipc_data_type(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+            None
+        );
+    }
+
+    /// A schema message claiming a 1 TiB body: `StreamReader` would try to
+    /// allocate that before reading anything and abort the process.
+    #[test]
+    fn a_huge_declared_body_length_is_not_allocated() {
+        let schema = arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+            "data",
+            DataType::UInt8,
+            false,
+        )]);
+        let mut fbb = flatbuffers::FlatBufferBuilder::new();
+        let fb_schema = arrow::ipc::convert::schema_to_fb_offset(&mut fbb, &schema);
+        let mut message = arrow::ipc::MessageBuilder::new(&mut fbb);
+        message.add_version(arrow::ipc::MetadataVersion::V5);
+        message.add_header_type(arrow::ipc::MessageHeader::Schema);
+        message.add_header(fb_schema.as_union_value());
+        message.add_bodyLength(1 << 40);
+        let message = message.finish();
+        fbb.finish(message, None);
+        let metadata = fbb.finished_data();
+
+        let mut bytes = vec![0xff; 4];
+        bytes.extend_from_slice(&i32::try_from(metadata.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(metadata);
+        assert_eq!(decode_ipc_data_type(&bytes), Some(DataType::UInt8));
+    }
 
     #[test]
     fn calculate_hz_does_not_panic_on_oversized_window() {
