@@ -1189,6 +1189,181 @@ async fn a_failed_barrier_is_persisted_as_durably_as_a_successful_one() {
     );
 }
 
+/// A connected daemon on `machine`, with the receiver for what is sent to it.
+fn connected_test_daemon(
+    daemon_connections: &mut DaemonConnections,
+    machine: &str,
+) -> (DaemonId, tokio::sync::mpsc::Receiver<String>) {
+    let daemon_id = DaemonId::new(Some(machine.to_string()));
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let connection = crate::state::DaemonConnection::new(
+        tx,
+        Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        BTreeMap::new(),
+    );
+    daemon_connections.add(daemon_id.clone(), connection);
+    (daemon_id, rx)
+}
+
+/// The `exited_before_subscribe` of every `AllNodesReady` queued on `rx`.
+fn received_all_nodes_ready(rx: &mut tokio::sync::mpsc::Receiver<String>) -> Vec<Vec<NodeId>> {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+    let mut frames = Vec::new();
+    while let Ok(outbound) = rx.try_recv() {
+        let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+        if let DaemonCoordinatorEvent::AllNodesReady {
+            exited_before_subscribe,
+            ..
+        } = outbound.params.inner
+        {
+            frames.push(exited_before_subscribe);
+        }
+    }
+    frames
+}
+
+/// A two-daemon dataflow whose ready barrier already released, with a
+/// `sender` node on `m1` and a `receiver` node on `m2`.
+fn released_two_daemon_dataflow(
+    dataflow_id: DataflowId,
+    m1: &DaemonId,
+    m2: &DaemonId,
+) -> RunningDataflow {
+    let mut dataflow = test_running_dataflow(dataflow_id, m1.clone(), "sender".to_string().into());
+    dataflow.daemons.insert(m2.clone());
+    dataflow
+        .node_to_daemon
+        .insert("receiver".to_string().into(), m2.clone());
+    dataflow.ready_barrier_released = true;
+    dataflow
+}
+
+#[tokio::test]
+async fn a_ready_report_after_the_barrier_released_does_not_release_it_again() {
+    // #3885: the barrier can release before a daemon reports (the last
+    // pending daemon disconnected, #2028), and that daemon still reports its
+    // nodes ready once it reconnects. That late report must not broadcast a
+    // second, possibly different verdict, rewrite the stored status, or
+    // replay params to every daemon again. The reporting daemon gets the
+    // released verdict back, and no one else gets anything.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let mut daemon_connections = DaemonConnections::default();
+    let (m1, mut m1_rx) = connected_test_daemon(&mut daemon_connections, "m1");
+    let (m2, mut m2_rx) = connected_test_daemon(&mut daemon_connections, "m2");
+
+    let mut dataflow = released_two_daemon_dataflow(dataflow_id, &m1, &m2);
+    // The dataflow moved on since the release; the late report must not
+    // put the durable record back to `Running`.
+    let seeded = dataflow
+        .make_record(StoreDataflowStatus::Stopping)
+        .expect("seed record");
+    store.put_dataflow(&seeded).expect("seed");
+
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, dataflow)]),
+        daemon_connections,
+        store.clone(),
+    );
+    // An empty verdict is the one a re-release would persist as `Running`.
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: m2.clone(),
+                exited_before_subscribe: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_dataflow(&dataflow_id)
+            .expect("read back")
+            .expect("record present")
+            .status,
+        StoreDataflowStatus::Stopping,
+        "the stored status must not be rewritten"
+    );
+
+    // A late report of a node that exited must not change the verdict.
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: m2,
+                exited_before_subscribe: vec!["receiver".to_string().into()],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        coordinator.running_dataflows[&dataflow_id]
+            .exited_before_subscribe
+            .is_empty(),
+        "the released verdict stays frozen, so reconnect replays match the broadcast"
+    );
+
+    assert_eq!(
+        received_all_nodes_ready(&mut m2_rx),
+        vec![Vec::<NodeId>::new(); 2],
+        "the reporting daemon is answered with the released verdict each time"
+    );
+    assert!(
+        received_all_nodes_ready(&mut m1_rx).is_empty(),
+        "no other daemon may be sent a second AllNodesReady"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn auto_recovered_nodes_are_released_after_the_barrier_released() {
+    // Auto-recovery re-spawns a daemon's nodes into the same dataflow, whose
+    // barrier released long ago. That daemon's re-spawned nodes wait for a
+    // coordinator `AllNodesReady`, and its `ReadyOnDaemon` is the only thing
+    // that triggers one: it must not be dropped as a stale report.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let mut daemon_connections = DaemonConnections::default();
+    let (m1, mut m1_rx) = connected_test_daemon(&mut daemon_connections, "m1");
+    let (m2, mut m2_rx) = connected_test_daemon(&mut daemon_connections, "m2");
+
+    let mut coordinator = test_coordinator(
+        HashMap::from([(
+            dataflow_id,
+            released_two_daemon_dataflow(dataflow_id, &m1, &m2),
+        )]),
+        daemon_connections,
+        store,
+    );
+    // `m1` restarted and reports nothing running, so its nodes are re-spawned.
+    coordinator
+        .handle_daemon_status_report(m1.clone(), vec![])
+        .await
+        .expect("status report should be handled");
+    assert!(received_all_nodes_ready(&mut m1_rx).is_empty());
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: m1,
+                exited_before_subscribe: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        received_all_nodes_ready(&mut m1_rx),
+        vec![Vec::<NodeId>::new()],
+        "the re-spawned daemon must be released"
+    );
+    assert!(received_all_nodes_ready(&mut m2_rx).is_empty());
+}
+
 #[tokio::test]
 async fn broadcasting_the_barrier_records_it_even_with_no_daemon_reachable() {
     // Goes through the real broadcast, with no daemon connections: every
