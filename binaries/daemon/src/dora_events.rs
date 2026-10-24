@@ -136,23 +136,7 @@ impl Daemon {
     pub(crate) fn check_input_timeouts(&mut self) {
         let clock = self.clock.clone();
         for dataflow in self.running.values_mut() {
-            let mut timed_out = Vec::new();
-            for ((node_id, input_id), deadline) in &dataflow.input_deadlines {
-                // Skip inputs already tracked as broken (avoids duplicate warnings)
-                if dataflow
-                    .broken_inputs
-                    .contains_key(&(node_id.clone(), input_id.clone()))
-                {
-                    continue;
-                }
-                // Only count elapsed time once the input has actually
-                // received a message. Inputs that never saw traffic are
-                // considered "not yet armed" — see InputDeadline::is_timed_out
-                // (dora-rs/adora#149).
-                if deadline.is_timed_out() {
-                    timed_out.push((node_id.clone(), input_id.clone(), deadline.timeout));
-                }
-            }
+            let timed_out = dataflow.timed_out_inputs();
             for (node_id, input_id, timeout) in &timed_out {
                 tracing::warn!(
                     "input `{node_id}/{input_id}` timed out after {timeout:?}, \
