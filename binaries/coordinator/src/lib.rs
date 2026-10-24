@@ -359,6 +359,10 @@ pub(crate) struct Coordinator {
     pub(crate) finished_builds: IndexMap<BuildId, CachedResult>,
     pub(crate) running_dataflows: HashMap<DataflowId, RunningDataflow>,
     pub(crate) pending_restarts: HashMap<DataflowId, PendingRestart>,
+    /// Launch contexts of dataflows removed from `running_dataflows` by an
+    /// orphan reclaim, restored when a daemon reconnects and re-reports them
+    /// (see [`state::ReclaimedLaunches`]).
+    pub(crate) reclaimed_launches: state::ReclaimedLaunches,
     pub(crate) dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     pub(crate) archived_dataflows: IndexMap<DataflowId, ArchivedDataflow>,
     pub(crate) daemon_connections: DaemonConnections,
@@ -465,6 +469,7 @@ async fn start_inner(
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::new(),
         pending_restarts: HashMap::new(),
+        reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections: DaemonConnections::default(),
