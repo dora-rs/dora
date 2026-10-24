@@ -3113,7 +3113,7 @@ impl SampleAllocator {
             }
             None => {
                 let bytes = ipc_encode::encode_ipc_to_vec_data(array)
-                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e:#}")))?;
                 let mut sample = self.allocate_for_path(bytes.len(), direct)?;
                 sample.copy_from_slice(&bytes);
                 sample
