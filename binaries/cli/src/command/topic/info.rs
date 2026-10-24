@@ -276,15 +276,18 @@ fn info(
 /// stream. Returns `None` for a malformed schema or one that is not a single
 /// column (the type is left unknown).
 ///
-/// Only the schema is parsed: decoding the record batch would copy the whole
-/// payload, for every sampled frame, just to read a type the schema already
-/// names.
+/// Only the first message's flatbuffer metadata is parsed. Decoding the
+/// record batch would copy the whole payload, for every sampled frame, just
+/// to read a type the schema already names. Going through `StreamReader` is
+/// not safe either: it allocates the message's declared `bodyLength` before
+/// checking it against the input, so a corrupt frame could abort the CLI.
 fn decode_ipc_data_type(bytes: &[u8]) -> Option<DataType> {
-    use arrow::ipc::reader::StreamReader;
-    use std::io::Cursor;
-
-    let reader = StreamReader::try_new(Cursor::new(bytes), None).ok()?;
-    let schema = reader.schema();
+    // A stream message is an optional 0xFFFFFFFF continuation marker, the
+    // little-endian i32 length of its metadata, then the metadata itself.
+    let bytes = bytes.strip_prefix(&[0xff; 4]).unwrap_or(bytes);
+    let (len, rest) = bytes.split_first_chunk::<4>()?;
+    let len = usize::try_from(i32::from_le_bytes(*len)).ok()?;
+    let schema = arrow::ipc::convert::try_schema_from_flatbuffer_bytes(rest.get(..len)?).ok()?;
     match schema.fields().as_ref() {
         [field] => Some(field.data_type().clone()),
         _ => None,
@@ -418,6 +421,36 @@ mod tests {
         let two_columns = ipc_stream(vec![("a", array.clone()), ("b", array)]);
         assert_eq!(decode_ipc_data_type(&two_columns), None);
         assert_eq!(decode_ipc_data_type(b"not arrow"), None);
+        assert_eq!(
+            decode_ipc_data_type(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+            None
+        );
+    }
+
+    /// A schema message claiming a 1 TiB body: `StreamReader` would try to
+    /// allocate that before reading anything and abort the process.
+    #[test]
+    fn a_huge_declared_body_length_is_not_allocated() {
+        let schema = arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+            "data",
+            DataType::UInt8,
+            false,
+        )]);
+        let mut fbb = flatbuffers::FlatBufferBuilder::new();
+        let fb_schema = arrow::ipc::convert::schema_to_fb_offset(&mut fbb, &schema);
+        let mut message = arrow::ipc::MessageBuilder::new(&mut fbb);
+        message.add_version(arrow::ipc::MetadataVersion::V5);
+        message.add_header_type(arrow::ipc::MessageHeader::Schema);
+        message.add_header(fb_schema.as_union_value());
+        message.add_bodyLength(1 << 40);
+        let message = message.finish();
+        fbb.finish(message, None);
+        let metadata = fbb.finished_data();
+
+        let mut bytes = vec![0xff; 4];
+        bytes.extend_from_slice(&i32::try_from(metadata.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(metadata);
+        assert_eq!(decode_ipc_data_type(&bytes), Some(DataType::UInt8));
     }
 
     #[test]
