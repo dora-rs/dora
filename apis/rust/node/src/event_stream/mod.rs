@@ -598,6 +598,8 @@ impl EventStream {
                         ingress_drops.entry(input_id.clone()).or_default().clone();
                     let decoder = decoder.clone();
                     let first_undecodable_cb = first_undecodable.clone();
+                    let clock_cb = clock.clone();
+                    let clock_warned = std::sync::atomic::AtomicBool::new(false);
                     let subscriber = session
                         .declare_subscriber(key_expr)
                         .callback(move |sample| {
@@ -663,6 +665,7 @@ impl EventStream {
                                         let _ = ack_tx_cb.try_send(input_id_cb.clone());
                                         return;
                                     }
+                                    observe_input_timestamp(&clock_cb, &metadata, &clock_warned);
                                     let payload = sample.payload().clone();
                                     // Decode here (receipt order) so the per-input
                                     // persistent decoder stays in sync. This runs on
@@ -1944,6 +1947,28 @@ fn schema_plane_fatal_due(first_undecodable: &mut Option<Instant>, now: Instant)
     now.duration_since(start) >= SCHEMA_PLANE_FATAL_GRACE
 }
 
+/// Move the node's clock past the timestamp of an input that arrived on the
+/// direct zenoh path, as the daemon path does for every event it delivers.
+///
+/// Without it, an output the node sends in reaction to the input can be
+/// stamped before the input itself when the producer's machine clock runs
+/// ahead, breaking the causal order the timestamps promise.
+///
+/// A timestamp too far ahead for the clock to adopt is warned about once per
+/// input (`warned`): this runs on zenoh's IO worker for every sample, so a
+/// skewed producer would otherwise log on each one.
+fn observe_input_timestamp(
+    clock: &uhlc::HLC,
+    metadata: &dora_message::metadata::Metadata,
+    warned: &std::sync::atomic::AtomicBool,
+) {
+    if let Err(err) = clock.update_with_timestamp(&metadata.timestamp())
+        && !warned.swap(true, std::sync::atomic::Ordering::Relaxed)
+    {
+        tracing::warn!("failed to update HLC from a zenoh input (warned once per input): {err}");
+    }
+}
+
 /// Decode a zenoh data sample in receipt order. A schema-less batch (the
 /// `SCHEMA_HASH` parameter is present) decodes against the per-input decoder
 /// primed from the output's `@schema` subtopic or in-band from an earlier full
@@ -2306,6 +2331,45 @@ mod tests {
     fn input_with_queue_size(queue_size: usize) -> Input {
         serde_yaml::from_str(&format!("source: a/out\nqueue_size: {queue_size}\n"))
             .expect("parse input")
+    }
+
+    /// A zenoh-delivered input stamped by a producer whose clock runs ahead
+    /// must move this node's clock past it, so an output sent in reaction is
+    /// stamped after the input, as on the daemon path.
+    #[test]
+    fn a_zenoh_input_moves_the_node_clock_past_its_timestamp() {
+        let producer = uhlc::HLC::default();
+        let sent = producer.new_timestamp();
+        let ahead = uhlc::Timestamp::new(
+            *sent.get_time() + uhlc::NTP64::from(Duration::from_millis(100)),
+            *sent.get_id(),
+        );
+        let metadata = dora_message::metadata::Metadata::new(ahead);
+
+        let node_clock = uhlc::HLC::default();
+        assert!(node_clock.new_timestamp() < ahead);
+        let warned = std::sync::atomic::AtomicBool::new(false);
+        observe_input_timestamp(&node_clock, &metadata, &warned);
+        assert!(node_clock.new_timestamp() > ahead);
+        assert!(!warned.into_inner());
+    }
+
+    /// A timestamp past the clock's allowed drift is not adopted, and only
+    /// the first one is warned about.
+    #[test]
+    fn a_zenoh_input_too_far_ahead_is_rejected_and_warned_once() {
+        let node_clock = uhlc::HLC::default();
+        let now = node_clock.new_timestamp();
+        let far_ahead = uhlc::Timestamp::new(
+            *now.get_time() + uhlc::NTP64::from(Duration::from_secs(60)),
+            *now.get_id(),
+        );
+        let metadata = dora_message::metadata::Metadata::new(far_ahead);
+
+        let warned = std::sync::atomic::AtomicBool::new(false);
+        observe_input_timestamp(&node_clock, &metadata, &warned);
+        assert!(warned.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(node_clock.new_timestamp() < far_ahead);
     }
 
     #[test]
