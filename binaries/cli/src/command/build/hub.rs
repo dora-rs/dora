@@ -18,7 +18,7 @@ use dora_core::{
         MANIFEST_FILENAME, NodeManifest,
         inject::{InjectionResult, apply_manifest_contracts},
     },
-    types::TypeRegistry,
+    types::{FieldDef, MetadataDef, TypeDef, TypeParam, TypeRegistry},
 };
 use dora_hub_client::{
     config::ResolvedConfig,
@@ -407,6 +407,93 @@ fn resolve_live(
     Ok((resolved.version, resolved.entry, bytes))
 }
 
+/// Whether two definitions of one URN describe the same contract. Descriptions
+/// are documentation, so two package versions that only reword one agree.
+/// The destructuring is exhaustive so a field added to these types has to be
+/// classified here.
+fn same_type_contract(a: &TypeDef, b: &TypeDef) -> bool {
+    let TypeDef {
+        arrow,
+        description: _,
+        params,
+        fields,
+        metadata,
+    } = a;
+    *arrow == b.arrow
+        && fields.len() == b.fields.len()
+        && fields.iter().zip(&b.fields).all(|(x, y)| {
+            let FieldDef {
+                name,
+                r#type,
+                nullable,
+            } = x;
+            *name == y.name && *r#type == y.r#type && *nullable == y.nullable
+        })
+        && params.len() == b.params.len()
+        && params.iter().zip(&b.params).all(|(x, y)| {
+            let TypeParam { name, default } = x;
+            *name == y.name && *default == y.default
+        })
+        && metadata.len() == b.metadata.len()
+        && metadata.iter().zip(&b.metadata).all(|(x, y)| {
+            let MetadataDef {
+                key,
+                description: _,
+            } = x;
+            *key == y.key
+        })
+}
+
+/// Register a hub package's shipped types into the shared registry.
+///
+/// A URN that is already registered with the same contract (the same package
+/// used by two nodes) is skipped. `shipped_by` maps each URN a hub package
+/// registered to that package's label; a URN missing from it was loaded from
+/// the dataflow's `types/` directory.
+///
+/// A different body from another hub package is an error: neither definition
+/// was chosen by the user, and the package's ports would otherwise be
+/// contract-checked against the earlier one. A different body in `types/` is
+/// the user's own override, so it wins (as it does for `path:` manifests,
+/// see `inject_adjacent_manifests`), with a warning that the package ships
+/// something else.
+fn register_shipped_types(
+    node_id: &NodeId,
+    label: &str,
+    manifest: &NodeManifest,
+    registry: &mut TypeRegistry,
+    shipped_by: &mut BTreeMap<String, String>,
+    warnings: &mut Vec<String>,
+) -> eyre::Result<()> {
+    for (urn, def) in &manifest.types {
+        if let Some(existing) = registry.resolve(urn) {
+            if same_type_contract(existing, def) {
+                continue;
+            }
+            match shipped_by.get(urn) {
+                Some(other) => eyre::bail!(
+                    "node `{node_id}`: the `{label}` package ships type `{urn}` with a \
+                     different definition than `{other}` — one URN must have one \
+                     definition per dataflow"
+                ),
+                None => {
+                    warnings.push(format!(
+                        "node `{node_id}`: the `{label}` package ships type `{urn}` with a \
+                         different definition than the dataflow's `types/` directory — \
+                         using the `types/` definition"
+                    ));
+                    continue;
+                }
+            }
+        }
+        registry
+            .add_user_type(urn, def.clone())
+            .map_err(|e| eyre::eyre!("node `{node_id}`: the `{label}` package: {e}"))?;
+        shipped_by.insert(urn.clone(), label.to_string());
+    }
+    Ok(())
+}
+
 pub fn resolve_hub_nodes(
     dataflow: &mut Descriptor,
     registry: &mut TypeRegistry,
@@ -432,6 +519,7 @@ pub fn resolve_hub_nodes(
         return Ok(resolution);
     }
     let mut used_overrides = BTreeSet::new();
+    let mut shipped_by = BTreeMap::new();
     resolution
         .notes
         .push("`hub:` is an unstable feature — its behavior may change in future releases".into());
@@ -494,12 +582,15 @@ pub fn resolve_hub_nodes(
                         .join("\n  - ")
                 );
             }
-            for (urn, def) in &manifest.types {
-                if registry.resolve(urn).is_none() {
-                    let _ = registry.add_user_type(urn, def.clone());
-                }
-            }
             let label = format!("{} (local override)", reference.key());
+            register_shipped_types(
+                &node.id,
+                &label,
+                &manifest,
+                registry,
+                &mut shipped_by,
+                &mut resolution.warnings,
+            )?;
             let mut contracts = InjectionResult::default();
             apply_manifest_contracts(node, &manifest, &label, registry, &mut contracts);
             if !contracts.warnings.is_empty() {
@@ -649,11 +740,14 @@ pub fn resolve_hub_nodes(
         }
         // register the package's shipped types, then inject contracts and
         // check the dataflow's wiring against the declared ports
-        for (urn, def) in &manifest.types {
-            if registry.resolve(urn).is_none() {
-                let _ = registry.add_user_type(urn, def.clone());
-            }
-        }
+        register_shipped_types(
+            &node.id,
+            &label,
+            manifest,
+            registry,
+            &mut shipped_by,
+            &mut resolution.warnings,
+        )?;
         let mut contracts = InjectionResult::default();
         apply_manifest_contracts(node, manifest, &label, registry, &mut contracts);
         if !contracts.warnings.is_empty() {
@@ -855,5 +949,145 @@ mod tests {
             panic!("expected a platform-mismatch error");
         };
         assert!(err.to_string().contains("this host"), "{err}");
+    }
+
+    use super::{NodeManifest, register_shipped_types, resolve_hub_nodes};
+
+    const POSE_URN: &str = "acme/common/v1/Pose";
+
+    /// A package manifest in the `acme` namespace shipping `acme/common/v1/Pose`
+    /// with one field of the given name.
+    fn pose_manifest_yaml(name: &str, field: &str, description: &str) -> String {
+        format!(
+            "apiVersion: 1\nname: {name}\nnamespace: acme\nruntime: rust\n\
+             entrypoint: target/release/{name}\ntypes:\n  {POSE_URN}:\n    \
+             arrow: Struct\n    description: {description}\n    fields:\n      \
+             - name: {field}\n        type: Float32\n"
+        )
+    }
+
+    fn pose_manifest(name: &str, field: &str, description: &str) -> NodeManifest {
+        NodeManifest::parse(&pose_manifest_yaml(name, field, description)).unwrap()
+    }
+
+    #[test]
+    fn shipped_type_with_a_conflicting_body_is_rejected() {
+        let node: dora_message::id::NodeId = "b".to_string().into();
+        let mut registry = dora_core::types::TypeRegistry::new();
+        let mut shipped_by = std::collections::BTreeMap::new();
+        let mut warnings = Vec::new();
+
+        register_shipped_types(
+            &node,
+            "acme/a@1.0.0",
+            &pose_manifest("a", "x", "first"),
+            &mut registry,
+            &mut shipped_by,
+            &mut warnings,
+        )
+        .unwrap();
+        // same contract, only the description differs: the same type
+        register_shipped_types(
+            &node,
+            "acme/a@1.1.0",
+            &pose_manifest("a", "x", "reworded"),
+            &mut registry,
+            &mut shipped_by,
+            &mut warnings,
+        )
+        .unwrap();
+        // a different field: rejected, naming both packages
+        let err = register_shipped_types(
+            &node,
+            "acme/b@2.0.0",
+            &pose_manifest("b", "y", "first"),
+            &mut registry,
+            &mut shipped_by,
+            &mut warnings,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("`acme/b@2.0.0`"), "{err}");
+        assert!(err.contains("`acme/a@1.0.0`"), "{err}");
+        assert!(err.contains(POSE_URN), "{err}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        // the first definition is kept
+        let def = registry.resolve(POSE_URN).unwrap();
+        assert_eq!(def.fields[0].name, "x");
+    }
+
+    #[test]
+    fn local_types_dir_definition_wins_over_a_shipped_type() {
+        let node: dora_message::id::NodeId = "a".to_string().into();
+        let mut registry = dora_core::types::TypeRegistry::new();
+        // stands in for a definition `TypeRegistry::load_from_dir` read from `types/`
+        registry
+            .add_user_type(
+                POSE_URN,
+                pose_manifest("local", "z", "local").types[POSE_URN].clone(),
+            )
+            .unwrap();
+        let mut warnings = Vec::new();
+        register_shipped_types(
+            &node,
+            "acme/a@1.0.0",
+            &pose_manifest("a", "x", "first"),
+            &mut registry,
+            &mut std::collections::BTreeMap::new(),
+            &mut warnings,
+        )
+        .unwrap();
+        assert_eq!(registry.resolve(POSE_URN).unwrap().fields[0].name, "z");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("`types/` directory"),
+            "{}",
+            warnings[0]
+        );
+    }
+
+    /// End to end through `resolve_hub_nodes`: two hub packages (here both
+    /// `--hub-override` checkouts, so no index or network is involved) ship the
+    /// same URN with different bodies, and resolution fails (#3847).
+    #[test]
+    fn resolve_hub_nodes_rejects_packages_shipping_conflicting_types() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut overrides = std::collections::BTreeMap::new();
+        for (name, field) in [("a", "x"), ("b", "y")] {
+            let dir = tmp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join(super::MANIFEST_FILENAME),
+                pose_manifest_yaml(name, field, "pose"),
+            )
+            .unwrap();
+            overrides.insert(format!("acme/{name}"), dir);
+        }
+        use dora_core::descriptor::DescriptorExt;
+
+        let mut dataflow = dora_message::descriptor::Descriptor::parse(
+            b"nodes:\n  - id: a\n    hub: acme/a@^1\n  - id: b\n    hub: acme/b@^1\n".to_vec(),
+        )
+        .unwrap();
+        let mut registry = dora_core::types::TypeRegistry::new();
+
+        let err = resolve_hub_nodes(
+            &mut dataflow,
+            &mut registry,
+            true,
+            None,
+            None,
+            false,
+            &overrides,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains(
+                "ships type `acme/common/v1/Pose` with a different definition than \
+                 `acme/a (local override)`"
+            ),
+            "{err}"
+        );
     }
 }
