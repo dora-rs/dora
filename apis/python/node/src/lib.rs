@@ -259,6 +259,9 @@ impl Node {
     ///     print(event)
     /// ```
     ///
+    /// While another receive (such as a pending `recv_async`) holds the event
+    /// stream, this reports an empty list instead of waiting for it.
+    ///
     /// :rtype: list[dict]
     #[allow(clippy::should_implement_trait)]
     pub fn drain(&self, py: Python) -> PyResult<Vec<Py<PyDict>>> {
@@ -295,9 +298,12 @@ impl Node {
     ///     print(event)
     /// ```
     ///
+    /// While another receive (such as a pending `recv_async`) holds the event
+    /// stream, this reports `None` instead of waiting for it.
+    ///
     /// :rtype: dict
     #[allow(clippy::should_implement_trait)]
-    pub fn try_recv(&mut self, py: Python) -> Option<Py<PyDict>> {
+    pub fn try_recv(&self, py: Python) -> Option<Py<PyDict>> {
         // Release pools other nodes freed before yielding the next event.
         // Compiles away entirely without the `tensor-pool` feature.
         self.process_pending_tensor_pool_frees(py);
@@ -308,6 +314,9 @@ impl Node {
     }
 
     /// Check if there are any buffered events in the event stream.
+    ///
+    /// While another receive (such as a pending `recv_async`) holds the event
+    /// stream, this reports `True` instead of waiting for it.
     ///
     /// :rtype: bool
     #[allow(clippy::should_implement_trait)]
@@ -1021,8 +1030,22 @@ impl Events {
         event.map(|event| PyEvent { event })
     }
 
+    /// Lock the stream for a non-blocking call, or `None` while another
+    /// receive holds it.
+    ///
+    /// `recv_async` keeps the lock across its await for the next event, and
+    /// that await can only make progress on the asyncio thread. Blocking on
+    /// the lock there (another task calling `is_empty`, `drain` or
+    /// `try_recv`) would deadlock the event loop for good. A pending receive
+    /// owns whatever arrives next, so to these calls the stream is empty.
+    fn try_lock_inner(&self) -> Option<tokio::sync::MutexGuard<'_, EventsInner>> {
+        self.inner.try_lock().ok()
+    }
+
     fn try_recv(&self) -> Result<PyEvent, TryRecvError> {
-        let mut inner = self.inner.blocking_lock();
+        let Some(mut inner) = self.try_lock_inner() else {
+            return Err(TryRecvError::Empty);
+        };
         let event = match &mut *inner {
             EventsInner::Dora(events) => events.try_recv().map(MergedEvent::Dora),
             EventsInner::Merged(events) => try_next_merged(events),
@@ -1046,7 +1069,9 @@ impl Events {
     }
 
     fn drain(&self) -> Option<Vec<PyEvent>> {
-        let mut inner = self.inner.blocking_lock();
+        let Some(mut inner) = self.try_lock_inner() else {
+            return Some(Vec::new());
+        };
         match &mut *inner {
             EventsInner::Dora(events) => events.drain().map(|items| {
                 items
@@ -1078,7 +1103,9 @@ impl Events {
     }
 
     fn is_empty(&self) -> bool {
-        let mut inner = self.inner.blocking_lock();
+        let Some(mut inner) = self.try_lock_inner() else {
+            return true;
+        };
         match &mut *inner {
             EventsInner::Dora(events) => events.is_empty(),
             // `peek` keeps the event it looks at buffered in the `Peekable`,
@@ -1536,6 +1563,46 @@ mod tests {
                 ("b".to_string(), 20),
             ];
             assert_eq!(seen, expected);
+        });
+    }
+
+    // Regression test: a pending `recv_async` holds the stream's lock across
+    // its await. `is_empty`, `drain` and `try_recv` blocked on that lock, so
+    // calling one from another asyncio task froze the event loop for good.
+    #[test]
+    fn non_blocking_receives_do_not_wait_for_a_pending_receive() {
+        let node = testing_node();
+        let pending_receive = node.events.inner.try_lock().unwrap();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let empty = node.events.is_empty();
+                let drained = node.events.drain().map(|events| events.len());
+                let received = node.events.try_recv().err();
+                let _ = done_tx.send((empty, drained, received));
+            });
+            let result = done_rx.recv_timeout(std::time::Duration::from_secs(10));
+            drop(pending_receive);
+            let (empty, drained, received) =
+                result.expect("non-blocking receive waited on a pending receive");
+            assert!(empty);
+            assert_eq!(drained, Some(0));
+            assert!(matches!(received, Some(TryRecvError::Empty)));
+        });
+    }
+
+    // A pending `recv_async` keeps a shared borrow of the `Node` for as long
+    // as it waits. `try_recv` took `&mut self`, so calling it from another
+    // asyncio task raised "Already borrowed" instead of returning.
+    #[test]
+    fn try_recv_works_while_the_node_is_borrowed() {
+        let node = testing_node();
+        Python::attach(|py| {
+            let node = Py::new(py, node).unwrap();
+            let _pending_receive = node.borrow(py);
+            node.call_method0(py, "try_recv")
+                .expect("try_recv must not need an exclusive borrow");
         });
     }
 
