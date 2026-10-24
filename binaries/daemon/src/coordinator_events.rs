@@ -633,6 +633,9 @@ impl Daemon {
                     // older coordinator cannot crash this daemon.
                     dora_core::descriptor::validate::check_node_timing(&node)?;
                     dora_core::descriptor::validate::check_operator_ids(&node)?;
+                    if node.kind.dynamic() {
+                        self.check_dynamic_node_listener(&node_id)?;
+                    }
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -1037,6 +1040,9 @@ impl Daemon {
                     // See the matching check in `AddNode`.
                     dora_core::descriptor::validate::check_node_timing(&node)?;
                     dora_core::descriptor::validate::check_operator_ids(&node)?;
+                    if node.kind.dynamic() {
+                        self.check_dynamic_node_listener(&node_id)?;
+                    }
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)

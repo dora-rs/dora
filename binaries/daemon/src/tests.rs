@@ -305,6 +305,53 @@ async fn spawn_rejects_invalid_timing_fields() {
     assert!(!daemon.running.contains_key(&dataflow_id));
 }
 
+/// A daemon that could not bind the dynamic-node port must refuse a dataflow
+/// with a dynamic node: the node would connect to whatever holds the port
+/// (another daemon or `dora run`) and never join this dataflow.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn spawn_rejects_dynamic_node_without_listener() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+    daemon.dynamic_node_port_unavailable = Some(53291);
+
+    let descriptor: Descriptor =
+        serde_json::from_str(r#"{ "nodes": [ { "id": "dyn", "path": "dynamic" } ] }"#).unwrap();
+    let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+    let spawn_nodes = nodes.keys().cloned().collect();
+    let dataflow_id = Uuid::new_v4();
+    let err = daemon
+        .spawn_dataflow(
+            None,
+            dataflow_id,
+            std::env::temp_dir(),
+            nodes,
+            descriptor,
+            spawn_nodes,
+            false,
+            None,
+        )
+        .await
+        .err()
+        .expect("spawn must reject a dynamic node it cannot listen for");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("`dyn` is a dynamic node"), "{msg}");
+    assert!(msg.contains("53291"), "{msg}");
+    assert!(msg.contains("DORA_DAEMON_LOCAL_LISTEN_PORT"), "{msg}");
+    assert!(!daemon.running.contains_key(&dataflow_id));
+}
+
+/// Dynamic nodes are allowed exactly when the listener bound (`AddNode`,
+/// `ReplaceNode` and `spawn_dataflow` all go through this check).
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn dynamic_node_check_follows_listener_state() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+    let node_id: NodeId = "dyn".to_string().into();
+    assert!(daemon.check_dynamic_node_listener(&node_id).is_ok());
+    daemon.dynamic_node_port_unavailable = Some(53291);
+    assert!(daemon.check_dynamic_node_listener(&node_id).is_err());
+}
+
 /// Same for an operator id that is not a valid `DataId` segment: the daemon
 /// would panic in `DataId::from` building the runtime node's input/output ids.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
