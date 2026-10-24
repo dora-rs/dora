@@ -71,7 +71,8 @@ impl TypeDef {
 
     /// Build an Arrow `Schema` resolving nested struct refs and `List<T>` via the registry.
     ///
-    /// Returns `None` if the type has no field definitions or none could be resolved.
+    /// Returns `None` if the type has no field definitions or any of them could
+    /// not be resolved.
     pub fn to_arrow_schema_with_registry(&self, registry: &TypeRegistry) -> Option<Schema> {
         self.build_schema(|t| resolve_field_type(t, registry, 0))
     }
@@ -174,8 +175,11 @@ fn resolve_field_type(type_str: &str, registry: &TypeRegistry, depth: u8) -> Opt
         .or_else(|| registry.resolve_short_name(type_str))?;
 
     if def.fields.is_empty() {
-        // Struct with no field definitions — can't build a DataType
-        return None;
+        // A primitive-backed type (`std/core/v1/String`, `Bytes`, ...) maps to
+        // its own `arrow:` type, which `TypeRegistry::field_type_resolves`
+        // already accepts as a field type. A `Struct` with no field
+        // definitions still can't build a DataType and stays `None`.
+        return def.arrow_data_type();
     }
 
     let fields: Vec<Field> = def
@@ -1472,6 +1476,71 @@ mod tests {
                 "{urn} has no resolvable schema"
             );
         }
+    }
+
+    #[test]
+    fn primitive_backed_std_field_types_resolve() {
+        // `field_type_resolves` admits registry types backed by a primitive
+        // Arrow type, so the schema builder must materialize them too rather
+        // than failing closed on a field the validator accepted.
+        let field = |name: &str, ty: &str| FieldDef {
+            name: name.to_string(),
+            r#type: ty.to_string(),
+            nullable: true,
+        };
+        let def = TypeDef {
+            arrow: "Struct".to_string(),
+            description: None,
+            params: vec![],
+            fields: vec![
+                field("label", "String"),
+                field("value", "std/core/v1/Float32"),
+                field("blob", "std/core/v1/Bytes"),
+                field("tags", "List<String>"),
+            ],
+            metadata: vec![],
+        };
+        let reg = TypeRegistry::new();
+        for f in &def.fields {
+            assert!(reg.field_type_resolves(&f.r#type), "{}", f.r#type);
+        }
+        let schema = def
+            .to_arrow_schema_with_registry(&reg)
+            .expect("primitive-backed field types must resolve");
+        assert_eq!(schema.field(0).data_type(), &DataType::Utf8);
+        assert_eq!(schema.field(1).data_type(), &DataType::Float32);
+        assert_eq!(schema.field(2).data_type(), &DataType::LargeBinary);
+        assert_eq!(
+            schema.field(3).data_type(),
+            &DataType::LargeList(Arc::new(Field::new("item", DataType::Utf8, true)))
+        );
+    }
+
+    #[test]
+    fn field_less_struct_field_type_returns_none() {
+        let mut reg = TypeRegistry::new();
+        reg.insert_type(
+            "acme/v1/Opaque",
+            TypeDef {
+                arrow: "Struct".to_string(),
+                description: None,
+                params: vec![],
+                fields: vec![],
+                metadata: vec![],
+            },
+        );
+        let def = TypeDef {
+            arrow: "Struct".to_string(),
+            description: None,
+            params: vec![],
+            fields: vec![FieldDef {
+                name: "inner".to_string(),
+                r#type: "acme/v1/Opaque".to_string(),
+                nullable: true,
+            }],
+            metadata: vec![],
+        };
+        assert!(def.to_arrow_schema_with_registry(&reg).is_none());
     }
 
     #[test]
