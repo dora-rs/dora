@@ -33,7 +33,9 @@ for key in node.drain_dropped_extension_keys("my-transport"):
 
 Rust nodes get the same four operations on `DoraNode`
 (`extension_store` / `extension_load` / `extension_drop`) plus
-`dora_node_api::event_stream::extensions::drain_dropped_keys`.
+`dora_node_api::event_stream::extensions::drain_dropped_keys`. C++ nodes get
+them as free functions in `dora-node-api.h` with the Python names; see
+`examples/c++-extension-seam/`.
 
 ### Guarantees
 
