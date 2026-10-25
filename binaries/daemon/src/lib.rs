@@ -179,6 +179,7 @@ pub(crate) use fault_tolerance::{CascadingErrorCauses, FaultToleranceStats};
 pub(crate) use local_delivery::{
     break_input, close_input, node_inputs, note_output_sent_to_local_receivers,
     reject_unpinnable_backpressure_inputs, send_output_to_local_receivers,
+    send_output_to_local_receivers_from,
 };
 pub(crate) use metrics::{METRICS_INTERVAL, MetricsState};
 pub(crate) use node_exit::{

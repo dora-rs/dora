@@ -5,8 +5,9 @@ use crate::local_listener::DynamicNodeEventWrapper;
 use crate::{
     Daemon, DaemonNodeEvent, Event, InterDaemonEvent, OutputId, RunningDataflow,
     ZENOH_PUBLISH_CHANNEL_CAPACITY, ZenohOutbound, close_input, drop_extension_and_notify,
-    extension_table::ExtensionKey, local_delivery::DeferredDelivery,
-    note_output_sent_to_local_receivers, send_output_to_local_receivers, send_with_timestamp,
+    extension_table::ExtensionKey,
+    local_delivery::{DeferredDelivery, OutputSource},
+    note_output_sent_to_local_receivers, send_output_to_local_receivers_from, send_with_timestamp,
 };
 use dora_core::{
     config::{DataId, NodeId, OperatorId},
@@ -239,6 +240,7 @@ impl Daemon {
                 deferred_reply,
             } => self
                 .send_out(
+                    OutputSource::Node,
                     dataflow_id,
                     node_id,
                     output_id,
@@ -465,8 +467,10 @@ impl Daemon {
     /// could not complete (see `DeferredDelivery`). Dropping it unanswered —
     /// the dataflow is gone, delivery failed — tells the waiting listener
     /// there is nothing to wait for.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn send_out(
         &mut self,
+        source: OutputSource,
         dataflow_id: Uuid,
         node_id: NodeId,
         output_id: DataId,
@@ -489,7 +493,8 @@ impl Daemon {
             || dataflow.enable_debug_inspection;
         let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
         let mut deferred = Vec::new();
-        let data_bytes = send_output_to_local_receivers(
+        let data_bytes = send_output_to_local_receivers_from(
+            source,
             &output_id_key,
             dataflow,
             &metadata,

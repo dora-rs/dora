@@ -569,6 +569,84 @@ async fn stdout_output_reaches_local_and_remote_consumers() {
     );
 }
 
+/// Stdout/log capture starts when the process spawns, before the ready
+/// barrier, so a consumer that is spawned but has not subscribed yet (a slow
+/// import) or is restarting misses lines without anything having gone wrong.
+/// Routing captured lines through `send_out` (#3923) must not turn that into
+/// the #3201 routing-loss path: no warning and no drop, which on a
+/// backpressure input would fail `--fail-on-lost-backpressure-messages`
+/// (dora-rs/dora#3935).
+#[test]
+fn stdout_line_to_unsubscribed_consumer_is_not_a_lost_message() {
+    use dora_message::config::QueuePolicy;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let clock = Arc::new(HLC::default());
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = rt.block_on(daemon_reporting_to(coordinator_sender, clock.clone()));
+    let mut dataflow = test_dataflow();
+    let dataflow_id = dataflow.id;
+    let producer = NodeId::from("producer".to_string());
+    let output_id = OutputId(producer, DataId::from("stdout".to_string()));
+    let consumer = NodeId::from("consumer".to_string());
+    let input = DataId::from("logs".to_string());
+    dataflow
+        .mappings
+        .entry(output_id.clone())
+        .or_default()
+        .insert((consumer.clone(), input.clone()));
+    let inputs = BTreeMap::from([(
+        input,
+        user_input("producer", "stdout", Some(QueuePolicy::Backpressure)),
+    )]);
+    // Spawned (in `running_nodes`) but not subscribed yet.
+    dataflow
+        .running_nodes
+        .insert(consumer, running_node_with(inputs, None));
+    daemon.running.insert(dataflow_id, dataflow);
+
+    // Capture only the delivery, not the daemon's startup.
+    let capture = LevelCapture::new();
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            for _ in 0..2 {
+                daemon
+                    .handle_dora_event(DoraEvent::Logs {
+                        dataflow_id,
+                        output_id: output_id.clone(),
+                        message: DataMessage::Vec(AVec::from_slice(128, b"hello")),
+                        metadata: metadata::Metadata::new(clock.new_timestamp()),
+                    })
+                    .await
+                    .unwrap();
+            }
+        });
+    });
+
+    assert_eq!(
+        daemon
+            .ft_stats
+            .dropped_messages
+            .load(atomic::Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        daemon
+            .ft_stats
+            .lost_backpressure_messages
+            .load(atomic::Ordering::Relaxed),
+        0
+    );
+    let levels = capture.levels.lock().unwrap();
+    assert!(
+        !levels.contains(&tracing::Level::WARN),
+        "no warning for a consumer that has not subscribed yet: {levels:?}"
+    );
+}
+
 /// `AddNode` re-registers a node's `dora/logs` inputs. An entry left by an
 /// earlier incarnation (kept across a crash, see the test above) must be
 /// replaced, not duplicated, or every log line reaches the node twice.
