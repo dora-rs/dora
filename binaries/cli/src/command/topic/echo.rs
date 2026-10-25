@@ -313,7 +313,11 @@ fn decode_and_render(
     let len = data.len();
     let buffer = unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data)) };
     let array = decode_arrow_ipc_zero_copy(buffer)?;
-    render_array_json(array, buf)
+    // A decoded array can still make arrow panic while printing it (a
+    // corrupted run-end-encoded array passes arrow's validation).
+    catch_arrow_panic("failed to print the payload: arrow panicked", || {
+        render_array_json(array, buf)
+    })
 }
 
 /// Render a decoded Arrow array into `buf` as `{"":[...]}\n`.
@@ -359,13 +363,33 @@ fn render_array_json(array: arrow::array::ArrayData, buf: &mut Vec<u8>) -> eyre:
 /// stream every node receives. The default `require_alignment = false` decoder
 /// realigns under-aligned input rather than erroring.
 ///
-/// Like that decoder, this rejects a multi-batch stream and trailing bytes
-/// after the end-of-stream marker rather than silently returning only the first
-/// batch — `dora topic echo` must not misrepresent a malformed payload as a
-/// clean single value.
+/// Like that decoder, this rejects a multi-batch stream, a truncated stream and
+/// trailing bytes after the end-of-stream marker rather than silently returning
+/// only the first batch — `dora topic echo` must not misrepresent a malformed
+/// payload as a clean single value — and it turns a panic inside arrow-ipc on a
+/// malformed message into an error.
 fn decode_arrow_ipc_zero_copy(
-    mut buffer: arrow::buffer::Buffer,
+    buffer: arrow::buffer::Buffer,
 ) -> eyre::Result<arrow::array::ArrayData> {
+    catch_arrow_panic(
+        "failed to decode Arrow IPC stream: the decoder panicked",
+        || decode_single_batch(buffer),
+    )
+}
+
+/// Run `f`, turning a panic inside arrow into the error `"{what}: {reason}"`.
+fn catch_arrow_panic<T>(what: &str, f: impl FnOnce() -> eyre::Result<T>) -> eyre::Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let reason = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("unknown reason");
+        Err(eyre!("{what}: {reason}"))
+    })
+}
+
+fn decode_single_batch(mut buffer: arrow::buffer::Buffer) -> eyre::Result<arrow::array::ArrayData> {
     use arrow::ipc::reader::StreamDecoder;
 
     let mut decoder = StreamDecoder::new();
@@ -408,6 +432,11 @@ fn decode_arrow_ipc_zero_copy(
         }
     }
 
+    // A stream that ends inside a message (for example inside a record batch's
+    // body, or halfway through the end-of-stream marker) is truncated.
+    decoder
+        .finish()
+        .context("truncated Arrow IPC stream: it ends inside a message")?;
     let batch = batch.ok_or_else(|| eyre!("Arrow IPC stream contained no record batches"))?;
     if batch.num_columns() != 1 {
         return Err(eyre!(
@@ -560,6 +589,72 @@ mod tests {
         encoded.extend_from_slice(&[0u8; 16]);
         let err = decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(encoded)).unwrap_err();
         assert!(err.to_string().contains("trailing bytes"), "got: {err}");
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// Found by fuzzing: makes arrow-ipc panic (`convert.rs`) (#3863).
+    const PANICS_ARROW: &str = "ffffffff320000001000000000000a0000000000090004000a00000000000000000100000000000000000000000000000000000000000000000000";
+    /// Found by fuzzing: its record batch claims a huge body (#3863).
+    const CLAIMS_HUGE_BODY: &str = "ffffffff780000001000000000000a000c000a00090004000a00000010000000000104000800080000000400080000000400000001000000140000001000160010000e000f0004000000080010000000180000001c00000000000102180000000000060008000400060000000800000000000000040000006441746100000000ffffffffb8000000100000000c001a0018001700040008000c00000020000000800000000000400000000000000000000304000a0018000c00080004000a0000002c000000100000000300000000000000000000000100000003000000000000000000000000000000000000000200000000000000000000000100000000000000400000000000000003000000000000000000000000000000ffffff7f0000000000000000000000000000000000000000000000000000000000000000000000";
+
+    /// Corrupted streams make `dora topic echo` report an error and keep going
+    /// instead of crashing (#3863).
+    #[test]
+    fn corrupt_streams_are_rejected_without_panicking() {
+        let err = decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(hex(PANICS_ARROW)))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the decoder panicked: "), "got: {err}");
+        assert!(!err.contains("unknown reason"), "got: {err}");
+
+        let result =
+            decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(hex(CLAIMS_HUGE_BODY)));
+        assert!(result.is_err(), "accepted a corrupt stream");
+    }
+
+    /// A stream cut inside its end-of-stream marker is truncated, matching the
+    /// node-api decoder.
+    #[test]
+    fn a_stream_cut_inside_the_end_marker_is_rejected() {
+        let mut encoded = encode_ipc(&Int32Array::from(vec![1, 2, 3]));
+        encoded.truncate(encoded.len() - 4);
+        let err = decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(encoded)).unwrap_err();
+        assert!(err.to_string().contains("truncated"), "got: {err}");
+    }
+
+    /// A run-end-encoded array whose run end was changed in transit passes
+    /// arrow's validation, and arrow panics while printing it; echo must
+    /// report an error instead of crashing (#3863).
+    #[test]
+    fn printing_a_corrupted_run_end_array_is_an_error() {
+        use arrow::array::RunArray;
+        use arrow::datatypes::Int32Type;
+        let array =
+            RunArray::<Int32Type>::try_new(&Int32Array::from(vec![2]), &Int32Array::from(vec![42]))
+                .unwrap();
+        let mut bytes = encode_ipc(&array);
+        // The body holds the run end (2) and then the value (42).
+        let value = bytes.windows(4).rposition(|w| w == [42, 0, 0, 0]).unwrap();
+        let run_end = bytes[..value]
+            .windows(4)
+            .rposition(|w| w == [2, 0, 0, 0])
+            .unwrap();
+        bytes[run_end] = 1;
+        let decoded = decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from(bytes.as_slice()));
+        assert_eq!(decoded.unwrap().len(), 2);
+
+        let payload = dora_message::aligned_vec::AVec::from_slice(128, &bytes);
+        let mut buf = Vec::new();
+        let err = decode_and_render(payload, &mut buf)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("panicked"), "got: {err}");
     }
 
     #[test]
