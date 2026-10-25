@@ -244,7 +244,8 @@ impl Message {
                 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
                 #attributes
                 pub struct #struct_raw_name {
-                    #[serde(skip)]
+                    // ROS's `structure_needs_at_least_one_member`: a message
+                    // with no fields is still one byte on the wire.
                     pub(super) _dummy: u8,
                 }
 
@@ -590,5 +591,25 @@ mod codegen_tests {
                 "expected `{escaped}` in generated code:\n{generated}"
             );
         }
+    }
+
+    // ROS gives a message with no fields one `uint8` member
+    // (`structure_needs_at_least_one_member`), so the placeholder must be
+    // serialized: with `#[serde(skip)]` dora sent an empty body, refused ROS's
+    // byte on Zenoh, and misread the fields after a nested empty message.
+    #[test]
+    fn an_empty_message_serializes_its_one_byte_member() {
+        let message = Message {
+            package: "test_pkg".to_string(),
+            name: "Empty".to_string(),
+            members: vec![],
+            constants: vec![],
+        };
+        let (def, _impls) = message.struct_token_stream("test_pkg", false);
+        let generated = format_valid_rust(def);
+        assert!(
+            generated.contains("pub(super) _dummy: u8,") && !generated.contains("serde"),
+            "expected a serialized `_dummy: u8` member in:\n{generated}"
+        );
     }
 }

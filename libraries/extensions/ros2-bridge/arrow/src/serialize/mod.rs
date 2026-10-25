@@ -71,7 +71,13 @@ impl serde::Serialize for TypedValue<'_> {
                 self.type_info.message_name
             )))?;
         }
-        let mut s = serializer.serialize_tuple_struct(DUMMY_STRUCT_NAME, message.members.len())?;
+        let len = message.members.len().max(1);
+        let mut s = serializer.serialize_tuple_struct(DUMMY_STRUCT_NAME, len)?;
+        if message.members.is_empty() {
+            // ROS gives a message with no fields one `uint8` member
+            // (`structure_needs_at_least_one_member`), so it is one byte.
+            s.serialize_field(&0u8)?;
+        }
         for field in message.members.iter() {
             let column: Cow<_> = match input.column_by_name(&field.name) {
                 Some(input) => Cow::Borrowed(input),
@@ -587,5 +593,87 @@ mod tests {
                 "{member_type:?}: expected a null-rejection error, got: {err}"
             );
         }
+    }
+
+    /// `test_msgs/Empty` (no fields) and `test_msgs/Outer { Empty e; int32 x }`.
+    fn empty_and_outer() -> Arc<HashMap<String, HashMap<String, Message>>> {
+        use dora_ros2_bridge_msg_gen::types::primitives::NamedType;
+        let mut package = HashMap::new();
+        for (name, members) in [
+            ("Empty", vec![]),
+            (
+                "Outer",
+                vec![
+                    Member {
+                        name: "e".to_string(),
+                        r#type: MemberType::NestableType(NestableType::NamedType(NamedType(
+                            "Empty".to_string(),
+                        ))),
+                        default: None,
+                    },
+                    Member {
+                        name: "x".to_string(),
+                        r#type: MemberType::NestableType(NestableType::BasicType(BasicType::I32)),
+                        default: None,
+                    },
+                ],
+            ),
+        ] {
+            let message = Message {
+                package: "test_msgs".to_string(),
+                name: name.to_string(),
+                members,
+                constants: vec![],
+            };
+            package.insert(name.to_string(), message);
+        }
+        Arc::new(HashMap::from([("test_msgs".to_string(), package)]))
+    }
+
+    fn serialize_as(
+        messages: &Arc<HashMap<String, HashMap<String, Message>>>,
+        message_name: &str,
+        value: &ArrayRef,
+    ) -> Vec<u8> {
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed(message_name),
+            messages: messages.clone(),
+        };
+        let typed = TypedValue {
+            value,
+            type_info: &type_info,
+        };
+        cdr_encoding::to_vec::<_, LittleEndian>(&typed).unwrap()
+    }
+
+    /// ROS gives a message with no fields one `uint8` member
+    /// (`structure_needs_at_least_one_member`, from rosidl_adapter's
+    /// `struct.idl.em`), so it is one byte on the wire, nested or not.
+    #[test]
+    fn an_empty_message_is_one_byte_like_ros() {
+        let messages = empty_and_outer();
+        let empty: ArrayRef = Arc::new(StructArray::new_empty_fields(1, None));
+        assert_eq!(serialize_as(&messages, "Empty", &empty), [0]);
+
+        let outer: ArrayRef = Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new(
+                    "e",
+                    DataType::Struct(arrow::datatypes::Fields::empty()),
+                    true,
+                )),
+                empty,
+            ),
+            (
+                Arc::new(Field::new("x", DataType::Int32, true)),
+                Arc::new(Int32Array::from(vec![7])) as ArrayRef,
+            ),
+        ]));
+        // The byte, three bytes of padding to align the int32, then `x`.
+        assert_eq!(
+            serialize_as(&messages, "Outer", &outer),
+            [0, 0, 0, 0, 7, 0, 0, 0]
+        );
     }
 }
