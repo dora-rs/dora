@@ -641,10 +641,10 @@ mod pool_id_tests {
 /// Pure logic — no CUDA runtime calls.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum TransportPath {
-    /// Buffer on sender device, plain DtoD memcpy (same-device or CPU source).
+    /// Same-device GPU copy (also selected for CPU sources before DMA dispatch).
     SameDeviceDtoD,
-    /// Cross-device with P2P peer access enabled.
-    P2PPeerAccess,
+    /// Cross-device P2P copy into the receiver-device allocation.
+    P2PPeerCopy,
     /// Cross-device without P2P — CPU page-locked transit (DtoH → HtoD).
     HostStagingTransit,
 }
@@ -658,7 +658,7 @@ enum TransportPath {
 /// |----------|----------|-----|---------------------|
 /// | false    | *        | *   | `SameDeviceDtoD`    |
 /// | true     | true     | *   | `SameDeviceDtoD`    |
-/// | true     | false    | yes | `P2PPeerAccess`     |
+/// | true     | false    | yes | `P2PPeerCopy`     |
 /// | true     | false    | no  | `HostStagingTransit`|
 #[inline]
 fn classify_transport(
@@ -674,7 +674,7 @@ fn classify_transport(
         return TransportPath::SameDeviceDtoD;
     }
     if p2p_available {
-        return TransportPath::P2PPeerAccess;
+        return TransportPath::P2PPeerCopy;
     }
     TransportPath::HostStagingTransit
 }
@@ -690,9 +690,9 @@ enum WritePath {
     CpuToGpuPoolDma,
     /// GPU source → GPU pool via transit (ipc_present=1, is_cuda, transit_ptr≠0).
     GpuToGpuPoolTransit,
-    /// GPU source → GPU pool via plain DtoD `_cuda_memcpy_gpu_buf`
+    /// GPU source → receiver GPU pool via DtoD or P2P `_cuda_memcpy_gpu_buf`
     /// (ipc_present=1, is_cuda, transit_ptr=0).
-    GpuToGpuPoolDtoD,
+    GpuToGpuPoolCopy,
     /// GPU source → shmem data region via `cudaMemcpy` (ipc_present≠1, is_cuda).
     GpuToShmem,
     /// CPU source → shmem data region via `ptr::copy_nonoverlapping`
@@ -708,7 +708,7 @@ fn classify_write_path(ipc_present: u64, is_cuda: bool, transit_ptr: u64) -> Wri
             if transit_ptr != 0 {
                 WritePath::GpuToGpuPoolTransit
             } else {
-                WritePath::GpuToGpuPoolDtoD
+                WritePath::GpuToGpuPoolCopy
             }
         } else {
             WritePath::CpuToGpuPoolDma
@@ -798,7 +798,7 @@ mod transport_tests {
     fn cross_device_with_p2p() {
         assert_eq!(
             classify_transport(0, 1, true, true),
-            TransportPath::P2PPeerAccess
+            TransportPath::P2PPeerCopy
         );
     }
 
@@ -827,7 +827,7 @@ mod transport_tests {
             ((0, 1, false, false), TransportPath::SameDeviceDtoD),
             ((0, 1, false, true), TransportPath::HostStagingTransit),
             ((0, 1, true, false), TransportPath::SameDeviceDtoD),
-            ((0, 1, true, true), TransportPath::P2PPeerAccess),
+            ((0, 1, true, true), TransportPath::P2PPeerCopy),
         ];
         for ((s, r, p2p, cuda), expected) in cases {
             let got = classify_transport(*s, *r, *p2p, *cuda);
@@ -864,7 +864,7 @@ mod transport_tests {
 
     #[test]
     fn write_path_gpu_to_gpu_pool_dtod() {
-        assert_eq!(classify_write_path(1, true, 0), WritePath::GpuToGpuPoolDtoD);
+        assert_eq!(classify_write_path(1, true, 0), WritePath::GpuToGpuPoolCopy);
     }
 
     #[test]
@@ -887,7 +887,7 @@ mod transport_tests {
         // current behaviour; if cache-miss transit recovery is added
         // later, this test must be updated.
         let path = classify_write_path(1, true, 0);
-        assert_eq!(path, WritePath::GpuToGpuPoolDtoD);
+        assert_eq!(path, WritePath::GpuToGpuPoolCopy);
     }
 
     #[test]
@@ -898,7 +898,7 @@ mod transport_tests {
         let cases: &[(u64, bool, u64, WritePath)] = &[
             (1, false, 0, WritePath::CpuToGpuPoolDma),
             (1, false, 1, WritePath::CpuToGpuPoolDma),
-            (1, true, 0, WritePath::GpuToGpuPoolDtoD),
+            (1, true, 0, WritePath::GpuToGpuPoolCopy),
             (1, true, 1, WritePath::GpuToGpuPoolTransit),
             (0, false, 0, WritePath::CpuToShmem),
             (0, false, 1, WritePath::CpuToShmem),
@@ -1010,6 +1010,9 @@ _lib.cudaMalloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t]
 _lib.cudaMemcpy.restype = ctypes.c_int
 _lib.cudaMemcpy.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
 
+_lib.cudaMemcpyPeer.restype = ctypes.c_int
+_lib.cudaMemcpyPeer.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t]
+
 _lib.cudaFree.restype = ctypes.c_int
 _lib.cudaFree.argtypes = [ctypes.c_void_p]
 
@@ -1035,7 +1038,7 @@ _lib.cudaIpcCloseMemHandle.restype = ctypes.c_int
 _lib.cudaIpcCloseMemHandle.argtypes = [ctypes.c_void_p]
 
 # Persistent state: per-slot GPU buffer cache
-_gpu_bufs = {}    # slot -> (d_ptr, size)
+_gpu_bufs = {}    # slot -> (d_ptr, size, allocation_device)
 
 def _register_host(ptr, size):
     """Pin host memory. Idempotent — error 712 (already registered) is ok."""
@@ -1133,7 +1136,7 @@ def _transit_copy_gpu_buf(slot, src_ptr, src_dev, transit_ptr, dst_dev, size):
     can surface the error instead of silently delivering stale data."""
     if slot not in _gpu_bufs:
         raise RuntimeError(f"GPU pool buffer for slot {slot} not initialised")
-    dst, capacity = _gpu_bufs[slot]
+    dst, capacity, _ = _gpu_bufs[slot]
     if size > capacity:
         raise RuntimeError(
             f"write size {size} exceeds GPU pool buffer capacity {capacity} (slot={slot})"
@@ -1173,24 +1176,39 @@ def _cuda_memcpy(dst, src, size, kind):
         raise RuntimeError(f"cudaMemcpy(0x{dst:x}, 0x{src:x}, {size}, {kind}) failed: {err}")
     _lib.cudaDeviceSynchronize()
 
-def _cuda_memcpy_gpu_buf(slot, src_ptr, size):
-    """Copy *size* bytes from *src_ptr* (GPU) into the pool's pinned GPU buffer
-    identified by *slot*.  Used by write_tensor_pool when both source and pool
-    buffer are GPU-resident (same-device DtoD copy)."""
+def _cuda_memcpy_gpu_buf(slot, src_ptr, size, src_device):
+    """Copy into the registered GPU allocation and complete before publishing.
+
+    The pool belongs to the receiver's device, independently of the caller's
+    current device. Same-device writes keep DtoD; cross-device writes use P2P.
+    """
     if slot not in _gpu_bufs:
         raise RuntimeError(f"GPU pool buffer for slot {slot} not initialised")
-    dst, capacity = _gpu_bufs[slot]
+    dst, capacity, dst_device = _gpu_bufs[slot]
     if size > capacity:
-        # The GPU buffer was sized at registration and its IPC handle is
-        # already exported; growing it would invalidate the receiver's
-        # imported handle.  Reject rather than overflow the allocation.
         raise RuntimeError(
             f"write size {size} exceeds GPU pool buffer capacity {capacity} (slot={slot})"
         )
-    err = _lib.cudaMemcpy(ctypes.c_void_p(dst), ctypes.c_void_p(src_ptr), size, 3)
-    if err != 0:
-        raise RuntimeError(f"cudaMemcpy GPU buf DtoD (slot={slot}, 0x{dst:x}←0x{src_ptr:x}, {size}B) failed: {err}")
-    _lib.cudaDeviceSynchronize()
+    saved = _get_cuda_device()
+    try:
+        err = _lib.cudaSetDevice(dst_device)
+        if err != 0:
+            raise RuntimeError(f'cudaSetDevice({dst_device}) failed: {err}')
+        if src_device == dst_device:
+            err = _lib.cudaMemcpy(ctypes.c_void_p(dst), ctypes.c_void_p(src_ptr), size, 3)
+        else:
+            err = _lib.cudaMemcpyPeer(
+                ctypes.c_void_p(dst), dst_device,
+                ctypes.c_void_p(src_ptr), src_device, size,
+            )
+        if err != 0:
+            raise RuntimeError(f'GPU pool copy (slot={slot}, {src_device}->{dst_device}) failed: {err}')
+        err = _lib.cudaDeviceSynchronize()
+        if err != 0:
+            raise RuntimeError(f'GPU pool copy synchronization (slot={slot}) failed: {err}')
+    finally:
+        _set_cuda_device(saved)
+
 
 def _get_gpu_buf(slot, size):
     """Get or allocate a GPU buffer for the given slot. Reuses when size matches."""
@@ -1202,7 +1220,7 @@ def _get_gpu_buf(slot, size):
     err = _lib.cudaMalloc(ctypes.byref(d_ptr), size)
     if err != 0:
         raise RuntimeError(f'cudaMalloc({size}) failed: {err}')
-    _gpu_bufs[slot] = (d_ptr.value, size)
+    _gpu_bufs[slot] = (d_ptr.value, size, _get_cuda_device())
     return d_ptr.value
 
 def _free_gpu_buf(slot):
@@ -1259,7 +1277,7 @@ def dma_copy(ptr, size, slot, no_dma):
     reallocation would invalidate the receiver's imported handle).
     """
     if slot in _gpu_bufs:
-        _, capacity = _gpu_bufs[slot]
+        _, capacity, _ = _gpu_bufs[slot]
         if size > capacity:
             raise RuntimeError(
                 f"write size {size} exceeds GPU pool buffer capacity {capacity} (slot={slot})"
@@ -2060,12 +2078,10 @@ impl Pool<'_> {
             }
         }
 
-        // GPU pool: allocate GPU buffer on current device, copy data, export
-        // IPC handle for cross-process zero-copy access.  When the source
-        // tensor is also on CUDA (GPU→GPU), the source and pool buffer are on
-        // the same device (sender's current CUDA device), so a plain DtoD
-        // memcpy suffices.  When the source is CPU, `dma_copy` does a pinned
-        // host→device DMA copy (existing path).
+        // GPU pool: allocate on the receiver device and export its IPC handle.
+        // CUDA sources use DtoD on the same device, P2P across peer-capable
+        // devices, or the existing host-staging fallback without P2P.
+        // CPU sources use the existing host→device DMA path.
         // Resolve sender and receiver device indices for cross-device detection.
         let sender_device_idx = tensor_device
             .strip_prefix("cuda")
@@ -2097,6 +2113,10 @@ impl Pool<'_> {
             && let Ok(helpers) = get_cuda_helpers(py)
         {
             let bound = helpers.bind(py);
+            let saved_device: i32 = bound
+                .call_method0("_get_cuda_device")
+                .and_then(|r| r.extract::<i32>())
+                .unwrap_or(0);
 
             // Enable P2P for the sender/receiver pair before any IPC operations.
             // Gate on a CUDA source: for a CPU source sender_device_idx defaults
@@ -2185,14 +2205,14 @@ impl Pool<'_> {
                     // saves/restores explicitly so later cudaMalloc calls land
                     // on the right GPU.
                 } else {
-                    // Same-device or P2P available: allocate on sender device.
+                    // Allocate on the receiver device, including when P2P is available.
                     // Save the current device and restore before returning
                     // so later cudaMalloc calls land on the right GPU.
                     let saved_dev: i32 = bound
                         .call_method0("_get_cuda_device")
                         .and_then(|r| r.extract::<i32>())
                         .unwrap_or(0);
-                    let _ = bound.call_method1("_set_cuda_device", (sender_device_idx,));
+                    let _ = bound.call_method1("_set_cuda_device", (receiver_device_idx,));
                     let result = {
                         let dst: u64 = bound
                             .call_method1("_get_gpu_buf", (pool_counter, size))
@@ -2202,7 +2222,10 @@ impl Pool<'_> {
                             // Only export a handle if the DtoD copy succeeded —
                             // otherwise the receiver would import uninitialised memory.
                             if bound
-                                .call_method1("_cuda_memcpy", (dst, ptr_val, size, 3u32))
+                                .call_method1(
+                                    "_cuda_memcpy_gpu_buf",
+                                    (pool_counter, ptr_val, size, sender_device_idx),
+                                )
                                 .is_ok()
                             {
                                 Some(dst)
@@ -2234,6 +2257,9 @@ impl Pool<'_> {
                 result
             };
 
+            // Export the allocation from its owning device, then restore the
+            // caller even if allocation, copy or handle export failed.
+            let _ = bound.call_method1("_set_cuda_device", (receiver_device_idx,));
             if let Some(gpu_ptr) = gpu_ptr
                 && let Ok(handle) = bound
                     .call_method1("_ipc_export", (gpu_ptr,))
@@ -2248,6 +2274,7 @@ impl Pool<'_> {
                 }
                 ipc_written = true;
             }
+            let _ = bound.call_method1("_set_cuda_device", (saved_device,));
         }
 
         // A CUDA receiver's shmem is header-only and useless without the IPC
@@ -2684,10 +2711,18 @@ impl Pool<'_> {
                                             )
                                             .map(|_| ())
                                     }
-                                    WritePath::GpuToGpuPoolDtoD => bound
+                                    WritePath::GpuToGpuPoolCopy => bound
                                         .call_method1(
                                             "_cuda_memcpy_gpu_buf",
-                                            (counter, ptr_val, size),
+                                            (
+                                                counter,
+                                                ptr_val,
+                                                size,
+                                                tensor_device
+                                                    .strip_prefix("cuda:")
+                                                    .and_then(|index| index.parse::<i32>().ok())
+                                                    .unwrap_or(0),
+                                            ),
                                         )
                                         .map(|_| ()),
                                     _ => {
@@ -2920,13 +2955,17 @@ impl Pool<'_> {
                                             )
                                             .map(|_| ())
                                     }
-                                    WritePath::GpuToGpuPoolDtoD => bound
+                                    WritePath::GpuToGpuPoolCopy => bound
                                         .call_method1(
                                             "_cuda_memcpy_gpu_buf",
                                             (
                                                 parse_pool_counter(&buffer_id).unwrap_or(0),
                                                 ptr_val,
                                                 size,
+                                                tensor_device
+                                                    .strip_prefix("cuda:")
+                                                    .and_then(|index| index.parse::<i32>().ok())
+                                                    .unwrap_or(0),
                                             ),
                                         )
                                         .map(|_| ()),
@@ -3830,5 +3869,21 @@ impl Pool<'_> {
         }
 
         Ok(Some(dict.into()))
+    }
+}
+
+#[cfg(test)]
+mod cuda_helper_tests {
+    #[test]
+    fn gpu_copy_routing_and_completion() {
+        // Exercise the actual embedded Python helpers without a CUDA driver.
+        // The hardware dataflow separately checks allocation and full payloads.
+        let python = std::env::var_os("PYO3_PYTHON").unwrap_or_else(|| "python3".into());
+        let status = std::process::Command::new(python)
+            .args(["-m", "unittest", "discover", "-s"])
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../tests"))
+            .status()
+            .expect("Python must be available to test the tensor-pool Python crate");
+        assert!(status.success(), "CUDA helper regressions failed");
     }
 }

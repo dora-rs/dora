@@ -59,6 +59,38 @@ node.free_tensor_pool(pool_id)
 Runnable dataflows are in [`examples/`](examples/), covering CPU↔CPU, CPU↔CUDA,
 CUDA↔CUDA and the negative lifecycle cases.
 
+### GPU pool placement and write completion
+
+For a local CUDA receiver, `register_tensor_pool(info, device="cuda:N")`
+allocates the pool on that receiver device and exports that allocation's IPC
+handle. A CUDA writer on another device copies the complete payload into this
+pool with `cudaMemcpyPeer` when P2P is available. Same-device writes use DtoD;
+without P2P the existing pinned-host staging fallback is used. The copy and
+receiver-device synchronization finish before the write generation is published.
+An allocation, copy, or completion failure is surfaced rather than publishing a
+successful frame. Device indices are process-local (`CUDA_VISIBLE_DEVICES`).
+
+The receiver imports the handle once and can retain its view across same-host,
+fixed-size writes, provided it acknowledges each frame before the next overwrite.
+Printing `tensor.device` alone does not establish the physical allocation device
+of a peer-accessible IPC mapping.
+
+Regression checks:
+
+```bash
+# No CUDA hardware needed; exercises the actual embedded helpers with a fake driver.
+python -m unittest discover -s libraries/extensions/tensor-pool/tests
+
+# Needs a tensor-pool-enabled wheel/CLI and two visible P2P-capable GPUs.
+dora run libraries/extensions/tensor-pool/tests/cuda_target_pool.yml
+SOURCE_DEVICE=1 TARGET_DEVICE=0 dora run libraries/extensions/tensor-pool/tests/cuda_target_pool.yml
+```
+
+The GPU check queries the original allocation in the sender process, verifies
+that both registration and writes preserve the caller's CUDA device, and checks
+all bytes of four changing frames while retaining one receiver view. It is a
+correctness check, not a throughput benchmark.
+
 ## Known open defects
 
 | Issue | Symptom |
