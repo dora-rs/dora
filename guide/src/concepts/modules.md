@@ -267,7 +267,7 @@ sentinels (which the daemon matches verbatim).
 An inner node's `path:` that is a single name without an extension, such as
 `path: dora-echo`, still means the file next to the module (`modules/dora-echo`).
 If no such file exists
-when the node starts, the name is looked up like a top-level `path:` instead
+(a folder of that name doesn't count) when the node starts, the name is looked up like a top-level `path:` instead
 (the dataflow directory, the uv environment, then `$PATH`), so a command that a
 `build:` step installs or that is on `$PATH` runs from a module in any
 directory. `dora expand` shows that name as the node's `path_fallback`.

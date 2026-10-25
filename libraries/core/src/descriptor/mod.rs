@@ -620,9 +620,11 @@ fn with_exe_extension(source: &str) -> PathBuf {
 /// [`resolve_path`] for a node's `path`. A node with a `path_fallback` (module
 /// expansion sets it to the name a bare module node `path:` was written as,
 /// #3826) runs the file at `path` if there is one, so a file next to the
-/// module wins, and else the fallback, looked up like a top-level `path`.
-/// `path` itself is not looked up in uv or on `$PATH` then, where a relative
-/// `modules/tool` would be found from the current directory instead.
+/// module wins, and else the fallback, looked up like a top-level `path`. A
+/// folder at `path` (often a Python package's source, named like its console
+/// script) is not a file, so the fallback is used. `path` itself is not looked
+/// up in uv or on `$PATH` then, where a relative `modules/tool` would be found
+/// from the current directory instead.
 pub fn resolve_node_path(
     path: &str,
     fallback: Option<&str>,
@@ -632,7 +634,7 @@ pub fn resolve_node_path(
         return resolve_path(path, working_dir);
     };
     let local = working_dir.join(with_exe_extension(path));
-    if local.exists() {
+    if local.is_file() {
         return absolutize_preserving_symlinks(&local);
     }
     resolve_path(fallback, working_dir).wrap_err_with(|| {
@@ -1553,6 +1555,24 @@ nodes:
         assert_eq!(
             resolve_node_path(&path, fallback, dir).unwrap(),
             dir.join("modules").join(&file)
+        );
+    }
+
+    /// A Python package shipped with a module often has a source folder named
+    /// like its console script (`modules/my-node/`). A folder can't be run, so
+    /// it must not stop the fallback lookup.
+    #[test]
+    fn a_folder_next_to_the_module_does_not_block_the_fallback() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let file = format!("my-node{}", std::env::consts::EXE_SUFFIX);
+        std::fs::create_dir_all(dir.join("modules").join(&file)).unwrap();
+        std::fs::write(dir.join(&file), "").unwrap();
+
+        let path = Path::new("modules").join("my-node");
+        assert_eq!(
+            resolve_node_path(path.to_str().unwrap(), Some("my-node"), dir).unwrap(),
+            dir.join(&file)
         );
     }
 

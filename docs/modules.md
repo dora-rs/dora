@@ -301,7 +301,8 @@ dora run examples/module-dataflow/dataflow.yml
 ## Commands inside modules
 
 For an inner `path: dora-echo`, Dora first tries `dora-echo` beside the module
-file. If it is missing, Dora looks up the original name in the dataflow
+file. If no such file exists (a folder of that name doesn't count), Dora
+looks up the original name in the dataflow
 directory, the uv environment, then `$PATH`. Expansion records the name as
 `path_fallback` without checking the filesystem, so building an executable
 cannot change expansion or its fingerprint.
