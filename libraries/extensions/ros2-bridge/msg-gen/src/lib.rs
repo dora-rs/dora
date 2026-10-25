@@ -608,6 +608,13 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             name: String,
             qos: &ffi::Ros2QosPolicies,
         ) -> eyre::Result<(dora_ros2_bridge::transport::zenoh::keyexpr::DataKey, dora_ros2_bridge::transport::zenoh::keyexpr::TopicToken)> {
+            // A relative name is under the node's namespace, as on DDS
+            // (ros2-client `Name::to_dds_name`).
+            let name = if name.starts_with('/') {
+                name
+            } else {
+                format!("{}/{}", node.namespace().trim_end_matches('/'), name)
+            };
             let identity = dora_ros2_bridge::transport::zenoh::compatibility::resolve_service(
                 compatibility,
                 package,

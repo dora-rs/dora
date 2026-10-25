@@ -6,10 +6,64 @@
 #include "ros2-bridge/msg/example_interfaces.h"
 
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <vector>
 
+// A relative name is under the node's namespace, as on DDS: one call between a
+// server and a client on a node in `node_namespace`, one of them named
+// relative to it (empty namespace) and the other absolute.
+int call_across_namespaces(Ros2Context &context, const char *node_namespace,
+                           const char *server_namespace, const char *client_namespace)
+{
+    auto events = empty_combined_events();
+    auto qos = qos_default();
+    qos.reliable = true;
+    auto node = context.new_node(node_namespace, "cxx_zenoh_namespaced");
+    auto server = create_service_server_example_interfaces_AddTwoInts(*node, server_namespace, "add_two_ints", qos, events);
+    auto client = create_client_example_interfaces_AddTwoInts(*node, client_namespace, "add_two_ints", qos, events);
+    client->wait_for_service(node);
+    example_interfaces::AddTwoInts_Request request{};
+    request.a = 2;
+    request.b = 3;
+    client->send_request(request);
+    auto request_event = events.next();
+    if (!server->matches(request_event))
+    {
+        std::cerr << node_namespace << ": request did not reach the server" << std::endl;
+        return 1;
+    }
+    auto received = server->downcast(std::move(request_event));
+    example_interfaces::AddTwoInts_Response response{};
+    response.sum = received->get_request().a + received->get_request().b;
+    server->send_response(received->get_id(), response);
+    auto response_event = events.next();
+    if (!client->matches(response_event) || client->downcast(std::move(response_event)).sum != 5)
+    {
+        std::cerr << node_namespace << ": wrong or missing response" << std::endl;
+        return 1;
+    }
+    std::cout << "relative and absolute names meet under " << node_namespace << std::endl;
+    return 0;
+}
+
+int run(int argc, char **argv);
+
 int main(int argc, char **argv)
+{
+    // A service that is never found throws from `wait_for_service`.
+    try
+    {
+        return run(argc, argv);
+    }
+    catch (const std::exception &error)
+    {
+        std::cerr << error.what() << std::endl;
+        return 1;
+    }
+}
+
+int run(int argc, char **argv)
 {
     if (argc != 2 || (std::strcmp(argv[1], "humble") != 0 && std::strcmp(argv[1], "rep2016") != 0))
     {
@@ -145,5 +199,11 @@ int main(int argc, char **argv)
         }
     }
     std::cout << argv[1] << ": " << in_flight + extra << " requests past the in-flight limit answered" << std::endl;
+
+    if (call_across_namespaces(*context, "/robot1", "/robot1", "") != 0 ||
+        call_across_namespaces(*context, "/robot2", "", "/robot2") != 0)
+    {
+        return 1;
+    }
     return 0;
 }
