@@ -76,7 +76,8 @@ class TargetGpuTests(unittest.TestCase):
         return self.helpers['_get_gpu_buf'](7, 1024)
 
     def write(self, source_device):
-        self.helpers['_cuda_memcpy_gpu_buf'](7, 8192, 1024, source_device)
+        self.cuda.device = source_device
+        self.helpers['_cuda_memcpy_gpu_buf'](7, 8192, 1024)
 
     def test_cross_gpu_copy_targets_pool_device_and_synchronizes(self):
         pointer = self.allocate(1)
@@ -95,11 +96,11 @@ class TargetGpuTests(unittest.TestCase):
 
     def test_same_gpu_keeps_device_to_device_copy(self):
         pointer = self.allocate(1)
-        self.cuda.device = 0
+        self.cuda.device = 1
         self.write(1)
         self.assertIn(('copy', 1, (pointer, 8192, 1024, 3)), self.cuda.calls)
         self.assertFalse(any(call[0] == 'peer' for call in self.cuda.calls))
-        self.assertEqual(self.cuda.device, 0)
+        self.assertEqual(self.cuda.device, 1)
 
     def test_host_staging_still_uses_receiver_allocation(self):
         pointer = self.allocate(1)
@@ -129,7 +130,7 @@ class TargetGpuTests(unittest.TestCase):
     def test_capacity_guard_runs_before_copy(self):
         self.allocate(1)
         with self.assertRaises(RuntimeError):
-            self.helpers['_cuda_memcpy_gpu_buf'](7, 8192, 1025, 0)
+            self.helpers['_cuda_memcpy_gpu_buf'](7, 8192, 1025)
         self.assertFalse(any(call[0] in ('copy', 'peer') for call in self.cuda.calls))
 
     def test_allocation_device_is_retained_when_slot_is_reused(self):

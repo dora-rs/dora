@@ -59,6 +59,15 @@ node.free_tensor_pool(pool_id)
 Runnable dataflows are in [`examples/`](examples/), covering CPU↔CPU, CPU↔CUDA,
 CUDA↔CUDA and the negative lifecycle cases.
 
+### Receiver-resident GPU pool semantics (proposed behavior change)
+
+This changes the local P2P path: upstream keeps the allocation on the sender
+GPU and exposes it to the peer through IPC; this branch materializes each frame
+on the receiver GPU. Both can provide correct cross-device access. The new path
+pays for the complete peer copy in `write_tensor_pool`, trading write cost for
+local receiver reads. It is not an unconditional throughput optimization, and
+maintainers should assess this default-placement change as an API design choice.
+
 ### GPU pool placement and write completion
 
 For a local CUDA receiver, `register_tensor_pool(info, device="cuda:N")`
@@ -180,3 +189,36 @@ reworking this:
 4. API shape: four methods versus a flag on `send_output`.
 5. Measurement against zenoh-shm **plus caller-side pinning**, on a real
    workload — not against non-pinned zenoh-shm.
+
+### Comparing complete receiver workloads
+
+The pure-transfer numbers measure different placement contracts and must not
+be used alone to claim that either implementation is faster for an application.
+The following harness uses identical seeded frames, one persistent view, one
+CLI and two Python environments. It reports both delivery-only and a separate
+**delivery + full receiver consumption** endpoint. Consumption is either a GPU
+sum over all elements or a copy into a preallocated receiver-local tensor;
+correctness verification and ACK follow both endpoints. Input generation and
+allocation are outside measured steady-state intervals.
+
+```bash
+python libraries/extensions/tensor-pool/tests/compare_gpu_consumption.py \
+  --upstream-python /path/to/upstream-venv/bin/python \
+  --branch-python /path/to/branch-venv/bin/python \
+  --dora /path/to/tensor-pool-enabled/dora \
+  --gpus GPU-SOURCE-UUID,GPU-TARGET-UUID \
+  --output /path/to/new/comparison-directory
+```
+
+Requires two visible P2P-capable GPUs, numpy, torch, pyarrow and PyYAML.
+Default: 1/10/100 decimal MB, 10 warmups and 100 frames per condition; raw CSV,
+configuration, runtime hashes, logs and summary JSON are retained for audit.
+Conditions run sequentially, with order reversed for 10 MB. Shared workloads
+and time-varying scheduling still limit the comparison; repeat under isolated
+resources for a controlled performance claim.
+
+The CPU-only Rust registration tests exercise the same allocation orchestration
+used by `register_tensor_pool`; changing its device selection back to the source
+makes a semantic assertion fail. The fake-driver Python checks also use the
+previous helper arity so an upstream comparison can reach behavior assertions
+instead of stopping at an argument-count error.

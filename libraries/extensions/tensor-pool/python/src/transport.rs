@@ -983,6 +983,44 @@ mod transport_tests {
     }
 }
 
+/// Allocate and initialize a local CUDA pool on the receiving device.
+/// Kept separate from descriptor publication so its device choice and failure
+/// handling can be tested without a daemon or CUDA hardware.
+fn allocate_receiver_gpu_pool(
+    helpers: &Bound<'_, PyModule>,
+    slot: u64,
+    source_ptr: u64,
+    size: usize,
+    source_device: i32,
+    receiver_device: i32,
+) -> PyResult<u64> {
+    let saved: i32 = helpers.call_method0("_get_cuda_device")?.extract()?;
+    let result = (|| {
+        helpers.call_method1("_set_cuda_device", (receiver_device,))?;
+        let pointer: u64 = helpers
+            .call_method1("_get_gpu_buf", (slot, size))?
+            .extract()?;
+        if pointer == 0 {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "GPU pool allocation failed",
+            ));
+        }
+        if let Err(error) = helpers.call_method1(
+            "_cuda_memcpy_gpu_buf",
+            (slot, source_ptr, size, source_device),
+        ) {
+            let _ = helpers.call_method1("_free_gpu_buf", (slot,));
+            return Err(error);
+        }
+        Ok(pointer)
+    })();
+    let restored = helpers.call_method1("_set_cuda_device", (saved,));
+    match result {
+        Err(error) => Err(error),
+        Ok(pointer) => restored.map(|_| pointer),
+    }
+}
+
 /// Get (or compile) the persistent CUDA DMA helper module.
 ///
 /// Compiled once at first use and reused across all subsequent iterations.
@@ -1176,7 +1214,7 @@ def _cuda_memcpy(dst, src, size, kind):
         raise RuntimeError(f"cudaMemcpy(0x{dst:x}, 0x{src:x}, {size}, {kind}) failed: {err}")
     _lib.cudaDeviceSynchronize()
 
-def _cuda_memcpy_gpu_buf(slot, src_ptr, size, src_device):
+def _cuda_memcpy_gpu_buf(slot, src_ptr, size, src_device=None):
     """Copy into the registered GPU allocation and complete before publishing.
 
     The pool belongs to the receiver's device, independently of the caller's
@@ -1190,6 +1228,8 @@ def _cuda_memcpy_gpu_buf(slot, src_ptr, size, src_device):
             f"write size {size} exceeds GPU pool buffer capacity {capacity} (slot={slot})"
         )
     saved = _get_cuda_device()
+    if src_device is None:
+        src_device = saved
     try:
         err = _lib.cudaSetDevice(dst_device)
         if err != 0:
@@ -2205,40 +2245,15 @@ impl Pool<'_> {
                     // saves/restores explicitly so later cudaMalloc calls land
                     // on the right GPU.
                 } else {
-                    // Allocate on the receiver device, including when P2P is available.
-                    // Save the current device and restore before returning
-                    // so later cudaMalloc calls land on the right GPU.
-                    let saved_dev: i32 = bound
-                        .call_method0("_get_cuda_device")
-                        .and_then(|r| r.extract::<i32>())
-                        .unwrap_or(0);
-                    let _ = bound.call_method1("_set_cuda_device", (receiver_device_idx,));
-                    let result = {
-                        let dst: u64 = bound
-                            .call_method1("_get_gpu_buf", (pool_counter, size))
-                            .and_then(|r| r.extract::<u64>())
-                            .unwrap_or(0);
-                        if dst != 0 {
-                            // Only export a handle if the DtoD copy succeeded —
-                            // otherwise the receiver would import uninitialised memory.
-                            if bound
-                                .call_method1(
-                                    "_cuda_memcpy_gpu_buf",
-                                    (pool_counter, ptr_val, size, sender_device_idx),
-                                )
-                                .is_ok()
-                            {
-                                Some(dst)
-                            } else {
-                                let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    };
-                    let _ = bound.call_method1("_set_cuda_device", (saved_dev,));
-                    result
+                    allocate_receiver_gpu_pool(
+                        bound,
+                        pool_counter,
+                        ptr_val,
+                        size,
+                        sender_device_idx,
+                        receiver_device_idx,
+                    )
+                    .ok()
                 }
             } else {
                 // CPU source → GPU pool: switch to the receiver's device
@@ -3885,5 +3900,116 @@ mod cuda_helper_tests {
             .status()
             .expect("Python must be available to test the tensor-pool Python crate");
         assert!(status.success(), "CUDA helper regressions failed");
+    }
+}
+
+#[cfg(test)]
+mod receiver_allocation_tests {
+    use super::allocate_receiver_gpu_pool;
+    use pyo3::prelude::*;
+    use pyo3::types::PyModule;
+    use std::ffi::CString;
+
+    const HELPERS: &str = r#"
+device = 2
+allocation_device = None
+freed = False
+fail_allocation = False
+fail_copy = False
+
+def _get_cuda_device():
+    return device
+
+def _set_cuda_device(value):
+    global device
+    device = value
+
+def _get_gpu_buf(slot, size):
+    global allocation_device
+    if fail_allocation:
+        raise RuntimeError('allocation failed')
+    allocation_device = device
+    return 4096
+
+def _cuda_memcpy_gpu_buf(slot, pointer, size, source_device):
+    if fail_copy:
+        raise RuntimeError('copy failed')
+
+def _free_gpu_buf(slot):
+    global freed
+    freed = True
+"#;
+
+    #[test]
+    fn registration_allocates_on_receiver_not_source_and_restores_caller() {
+        Python::initialize();
+        Python::attach(|py| {
+            for (source, receiver) in [(0, 1), (1, 0), (1, 1)] {
+                let module = PyModule::from_code(
+                    py,
+                    &CString::new(HELPERS).unwrap(),
+                    c"test_cuda.py",
+                    c"test_cuda",
+                )
+                .unwrap();
+                assert_eq!(
+                    allocate_receiver_gpu_pool(&module, 7, 8192, 1024, source, receiver).unwrap(),
+                    4096
+                );
+                assert_eq!(
+                    module
+                        .getattr("allocation_device")
+                        .unwrap()
+                        .extract::<i32>()
+                        .unwrap(),
+                    receiver
+                );
+                assert_eq!(
+                    module.getattr("device").unwrap().extract::<i32>().unwrap(),
+                    2
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn registration_restores_caller_and_frees_buffer_after_copy_failure() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::from_code(
+                py,
+                &CString::new(HELPERS).unwrap(),
+                c"test_cuda.py",
+                c"test_cuda",
+            )
+            .unwrap();
+            module.setattr("fail_copy", true).unwrap();
+            assert!(allocate_receiver_gpu_pool(&module, 7, 8192, 1024, 0, 1).is_err());
+            assert!(module.getattr("freed").unwrap().extract::<bool>().unwrap());
+            assert_eq!(
+                module.getattr("device").unwrap().extract::<i32>().unwrap(),
+                2
+            );
+        });
+    }
+
+    #[test]
+    fn registration_restores_caller_after_allocation_failure() {
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::from_code(
+                py,
+                &CString::new(HELPERS).unwrap(),
+                c"test_cuda.py",
+                c"test_cuda",
+            )
+            .unwrap();
+            module.setattr("fail_allocation", true).unwrap();
+            assert!(allocate_receiver_gpu_pool(&module, 7, 8192, 1024, 0, 1).is_err());
+            assert_eq!(
+                module.getattr("device").unwrap().extract::<i32>().unwrap(),
+                2
+            );
+        });
     }
 }
