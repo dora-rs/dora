@@ -59,15 +59,6 @@ node.free_tensor_pool(pool_id)
 Runnable dataflows are in [`examples/`](examples/), covering CPU↔CPU, CPU↔CUDA,
 CUDA↔CUDA and the negative lifecycle cases.
 
-### Receiver-resident GPU pool semantics (proposed behavior change)
-
-This changes the local P2P path: upstream keeps the allocation on the sender
-GPU and exposes it to the peer through IPC; this branch materializes each frame
-on the receiver GPU. Both can provide correct cross-device access. The new path
-pays for the complete peer copy in `write_tensor_pool`, trading write cost for
-local receiver reads. It is not an unconditional throughput optimization, and
-maintainers should assess this default-placement change as an API design choice.
-
 ### GPU pool placement and write completion
 
 For a local CUDA receiver, `register_tensor_pool(info, device="cuda:N")`
@@ -78,6 +69,9 @@ without P2P the existing pinned-host staging fallback is used. The copy and
 receiver-device synchronization finish before the write generation is published.
 An allocation, copy, or completion failure is surfaced rather than publishing a
 successful frame. Device indices are process-local (`CUDA_VISIBLE_DEVICES`).
+Each cross-device write includes a blocking full-payload copy and completion
+synchronization, so its cost grows with payload size; subsequent reads access
+receiver-local memory.
 
 The receiver imports the handle once and can retain its view across same-host,
 fixed-size writes, provided it acknowledges each frame before the next overwrite.
@@ -99,6 +93,11 @@ The GPU check queries the original allocation in the sender process, verifies
 that both registration and writes preserve the caller's CUDA device, and checks
 all bytes of four changing frames while retaining one receiver view. It is a
 correctness check, not a throughput benchmark.
+
+CPU-only Rust tests exercise the allocation orchestration used by registration,
+including receiver-device selection, failure cleanup and caller-device
+restoration. Fake-driver Python tests cover peer copies, host-staging fallback
+and copy or synchronization failures without requiring CUDA hardware.
 
 ## Known open defects
 
@@ -189,36 +188,3 @@ reworking this:
 4. API shape: four methods versus a flag on `send_output`.
 5. Measurement against zenoh-shm **plus caller-side pinning**, on a real
    workload — not against non-pinned zenoh-shm.
-
-### Comparing complete receiver workloads
-
-The pure-transfer numbers measure different placement contracts and must not
-be used alone to claim that either implementation is faster for an application.
-The following harness uses identical seeded frames, one persistent view, one
-CLI and two Python environments. It reports both delivery-only and a separate
-**delivery + full receiver consumption** endpoint. Consumption is either a GPU
-sum over all elements or a copy into a preallocated receiver-local tensor;
-correctness verification and ACK follow both endpoints. Input generation and
-allocation are outside measured steady-state intervals.
-
-```bash
-python libraries/extensions/tensor-pool/tests/compare_gpu_consumption.py \
-  --upstream-python /path/to/upstream-venv/bin/python \
-  --branch-python /path/to/branch-venv/bin/python \
-  --dora /path/to/tensor-pool-enabled/dora \
-  --gpus GPU-SOURCE-UUID,GPU-TARGET-UUID \
-  --output /path/to/new/comparison-directory
-```
-
-Requires two visible P2P-capable GPUs, numpy, torch, pyarrow and PyYAML.
-Default: 1/10/100 decimal MB, 10 warmups and 100 frames per condition; raw CSV,
-configuration, runtime hashes, logs and summary JSON are retained for audit.
-Conditions run sequentially, with order reversed for 10 MB. Shared workloads
-and time-varying scheduling still limit the comparison; repeat under isolated
-resources for a controlled performance claim.
-
-The CPU-only Rust registration tests exercise the same allocation orchestration
-used by `register_tensor_pool`; changing its device selection back to the source
-makes a semantic assertion fail. The fake-driver Python checks also use the
-previous helper arity so an upstream comparison can reach behavior assertions
-instead of stopping at an argument-count error.
