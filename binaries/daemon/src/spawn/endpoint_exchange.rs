@@ -581,24 +581,30 @@ async fn probe_link(
     }
 }
 
-/// This session's zenoh id and the peers it is linked to, for the link-probe
-/// diagnostics: tells "linked to the silent daemon, which does not answer"
-/// apart from "linked only to others" and "linked to nothing". The silent
-/// daemon logs its own id at startup ("zenoh session open with id …"). Peers
-/// include nodes and other zenoh clients, not just daemons.
+/// This session's zenoh id and the peers and routers it is linked to, for the
+/// link-probe diagnostics: tells "linked to the silent daemon, which does not
+/// answer" apart from "linked only to others" and "linked to nothing". The
+/// silent daemon logs its own id at startup ("zenoh session open with id …").
+/// Peers include nodes and other zenoh clients, not just daemons. Routers are
+/// listed too: under a `ZENOH_CONFIG` in client mode, or in a routed
+/// deployment, a daemon's only links are to a router.
 async fn link_state(session: &zenoh::Session) -> String {
-    let peers = session
-        .info()
-        .peers_zid()
-        .await
-        .map(|zid| zid.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let zid = session.zid();
-    if peers.is_empty() {
-        format!("this daemon's zenoh id is {zid}, linked to no zenoh peers")
+    let info = session.info();
+    let peers = zid_list(info.peers_zid().await);
+    let routers = zid_list(info.routers_zid().await);
+    format!(
+        "this daemon's zenoh id is {}, linked to zenoh peers {peers} and zenoh routers {routers}",
+        session.zid()
+    )
+}
+
+/// `[a, b]`, or `none` for no ids.
+fn zid_list(zids: impl Iterator<Item = zenoh::session::ZenohId>) -> String {
+    let zids: Vec<_> = zids.map(|zid| zid.to_string()).collect();
+    if zids.is_empty() {
+        "none".to_owned()
     } else {
-        format!("this daemon's zenoh id is {zid}, linked to zenoh peers [{peers}]")
+        format!("[{}]", zids.join(", "))
     }
 }
 
@@ -1142,7 +1148,8 @@ mod tests {
             .expect("open a lone session");
         let state = link_state(&alone).await;
         assert!(state.contains(&alone.zid().to_string()), "{state}");
-        assert!(state.contains("no zenoh peers"), "{state}");
+        assert!(state.contains("zenoh peers none"), "{state}");
+        assert!(state.contains("zenoh routers none"), "{state}");
     }
 
     /// The probe that runs after an unanswered exchange returns as soon as the
