@@ -612,4 +612,30 @@ mod codegen_tests {
             "expected a serialized `_dummy: u8` member in:\n{generated}"
         );
     }
+
+    // A `wstring` default names `U16String` through the parent module, which
+    // re-exports it in both crates that include this code (`crate::messages`
+    // in dora-ros2-bridge, `crate::ros2` in dora-node-api-cxx). A
+    // `crate::messages` path didn't compile in the C++ crate (#3949).
+    #[test]
+    fn a_wstring_default_names_u16string_through_the_parent_module() {
+        let message = Message {
+            package: "test_pkg".to_string(),
+            name: "WStr".to_string(),
+            members: vec![Member {
+                name: "value".to_string(),
+                r#type: crate::types::primitives::GenericString::WString.into(),
+                default: Some(vec!["Hello".to_string()]),
+            }],
+            constants: vec![],
+        };
+        for cxx in [false, true] {
+            let (_def, impls) = message.struct_token_stream("test_pkg", cxx);
+            let generated = format_valid_rust(impls);
+            assert!(
+                generated.contains(r#"value: super::ffi::U16String::from_str("Hello"),"#),
+                "expected the default through `super::ffi` in:\n{generated}"
+            );
+        }
+    }
 }
