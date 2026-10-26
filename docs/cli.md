@@ -585,6 +585,11 @@ exported as with `arrow`. An output counts as an image when:
   camera's metadata onto outputs that aren't images, so undeclared raw pixels
   stay Arrow; declare them in `output_types` to export them as images.
 
+Only `output_types` written in the dataflow file count: the recording stores
+that file as written, so a type that a node declares only in its own manifest
+(`dora-node.yml`, as hub packages do) isn't seen. Repeat it in the dataflow's
+`output_types` to export that output as an image.
+
 An output declared as any other type is never treated as an image. If the
 descriptor stored in the recording can't be read, the export prints a warning
 and converts only undeclared compressed frames. A topic's
