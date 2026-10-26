@@ -148,6 +148,10 @@ nodes:
 
 Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MODE`) into every node inside the module.
 
+Params reach a nested module's nodes the same way. A nested module node can
+also set its own params, which take precedence, or forward one under a new
+name with a reference such as `max_speed: $PARAM_SPEED`.
+
 ## Expansion Rules
 
 1. Load the module YAML file and validate its header
