@@ -21,7 +21,7 @@
 
 use std::collections::BTreeMap;
 
-use dora_message::descriptor::{Descriptor, EnvValue};
+use dora_message::descriptor::{Descriptor, EnvValue, Node};
 use eyre::{Result, bail};
 
 /// Parse repeated `--env KEY=VALUE` flags. The value may itself contain
@@ -58,8 +58,8 @@ pub fn parse_env_overrides(flags: &[String]) -> Result<BTreeMap<String, EnvValue
 ///   secrets that `strip_denied_env` exists to keep out of nodes (that
 ///   guard matches key names, so an innocuous key sails through).
 ///   YAML `env:` values are expanded CLI-side when the descriptor is
-///   read, so they reach the wire already substituted — `--env` is the
-///   only path that can put an unexpanded `$` on it.
+///   read, but a CLI variable whose *value* holds a `$` still puts one on
+///   the wire; [`ensure_descriptor_env_wire_safe`] covers that path.
 /// * **Numeric-looking strings are coerced by released 1.x peers.**
 ///   Coordinators and daemons before the lossless `EnvValue` fix decode
 ///   `1.10` as `1.1` and `01234` as `1234`, and a newer CLI still talks to
@@ -118,6 +118,78 @@ fn ensure_wire_safe(key: &str, value: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Reject a descriptor whose `env:` values would be expanded again on
+/// the coordinator or daemon host (dora-rs/dora#3947).
+///
+/// YAML `env:` strings are `$`-expanded against the CLI's environment
+/// when the descriptor is read, and again by every process that decodes
+/// it afterwards. A value is only delivered as read if that second
+/// expansion leaves it alone, which fails when the first expansion
+/// produced a variable reference: `X: ${FOO}` with
+/// `FOO='${DORA_AUTH_TOKEN}'` would hand the node the daemon's token,
+/// and `${DB_PASSWORD}` holding `p$ssw0rd` would reach the node as
+/// `p` plus the host's `$ssw0rd`, or fail to decode on the coordinator.
+///
+/// The check is syntactic, like [`ensure_wire_safe`]'s, and runs on the
+/// already-expanded values: any `$` that `shellexpand` would interpret
+/// (see [`has_expandable_dollar`]) is refused. A `$` that it keeps
+/// verbatim, such as a trailing one, is still allowed, since every later
+/// expansion leaves it unchanged.
+pub fn ensure_descriptor_env_wire_safe(descriptor: &Descriptor) -> Result<()> {
+    if let Some(env) = &descriptor.env {
+        ensure_env_map_wire_safe(env, "the dataflow")?;
+    }
+    for node in &descriptor.nodes {
+        ensure_node_env_wire_safe(node)?;
+    }
+    Ok(())
+}
+
+/// [`ensure_descriptor_env_wire_safe`] for a single node, as sent by
+/// `dora node add` / `dora node replace`.
+pub fn ensure_node_env_wire_safe(node: &Node) -> Result<()> {
+    if let Some(env) = &node.env {
+        ensure_env_map_wire_safe(env, format_args!("node `{}`", node.id))?;
+    }
+    Ok(())
+}
+
+fn ensure_env_map_wire_safe(
+    env: &BTreeMap<String, EnvValue>,
+    origin: impl std::fmt::Display,
+) -> Result<()> {
+    for (key, value) in env {
+        if let EnvValue::String(value) = value
+            && has_expandable_dollar(value)
+        {
+            bail!(
+                "env `{key}` of {origin} contains a `$` after expansion, which the \
+                 coordinator and daemon would expand again against THEIR OWN \
+                 environment, so the node would not receive this value. (The value \
+                 is not printed, as it may be a secret.)\n\n  \
+                 hint: a variable referenced from the YAML must not itself contain \
+                 `$VAR`, `${{VAR}}` or `$$`; if the `$` is literal (e.g. in a \
+                 password), pass the value to the node another way, such as a file."
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Whether `shellexpand::env` (behind `with_expand_envs`) may change
+/// `value`: it rewrites a `$` followed by `{`, by a variable-name
+/// character, or by a second `$` (an escape that collapses to one), and
+/// keeps any other `$` as is. A `${` with no closing brace is also kept,
+/// but is refused here too rather than mirroring that detail.
+fn has_expandable_dollar(value: &str) -> bool {
+    value.match_indices('$').any(|(i, _)| {
+        value[i + 1..]
+            .chars()
+            .next()
+            .is_some_and(|c| c == '{' || c == '$' || c == '_' || c.is_alphanumeric())
+    })
 }
 
 /// What a coordinator or daemon released before the lossless `EnvValue`
@@ -240,17 +312,26 @@ mod tests {
     /// `unsafe` in edition 2024 and would race sibling tests.
     #[test]
     fn self_referential_local_variable_cannot_smuggle_a_dollar_through() {
+        assert_child_test_passes(
+            "self_referential_child",
+            ("DORA_TEST_2919_SELFREF", "${DORA_TEST_2919_SELFREF}"),
+            "the self-referential value was NOT rejected — a `$` reached the wire",
+        );
+    }
+
+    /// Re-run this test binary for the single test `child` with `key=value` set,
+    /// and assert that it passed.
+    fn assert_child_test_passes(child: &str, (key, value): (&str, &str), failure: &str) {
         let exe = std::env::current_exe().expect("test binary path");
         let output = std::process::Command::new(exe)
-            .args(["--exact", "env_overrides::tests::self_referential_child"])
-            .env("DORA_TEST_2919_SELFREF", "${DORA_TEST_2919_SELFREF}")
+            .args(["--exact", &format!("env_overrides::tests::{child}")])
+            .env(key, value)
             .env("RUST_TEST_NOCAPTURE", "0")
             .output()
             .expect("failed to re-run test binary");
         assert!(
             output.status.success(),
-            "the self-referential value was NOT rejected — a `$` reached the \
-             wire.\nstdout:\n{}\nstderr:\n{}",
+            "{failure}.\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
@@ -313,6 +394,81 @@ mod tests {
         assert_eq!(parsed["PLAIN"], EnvValue::String("hello world".into()));
         assert_eq!(parsed["UNICODE"], EnvValue::String("café ☕".into()));
         assert_eq!(parsed["EMPTY"], EnvValue::String(String::new()));
+    }
+
+    /// dora-rs/dora#3947: a YAML value is expanded CLI-side, and again by
+    /// each process that decodes the descriptor; any `$` the first pass
+    /// leaves that a later pass would rewrite must be refused.
+    #[test]
+    fn detects_dollars_a_later_expansion_would_rewrite() {
+        for value in ["${HOME}", "$HOME", "p$ssw0rd", "a$_b", "$$", "x${unclosed"] {
+            assert!(has_expandable_dollar(value), "`{value}` must be refused");
+        }
+        for value in ["", "plain", "5$", "$-", "a $ b", "$/path", "$}"] {
+            assert!(!has_expandable_dollar(value), "`{value}` is stable");
+        }
+    }
+
+    #[test]
+    fn rejects_descriptor_env_that_would_be_expanded_again() {
+        let dataflow_level: Descriptor =
+            Descriptor::parse(b"env:\n  PW: \"p$$ssw0rd\"\nnodes: []\n".to_vec()).unwrap();
+        assert_eq!(
+            dataflow_level.env.as_ref().unwrap()["PW"],
+            EnvValue::String("p$ssw0rd".into()),
+            "test premise: `$$` is read as a literal `$`"
+        );
+        let err = ensure_descriptor_env_wire_safe(&dataflow_level).unwrap_err();
+        assert!(err.to_string().contains("`PW`"), "{err}");
+
+        let node_level: Descriptor = Descriptor::parse(
+            b"nodes:\n  - id: probe\n    path: probe.bin\n    env:\n      PW: \"p$$ssw0rd\"\n"
+                .to_vec(),
+        )
+        .unwrap();
+        let err = ensure_descriptor_env_wire_safe(&node_level).unwrap_err();
+        assert!(err.to_string().contains("node `probe`"), "{err}");
+    }
+
+    #[test]
+    fn accepts_descriptor_env_that_survives_another_expansion() {
+        let descriptor: Descriptor = Descriptor::parse(
+            b"env:\n  PRICE: 5$\n  PORT: 8080\nnodes:\n  - id: probe\n    path: probe.bin\n    env:\n      OPTS: --level=debug\n"
+                .to_vec(),
+        )
+        .unwrap();
+        ensure_descriptor_env_wire_safe(&descriptor).expect("these values are wire-safe");
+    }
+
+    /// The reproduction from the issue: `X: ${FOO}` with
+    /// `FOO='${DORA_AUTH_TOKEN}'` in the CLI's environment puts
+    /// `${DORA_AUTH_TOKEN}` on the wire for the daemon to expand. Runs in
+    /// a child process, as `set_var` is `unsafe` and would race siblings.
+    #[test]
+    fn yaml_reference_to_a_variable_holding_a_reference_is_rejected() {
+        assert_child_test_passes(
+            "yaml_reference_child",
+            ("DORA_TEST_3947_INDIRECT", "${DORA_AUTH_TOKEN}"),
+            "the indirect reference was NOT rejected",
+        );
+    }
+
+    /// Child of `yaml_reference_to_a_variable_holding_a_reference_is_rejected`;
+    /// a no-op when run directly.
+    #[test]
+    fn yaml_reference_child() {
+        if std::env::var("DORA_TEST_3947_INDIRECT").is_err() {
+            return; // not the child invocation
+        }
+        let descriptor: Descriptor =
+            Descriptor::parse(b"env:\n  X: ${DORA_TEST_3947_INDIRECT}\nnodes: []\n".to_vec())
+                .unwrap();
+        assert_eq!(
+            descriptor.env.as_ref().unwrap()["X"],
+            EnvValue::String("${DORA_AUTH_TOKEN}".into()),
+            "child env not set up"
+        );
+        assert!(ensure_descriptor_env_wire_safe(&descriptor).is_err());
     }
 
     #[test]
