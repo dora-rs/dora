@@ -298,6 +298,13 @@ jobs:
       # changes. `dora-runtime-python` is one of them: it links pyo3 like the
       # rest, and only its own targets are skipped — the lib still builds
       # above, as a dependency of dora-cli-api-python.
+      #
+      # `dora-tensor-pool-python` is the newest exclusion and the one that
+      # most needs it: its tests start an embedded interpreter
+      # (`Python::initialize`) and spawn a `python3 -m unittest` subprocess,
+      # so they hard-fail on a runner with no interpreter (and on
+      # windows-latest, where `python3` may not be on PATH). Like the rest,
+      # its lib still builds above and its tests run in `contract-tests`.
       - name: Test
         run: >
           cargo test --all
@@ -307,6 +314,7 @@ jobs:
           --exclude dora-runtime-python
           --exclude dora-cli-api-python
           --exclude dora-examples
+          --exclude dora-tensor-pool-python
 
       # The tensor-pool transport is opt-in (see docs/extensions.md), so the
       # workspace run above builds the extension's node half only — its daemon

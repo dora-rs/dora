@@ -65,7 +65,14 @@ class Cuda:
 class TargetGpuTests(unittest.TestCase):
     def setUp(self):
         source = (Path(__file__).resolve().parents[1] / 'python/src/transport.rs').read_text()
-        code = re.search(r'let code = r#"(.*?)"#;', source, re.S).group(1)
+        # This test is intentionally coupled to the source form: it fishes the
+        # embedded helper module out of transport.rs. Tolerate any raw-string
+        # delimiter arity (`r#"…"#`, `r##"…"##`) and fail loudly rather than
+        # silently extracting nothing or the wrong block if the source is ever
+        # restructured into more than one embedded chunk.
+        match = re.search(r'let code = r(#+)"(.*?)"\1;', source, re.S)
+        assert match is not None, 'could not locate the single embedded CUDA helper source in transport.rs'
+        code = match.group(2)
         self.cuda = Cuda()
         self.helpers = {}
         with patch('ctypes.CDLL', return_value=self.cuda):
