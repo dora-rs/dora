@@ -378,11 +378,26 @@ struct Edge {
     to_base: String,
     /// Parameters of the rule's `to` URN.
     to_params: BTreeMap<String, String>,
-    /// Whether the source's parameters survive the conversion. True only for
-    /// the built-in widening within one numeric family (`Int32[unit=s]` is an
-    /// `Int64[unit=s]`); across a user rule between two types the same key
-    /// may mean something else, so only the rule's own `to` parameters hold.
+    /// Whether the source's parameters survive the conversion, overridden by
+    /// the rule's own `to` parameters. True for the built-in widening within
+    /// one numeric family (`Int32[unit=s]` is an `Int64[unit=s]`) and for a
+    /// user rule within one base, which changes only the parameters it names.
+    /// Across a user rule between two types the same key may mean something
+    /// else, so only the rule's `to` parameters hold.
     keeps_params: bool,
+}
+
+impl Edge {
+    /// The parameters known after following this edge from `params`.
+    fn next_params(&self, params: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+        let mut next = if self.keeps_params {
+            params.clone()
+        } else {
+            BTreeMap::new()
+        };
+        next.extend(self.to_params.iter().map(|(k, v)| (k.clone(), v.clone())));
+        next
+    }
 }
 
 /// Split a URN into base and parameters, treating an unparseable one as a
@@ -398,9 +413,10 @@ impl CompatibilityGraph {
     /// Create a new compatibility graph with hardcoded rules + optional user rules.
     pub fn new(user_rules: &[TypeRule]) -> Self {
         let mut edges: BTreeMap<String, Vec<Edge>> = BTreeMap::new();
-        let mut add = |from: &str, to: &str, keeps_params: bool| {
+        let mut add = |from: &str, to: &str, builtin: bool| {
             let (from_base, from_params) = base_and_params(from);
             let (to_base, to_params) = base_and_params(to);
+            let keeps_params = builtin || from_base == to_base;
             edges.entry(from_base).or_default().push(Edge {
                 from_params,
                 to_base,
@@ -472,17 +488,24 @@ impl CompatibilityGraph {
         let (to_base, to_params) = base_and_params(to);
 
         // Same base — check params via the shared agreement rule. Disagreeing
-        // params can still be bridged by a rule that names the target's
-        // params (`Image[encoding=bgr8]` -> `Image[encoding=rgb8]`).
-        let same_base = from_base == to_base;
-        if same_base && params_agree(&from_params, &to_params) {
-            return true;
+        // params can only be bridged by a single rule within that base
+        // (`Image[encoding=bgr8]` -> `Image[encoding=rgb8]`), which keeps the
+        // params it does not name. A detour through other types drops params
+        // and would hide a mismatch, so it is not searched.
+        if from_base == to_base {
+            return params_agree(&from_params, &to_params)
+                || self.edges.get(&from_base).is_some_and(|edges| {
+                    edges.iter().any(|edge| {
+                        edge.to_base == to_base
+                            && params_agree(&edge.from_params, &from_params)
+                            && params_agree(&edge.next_params(&from_params), &to_params)
+                    })
+                });
         }
 
         // BFS with depth limit 3. Each state carries the parameters known so
         // far: a rule applies when they agree with its `from` parameters, and
-        // the next state holds the rule's `to` parameters (plus the source's,
-        // for a built-in widening; see `Edge::keeps_params`).
+        // the next state is `Edge::next_params`.
         let mut queue = std::collections::VecDeque::new();
         let mut visited = std::collections::BTreeSet::new();
         queue.push_back((from_base.as_str(), from_params, 0u32));
@@ -498,17 +521,8 @@ impl CompatibilityGraph {
                 if !params_agree(&edge.from_params, &params) {
                     continue;
                 }
-                let mut next_params = if edge.keeps_params {
-                    params.clone()
-                } else {
-                    BTreeMap::new()
-                };
-                next_params.extend(edge.to_params.iter().map(|(k, v)| (k.clone(), v.clone())));
-                // back on the source's base, only a rule that names params may
-                // convert between them: a parameter-free cycle (`A -> B -> A`)
-                // must not make every `A[..]` compatible with every other
-                let bridges = !same_base || !edge.to_params.is_empty();
-                if edge.to_base == to_base && bridges && params_agree(&next_params, &to_params) {
+                let next_params = edge.next_params(&params);
+                if edge.to_base == to_base && params_agree(&next_params, &to_params) {
                     return true;
                 }
                 if visited.insert((edge.to_base.as_str(), next_params.clone())) {
@@ -1229,6 +1243,28 @@ mod tests {
         assert!(!g.is_compatible("acme/Image[encoding=yuv]", "acme/Image[encoding=rgb8]"));
         // a parameter-free cycle does not convert between params of one type
         assert!(!g.is_compatible("acme/A[x=1]", "acme/A[x=2]"));
+        // a same-base rule changes only the params it names
+        assert!(g.is_compatible(
+            "acme/Image[encoding=bgr8,frame=cam0]",
+            "acme/Image[encoding=rgb8,frame=cam0]"
+        ));
+        assert!(!g.is_compatible(
+            "acme/Image[encoding=bgr8,frame=cam0]",
+            "acme/Image[encoding=rgb8,frame=cam1]"
+        ));
+    }
+
+    #[test]
+    fn compat_detour_does_not_hide_a_same_base_mismatch() {
+        let rule = |from: &str, to: &str| TypeRule {
+            from: from.into(),
+            to: to.into(),
+        };
+        let g = CompatibilityGraph::new(&[
+            rule("acme/Image", "acme/Blob"),
+            rule("acme/Blob", "acme/Image[encoding=raw]"),
+        ]);
+        assert!(!g.is_compatible("acme/Image[frame=cam0]", "acme/Image[frame=cam1]"));
     }
 
     // --- Phase 5: metadata pattern tests ---
