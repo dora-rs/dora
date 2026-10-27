@@ -11,7 +11,10 @@ use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use crate::{
     command::{
         Executable, default_tracing,
-        topic::selector::{TopicSelector, node_topic_inputs},
+        topic::{
+            catch_arrow_panic,
+            selector::{TopicSelector, node_topic_inputs},
+        },
     },
     common::CoordinatorOptions,
 };
@@ -287,7 +290,15 @@ fn decode_ipc_data_type(bytes: &[u8]) -> Option<DataType> {
     let bytes = bytes.strip_prefix(&[0xff; 4]).unwrap_or(bytes);
     let (len, rest) = bytes.split_first_chunk::<4>()?;
     let len = usize::try_from(i32::from_le_bytes(*len)).ok()?;
-    let schema = arrow::ipc::convert::try_schema_from_flatbuffer_bytes(rest.get(..len)?).ok()?;
+    let metadata = rest.get(..len)?;
+    // arrow-ipc panics instead of erroring on some malformed schemas (e.g. one
+    // without a `fields` vector), and the frame comes from another process.
+    let schema = catch_arrow_panic("failed to read the IPC schema: arrow panicked", || {
+        Ok(arrow::ipc::convert::try_schema_from_flatbuffer_bytes(
+            metadata,
+        )?)
+    })
+    .ok()?;
     match schema.fields().as_ref() {
         [field] => Some(field.data_type().clone()),
         _ => None,
@@ -451,6 +462,28 @@ mod tests {
         bytes.extend_from_slice(&i32::try_from(metadata.len()).unwrap().to_le_bytes());
         bytes.extend_from_slice(metadata);
         assert_eq!(decode_ipc_data_type(&bytes), Some(DataType::UInt8));
+    }
+
+    /// A schema message without a `fields` vector makes arrow-ipc panic
+    /// (`fb.fields().unwrap()` in `convert.rs`) instead of returning an error.
+    /// One such frame must leave the type unknown rather than take down the
+    /// stats thread and fail the whole command (#3863).
+    #[test]
+    fn a_schema_that_makes_arrow_panic_leaves_the_type_unknown() {
+        let mut fbb = flatbuffers::FlatBufferBuilder::new();
+        let fb_schema = arrow::ipc::SchemaBuilder::new(&mut fbb).finish();
+        let mut message = arrow::ipc::MessageBuilder::new(&mut fbb);
+        message.add_version(arrow::ipc::MetadataVersion::V5);
+        message.add_header_type(arrow::ipc::MessageHeader::Schema);
+        message.add_header(fb_schema.as_union_value());
+        let message = message.finish();
+        fbb.finish(message, None);
+        let metadata = fbb.finished_data();
+
+        let mut bytes = vec![0xff; 4];
+        bytes.extend_from_slice(&i32::try_from(metadata.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(metadata);
+        assert_eq!(decode_ipc_data_type(&bytes), None);
     }
 
     #[test]

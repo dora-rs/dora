@@ -13,7 +13,10 @@ use eyre::{Context, eyre};
 use crate::{
     command::{
         Executable, default_tracing,
-        topic::selector::{TopicSelector, public_topic_output_id},
+        topic::{
+            catch_arrow_panic,
+            selector::{TopicSelector, public_topic_output_id},
+        },
     },
     common::CoordinatorOptions,
     formatting::OutputFormat,
@@ -375,18 +378,6 @@ fn decode_arrow_ipc_zero_copy(
         "failed to decode Arrow IPC stream: the decoder panicked",
         || decode_single_batch(buffer),
     )
-}
-
-/// Run `f`, turning a panic inside arrow into the error `"{what}: {reason}"`.
-fn catch_arrow_panic<T>(what: &str, f: impl FnOnce() -> eyre::Result<T>) -> eyre::Result<T> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
-        let reason = panic
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
-            .unwrap_or("unknown reason");
-        Err(eyre!("{what}: {reason}"))
-    })
 }
 
 fn decode_single_batch(mut buffer: arrow::buffer::Buffer) -> eyre::Result<arrow::array::ArrayData> {
