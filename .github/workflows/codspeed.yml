@@ -1,0 +1,73 @@
+name: CodSpeed
+
+# Runs the criterion benchmark suites (through `codspeed-criterion-compat`)
+# under CodSpeed's CPU simulation instrument and reports the results on
+# pull requests and on the `main` branch history.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # `workflow_dispatch` lets CodSpeed trigger backtest runs to generate
+  # initial performance data.
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write # OpenID Connect authentication with CodSpeed
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.97.1"
+
+jobs:
+  benchmarks:
+    name: Run benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: codspeed
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-codspeed
+      # The benchmark binaries pull in a large part of the workspace (zenoh,
+      # arrow, ...). Free the preinstalled toolchains first to avoid
+      # "no space left on device".
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -eux
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          df -h
+
+      - name: Build the benchmark targets
+        run: |
+          cargo codspeed build -m simulation -p dora-message -p dora-node-api
+          cargo codspeed build -m simulation -p dora-daemon --features bench
+
+      - name: Run the benchmarks
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          run: cargo codspeed run -m simulation -p dora-message -p dora-node-api -p dora-daemon
