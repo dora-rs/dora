@@ -78,6 +78,14 @@ fixed-size writes, provided it acknowledges each frame before the next overwrite
 Printing `tensor.device` alone does not establish the physical allocation device
 of a peer-accessible IPC mapping.
 
+Because the *writer* allocates the pool on the receiver's device, a cross-device
+writer creates a CUDA context on the receiver's GPU the first time it registers
+or writes such a pool (the allocation, the IPC export, and enabling the
+bidirectional peer pair all need one). This is a one-time, per-process cost — a
+few hundred MB of device memory on each GPU in the pair — that persists for the
+life of the writer process; it is not re-paid per frame. On a GPU shared with
+other work, budget for it on both cards.
+
 Regression checks:
 
 ```bash

@@ -87,6 +87,40 @@ fn parse_pool_counter(pool_id: &str) -> Option<u64> {
         .and_then(|(_, counter)| counter.parse::<u64>().ok())
 }
 
+/// Parse a caller-facing CUDA device spec, e.g. `"cuda:1"`, into a
+/// process-local device index (as seen by this process's
+/// `CUDA_VISIBLE_DEVICES`).
+///
+/// The spec must be `"cuda:"` followed by a non-negative index; anything else
+/// — `"cpu"`, a missing prefix, a missing colon, or a non-numeric tail — is
+/// treated as device 0, matching the legacy registration-side behaviour. This
+/// central helper keeps registration and the write path on the same parsing
+/// rules (the write path previously did its own `strip_prefix`).
+fn parse_cuda_device_index(spec: &str) -> i32 {
+    spec.strip_prefix("cuda")
+        .and_then(|s| s.strip_prefix(':'))
+        .and_then(|s| s.parse::<i32>().ok())
+        .unwrap_or(0)
+}
+
+/// Query the caller's ambient CUDA device, normalising an unreadable value to
+/// the documented default.
+///
+/// `_get_cuda_device` returns `-1` (rather than raising) when the runtime
+/// reports no current device, and the `PyO3` call itself can fail too. Without
+/// this clamp a `-1` would flow into `_set_cuda_device(-1)`, which is a no-op —
+/// silently leaving the caller on whichever device the block last touched
+/// (the receiver's, not GPU0). Every such case means "no usable current
+/// device", and `0` is the device CUDA's runtime would select anyway, so `0`
+/// is the least-surprising restore target.
+fn query_cuda_device_or_default(helpers: &Bound<'_, PyModule>) -> i32 {
+    helpers
+        .call_method0("_get_cuda_device")
+        .and_then(|r| r.extract::<i32>())
+        .unwrap_or(-1)
+        .max(0)
+}
+
 /// Counter to make pinned memory buffer IDs unique across registrations.
 ///
 /// Seeded with a random value per process rather than `0` (dora-rs/dora#3015).
@@ -569,6 +603,25 @@ mod pool_id_tests {
     #[test]
     fn parse_pool_counter_rejects_a_non_numeric_tail() {
         assert_eq!(parse_pool_counter("dora_pool_df_node_notanumber"), None);
+    }
+
+    /// `parse_cuda_device_index` centralises the `"cuda:N"` parsing that the
+    /// registration and write paths each used to do inline. A valid index is
+    /// returned as-is; a missing colon, a non-numeric tail, or a non-CUDA
+    /// device all fall back to `0` (the previous registration-side behaviour),
+    /// so a caller on any device is never silently retargeted to a *wrong*
+    /// GPU.
+    #[test]
+    fn parse_cuda_device_index_handles_valid_and_fallback_forms() {
+        assert_eq!(parse_cuda_device_index("cuda:0"), 0);
+        assert_eq!(parse_cuda_device_index("cuda:3"), 3);
+        // Missing colon / index — fall back to 0, not to a parsed junk value.
+        assert_eq!(parse_cuda_device_index("cuda"), 0);
+        assert_eq!(parse_cuda_device_index("cuda:"), 0);
+        // Non-numeric tail and non-CUDA devices — fall back to 0.
+        assert_eq!(parse_cuda_device_index("cuda:x"), 0);
+        assert_eq!(parse_cuda_device_index("cpu"), 0);
+        assert_eq!(parse_cuda_device_index(""), 0);
     }
 
     /// dora-rs/dora#3207: a pool registered with an explicit `name=` (that
@@ -2123,16 +2176,8 @@ impl Pool<'_> {
         // devices, or the existing host-staging fallback without P2P.
         // CPU sources use the existing host→device DMA path.
         // Resolve sender and receiver device indices for cross-device detection.
-        let sender_device_idx = tensor_device
-            .strip_prefix("cuda")
-            .and_then(|s| s.strip_prefix(':'))
-            .and_then(|s| s.parse::<i32>().ok())
-            .unwrap_or(0);
-        let receiver_device_idx = device
-            .strip_prefix("cuda")
-            .and_then(|s| s.strip_prefix(':'))
-            .and_then(|s| s.parse::<i32>().ok())
-            .unwrap_or(0);
+        let sender_device_idx = parse_cuda_device_index(&tensor_device);
+        let receiver_device_idx = parse_cuda_device_index(&device);
         let cross_device = sender_device_idx != receiver_device_idx;
         let mut transit_ptr: u64 = 0;
         let mut pool_device = if receiver_is_cuda {
@@ -2153,10 +2198,7 @@ impl Pool<'_> {
             && let Ok(helpers) = get_cuda_helpers(py)
         {
             let bound = helpers.bind(py);
-            let saved_device: i32 = bound
-                .call_method0("_get_cuda_device")
-                .and_then(|r| r.extract::<i32>())
-                .unwrap_or(0);
+            let saved_device = query_cuda_device_or_default(bound);
 
             // Enable P2P for the sender/receiver pair before any IPC operations.
             // Gate on a CUDA source: for a CPU source sender_device_idx defaults
@@ -2241,9 +2283,9 @@ impl Pool<'_> {
                     }
                     // Both branches start from sender_device_idx (restored
                     // after _ensure_p2p_pair above).  _transit_copy does its
-                    // own internal save/restore; the same-device branch below
-                    // saves/restores explicitly so later cudaMalloc calls land
-                    // on the right GPU.
+                    // own internal save/restore; the else branch below
+                    // delegates to allocate_receiver_gpu_pool, which saves and
+                    // restores the caller's device itself.
                 } else {
                     allocate_receiver_gpu_pool(
                         bound,
@@ -2259,10 +2301,7 @@ impl Pool<'_> {
                 // CPU source → GPU pool: switch to the receiver's device
                 // so cudaMalloc in dma_copy → _get_gpu_buf lands on the
                 // correct GPU (matching the GPU-source branches).
-                let saved_dev: i32 = bound
-                    .call_method0("_get_cuda_device")
-                    .and_then(|r| r.extract::<i32>())
-                    .unwrap_or(0);
+                let saved_dev: i32 = query_cuda_device_or_default(bound);
                 let _ = bound.call_method1("_set_cuda_device", (receiver_device_idx,));
                 let result = bound
                     .call_method1("dma_copy", (ptr_val, size, pool_counter, !is_pinned))
@@ -2707,11 +2746,7 @@ impl Pool<'_> {
                                         } else {
                                             pool_dev
                                         };
-                                        let sender_dev = tensor_device
-                                            .strip_prefix("cuda")
-                                            .and_then(|d| d.strip_prefix(':'))
-                                            .and_then(|d| d.parse::<i32>().ok())
-                                            .unwrap_or(0);
+                                        let sender_dev = parse_cuda_device_index(&tensor_device);
                                         bound
                                             .call_method1(
                                                 "_transit_copy_gpu_buf",
@@ -2733,10 +2768,7 @@ impl Pool<'_> {
                                                 counter,
                                                 ptr_val,
                                                 size,
-                                                tensor_device
-                                                    .strip_prefix("cuda:")
-                                                    .and_then(|index| index.parse::<i32>().ok())
-                                                    .unwrap_or(0),
+                                                parse_cuda_device_index(&tensor_device),
                                             ),
                                         )
                                         .map(|_| ()),
@@ -2951,11 +2983,7 @@ impl Pool<'_> {
                                 );
                                 let res = match write_path {
                                     WritePath::GpuToGpuPoolTransit => {
-                                        let sender_dev = tensor_device
-                                            .strip_prefix("cuda")
-                                            .and_then(|d| d.strip_prefix(':'))
-                                            .and_then(|d| d.parse::<i32>().ok())
-                                            .unwrap_or(0);
+                                        let sender_dev = parse_cuda_device_index(&tensor_device);
                                         bound
                                             .call_method1(
                                                 "_transit_copy_gpu_buf",
@@ -2977,10 +3005,7 @@ impl Pool<'_> {
                                                 parse_pool_counter(&buffer_id).unwrap_or(0),
                                                 ptr_val,
                                                 size,
-                                                tensor_device
-                                                    .strip_prefix("cuda:")
-                                                    .and_then(|index| index.parse::<i32>().ok())
-                                                    .unwrap_or(0),
+                                                parse_cuda_device_index(&tensor_device),
                                             ),
                                         )
                                         .map(|_| ()),
