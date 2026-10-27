@@ -1,18 +1,15 @@
 name: CodSpeed
 
 # Runs the criterion benchmark suites (through `codspeed-criterion-compat`)
-# under CodSpeed's CPU simulation instrument and reports the results on
-# pull requests and on the `main` branch history.
+# under CodSpeed's CPU simulation instrument and records the results in the
+# `main` branch history.
 #
-# Like nightly.yml, the `main` baseline is refreshed once per night on a
-# schedule rather than on every push to `main`, to save CI capacity.
-# Pull requests are compared against the latest nightly `main` run.
+# Like nightly.yml, it runs once per night on a schedule rather than on every
+# push or pull request, to save CI capacity. It can also be started manually.
 
 on:
   schedule:
     - cron: "0 6 * * *" # daily at 06:00 UTC, same as nightly.yml
-  pull_request:
-    branches: [main]
   # `workflow_dispatch` lets CodSpeed trigger backtest runs to generate
   # initial performance data.
   workflow_dispatch:
