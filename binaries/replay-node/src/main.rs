@@ -92,7 +92,7 @@ fn classify_event(event: Option<&Event>) -> Replay {
 /// Poll the daemon for a `Stop` without blocking.
 ///
 /// Used on the paths that have no pacing gap to wait out: `--speed 0` replays
-/// as fast as possible, and the gap between two `--loop` passes is zero.
+/// as fast as possible, and an entry or a `--loop` pass end can already be due.
 fn poll_stop(events: &mut EventStream) -> Replay {
     match events.try_recv() {
         Ok(event) => classify_event(Some(&event)),
@@ -150,13 +150,13 @@ fn main() -> eyre::Result<()> {
 
     let (mut node, mut events) = DoraNode::init_from_env()?;
 
+    // Start of the current pass's pacing schedule; see `pacing_gap`.
+    let mut pass_start = Instant::now();
     loop {
         let file =
             File::open(&replay_file).wrap_err_with(|| format!("failed to open {replay_file}"))?;
         let mut reader = RecordingReader::open(file).wrap_err("failed to read recording")?;
 
-        // Start of this pass's pacing schedule; see `pacing_gap`.
-        let pass_start = Instant::now();
         let mut replayed = 0u64;
         let mut skipped = 0u64;
         let mut stopped = false;
@@ -256,13 +256,29 @@ fn main() -> eyre::Result<()> {
             break;
         }
 
-        // A pass that matched no entries never reaches the poll inside the loop
-        // above, so check here too — otherwise `--loop` on a recording holding
-        // nothing for this node spins reopening the file with no way to stop.
-        if poll_stop(&mut events) == Replay::Stop {
+        // A pass lasts until the recording's last message from *any* node,
+        // not just this node's last one. Every replay node is its own process;
+        // restarting each at its own last entry would give each a different
+        // loop period, so the nodes would drift a little further apart on
+        // every pass, and this node's first message would follow its last one
+        // with no gap. Wait out the rest of the shared period instead.
+        //
+        // This also polls for `Stop` when there is nothing left to wait (or
+        // with `--speed 0`): a pass that matched no entries never reaches the
+        // poll inside the loop above, and without it `--loop` on a recording
+        // holding nothing for this node would spin reopening the file with no
+        // way to stop.
+        let period = pacing_gap(Duration::ZERO, reader.last_timestamp_offset_nanos(), speed);
+        let rest_of_pass = period.saturating_sub(pass_start.elapsed());
+        if wait_out_gap(&mut events, rest_of_pass) == Replay::Stop {
             eprintln!("dora-replay-node[{replay_node}]: stop requested, exiting");
             break;
         }
+        // The next pass is due one period after this one was, not after this
+        // wait happened to return: reopening the file and timer overshoot
+        // would otherwise add up over the passes, at a different rate in each
+        // replay node.
+        pass_start = pass_start.checked_add(period).unwrap_or_else(Instant::now);
         eprintln!("dora-replay-node[{replay_node}]: looping...");
     }
 

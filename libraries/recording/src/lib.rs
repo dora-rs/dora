@@ -157,26 +157,22 @@ impl RecordEntry {
         2 + self.node_id.len() + 2 + self.output_id.len() + 8 + 4 + self.event_bytes.len()
     }
 
-    /// Parse a record body into an owned entry, or `None` when `only_node` is
-    /// set and the record belongs to another node (nothing is allocated for
-    /// it). The payload keeps the record's own allocation (its bytes are
-    /// shifted to the front) instead of being copied into a fresh one, which
-    /// for a multi-megabyte payload costs far more than the move.
-    fn from_record(mut record_buf: Vec<u8>, only_node: Option<&str>) -> eyre::Result<Option<Self>> {
+    /// Parse a record body into an owned entry. The payload keeps the record's
+    /// own allocation (its bytes are shifted to the front) instead of being
+    /// copied into a fresh one, which for a multi-megabyte payload costs far
+    /// more than the move.
+    fn from_record(mut record_buf: Vec<u8>) -> eyre::Result<Self> {
         let (node_id, output_id, timestamp_offset_nanos, payload) = parse_record(&record_buf)?;
-        if only_node.is_some_and(|node| node != node_id) {
-            return Ok(None);
-        }
         let node_id = node_id.to_string();
         let output_id = output_id.to_string();
         record_buf.truncate(payload.end);
         record_buf.drain(..payload.start);
-        Ok(Some(Self {
+        Ok(Self {
             node_id,
             output_id,
             timestamp_offset_nanos,
             event_bytes: record_buf,
-        }))
+        })
     }
 }
 
@@ -313,6 +309,8 @@ impl<W: Write> RecordingWriter<W> {
 pub struct RecordingReader<R: Read> {
     reader: BufReader<R>,
     header: RecordingHeader,
+    /// See [`last_timestamp_offset_nanos`](Self::last_timestamp_offset_nanos).
+    last_timestamp_offset_nanos: u64,
 }
 
 impl<R: Read> RecordingReader<R> {
@@ -320,7 +318,11 @@ impl<R: Read> RecordingReader<R> {
     pub fn open(inner: R) -> eyre::Result<Self> {
         let mut reader = BufReader::new(inner);
         let header = read_header(&mut reader)?;
-        Ok(Self { reader, header })
+        Ok(Self {
+            reader,
+            header,
+            last_timestamp_offset_nanos: 0,
+        })
     }
 
     /// The recording header parsed by [`open`](Self::open).
@@ -328,12 +330,24 @@ impl<R: Read> RecordingReader<R> {
         &self.header
     }
 
+    /// The largest [`RecordEntry::timestamp_offset_nanos`] among the records
+    /// read so far, from *any* node — including the ones
+    /// [`next_entry_for_node`](Self::next_entry_for_node) skipped. Once a
+    /// `next_*` call has returned `None`, this is the offset of the
+    /// recording's last message: the length of one pass, which every replay
+    /// node of a `--loop` replay must agree on to stay aligned.
+    pub fn last_timestamp_offset_nanos(&self) -> u64 {
+        self.last_timestamp_offset_nanos
+    }
+
     /// Read the next entry. Returns `None` at EOF or footer.
     pub fn next_entry(&mut self) -> eyre::Result<Option<RecordEntry>> {
         let Some(record_buf) = self.read_next_record()? else {
             return Ok(None);
         };
-        RecordEntry::from_record(record_buf, None)
+        let entry = RecordEntry::from_record(record_buf)?;
+        self.note_offset(entry.timestamp_offset_nanos);
+        Ok(Some(entry))
     }
 
     /// Read the next entry's metadata, *without* its event payload. Returns
@@ -349,6 +363,7 @@ impl<R: Read> RecordingReader<R> {
             return Ok(None);
         };
         let (node_id, output_id, timestamp_offset_nanos, _payload) = parse_record(&record_buf)?;
+        self.note_offset(timestamp_offset_nanos);
         Ok(Some(RecordEntryHeader {
             node_id: node_id.to_string(),
             output_id: output_id.to_string(),
@@ -372,10 +387,17 @@ impl<R: Read> RecordingReader<R> {
             let Some(record_buf) = self.read_next_record()? else {
                 return Ok(None);
             };
-            if let Some(entry) = RecordEntry::from_record(record_buf, Some(node))? {
-                return Ok(Some(entry));
+            let (node_id, _, timestamp_offset_nanos, _) = parse_record(&record_buf)?;
+            self.note_offset(timestamp_offset_nanos);
+            if node_id == node {
+                return RecordEntry::from_record(record_buf).map(Some);
             }
         }
+    }
+
+    fn note_offset(&mut self, timestamp_offset_nanos: u64) {
+        self.last_timestamp_offset_nanos =
+            self.last_timestamp_offset_nanos.max(timestamp_offset_nanos);
     }
 
     /// Read the next record body from the stream, or `None` at EOF/footer.
@@ -1003,6 +1025,39 @@ mod tests {
             assert_eq!(got.timestamp_offset_nanos, expected.timestamp_offset_nanos);
         }
         assert!(reader.next_entry_header().unwrap().is_none());
+    }
+
+    /// A filtered read still learns the offsets of the entries it skips, so a
+    /// node whose own last entry comes early sees the recording's true end —
+    /// the shared loop period of a `dora replay --loop`.
+    #[test]
+    fn last_timestamp_offset_counts_skipped_entries() {
+        let header = sample_header();
+        let entries = vec![
+            sample_entry("cam", "frame", 0, b"\x01"),
+            sample_entry("cam", "frame", 9_000_000_000, b"\x02"),
+            sample_entry("lidar", "points", 10_000_000_000, b"\x03"),
+        ];
+
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        for e in &entries {
+            writer.write_entry(e).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        assert_eq!(reader.last_timestamp_offset_nanos(), 0);
+        while reader.next_entry_for_node("cam").unwrap().is_some() {}
+        assert_eq!(reader.last_timestamp_offset_nanos(), 10_000_000_000);
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        while reader.next_entry().unwrap().is_some() {}
+        assert_eq!(reader.last_timestamp_offset_nanos(), 10_000_000_000);
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        while reader.next_entry_header().unwrap().is_some() {}
+        assert_eq!(reader.last_timestamp_offset_nanos(), 10_000_000_000);
     }
 
     /// `next_entry_for_node` returns only the requested node's entries, in
