@@ -1,6 +1,9 @@
 use dora_cli::{BuildConfig, Executable, RunCommand, build};
-use eyre::Context;
-use std::{path::Path, time::Duration};
+use eyre::{Context, bail};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 
 fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -13,12 +16,17 @@ fn main() -> eyre::Result<()> {
         ..Default::default()
     })?;
 
-    // Bound the run so a wedged node fails fast via the daemon's stop
-    // escalation instead of hanging until the CI step timeout (#2152).
-    // A healthy run self-terminates quickly.
+    // Bound the run so a wedged node can't hang CI (#2152). A node the daemon
+    // kills with SIGTERM at the deadline still counts as a clean stop, and a
+    // healthy run ends long before it, so check the time after `execute()`.
+    let deadline = Duration::from_secs(120);
     let mut run = RunCommand::new("dataflow.yml".to_string());
-    run.stop_after = Some(Duration::from_secs(120));
+    run.stop_after = Some(deadline);
+    let started = Instant::now();
     run.execute()?;
+    if started.elapsed() >= deadline {
+        bail!("the dataflow did not finish within {deadline:?}, so a node hung");
+    }
 
     Ok(())
 }
