@@ -236,12 +236,10 @@ fn run_git_in(dir: &std::path::Path, args: &[&str]) -> eyre::Result<()> {
     run_git_impl(Some(dir), args)
 }
 fn run_git_impl(dir: Option<&std::path::Path>, args: &[&str]) -> eyre::Result<()> {
-    let mut cmd = std::process::Command::new("git");
-    cmd.env("GIT_TERMINAL_PROMPT", "0");
-    if let Some(dir) = dir {
-        cmd.current_dir(dir);
-    }
-    let status = cmd.args(args).status().context("failed to run `git`")?;
+    let status = dora_hub_client::transport::git_command(dir)
+        .args(args)
+        .status()
+        .context("failed to run `git`")?;
     if !status.success() {
         eyre::bail!("`git {}` failed", args.join(" "));
     }
