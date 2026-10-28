@@ -547,15 +547,26 @@ impl Daemon {
         // which is fine for a debug tap.
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
             || (dataflow.enable_debug_inspection
-                && control_publisher(
+                && match control_publisher(
                     &self.zenoh_session,
                     &mut dataflow.publishers,
                     dataflow.id,
                     &output_id_key,
                 )
-                .await?
-                .has_subscribers
-                .load(std::sync::atomic::Ordering::Relaxed));
+                .await
+                {
+                    Ok(publisher) => publisher.has_subscribers.load(Ordering::Relaxed),
+                    // Local delivery below must not depend on zenoh: treat a
+                    // failed lookup as "nobody subscribed" and move on.
+                    Err(err) => {
+                        tracing::warn!(
+                            "debug publishing of `{}/{}` disabled for this message: {err:?}",
+                            output_id_key.0,
+                            output_id_key.1
+                        );
+                        false
+                    }
+                });
         let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
         let mut deferred = Vec::new();
         let data_bytes = send_output_to_local_receivers(

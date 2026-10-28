@@ -2613,6 +2613,40 @@ async fn debug_inspection_publishes_to_a_zenoh_subscriber() {
     }
 }
 
+/// Local delivery must not depend on zenoh: if declaring the debug control
+/// publisher fails, a `--debug` dataflow's output still reaches its local
+/// receivers.
+#[tokio::test(flavor = "multi_thread")]
+async fn debug_publisher_failure_does_not_block_local_delivery() {
+    let (mut daemon, dataflow_id, clock) = debug_dataflow_daemon().await;
+    let receiver: NodeId = "receiver".to_string().into();
+    let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    {
+        let dataflow = daemon.running.get_mut(&dataflow_id).unwrap();
+        dataflow
+            .mappings
+            .entry(OutputId(
+                NodeId::from("sender".to_string()),
+                DataId::from("output".to_string()),
+            ))
+            .or_default()
+            .insert((receiver.clone(), DataId::from("input".to_string())));
+        dataflow.subscribe_channels.insert(receiver, tx);
+    }
+    // Every declaration on a closed session fails.
+    daemon.zenoh_session.close().await.unwrap();
+
+    send_debug_output(&mut daemon, dataflow_id, &clock).await;
+
+    let events = drain_events(&mut rx);
+    assert_eq!(
+        events.len(),
+        1,
+        "the local receiver must still get the output"
+    );
+    assert!(matches_event(&events[0], "Input"));
+}
+
 // -- Regression tests for dora-rs/dora#3201: a receiver whose event
 //    stream is gone must not be silently starved. --
 
