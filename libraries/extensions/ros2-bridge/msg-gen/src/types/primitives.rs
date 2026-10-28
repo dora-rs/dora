@@ -213,7 +213,10 @@ impl GenericString {
         }
         let value = Literal::string(value);
         if self.is_wide() {
-            quote! { crate::messages::ffi::U16String::from_str(#value) }
+            // `super` is the module that includes the generated packages:
+            // `crate::messages` in dora-ros2-bridge, `crate::ros2` in
+            // dora-node-api-cxx. Both re-export `default_impl::ffi`.
+            quote! { super::ffi::U16String::from_str(#value) }
         } else {
             quote! { ::std::string::String::from(#value) }
         }

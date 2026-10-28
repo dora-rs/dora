@@ -73,7 +73,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -362,25 +362,40 @@ fn run_reader(
 /// frame and returns `Ok`, letting `run_reader` re-check its shutdown
 /// flag and exit.
 ///
-/// For `udp://0.0.0.0:N` we redirect to `127.0.0.1:N` because sending
-/// to 0.0.0.0 isn't routable. Any send error is non-fatal — the grace
-/// window in `main` is the safety net.
-fn wake_udp_recv(url: &Url, system_id: u8, component_id: u8) -> std::io::Result<()> {
+/// The frame is encoded in the connection's own protocol `version`: a
+/// `?proto=v1` connection reads only V1 frames and skips a V2 one byte
+/// by byte, so a V2 wake would never return from `recv`.
+///
+/// An unspecified bind address (`0.0.0.0` / `[::]`) is redirected to
+/// the loopback address of the same family, since it isn't routable,
+/// and each wake is sent from a socket in the destination's address
+/// family — an IPv4 socket cannot send to an IPv6 endpoint. A host name
+/// is woken on every address it resolves to: the connection's bind took
+/// the first one that succeeded, which need not be the first listed.
+/// Any send error is non-fatal — the grace window in `main` is the
+/// safety net.
+fn wake_udp_recv(
+    url: &Url,
+    version: MavlinkVersion,
+    system_id: u8,
+    component_id: u8,
+) -> std::io::Result<()> {
     use mavlink::dialects::common::{
         HEARTBEAT_DATA, MavAutopilot, MavMessage, MavModeFlag, MavState, MavType,
     };
-    use std::net::UdpSocket;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 
-    let host = url.host_str().unwrap_or("127.0.0.1");
-    let target_host = if host == "0.0.0.0" || host.is_empty() {
-        "127.0.0.1"
-    } else {
-        host
-    };
     let port = url.port().unwrap_or(transport::DEFAULT_UDP_PORT);
-    let dest = format!("{target_host}:{port}");
+    let ips: Vec<IpAddr> = match url.host() {
+        Some(url::Host::Ipv4(ip)) => vec![IpAddr::V4(ip)],
+        Some(url::Host::Ipv6(ip)) => vec![IpAddr::V6(ip)],
+        Some(url::Host::Domain(host)) => (host, port)
+            .to_socket_addrs()?
+            .map(|addr| addr.ip())
+            .collect(),
+        None => vec![IpAddr::V4(Ipv4Addr::LOCALHOST)],
+    };
 
-    let socket = UdpSocket::bind("0.0.0.0:0")?;
     let header = MavHeader {
         system_id,
         component_id,
@@ -395,10 +410,32 @@ fn wake_udp_recv(url: &Url, system_id: u8, component_id: u8) -> std::io::Result<
         mavlink_version: 3,
     });
     let mut buf = Vec::new();
-    mavlink::write_versioned_msg(&mut buf, MavlinkVersion::V2, header, &hb)
+    mavlink::write_versioned_msg(&mut buf, version, header, &hb)
         .map_err(|e| std::io::Error::other(format!("encode wake heartbeat: {e}")))?;
-    socket.send_to(&buf, dest)?;
-    Ok(())
+
+    let mut delivered = false;
+    let mut last_err = None;
+    for ip in ips {
+        let (dest, unspecified): (IpAddr, IpAddr) = match ip {
+            IpAddr::V4(ip) if ip.is_unspecified() => (Ipv4Addr::LOCALHOST.into(), ip.into()),
+            IpAddr::V4(_) => (ip, Ipv4Addr::UNSPECIFIED.into()),
+            IpAddr::V6(ip) if ip.is_unspecified() => (Ipv6Addr::LOCALHOST.into(), ip.into()),
+            IpAddr::V6(_) => (ip, Ipv6Addr::UNSPECIFIED.into()),
+        };
+        match UdpSocket::bind(SocketAddr::new(unspecified, 0))
+            .and_then(|socket| socket.send_to(&buf, SocketAddr::new(dest, port)))
+        {
+            Ok(_) => delivered = true,
+            Err(e) => last_err = Some(e),
+        }
+    }
+    match (delivered, last_err) {
+        (true, _) => Ok(()),
+        (false, Some(e)) => Err(e),
+        (false, None) => Err(std::io::Error::other(format!(
+            "`{url}` resolved to no address"
+        ))),
+    }
 }
 
 /// Decode an incoming Arrow `StructArray` for type `T` from a dora
@@ -423,27 +460,12 @@ fn decode_input<T: MavlinkArrow>(data: &ArrayRef, input: &str) -> Result<T> {
     T::from_record_batch(&batch).with_context(|| format!("decoding {input} from incoming Arrow"))
 }
 
-/// Build the header for the next outbound frame, stamping it with the next
-/// MAVLink sequence number.
-///
-/// The sequence field must increment per transmitted frame (wrapping at 255)
-/// so receivers can detect dropped packets (e.g. radio-link statistics /
-/// `SYS_STATUS.drop_rate_comm`). A constant `0` — as every send used before —
-/// makes loss detection impossible and is non-conformant with the protocol.
-fn next_header(base: &MavHeader, sequence: &AtomicU8) -> MavHeader {
-    MavHeader {
-        sequence: sequence.fetch_add(1, Ordering::Relaxed),
-        ..*base
-    }
-}
-
 /// Forward one incoming dora `Event::Input` as a MAVLink frame on
 /// `conn`. Unknown input ids are silently ignored — the bridge does
 /// not abort the whole node on misrouted inputs.
 fn handle_input(
     conn: &(dyn MavConnection<MavMessage> + Send + Sync),
     header: &MavHeader,
-    sequence: &AtomicU8,
     id: &DataId,
     data: &ArrayRef,
 ) -> Result<()> {
@@ -478,7 +500,7 @@ fn handle_input(
         _ => return Ok(()), // unknown input id, ignore
     };
     let sent = conn
-        .send(&next_header(header, sequence), &outgoing)
+        .send(header, &outgoing)
         .map_err(|e| eyre!("mavlink send: {e}"))?;
     if sent == 0 {
         // UDP server mode (`udpin:`) reports a successful 0-byte send until a
@@ -504,7 +526,6 @@ fn handle_input(
 fn attempt_data_stream_request(
     conn: &(dyn MavConnection<MavMessage> + Send + Sync),
     header: &MavHeader,
-    sequence: &AtomicU8,
 ) -> bool {
     let req = mavlink::dialects::common::REQUEST_DATA_STREAM_DATA {
         req_message_rate: 5,
@@ -513,10 +534,7 @@ fn attempt_data_stream_request(
         req_stream_id: 0, // MAV_DATA_STREAM_ALL
         start_stop: 1,
     };
-    match conn.send(
-        &next_header(header, sequence),
-        &MavMessage::REQUEST_DATA_STREAM(req),
-    ) {
+    match conn.send(header, &MavMessage::REQUEST_DATA_STREAM(req)) {
         Ok(0) => false, // no UDP peer yet — retry once one connects
         Ok(_) => {
             tracing::info!("requested all data streams at 5 Hz");
@@ -565,15 +583,13 @@ fn main() -> Result<()> {
     let conn_box = connect_with_retry(&url)?;
     let conn: Arc<dyn MavConnection<MavMessage> + Send + Sync> = Arc::from(conn_box);
 
+    // `sequence` is a placeholder: every mavlink-core transport stamps each
+    // outbound frame with its own per-connection counter, ignoring this one.
     let header = MavHeader {
         system_id: cfg.system_id,
         component_id: cfg.component_id,
         sequence: 0,
     };
-    // Per-frame MAVLink sequence counter. `next_header` stamps each outbound
-    // frame with the next value (wrapping at 255) so receivers can detect
-    // dropped packets; a constant sequence would make that impossible.
-    let sequence = AtomicU8::new(0);
 
     // Request all data streams from the autopilot at 5 Hz so HEARTBEAT,
     // GLOBAL_POSITION_INT, GPS_RAW_INT, COMMAND_ACK, etc. start flowing
@@ -581,7 +597,7 @@ fn main() -> Result<()> {
     // until a GCS asks. In UDP server mode this first attempt is dropped
     // (no client yet), so it is retried in the event loop below until a peer
     // connects (dora-rs/dora#2027).
-    let mut data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header, &sequence);
+    let mut data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header);
 
     let (mut node, mut events) =
         DoraNode::init_from_env().map_err(|e| eyre!("DoraNode init: {e}"))?;
@@ -638,7 +654,7 @@ fn main() -> Result<()> {
         // connected; once the reader receives a packet the shared connection
         // learns the peer and this send goes out (dora-rs/dora#2027).
         if !data_stream_requested {
-            data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header, &sequence);
+            data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header);
         }
 
         let event = match wait_for_event_or_frame(events.recv_async_timeout(POLL_INTERVAL), &rx) {
@@ -658,7 +674,7 @@ fn main() -> Result<()> {
         match event {
             Event::Input { id, data, .. } => {
                 let array_ref: ArrayRef = data.into();
-                if let Err(e) = handle_input(conn.as_ref(), &header, &sequence, &id, &array_ref) {
+                if let Err(e) = handle_input(conn.as_ref(), &header, &id, &array_ref) {
                     // Writer errors mean the dora node's command did NOT reach the
                     // autopilot. Surface at error level so users debugging missions see
                     // it in default log filters rather than treating it as routine noise.
@@ -703,7 +719,12 @@ fn main() -> Result<()> {
     //      `READER_SHUTDOWN_GRACE` regardless.
     shutdown.store(true, Ordering::Relaxed);
     if url.scheme() == "udp"
-        && let Err(e) = wake_udp_recv(&url, cfg.system_id, cfg.component_id)
+        && let Err(e) = wake_udp_recv(
+            &url,
+            conn.protocol_version(),
+            cfg.system_id,
+            cfg.component_id,
+        )
     {
         tracing::debug!("UDP wake send failed (non-fatal): {e}");
     }
@@ -787,45 +808,7 @@ mod tests {
     #[test]
     fn run_reader_exits_promptly_when_udp_peer_is_silent() {
         let port = pick_free_udp_port();
-        let url = Url::parse(&format!("udp://127.0.0.1:{port}")).unwrap();
-        let conn_box = transport::connect(&url).expect("transport::connect");
-        let conn: Arc<dyn MavConnection<MavMessage> + Send + Sync> = Arc::from(conn_box);
-
-        let (tx, _rx_keep_alive) = flume::bounded::<(DataId, ArrayRef)>(64);
-        let shutdown = Arc::new(AtomicBool::new(false));
-
-        let handle = std::thread::spawn({
-            let conn = Arc::clone(&conn);
-            let shutdown = Arc::clone(&shutdown);
-            move || run_reader(conn, tx, shutdown, true)
-        });
-
-        // Let the reader thread settle into `recv_from`.
-        std::thread::sleep(Duration::from_millis(150));
-        assert!(
-            !handle.is_finished(),
-            "reader exited unexpectedly before shutdown was signalled"
-        );
-
-        let started = Instant::now();
-        shutdown.store(true, Ordering::Relaxed);
-        wake_udp_recv(&url, 0xFE, 1).expect("wake send");
-
-        // The wake frame should round-trip and the reader should
-        // notice the flag within well under a second. Cap at 2 s to
-        // give CI runners headroom; on a developer laptop this
-        // typically returns in <50 ms.
-        let join_deadline = Instant::now() + Duration::from_secs(2);
-        while !handle.is_finished() && Instant::now() < join_deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert!(
-            handle.is_finished(),
-            "reader did not exit within 2s of shutdown wake; elapsed={:?}",
-            started.elapsed()
-        );
-        let result = handle.join().expect("reader thread panicked");
-        assert!(result.is_ok(), "reader returned Err: {result:?}");
+        assert_wake_stops_reader(&format!("udp://127.0.0.1:{port}"));
     }
 
     /// `wake_udp_recv` should rewrite an `udp://0.0.0.0:port` URL to
@@ -836,7 +819,46 @@ mod tests {
     #[test]
     fn wake_udp_recv_handles_zero_address_bind() {
         let port = pick_free_udp_port();
-        let url = Url::parse(&format!("udp://0.0.0.0:{port}")).unwrap();
+        assert_wake_stops_reader(&format!("udp://0.0.0.0:{port}"));
+    }
+
+    /// A `?proto=v1` connection reads only V1 frames and skips a V2 frame
+    /// byte by byte, so the wake must be encoded in the connection's own
+    /// protocol version or the reader never returns from `recv`.
+    #[test]
+    fn wake_udp_recv_wakes_a_v1_connection() {
+        let port = pick_free_udp_port();
+        assert_wake_stops_reader(&format!("udp://127.0.0.1:{port}?proto=v1"));
+    }
+
+    /// A host name is woken on every address it resolves to: `localhost`
+    /// may list `::1` before `127.0.0.1` (or have no usable IPv6 at all)
+    /// while the connection's bind took whichever address succeeded.
+    #[test]
+    fn wake_udp_recv_wakes_a_host_name_bind() {
+        let port = pick_free_udp_port();
+        assert_wake_stops_reader(&format!("udp://localhost:{port}"));
+    }
+
+    /// An IPv6 endpoint (here the unspecified `[::]`, redirected to `[::1]`)
+    /// must be woken from an IPv6 socket; an IPv4 one cannot send to it.
+    #[test]
+    fn wake_udp_recv_wakes_an_ipv6_bind() {
+        // Skip on hosts without IPv6 loopback (e.g. some CI containers).
+        let Ok(probe) = UdpSocket::bind("[::1]:0") else {
+            eprintln!("skipping: no IPv6 loopback");
+            return;
+        };
+        let port = probe.local_addr().expect("local_addr").port();
+        drop(probe);
+        assert_wake_stops_reader(&format!("udp://[::]:{port}"));
+    }
+
+    /// Run `run_reader` on a silent UDP connection to `url`, then set the
+    /// shutdown flag and send the wake frame: the reader must exit cleanly
+    /// within 2 s.
+    fn assert_wake_stops_reader(url: &str) {
+        let url = Url::parse(url).unwrap();
         let conn_box = transport::connect(&url).expect("transport::connect");
         let conn: Arc<dyn MavConnection<MavMessage> + Send + Sync> = Arc::from(conn_box);
 
@@ -848,43 +870,75 @@ mod tests {
             let shutdown = Arc::clone(&shutdown);
             move || run_reader(conn, tx, shutdown, true)
         });
+        // Let the reader thread settle into `recv_from`.
         std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !handle.is_finished(),
+            "reader exited unexpectedly before shutdown was signalled"
+        );
 
         shutdown.store(true, Ordering::Relaxed);
-        wake_udp_recv(&url, 0xFE, 1).expect("wake send");
+        wake_udp_recv(&url, conn.protocol_version(), 0xFE, 1).expect("wake send");
 
+        // Well under a second on a laptop; 2 s gives CI runners headroom.
         let join_deadline = Instant::now() + Duration::from_secs(2);
         while !handle.is_finished() && Instant::now() < join_deadline {
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(handle.is_finished(), "0.0.0.0-bind wake did not deliver");
+        assert!(handle.is_finished(), "wake for `{url}` did not deliver");
         handle.join().expect("panic").expect("err");
     }
 
-    /// Every outbound frame must carry a monotonically increasing sequence
-    /// number (wrapping at 255), not a constant 0, so receivers can detect
-    /// dropped packets. The system/component id are preserved.
+    /// Every outbound frame must carry an increasing sequence number, not a
+    /// constant 0, so receivers can detect dropped packets. The bridge sends
+    /// one fixed header and relies on mavlink-core stamping the sequence per
+    /// connection; this pins that, so a mavlink bump that stops doing it fails
+    /// here. The system/component id are preserved.
     #[test]
-    fn next_header_increments_and_wraps_sequence() {
-        let base = MavHeader {
+    fn transport_stamps_increasing_sequence_over_fixed_header() {
+        use mavlink::dialects::common::{
+            HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType,
+        };
+
+        let peer = UdpSocket::bind("127.0.0.1:0").expect("bind peer");
+        peer.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout");
+        let port = peer.local_addr().expect("local_addr").port();
+        let conn = mavlink::connect::<MavMessage>(&format!("udpout:127.0.0.1:{port}"))
+            .expect("udpout connect");
+
+        let header = MavHeader {
             system_id: 42,
             component_id: 7,
             sequence: 0,
         };
-        let seq = AtomicU8::new(0);
+        let hb = MavMessage::HEARTBEAT(HEARTBEAT_DATA {
+            custom_mode: 0,
+            mavtype: MavType::MAV_TYPE_GENERIC,
+            autopilot: MavAutopilot::MAV_AUTOPILOT_GENERIC,
+            base_mode: MavModeFlag::empty(),
+            system_status: MavState::MAV_STATE_UNINIT,
+            mavlink_version: 3,
+        });
 
-        let h0 = next_header(&base, &seq);
-        let h1 = next_header(&base, &seq);
-        let h2 = next_header(&base, &seq);
-        assert_eq!((h0.sequence, h1.sequence, h2.sequence), (0, 1, 2));
-        // Base identity fields are carried through unchanged.
-        assert_eq!(h0.system_id, 42);
-        assert_eq!(h0.component_id, 7);
+        let mut received = Vec::new();
+        for _ in 0..3 {
+            conn.send(&header, &hb).expect("send");
+            let mut buf = [0u8; 512];
+            let (n, _) = peer.recv_from(&mut buf).expect("recv");
+            let mut reader = mavlink::peek_reader::PeekReader::new(&buf[..n]);
+            let (h, _): (MavHeader, MavMessage) =
+                mavlink::read_v2_msg(&mut reader).expect("decode");
+            received.push(h);
+        }
 
-        // Wraps at 255 -> 0 rather than panicking on overflow.
-        let seq = AtomicU8::new(255);
-        assert_eq!(next_header(&base, &seq).sequence, 255);
-        assert_eq!(next_header(&base, &seq).sequence, 0);
+        let sequences: Vec<u8> = received.iter().map(|h| h.sequence).collect();
+        assert_eq!(sequences, [0, 1, 2]);
+        assert!(
+            received
+                .iter()
+                .all(|h| (h.system_id, h.component_id) == (42, 7))
+        );
     }
 
     // ---- #2034: recv-error classification ----------------------------
@@ -1069,9 +1123,8 @@ mod tests {
             sequence: 0,
         };
 
-        let sequence = AtomicU8::new(0);
         assert!(
-            !attempt_data_stream_request(conn.as_ref(), &header, &sequence),
+            !attempt_data_stream_request(conn.as_ref(), &header),
             "with no UDP peer connected the request is dropped (0 bytes) and must be retried"
         );
     }

@@ -200,3 +200,181 @@ async fn multiple_complete_servers_remote_errors_and_disappearance_are_observabl
         Err(ServiceError::Timeout)
     ));
 }
+
+/// A session whose Zenoh-level query timeout is shorter than the per-call
+/// timeouts below, standing in for the 10 s `queries_default_timeout` that
+/// capped every rmw_zenoh service and action call (#3742).
+async fn session_with_short_default_query_timeout() -> zenoh::Session {
+    let mut config = zenoh::Config::default();
+    config
+        .insert_json5("queries_default_timeout", "100")
+        .unwrap();
+    zenoh::open(config).await.unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn call_timeout_is_not_capped_by_the_session_default_query_timeout() {
+    use dora_ros2_bridge::transport::zenoh::service::{RawServiceClient, RawServiceServer};
+
+    let session = session_with_short_default_query_timeout().await;
+    let server = RawServiceServer::declare(&session, "dora/test/slow", 64, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let client = RawServiceClient::declare(&session, "dora/test/slow", [7; 16], 64)
+        .await
+        .unwrap();
+
+    let worker = tokio::spawn(async move {
+        let request = server.recv().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        server.reply(request.id, &request.payload).await.unwrap();
+    });
+    let reply = client
+        .call(vec![0, 1, 0, 0, 3], Duration::from_secs(2))
+        .await;
+    assert_eq!(reply.unwrap(), vec![0, 1, 0, 0, 3]);
+    worker.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unanswered_call_reports_timeout_at_the_callers_deadline() {
+    use dora_ros2_bridge::transport::zenoh::service::{RawServiceClient, RawServiceServer};
+
+    let session = session_with_short_default_query_timeout().await;
+    // Declared but never answers.
+    let _server =
+        RawServiceServer::declare(&session, "dora/test/silent", 64, Duration::from_secs(30))
+            .await
+            .unwrap();
+    let client = RawServiceClient::declare(&session, "dora/test/silent", [8; 16], 64)
+        .await
+        .unwrap();
+
+    let start = Instant::now();
+    let result = client.call(vec![1], Duration::from_millis(300)).await;
+    assert!(
+        matches!(result, Err(ServiceError::Timeout)),
+        "expected ServiceError::Timeout, got {result:?}"
+    );
+    assert!(start.elapsed() >= Duration::from_millis(300));
+}
+
+/// How often the late-poll tests repeat their case: with a random choice
+/// between the reply and the expired deadline, all rounds pass by chance only
+/// once in 2^16 runs.
+const LATE_POLL_ROUNDS: usize = 16;
+
+/// A caller that polls its call late (the generated C++ client's pump while
+/// it waits for room in the event stream) must still get a reply that arrived
+/// before the deadline, not a timeout, like `tokio::time::timeout`, which
+/// checks the inner future before the timer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_received_in_time_wins_over_the_expired_deadline() {
+    use dora_ros2_bridge::transport::zenoh::service::{RawServiceClient, RawServiceServer};
+
+    let session = zenoh::open(zenoh::Config::default()).await.unwrap();
+    let server = RawServiceServer::declare(&session, "dora/test/late", 64, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let client = RawServiceClient::declare(&session, "dora/test/late", [9; 16], 64)
+        .await
+        .unwrap();
+
+    for round in 0..LATE_POLL_ROUNDS {
+        let call = client.call(vec![0, 1, 0, 0, round as u8], Duration::from_millis(50));
+        futures::pin_mut!(call);
+        assert!(futures::poll!(&mut call).is_pending(), "the query is sent");
+        let request = tokio::time::timeout(Duration::from_secs(5), server.recv())
+            .await
+            .expect("the server gets the request")
+            .unwrap();
+        server.reply(request.id, &request.payload).await.unwrap();
+        // Let the reply arrive and the 50 ms pass before polling again.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            call.await.unwrap(),
+            vec![0, 1, 0, 0, round as u8],
+            "round {round}"
+        );
+    }
+}
+
+/// Same for `wait_for_service`: a server that appeared before the deadline is
+/// found even when the wait is polled after it.
+#[tokio::test]
+async fn a_service_seen_in_time_wins_over_the_expired_deadline() {
+    use dora_ros2_bridge::transport::zenoh::keyexpr::{EntityKind, LivelinessKey, TopicToken};
+
+    for round in 0..LATE_POLL_ROUNDS {
+        let graph = GraphCache::new(7);
+        let wait = wait_for_service(
+            &graph,
+            "/add",
+            "example_interfaces::srv::dds_::AddTwoInts_",
+            "RIHS01_hash",
+            "qos",
+            Instant::now() + Duration::from_millis(20),
+        );
+        futures::pin_mut!(wait);
+        assert!(futures::poll!(&mut wait).is_pending(), "no server yet");
+        let service = LivelinessKey::endpoint(
+            7,
+            "zid",
+            "nid",
+            "eid",
+            EntityKind::Service,
+            "/",
+            "/",
+            "node",
+            TopicToken {
+                name: "/add".into(),
+                type_name: "example_interfaces::srv::dds_::AddTwoInts_".into(),
+                type_hash: "RIHS01_hash".into(),
+                qos: "qos".into(),
+            },
+        )
+        .unwrap();
+        graph.apply_put(service.as_str()).unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(wait.await.is_ok(), "round {round}");
+    }
+}
+
+/// rmw_zenoh's `service_server_is_available` matches a server by name and type
+/// only; the client's QoS is never compared. A dora client using its default
+/// QoS (best effort, depth 1) must still find an rclpy server advertised with
+/// the services default (reliable, depth 10).
+#[tokio::test]
+async fn wait_for_service_ignores_qos_like_rmw_zenoh() {
+    use dora_ros2_bridge::transport::zenoh::keyexpr::{EntityKind, LivelinessKey, TopicToken};
+
+    let graph = GraphCache::new(7);
+    let server = LivelinessKey::endpoint(
+        7,
+        "zid",
+        "nid",
+        "eid",
+        EntityKind::Service,
+        "/",
+        "/",
+        "node",
+        TopicToken {
+            name: "/add".into(),
+            type_name: "example_interfaces::srv::dds_::AddTwoInts_".into(),
+            type_hash: "RIHS01_hash".into(),
+            qos: "::,10:,:,:,,".into(),
+        },
+    )
+    .unwrap();
+    graph.apply_put(server.as_str()).unwrap();
+    wait_for_service(
+        &graph,
+        "/add",
+        "example_interfaces::srv::dds_::AddTwoInts_",
+        "RIHS01_hash",
+        "2::,1:,:,:,,",
+        Instant::now() + Duration::from_millis(200),
+    )
+    .await
+    .unwrap();
+}

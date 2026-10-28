@@ -9,7 +9,7 @@ use eyre::Context;
 
 use crate::{
     command::{Executable, default_tracing, up},
-    common::connect_to_coordinator,
+    common::{connect_to_coordinator, coordinator_rejected},
 };
 
 use super::config::ClusterConfig;
@@ -47,6 +47,7 @@ impl Executable for Up {
                 println!("Coordinator already running at {coordinator_addr}");
                 s
             }
+            Err(err) if coordinator_rejected(&err) => return Err(err),
             Err(_) => {
                 // Shared with `dora up` so the two cannot drift apart again;
                 // the wildcard bind is what makes the coordinator reachable

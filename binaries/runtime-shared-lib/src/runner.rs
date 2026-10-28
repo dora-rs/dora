@@ -140,11 +140,7 @@ impl SharedLibraryOperator<'_> {
                     open_telemetry_context,
                 },
             } = output;
-            let mut parameters = BTreeMap::new();
-            parameters.insert(
-                dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT.to_string(),
-                Parameter::String(open_telemetry_context.to_string()),
-            );
+            let parameters = output_parameters(&open_telemetry_context);
 
             let arrow_array = match unsafe { arrow::ffi::from_ffi(data_array, &schema) } {
                 Ok(a) => dora_node_api::DoraArray::from_array(arrow::array::make_array(a)),
@@ -299,7 +295,13 @@ struct OperatorContext<'lib> {
 
 impl Drop for OperatorContext<'_> {
     fn drop(&mut self) {
-        unsafe { (self.drop_fn.drop_operator)(self.raw) };
+        let result = unsafe { (self.drop_fn.drop_operator)(self.raw) };
+        // A panic in the operator's `Drop` is caught on the operator side and
+        // returned here; log it rather than losing it (the runtime is already
+        // tearing down, so there is nobody to propagate it to).
+        if let Some(error) = result.error {
+            tracing::warn!("failed to drop operator: {}", *error);
+        }
     }
 }
 
@@ -325,5 +327,37 @@ impl<'lib> Bindings<'lib> {
             }
         };
         Ok(bindings)
+    }
+}
+
+/// Metadata parameters for an operator output. Every operator API currently
+/// passes an empty context, which carries nothing (`open_telemetry_context()`
+/// reads a missing key as `""`) yet would cost an allocation and a map insert
+/// per output plus an extra key on the wire, and would keep `send_output` from
+/// attaching the current tracing context — so it is left out.
+fn output_parameters(open_telemetry_context: &str) -> BTreeMap<String, Parameter> {
+    let mut parameters = BTreeMap::new();
+    if !open_telemetry_context.is_empty() {
+        parameters.insert(
+            dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT.to_string(),
+            Parameter::String(open_telemetry_context.to_owned()),
+        );
+    }
+    parameters
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_parameters_omit_an_empty_open_telemetry_context() {
+        assert!(output_parameters("").is_empty());
+
+        let parameters = output_parameters("traceparent:00-ab-cd-01");
+        assert_eq!(
+            parameters.get(dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT),
+            Some(&Parameter::String("traceparent:00-ab-cd-01".to_owned()))
+        );
     }
 }

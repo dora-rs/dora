@@ -9,13 +9,14 @@ use dora_node_api::dora_core::config::{DataId, NodeId};
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, init_tracing};
 use dora_operator_api_python::{
-    DelayedCleanup, NodeCleanupHandle, PyEvent, datetime_module, pydict_to_metadata,
+    DelayedCleanup, ExternalEvent, NodeCleanupHandle, PyEvent, datetime_module, pydict_to_metadata,
 };
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
 
 use futures::future::{Either, select};
-use futures::{Stream, StreamExt};
+use futures::stream::Peekable;
+use futures::{FutureExt, Stream, StreamExt};
 use futures_timer::Delay;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
@@ -200,28 +201,14 @@ impl Node {
             }
         });
 
-        let dataflow_id = *node.dataflow_id();
-        let node_id = node.id().clone();
-        let node = DelayedCleanup::new(node);
-        let events = events;
-        let cleanup_handle = NodeCleanupHandle {
-            _handles: Arc::new(node.handle()),
-        };
+        let node = Node::from_parts(node, events);
 
         Python::attach(|py| {
             // Extend the `logging` module to interact with tracing
             setup_logging(py)
         })?;
 
-        Ok(Node {
-            events: Events {
-                inner: Arc::new(Mutex::new(EventsInner::Dora(events))),
-                _cleanup_handle: cleanup_handle,
-            },
-            dataflow_id,
-            node_id,
-            node,
-        })
+        Ok(node)
     }
 
     /// `.next()` gives you the next input that the node has received.
@@ -272,6 +259,9 @@ impl Node {
     ///     print(event)
     /// ```
     ///
+    /// While another receive (such as a pending `recv_async`) holds the event
+    /// stream, this reports an empty list instead of waiting for it.
+    ///
     /// :rtype: list[dict]
     #[allow(clippy::should_implement_trait)]
     pub fn drain(&self, py: Python) -> PyResult<Vec<Py<PyDict>>> {
@@ -308,9 +298,12 @@ impl Node {
     ///     print(event)
     /// ```
     ///
+    /// While another receive (such as a pending `recv_async`) holds the event
+    /// stream, this reports `None` instead of waiting for it.
+    ///
     /// :rtype: dict
     #[allow(clippy::should_implement_trait)]
-    pub fn try_recv(&mut self, py: Python) -> Option<Py<PyDict>> {
+    pub fn try_recv(&self, py: Python) -> Option<Py<PyDict>> {
         // Release pools other nodes freed before yielding the next event.
         // Compiles away entirely without the `tensor-pool` feature.
         self.process_pending_tensor_pool_frees(py);
@@ -321,6 +314,9 @@ impl Node {
     }
 
     /// Check if there are any buffered events in the event stream.
+    ///
+    /// While another receive (such as a pending `recv_async`) holds the event
+    /// stream, this reports `True` instead of waiting for it.
     ///
     /// :rtype: bool
     #[allow(clippy::should_implement_trait)]
@@ -491,9 +487,7 @@ impl Node {
         _py: Python,
     ) -> eyre::Result<SampleHandler> {
         let parameters = pydict_to_metadata(metadata)?;
-        let data_id: DataId = output_id
-            .parse()
-            .map_err(|e| eyre::eyre!("invalid output_id: {e}"))?;
+        let data_id = parse_output_id(&output_id)?;
         if !self.node.get_mut().validate_output(&data_id) {
             eyre::bail!("Output `{data_id}` not in node's output list.")
         }
@@ -901,13 +895,24 @@ impl Node {
     /// Merge an external event stream with dora main loop.
     /// This currently only work with ROS2.
     ///
+    /// Events from the subscription arrive with ``kind`` set to
+    /// ``"external"`` and ``id`` set to the given ``id``, or to the
+    /// subscription's ROS2 topic name (e.g. ``"/turtle1/pose"``) when no
+    /// ``id`` is given. Call this once per subscription to handle several
+    /// topics in one node, and use ``event["id"]`` to tell them apart.
+    ///
     /// :type subscription: dora.Ros2Subscription
+    /// :type id: str, optional
     /// :rtype: None
+    #[pyo3(signature = (subscription, id=None))]
     pub fn merge_external_events(
         &self,
         py: Python,
         subscription: &mut Ros2Subscription,
+        id: Option<String>,
     ) -> eyre::Result<()> {
+        // Validate before `into_stream`, which consumes the subscription.
+        let id = external_event_id(id, subscription.topic_name())?;
         let subscription = subscription.into_stream()?;
         let stream = futures::stream::poll_fn(move |cx| {
             let s = subscription.as_stream().map(|item| {
@@ -926,23 +931,7 @@ impl Node {
             s.poll_next_unpin(cx)
         });
 
-        // Release the GIL while blocking on the node's event mutex. Holding the
-        // GIL across `blocking_lock()` can deadlock against a suspended
-        // `recv_async` task that holds the same lock (`inner.lock().await`) and
-        // needs the GIL to make progress (dora-rs/dora#2027). Clone the `Arc` so
-        // the closure doesn't capture `&self` (keeping the `Ungil` bound clean).
-        let inner = self.events.inner.clone();
-        py.detach(move || {
-            // take out the event stream and temporarily replace it with a dummy
-            let mut guard = inner.blocking_lock();
-            let events = std::mem::replace(
-                &mut *guard,
-                EventsInner::Merged(Box::new(futures::stream::empty())),
-            );
-            // update the stream with the merged one
-            *guard = EventsInner::Merged(events.merge_external_send(Box::pin(stream)));
-        });
-
+        self.merge_external_stream(py, stream, id);
         Ok(())
     }
 }
@@ -967,6 +956,22 @@ impl Node {
              which only became part of the stable C API in 3.11. \
              Upgrade Python or use send_output() instead (1 copy)."
         )))
+    }
+}
+
+/// Resolve the `id` external events are tagged with: the caller's `id` if
+/// given, otherwise the subscription's topic name. An empty id is rejected,
+/// since it could not be told apart from a missing one in Python.
+fn external_event_id(id: Option<String>, topic_name: &str) -> eyre::Result<Arc<str>> {
+    match id {
+        Some(id) if id.is_empty() => {
+            let err = pyo3::exceptions::PyValueError::new_err(
+                "`id` must not be empty; omit it to use the topic name",
+            );
+            Err(err.into())
+        }
+        Some(id) => Ok(id.into()),
+        None => Ok(topic_name.into()),
     }
 }
 
@@ -997,9 +1002,9 @@ struct Events {
 async fn recv_merged_with_timeout<S>(
     events: &mut S,
     timeout: Option<Duration>,
-) -> Option<MergedEvent<Py<PyAny>>>
+) -> Option<MergedEvent<ExternalEvent>>
 where
-    S: Stream<Item = MergedEvent<Py<PyAny>>> + Unpin,
+    S: Stream<Item = MergedEvent<ExternalEvent>> + Unpin,
 {
     match timeout {
         Some(timeout) => match select(events.next(), Delay::new(timeout)).await {
@@ -1025,15 +1030,25 @@ impl Events {
         event.map(|event| PyEvent { event })
     }
 
+    /// Lock the stream for a non-blocking call, or `None` while another
+    /// receive holds it.
+    ///
+    /// `recv_async` keeps the lock across its await for the next event, and
+    /// that await can only make progress on the asyncio thread. Blocking on
+    /// the lock there (another task calling `is_empty`, `drain` or
+    /// `try_recv`) would deadlock the event loop for good. A pending receive
+    /// owns whatever arrives next, so to these calls the stream is empty.
+    fn try_lock_inner(&self) -> Option<tokio::sync::MutexGuard<'_, EventsInner>> {
+        self.inner.try_lock().ok()
+    }
+
     fn try_recv(&self) -> Result<PyEvent, TryRecvError> {
-        let mut inner = self.inner.blocking_lock();
+        let Some(mut inner) = self.try_lock_inner() else {
+            return Err(TryRecvError::Empty);
+        };
         let event = match &mut *inner {
             EventsInner::Dora(events) => events.try_recv().map(MergedEvent::Dora),
-            EventsInner::Merged(_events) => {
-                // try_recv is not supported on merged event streams;
-                // return Empty (stream is still open, Closed would be wrong).
-                return Err(TryRecvError::Empty);
-            }
+            EventsInner::Merged(events) => try_next_merged(events),
         };
         event.map(|event| PyEvent { event })
     }
@@ -1054,7 +1069,9 @@ impl Events {
     }
 
     fn drain(&self) -> Option<Vec<PyEvent>> {
-        let mut inner = self.inner.blocking_lock();
+        let Some(mut inner) = self.try_lock_inner() else {
+            return Some(Vec::new());
+        };
         match &mut *inner {
             EventsInner::Dora(events) => events.drain().map(|items| {
                 items
@@ -1063,39 +1080,78 @@ impl Events {
                     .map(|event| PyEvent { event })
                     .collect()
             }),
-            EventsInner::Merged(_events) => {
-                // drain is not supported on merged event streams; return
-                // empty list (stream is still open, None would signal closed).
-                Some(vec![])
+            EventsInner::Merged(events) => {
+                // Same contract as `EventStream::drain`: everything that is
+                // ready now, `Some(vec![])` if nothing is, `None` once the
+                // stream is closed and nothing was buffered.
+                let mut drained = Vec::new();
+                loop {
+                    match try_next_merged(events) {
+                        Ok(event) => drained.push(PyEvent { event }),
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Closed) => {
+                            if drained.is_empty() {
+                                return None;
+                            }
+                            break;
+                        }
+                    }
+                }
+                Some(drained)
             }
         }
     }
 
     fn is_empty(&self) -> bool {
-        let inner = self.inner.blocking_lock();
-        match &*inner {
+        let Some(mut inner) = self.try_lock_inner() else {
+            return true;
+        };
+        match &mut *inner {
             EventsInner::Dora(events) => events.is_empty(),
-            EventsInner::Merged(_events) => {
-                // Cannot determine emptiness of a merged stream; conservatively
-                // return false so callers do not skip a recv() call.
-                false
+            // `peek` keeps the event it looks at buffered in the `Peekable`,
+            // so the next receive still returns it.
+            EventsInner::Merged(events) => {
+                let next = std::pin::Pin::new(events).peek().now_or_never();
+                !matches!(next, Some(Some(_)))
             }
         }
     }
 }
 
+/// Take the next event of a merged stream without blocking, mirroring
+/// `EventStream::try_recv`: `Empty` when nothing is ready yet, `Closed` once
+/// the stream has ended.
+fn try_next_merged(events: &mut MergedStream) -> Result<MergedEvent<ExternalEvent>, TryRecvError> {
+    match events.next().now_or_never() {
+        Some(Some(event)) => Ok(event),
+        Some(None) => Err(TryRecvError::Closed),
+        None => Err(TryRecvError::Empty),
+    }
+}
+
+/// A boxed dora event stream with one or more external streams merged in.
+type BoxedMergedStream = Box<dyn Stream<Item = MergedEvent<ExternalEvent>> + Unpin + Send + Sync>;
+
+/// [`BoxedMergedStream`] made peekable, so that `is_empty` can look at the
+/// next event without consuming it.
+type MergedStream = Peekable<BoxedMergedStream>;
+
+fn merged_stream(stream: BoxedMergedStream) -> MergedStream {
+    stream.peekable()
+}
+
 #[allow(clippy::large_enum_variant)]
 enum EventsInner {
     Dora(EventStream),
-    Merged(Box<dyn Stream<Item = MergedEvent<Py<PyAny>>> + Unpin + Send + Sync>),
+    Merged(MergedStream),
 }
 
-impl<'a> MergeExternalSend<'a, Py<PyAny>> for EventsInner {
-    type Item = MergedEvent<Py<PyAny>>;
+impl<'a> MergeExternalSend<'a, ExternalEvent> for EventsInner {
+    type Item = MergedEvent<ExternalEvent>;
 
     fn merge_external_send(
         self,
-        external_events: impl Stream<Item = Py<PyAny>> + Unpin + Send + Sync + 'a,
+        external_events: impl Stream<Item = ExternalEvent> + Unpin + Send + Sync + 'a,
     ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
         match self {
             EventsInner::Dora(events) => events.merge_external_send(external_events),
@@ -1115,6 +1171,61 @@ impl Node {
         self.node_id.to_string()
     }
 
+    /// Wrap an initialized node and its event stream.
+    fn from_parts(node: DoraNode, events: EventStream) -> Self {
+        let dataflow_id = *node.dataflow_id();
+        let node_id = node.id().clone();
+        let node = DelayedCleanup::new(node);
+        let cleanup_handle = NodeCleanupHandle {
+            _handles: Arc::new(node.handle()),
+        };
+        Node {
+            events: Events {
+                inner: Arc::new(Mutex::new(EventsInner::Dora(events))),
+                _cleanup_handle: cleanup_handle,
+            },
+            dataflow_id,
+            node_id,
+            node,
+        }
+    }
+
+    /// Merge `stream` into this node's event loop, tagging every item with
+    /// `id` so that Python can tell merged sources apart (dora-rs/dora#2801).
+    ///
+    /// Merging again keeps the ids of earlier merges: the nested
+    /// `Either` produced by `merge_external_send` is flattened in
+    /// `EventsInner`, but each item already carries its own `id`.
+    fn merge_external_stream(
+        &self,
+        py: Python<'_>,
+        stream: impl Stream<Item = Py<PyAny>> + Send + Sync + 'static,
+        id: Arc<str>,
+    ) {
+        let stream = stream.map(move |value| ExternalEvent {
+            id: id.clone(),
+            value,
+        });
+
+        // Release the GIL while blocking on the node's event mutex. Holding the
+        // GIL across `blocking_lock()` can deadlock against a suspended
+        // `recv_async` task that holds the same lock (`inner.lock().await`) and
+        // needs the GIL to make progress (dora-rs/dora#2027). Clone the `Arc` so
+        // the closure doesn't capture `&self` (keeping the `Ungil` bound clean).
+        let inner = self.events.inner.clone();
+        py.detach(move || {
+            // take out the event stream and temporarily replace it with a dummy
+            let mut guard = inner.blocking_lock();
+            let events = std::mem::replace(
+                &mut *guard,
+                EventsInner::Merged(merged_stream(Box::new(futures::stream::empty()))),
+            );
+            // update the stream with the merged one
+            let merged = events.merge_external_send(Box::pin(stream));
+            *guard = EventsInner::Merged(merged_stream(merged));
+        });
+    }
+
     /// Dispatch a payload to `output_id`: a `PyBytes` value is sent as raw
     /// bytes, a pyarrow array is sent as an Arrow array, and anything else is an
     /// error. `bytes_context` labels a failure of the byte-path send. Shared by
@@ -1128,15 +1239,21 @@ impl Node {
         py: Python,
         bytes_context: &'static str,
     ) -> eyre::Result<()> {
+        // Parse before taking the node lock: `DataId::from(String)` panics on
+        // an invalid id, which surfaced in Python as an uncatchable-by-
+        // `except Exception` `PanicException` and, since the panic unwound
+        // through the held `get_mut()` guard, poisoned the node for every
+        // later call.
+        let output_id = parse_output_id(&output_id)?;
         if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
             let bytes = py_bytes.as_bytes();
             self.node
                 .get_mut()
-                .send_output_bytes(output_id.into(), parameters, bytes.len(), bytes)
+                .send_output_bytes(output_id, parameters, bytes.len(), bytes)
                 .wrap_err(bytes_context)?;
         } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
             self.node.get_mut().send_output(
-                output_id.into(),
+                output_id,
                 parameters,
                 arrow::array::make_array(arrow_array),
             )?;
@@ -1178,8 +1295,11 @@ impl Node {
 ///
 /// :rtype: None
 #[pyfunction]
-pub fn start_runtime() -> eyre::Result<()> {
-    dora_runtime_python::main().wrap_err("Dora Runtime raised an error.")
+pub fn start_runtime(py: Python<'_>) -> eyre::Result<()> {
+    // The runtime blocks this thread for the operator's whole life and takes
+    // the GIL only where it calls into Python, so operator threads keep running.
+    py.detach(dora_runtime_python::main)
+        .wrap_err("Dora Runtime raised an error.")
 }
 
 /// Build a Dataflow, exactly the same way as `dora build` command line tool.
@@ -1257,6 +1377,14 @@ fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 // test binary links libpython), but the module below still runs in CI via
 // the `contract-tests` job's `make qa-test-python`.
 
+/// Parse a user-supplied output id, returning an error (raised in Python as
+/// an ordinary exception) instead of panicking like `DataId::from(String)`.
+fn parse_output_id(output_id: &str) -> eyre::Result<DataId> {
+    output_id
+        .parse()
+        .map_err(|e| eyre::eyre!("invalid output_id: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1280,6 +1408,54 @@ mod tests {
         locals.get_item("record").unwrap().unwrap()
     }
 
+    fn testing_node() -> Node {
+        use dora_node_api::integration_testing::{
+            IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
+            integration_testing_format::{IncomingEvent, TimedIncomingEvent},
+            output_channel,
+        };
+
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            vec![TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Stop,
+            }],
+        ));
+        let (tx, _rx) = output_channel();
+        let (node, events) = DoraNode::init_testing(
+            inputs,
+            TestingOutput::ToChannel(tx),
+            TestingOptions {
+                skip_output_time_offsets: true,
+            },
+        )
+        .expect("failed to init testing node");
+        Node::from_parts(node, events)
+    }
+
+    // An invalid output id must be an ordinary error, not a panic: the panic
+    // (from `DataId::from(String)`) unwound through the held node lock and
+    // poisoned it, so every later call on the node panicked too.
+    #[test]
+    fn send_output_rejects_invalid_id_without_poisoning_the_node() {
+        let node = testing_node();
+        Python::attach(|py| {
+            let data: Py<PyAny> = PyBytes::new(py, b"x").into_any().unbind();
+            for bad in ["bad id", "a//b", ""] {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    node.send_payload(bad.to_string(), Default::default(), &data, py, "send")
+                }));
+                let err = result
+                    .unwrap_or_else(|_| panic!("`{bad}` must not panic"))
+                    .expect_err("an invalid id must be rejected");
+                assert!(err.to_string().contains("invalid output_id"), "{err}");
+            }
+            // The node is still usable after the rejected sends.
+            drop(node.node.get_mut());
+        });
+    }
+
     // A large custom level (> 255) must be accepted, not rejected with
     // `OverflowError` as the old `extract::<u8>()` did.
     #[test]
@@ -1301,10 +1477,10 @@ mod tests {
     // A merged stream that never yields must time out (return `None`) rather
     // than block forever — the bug this change fixes. No ROS2 or GIL needed:
     // the helper is generic over the stream and the pending stream yields no
-    // `Py<PyAny>`.
+    // `ExternalEvent`.
     #[test]
     fn merged_timeout_returns_none_when_stream_is_idle() {
-        let mut stream = futures::stream::pending::<MergedEvent<Py<PyAny>>>();
+        let mut stream = futures::stream::pending::<MergedEvent<ExternalEvent>>();
         let event = block_on(recv_merged_with_timeout(
             &mut stream,
             Some(Duration::from_millis(10)),
@@ -1328,5 +1504,156 @@ mod tests {
         let mut stream = futures::stream::iter([MergedEvent::Dora(Event::Stop(StopCause::Manual))]);
         let event = block_on(recv_merged_with_timeout(&mut stream, None));
         assert!(matches!(event, Some(MergedEvent::Dora(Event::Stop(_)))));
+    }
+
+    // `merge_external_events` tags events with the caller's `id`, falls back to
+    // the subscription's topic name, and rejects an empty id (dora-rs/dora#2801).
+    #[test]
+    fn external_event_id_defaults_to_topic_name() {
+        let topic = "/turtle1/pose";
+        assert_eq!(&*external_event_id(None, topic).unwrap(), "/turtle1/pose");
+        assert_eq!(
+            &*external_event_id(Some("pose".to_string()), topic).unwrap(),
+            "pose"
+        );
+        assert!(external_event_id(Some(String::new()), topic).is_err());
+    }
+
+    // Regression test for dora-rs/dora#2801: events from several merged
+    // external sources must stay distinguishable. Before the fix, the second
+    // merge flattened both sources into one stream and the Python event dict
+    // carried only `kind` and `value`, so every external event looked the
+    // same. No ROS2 needed: `merge_external_stream` is what
+    // `merge_external_events` uses once the subscription is turned into a
+    // stream.
+    #[test]
+    fn merged_external_events_keep_their_source_id() {
+        let node = testing_node();
+        Python::attach(|py| {
+            let values = |values: &[i64]| -> Vec<Py<PyAny>> {
+                values
+                    .iter()
+                    .map(|&v| v.into_pyobject(py).unwrap().into_any().unbind())
+                    .collect()
+            };
+            let first = futures::stream::iter(values(&[1, 2][..]));
+            let second = futures::stream::iter(values(&[10, 20][..]));
+            node.merge_external_stream(py, first, "/a".into());
+            node.merge_external_stream(py, second, "b".into());
+
+            let mut seen: Vec<(String, i64)> = Vec::new();
+            while let Some(event) = node.events.recv(Some(Duration::from_secs(2))) {
+                let dict = event.to_py_dict(py).unwrap();
+                let dict = dict.bind(py);
+                let item = |key: &str| dict.get_item(key).unwrap().unwrap();
+                if item("kind").extract::<String>().unwrap() != "external" {
+                    continue;
+                }
+                seen.push((
+                    item("id").extract::<String>().unwrap(),
+                    item("value").extract::<i64>().unwrap(),
+                ));
+            }
+
+            seen.sort();
+            let expected: Vec<(String, i64)> = vec![
+                ("/a".to_string(), 1),
+                ("/a".to_string(), 2),
+                ("b".to_string(), 10),
+                ("b".to_string(), 20),
+            ];
+            assert_eq!(seen, expected);
+        });
+    }
+
+    // Regression test: a pending `recv_async` holds the stream's lock across
+    // its await. `is_empty`, `drain` and `try_recv` blocked on that lock, so
+    // calling one from another asyncio task froze the event loop for good.
+    #[test]
+    fn non_blocking_receives_do_not_wait_for_a_pending_receive() {
+        let node = testing_node();
+        let pending_receive = node.events.inner.try_lock().unwrap();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                let empty = node.events.is_empty();
+                let drained = node.events.drain().map(|events| events.len());
+                let received = node.events.try_recv().err();
+                let _ = done_tx.send((empty, drained, received));
+            });
+            let result = done_rx.recv_timeout(std::time::Duration::from_secs(10));
+            drop(pending_receive);
+            let (empty, drained, received) =
+                result.expect("non-blocking receive waited on a pending receive");
+            assert!(empty);
+            assert_eq!(drained, Some(0));
+            assert!(matches!(received, Some(TryRecvError::Empty)));
+        });
+    }
+
+    // A pending `recv_async` keeps a shared borrow of the `Node` for as long
+    // as it waits. `try_recv` took `&mut self`, so calling it from another
+    // asyncio task raised "Already borrowed" instead of returning.
+    #[test]
+    fn try_recv_works_while_the_node_is_borrowed() {
+        let node = testing_node();
+        Python::attach(|py| {
+            let node = Py::new(py, node).unwrap();
+            let _pending_receive = node.borrow(py);
+            node.call_method0(py, "try_recv")
+                .expect("try_recv must not need an exclusive borrow");
+        });
+    }
+
+    // Regression test: once external events were merged in, `try_recv`,
+    // `drain` and `is_empty` were no-ops (always "empty", `[]` and `False`),
+    // so a polling loop silently received nothing.
+    #[test]
+    fn merged_stream_supports_non_blocking_receives() {
+        let node = testing_node();
+        Python::attach(|py| {
+            let values: Vec<Py<PyAny>> = [1_i64, 2, 3]
+                .iter()
+                .map(|&v| v.into_pyobject(py).unwrap().into_any().unbind())
+                .collect();
+            node.merge_external_stream(py, futures::stream::iter(values), "a".into());
+
+            // The external events are ready right away.
+            assert!(!node.events.is_empty());
+
+            // The value of an external event, `None` for a dora event.
+            let external_value = |event: PyEvent| -> Option<i64> {
+                let dict = event.to_py_dict(py).unwrap();
+                let dict = dict.bind(py);
+                let item = |key: &str| dict.get_item(key).unwrap().unwrap();
+                (item("kind").extract::<String>().unwrap() == "external")
+                    .then(|| item("value").extract::<i64>().unwrap())
+            };
+
+            // `try_recv` returns the first external event; dora events (the
+            // testing node's `Stop`) may come first and are skipped.
+            let first = loop {
+                match node.events.try_recv() {
+                    Ok(event) => {
+                        if let Some(value) = external_value(event) {
+                            break value;
+                        }
+                    }
+                    Err(err) => panic!("expected a ready event, got {err:?}"),
+                }
+            };
+            assert_eq!(first, 1);
+
+            // `drain` returns everything else that is ready, in order.
+            let rest: Vec<i64> = node
+                .events
+                .drain()
+                .expect("events were still buffered")
+                .into_iter()
+                .filter_map(&external_value)
+                .collect();
+            assert_eq!(rest, vec![2, 3]);
+        });
     }
 }

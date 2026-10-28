@@ -1,4 +1,8 @@
-use crate::{LOCALHOST, formatting::FormatDataflowError, ws_client::WsSession};
+use crate::{
+    LOCALHOST,
+    formatting::FormatDataflowError,
+    ws_client::{CoordinatorRejected, WsSession},
+};
 use dora_core::{
     descriptor::{Descriptor, source_is_url},
     topics::DORA_COORDINATOR_PORT_WS_DEFAULT,
@@ -18,6 +22,17 @@ use std::{
 };
 use tokio::runtime::Builder;
 use uuid::Uuid;
+
+/// Whether `key` should leave one of the CLI's TUIs: `q`, `Esc`, or Ctrl-C.
+///
+/// Raw mode turns off the terminal's signal generation, so Ctrl-C arrives as
+/// a `'c'` key event with the CONTROL modifier rather than as SIGINT. Check
+/// this before any plain `'c'` binding, which would otherwise swallow it.
+pub(crate) fn is_quit_key(key: &crossterm::event::KeyEvent) -> bool {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+        || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
+}
 
 /// Monomorphic wrapper around `duration_str::parse` for use as a clap
 /// `value_parser` (the generic signature of `parse` in duration-str 0.21+
@@ -199,7 +214,23 @@ pub(crate) fn connect_to_coordinator(coordinator_addr: SocketAddr) -> eyre::Resu
     WsSession::connect(coordinator_addr)
 }
 
+/// Whether a [`connect_to_coordinator`] error came from a coordinator that is
+/// running but turned this CLI away (rejected `--auth` token or version
+/// handshake), as opposed to no coordinator answering at all.
+///
+/// A command that starts a coordinator, or builds locally, when none is
+/// reachable must surface this error instead: a second coordinator cannot
+/// start on the same port, and a local build skips the `deploy:` targets.
+/// `dora logs` still falls back to the local `out/` logs, with a warning,
+/// because the refusing coordinator may not be the one that ran the dataflow.
+pub(crate) fn coordinator_rejected(err: &eyre::Report) -> bool {
+    err.downcast_ref::<CoordinatorRejected>().is_some()
+}
+
 /// Try to connect to the coordinator, retrying for `timeout` before giving up.
+///
+/// A rejection is returned at once: retrying cannot fix a wrong token or a
+/// version mismatch.
 pub(crate) fn connect_with_retry(
     addr: SocketAddr,
     timeout: std::time::Duration,
@@ -208,7 +239,7 @@ pub(crate) fn connect_with_retry(
     loop {
         match connect_to_coordinator(addr) {
             Ok(session) => return Ok(session),
-            Err(_) if std::time::Instant::now() < deadline => {
+            Err(err) if !coordinator_rejected(&err) && std::time::Instant::now() < deadline => {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             Err(err) => return Err(err),
@@ -431,5 +462,118 @@ mod tests {
         let mut only_labels = deploy_with(None);
         only_labels.labels = BTreeMap::from([("gpu".to_owned(), "true".to_owned())]);
         assert!(deploy_pins_daemon(Some(&only_labels)));
+    }
+}
+
+/// [`coordinator_rejected`] separates "a coordinator refused us" from "no
+/// coordinator answered". Commands that fall back to local data or spawn a
+/// coordinator depend on it, so a 401 must not look like a closed port.
+#[cfg(test)]
+mod coordinator_rejected_tests {
+    use super::{connect_to_coordinator, connect_with_retry, coordinator_rejected};
+    use std::io::{Read, Write};
+    use std::net::{SocketAddr, TcpListener};
+    use std::time::{Duration, Instant};
+
+    /// Answers every WS upgrade on a fresh port with `401 Unauthorized`, like
+    /// a coordinator started with `--auth` given a wrong token. Returns the
+    /// address and a counter of the connections it saw.
+    fn unauthorized_server() -> (SocketAddr, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
+            }
+        });
+        (addr, seen)
+    }
+
+    #[test]
+    fn auth_failure_is_a_rejection() {
+        let (addr, _) = unauthorized_server();
+        let err = connect_to_coordinator(addr)
+            .err()
+            .expect("401 must fail the connection");
+        assert!(coordinator_rejected(&err), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("authentication failed"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn refused_connection_is_not_a_rejection() {
+        let addr = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let err = connect_to_coordinator(addr)
+            .err()
+            .expect("closed port must fail the connection");
+        assert!(!coordinator_rejected(&err), "{err:#}");
+    }
+
+    #[test]
+    fn handshake_rejection_is_a_rejection() {
+        // A coordinator from another release accepts the WS upgrade but
+        // answers the `Hello` with an error.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                use futures::{SinkExt, StreamExt};
+                use tokio_tungstenite::tungstenite::Message;
+                listener.set_nonblocking(true).unwrap();
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(msg)) = ws.next().await {
+                    if let Message::Text(text) = msg {
+                        let req: dora_message::ws_protocol::WsRequest =
+                            serde_json::from_str(&text).unwrap();
+                        let reply = serde_json::json!({
+                            "id": req.id,
+                            "error": "incompatible CLI version 0.0.1",
+                        });
+                        ws.send(Message::Text(reply.to_string().into()))
+                            .await
+                            .unwrap();
+                    }
+                }
+            });
+        });
+
+        let err = connect_to_coordinator(addr)
+            .err()
+            .expect("a rejected Hello must fail the connection");
+        assert!(coordinator_rejected(&err), "{err:#}");
+        assert!(
+            format!("{err:#}").contains("coordinator rejected CLI"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn retry_gives_up_at_once_on_a_rejection() {
+        let (addr, seen) = unauthorized_server();
+        let start = Instant::now();
+        let err = connect_with_retry(addr, Duration::from_secs(5))
+            .err()
+            .expect("401 must fail the connection");
+        assert!(coordinator_rejected(&err), "{err:#}");
+        // Before the fix this retried every 50 ms for the whole 5 s.
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 }

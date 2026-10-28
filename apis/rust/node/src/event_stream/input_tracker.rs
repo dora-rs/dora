@@ -44,12 +44,6 @@ use super::event::Event;
 pub struct InputTracker {
     states: HashMap<DataId, InputState>,
     cache: HashMap<DataId, DoraArray>,
-    /// Optional input → source node map. When provided, `NodeRestarted`
-    /// events transition any `Closed` inputs sourced from the restarted
-    /// node back to `Healthy`. Without it the tracker has no way to know
-    /// which inputs a given upstream node feeds, so `NodeRestarted`
-    /// leaves state unchanged (dora-rs/adora#148).
-    source_map: HashMap<DataId, NodeId>,
 }
 
 /// Health state of a tracked input.
@@ -64,33 +58,28 @@ pub enum InputState {
 impl InputTracker {
     /// Create a new, empty tracker.
     ///
-    /// Without a source map, `NodeRestarted` events are acknowledged
-    /// (return `true` from `process_event`) but do not mutate state,
-    /// because the tracker cannot determine which inputs a given node
-    /// feeds. If you use fault-tolerance restart policies, prefer
-    /// [`InputTracker::with_source_map`] so closed inputs recover
-    /// automatically when the upstream comes back up.
+    /// `NodeRestarted` events are acknowledged (return `true` from
+    /// `process_event`) but do not change any input's state: a `Closed`
+    /// input becomes `Healthy` again only on its next `Input` or
+    /// `InputRecovered` event.
     pub fn new() -> Self {
         Self {
             states: HashMap::new(),
             cache: HashMap::new(),
-            source_map: HashMap::new(),
         }
     }
 
-    /// Create a tracker that knows which input is fed by which upstream
-    /// node. With this map populated, `NodeRestarted { id }` events
-    /// transition any `Closed` inputs sourced from `id` back to `Healthy`.
+    /// Create a tracker from an input → upstream node map.
     ///
-    /// The map can be built from the dataflow's `input_config` at
-    /// initialization time — for each user input `(data_id, source_node)`
-    /// insert the pair here.
-    pub fn with_source_map(source_map: HashMap<DataId, NodeId>) -> Self {
-        Self {
-            states: HashMap::new(),
-            cache: HashMap::new(),
-            source_map,
-        }
+    /// The map is not used and this is equivalent to [`InputTracker::new`].
+    /// It used to make `NodeRestarted { id }` mark every `Closed` input fed
+    /// by `id` as `Healthy`, but the daemon does not reopen an input on a
+    /// restart: one closed by a timeout reports `InputRecovered` when data
+    /// flows again, and one closed for good (`close_outputs`, an upstream
+    /// exit, `dora node disconnect`) never receives data again, so it must
+    /// stay `Closed` (dora-rs/dora#3958).
+    pub fn with_source_map(_source_map: HashMap<DataId, NodeId>) -> Self {
+        Self::new()
     }
 
     /// Update tracker state from an event. Returns `true` if the event
@@ -112,20 +101,11 @@ impl InputTracker {
                 self.states.insert(id.clone(), InputState::Healthy);
                 true
             }
-            Event::NodeRestarted { id: restarted } => {
-                // Transition any closed inputs fed by the restarted node
-                // back to Healthy. Cached last_value is preserved so the
-                // node can still fall back to stale data between restart
-                // and first post-restart message.
-                for (input_id, source) in &self.source_map {
-                    if source == restarted && self.states.get(input_id) == Some(&InputState::Closed)
-                    {
-                        self.states.insert(input_id.clone(), InputState::Healthy);
-                    }
-                }
-                // Always return true to signal relevance even when the
-                // tracker has no source map: callers inspecting the
-                // boolean can still detect that a lifecycle event arrived.
+            Event::NodeRestarted { .. } => {
+                // A restart does not reopen a closed input on the daemon
+                // side (dora-rs/dora#3958): it turns `Healthy` only on its
+                // next `Input` or `InputRecovered`. Still report the event
+                // as relevant so callers can see the lifecycle signal.
                 true
             }
             _ => false,
@@ -252,7 +232,11 @@ mod tests {
     }
 
     #[test]
-    fn node_restarted_with_source_map_recovers_matching_closed_inputs() {
+    fn node_restarted_keeps_closed_inputs_closed_until_data_returns() {
+        // dora-rs/dora#3958: the daemon never reopens an input that was
+        // closed for good (`close_outputs`, `dora node disconnect`) when its
+        // upstream restarts, so `NodeRestarted` alone must not report it as
+        // `Healthy`. Only an actual `Input` or `InputRecovered` may.
         let mut source_map = HashMap::new();
         source_map.insert(
             DataId::from("sensor".to_string()),
@@ -262,32 +246,31 @@ mod tests {
             DataId::from("telemetry".to_string()),
             NodeId::from("camera".to_string()),
         );
-        source_map.insert(
-            DataId::from("config".to_string()),
-            NodeId::from("other".to_string()),
-        );
         let mut t = InputTracker::with_source_map(source_map);
 
-        // Close all three inputs.
         t.process_event(&Event::InputClosed {
             id: "sensor".into(),
         });
         t.process_event(&Event::InputClosed {
             id: "telemetry".into(),
         });
-        t.process_event(&Event::InputClosed {
-            id: "config".into(),
-        });
-        assert_eq!(t.closed_inputs().len(), 3);
 
-        // Only the `camera`-sourced inputs should recover.
         assert!(t.process_event(&Event::NodeRestarted {
             id: NodeId::from("camera".to_string()),
         }));
+        assert_eq!(t.state(&"sensor".into()), Some(InputState::Closed));
+        assert_eq!(t.state(&"telemetry".into()), Some(InputState::Closed));
+        assert_eq!(t.closed_inputs().len(), 2);
 
+        // A recoverable (timed-out) input comes back through the daemon's
+        // `InputRecovered` / the first new `Input`, not through the restart.
+        t.process_event(&make_input("sensor", empty_data()));
+        t.process_event(&Event::InputRecovered {
+            id: "telemetry".into(),
+        });
         assert_eq!(t.state(&"sensor".into()), Some(InputState::Healthy));
         assert_eq!(t.state(&"telemetry".into()), Some(InputState::Healthy));
-        assert_eq!(t.state(&"config".into()), Some(InputState::Closed));
+        assert!(!t.any_closed());
     }
 
     #[test]
@@ -311,7 +294,6 @@ mod tests {
             id: NodeId::from("camera".to_string()),
         });
 
-        assert_eq!(t.state(&"sensor".into()), Some(InputState::Healthy));
         assert!(
             t.last_value(&"sensor".into()).is_some(),
             "cached value should survive restart so nodes can degrade gracefully"

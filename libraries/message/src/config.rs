@@ -166,7 +166,7 @@ impl PartialEq for Input {
 
 impl Eq for Input {}
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum InputDef {
     MappingOnly(InputMapping),
@@ -205,6 +205,58 @@ impl PartialEq for InputDef {
 }
 
 impl Eq for InputDef {}
+
+// Hand-written instead of a derived `untagged` impl: an untagged enum drops
+// every variant's error and reports only "data did not match any variant of
+// untagged enum InputDef", so a dataflow author never saw why a mapping was
+// rejected (e.g. "hz must be a positive finite number", an unknown log level, an
+// invalid node id). A string is the short form, a map the long form; each
+// reports its own error.
+impl<'de> Deserialize<'de> for InputDef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct WithOptions {
+            source: InputMapping,
+            #[serde(default)]
+            queue_size: Option<usize>,
+            #[serde(default)]
+            input_timeout: Option<f64>,
+            #[serde(default)]
+            queue_policy: Option<QueuePolicy>,
+        }
+
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = InputDef;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("an input mapping string or a map with a `source` key")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<InputDef, E> {
+                v.parse().map(InputDef::MappingOnly).map_err(E::custom)
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<InputDef, A::Error> {
+                let WithOptions {
+                    source,
+                    queue_size,
+                    input_timeout,
+                    queue_policy,
+                } = WithOptions::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(InputDef::WithOptions {
+                    source,
+                    queue_size,
+                    input_timeout,
+                    queue_policy,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
 
 impl From<Input> for InputDef {
     fn from(input: Input) -> Self {
@@ -268,6 +320,7 @@ impl From<InputDef> for Input {
 /// assert!("no-slash".parse::<InputMapping>().is_err());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
+#[schemars(transform = accept_input_mapping_string)]
 pub enum InputMapping {
     /// A built-in timer that fires at a fixed `interval`.
     ///
@@ -282,6 +335,33 @@ pub enum InputMapping {
     Logs(LogSubscriptionFilter),
     /// Subscribe to another node's output — the common case.
     User(UserInputMapping),
+}
+
+/// Adds the `/`-separated string to `InputMapping`'s JSON schema.
+///
+/// The derive describes the enum's shape, but the `Serialize`/`Deserialize`
+/// impls go through [`fmt::Display`]/[`FromStr`], so a dataflow only ever
+/// contains the string form. Without it the published schema rejects every
+/// input (#3701). The derived object alternatives stay: the dataflow YAML
+/// schema is frozen for 1.x, and dropping an accepted alternative is a
+/// breaking change there.
+///
+/// The pattern only asks for a `/`, which is all [`FromStr`] checks before
+/// dispatching on the source. Anything stricter would reject inputs that
+/// `dora` accepts.
+fn accept_input_mapping_string(schema: &mut schemars::Schema) {
+    if let Some(serde_json::Value::Array(alternatives)) = schema.get_mut("oneOf") {
+        alternatives.insert(
+            0,
+            serde_json::json!({
+                "description": "`<source>/<output>` for another node's output, \
+                    `dora/timer/{unit}/{value}` for a built-in timer, or \
+                    `dora/logs[/{level}[/{node_id}]]` for node logs.",
+                "type": "string",
+                "pattern": "/",
+            }),
+        );
+    }
 }
 
 impl fmt::Display for InputMapping {
@@ -785,6 +865,41 @@ mod tests {
         assert!(matches!(mapping, InputMapping::User(_)));
     }
 
+    /// An invalid mapping must report why it was rejected, in both the
+    /// short and the long form, not serde's generic "data did not match any
+    /// variant of untagged enum InputDef".
+    #[test]
+    fn invalid_input_mapping_reports_its_own_error() {
+        for (yaml, expected) in [
+            ("dora/timer/hz/0", "positive finite"),
+            ("source: dora/timer/hz/0", "positive finite"),
+            ("bad node/output", "invalid character"),
+            (
+                "source: bad node/output\nqueue_size: 2",
+                "invalid character",
+            ),
+        ] {
+            let err = serde_yaml::from_str::<Input>(yaml).unwrap_err().to_string();
+            assert!(
+                err.contains(expected) && !err.contains("did not match any variant"),
+                "yaml {yaml:?}: {err}"
+            );
+        }
+        // Neither a string nor a map: the expectation names both forms.
+        let err = serde_yaml::from_str::<Input>("42").unwrap_err().to_string();
+        assert!(err.contains("input mapping string"), "{err}");
+    }
+
+    /// The JSON wire form (CLI -> coordinator -> daemon) still parses.
+    #[test]
+    fn input_round_trips_through_json() {
+        for yaml in ["node_a/output_1", "source: node_a/output_1\nqueue_size: 3"] {
+            let input: Input = serde_yaml::from_str(yaml).unwrap();
+            let json = serde_json::to_string(&input).unwrap();
+            assert_eq!(serde_json::from_str::<Input>(&json).unwrap(), input);
+        }
+    }
+
     #[test]
     fn parse_input_with_drop_oldest_policy() {
         let yaml = "source: node_a/output_1\nqueue_size: 5\nqueue_policy: drop_oldest\n";
@@ -1238,5 +1353,24 @@ mod tests {
         let yaml = "outputs:\n  - foo\n";
         let config: NodeRunConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.shared_memory_pool_size, None);
+    }
+
+    // #3701: inputs are strings in YAML, so the schema has to accept one,
+    // and its pattern has to agree with what `FromStr` accepts.
+    #[test]
+    fn input_mapping_schema_accepts_the_string_form() {
+        let schema = serde_json::to_value(schemars::schema_for!(InputMapping)).unwrap();
+        let alternatives = schema["oneOf"].as_array().expect("oneOf alternatives");
+        let string = alternatives
+            .iter()
+            .find(|alt| alt["type"] == "string")
+            .expect("InputMapping schema should accept the string form");
+        assert_eq!(string["pattern"], "/");
+
+        for valid in ["camera/image", "dora/timer/millis/100", "dora/logs"] {
+            assert!(valid.parse::<InputMapping>().is_ok(), "{valid}");
+            assert!(valid.contains('/'), "{valid} should match the pattern");
+        }
+        assert!("no-slash".parse::<InputMapping>().is_err());
     }
 }

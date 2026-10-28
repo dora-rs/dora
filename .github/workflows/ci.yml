@@ -111,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt
@@ -122,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
@@ -175,7 +175,7 @@ jobs:
       # squash-merge of another repo's history (#2194).
       - name: Check for committed credential files
         run: make qa-secret-files
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Pin toolchain set for a stable rust-cache key (see header)
@@ -257,7 +257,7 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Pin toolchain set for a stable rust-cache key (see header)
@@ -333,7 +333,7 @@ jobs:
         run: |
           set -e
           for sub in run up down build start stop restart list logs top \
-                     topic node param record replay trace doctor status \
+                     topic node param record recording replay trace doctor status \
                      new graph expand validate completion inspect self; do
             cargo run --quiet -p dora-cli -- "$sub" --help > /dev/null
           done
@@ -416,7 +416,7 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Pin toolchain set for a stable rust-cache key (see header)
@@ -567,7 +567,7 @@ jobs:
       MATURIN_PEP517_ARGS: "--profile dev"
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Pin toolchain set for a stable rust-cache key (see header)
@@ -624,7 +624,7 @@ jobs:
         # implementation detail (LD_LIBRARY_PATH only adds a search path).
         env:
           LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -686,7 +686,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Pin toolchain set for a stable rust-cache key (see header)
@@ -762,7 +762,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: crate-ci/typos@00f422f3b19c57bc6338715ebfe3316d38768461 # v1.50.3
+      - uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
 
   # ===== Fast supply-chain gates =====
   # Only the cheap, deterministic QA gates run remotely. The deeper
@@ -775,7 +775,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: taiki-e/install-action@v2
@@ -897,7 +897,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Pin toolchain set for a stable rust-cache key (see header)

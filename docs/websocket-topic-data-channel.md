@@ -91,6 +91,9 @@ The subscription uses the existing UUID-correlated request-reply protocol:
 }
 ```
 
+A connection can only unsubscribe the subscriptions it created itself. An id
+it does not own gets an error reply and leaves the subscription untouched.
+
 ### Binary data frames
 
 After the handshake, the coordinator pushes binary WS frames. Each frame has a fixed-size header:

@@ -63,6 +63,10 @@ impl IpRateLimiter {
     /// Returns `true` if the connection should be allowed.
     /// Loopback addresses are always allowed (localhost has machine-level access).
     pub fn check(&self, ip: IpAddr) -> bool {
+        // `to_canonical` so a dual-stack (`::`) listener, which reports an
+        // IPv4 peer as `::ffff:a.b.c.d`, still exempts `127.0.0.1` and counts
+        // a mapped address against the same budget as its plain IPv4 form.
+        let ip = ip.to_canonical();
         if ip.is_loopback() {
             return true;
         }
@@ -93,6 +97,9 @@ impl IpRateLimiter {
 #[derive(Clone)]
 pub(crate) struct WsState {
     pub event_tx: mpsc::Sender<Event>,
+    /// Topic debug frames, kept off `event_tx` so they cannot queue ahead of
+    /// control events (dora-rs/dora#3535).
+    pub topic_debug_tx: mpsc::Sender<Event>,
     pub clock: Arc<HLC>,
     pub auth_token: Option<AuthToken>,
     pub artifact_store: Arc<ArtifactStore>,
@@ -222,6 +229,7 @@ async fn ws_daemon_handler(
             handle_daemon_ws(
                 socket,
                 state.event_tx.clone(),
+                state.topic_debug_tx.clone(),
                 state.clock.clone(),
                 state.store.clone(),
                 addr,
@@ -266,9 +274,11 @@ async fn artifact_handler(
 }
 
 /// Start the axum WS server. Returns the bound port, a shutdown trigger, and a future to await.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve(
     bind: SocketAddr,
     event_tx: mpsc::Sender<Event>,
+    topic_debug_tx: mpsc::Sender<Event>,
     clock: Arc<HLC>,
     auth_token: Option<AuthToken>,
     artifact_store: Arc<ArtifactStore>,
@@ -283,6 +293,7 @@ pub(crate) async fn serve(
     let port = listener.local_addr()?.port();
     let state = WsState {
         event_tx,
+        topic_debug_tx,
         clock,
         auth_token,
         artifact_store,
@@ -440,6 +451,24 @@ mod tests {
             assert!(rl.check(ipv4_lo));
             assert!(rl.check(ipv6_lo));
         }
+    }
+
+    #[test]
+    fn rate_limiter_treats_ipv4_mapped_addresses_as_ipv4() {
+        let rl = IpRateLimiter::new();
+        // A dual-stack listener reports a local IPv4 client this way.
+        let mapped_lo: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        for _ in 0..(MAX_CONNECTIONS_PER_IP * 5) {
+            assert!(rl.check(mapped_lo));
+        }
+        // A remote IPv4 peer shares one budget across both spellings.
+        let plain: IpAddr = "10.0.0.9".parse().unwrap();
+        let mapped: IpAddr = "::ffff:10.0.0.9".parse().unwrap();
+        for i in 0..MAX_CONNECTIONS_PER_IP {
+            assert!(rl.check(if i % 2 == 0 { plain } else { mapped }));
+        }
+        assert!(!rl.check(plain));
+        assert!(!rl.check(mapped));
     }
 
     #[test]

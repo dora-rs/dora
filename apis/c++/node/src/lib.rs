@@ -14,12 +14,9 @@ use dora_node_api::merged::MergeExternal;
 use dora_node_api::{
     self, Event, EventStream, Metadata as DoraMetadata,
     MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, PatternError,
-    TryRecvError,
-    arrow_v59::array::{AsArray, UInt8Array},
-    dora_core::config::NodeId,
-    merged::MergedEvent,
+    TryRecvError, dora_core::config::NodeId, merged::MergedEvent,
 };
-use eyre::{Result as EyreResult, bail, eyre};
+use eyre::{Result as EyreResult, WrapErr as _, bail, eyre};
 use futures_lite::future::{block_on, or};
 use futures_timer::Delay;
 use serde::Serialize;
@@ -424,6 +421,9 @@ mod ffi {
         ) -> ArrowInputInfo;
 
         fn new_metadata() -> Box<Metadata>;
+        /// The message's hybrid logical clock timestamp in NTP64 format, not
+        /// nanoseconds: the upper 32 bits are seconds since the UNIX epoch,
+        /// the lower 32 bits the fraction of a second in units of 2^-32 s.
         fn timestamp(self: &Metadata) -> u64;
         fn get_bool(self: &Metadata, key: &str) -> Result<bool>;
         fn get_float(self: &Metadata, key: &str) -> Result<f64>;
@@ -679,8 +679,12 @@ fn event_as_input_with_metadata(event: Box<DoraEvent>) -> eyre::Result<ffi::Dora
 fn input_bytes(data: &dora_node_api::DoraArray) -> eyre::Result<Vec<u8>> {
     match data.as_array().data_type() {
         dora_node_api::arrow_v59::datatypes::DataType::UInt8 => {
-            let array: &UInt8Array = data.as_array().as_primitive();
-            Ok(array.values().to_vec())
+            // The shared conversion refuses an array with null slots: the
+            // bytes behind a null are unspecified, and a byte vector cannot
+            // say which slots were null.
+            Vec::<u8>::try_from(data).wrap_err(
+                "cannot read UInt8 input as bytes; use event_as_arrow_input for typed access",
+            )
         }
         dora_node_api::arrow_v59::datatypes::DataType::Null => Ok(vec![]),
         other => {
@@ -881,6 +885,7 @@ impl Metadata {
         }
     }
 
+    /// NTP64, not nanoseconds — see the bridge declaration.
     pub fn timestamp(&self) -> u64 {
         self.timestamp
     }
@@ -1573,8 +1578,7 @@ unsafe fn send_arrow_output_impl(
         Ok(array_data) => {
             let arrow_array = arrow::array::make_array(array_data);
             let parameters: DoraMetadataParameters = metadata
-                .as_ref()
-                .map(|metadata| metadata.parameters.clone())
+                .map(|metadata| metadata.into_parameters())
                 .unwrap_or_default();
             let output_id = match parse_output_id(&id) {
                 Ok(parsed) => parsed,
@@ -1661,7 +1665,7 @@ mod tests {
     use super::*;
     use dora_node_api::{
         DoraArray,
-        arrow_v59::array::{ArrayRef, Int32Array},
+        arrow_v59::array::{ArrayRef, Int32Array, UInt8Array},
         uhlc::HLC,
     };
     use std::sync::Arc;
@@ -1680,6 +1684,45 @@ mod tests {
 
         let result = event_as_input(event);
         assert!(result.is_err(), "expected Err for non-UInt8 input, got Ok");
+    }
+
+    /// A UInt8 input with null slots must be refused: the bytes behind a null
+    /// are unspecified, and a byte vector cannot say which slots were null.
+    #[test]
+    fn event_as_input_uint8_with_nulls_returns_err() {
+        let array: ArrayRef = Arc::new(UInt8Array::from(vec![Some(1), None, Some(3)]));
+        let event = Box::new(DoraEvent(EventOrReason::Event(Event::Input {
+            id: "my_input".into(),
+            metadata: DoraMetadata::new(HLC::default().new_timestamp()),
+            data: DoraArray::from(array),
+        })));
+
+        let Err(err) = event_as_input(event) else {
+            panic!("expected Err for UInt8 input with nulls, got Ok");
+        };
+        assert!(format!("{err:#}").contains("nulls"), "got: {err:#}");
+    }
+
+    /// Pins the shape `Metadata::to_json` hands to C++ (documented in the
+    /// README): the raw HLC `timestamp` as a number, and `parameters` as a
+    /// map of externally tagged values.
+    #[test]
+    fn metadata_to_json_shape() {
+        let mut metadata = Metadata::empty();
+        metadata.timestamp = 42;
+        metadata.set_int("count", 3).unwrap();
+        metadata.set_string("frame", "base".into()).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&metadata.to_json()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "timestamp": 42,
+                "parameters": {
+                    "count": { "Integer": 3 },
+                    "frame": { "String": "base" },
+                },
+            })
+        );
     }
 
     #[test]

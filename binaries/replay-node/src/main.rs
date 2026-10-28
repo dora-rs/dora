@@ -3,7 +3,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
+use dora_message::{
+    common::Timestamped,
+    daemon_to_daemon::InterDaemonEvent,
+    metadata::{MetadataParameters, strip_internal_parameters},
+};
 use dora_node_api::{
     DoraArray, DoraNode, Event, EventStream, IntoArrow, TryRecvError,
     arrow_utils::decode_arrow_ipc, arrow_v59::array::NullArray,
@@ -205,7 +209,7 @@ fn main() -> eyre::Result<()> {
                             continue;
                         }
                     };
-                    node.send_output(output_id, metadata.parameters, array)
+                    node.send_output(output_id, replay_parameters(metadata.parameters), array)
                         .wrap_err("failed to send replay output")?;
                     replayed += 1;
                 }
@@ -265,16 +269,41 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
+/// The metadata parameters to re-send for a recorded output.
+///
+/// Recordings made with `dora record --proxy` before the proxy learned to
+/// strip it carry the daemon's debug-only `_wire_size` stamp on every
+/// message. Drop internal keys here, so they never reach downstream nodes.
+fn replay_parameters(mut parameters: MetadataParameters) -> MetadataParameters {
+    strip_internal_parameters(&mut parameters);
+    parameters
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         Replay, classify_event, decode_recorded_payload, pacing_gap, replay_emitted_nothing_usable,
+        replay_parameters,
     };
     use dora_node_api::DoraArray;
     use dora_node_api::arrow_utils::encode_arrow_ipc;
     use dora_node_api::arrow_v59::array::Int32Array;
     use dora_node_api::{Event, StopCause};
     use std::time::Duration;
+
+    #[test]
+    fn replay_drops_the_debug_wire_size_stamp() {
+        use dora_message::metadata::{MetadataParameters, Parameter, WIRE_SIZE};
+
+        let mut parameters = MetadataParameters::default();
+        parameters.insert(WIRE_SIZE.to_string(), Parameter::Integer(42));
+        parameters.insert("user_key".to_string(), Parameter::Integer(7));
+
+        let replayed = replay_parameters(parameters);
+
+        assert!(!replayed.contains_key(WIRE_SIZE));
+        assert!(replayed.contains_key("user_key"));
+    }
 
     #[test]
     fn stop_event_ends_the_replay() {
@@ -410,5 +439,18 @@ mod tests {
         // behavior the `main` loop relies on to stay resilient.
         let garbage = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03];
         assert!(decode_recorded_payload(Some(&garbage)).is_err());
+    }
+
+    #[test]
+    fn payload_claiming_a_huge_body_is_skipped_not_an_abort() {
+        // Found by fuzzing (#3863): this stream's record batch claims an
+        // enormous body. The decoder must return `Err` (the record is skipped)
+        // instead of trying to allocate that size and aborting the replay node.
+        let hex = "ffffffff780000001000000000000a000c000a00090004000a00000010000000000104000800080000000400080000000400000001000000140000001000160010000e000f0004000000080010000000180000001c00000000000102180000000000060008000400060000000800000000000000040000006441746100000000ffffffffb8000000100000000c001a0018001700040008000c00000020000000800000000000400000000000000000000304000a0018000c00080004000a0000002c000000100000000300000000000000000000000100000003000000000000000000000000000000000000000200000000000000000000000100000000000000400000000000000003000000000000000000000000000000ffffff7f0000000000000000000000000000000000000000000000000000000000000000000000";
+        let payload: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        assert!(decode_recorded_payload(Some(&payload)).is_err());
     }
 }

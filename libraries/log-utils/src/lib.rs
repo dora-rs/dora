@@ -1,12 +1,9 @@
 //! **Internal to dora — not a public API.**
 //!
-//! This crate is published to crates.io only because cargo requires every
-//! dependency of a published crate to be published; `dora-node-api` and
-//! `dora-cli` depend on it. It is not covered by dora's 1.0 stability
-//! guarantee and may change in any release, including a patch.
-//!
-//! Depend on it directly at your own risk. See the "Stability scope at 1.0"
-//! section of `docs/api-rust.md`.
+//! Parsing and formatting helpers for the log messages a `dora/logs` input
+//! delivers, used by the log-sink examples in this repository. The crate is
+//! not published to crates.io and is not covered by dora's 1.0 stability
+//! guarantee. See the "Stability scope at 1.0" section of `docs/api-rust.md`.
 //!
 use dora_message::common::LogMessage;
 use eyre::{Context, Result, bail};

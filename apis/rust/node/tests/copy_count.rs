@@ -101,7 +101,7 @@ fn send_strategies_intermediate_allocation() {
         let mut sample = vec![0u8; PAYLOAD];
         sample.iter_mut().for_each(|b| *b = 0); // pre-fault
         let (allocated, ()) = allocated_during(|| {
-            for (i, chunk) in sample.chunks_exact_mut(4).enumerate() {
+            for (i, chunk) in sample.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                 chunk.copy_from_slice(&(i as f32).to_le_bytes());
             }
         });
