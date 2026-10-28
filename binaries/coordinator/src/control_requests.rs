@@ -21,6 +21,7 @@ use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
 use dora_message::{
     BuildId, SessionId,
     cli_to_coordinator::ControlRequest,
+    common::DaemonId,
     config::{Input, InputMapping},
     coordinator_to_cli::{
         CleanFailure, ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry,
@@ -32,7 +33,11 @@ use dora_message::{
 };
 use eyre::{Result, bail, eyre};
 use petname::petname;
-use std::{collections::BTreeSet, path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    time::Duration,
+};
 use uuid::Uuid;
 
 type ReplySender = tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>;
@@ -1244,15 +1249,18 @@ impl Coordinator {
                         Ok((node_id, resolved_node)) => {
                             // Honour the node's `deploy` placement
                             // among the dataflow's daemons (#3672).
-                            let producer_daemons = upstream_node_ids(&resolved_node)
-                                .filter_map(|source| dataflow.node_to_daemon.get(source))
-                                .cloned()
-                                .collect();
-                            let daemon_id = self.daemon_connections.resolve_add_node_daemon(
-                                &dataflow.daemons,
-                                &producer_daemons,
-                                resolved_node.deploy.as_ref(),
-                            );
+                            let daemon_id = producer_daemons(
+                                &resolved_node,
+                                &dataflow.nodes,
+                                &dataflow.node_to_daemon,
+                            )
+                            .and_then(|producer_daemons| {
+                                self.daemon_connections.resolve_add_node_daemon(
+                                    &dataflow.daemons,
+                                    &producer_daemons,
+                                    resolved_node.deploy.as_ref(),
+                                )
+                            });
                             match daemon_id {
                                 Ok(did) => {
                                     let msg = serde_json::to_vec(&Timestamped {
@@ -1649,4 +1657,31 @@ pub(crate) fn upstream_node_ids(node: &ResolvedNode) -> impl Iterator<Item = &No
         InputMapping::User(mapping) => Some(&mapping.source),
         _ => None,
     })
+}
+
+/// The daemons hosting the nodes whose outputs `node` subscribes to.
+///
+/// Fails when such a producer is a node of the dataflow but has no daemon
+/// mapping yet (after a coordinator restart or reclaim, until its daemon
+/// reconnects): placing the new node without knowing where its producer
+/// runs could put it on a daemon that never forwards the producer's data.
+pub(crate) fn producer_daemons(
+    node: &ResolvedNode,
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+    node_to_daemon: &BTreeMap<NodeId, DaemonId>,
+) -> eyre::Result<BTreeSet<DaemonId>> {
+    let mut daemons = BTreeSet::new();
+    for source in upstream_node_ids(node) {
+        match node_to_daemon.get(source) {
+            Some(daemon) => {
+                daemons.insert(daemon.clone());
+            }
+            None if nodes.contains_key(source) => bail!(
+                "the daemon running upstream node `{source}` is not known yet \
+                 (is it still reconnecting?); retry `dora node add` later"
+            ),
+            None => {}
+        }
+    }
+    Ok(daemons)
 }

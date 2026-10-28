@@ -6676,3 +6676,38 @@ fn upstream_node_ids_lists_node_sources_only() {
         .collect();
     assert_eq!(sources, ["producer"]);
 }
+
+#[test]
+fn producer_daemons_rejects_a_known_but_unmapped_producer() {
+    // After a coordinator restart or reclaim, `node_to_daemon` only holds
+    // nodes whose daemon has already reported back. A known producer with
+    // no mapping must not be skipped, or the placement check fails open.
+    let running = running_descriptor_with_operator_producer(serde_json::json!(null));
+    let added: Node = serde_json::from_value(serde_json::json!({
+        "id": "consumer",
+        "path": "consumer",
+        "inputs": { "reading": "producer/result" },
+    }))
+    .expect("valid node");
+    let (_, resolved) = resolve_single_node(added, &running).expect("node resolves");
+
+    let producer: NodeId = "producer".to_string().into();
+    let producer_node = ResolvedNode::new(
+        producer.clone(),
+        dora_message::descriptor::CoreNodeKind::Runtime(dora_message::descriptor::RuntimeNode {
+            operators: Vec::new(),
+        }),
+    );
+    let nodes = BTreeMap::from([(producer.clone(), producer_node)]);
+
+    let err =
+        crate::control_requests::producer_daemons(&resolved, &nodes, &BTreeMap::new()).unwrap_err();
+    assert!(format!("{err}").contains("producer"), "{err}");
+
+    let daemon = DaemonId::new(Some("machine-a".to_string()));
+    let mapped = BTreeMap::from([(producer, daemon.clone())]);
+    assert_eq!(
+        crate::control_requests::producer_daemons(&resolved, &nodes, &mapped).unwrap(),
+        BTreeSet::from([daemon])
+    );
+}
