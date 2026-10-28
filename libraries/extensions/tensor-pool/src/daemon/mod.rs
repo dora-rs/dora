@@ -1244,6 +1244,96 @@ mod cross_pool_write_tests {
         );
     }
 
+    /// A direct send abandoned at its deadline is aborted with a reset, not
+    /// a FIN: on a FIN the mirror would keep writing the frame's in-flight
+    /// tail into the segment while the same write is relayed.
+    #[test]
+    fn direct_tcp_send_resets_an_abandoned_frame() {
+        // SAFETY (env mutation in tests): serialized by `CROSS_DATA_AUTH_ENV_LOCK`.
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            use tokio::io::AsyncReadExt;
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let conns = Arc::new(std::sync::Mutex::new(HashMap::new()));
+            let payload = vec![0u8; 32 * 1024 * 1024];
+            let send = send_cross_data_frame(
+                &conns,
+                addr,
+                Uuid::new_v4(),
+                "pool_node_0",
+                1,
+                &payload,
+                tokio::time::Instant::now() + std::time::Duration::from_millis(300),
+            );
+            // The peer stops reading, so the send stalls until its deadline.
+            let (mut peer, ()) =
+                tokio::join!(async { listener.accept().await.unwrap().0 }, async {
+                    assert!(send.await.is_err())
+                },);
+            let mut buf = vec![0u8; 1 << 20];
+            let err = loop {
+                match peer.read(&mut buf).await {
+                    Ok(0) => panic!("abandoned frame ended in a FIN, not a reset"),
+                    Ok(_) => continue,
+                    Err(e) => break e,
+                }
+            };
+            assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+        });
+    }
+
+    /// The mirror waits for a frame under the idle bound and only then
+    /// starts the frame's read bound; the wait never consumes frame bytes.
+    #[tokio::test]
+    async fn await_next_frame_splits_idle_from_frame_timing() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut origin = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mirror, _) = listener.accept().await.unwrap();
+        let short = std::time::Duration::from_millis(100);
+
+        // Nothing arrives within the idle bound: the connection is closed.
+        assert!(!await_next_frame(&mirror, short).await.unwrap());
+
+        // A frame that starts late, but within the idle bound, is waited
+        // for and left unread for the frame reader.
+        let late = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            origin
+                .write_all(&CROSS_DATA_MAGIC.to_be_bytes())
+                .await
+                .unwrap();
+            origin
+        });
+        assert!(
+            await_next_frame(&mirror, std::time::Duration::from_secs(5))
+                .await
+                .unwrap()
+        );
+        let mut magic = [0u8; 4];
+        assert_eq!(mirror.peek(&mut magic).await.unwrap(), 4);
+        assert_eq!(u32::from_be_bytes(magic), CROSS_DATA_MAGIC);
+
+        // The origin closing the connection ends the wait.
+        drop(late.await.unwrap());
+        let mut drained = [0u8; 4];
+        mirror.try_read(&mut drained).unwrap();
+        assert!(
+            !await_next_frame(&mirror, std::time::Duration::from_secs(5))
+                .await
+                .unwrap()
+        );
+    }
+
     /// The deadline covers the auth handshake too, not just the frame
     /// send: separately bounded steps added up past the ack timeout, so a
     /// stalled handshake still left a late relay (#3688).
