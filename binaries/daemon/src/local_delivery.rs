@@ -86,6 +86,10 @@ struct Holds {
     /// Close events that must not overtake a held delivery, in the order the
     /// daemon loop decided them (see [`DrainSignal::send_close`]).
     waiting: Vec<WaitingClose>,
+    /// When a waiting `AllInputsClosed` was last sent, which can be well
+    /// after the daemon loop decided it (see
+    /// [`DrainSignal::all_inputs_closed_sent`]).
+    all_inputs_closed_released_at: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -111,8 +115,10 @@ impl Holds {
         for close in std::mem::take(&mut self.waiting) {
             if self.holds_back(close.input.as_ref()) {
                 self.waiting.push(close);
-            } else {
-                send_control(&close.channel, close.pending.as_ref(), close.event);
+            } else if send_control(&close.channel, close.pending.as_ref(), close.event)
+                && close.input.is_none()
+            {
+                self.all_inputs_closed_released_at = Some(Instant::now());
             }
         }
     }
@@ -148,8 +154,10 @@ impl DrainSignal {
     /// overtake is in flight, keeps it until that delivery is done, however
     /// it ends ([`HeldInput`]'s drop). A producer that exits while one of its
     /// messages is held must neither lose it nor have it land behind the
-    /// close (dora-rs/dora#3619). Returns whether the event was sent or is
-    /// waiting.
+    /// close (dora-rs/dora#3619). A waiting event keeps the timestamp it was
+    /// decided with, so events sent meanwhile (`Stop`, timer ticks) can reach
+    /// the node first despite later timestamps. Returns whether the event was
+    /// sent or is waiting.
     fn send_close(
         &self,
         input: Option<&DataId>,
@@ -168,6 +176,24 @@ impl DrainSignal {
             event,
         });
         true
+    }
+
+    /// When this receiver's `AllInputsClosed`, which the daemon loop decided
+    /// at `decided`, went out: `None` while it still waits for a held
+    /// delivery. That wait can outlast the receiver's own drain — a
+    /// producer's held deliveries run one after another, so one wedged
+    /// receiver can delay another's close by a stall limit — and the finish
+    /// drain clock must not count it (dora-rs/dora#3623 review).
+    pub fn all_inputs_closed_sent(&self, decided: Instant) -> Option<Instant> {
+        let holds = self.holds.lock().unwrap_or_else(PoisonError::into_inner);
+        if holds.waiting.iter().any(|close| close.input.is_none()) {
+            return None;
+        }
+        Some(
+            holds
+                .all_inputs_closed_released_at
+                .map_or(decided, |released| released.max(decided)),
+        )
     }
 
     /// Drops the closes still waiting for `input`, which a reload maps
@@ -786,9 +812,9 @@ pub(crate) fn signal_all_inputs_closed_if_drained(
             clock,
         )
     {
-        // The drain clock starts here even if the event waits behind a held
-        // message: that wait ends once the node makes room, or at the stall
-        // limit, well inside the default finish grace.
+        // The decision time. If the event waits behind a held message, the
+        // drain clock only starts once it is sent
+        // (`RunningDataflow::drained_for`).
         dataflow
             .all_inputs_closed_at
             .insert(receiver_id.clone(), Instant::now());

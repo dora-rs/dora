@@ -44,9 +44,8 @@ impl Daemon {
         for (dataflow_id, dataflow) in self.running.iter_mut() {
             for node_id in dataflow.finish_stragglers(grace, now_millis) {
                 let drained_for_secs = dataflow
-                    .all_inputs_closed_at
-                    .get(&node_id)
-                    .map(|since| since.elapsed().as_secs())
+                    .drained_for(&node_id)
+                    .map(|since| since.as_secs())
                     .unwrap_or_default();
                 let pid = dataflow
                     .running_nodes

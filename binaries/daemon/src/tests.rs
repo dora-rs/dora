@@ -2871,7 +2871,7 @@ fn lost(ft_stats: &FaultToleranceStats) -> u64 {
 /// (dora-rs/dora#3619).
 #[tokio::test]
 async fn held_message_lands_before_its_input_closed() {
-    let _log = tracing::subscriber::set_default(LevelCapture::default());
+    let _log = tracing::subscriber::set_default(LevelCapture::new());
     let (mut df, receiver, mut rx, drained) = full_backpressure_receiver(&["a"]);
     let clock = test_clock();
     let ft_stats = Arc::new(FaultToleranceStats::default());
@@ -2899,7 +2899,7 @@ async fn held_message_lands_before_its_input_closed() {
 /// held (dora-rs/dora#3619).
 #[tokio::test]
 async fn all_inputs_closed_waits_for_a_held_message() {
-    let _log = tracing::subscriber::set_default(LevelCapture::default());
+    let _log = tracing::subscriber::set_default(LevelCapture::new());
     let (mut df, receiver, mut rx, drained) = full_backpressure_receiver(&["a", "b"]);
     let clock = test_clock();
     let ft_stats = Arc::new(FaultToleranceStats::default());
@@ -2926,7 +2926,7 @@ async fn all_inputs_closed_waits_for_a_held_message() {
 /// was waiting to send, and the `AllInputsClosed` behind it, are dropped.
 #[tokio::test]
 async fn remapping_an_input_cancels_its_waiting_close() {
-    let _log = tracing::subscriber::set_default(LevelCapture::default());
+    let _log = tracing::subscriber::set_default(LevelCapture::new());
     let (mut df, receiver, mut rx, drained) = full_backpressure_receiver(&["a"]);
     let clock = test_clock();
     let ft_stats = Arc::new(FaultToleranceStats::default());
@@ -2952,7 +2952,7 @@ async fn remapping_an_input_cancels_its_waiting_close() {
 /// then instead of never.
 #[tokio::test(start_paused = true)]
 async fn waiting_close_goes_out_when_the_held_delivery_gives_up() {
-    let _log = tracing::subscriber::set_default(LevelCapture::default());
+    let _log = tracing::subscriber::set_default(LevelCapture::new());
     let (mut df, receiver, mut rx, _drained) = full_backpressure_receiver(&["a"]);
     let clock = test_clock();
     let ft_stats = Arc::new(FaultToleranceStats::default());
@@ -2972,13 +2972,51 @@ async fn waiting_close_goes_out_when_the_held_delivery_gives_up() {
     );
 }
 
-/// A receiver whose event stream goes away while a close waits for a held
+/// The finish drain clock starts when `AllInputsClosed` is sent, not when
+/// the daemon loop decides it: the event can wait behind a held message for
+/// up to a stall limit per delivery queued ahead of it, possibly for another
+/// receiver, and the straggler watchdog must not count that against this one
+/// (dora-rs/dora#3623 review).
+#[tokio::test]
+async fn drain_clock_starts_when_all_inputs_closed_is_sent() {
+    let _log = tracing::subscriber::set_default(LevelCapture::new());
+    let (mut df, receiver, mut rx, drained) = full_backpressure_receiver(&["a"]);
+    let clock = test_clock();
+    let ft_stats = Arc::new(FaultToleranceStats::default());
+    let held = send_held(&mut df, "a", &clock, &ft_stats).await;
+
+    close_input(&mut df, &receiver, &"a".to_string().into(), &clock);
+    assert!(df.all_inputs_closed_at.contains_key(&receiver));
+    assert_eq!(
+        df.drained_for(&receiver),
+        None,
+        "not drained while AllInputsClosed waits"
+    );
+
+    let waited = Duration::from_millis(200);
+    std::thread::sleep(waited);
+    let events = drain_and_finish(&mut rx, &drained, held).await;
+    assert_eq!(
+        seen(&events),
+        ["Input(a)", "InputClosed(a)", "AllInputsClosed"]
+    );
+    let drained_for = df
+        .drained_for(&receiver)
+        .expect("drained once AllInputsClosed is sent");
+    assert!(
+        drained_for < waited,
+        "the clock starts at the send, not the decision: {drained_for:?}"
+    );
+}
+
+/// A receiver whose event channel closes while a close waits for a held
 /// message (it crashed, or is being torn down) ends the wait at once: the
 /// held message is lost to the closed channel like any other, and nothing
-/// hangs on the close.
+/// hangs on the close. The listener's own teardown is covered by
+/// `node_communication::tests::listener_teardown_ends_held_deliveries`.
 #[tokio::test]
-async fn receiver_teardown_ends_a_waiting_close() {
-    let _log = tracing::subscriber::set_default(LevelCapture::default());
+async fn closed_receiver_ends_a_waiting_close() {
+    let _log = tracing::subscriber::set_default(LevelCapture::new());
     let (mut df, receiver, rx, drained) = full_backpressure_receiver(&["a"]);
     let clock = test_clock();
     let ft_stats = Arc::new(FaultToleranceStats::default());

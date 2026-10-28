@@ -1376,6 +1376,18 @@ impl RunningDataflow {
     ///
     /// `now_millis` is the current `node_communication::current_millis()`, the
     /// clock `RunningNode::last_activity` is stamped against.
+    /// How long ago `node_id` was sent `AllInputsClosed`. `None` if it was
+    /// not, including while the event still waits behind a held backpressure
+    /// message (`DrainSignal::all_inputs_closed_sent`).
+    pub(crate) fn drained_for(&self, node_id: &NodeId) -> Option<Duration> {
+        let decided = *self.all_inputs_closed_at.get(node_id)?;
+        let sent = match self.drain_signals.get(node_id) {
+            Some(drained) => drained.all_inputs_closed_sent(decided)?,
+            None => decided,
+        };
+        Some(sent.elapsed())
+    }
+
     pub(crate) fn finish_stragglers(&self, grace: Duration, now_millis: u64) -> Vec<NodeId> {
         if self.stop_sent {
             return Vec::new();
@@ -1397,7 +1409,7 @@ impl RunningDataflow {
                     // presence so a node that dropped its event stream but is
                     // still alive remains a candidate (dora#2270 review).
                     connected: self.connected_nodes.contains(id),
-                    drained_for: self.all_inputs_closed_at.get(id).map(Instant::elapsed),
+                    drained_for: self.drained_for(id),
                     silent_for: Duration::from_millis(now_millis.saturating_sub(last)),
                     node_grace: node.finish_grace_secs,
                     remote_output_open: self
