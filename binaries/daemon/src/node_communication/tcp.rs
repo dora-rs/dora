@@ -6,7 +6,9 @@ use std::{
 use super::{BackpressureConfig, Connection, Listener};
 use crate::{
     Event,
-    socket_stream_utils::{socket_stream_receive_with_header_timeout, socket_stream_send},
+    socket_stream_utils::{
+        accept_failed, socket_stream_receive_with_header_timeout, socket_stream_send,
+    },
 };
 use dora_core::uhlc::HLC;
 use dora_message::{
@@ -33,12 +35,22 @@ pub async fn listener_loop(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
     mut node_shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
+    let mut backoff = None;
     loop {
+        // Sleep off the backoff inside the accept branch, so a shutdown is
+        // still noticed while a resource-exhaustion error is being waited out.
+        let accept = async {
+            if let Some(delay) = backoff {
+                tokio::time::sleep(delay).await;
+            }
+            listener.accept().await
+        };
         tokio::select! {
-            result = listener.accept() => {
-                match result.wrap_err("failed to accept new connection") {
-                    Err(err) => tracing::warn!("{err}"),
+            result = accept => {
+                match result {
+                    Err(err) => backoff = accept_failed(backoff, &err),
                     Ok((connection, _)) => {
+                        backoff = None;
                         tokio::spawn(handle_connection_loop(
                             connection,
                             generation.clone(),

@@ -277,8 +277,11 @@ fn check_package_name(name: &str) -> Option<String> {
 }
 
 /// Namespaces are GitHub orgs/users: lowercase alphanumeric plus `-`, no
-/// leading/trailing/double hyphen, at most 39 characters.
-fn check_namespace(ns: &str) -> Option<String> {
+/// leading/trailing/double hyphen, at most 39 characters. Returns a
+/// description of the problem, or `None` when `ns` is valid.
+///
+/// Also used by `dora-hub-client` to validate `hub.toml` namespace bindings.
+pub fn check_namespace(ns: &str) -> Option<String> {
     if ns.is_empty() {
         return Some("must not be empty".into());
     }
