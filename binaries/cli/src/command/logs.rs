@@ -1221,15 +1221,17 @@ fn all_nodes_logs_from_coordinator(
     Ok(())
 }
 
-/// Returns whether a log message should be kept given an optional node filter.
-/// `None` means no filtering (messages from every node pass); `Some(want)`
-/// keeps only messages whose node id equals `want`.
+/// Whether `msg` is the coordinator's notice that this reader missed lines,
+/// which is shown past the node and pattern filters.
 fn is_dropped_lines_notice(msg: &LogMessage) -> bool {
     msg.fields
         .as_ref()
         .is_some_and(|fields| fields.contains_key(dora_message::common::DROPPED_LOG_LINES_FIELD))
 }
 
+/// Returns whether a log message should be kept given an optional node filter.
+/// `None` means no filtering (messages from every node pass); `Some(want)`
+/// keeps only messages whose node id equals `want`.
 fn matches_node_filter(msg_node: Option<&str>, want: Option<&str>) -> bool {
     match want {
         None => true,
