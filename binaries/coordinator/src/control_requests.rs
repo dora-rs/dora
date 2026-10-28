@@ -1221,7 +1221,13 @@ impl Coordinator {
     ) -> eyre::Result<()> {
         let result = match self.running_dataflows.get_mut(&dataflow_id) {
             Some(dataflow) => {
-                if dataflow.node_to_daemon.contains_key(&node.id) {
+                // Check the stored topology, not `node_to_daemon`: a dataflow
+                // rebuilt after a coordinator restart or orphan reclaim maps
+                // only the nodes its reconnected daemons still run, so an
+                // exited node (or one on a daemon that has not reported yet)
+                // would pass, and the push below would persist a duplicate id
+                // that the next re-establish fails to resolve (#3759).
+                if dataflow.descriptor.nodes.iter().any(|n| n.id == node.id) {
                     Err(eyre!(
                         "node '{}' already exists in dataflow {dataflow_id}",
                         node.id
