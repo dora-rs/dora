@@ -2529,22 +2529,21 @@ async fn data_bytes_returned_with_and_without_local_receivers() {
     assert!(matches_event(&events[0], "Input"));
 }
 
-/// Debug inspection alone must not send an output down the inter-daemon
-/// path: no remote daemon subscribes to the control topic for an output it
-/// has no mapping for, and watchers are served by `debug_topic_watchers`.
-/// Forcing it copied, serialized and published every payload of a `--debug`
-/// dataflow for nobody.
-#[tokio::test(flavor = "multi_thread")]
-async fn debug_inspection_alone_does_not_publish_to_remote_daemons() {
+/// A `--debug` dataflow, as `send_out` sees it: a daemon running one
+/// dataflow with debug inspection on and no mapped receivers.
+async fn debug_dataflow_daemon() -> (Daemon, Uuid, Arc<HLC>) {
     let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
     let clock = Arc::new(HLC::default());
     let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
-
     let dataflow_id = Uuid::new_v4();
     let mut dataflow = test_dataflow();
+    dataflow.id = dataflow_id;
     dataflow.enable_debug_inspection = true;
     daemon.running.insert(dataflow_id, dataflow);
+    (daemon, dataflow_id, clock)
+}
 
+async fn send_debug_output(daemon: &mut Daemon, dataflow_id: Uuid, clock: &HLC) {
     daemon
         .send_out(
             dataflow_id,
@@ -2556,12 +2555,62 @@ async fn debug_inspection_alone_does_not_publish_to_remote_daemons() {
         )
         .await
         .unwrap();
+}
 
-    let dataflow = &daemon.running[&dataflow_id];
-    assert!(
-        dataflow.publishers.is_empty(),
-        "no inter-daemon control publisher should be declared for an unmapped output"
+/// With nobody subscribed to an output's control topic, a `--debug`
+/// dataflow must not copy, serialize and publish it: no remote daemon has
+/// it mapped, and dora's own inspection is served by `debug_topic_watchers`.
+#[tokio::test(flavor = "multi_thread")]
+async fn debug_inspection_does_not_publish_without_subscribers() {
+    let (mut daemon, dataflow_id, clock) = debug_dataflow_daemon().await;
+    send_debug_output(&mut daemon, dataflow_id, &clock).await;
+    send_debug_output(&mut daemon, dataflow_id, &clock).await;
+
+    // Anything handed to the drain task would be counted once published.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let sent = daemon.running[&dataflow_id]
+        .net_messages_sent
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(sent, 0, "published to a control topic nobody subscribes to");
+}
+
+/// A user's own zenoh subscriber on the control topic of a `--debug`
+/// dataflow keeps receiving its outputs, as documented for the flag, also
+/// when it joins after the output was first sent: the publisher then
+/// already exists, and only its matching listener can notice the subscriber.
+#[tokio::test(flavor = "multi_thread")]
+async fn debug_inspection_publishes_to_a_zenoh_subscriber() {
+    let (mut daemon, dataflow_id, clock) = debug_dataflow_daemon().await;
+    send_debug_output(&mut daemon, dataflow_id, &clock).await;
+
+    let topic = dora_core::topics::zenoh_daemon_control_topic(
+        dataflow_id,
+        &NodeId::from("sender".to_string()),
+        &DataId::from("output".to_string()),
     );
+    let subscriber = daemon
+        .zenoh_session
+        .declare_subscriber(topic)
+        .await
+        .unwrap();
+
+    // The subscriber's declaration reaches the publisher's matching status
+    // asynchronously, so earlier outputs may be skipped.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        send_debug_output(&mut daemon, dataflow_id, &clock).await;
+        if let Ok(Some(_)) =
+            tokio::time::timeout(Duration::from_millis(100), subscriber.recv_async())
+                .await
+                .map(Result::ok)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the zenoh subscriber never received an output"
+        );
+    }
 }
 
 // -- Regression tests for dora-rs/dora#3201: a receiver whose event
