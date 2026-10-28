@@ -656,7 +656,10 @@ mod tests {
     /// when the build ends -- must not stop the connection from forwarding
     /// the log lines pushed to it meanwhile. Before the fix the WS loop sat in
     /// `reply_rx.await`, so after 64 lines the coordinator's sends blocked
-    /// (and in production timed out, then dropped the subscriber).
+    /// (and in production timed out, then dropped the subscriber). Pushes no
+    /// longer block, but an undrained queue still drops live lines past
+    /// `MAX_QUEUED_LOG_BYTES`, so the stand-in only replies once the client
+    /// has received every line: without the drain the test times out.
     #[tokio::test]
     async fn logs_keep_flowing_while_a_reply_is_pending() {
         use futures::{SinkExt as _, StreamExt as _};
@@ -664,6 +667,7 @@ mod tests {
         use tokio_tungstenite::tungstenite::Message as ClientMessage;
 
         const LINES: usize = 500;
+        let (all_received_tx, all_received_rx) = tokio::sync::oneshot::channel::<()>();
 
         let (event_tx, mut event_rx) = mpsc::channel(16);
         let clock = Arc::new(dora_core::uhlc::HLC::default());
@@ -683,7 +687,8 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, app).await });
 
         // Stand-in for the coordinator event loop: accept the log subscription,
-        // then push LINES log lines before answering the pending request.
+        // then push LINES log lines and answer the pending request only after
+        // the client has received all of them.
         let coordinator = tokio::spawn(async move {
             let mut log_sender = None;
             while let Some(event) = event_rx.recv().await {
@@ -701,6 +706,9 @@ mod tests {
                                 .push(format!("{{\"line\":{i}}}"))
                                 .expect("log channel closed");
                         }
+                        all_received_rx
+                            .await
+                            .expect("client stopped before receiving every line");
                         let _ = reply_sender.send(Ok(ControlRequestReply::TopicPublished));
                         return;
                     }
@@ -735,6 +743,7 @@ mod tests {
         let wait_id = send(ControlRequest::WaitForBuild { build_id }).await;
 
         let mut lines = 0;
+        let mut all_received_tx = Some(all_received_tx);
         loop {
             let msg = tokio::time::timeout(Duration::from_secs(30), ws.next())
                 .await
@@ -748,6 +757,11 @@ mod tests {
             if value.get("line").is_some() {
                 assert_eq!(value["line"], lines, "log lines must arrive in order");
                 lines += 1;
+                if lines == LINES
+                    && let Some(tx) = all_received_tx.take()
+                {
+                    let _ = tx.send(());
+                }
             } else if value["id"] == serde_json::json!(wait_id) {
                 break;
             }
