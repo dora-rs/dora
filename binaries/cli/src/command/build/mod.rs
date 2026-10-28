@@ -65,8 +65,8 @@ use crate::ws_client::WsSession;
 use super::{Executable, default_tracing};
 use crate::{
     common::{
-        canonicalize_working_dir, connect_to_coordinator, local_working_dir, resolve_dataflow,
-        working_dir_or_parent,
+        canonicalize_working_dir, connect_to_coordinator, coordinator_rejected, local_working_dir,
+        resolve_dataflow, working_dir_or_parent,
     },
     session::DataflowSession,
 };
@@ -519,6 +519,9 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
                     coordinator_session,
                 }
             }
+            // A coordinator is running but refused us: building locally
+            // instead would skip the `deploy` machines it should reach.
+            Err(err) if coordinator_rejected(&err) => return Err(err),
             Err(_) => {
                 log::warn!("No dora coordinator instance found -> trying a local build");
                 // no coordinator instance found -> do a local build

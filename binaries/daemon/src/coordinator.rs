@@ -3,7 +3,9 @@ use dora_core::uhlc::HLC;
 use dora_message::{
     common::{DaemonId, Timestamped},
     coordinator_to_daemon::RegisterResult,
-    daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonRegisterRequest},
+    daemon_to_coordinator::{
+        CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DaemonRegisterRequest,
+    },
     ws_protocol::WsResponse,
 };
 use eyre::eyre;
@@ -30,15 +32,31 @@ pub struct CoordinatorEvent {
     pub reply_tx: oneshot::Sender<Option<DaemonCoordinatorReply>>,
 }
 
-/// Wraps the WS send channel for fire-and-forget daemon events to the coordinator.
+/// Capacity of the outbound topic debug channel. Frames beyond it are dropped.
+const TOPIC_DEBUG_CHANNEL_CAPACITY: usize = 64;
+/// Largest message the coordinator accepts on the daemon socket
+/// (`MAX_CONTROL_MESSAGE_BYTES` in its `ws_server`). A larger one makes it
+/// close the connection, so a topic debug frame past it is dropped here
+/// instead of taking the control plane down with it.
+pub(crate) const MAX_COORDINATOR_MESSAGE_BYTES: usize = 1024 * 1024;
+
+/// Wraps the WS send channels for fire-and-forget daemon events to the coordinator.
 #[derive(Clone)]
 pub struct CoordinatorSender {
     sender: mpsc::Sender<String>,
+    /// Topic debug frames, kept off `sender` so they can never delay a control
+    /// message; see `run_coordinator_ws_writer`.
+    topic_debug: mpsc::Sender<String>,
 }
 
 #[derive(Debug)]
 pub enum TrySendEventError {
     InvalidUtf8(std::str::Utf8Error),
+    Encode(serde_json::Error),
+    /// Larger than the coordinator accepts on the daemon socket.
+    TooLarge {
+        bytes: usize,
+    },
     Full,
     Closed,
 }
@@ -47,6 +65,12 @@ impl std::fmt::Display for TrySendEventError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidUtf8(err) => write!(f, "event message not UTF-8: {err}"),
+            Self::Encode(err) => write!(f, "failed to encode event message: {err}"),
+            Self::TooLarge { bytes } => write!(
+                f,
+                "{bytes} bytes exceeds the coordinator's \
+                 {MAX_COORDINATOR_MESSAGE_BYTES}-byte message limit"
+            ),
             Self::Full => write!(f, "WS send channel full"),
             Self::Closed => write!(f, "WS send channel closed"),
         }
@@ -95,12 +119,47 @@ impl CoordinatorSender {
             .map_err(|_| eyre!("WS send channel closed"))
     }
 
-    pub fn try_send_event(&self, message: &[u8]) -> Result<(), TrySendEventError> {
-        let json = Self::format_event_message(message)?;
-        self.sender.try_send(json).map_err(|err| match err {
-            mpsc::error::TrySendError::Full(_) => TrySendEventError::Full,
-            mpsc::error::TrySendError::Closed(_) => TrySendEventError::Closed,
+    /// Queue a topic debug frame on the debug channel, or drop it: `Full` if
+    /// the channel has no room, rather than blocking the daemon's main loop,
+    /// and `TooLarge` if the coordinator would reject it, since it closes the
+    /// daemon connection on an oversized message (dora-rs/dora#3535).
+    pub fn try_send_topic_debug_frame(
+        &self,
+        daemon_id: &DaemonId,
+        clock: &HLC,
+        dataflow_id: Uuid,
+        subscription_ids: Vec<Uuid>,
+        payload: Vec<u8>,
+    ) -> Result<(), TrySendEventError> {
+        let slot = self.topic_debug.try_reserve().map_err(|err| match err {
+            mpsc::error::TrySendError::Full(()) => TrySendEventError::Full,
+            mpsc::error::TrySendError::Closed(()) => TrySendEventError::Closed,
+        })?;
+        // Each payload byte takes at least two characters in the JSON number
+        // array, so skip rendering a payload that cannot fit.
+        if payload.len() > MAX_COORDINATOR_MESSAGE_BYTES / 2 {
+            return Err(TrySendEventError::TooLarge {
+                bytes: payload.len().saturating_mul(2),
+            });
+        }
+        let event = serde_json::to_vec(&Timestamped {
+            inner: CoordinatorRequest::Event {
+                daemon_id: daemon_id.clone(),
+                event: DaemonEvent::TopicDebugData {
+                    dataflow_id,
+                    subscription_ids,
+                    payload,
+                },
+            },
+            timestamp: clock.new_timestamp(),
         })
+        .map_err(TrySendEventError::Encode)?;
+        let json = Self::format_event_message(&event)?;
+        if json.len() > MAX_COORDINATOR_MESSAGE_BYTES {
+            return Err(TrySendEventError::TooLarge { bytes: json.len() });
+        }
+        slot.send(json);
+        Ok(())
     }
 
     /// Build a detached sender (and its receiver) for tests that only need a
@@ -108,7 +167,14 @@ impl CoordinatorSender {
     #[cfg(test)]
     pub(crate) fn for_test() -> (Self, mpsc::Receiver<String>) {
         let (sender, rx) = mpsc::channel(8);
-        (Self { sender }, rx)
+        let (topic_debug, _) = mpsc::channel(1);
+        (
+            Self {
+                sender,
+                topic_debug,
+            },
+            rx,
+        )
     }
 }
 
@@ -208,6 +274,7 @@ pub async fn register(
     // The coordinator sender writes to this, and the writer task below reads
     // and forwards to WS.
     let (send_tx, send_rx) = mpsc::channel::<String>(64);
+    let (topic_debug_tx, topic_debug_rx) = mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
 
     // Send Register request.
     // Serialize params via to_string (not to_value) to preserve u128 fidelity
@@ -287,7 +354,12 @@ pub async fn register(
     // can form; only genuine peer backpressure can slow transmission.
     let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(64);
 
-    tokio::spawn(run_coordinator_ws_writer(ws_tx, send_rx, internal_rx));
+    tokio::spawn(run_coordinator_ws_writer(
+        ws_tx,
+        send_rx,
+        internal_rx,
+        topic_debug_rx,
+    ));
 
     let task_clock = clock.clone();
     tokio::spawn(run_coordinator_ws_reader(
@@ -301,7 +373,10 @@ pub async fn register(
         daemon_id,
         reserved_listen_endpoint,
         peer_zenoh_endpoints,
-        CoordinatorSender { sender: send_tx },
+        CoordinatorSender {
+            sender: send_tx,
+            topic_debug: topic_debug_tx,
+        },
         ReceiverStream::new(rx),
     ))
 }
@@ -311,8 +386,9 @@ pub async fn register(
 ///
 /// The coordinator already hands loopback endpoints only to same-host daemons
 /// (`DaemonConnections::zenoh_endpoints_for`), but a 1.0.x coordinator hands
-/// out whatever it was told, and daemons now report loopback listeners too. A
-/// daemon on another host would dial its own loopback.
+/// out whatever it was told. New daemons advertise loopback in a separate
+/// field it ignores; this also guards endpoints from other reporting peers,
+/// which could otherwise make a daemon on another host dial its own loopback.
 fn usable_peer_endpoints(coordinator: SocketAddr, endpoints: Vec<String>) -> Vec<String> {
     if coordinator.ip().to_canonical().is_loopback() {
         return endpoints;
@@ -344,15 +420,25 @@ enum OutboundFrame {
 /// stops (dropping `internal_tx`), or a `DestroyNotify` frame ends it. Because
 /// this drain runs independently of command/reply processing, nothing the
 /// reader does can stall it — see `register` and dora-rs/dora#3164.
+///
+/// The arms are polled in order. `internal_rx` cannot starve `send_rx`: the
+/// reader queues one frame per command or ping it reads, and awaits each
+/// command's reply before reading on. Topic debug frames (`topic_debug_rx`)
+/// come last, so a control message waits for at most the one frame already
+/// being written, not a backlog of them (dora-rs/dora#3535). A finish report
+/// can therefore overtake frames queued before it; the coordinator then drops
+/// those, as `dora topic` is lossy anyway.
 async fn run_coordinator_ws_writer<Tx>(
     mut ws_tx: Tx,
     mut send_rx: mpsc::Receiver<String>,
     mut internal_rx: mpsc::Receiver<OutboundFrame>,
+    mut topic_debug_rx: mpsc::Receiver<String>,
 ) where
     Tx: Sink<Message> + Unpin,
 {
     loop {
         tokio::select! {
+            biased;
             frame = internal_rx.recv() => match frame {
                 Some(OutboundFrame::Ws(msg)) => {
                     if ws_tx.send(msg).await.is_err() {
@@ -376,6 +462,11 @@ async fn run_coordinator_ws_writer<Tx>(
                 // CoordinatorSender dropped: nothing more to send.
                 None => break,
             },
+            Some(text) = topic_debug_rx.recv() => {
+                if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
         }
     }
 }
@@ -474,22 +565,14 @@ async fn run_coordinator_ws_reader<Rx, E>(
         };
 
         if let Some(reply) = reply {
-            if needs_reply {
-                let response = match serde_json::to_value(&reply) {
-                    Ok(val) => WsResponse::ok(request_id, val),
-                    Err(e) => {
-                        tracing::error!("failed to serialize reply: {e}");
-                        WsResponse::err(request_id, format!("{e}"))
-                    }
-                };
-                if let Ok(json) = serde_json::to_string(&response)
-                    && internal_tx
-                        .send(OutboundFrame::Ws(Message::Text(json.into())))
-                        .await
-                        .is_err()
-                {
-                    break;
-                }
+            if needs_reply
+                && let Some(json) = encode_reply(request_id, &reply)
+                && internal_tx
+                    .send(OutboundFrame::Ws(Message::Text(json.into())))
+                    .await
+                    .is_err()
+            {
+                break;
             }
             if let DaemonCoordinatorReply::DestroyResult { notify, .. } = reply {
                 if let Some(notify) = notify {
@@ -637,6 +720,62 @@ fn jittered_backoff(backoff: Duration, rand: u64) -> Duration {
     Duration::from_millis((backoff.as_millis() as u64).saturating_add_signed(offset))
 }
 
+/// Encode the WS response carrying `reply` to the coordinator request
+/// `request_id`.
+///
+/// A reply past [`MAX_COORDINATOR_MESSAGE_BYTES`] is swapped for an error
+/// response: the coordinator closes the daemon connection on a larger
+/// message, so sending it would fail the request and drop the connection.
+/// A whole node log, which `dora logs` asks for without `--tail`, is the
+/// reply that gets there in practice, since its bytes go out as a JSON
+/// number array of up to four characters per byte.
+fn encode_reply(request_id: Uuid, reply: &DaemonCoordinatorReply) -> Option<String> {
+    let too_large = |bytes| {
+        let hint = match reply {
+            DaemonCoordinatorReply::Logs(_) => {
+                "; run `dora logs --local` on the machine that ran the node, or fetch \
+                 fewer lines with `--node <name> --tail <lines>` and no `--since`, \
+                 `--until`, `--grep` or `--level` filter"
+            }
+            _ => "",
+        };
+        let error = format!(
+            "daemon reply of {}{hint}",
+            TrySendEventError::TooLarge { bytes }
+        );
+        tracing::warn!("{error}");
+        serde_json::to_string(&WsResponse::err(request_id, error)).ok()
+    };
+    // Skip rendering a log whose JSON number array alone cannot fit: each
+    // byte takes its decimal digits plus a comma.
+    if let DaemonCoordinatorReply::Logs(Ok(logs)) = reply {
+        let array_len: usize = logs
+            .iter()
+            .map(|&b| match b {
+                0..=9 => 2,
+                10..=99 => 3,
+                _ => 4,
+            })
+            .sum::<usize>()
+            + 1;
+        if array_len > MAX_COORDINATOR_MESSAGE_BYTES {
+            return too_large(array_len);
+        }
+    }
+    let response = match serde_json::to_value(reply) {
+        Ok(val) => WsResponse::ok(request_id, val),
+        Err(e) => {
+            tracing::error!("failed to serialize reply: {e}");
+            WsResponse::err(request_id, format!("{e}"))
+        }
+    };
+    let json = serde_json::to_string(&response).ok()?;
+    if json.len() > MAX_COORDINATOR_MESSAGE_BYTES {
+        return too_large(json.len());
+    }
+    Some(json)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -659,6 +798,41 @@ mod tests {
         );
         let local = SocketAddr::from(([127, 0, 0, 1], 6012));
         assert_eq!(usable_peer_endpoints(local, endpoints()), endpoints());
+    }
+
+    /// `dora logs` without `--tail` asks for a node's whole log; one past
+    /// about 270 KB used to encode to more than the coordinator accepts and
+    /// cost the daemon its coordinator connection.
+    #[test]
+    fn an_oversized_reply_becomes_an_error_that_fits() {
+        let request_id = Uuid::new_v4();
+        // Past the pre-check, and under it but still too large once wrapped.
+        for log in [
+            b"{\"message\":\"hello\"}\n".repeat(20_000),
+            vec![b'x'; MAX_COORDINATOR_MESSAGE_BYTES / 4 - 10],
+        ] {
+            let json = encode_reply(request_id, &DaemonCoordinatorReply::Logs(Ok(log))).unwrap();
+            assert!(json.len() <= MAX_COORDINATOR_MESSAGE_BYTES);
+            let response: WsResponse = serde_json::from_str(&json).unwrap();
+            assert_eq!(response.id, request_id);
+            assert!(response.result.is_none());
+            let error = response.error.unwrap();
+            assert!(error.contains("message limit"), "{error}");
+            assert!(error.contains("--tail"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_reply_that_fits_is_sent_as_is() {
+        let request_id = Uuid::new_v4();
+        let reply = DaemonCoordinatorReply::Logs(Ok(b"line\n".to_vec()));
+        let json = encode_reply(request_id, &reply).unwrap();
+        let response: WsResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(response.id, request_id);
+        assert!(response.error.is_none());
+        let logs: DaemonCoordinatorReply =
+            serde_json::from_value(response.result.unwrap()).unwrap();
+        assert!(matches!(logs, DaemonCoordinatorReply::Logs(Ok(bytes)) if bytes == b"line\n"));
     }
 
     #[tokio::test]
@@ -790,8 +964,14 @@ mod tests {
         // the writer keeps draining `send_rx` concurrently.
         let (send_tx, send_rx) = mpsc::channel::<String>(64);
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(64);
+        let (_topic_debug_tx, topic_debug_rx) = mpsc::channel::<String>(1);
 
-        let writer = tokio::spawn(run_coordinator_ws_writer(ws_out_tx, send_rx, internal_rx));
+        let writer = tokio::spawn(run_coordinator_ws_writer(
+            ws_out_tx,
+            send_rx,
+            internal_rx,
+            topic_debug_rx,
+        ));
         let reader = tokio::spawn(run_coordinator_ws_reader(
             ws_in,
             tx,
@@ -826,6 +1006,69 @@ mod tests {
         })
         .await
         .expect("WS router deadlocked under outbound backpressure (#3164)");
+    }
+
+    /// Regression test for dora-rs/dora#3535: with the topic debug queue full,
+    /// control messages still go out first. Several of them, because without
+    /// `biased;` the writer would pick between two ready arms at random.
+    #[tokio::test]
+    async fn ws_writer_sends_control_before_queued_topic_debug_frames() {
+        let (ws_out_tx, mut ws_out_rx) = futures::channel::mpsc::unbounded();
+        let (send_tx, send_rx) = mpsc::channel(64);
+        let (_internal_tx, internal_rx) = mpsc::channel(1);
+        let (topic_debug_tx, topic_debug_rx) = mpsc::channel(TOPIC_DEBUG_CHANNEL_CAPACITY);
+        while topic_debug_tx.try_send("debug".to_owned()).is_ok() {}
+        for i in 0..16 {
+            send_tx.try_send(format!("control-{i}")).unwrap();
+        }
+
+        tokio::spawn(run_coordinator_ws_writer(
+            ws_out_tx,
+            send_rx,
+            internal_rx,
+            topic_debug_rx,
+        ));
+
+        for i in 0..16 {
+            let control = Message::Text(format!("control-{i}").into());
+            assert_eq!(ws_out_rx.next().await, Some(control));
+        }
+        assert_eq!(ws_out_rx.next().await, Some(Message::Text("debug".into())));
+    }
+
+    /// A topic debug frame the coordinator would reject is dropped, never
+    /// sent: the coordinator closes the daemon connection on an oversized
+    /// message (dora-rs/dora#3535). As a JSON number array, payloads of a few
+    /// hundred kilobytes already reach that limit.
+    #[test]
+    fn topic_debug_frame_beyond_the_coordinator_limit_is_dropped() {
+        let (topic_debug, mut topic_debug_rx) = mpsc::channel(1);
+        let sender = CoordinatorSender {
+            topic_debug,
+            ..CoordinatorSender::for_test().0
+        };
+        let send = |payload_len| {
+            sender.try_send_topic_debug_frame(
+                &DaemonId::new(None),
+                &HLC::default(),
+                Uuid::new_v4(),
+                vec![Uuid::new_v4()],
+                vec![255; payload_len],
+            )
+        };
+
+        // Caught before rendering, and after it.
+        for payload_len in [MAX_COORDINATOR_MESSAGE_BYTES / 2 + 1, 300 * 1024] {
+            assert!(matches!(
+                send(payload_len),
+                Err(TrySendEventError::TooLarge { .. })
+            ));
+        }
+        // Neither kept the one slot, and a frame within the limit goes out.
+        send(3).unwrap();
+        let text = topic_debug_rx.try_recv().unwrap();
+        assert!(text.contains(r#""TopicDebugData":{"#), "{text}");
+        assert!(text.contains(r#""payload":[255,255,255]"#), "{text}");
     }
 
     /// Regression test for the reply routing `resolve_machine` depends on

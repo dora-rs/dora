@@ -1,10 +1,12 @@
 use super::*;
 use crate::state::ParamTarget;
+use crate::topic_debug::topic_outputs_by_daemon;
 use crate::{
     daemon_liveness::{
         DisconnectAction, HeartbeatSendOutcome, MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS,
         heartbeat_disconnect_decision,
     },
+    params::replay_persisted_params_for_daemon,
     ready_barrier::{
         all_nodes_ready_message, persist_ready_barrier_release, release_barrier_message,
     },
@@ -313,8 +315,8 @@ fn test_running_dataflow(
         created_at: 0,
         store_generation: 0,
         last_recovery_attempt: BTreeMap::new(),
-        last_replay_attempt: BTreeMap::new(),
         uv: false,
+        launch: crate::state::LaunchContext::unknown(),
         state_log_sequence: 0,
         state_log: Vec::new(),
         daemon_ack_sequence: BTreeMap::new(),
@@ -572,6 +574,56 @@ fn topic_outputs_by_daemon_normalizes_single_operator_outputs() {
         .expect("nested outputs should resolve to their daemon");
 
     assert_eq!(outputs[&daemon_id], expected_topics);
+}
+
+/// `dora topic pub` must publish under the id the daemons subscribe to: a
+/// single-operator runtime node's bare `image` went out unresolved, as
+/// `.../control/single/image`, so the check passed and the message was lost.
+#[test]
+fn topic_publish_resolves_a_single_operator_output_id() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let descriptor: Descriptor = serde_json::from_value(serde_json::json!({
+        "nodes": [{
+            "id": "single",
+            "operator": { "python": "single.py", "outputs": ["image"] },
+        }],
+    }))
+    .expect("valid test descriptor");
+    let single_node: dora_core::config::NodeId = "single".to_string().into();
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, single_node.clone());
+    dataflow.descriptor = descriptor;
+    dataflow.nodes = dataflow
+        .descriptor
+        .resolve_aliases_and_set_defaults()
+        .expect("test descriptor should resolve");
+    let mut running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+    let publish = |running_dataflows: &HashMap<_, _>, output: &str| {
+        topic_publish_output_id(
+            running_dataflows,
+            dataflow_id,
+            single_node.clone(),
+            output.to_string().into(),
+        )
+    };
+
+    // Debug publishing is off by default.
+    assert_eq!(publish(&running_dataflows, "image"), None);
+
+    running_dataflows
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .descriptor
+        .debug
+        .enable_debug_inspection = true;
+    let resolved = publish(&running_dataflows, "image").expect("bare output resolves");
+    assert_eq!(resolved.to_string(), "op/image");
+    assert!(
+        dora_core::topics::zenoh_daemon_control_topic(dataflow_id, &single_node, &resolved)
+            .ends_with("/control/single/op/image")
+    );
+    assert_eq!(publish(&running_dataflows, "op/image"), Some(resolved));
+    assert_eq!(publish(&running_dataflows, "missing"), None);
 }
 
 #[tokio::test]
@@ -995,7 +1047,7 @@ async fn replaying_the_barrier_sends_it_and_the_params_to_that_daemon() {
         dataflow_id,
         &dataflow,
         &daemon_id,
-        &mut daemon_connections,
+        &daemon_connections,
         &store,
         &Arc::new(HLC::default()),
     )
@@ -1135,6 +1187,181 @@ async fn a_failed_barrier_is_persisted_as_durably_as_a_successful_one() {
         StoreDataflowStatus::Pending,
         "a failed barrier keeps the status it had; it must not be promoted"
     );
+}
+
+/// A connected daemon on `machine`, with the receiver for what is sent to it.
+fn connected_test_daemon(
+    daemon_connections: &mut DaemonConnections,
+    machine: &str,
+) -> (DaemonId, tokio::sync::mpsc::Receiver<String>) {
+    let daemon_id = DaemonId::new(Some(machine.to_string()));
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let connection = crate::state::DaemonConnection::new(
+        tx,
+        Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        BTreeMap::new(),
+    );
+    daemon_connections.add(daemon_id.clone(), connection);
+    (daemon_id, rx)
+}
+
+/// The `exited_before_subscribe` of every `AllNodesReady` queued on `rx`.
+fn received_all_nodes_ready(rx: &mut tokio::sync::mpsc::Receiver<String>) -> Vec<Vec<NodeId>> {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+    let mut frames = Vec::new();
+    while let Ok(outbound) = rx.try_recv() {
+        let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+        if let DaemonCoordinatorEvent::AllNodesReady {
+            exited_before_subscribe,
+            ..
+        } = outbound.params.inner
+        {
+            frames.push(exited_before_subscribe);
+        }
+    }
+    frames
+}
+
+/// A two-daemon dataflow whose ready barrier already released, with a
+/// `sender` node on `m1` and a `receiver` node on `m2`.
+fn released_two_daemon_dataflow(
+    dataflow_id: DataflowId,
+    m1: &DaemonId,
+    m2: &DaemonId,
+) -> RunningDataflow {
+    let mut dataflow = test_running_dataflow(dataflow_id, m1.clone(), "sender".to_string().into());
+    dataflow.daemons.insert(m2.clone());
+    dataflow
+        .node_to_daemon
+        .insert("receiver".to_string().into(), m2.clone());
+    dataflow.ready_barrier_released = true;
+    dataflow
+}
+
+#[tokio::test]
+async fn a_ready_report_after_the_barrier_released_does_not_release_it_again() {
+    // #3885: the barrier can release before a daemon reports (the last
+    // pending daemon disconnected, #2028), and that daemon still reports its
+    // nodes ready once it reconnects. That late report must not broadcast a
+    // second, possibly different verdict, rewrite the stored status, or
+    // replay params to every daemon again. The reporting daemon gets the
+    // released verdict back, and no one else gets anything.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let mut daemon_connections = DaemonConnections::default();
+    let (m1, mut m1_rx) = connected_test_daemon(&mut daemon_connections, "m1");
+    let (m2, mut m2_rx) = connected_test_daemon(&mut daemon_connections, "m2");
+
+    let mut dataflow = released_two_daemon_dataflow(dataflow_id, &m1, &m2);
+    // The dataflow moved on since the release; the late report must not
+    // put the durable record back to `Running`.
+    let seeded = dataflow
+        .make_record(StoreDataflowStatus::Stopping)
+        .expect("seed record");
+    store.put_dataflow(&seeded).expect("seed");
+
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, dataflow)]),
+        daemon_connections,
+        store.clone(),
+    );
+    // An empty verdict is the one a re-release would persist as `Running`.
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: m2.clone(),
+                exited_before_subscribe: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_dataflow(&dataflow_id)
+            .expect("read back")
+            .expect("record present")
+            .status,
+        StoreDataflowStatus::Stopping,
+        "the stored status must not be rewritten"
+    );
+
+    // A late report of a node that exited must not change the verdict.
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: m2,
+                exited_before_subscribe: vec!["receiver".to_string().into()],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        coordinator.running_dataflows[&dataflow_id]
+            .exited_before_subscribe
+            .is_empty(),
+        "the released verdict stays frozen, so reconnect replays match the broadcast"
+    );
+
+    assert_eq!(
+        received_all_nodes_ready(&mut m2_rx),
+        vec![Vec::<NodeId>::new(); 2],
+        "the reporting daemon is answered with the released verdict each time"
+    );
+    assert!(
+        received_all_nodes_ready(&mut m1_rx).is_empty(),
+        "no other daemon may be sent a second AllNodesReady"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn auto_recovered_nodes_are_released_after_the_barrier_released() {
+    // Auto-recovery re-spawns a daemon's nodes into the same dataflow, whose
+    // barrier released long ago. That daemon's re-spawned nodes wait for a
+    // coordinator `AllNodesReady`, and its `ReadyOnDaemon` is the only thing
+    // that triggers one: it must not be dropped as a stale report.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let mut daemon_connections = DaemonConnections::default();
+    let (m1, mut m1_rx) = connected_test_daemon(&mut daemon_connections, "m1");
+    let (m2, mut m2_rx) = connected_test_daemon(&mut daemon_connections, "m2");
+
+    let mut coordinator = test_coordinator(
+        HashMap::from([(
+            dataflow_id,
+            released_two_daemon_dataflow(dataflow_id, &m1, &m2),
+        )]),
+        daemon_connections,
+        store,
+    );
+    // `m1` restarted and reports nothing running, so its nodes are re-spawned.
+    coordinator
+        .handle_daemon_status_report(m1.clone(), vec![])
+        .await
+        .expect("status report should be handled");
+    assert!(received_all_nodes_ready(&mut m1_rx).is_empty());
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: m1,
+                exited_before_subscribe: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        received_all_nodes_ready(&mut m1_rx),
+        vec![Vec::<NodeId>::new()],
+        "the re-spawned daemon must be released"
+    );
+    assert!(received_all_nodes_ready(&mut m2_rx).is_empty());
 }
 
 #[tokio::test]
@@ -1552,6 +1779,280 @@ fn resolve_param_target_errors_for_unknown_node() {
     assert!(err.to_string().contains("not found in dataflow"));
 }
 
+/// A forwarded `dora param set`/`delete` that the daemon applied must not
+/// stay in the state catch-up log: acks used to move only on reconnect, so on
+/// a healthy cluster the log grew to its hard cap and every reconnect
+/// replayed the whole history. A daemon that missed an entry for its own
+/// node keeps it until it is gone from the dataflow; one whose missed entries
+/// all target other daemons' nodes advances.
+#[tokio::test]
+async fn applied_param_changes_are_acked_and_pruned_from_the_state_log() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let owner = DaemonId::new(Some("owner".to_string()));
+    let peer = DaemonId::new(Some("peer".to_string()));
+    let lagging = DaemonId::new(Some("lagging".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+
+    // A daemon that answers every request with `Ok`.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let conn = crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    tokio::spawn(async move {
+        #[derive(serde::Deserialize)]
+        struct OutboundRaw {
+            id: String,
+            params: Timestamped<DaemonCoordinatorEvent>,
+        }
+        while let Some(outbound) = rx.recv().await {
+            let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            let reply = match outbound.params.inner {
+                DaemonCoordinatorEvent::SetParam { .. } => {
+                    DaemonCoordinatorReply::SetParamResult(Ok(()))
+                }
+                DaemonCoordinatorEvent::DeleteParam { .. } => {
+                    DaemonCoordinatorReply::DeleteParamResult(Ok(()))
+                }
+                other => panic!("unexpected event: {other:?}"),
+            };
+            let request_id = Uuid::parse_str(&outbound.id).unwrap();
+            if let Some(reply_tx) = pending_replies.lock().await.remove(&request_id) {
+                let _ = reply_tx.send(serde_json::to_string(&reply).unwrap());
+            }
+        }
+    });
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(owner.clone(), conn);
+
+    let lagging_node: NodeId = "lagging-node".to_string().into();
+    let mut df = test_running_dataflow(dataflow_id, owner.clone(), node_id.clone());
+    df.daemons.extend([peer.clone(), lagging.clone()]);
+    df.node_to_daemon
+        .insert(lagging_node.clone(), lagging.clone());
+    // An earlier entry for `lagging`'s node, which only `owner` has acked
+    // (`peer` has nothing to apply for it).
+    df.append_state_log(StateCatchUpOperation::DeleteParam {
+        node_id: lagging_node,
+        key: "old".to_string(),
+    });
+    df.daemon_ack_sequence = BTreeMap::from([(owner.clone(), 1)]);
+
+    let mut coordinator = Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows: HashMap::from([(dataflow_id, df)]),
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections,
+        clock: Arc::new(HLC::default()),
+        store: Arc::new(InMemoryStore::new()),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    };
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_set_param(
+            dataflow_id,
+            node_id.clone(),
+            "gain".to_string(),
+            serde_json::json!(2),
+            reply_tx,
+        )
+        .await
+        .unwrap();
+    reply_rx.await.unwrap().expect("set is applied");
+
+    let df = &coordinator.running_dataflows[&dataflow_id];
+    assert_eq!(df.state_log_sequence, 2);
+    assert_eq!(df.daemon_ack_sequence[&owner], 2);
+    assert_eq!(df.daemon_ack_sequence[&peer], 2);
+    assert_eq!(
+        df.daemon_ack_sequence.get(&lagging).copied().unwrap_or(0),
+        0,
+        "a daemon that missed entry 1 for its own node must not skip it"
+    );
+    assert_eq!(df.state_log.len(), 2, "kept for the lagging daemon");
+
+    // Once the lagging daemon is gone, the next applied change empties the log.
+    coordinator
+        .running_dataflows
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .daemons
+        .remove(&lagging);
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_delete_param(dataflow_id, node_id, "gain".to_string(), reply_tx)
+        .await
+        .unwrap();
+    reply_rx.await.unwrap().expect("delete is applied");
+
+    let df = &coordinator.running_dataflows[&dataflow_id];
+    assert_eq!(df.daemon_ack_sequence[&owner], 3);
+    assert_eq!(df.daemon_ack_sequence[&peer], 3);
+    assert!(df.state_log.is_empty(), "every live daemon applied it");
+}
+
+/// A `WaitForSpawn` that lands after a failed spawn already tore the
+/// dataflow down must report the failure. It used to get "unknown
+/// dataflow", which `dora start` reads as "started and finished", so a
+/// dataflow that never started was reported as a success.
+#[tokio::test]
+async fn wait_for_spawn_after_a_failed_spawn_reports_the_failure() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+    df.pending_spawn_results.insert(daemon_id.clone());
+
+    let mut coordinator = Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows: HashMap::from([(dataflow_id, df)]),
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections: DaemonConnections::default(),
+        clock: Arc::new(HLC::default()),
+        store: Arc::new(InMemoryStore::new()),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    };
+    coordinator
+        .handle_spawn_result(dataflow_id, daemon_id, Err(eyre!("no such binary")))
+        .await
+        .unwrap();
+    assert!(!coordinator.running_dataflows.contains_key(&dataflow_id));
+
+    let wait_for_spawn = |dataflow_id| {
+        let (reply_sender, reply) = tokio::sync::oneshot::channel();
+        let event = ControlEvent::IncomingRequest {
+            request: Box::new(
+                dora_message::cli_to_coordinator::ControlRequest::WaitForSpawn { dataflow_id },
+            ),
+            reply_sender,
+        };
+        (event, reply)
+    };
+
+    let (event, reply) = wait_for_spawn(dataflow_id);
+    coordinator.handle_control_event(event).await.unwrap();
+    let err = format!("{:?}", reply.await.unwrap().expect_err("spawn failed"));
+    assert!(err.contains("no such binary"), "got: {err}");
+    assert!(
+        !error_reads_as_finished(&err),
+        "must not read as a dataflow that ran to completion: {err}"
+    );
+
+    // A dataflow the coordinator never knew still answers "unknown".
+    let (event, reply) = wait_for_spawn(DataflowId::from(Uuid::new_v4()));
+    coordinator.handle_control_event(event).await.unwrap();
+    let err = format!("{:?}", reply.await.unwrap().expect_err("unknown"));
+    assert!(err.contains("unknown dataflow"), "got: {err}");
+}
+
+/// Runs a dataflow whose only node exits with `node_result` before its spawn
+/// result is recorded, then sends the `WaitForSpawn` that `dora start` sends
+/// once the coordinator has archived it, and returns the reply.
+async fn wait_for_spawn_after_an_early_node_exit(
+    node_result: Result<(), NodeError>,
+) -> eyre::Result<ControlRequestReply> {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+    let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+    df.pending_spawn_results.insert(daemon_id.clone());
+
+    let mut coordinator = Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows: HashMap::from([(dataflow_id, df)]),
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections: DaemonConnections::default(),
+        clock: Arc::new(HLC::default()),
+        store: Arc::new(InMemoryStore::new()),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    };
+    let result = DataflowDaemonResult {
+        timestamp: coordinator.clock.new_timestamp(),
+        node_results: BTreeMap::from([(node_id, node_result)]),
+    };
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result },
+        )
+        .await
+        .unwrap();
+    assert!(!coordinator.running_dataflows.contains_key(&dataflow_id));
+
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_control_event(ControlEvent::IncomingRequest {
+            request: Box::new(
+                dora_message::cli_to_coordinator::ControlRequest::WaitForSpawn { dataflow_id },
+            ),
+            reply_sender,
+        })
+        .await
+        .unwrap();
+    reply.await.unwrap()
+}
+
+/// The same late `WaitForSpawn`, for a dataflow whose node crashed before
+/// the spawn completed: the coordinator archives it from
+/// `DataflowFinishedOnDaemon` and the request must still see the failure.
+#[tokio::test]
+async fn wait_for_spawn_after_an_early_node_exit_reports_the_failure() {
+    let err = wait_for_spawn_after_an_early_node_exit(Err(NodeError {
+        timestamp: HLC::default().new_timestamp(),
+        cause: NodeErrorCause::Other {
+            stderr: "segfault at startup".to_string(),
+        },
+        exit_status: NodeExitStatus::ExitCode(139),
+    }))
+    .await
+    .expect_err("spawn failed");
+    let err = format!("{err:?}");
+    assert!(err.contains("failed to start"), "got: {err}");
+    assert!(
+        !error_reads_as_finished(&err),
+        "must not read as a dataflow that ran to completion: {err}"
+    );
+}
+
+/// A dataflow whose nodes all exited cleanly before the spawn result came in
+/// did start: a late `WaitForSpawn` must keep reading as "started and
+/// finished", as it does for any other finished dataflow.
+#[tokio::test]
+async fn wait_for_spawn_after_a_clean_early_exit_reads_as_finished() {
+    let err = wait_for_spawn_after_an_early_node_exit(Ok(()))
+        .await
+        .expect_err("the dataflow is no longer running");
+    let err = format!("{err:?}");
+    assert!(
+        error_reads_as_finished(&err),
+        "must read as a dataflow that ran to completion: {err}"
+    );
+}
+
+/// Mirrors the CLI's `error_indicates_dataflow_finished`.
+fn error_reads_as_finished(msg: &str) -> bool {
+    msg.contains("no running dataflow with id") || msg.contains("unknown dataflow")
+}
+
 #[tokio::test]
 async fn replay_replays_persisted_param_to_daemon_connection() {
     #[derive(serde::Deserialize)]
@@ -1629,6 +2130,360 @@ async fn replay_replays_persisted_param_to_daemon_connection() {
         .await
         .expect("daemon task did not receive the expected message")
         .unwrap();
+}
+
+/// Fake daemon for replay tests: answers every `SetParam` with `Ok`, after
+/// running `on_request` on it, and returns the `(key, value)` pairs it saw.
+fn spawn_set_param_acking_daemon(
+    mut rx: tokio::sync::mpsc::Receiver<String>,
+    pending_replies: Arc<tokio::sync::Mutex<HashMap<Uuid, tokio::sync::oneshot::Sender<String>>>>,
+    mut on_request: impl FnMut(&str) + Send + 'static,
+) -> tokio::task::JoinHandle<Vec<(String, serde_json::Value)>> {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        id: String,
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+    tokio::spawn(async move {
+        let mut seen = Vec::new();
+        while let Some(outbound) = rx.recv().await {
+            let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            let DaemonCoordinatorEvent::SetParam { key, value, .. } = outbound_raw.params.inner
+            else {
+                panic!("unexpected replay event");
+            };
+            on_request(&key);
+            seen.push((key, value));
+            let request_id = Uuid::parse_str(&outbound_raw.id).expect("valid request id");
+            let reply =
+                serde_json::to_string(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+            let reply_tx = pending_replies
+                .lock()
+                .await
+                .remove(&request_id)
+                .expect("pending reply sender should exist");
+            let _ = reply_tx.send(reply);
+        }
+        seen
+    })
+}
+
+#[tokio::test]
+async fn replay_sends_current_value_of_param_changed_after_snapshot() {
+    // #3683: a `dora param set`/`delete` that lands while the replay is
+    // sending earlier items must not be overwritten by the value the replay
+    // listed at its start, nor a deleted key be resurrected.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+    let one = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    for key in ["a", "b", "c"] {
+        store
+            .put_node_param(&dataflow_id, &node_id, key, &one)
+            .unwrap();
+    }
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+
+    let daemon_store = store.clone();
+    let daemon_node = node_id.clone();
+    let daemon_task = spawn_set_param_acking_daemon(rx, pending_replies, move |key| {
+        if key == "a" {
+            let two = serde_json::to_vec(&serde_json::json!(2)).unwrap();
+            daemon_store
+                .put_node_param(&dataflow_id, &daemon_node, "b", &two)
+                .unwrap();
+            daemon_store
+                .delete_node_param(&dataflow_id, &daemon_node, "c")
+                .unwrap();
+        }
+    });
+
+    let summary = replay_persisted_params_for_daemon(
+        dataflow_id,
+        daemon_id,
+        vec![node_id],
+        store,
+        connection,
+        Arc::new(HLC::default()),
+    )
+    .await;
+    assert_eq!(summary.attempted, 2);
+    assert_eq!(summary.failed, 0);
+
+    let seen = tokio::time::timeout(Duration::from_secs(10), daemon_task)
+        .await
+        .expect("daemon task did not finish")
+        .unwrap();
+    assert_eq!(
+        seen,
+        vec![
+            ("a".to_string(), serde_json::json!(1)),
+            ("b".to_string(), serde_json::json!(2)),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn replay_releases_param_write_lock_while_waiting_for_the_daemon() {
+    // The replay holds the connection's lock only up to queuing each param
+    // (#3683). Held while waiting for the reply, a slow daemon would stall
+    // every `dora param set` to it, on the coordinator's event loop.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+    let value = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &value)
+        .unwrap();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection = crate::state::DaemonConnection::new(tx, pending_replies, BTreeMap::new());
+    let lock = connection.param_write_lock.clone();
+
+    let replay = tokio::spawn(replay_persisted_params_for_daemon(
+        dataflow_id,
+        daemon_id,
+        vec![node_id],
+        store,
+        connection,
+        Arc::new(HLC::default()),
+    ));
+
+    // The daemon receives the param but never answers it.
+    tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("replay did not send the param")
+        .expect("connection closed");
+    let _released = tokio::time::timeout(Duration::from_secs(10), lock.lock())
+        .await
+        .expect("replay must release the lock before waiting for the reply");
+    assert!(
+        !replay.is_finished(),
+        "replay is still waiting for the reply"
+    );
+    replay.abort();
+}
+
+#[tokio::test]
+async fn replay_takes_param_write_lock_before_reading_the_param() {
+    // #3683, replay side: a `set` holding the connection's lock may be
+    // between persisting its value and queuing it. The replay must wait for
+    // it before re-reading the store, or it could queue the old value after
+    // the `set`'s new one.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+    let one = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &one)
+        .unwrap();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    let lock = connection.param_write_lock.clone();
+    let daemon_task = spawn_set_param_acking_daemon(rx, pending_replies, |_| {});
+
+    let set_guard = lock.lock().await;
+    let replay = tokio::spawn(replay_persisted_params_for_daemon(
+        dataflow_id,
+        daemon_id,
+        vec![node_id.clone()],
+        store.clone(),
+        connection,
+        Arc::new(HLC::default()),
+    ));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!replay.is_finished(), "replay must wait for the set's lock");
+    // The `set` persists its value while it holds the lock.
+    let two = serde_json::to_vec(&serde_json::json!(2)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &two)
+        .unwrap();
+    drop(set_guard);
+
+    let summary = tokio::time::timeout(Duration::from_secs(10), replay)
+        .await
+        .expect("replay did not finish")
+        .unwrap();
+    assert_eq!(summary.attempted, 1);
+    assert_eq!(summary.failed, 0);
+    let seen = tokio::time::timeout(Duration::from_secs(10), daemon_task)
+        .await
+        .expect("daemon task did not finish")
+        .unwrap();
+    assert_eq!(seen, vec![("gain".to_string(), serde_json::json!(2))]);
+}
+
+/// A `Coordinator` around the given state, with everything else empty.
+fn test_coordinator(
+    running_dataflows: HashMap<DataflowId, RunningDataflow>,
+    daemon_connections: DaemonConnections,
+    store: Arc<dyn CoordinatorStore>,
+) -> Coordinator {
+    Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows,
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections,
+        clock: Arc::new(HLC::default()),
+        store,
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    }
+}
+
+#[tokio::test]
+async fn param_set_waits_for_a_replay_queuing_to_the_same_daemon() {
+    // #3683, handler side: a `set` takes the connection's lock before it
+    // persists. A replay holding it has read a param from the store and is
+    // queuing it; the `set` must neither persist nor forward until then, or
+    // the replay could queue the old value after the new one.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    let lock = connection.param_write_lock.clone();
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), connection);
+    let daemon_task = spawn_set_param_acking_daemon(rx, pending_replies, |_| {});
+
+    let df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        daemon_connections,
+        store.clone(),
+    );
+
+    let replay_guard = lock.lock().await;
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    let set = tokio::spawn(async move {
+        coordinator
+            .handle_set_param(
+                dataflow_id,
+                node_id,
+                "gain".to_string(),
+                serde_json::json!(2),
+                reply_tx,
+            )
+            .await
+            .unwrap();
+        coordinator
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!set.is_finished(), "set must wait for the replay's lock");
+    assert_eq!(
+        store
+            .get_node_param(&dataflow_id, &"sender".to_string().into(), "gain")
+            .unwrap(),
+        None,
+        "set must not persist while a replay is queuing"
+    );
+
+    drop(replay_guard);
+    let coordinator = tokio::time::timeout(Duration::from_secs(10), set)
+        .await
+        .expect("set did not finish")
+        .unwrap();
+    reply_rx.await.unwrap().expect("set is applied");
+    drop(coordinator);
+    let seen = tokio::time::timeout(Duration::from_secs(10), daemon_task)
+        .await
+        .expect("daemon task did not finish")
+        .unwrap();
+    assert_eq!(seen, vec![("gain".to_string(), serde_json::json!(2))]);
+}
+
+/// Runs a `dora param set` (or `delete`) against a daemon that never
+/// answers, and checks that the handler frees the connection's lock once the
+/// forward is queued. Held while waiting for the reply, a slow daemon would
+/// stall every replay to it, and the `set` itself runs on the event loop.
+async fn assert_param_write_releases_lock_while_waiting(delete: bool) {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+    let one = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &one)
+        .unwrap();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection = crate::state::DaemonConnection::new(tx, pending_replies, BTreeMap::new());
+    let lock = connection.param_write_lock.clone();
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), connection);
+
+    let df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        daemon_connections,
+        store,
+    );
+
+    let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+    let write = tokio::spawn(async move {
+        if delete {
+            coordinator
+                .handle_delete_param(dataflow_id, node_id, "gain".to_string(), reply_tx)
+                .await
+        } else {
+            coordinator
+                .handle_set_param(
+                    dataflow_id,
+                    node_id,
+                    "gain".to_string(),
+                    serde_json::json!(2),
+                    reply_tx,
+                )
+                .await
+        }
+    });
+
+    // The daemon receives the forward but never answers it.
+    tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("handler did not forward the change")
+        .expect("connection closed");
+    let _replay_guard = tokio::time::timeout(Duration::from_secs(10), lock.lock())
+        .await
+        .expect("handler must release the lock before waiting for the reply");
+    assert!(
+        !write.is_finished(),
+        "handler is still waiting for the reply"
+    );
+    write.abort();
+}
+
+#[tokio::test]
+async fn param_set_releases_param_write_lock_while_waiting_for_the_daemon() {
+    assert_param_write_releases_lock_while_waiting(false).await;
+}
+
+#[tokio::test]
+async fn param_delete_releases_param_write_lock_while_waiting_for_the_daemon() {
+    assert_param_write_releases_lock_while_waiting(true).await;
 }
 
 #[tokio::test]
@@ -1754,66 +2609,181 @@ async fn replay_reports_failure_when_daemon_rejects_param() {
         .unwrap();
 }
 
-#[tokio::test]
-async fn fallback_replay_keeps_ack_unchanged_when_daemon_is_disconnected() {
-    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
-    let dataflow_id = DataflowId::from(Uuid::new_v4());
-    let daemon_id = DaemonId::new(Some("m1".to_string()));
-    let node_id: dora_core::config::NodeId = "camera".to_string().into();
-
-    let value_bytes = serde_json::to_vec(&serde_json::json!(1)).unwrap();
-    store
-        .put_node_param(&dataflow_id, &node_id, "threshold", &value_bytes)
-        .unwrap();
-
-    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
+/// A dataflow whose state log was pruned past `daemon_id`'s ack of 3.
+fn dataflow_with_pruned_log(
+    dataflow_id: DataflowId,
+    daemon_id: &DaemonId,
+    node_id: &NodeId,
+) -> RunningDataflow {
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+    dataflow.ready_barrier_released = true;
     dataflow.state_log_sequence = 10;
     dataflow.daemon_ack_sequence.insert(daemon_id.clone(), 3);
-
-    let mut daemon_connections = DaemonConnections::default();
-    handle_pruned_state_catchup_fallback(
-        dataflow_id,
-        &mut dataflow,
-        &daemon_id,
-        store,
-        &mut daemon_connections,
-        Arc::new(HLC::default()),
-        Instant::now(),
-    )
-    .await;
-
-    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&3));
-    assert!(!dataflow.last_replay_attempt.contains_key(&daemon_id));
+    assert!(dataflow.state_log_delta_for_daemon(3, daemon_id).is_none());
+    dataflow
 }
 
-#[tokio::test]
-async fn fallback_replay_respects_backoff_window() {
+#[test]
+fn pruned_catch_up_keeps_ack_when_daemon_is_disconnected() {
     let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
     let dataflow_id = DataflowId::from(Uuid::new_v4());
     let daemon_id = DaemonId::new(Some("m1".to_string()));
-    let node_id: dora_core::config::NodeId = "camera".to_string().into();
+    let node_id: NodeId = "camera".to_string().into();
+    let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
 
-    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
-    dataflow.state_log_sequence = 8;
-    dataflow.daemon_ack_sequence.insert(daemon_id.clone(), 2);
-    dataflow
-        .last_replay_attempt
-        .insert(daemon_id.clone(), Instant::now());
-
-    let mut daemon_connections = DaemonConnections::default();
-    handle_pruned_state_catchup_fallback(
+    catch_up_daemon_behind_pruned_log(
         dataflow_id,
         &mut dataflow,
         &daemon_id,
-        store,
-        &mut daemon_connections,
-        Arc::new(HLC::default()),
-        Instant::now(),
-    )
-    .await;
+        false,
+        &DaemonConnections::default(),
+        &store,
+        &Arc::new(HLC::default()),
+    );
 
-    // No replay attempted while backoff is active, so ack remains unchanged.
-    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&2));
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&3));
+}
+
+/// #3684: the ready-barrier replay of the same status report already sends
+/// every persisted param, so the pruned-log catch-up must not send them a
+/// second time, and must not wait for that replay on the event loop.
+#[tokio::test]
+async fn pruned_catch_up_reuses_the_ready_barrier_replay() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "camera".to_string().into();
+    let value = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &value)
+        .unwrap();
+    let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(
+        daemon_id.clone(),
+        crate::state::DaemonConnection::new(tx, pending_replies, BTreeMap::new()),
+    );
+
+    catch_up_daemon_behind_pruned_log(
+        dataflow_id,
+        &mut dataflow,
+        &daemon_id,
+        true,
+        &daemon_connections,
+        &store,
+        &Arc::new(HLC::default()),
+    );
+
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&10));
+    tokio::task::yield_now().await;
+    assert!(rx.try_recv().is_err(), "no second replay");
+}
+
+#[test]
+fn pruned_catch_up_before_barrier_release_leaves_the_replay_to_the_release() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "camera".to_string().into();
+    let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
+    dataflow.ready_barrier_released = false;
+
+    catch_up_daemon_behind_pruned_log(
+        dataflow_id,
+        &mut dataflow,
+        &daemon_id,
+        false,
+        &DaemonConnections::default(),
+        &store,
+        &Arc::new(HLC::default()),
+    );
+
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&10));
+}
+
+/// #3684: when nothing else replays the params to the daemon, the catch-up
+/// starts a replay itself, in the background: an unresponsive daemon must not
+/// stall the coordinator's event loop.
+#[tokio::test]
+async fn pruned_catch_up_replays_in_the_background_when_nothing_else_does() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "camera".to_string().into();
+    let value = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &value)
+        .unwrap();
+    let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
+
+    // The daemon never answers.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(
+        daemon_id.clone(),
+        crate::state::DaemonConnection::new(tx, pending_replies, BTreeMap::new()),
+    );
+
+    catch_up_daemon_behind_pruned_log(
+        dataflow_id,
+        &mut dataflow,
+        &daemon_id,
+        false,
+        &daemon_connections,
+        &store,
+        &Arc::new(HLC::default()),
+    );
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&10));
+
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+    let outbound = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("replay did not send the param")
+        .expect("connection closed");
+    let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+    assert!(matches!(
+        outbound.params.inner,
+        DaemonCoordinatorEvent::SetParam { key, .. } if key == "gain"
+    ));
+}
+
+/// After the pruned-log catch-up, a `dora param set` that the daemon applies
+/// advances its ack like on any other daemon, so it neither stays behind nor
+/// holds back log pruning for the dataflow. Acking only when a background
+/// replay finished would leave a set applied meanwhile unacked forever.
+#[test]
+fn param_set_after_pruned_catch_up_is_acked_and_pruned() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: NodeId = "camera".to_string().into();
+    let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
+
+    catch_up_daemon_behind_pruned_log(
+        dataflow_id,
+        &mut dataflow,
+        &daemon_id,
+        true,
+        &DaemonConnections::default(),
+        &store,
+        &Arc::new(HLC::default()),
+    );
+    let sequence = dataflow.append_state_log(StateCatchUpOperation::SetParam {
+        node_id,
+        key: "gain".to_string(),
+        value: serde_json::json!(2),
+    });
+    dataflow.ack_applied_state_log_entry(sequence, &daemon_id);
+
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&11));
+    assert!(dataflow.state_log.is_empty());
 }
 
 #[tokio::test]
@@ -1879,7 +2849,7 @@ async fn ready_boundary_schedules_replay_for_daemon_nodes() {
     schedule_param_replay_for_ready_dataflow(
         dataflow_id,
         &running_dataflow,
-        &mut daemon_connections,
+        &daemon_connections,
         store,
         Arc::new(HLC::default()),
     );
@@ -2093,6 +3063,241 @@ async fn start_topic_debug_stream_rolls_back_on_daemon_error() {
     for task in daemon_tasks {
         task.abort();
     }
+}
+
+/// #3722: an unreachable daemon during rollback must neither stop the
+/// remaining daemons from getting their stop, nor replace the daemon's
+/// original reason for rejecting the subscription.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn start_topic_debug_stream_rollback_reaches_every_started_daemon() {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        id: String,
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    enum Behavior {
+        RejectStart,
+        DropStartReply,
+        DropStopReply,
+        Accept,
+    }
+
+    let dataflow_id = Uuid::new_v4();
+    let data_id: dora_core::config::DataId = "message".to_string().into();
+    let (frame_tx, _frame_rx) =
+        tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+
+    // Daemons are visited in `DaemonId` order, so `daemon-b` (whose stop
+    // fails) comes before `daemon-c` (which must still get one). `daemon-d`
+    // may have started streaming although its start reply got lost.
+    let daemons = [
+        ("daemon-a", "sender", Behavior::RejectStart),
+        ("daemon-b", "relay", Behavior::DropStopReply),
+        ("daemon-c", "sink", Behavior::Accept),
+        ("daemon-d", "logger", Behavior::DropStartReply),
+    ];
+
+    let mut daemon_connections = DaemonConnections::default();
+    let mut daemon_tasks = Vec::new();
+    let stopped_daemons = Arc::new(std::sync::Mutex::new(BTreeSet::new()));
+    let mut node_daemons = Vec::new();
+    for (name, node, behavior) in daemons {
+        let daemon_id = DaemonId::new(Some(name.to_string()));
+        node_daemons.push((
+            dora_message::id::NodeId::from(node.to_string()),
+            daemon_id.clone(),
+        ));
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let connection =
+            crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+        daemon_connections.add(daemon_id, connection);
+
+        let stopped_daemons = stopped_daemons.clone();
+        daemon_tasks.push(tokio::spawn(async move {
+            while let Some(outbound) = rx.recv().await {
+                let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+                let request_id = Uuid::parse_str(&outbound_raw.id).expect("valid request id");
+                let reply_tx = pending_replies
+                    .lock()
+                    .await
+                    .remove(&request_id)
+                    .expect("pending reply sender should exist");
+                let reply = match outbound_raw.params.inner {
+                    DaemonCoordinatorEvent::StartTopicDebugStream { .. } => {
+                        if behavior == Behavior::DropStartReply {
+                            continue;
+                        }
+                        DaemonCoordinatorReply::StartTopicDebugStreamResult(
+                            if behavior == Behavior::RejectStart {
+                                Err("daemon rejected debug stream".to_string())
+                            } else {
+                                Ok(())
+                            },
+                        )
+                    }
+                    DaemonCoordinatorEvent::StopTopicDebugStream { .. } => {
+                        match behavior {
+                            // Dropping the reply sender fails the coordinator's
+                            // `send_and_receive` like a closed connection does.
+                            Behavior::DropStopReply => continue,
+                            Behavior::Accept | Behavior::DropStartReply => {
+                                stopped_daemons.lock().unwrap().insert(name);
+                            }
+                            Behavior::RejectStart => {
+                                panic!("a daemon that rejected the start must not be stopped")
+                            }
+                        }
+                        DaemonCoordinatorReply::StopTopicDebugStreamResult(Ok(()))
+                    }
+                    other => panic!("unexpected daemon event during rollback test: {other:?}"),
+                };
+                let _ = reply_tx.send(serde_json::to_string(&reply).unwrap());
+            }
+        }));
+    }
+
+    let mut running_dataflows = HashMap::new();
+    let (first_node, first_daemon) = node_daemons[0].clone();
+    let mut dataflow = test_running_dataflow(dataflow_id, first_daemon, first_node);
+    dataflow.descriptor.debug.enable_debug_inspection = true;
+    let mut descriptor_json = serde_json::to_value(&dataflow.descriptor).unwrap();
+    let nodes = descriptor_json
+        .get_mut("nodes")
+        .and_then(serde_json::Value::as_array_mut)
+        .expect("descriptor nodes array");
+    for (node_id, daemon_id) in &node_daemons[1..] {
+        dataflow
+            .node_to_daemon
+            .insert(node_id.clone(), daemon_id.clone());
+        nodes.push(serde_json::json!({
+            "id": node_id,
+            "path": node_id,
+            "outputs": [data_id.clone()],
+        }));
+    }
+    dataflow.descriptor = serde_json::from_value(descriptor_json).unwrap();
+    dataflow.nodes = dataflow
+        .descriptor
+        .resolve_aliases_and_set_defaults()
+        .expect("test descriptor should resolve");
+    running_dataflows.insert(dataflow_id, dataflow);
+
+    let err = start_topic_debug_stream(
+        &mut running_dataflows,
+        &mut daemon_connections,
+        dataflow_id,
+        node_daemons
+            .iter()
+            .map(|(node_id, _)| (node_id.clone(), data_id.clone()))
+            .collect(),
+        frame_tx,
+        &HLC::default(),
+    )
+    .await
+    .expect_err("subscription should fail");
+
+    assert!(
+        format!("{err:#}").contains("daemon rejected debug stream"),
+        "the daemon's rejection must be returned, got: {err:#}"
+    );
+    // The rollback stops are sent from a spawned task.
+    let expected = BTreeSet::from(["daemon-c", "daemon-d"]);
+    let stopped = timeout(TokioDuration::from_secs(10), async {
+        while *stopped_daemons.lock().unwrap() != expected {
+            tokio::time::sleep(TokioDuration::from_millis(5)).await;
+        }
+    })
+    .await;
+    assert!(
+        stopped.is_ok(),
+        "daemon-c must be stopped even though daemon-b's stop failed, and \
+         daemon-d although its start reply got lost; stopped: {:?}",
+        stopped_daemons.lock().unwrap()
+    );
+    assert!(running_dataflows[&dataflow_id].topic_subscribers.is_empty());
+
+    for task in daemon_tasks {
+        task.abort();
+    }
+}
+
+/// #3723: `TopicUnsubscribe` runs inside the serial event loop, and the
+/// daemon may not answer the stop while it is still flooding the coordinator
+/// with frames. The unsubscribe must return with the subscriber removed and
+/// the stop in flight, instead of waiting up to `TCP_READ_TIMEOUT` for the
+/// reply.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn stop_topic_debug_stream_does_not_wait_for_daemon_reply() {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "sender".to_string().into();
+    let data_id: dora_core::config::DataId = "message".to_string().into();
+    let subscription_id = Uuid::new_v4();
+
+    // The daemon never answers: nothing ever takes the reply sender out of
+    // `pending_replies`.
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), connection);
+
+    let mut running_dataflows = HashMap::new();
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+    let (frame_tx, _frame_rx) =
+        tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    let mut outputs_by_daemon = BTreeMap::new();
+    outputs_by_daemon.insert(daemon_id, vec![(node_id, data_id)]);
+    dataflow.topic_subscribers.insert(
+        subscription_id,
+        crate::topic_subscriber::TopicSubscriber::new(outputs_by_daemon, frame_tx),
+    );
+    running_dataflows.insert(dataflow_id, dataflow);
+
+    let started = tokio::time::Instant::now();
+    stop_topic_debug_stream(
+        &mut running_dataflows,
+        &mut daemon_connections,
+        subscription_id,
+        &HLC::default(),
+    )
+    .expect("unsubscribe should succeed");
+    assert!(
+        running_dataflows[&dataflow_id].topic_subscribers.is_empty(),
+        "the subscriber must be removed right away"
+    );
+
+    // The stop still reaches the daemon, from the spawned task.
+    let outbound = rx.recv().await.expect("daemon should receive the stop");
+    let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+    match outbound_raw.params.inner {
+        DaemonCoordinatorEvent::StopTopicDebugStream {
+            dataflow_id: stop_df,
+            subscription_id: stop_sub,
+        } => {
+            assert_eq!(stop_df, dataflow_id);
+            assert_eq!(stop_sub, subscription_id);
+        }
+        other => panic!("unexpected event on unsubscribe: {other:?}"),
+    }
+    assert!(
+        started.elapsed() < dora_message::TCP_READ_TIMEOUT,
+        "unsubscribe must not wait for the daemon's reply"
+    );
+    assert_eq!(
+        pending_replies.lock().await.len(),
+        1,
+        "the stop's reply should still be outstanding"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -2426,6 +3631,44 @@ fn state_log_prune_ignores_disconnected_daemon_ack() {
     );
     // A caller already at the high-water mark is genuinely caught up.
     assert!(matches!(df.state_log_delta(5), Some(entries) if entries.is_empty()));
+}
+
+// The state log is dataflow-wide, but a reconnecting daemon stops replaying
+// at the first entry for a node it has no channel for. Entries for another
+// daemon's node (or a removed node) must not be sent to it, or they block
+// every later entry for its own nodes on every reconnect.
+#[test]
+fn state_log_delta_for_daemon_keeps_only_its_own_nodes() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let d1 = DaemonId::new(Some("m1".to_string()));
+    let d2 = DaemonId::new(Some("m2".to_string()));
+    let node_a: dora_core::config::NodeId = "a".to_string().into();
+    let node_b: dora_core::config::NodeId = "b".to_string().into();
+    let removed: dora_core::config::NodeId = "removed".to_string().into();
+
+    let mut df = test_running_dataflow(dataflow_id, d1.clone(), node_a.clone());
+    df.daemons.insert(d2.clone());
+    df.node_to_daemon.insert(node_b.clone(), d2.clone());
+
+    for node_id in [&node_b, &removed, &node_a] {
+        df.append_state_log(StateCatchUpOperation::SetParam {
+            node_id: node_id.clone(),
+            key: "k".to_string(),
+            value: serde_json::json!(1),
+        });
+    }
+
+    let for_d1 = df.state_log_delta_for_daemon(0, &d1).expect("not pruned");
+    assert_eq!(for_d1.len(), 1);
+    assert_eq!(for_d1[0].sequence, 3);
+
+    let for_d2 = df.state_log_delta_for_daemon(0, &d2).expect("not pruned");
+    assert_eq!(for_d2.len(), 1);
+    assert_eq!(for_d2[0].sequence, 1);
+
+    // Nothing after seq 1 targets d2: an empty delta, not a pruned one.
+    let for_d2 = df.state_log_delta_for_daemon(1, &d2).expect("not pruned");
+    assert!(for_d2.is_empty());
 }
 
 #[test]
@@ -3400,6 +4643,7 @@ async fn async_partial_spawn_failure_rolls_back_started_daemon() {
                 .expect("valid descriptor"),
             name: None,
             uv: false,
+            launch: crate::state::LaunchContext::unknown(),
             reply_sender: restart_tx,
         },
     );
@@ -4269,6 +5513,8 @@ fn archived_dataflows_predicate_distinguishes_watchdog_failed_from_unknown() {
         ArchivedDataflow {
             name: Some("flagged".to_string()),
             nodes: BTreeMap::new(),
+            node_to_daemon: BTreeMap::new(),
+            spawn_error: None,
         },
     );
 
@@ -4828,6 +6074,7 @@ fn cleanup_disconnected_daemons_drains_pending_restarts() {
             descriptor,
             name: None,
             uv: false,
+            launch: crate::state::LaunchContext::unknown(),
             reply_sender: tx,
         },
     );
@@ -4855,6 +6102,174 @@ fn cleanup_disconnected_daemons_drains_pending_restarts() {
     );
 }
 
+/// `dora restart` must relaunch with the original launch context. The
+/// replacement used to be spawned with no working dir, a fresh session and
+/// no build, so the daemon ran it in `_work/<new session>`: relative node
+/// paths stopped resolving and built nodes lost their build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn restart_relaunches_with_the_original_launch_context() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    // Unnamed, so nodes without a `deploy` block resolve to it.
+    let daemon_id = DaemonId::new(None);
+
+    // A daemon that acks every request and records each `Spawn` it gets.
+    let spawns = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let pending: Arc<tokio::sync::Mutex<HashMap<Uuid, tokio::sync::oneshot::Sender<String>>>> =
+        Default::default();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let conn = crate::state::DaemonConnection::new(tx, pending.clone(), BTreeMap::new());
+    let spawns_task = spawns.clone();
+    tokio::spawn(async move {
+        #[derive(serde::Deserialize)]
+        struct OutboundRaw {
+            id: Uuid,
+            params: Timestamped<DaemonCoordinatorEvent>,
+        }
+        while let Some(outbound) = rx.recv().await {
+            let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            let reply = match outbound.params.inner {
+                DaemonCoordinatorEvent::Spawn(spawn) => {
+                    spawns_task.lock().await.push(spawn);
+                    DaemonCoordinatorReply::TriggerSpawnResult(Ok(()))
+                }
+                DaemonCoordinatorEvent::StopDataflow { .. } => {
+                    DaemonCoordinatorReply::StopResult(Ok(()))
+                }
+                other => panic!("unexpected event: {other:?}"),
+            };
+            if let Some(sender) = pending.lock().await.remove(&outbound.id) {
+                let _ = sender.send(serde_json::to_string(&reply).unwrap());
+            }
+        }
+    });
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), conn);
+
+    let launch = crate::state::LaunchContext {
+        build_id: Some(BuildId::generate()),
+        session_id: dora_message::SessionId::generate(),
+        local_working_dir: Some("/home/user/project".into()),
+        write_events_to: Some("/home/user/events".into()),
+    };
+    let mut df = test_running_dataflow(dataflow_id, daemon_id, "sender".to_string().into());
+    df.launch = launch.clone();
+    let mut running_dataflows = HashMap::new();
+    running_dataflows.insert(dataflow_id, df);
+
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let clock = Arc::new(HLC::default());
+    let mut pending_restarts = HashMap::new();
+    let (reply_tx, _reply_rx) = tokio::sync::oneshot::channel();
+    initiate_restart(
+        dataflow_id,
+        None,
+        false,
+        &mut running_dataflows,
+        &mut pending_restarts,
+        &mut daemon_connections,
+        &clock,
+        store.as_ref(),
+        reply_tx,
+    )
+    .await;
+
+    // What the event loop does once every daemon reports the old one done.
+    let restart = pending_restarts
+        .remove(&dataflow_id)
+        .expect("restart should be pending");
+    let new_dataflow = crate::handlers::start_dataflow(
+        restart.descriptor,
+        restart.launch,
+        restart.name,
+        &mut daemon_connections,
+        &clock,
+        restart.uv,
+    )
+    .await
+    .expect("restart spawn should succeed");
+
+    let spawns = spawns.lock().await;
+    let [spawn] = spawns.as_slice() else {
+        panic!("expected exactly one spawn, got {}", spawns.len());
+    };
+    assert_eq!(spawn.local_working_dir, launch.local_working_dir);
+    assert_eq!(spawn.session_id, launch.session_id);
+    assert_eq!(spawn.build_id, launch.build_id);
+    assert_eq!(spawn.write_events_to, launch.write_events_to);
+    // ... and kept on the replacement, so a second restart works too.
+    assert_eq!(new_dataflow.launch, launch);
+}
+
+/// Auto-recovery re-spawns a dataflow on a daemon that reconnects without
+/// reporting it. The re-spawn reuses the dataflow's UUID, so it must also
+/// reuse its launch context: with a fresh session and no working dir, the
+/// daemon ran the re-spawned nodes in a different `_work/<session>` dir
+/// than the rest of the dataflow, without its build.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn auto_recovery_respawns_with_the_original_launch_context() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(None);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let conn = crate::state::DaemonConnection::new(tx, Default::default(), BTreeMap::new());
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), conn);
+
+    let launch = crate::state::LaunchContext {
+        build_id: Some(BuildId::generate()),
+        session_id: dora_message::SessionId::generate(),
+        local_working_dir: Some("/home/user/project".into()),
+        write_events_to: Some("/home/user/events".into()),
+    };
+    let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+    df.launch = launch.clone();
+    let mut running_dataflows = HashMap::new();
+    running_dataflows.insert(dataflow_id, df);
+
+    let mut coordinator = Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows,
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections,
+        clock: Arc::new(HLC::default()),
+        store: Arc::new(InMemoryStore::new()),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    };
+
+    // The daemon reconnects reporting no running dataflows.
+    coordinator
+        .handle_daemon_status_report(daemon_id, vec![])
+        .await
+        .expect("status report should be handled");
+
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+    let mut spawns = Vec::new();
+    while let Ok(outbound) = rx.try_recv() {
+        let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+        if let DaemonCoordinatorEvent::Spawn(spawn) = outbound.params.inner {
+            spawns.push(spawn);
+        }
+    }
+    let [spawn] = spawns.as_slice() else {
+        panic!("expected exactly one re-spawn, got {}", spawns.len());
+    };
+    assert_eq!(spawn.dataflow_id, dataflow_id);
+    assert_eq!(spawn.local_working_dir, launch.local_working_dir);
+    assert_eq!(spawn.session_id, launch.session_id);
+    assert_eq!(spawn.build_id, launch.build_id);
+    assert_eq!(spawn.write_events_to, launch.write_events_to);
+}
+
 #[tokio::test]
 async fn initiate_restart_rejects_duplicate_request() {
     let dataflow_id = DataflowId::from(Uuid::new_v4());
@@ -4878,6 +6293,7 @@ async fn initiate_restart_rejects_duplicate_request() {
             descriptor: descriptor.clone(),
             name: None,
             uv: false,
+            launch: crate::state::LaunchContext::unknown(),
             reply_sender: existing_tx,
         },
     );
@@ -4916,4 +6332,190 @@ async fn initiate_restart_rejects_duplicate_request() {
         1,
         "original PendingRestart must not be overwritten by duplicate"
     );
+}
+
+/// `dora node add` / `remove` / `replace` change the running descriptor, and
+/// a coordinator restarted on a persistent store rebuilds `nodes` from the
+/// stored `descriptor_json` (`reestablish_running_dataflow`). So each change
+/// has to reach the store, or the restarted coordinator forgets an added
+/// node (dropping it from `dora node list` and topic echo/publish) and
+/// resurrects a removed one. The stored status must be left as it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn node_topology_changes_are_persisted() {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        id: String,
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(None);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let conn = crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id.clone(), conn);
+
+    // A daemon that accepts every topology change.
+    let daemon_task = tokio::spawn(async move {
+        while let Some(outbound) = rx.recv().await {
+            let raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            let reply = match raw.params.inner {
+                DaemonCoordinatorEvent::AddNode { .. } => {
+                    DaemonCoordinatorReply::AddNodeResult(Ok(()))
+                }
+                DaemonCoordinatorEvent::RemoveNode { .. } => {
+                    DaemonCoordinatorReply::RemoveNodeResult(Ok(()))
+                }
+                DaemonCoordinatorEvent::ReplaceNode { .. } => {
+                    DaemonCoordinatorReply::ReplaceNodeResult(Ok(()))
+                }
+                other => panic!("unexpected daemon event {other:?}"),
+            };
+            let request_id = Uuid::parse_str(&raw.id).expect("valid request id");
+            if let Some(reply_tx) = pending_replies.lock().await.remove(&request_id) {
+                let _ = reply_tx.send(serde_json::to_string(&reply).unwrap());
+            }
+        }
+    });
+
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let mut df = test_running_dataflow(dataflow_id, daemon_id, "sender".to_string().into());
+    store
+        .put_dataflow(&df.make_record(StoreDataflowStatus::Running).unwrap())
+        .unwrap();
+    let mut running_dataflows = HashMap::new();
+    running_dataflows.insert(dataflow_id, df);
+
+    let mut coordinator = Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows,
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections,
+        clock: Arc::new(HLC::default()),
+        store: store.clone(),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    };
+
+    let stored_nodes = || {
+        let record = store.get_dataflow(&dataflow_id).unwrap().expect("record");
+        assert_eq!(record.status, StoreDataflowStatus::Running);
+        let descriptor: Descriptor = serde_json::from_str(&record.descriptor_json).unwrap();
+        descriptor
+            .nodes
+            .iter()
+            .map(|n| (n.id.to_string(), n.path.clone()))
+            .collect::<Vec<_>>()
+    };
+    let node = |id: &str, path: &str| -> dora_message::descriptor::Node {
+        serde_json::from_value(serde_json::json!({ "id": id, "path": path })).unwrap()
+    };
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_add_node(dataflow_id, node("extra", "extra-v1"), reply_tx)
+        .await
+        .unwrap();
+    reply_rx.await.unwrap().expect("add should succeed");
+    assert_eq!(
+        stored_nodes(),
+        [
+            ("sender".to_string(), Some("sender".to_string())),
+            ("extra".to_string(), Some("extra-v1".to_string()))
+        ]
+    );
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_replace_node(dataflow_id, node("extra", "extra-v2"), None, reply_tx)
+        .await
+        .unwrap();
+    reply_rx.await.unwrap().expect("replace should succeed");
+    assert_eq!(
+        stored_nodes(),
+        [
+            ("sender".to_string(), Some("sender".to_string())),
+            ("extra".to_string(), Some("extra-v2".to_string()))
+        ]
+    );
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_remove_node(dataflow_id, "extra".to_string().into(), None, reply_tx)
+        .await
+        .unwrap();
+    reply_rx.await.unwrap().expect("remove should succeed");
+    assert_eq!(
+        stored_nodes(),
+        [("sender".to_string(), Some("sender".to_string()))]
+    );
+
+    drop(coordinator);
+    daemon_task.await.unwrap();
+}
+
+/// `dora clean` must leave a dataflow alone while it waits for a daemon to
+/// reconnect. Once one daemon of a multi-daemon dataflow has finished, the
+/// dataflow has partial `dataflow_results`; if the remaining daemon then drops
+/// off, the orphan reclaim removes it from `running_dataflows` and persists
+/// `Recovering`. `clean` used to take the partial results for a finished
+/// dataflow and delete the stored record, so the reconnecting daemon found
+/// nothing to reconcile and its nodes kept running unmanaged.
+#[tokio::test]
+async fn clean_keeps_a_dataflow_awaiting_reclaim() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let finished_daemon = DaemonId::new(Some("a".to_string()));
+    let remaining_daemon = DaemonId::new(Some("b".to_string()));
+    let df = test_running_dataflow(dataflow_id, remaining_daemon, "sender".to_string().into());
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        Default::default(),
+        store.clone(),
+    );
+    coordinator.dataflow_results.insert(
+        dataflow_id,
+        BTreeMap::from([(
+            finished_daemon,
+            DataflowDaemonResult {
+                timestamp: coordinator.clock.new_timestamp(),
+                node_results: BTreeMap::new(),
+            },
+        )]),
+    );
+    crate::daemon_liveness::begin_orphaned_dataflow_reclaim(
+        dataflow_id,
+        &mut coordinator.running_dataflows,
+        &coordinator.clock,
+        store.as_ref(),
+    )
+    .await;
+    assert!(matches!(
+        store.get_dataflow(&dataflow_id).unwrap().map(|r| r.status),
+        Some(StoreDataflowStatus::Recovering)
+    ));
+
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator.handle_clean(reply_sender).await.unwrap();
+    let Ok(ControlRequestReply::CleanResult { cleaned, failed }) = reply.await.unwrap() else {
+        panic!("expected a clean result");
+    };
+    assert!(failed.is_empty());
+    assert!(
+        cleaned.0.iter().all(|entry| entry.id.uuid != dataflow_id),
+        "a dataflow awaiting reclaim must not be cleaned: {cleaned:?}"
+    );
+    assert!(
+        store.get_dataflow(&dataflow_id).unwrap().is_some(),
+        "the Recovering record must survive `dora clean`"
+    );
+    assert!(coordinator.dataflow_results.contains_key(&dataflow_id));
 }

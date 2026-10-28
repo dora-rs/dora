@@ -9,26 +9,31 @@ use glob::glob;
 use super::{action::parse_action_file, message::parse_message_file, service::parse_service_file};
 use crate::types::Package;
 
-fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Package>> {
+fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs_in: &[P]) -> Result<Vec<Package>> {
     let mut map: HashMap<String, Package> = HashMap::new();
 
     let ros_formats = ["msg", "srv", "action"];
 
-    // Return empty vector if root_dir is empty
-    for root_dir in root_dirs {
-        if root_dir.as_ref() == Path::new("") {
-            let empty_vec: Vec<Package> = vec![];
-            println!("cargo::warning=AMENT_PREFIX_PATH pointed to ''");
-            return Ok(empty_vec);
+    // An empty entry, as a leading, trailing or doubled `:` in
+    // AMENT_PREFIX_PATH leaves, names no prefix. Skip it rather than
+    // discarding the packages found under the other entries. A prefix listed
+    // twice is scanned once: its packages would otherwise pass the
+    // first-prefix check below and have every message parsed twice.
+    let mut root_dirs: Vec<&Path> = Vec::new();
+    for root_dir in root_dirs_in.iter().map(AsRef::as_ref) {
+        if root_dir != Path::new("") && !root_dirs.contains(&root_dir) {
+            root_dirs.push(root_dir);
         }
+    }
+    if root_dirs.is_empty() {
+        println!("cargo::warning=AMENT_PREFIX_PATH pointed to ''");
+        return Ok(Vec::new());
+    }
 
+    for root_dir in root_dirs {
         for ros_format in ros_formats.iter() {
-            let pattern = root_dir.as_ref().to_string_lossy().to_string()
-                + "/**/"
-                + ros_format
-                + "/*."
-                + ros_format;
-            let mut visited_files = vec![];
+            let pattern =
+                root_dir.to_string_lossy().to_string() + "/**/" + ros_format + "/*." + ros_format;
             for entry in glob(&pattern).context("Failed to read glob pattern")? {
                 let path = entry.context("Could not glob given path")?;
                 let file_name = path
@@ -54,20 +59,26 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
                 // Hack
                 if file_name == "libstatistics_collector" {
                     continue;
-                } else if visited_files.contains(&(package.clone(), file_name.clone())) {
+                }
+                // Each `Package` keeps the directory it was first found in.
+                // AMENT_PREFIX_PATH lists overlays before underlays, so the
+                // first copy of a package shadows every later one, as it does
+                // in ROS itself. Without this, a package rebuilt in an overlay
+                // and also installed in `/opt/ros/<distro>` was parsed from
+                // both prefixes into one `Package`, holding each message
+                // twice, and the generated bindings defined every struct twice.
+                let p = map.entry(package.clone()).or_insert_with(|| {
+                    let mut p = Package::new(package.clone());
+                    p.path = package_path.to_owned();
+                    p
+                });
+                if p.path != package_path {
                     println!(
                         "cargo::warning=found two versions of package: {:?}, message: {:?}. will skip the one in: {:#?}",
                         package, file_name, path
                     );
                     continue;
-                } else {
-                    visited_files.push((package.clone(), file_name.clone()));
                 }
-
-                let p = map
-                    .entry(package.clone())
-                    .or_insert_with(|| Package::new(package.clone()));
-                p.path = PathBuf::from(package_path);
 
                 match *ros_format {
                     "msg" => {
@@ -108,20 +119,10 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
     }
 
     // flatten the dependencies
-    let dependencies = {
-        let mut flattened_dependencies = HashMap::<String, BTreeSet<String>>::new();
-        let mut unfinished_set: BTreeSet<String> = dependencies.keys().cloned().collect();
-        // recursively flatten the dependencies
-        while let Some(first) = unfinished_set.first().cloned() {
-            flatten_dependencies(
-                &first,
-                &dependencies,
-                &mut flattened_dependencies,
-                &mut unfinished_set,
-            );
-        }
-        flattened_dependencies
-    };
+    let dependencies: HashMap<String, BTreeSet<String>> = dependencies
+        .keys()
+        .map(|name| (name.clone(), transitive_dependencies(name, &dependencies)))
+        .collect();
 
     for package in &mut packages {
         package.dependencies = dependencies
@@ -135,36 +136,34 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
     Ok(packages)
 }
 
-/// Flatten the dependencies of packages recursively.
-/// The name is the name of the package to expand.
-/// The dependencies is the dependency trees of the packages with its direct dependencies.
-/// flattened_dependencies records the flattened dependencies of the packages.
-/// finished_set is the set of names of packages that have been finished.
-fn flatten_dependencies(
+/// Every package `name` depends on, directly or indirectly, given each
+/// package's direct dependencies. Walks the graph with a visited set, so a
+/// dependency cycle (legal for `exec_depend`) terminates, and a package is
+/// never its own dependency.
+fn transitive_dependencies(
     name: &str,
     dependencies: &HashMap<String, BTreeSet<String>>,
-    flattened_dependencies: &mut HashMap<String, BTreeSet<String>>,
-    unfinished_set: &mut BTreeSet<String>,
 ) -> BTreeSet<String> {
-    if let Some(add_deps) = flattened_dependencies.get(name) {
-        return add_deps.clone();
-    }
-
-    let mut add_deps = BTreeSet::new();
-    let direct_deps: BTreeSet<String> = dependencies.get(name).unwrap().iter().cloned().collect();
-    for dep_name in &direct_deps {
-        let indirect_deps = flatten_dependencies(
-            dep_name,
-            dependencies,
-            flattened_dependencies,
-            unfinished_set,
+    let mut found = BTreeSet::new();
+    let mut pending: Vec<&str> = dependencies
+        .get(name)
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    while let Some(dep) = pending.pop() {
+        if dep == name || !found.insert(dep.to_owned()) {
+            continue;
+        }
+        pending.extend(
+            dependencies
+                .get(dep)
+                .into_iter()
+                .flatten()
+                .map(String::as_str),
         );
-        add_deps.extend(indirect_deps);
     }
-    add_deps.extend(direct_deps);
-    flattened_dependencies.insert(name.to_string(), add_deps.clone());
-    unfinished_set.remove(name);
-    add_deps
+    found
 }
 
 pub fn get_packages<P>(paths: &[P]) -> Result<Vec<Package>>
@@ -225,4 +224,109 @@ fn parse_dependencies(path: PathBuf) -> Result<BTreeSet<String>> {
         buf.clear(); // Clear the buffer for the next event
     }
     Ok(deps)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::get_ros_msgs_each_package;
+
+    /// An ament prefix with one message per package and the given
+    /// `<depend>`s, under a fresh temp directory.
+    fn prefix(test: &str, packages: &[(&str, &[&str])]) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("dora-msg-gen-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (name, deps) in packages {
+            let package = root.join("share").join(name);
+            std::fs::create_dir_all(package.join("msg")).unwrap();
+            std::fs::write(package.join("msg").join("Value.msg"), "int32 value\n").unwrap();
+            let deps: String = deps
+                .iter()
+                .map(|dep| format!("<depend>{dep}</depend>"))
+                .collect();
+            std::fs::write(
+                package.join("package.xml"),
+                format!("<package format=\"3\"><name>{name}</name>{deps}</package>"),
+            )
+            .unwrap();
+        }
+        root
+    }
+
+    fn dependencies_of(packages: &[crate::types::Package], name: &str) -> Vec<String> {
+        let package = packages.iter().find(|p| p.name == name).unwrap();
+        let mut deps: Vec<_> = package
+            .dependencies
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        deps.sort();
+        deps
+    }
+
+    #[test]
+    fn dependencies_are_transitive() {
+        let root = prefix("chain", &[("a", &["b"]), ("b", &["c"]), ("c", &[])]);
+        let packages = get_ros_msgs_each_package(&[&root]).unwrap();
+        assert_eq!(dependencies_of(&packages, "a"), ["b", "c"]);
+        assert_eq!(dependencies_of(&packages, "b"), ["c"]);
+        assert!(dependencies_of(&packages, "c").is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// `exec_depend` cycles are legal in ROS (only build dependencies must be
+    /// acyclic); they used to recurse until the stack overflowed.
+    #[test]
+    fn a_dependency_cycle_does_not_overflow_the_stack() {
+        let root = prefix("cycle", &[("a", &["b"]), ("b", &["a"])]);
+        let packages = get_ros_msgs_each_package(&[&root]).unwrap();
+        assert_eq!(dependencies_of(&packages, "a"), ["b"]);
+        assert_eq!(dependencies_of(&packages, "b"), ["a"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// An overlay that rebuilds a package also installed in an underlay must
+    /// shadow it, not be merged with it: each message is parsed once, from the
+    /// first prefix on the path.
+    #[test]
+    fn a_package_in_two_prefixes_is_taken_from_the_first() {
+        let overlay = prefix("overlay", &[("a", &[])]);
+        let underlay = prefix("underlay", &[("a", &[])]);
+        let packages = get_ros_msgs_each_package(&[&overlay, &underlay]).unwrap();
+        let a = packages.iter().find(|p| p.name == "a").unwrap();
+        assert_eq!(a.messages.len(), 1);
+        assert!(a.path.starts_with(&overlay), "path: {}", a.path.display());
+        std::fs::remove_dir_all(overlay).unwrap();
+        std::fs::remove_dir_all(underlay).unwrap();
+    }
+
+    #[test]
+    fn a_prefix_listed_twice_is_parsed_once() {
+        let root = prefix("twice", &[("a", &[])]);
+        let packages = get_ros_msgs_each_package(&[&root, &root]).unwrap();
+        let a = packages.iter().find(|p| p.name == "a").unwrap();
+        assert_eq!(a.messages.len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_empty_prefix_entry_does_not_discard_the_others() {
+        let root = prefix("empty-entry", &[("a", &[])]);
+        let empty = PathBuf::new();
+        for roots in [[&root, &empty], [&empty, &root]] {
+            let packages = get_ros_msgs_each_package(&roots).unwrap();
+            assert_eq!(packages.len(), 1);
+            assert_eq!(packages[0].name, "a");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_package_depending_on_itself_is_not_its_own_dependency() {
+        let root = prefix("self", &[("a", &["a"])]);
+        let packages = get_ros_msgs_each_package(&[&root]).unwrap();
+        assert!(dependencies_of(&packages, "a").is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

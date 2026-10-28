@@ -98,6 +98,25 @@ pub(crate) async fn serve_cross_data_frame(
     shm_provider: Option<&ShmProvider<PosixShmProviderBackend>>,
     stream: &mut tokio::net::TcpStream,
 ) -> Result<bool, String> {
+    // Wait for the next frame's first byte under the (long) idle bound,
+    // then bound the frame itself from that byte on. Starting the frame
+    // timer while still waiting would open the mirror's window before the
+    // origin's, so the mirror would give up on a slow frame first (#3688).
+    let mut first = [0u8; 1];
+    match tokio::time::timeout(CROSS_DATA_IDLE_TIMEOUT, stream.peek(&mut first)).await {
+        // The origin closed the connection.
+        Ok(Ok(0)) => return Ok(false),
+        Err(_) => {
+            tracing::debug!("memory pool: closing idle direct-TCP data connection");
+            return Ok(false);
+        }
+        Ok(Ok(_)) => {}
+        Ok(Err(e)) => {
+            return Err(format!(
+                "memory pool: direct-TCP data connection failed: {e}"
+            ));
+        }
+    }
     // Bound the whole frame read: a peer that sends a header with a large
     // `size` and then stalls would otherwise hold the per-pool lock and
     // leave the seqlock odd indefinitely, wedging every subsequent write
@@ -120,12 +139,14 @@ pub(crate) async fn serve_cross_data_frame(
     match frame {
         Ok(Some((dataflow_id, shared_memory_id, seq))) => {
             // Remote commit ack via zenoh (the origin's pending reply
-            // waits on it).
+            // waits on it), addressed to the pool's origin.
+            let origin_machine =
+                tensor_pool.cross_peer(&dataflow_id.to_string(), &shared_memory_id);
             publish_pool_message(
                 session,
                 clock,
                 &dataflow_id,
-                None,
+                origin_machine.as_deref(),
                 &PeerMessage::WriteAck {
                     shared_memory_id,
                     seq,
@@ -149,7 +170,9 @@ pub(crate) async fn serve_cross_data_frame(
                     session,
                     clock,
                     &dataflow_id,
-                    None,
+                    tensor_pool
+                        .cross_peer(&dataflow_id.to_string(), &shared_memory_id)
+                        .as_deref(),
                     &PeerMessage::WriteAck {
                         shared_memory_id,
                         seq,
@@ -385,24 +408,31 @@ pub(crate) async fn handle_cross_data_frame(
     Ok(Some((dataflow_id, shared_memory_id, seq)))
 }
 
-/// Why [`send_cross_data_frame`] failed.
-#[derive(Debug)]
-pub(crate) enum DirectSendError {
-    /// The frame could not be sent; the zenoh relay may still deliver it.
-    Failed(String),
-    /// Sending the frame outlasted its bound. The ack window is nearly
-    /// spent, so relaying the frame would only race the safety-net
-    /// timeout — the write is failed instead.
-    TimedOut(String),
+/// Whether a pooled direct-TCP data connection can still carry a frame.
+///
+/// The mirror never writes on a data connection after the auth handshake,
+/// so a socket that has become readable means the peer closed (EOF) or
+/// reset it: typically the mirror's `CROSS_DATA_IDLE_TIMEOUT` firing on a
+/// connection that sat idle between writes, or a mirror daemon restart.
+/// Writing a frame that fits in the send buffer into such a half-closed
+/// socket still succeeds locally, so reusing it loses the frame without an
+/// error, nothing falls back to the relay, and the node's write waits out
+/// the whole ack timeout.
+fn pooled_conn_is_open(stream: &tokio::net::TcpStream) -> bool {
+    let mut probe = [0u8; 1];
+    // `WouldBlock` is the only answer from a live, quiet connection: `Ok(0)`
+    // is EOF, `Ok(_)` is bytes the protocol never sends, `Err(_)` is a reset.
+    matches!(
+        stream.try_read(&mut probe),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
+    )
 }
 
-impl std::fmt::Display for DirectSendError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Failed(e) | Self::TimedOut(e) => f.write_str(e),
-        }
-    }
-}
+/// Pooled direct-TCP data connections (origin side), keyed by the peer's
+/// data listener, each with when it last carried a frame.
+pub(crate) type CrossDataConns = Arc<
+    std::sync::Mutex<HashMap<std::net::SocketAddr, (tokio::net::TcpStream, tokio::time::Instant)>>,
+>;
 
 /// Send one direct-TCP data frame to a peer's data listener (origin side).
 /// Reuses a persistent connection per endpoint; a dead connection is
@@ -413,96 +443,85 @@ impl std::fmt::Display for DirectSendError {
 /// auth is configured, a freshly connected socket performs the token
 /// handshake before the first frame.
 ///
-/// Sending the frame is bounded by `send_timeout` (production passes
-/// [`CROSS_DATA_READ_TIMEOUT`], the limit the mirror applies to reading
-/// it): past that the mirror has given up on the frame anyway, and an
-/// unbounded send would keep streaming a payload nobody is waiting for
-/// after the node's write already failed (#3688).
+/// The whole attempt — connect, handshake and frame send — must finish by
+/// `deadline` (see [`cross_transfer_budget`]). One deadline rather than a
+/// bound per step: separately bounded steps add up, and an attempt that
+/// outlives the node's write would keep streaming a payload nobody waits
+/// for, or leave too little of the ack window for the relay (#3688). A
+/// connection abandoned mid-frame is dropped, never pooled.
 pub(crate) async fn send_cross_data_frame(
-    conns: &Arc<std::sync::Mutex<HashMap<std::net::SocketAddr, tokio::net::TcpStream>>>,
+    conns: &CrossDataConns,
     endpoint: std::net::SocketAddr,
     dataflow_id: Uuid,
     shared_memory_id: &str,
     seq: u64,
     data: &[u8],
-    send_timeout: std::time::Duration,
-) -> Result<(), DirectSendError> {
+    deadline: tokio::time::Instant,
+) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
 
-    let mut stream = {
-        // The guard is a temporary: it must be dropped before the connect
-        // await below (a std MutexGuard is not Send across awaits).
-        let existing = conns
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&endpoint);
-        match existing {
+    // The guard is a temporary: it must be dropped before the connect
+    // await below (a std MutexGuard is not Send across awaits).
+    let pooled = conns
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&endpoint)
+        // Stop reusing a connection well before the mirror's idle bound
+        // closes it: a FIN still in flight when the reuse check runs would
+        // otherwise swallow a small frame without an error.
+        .filter(|(stream, last_used)| {
+            last_used.elapsed() < CROSS_DATA_IDLE_TIMEOUT / 2 && pooled_conn_is_open(stream)
+        })
+        .map(|(stream, _)| stream);
+    let attempt = async {
+        let mut stream = match pooled {
             Some(stream) => stream,
             None => {
-                let stream = tokio::time::timeout(
+                let mut stream = tokio::time::timeout(
                     std::time::Duration::from_secs(5),
                     tokio::net::TcpStream::connect(endpoint),
                 )
                 .await
-                .map_err(|_| DirectSendError::Failed(format!("connect timeout to {endpoint}")))?
-                .map_err(|e| {
-                    DirectSendError::Failed(format!("connect to {endpoint} failed: {e}"))
-                })?;
+                .map_err(|_| format!("connect timeout to {endpoint}"))?
+                .map_err(|e| format!("connect to {endpoint} failed: {e}"))?;
                 // Auth handshake on fresh connections only. A rejected
                 // handshake is an error on this side too — the caller
                 // degrades to the zenoh relay.
-                let mut stream = stream;
                 if let Some(token) = cross_data_auth_token() {
-                    tokio::time::timeout(
-                        CROSS_DATA_READ_TIMEOUT,
-                        auth_handshake_send(&mut stream, &token),
-                    )
-                    .await
-                    .map_err(|_| {
-                        DirectSendError::Failed(format!("auth handshake timeout to {endpoint}"))
-                    })?
-                    .map_err(|e| {
-                        DirectSendError::Failed(format!("auth handshake to {endpoint} failed: {e}"))
-                    })?;
+                    auth_handshake_send(&mut stream, &token)
+                        .await
+                        .map_err(|e| format!("auth handshake to {endpoint} failed: {e}"))?;
                 }
                 stream
             }
+        };
+        // Header only: the payload goes out in its own `write_all` below, so
+        // reserving `data.len()` here would allocate a tensor-sized buffer per
+        // frame that is never written to.
+        let mut buf = Vec::with_capacity(4 + 16 + 4 + shared_memory_id.len() + 8 + 8);
+        buf.extend_from_slice(&CROSS_DATA_MAGIC.to_be_bytes());
+        buf.extend_from_slice(dataflow_id.as_bytes());
+        buf.extend_from_slice(&(shared_memory_id.len() as u32).to_be_bytes());
+        buf.extend_from_slice(shared_memory_id.as_bytes());
+        buf.extend_from_slice(&seq.to_be_bytes());
+        buf.extend_from_slice(&(data.len() as u64).to_be_bytes());
+        // A failed write leaves a dead connection — it is dropped here (not
+        // re-inserted) so the next write reconnects.
+        async {
+            stream.write_all(&buf).await?;
+            stream.write_all(data).await?;
+            stream.flush().await
         }
+        .await
+        .map_err(|e| format!("direct write to {endpoint} failed: {e}"))?;
+        Ok::<_, String>(stream)
     };
-    let mut buf = Vec::with_capacity(4 + 16 + 4 + shared_memory_id.len() + 8 + 8);
-    buf.extend_from_slice(&CROSS_DATA_MAGIC.to_be_bytes());
-    buf.extend_from_slice(dataflow_id.as_bytes());
-    buf.extend_from_slice(&(shared_memory_id.len() as u32).to_be_bytes());
-    buf.extend_from_slice(shared_memory_id.as_bytes());
-    buf.extend_from_slice(&seq.to_be_bytes());
-    buf.extend_from_slice(&(data.len() as u64).to_be_bytes());
-    let result = tokio::time::timeout(send_timeout, async {
-        stream.write_all(&buf).await?;
-        stream.write_all(data).await?;
-        stream.flush().await?;
-        Ok::<(), std::io::Error>(())
-    })
-    .await;
-    match result {
-        Ok(Ok(())) => {}
-        // Dead or stalled connection — drop it (not re-inserted) so the
-        // next write reconnects. A timed-out stream is mid-frame, so it
-        // can never be reused.
-        Ok(Err(e)) => {
-            return Err(DirectSendError::Failed(format!(
-                "direct write to {endpoint} failed: {e}"
-            )));
-        }
-        Err(_) => {
-            return Err(DirectSendError::TimedOut(format!(
-                "direct write to {endpoint} timed out after {}s",
-                send_timeout.as_secs_f64()
-            )));
-        }
-    }
+    let stream = tokio::time::timeout_at(deadline, attempt)
+        .await
+        .map_err(|_| format!("direct write to {endpoint} did not finish within its deadline"))??;
     conns
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(endpoint, stream);
+        .insert(endpoint, (stream, tokio::time::Instant::now()));
     Ok(())
 }

@@ -115,7 +115,7 @@ async fn graph_waiters_wake_once_on_change_and_on_shutdown() {
 }
 
 #[test]
-fn graph_service_matching_checks_complete_identity() {
+fn graph_service_matching_checks_name_and_type_identity() {
     let graph = GraphCache::new(7);
     graph
         .apply_put(endpoint(7, "service", EntityKind::Service).as_str())
@@ -126,7 +126,6 @@ fn graph_service_matching_checks_complete_identity() {
                 "/robot/add_two_ints",
                 "example_interfaces::srv::dds_::AddTwoInts_",
                 "TypeHashNotSupported",
-                "2::,1:,:,:,,,"
             )
             .len(),
         1
@@ -134,10 +133,18 @@ fn graph_service_matching_checks_complete_identity() {
     assert!(
         graph
             .matching_services(
+                "/robot/add_two_ints",
+                "example_interfaces::srv::dds_::AddTwoInts_",
+                "RIHS01_other",
+            )
+            .is_empty()
+    );
+    assert!(
+        graph
+            .matching_services(
                 "/other",
                 "example_interfaces::srv::dds_::AddTwoInts_",
                 "TypeHashNotSupported",
-                "2::,1:,:,:,,,"
             )
             .is_empty()
     );

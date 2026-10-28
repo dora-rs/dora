@@ -244,7 +244,8 @@ impl Message {
                 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
                 #attributes
                 pub struct #struct_raw_name {
-                    #[serde(skip)]
+                    // ROS's `structure_needs_at_least_one_member`: a message
+                    // with no fields is still one byte on the wire.
                     pub(super) _dummy: u8,
                 }
 
@@ -588,6 +589,52 @@ mod codegen_tests {
             assert!(
                 generated.contains(&escaped),
                 "expected `{escaped}` in generated code:\n{generated}"
+            );
+        }
+    }
+
+    // ROS gives a message with no fields one `uint8` member
+    // (`structure_needs_at_least_one_member`), so the placeholder must be
+    // serialized: with `#[serde(skip)]` dora sent an empty body, refused ROS's
+    // byte on Zenoh, and misread the fields after a nested empty message.
+    #[test]
+    fn an_empty_message_serializes_its_one_byte_member() {
+        let message = Message {
+            package: "test_pkg".to_string(),
+            name: "Empty".to_string(),
+            members: vec![],
+            constants: vec![],
+        };
+        let (def, _impls) = message.struct_token_stream("test_pkg", false);
+        let generated = format_valid_rust(def);
+        assert!(
+            generated.contains("pub(super) _dummy: u8,") && !generated.contains("serde"),
+            "expected a serialized `_dummy: u8` member in:\n{generated}"
+        );
+    }
+
+    // A `wstring` default names `U16String` through the parent module, which
+    // re-exports it in both crates that include this code (`crate::messages`
+    // in dora-ros2-bridge, `crate::ros2` in dora-node-api-cxx). A
+    // `crate::messages` path didn't compile in the C++ crate (#3949).
+    #[test]
+    fn a_wstring_default_names_u16string_through_the_parent_module() {
+        let message = Message {
+            package: "test_pkg".to_string(),
+            name: "WStr".to_string(),
+            members: vec![Member {
+                name: "value".to_string(),
+                r#type: crate::types::primitives::GenericString::WString.into(),
+                default: Some(vec!["Hello".to_string()]),
+            }],
+            constants: vec![],
+        };
+        for cxx in [false, true] {
+            let (_def, impls) = message.struct_token_stream("test_pkg", cxx);
+            let generated = format_valid_rust(impls);
+            assert!(
+                generated.contains(r#"value: super::ffi::U16String::from_str("Hello"),"#),
+                "expected the default through `super::ffi` in:\n{generated}"
             );
         }
     }
