@@ -799,6 +799,14 @@ fn expand_module_node(
     // Build set of inner node IDs for cross-reference rewriting
     let inner_node_ids: BTreeSet<String> =
         module_file.nodes.iter().map(|n| n.id.to_string()).collect();
+    // The subset that are themselves modules: only those expand into
+    // `<sibling>.<inner>` nodes a log filter can name.
+    let module_sibling_ids: BTreeSet<String> = module_file
+        .nodes
+        .iter()
+        .filter(|n| n.module.is_some())
+        .map(|n| n.id.to_string())
+        .collect();
 
     // Phase 1: prefix IDs, rewrite inputs, resolve paths, substitute params
     let mut prefixed_nodes = Vec::new();
@@ -819,6 +827,7 @@ fn expand_module_node(
                 &module_id,
                 &node.inputs,
                 &inner_node_ids,
+                &module_sibling_ids,
                 &optional_inputs,
             )?;
         }
@@ -1206,6 +1215,24 @@ fn substitute_params_in_str(s: &str, params: &BTreeMap<String, String>) -> Strin
     result
 }
 
+/// Whether a log filter's `node` is one of `inner_node_ids`, or a node nested
+/// under a module sibling (`<module-sibling>.<...>`, the id a nested module's
+/// inner node gets once expanded).
+///
+/// Only module siblings count for the dotted form: node ids may contain `.`,
+/// so with a plain sibling `cam`, `cam.raw` is an unrelated (top-level) node
+/// and must be left alone.
+fn names_sibling_or_its_inner_node(
+    node: &str,
+    inner_node_ids: &BTreeSet<String>,
+    module_sibling_ids: &BTreeSet<String>,
+) -> bool {
+    inner_node_ids.contains(node)
+        || node
+            .match_indices('.')
+            .any(|(i, _)| module_sibling_ids.contains(&node[..i]))
+}
+
 /// Rewrite a single input mapping inside a module's inner node.
 ///
 /// - `_mod/X` references are resolved to the actual source from the module
@@ -1218,22 +1245,31 @@ fn rewrite_module_input(
     module_id: &str,
     module_inputs: &BTreeMap<DataId, Input>,
     inner_node_ids: &BTreeSet<String>,
+    module_sibling_ids: &BTreeSet<String>,
     optional_inputs: &BTreeSet<String>,
 ) -> eyre::Result<Option<Input>> {
     match &input.mapping {
-        // `dora/logs/<level>/<node>` naming a sibling: prefix the node filter
+        // `dora/logs/<level>/<node>` naming a sibling, or an inner node of a
+        // nested-module sibling (`<module-sibling>.<inner>`): prefix the node filter
         // like a sibling data source, or it would match no node after
         // expansion and the sink would silently receive nothing.
         InputMapping::Logs(LogSubscriptionFilter {
             min_level,
             node_filter: Some(node),
-        }) if inner_node_ids.contains(node.as_ref()) => Ok(Some(Input {
-            mapping: InputMapping::Logs(LogSubscriptionFilter {
-                min_level: min_level.clone(),
-                node_filter: Some(format!("{module_id}.{node}").into()),
-            }),
-            ..input.clone()
-        })),
+        }) if names_sibling_or_its_inner_node(
+            node.as_ref(),
+            inner_node_ids,
+            module_sibling_ids,
+        ) =>
+        {
+            Ok(Some(Input {
+                mapping: InputMapping::Logs(LogSubscriptionFilter {
+                    min_level: min_level.clone(),
+                    node_filter: Some(format!("{module_id}.{node}").into()),
+                }),
+                ..input.clone()
+            }))
+        }
         InputMapping::Timer { .. } | InputMapping::Logs(_) => Ok(Some(input.clone())),
         InputMapping::User(user_mapping) => {
             let source_str = user_mapping.source.to_string();
@@ -1286,6 +1322,7 @@ fn rewrite_module_inputs_map(
     module_id: &str,
     module_inputs: &BTreeMap<DataId, Input>,
     inner_node_ids: &BTreeSet<String>,
+    module_sibling_ids: &BTreeSet<String>,
     optional_inputs: &BTreeSet<String>,
 ) -> eyre::Result<BTreeMap<DataId, Input>> {
     let mut new_inputs = BTreeMap::new();
@@ -1295,6 +1332,7 @@ fn rewrite_module_inputs_map(
             module_id,
             module_inputs,
             inner_node_ids,
+            module_sibling_ids,
             optional_inputs,
         )? {
             new_inputs.insert(input_id.clone(), new_input);
@@ -4282,6 +4320,155 @@ nodes:
             "outside"
         );
         assert!(filter_of("all").node_filter.is_none());
+    }
+
+    /// A log filter naming a module node (or a nested module inside it) names
+    /// no node once expanded, so wiring validation must reject it rather than
+    /// let the sink silently receive nothing. Inside a module, a filter naming
+    /// an inner node of a nested-module sibling (`inner.worker`) is prefixed
+    /// with the module id like any sibling reference.
+    #[test]
+    fn log_filters_naming_modules_and_nested_module_nodes() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "leaf_module.yml",
+            r#"
+module:
+  name: leaf_module
+  outputs: []
+
+nodes:
+  - id: worker
+    path: worker.py
+"#,
+        );
+        write_file(
+            base,
+            "outer_module.yml",
+            r#"
+module:
+  name: outer_module
+  outputs: []
+
+nodes:
+  - id: inner
+    module: leaf_module.yml
+  - id: inner_sink
+    path: sink.py
+    inputs:
+      logs: dora/logs/info/inner.worker
+"#,
+        );
+
+        for (filter, accepted) in [
+            ("outer", false),
+            ("outer.inner", false),
+            ("outer.inner.worker", true),
+        ] {
+            let desc = parse_descriptor(&format!(
+                r#"
+nodes:
+  - id: outer
+    module: outer_module.yml
+  - id: sink
+    path: sink.py
+    inputs:
+      logs: dora/logs/info/{filter}
+"#
+            ));
+            let expanded = expand_modules(&desc, base).unwrap();
+            let result = crate::descriptor::validate::check_wiring(&expanded);
+            assert_eq!(result.is_ok(), accepted, "{filter}: {result:?}");
+
+            let inner_sink = expanded
+                .nodes
+                .iter()
+                .find(|n| n.id.to_string() == "outer.inner_sink")
+                .unwrap();
+            let InputMapping::Logs(inner_filter) =
+                &inner_sink.inputs[&DataId::from("logs".to_string())].mapping
+            else {
+                panic!("expected a logs mapping");
+            };
+            assert_eq!(
+                inner_filter.node_filter.as_ref().unwrap().to_string(),
+                "outer.inner.worker"
+            );
+        }
+    }
+
+    /// A module-internal log filter naming a dotted top-level node whose
+    /// first segment equals a plain (non-module) sibling must not be
+    /// prefixed: `cam.raw` is that top-level node, not a child of `cam`.
+    #[test]
+    fn log_filter_naming_dotted_top_level_node_is_not_prefixed() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "cam_module.yml",
+            r#"
+module:
+  name: cam_module
+  outputs: []
+
+nodes:
+  - id: cam
+    path: cam.py
+  - id: sink
+    path: sink.py
+    inputs:
+      logs: dora/logs/info/cam.raw
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: cam_module.yml
+  - id: cam.raw
+    path: raw.py
+"#,
+        );
+        let expanded = expand_modules(&desc, base).unwrap();
+        let sink = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.sink")
+            .unwrap();
+        let InputMapping::Logs(filter) = &sink.inputs[&DataId::from("logs".to_string())].mapping
+        else {
+            panic!("expected a logs mapping");
+        };
+        assert_eq!(filter.node_filter.as_ref().unwrap().to_string(), "cam.raw");
+        crate::descriptor::validate::check_wiring(&expanded).unwrap();
+    }
+
+    #[test]
+    fn names_sibling_or_its_inner_node_matches_whole_segments_only() {
+        let ids = BTreeSet::from([
+            "inner".to_string(),
+            "node.v2".to_string(),
+            "cam".to_string(),
+        ]);
+        let modules = BTreeSet::from(["inner".to_string(), "node.v2".to_string()]);
+        let names = |node| names_sibling_or_its_inner_node(node, &ids, &modules);
+        assert!(names("inner"));
+        assert!(names("inner.worker"));
+        assert!(names("node.v2"));
+        assert!(names("node.v2.worker"));
+        assert!(names("cam"));
+        // `cam` is a plain node, so `cam.raw` is some other node, not one of
+        // its children.
+        assert!(!names("cam.raw"));
+        assert!(!names("innerx"));
+        assert!(!names("node"));
+        assert!(!names("outside"));
     }
 
     #[test]
