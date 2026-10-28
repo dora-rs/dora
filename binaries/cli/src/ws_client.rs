@@ -6,7 +6,7 @@
 use dora_message::ws_protocol::WsRequest;
 use eyre::{Context, eyre};
 use futures::{SinkExt, StreamExt};
-use std::{collections::HashMap, net::SocketAddr, sync::mpsc as std_mpsc};
+use std::{collections::HashMap, net::SocketAddr, sync::mpsc as std_mpsc, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
@@ -199,17 +199,21 @@ impl WsSession {
     /// `data` should be a serialized `ControlRequest`.
     /// Returns the serialized `ControlRequestReply`.
     pub fn request(&self, data: &[u8]) -> eyre::Result<Vec<u8>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.cmd_tx
-            .send(SessionCommand::Request {
-                data: data.to_vec(),
-                reply: reply_tx,
-            })
-            .map_err(|_| eyre!("WS session closed"))?;
-
+        let reply_rx = send_request(&self.cmd_tx, data)?;
         self.rt
             .block_on(reply_rx)
             .map_err(|_| eyre!("WS session dropped reply"))?
+    }
+
+    /// A `'static` handle that sends requests on this session from another
+    /// thread, such as a Ctrl-C handler, while this thread is blocked in
+    /// [`Self::request`]. Requests are multiplexed by id, so they do not
+    /// wait for the one already in flight.
+    pub fn requester(&self) -> WsRequester {
+        WsRequester {
+            handle: self.rt.handle().clone(),
+            cmd_tx: self.cmd_tx.clone(),
+        }
     }
 
     /// Subscribe to topic data via the coordinator's topic inspection stream.
@@ -270,6 +274,39 @@ impl WsSession {
             .map_err(|_| eyre!("WS session dropped ack"))??;
 
         Ok(log_rx)
+    }
+}
+
+fn send_request(
+    cmd_tx: &mpsc::UnboundedSender<SessionCommand>,
+    data: &[u8],
+) -> eyre::Result<oneshot::Receiver<eyre::Result<Vec<u8>>>> {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    cmd_tx
+        .send(SessionCommand::Request {
+            data: data.to_vec(),
+            reply: reply_tx,
+        })
+        .map_err(|_| eyre!("WS session closed"))?;
+    Ok(reply_rx)
+}
+
+/// See [`WsSession::requester`].
+#[derive(Clone)]
+pub struct WsRequester {
+    handle: tokio::runtime::Handle,
+    cmd_tx: mpsc::UnboundedSender<SessionCommand>,
+}
+
+impl WsRequester {
+    /// Like [`WsSession::request`], but gives up after `timeout`. Must not be
+    /// called from within an async context.
+    pub fn request_timeout(&self, data: &[u8], timeout: Duration) -> eyre::Result<Vec<u8>> {
+        let reply_rx = send_request(&self.cmd_tx, data)?;
+        self.handle
+            .block_on(async { tokio::time::timeout(timeout, reply_rx).await })
+            .map_err(|_| eyre!("no reply from the coordinator within {timeout:?}"))?
+            .map_err(|_| eyre!("WS session dropped reply"))?
     }
 }
 
@@ -588,6 +625,66 @@ mod tests {
 
     fn raw(val: serde_json::Value) -> Box<RawValue> {
         serde_json::value::to_raw_value(&val).unwrap()
+    }
+
+    /// A session whose loop holds back the reply to `parked` (like the
+    /// coordinator's reply to a graceful `Stop`), reporting on the returned
+    /// channel when it does, drops the held replies on `release`, and echoes
+    /// every other request.
+    fn session_parking(parked: &'static [u8]) -> (WsSession, std_mpsc::Receiver<()>) {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel();
+        let (parked_tx, parked_rx) = std_mpsc::channel();
+        rt.spawn(async move {
+            let mut held = Vec::new();
+            while let Some(cmd) = cmd_rx.recv().await {
+                if let SessionCommand::Request { data, reply } = cmd {
+                    if data == parked {
+                        held.push(reply);
+                        let _ = parked_tx.send(());
+                    } else if data == b"release" {
+                        held.clear();
+                    } else {
+                        let _ = reply.send(Ok(data));
+                    }
+                }
+            }
+        });
+        (WsSession { rt, cmd_tx }, parked_rx)
+    }
+
+    /// The second Ctrl-C of `dora start --attach` sends its force-stop from
+    /// the handler thread while the control loop is still blocked on the
+    /// graceful `Stop` (#3969).
+    #[test]
+    fn requester_is_answered_while_another_request_is_in_flight() {
+        let (session, parked) = session_parking(b"graceful");
+        let requester = session.requester();
+        std::thread::scope(|s| {
+            let graceful = s.spawn(|| session.request(b"graceful"));
+            parked.recv().unwrap();
+            let reply = requester
+                .request_timeout(b"force", Duration::from_secs(5))
+                .unwrap();
+            assert_eq!(reply, b"force");
+            assert!(!graceful.is_finished());
+            let _ = requester.request_timeout(b"release", Duration::from_millis(1));
+            assert!(graceful.join().unwrap().is_err());
+        });
+    }
+
+    #[test]
+    fn requester_gives_up_after_the_timeout() {
+        let (session, _parked) = session_parking(b"force");
+        let err = session
+            .requester()
+            .request_timeout(b"force", Duration::from_millis(50))
+            .unwrap_err();
+        assert!(err.to_string().contains("no reply"), "{err:#}");
     }
 
     #[test]

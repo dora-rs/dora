@@ -114,17 +114,32 @@ pub fn attach_dataflow(
     };
 
     // Setup Ctrlc Watcher to stop dataflow after ctrlc
+    //
+    // The first Ctrl-C is queued for the control loop below. The second one
+    // must not be: the coordinator answers a graceful `Stop` only once the
+    // dataflow has finished, so the control loop is blocked in
+    // `session.request` for that whole grace period and a queued force-stop
+    // would never be sent before `exit`. The handler sends it itself, on its
+    // own request id, and waits a bounded time for the reply (#3969).
     let ctrlc_tx = tx.clone();
+    let requester = session.requester();
+    let force_stop = serde_json::to_vec(&ControlRequest::Stop {
+        dataflow_uuid: dataflow_id,
+        grace_duration: None,
+        force: true,
+    })
+    .wrap_err("failed to serialize message")?;
     let mut ctrlc_sent = false;
     ctrlc::set_handler(move || {
         if ctrlc_sent {
-            ctrlc_tx
-                .send(AttachEvent::Control(ControlRequest::Stop {
-                    dataflow_uuid: dataflow_id,
-                    grace_duration: None,
-                    force: true,
-                }))
-                .ok();
+            eprintln!("received second Ctrl-C -> force-stopping dataflow {dataflow_id}");
+            if let Err(err) = requester.request_timeout(&force_stop, FORCE_STOP_REPLY_TIMEOUT) {
+                eprintln!(
+                    "could not confirm the force-stop: {err:#}\n  \
+                     hint: check with `dora list`, and run `dora stop --force {dataflow_id}` \
+                     if it is still running"
+                );
+            }
             std::process::exit(1);
         } else {
             let _ = ctrlc_tx.send(AttachEvent::Control(ControlRequest::Stop {
@@ -195,6 +210,11 @@ pub fn attach_dataflow(
         };
     }
 }
+
+/// How long the second Ctrl-C waits for the coordinator to answer the
+/// force-stop. The reply comes once the killed nodes are gone, which is quick,
+/// but a wedged coordinator must not keep the CLI from exiting.
+const FORCE_STOP_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[allow(clippy::large_enum_variant)]
 enum AttachEvent {
