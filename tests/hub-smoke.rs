@@ -650,7 +650,7 @@ fn hub_override_local_ignores_coordinator_env() {
         stderr(&out)
     );
     assert!(
-        stderr(&out).contains("write-lockfile"),
+        stderr(&out).contains("`--hub-override` cannot be combined with `--write-lockfile`"),
         "expected to reach the write-lockfile rejection, got: {}",
         stderr(&out)
     );
