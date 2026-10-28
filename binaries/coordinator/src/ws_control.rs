@@ -124,18 +124,19 @@ async fn send_topic_frame(
 /// Wait for a control request's reply while still draining the connection's
 /// pushed log lines and topic frames to the CLI.
 ///
-/// The coordinator event loop fills `log_rx`/`binary_rx` (64 slots each) and
-/// only this connection empties them. Awaiting the reply alone would leave
-/// them undrained for as long as the request takes, which for `WaitForBuild`
-/// or `Stop` is the whole build or shutdown: once full, every further log line
-/// costs the event loop a 100 ms send timeout and the subscriber is dropped
-/// after 100 of them, losing the rest of the log.
+/// The coordinator event loop fills `log_rx` and `binary_rx` and only this
+/// connection empties them. Awaiting the reply alone would leave them
+/// undrained for as long as the request takes, which for `WaitForBuild` or
+/// `Stop` is the whole build or shutdown: live log lines past
+/// `MAX_QUEUED_LOG_BYTES` would be dropped, and once the 64 `binary_rx`
+/// frames are full every further topic frame costs the event loop a 100 ms
+/// send timeout.
 ///
 /// `Err` means the WebSocket send failed (the connection is gone).
 async fn await_reply_forwarding_pushes(
     mut reply_rx: oneshot::Receiver<eyre::Result<ControlRequestReply>>,
     ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
-    log_rx: &mut mpsc::Receiver<String>,
+    log_rx: &mut crate::log_subscriber::LogQueue,
     binary_rx: &mut mpsc::Receiver<crate::topic_subscriber::TopicFrame>,
 ) -> Result<ControlRequestReply, ()> {
     let reply = loop {
@@ -150,7 +151,7 @@ async fn await_reply_forwarding_pushes(
     // now, though: draining until empty would let a producer that outpaces the
     // socket hold the reply back for as long as its burst lasts.
     for _ in 0..log_rx.len() {
-        let Ok(log_json) = log_rx.try_recv() else {
+        let Some(log_json) = log_rx.try_recv() else {
             break;
         };
         send_log_line(ws_tx, log_json).await?;
@@ -194,10 +195,10 @@ pub(crate) async fn handle_control_ws(
     clock: Arc<dora_core::uhlc::HLC>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-    // Channel for log events to push back on same WS connection. Live log
-    // lines are dropped, not awaited, when it is full (#3794), so it is sized
-    // to absorb a burst of node output while the writer catches up.
-    let (log_tx, mut log_rx) = mpsc::channel::<String>(1024);
+    // Log events to push back on the same WS connection. The event loop never
+    // waits on it (#3794): it is bounded by bytes, and live lines past the
+    // cap are dropped and reported to the reader.
+    let (log_tx, mut log_rx) = crate::log_subscriber::log_queue();
     // Channel for binary topic data frames
     let (binary_tx, mut binary_rx) = mpsc::channel::<crate::topic_subscriber::TopicFrame>(64);
     let mut topic_subscriptions: Vec<ActiveTopicSubscription> = Vec::new();
@@ -696,13 +697,9 @@ mod tests {
                     Event::Control(ControlEvent::IncomingRequest { reply_sender, .. }) => {
                         let sender = log_sender.take().expect("subscribed before the request");
                         for i in 0..LINES {
-                            tokio::time::timeout(
-                                Duration::from_secs(5),
-                                sender.send(format!("{{\"line\":{i}}}")),
-                            )
-                            .await
-                            .expect("log channel not drained while the reply was pending")
-                            .expect("log channel closed");
+                            sender
+                                .push(format!("{{\"line\":{i}}}"))
+                                .expect("log channel closed");
                         }
                         let _ = reply_sender.send(Ok(ControlRequestReply::TopicPublished));
                         return;

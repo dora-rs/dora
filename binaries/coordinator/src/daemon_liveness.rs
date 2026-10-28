@@ -4,7 +4,7 @@
 
 use crate::{
     broadcast_all_nodes_ready, close_topic_subscribers_on_finish, finalize_build,
-    handlers::{send_heartbeat_message, send_log_message},
+    handlers::{send_heartbeat_message, send_status_log_message},
     state::{CachedResult, DaemonConnections, PendingRestart, RunningBuild, RunningDataflow},
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
@@ -383,7 +383,7 @@ pub(crate) async fn begin_orphaned_dataflow_reclaim(
         tracing::warn!(dataflow = %uuid, "failed to persist reclaim (Recovering) state: {e}");
     }
 
-    send_log_message(
+    send_status_log_message(
         &mut df.log_subscribers,
         &LogMessage {
             build_id: None,

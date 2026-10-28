@@ -1,5 +1,5 @@
 use crate::{
-    log_subscriber::{Delivery, LogSubscriber},
+    log_subscriber::{Admission, LogSubscriber},
     run::{SpawnedDataflow, resolve_daemon, spawn_dataflow},
     state::{
         self, ArchivedDataflow, CachedResult, DaemonConnection, DaemonConnections, RunningBuild,
@@ -69,13 +69,11 @@ pub(crate) fn resolve_name(
 
 /// Register `subscriber` and replay the logs buffered before it attached.
 ///
-/// `found_tx` is answered *before* the replay. The WS task that owns the
-/// subscriber's receiver waits on it and only resumes draining that receiver
-/// once it fires, so replaying first let the bounded channel fill up: every
-/// further message then took the replay's 100 ms timeout, which stalled the
-/// coordinator's event loop and finally evicted the subscriber with the rest
-/// of the backlog lost.
-pub(crate) async fn attach_log_subscriber(
+/// The backlog is replayed with [`Admission::Always`]: it is already held in
+/// memory (at most `MAX_BUFFERED_LOG_MESSAGES` lines) and a reader that just
+/// attached must get all of it, so it does not count against the
+/// connection's byte cap the way live lines do.
+pub(crate) fn attach_log_subscriber(
     log_subscribers: &mut Vec<LogSubscriber>,
     buffered_log_messages: &mut Vec<LogMessage>,
     subscriber: LogSubscriber,
@@ -84,82 +82,43 @@ pub(crate) async fn attach_log_subscriber(
     log_subscribers.push(subscriber);
     let _ = found_tx.send(true);
     for message in std::mem::take(buffered_log_messages) {
-        replay_log_message(log_subscribers, &message).await;
+        deliver_log_message(log_subscribers, &message, Admission::Always);
     }
 }
-
-/// Deliver one buffered log line, waiting up to 100 ms per subscriber for
-/// channel space.
-///
-/// The backlog is sent once, to a reader that has just attached and is
-/// draining, and it can be larger than the channel, so it waits for space
-/// instead of dropping lines like [`send_log_message`]. A reader that stops
-/// draining is closed after a streak of timeouts, so a stuck reader costs
-/// the event loop at most 100 × 100 ms once.
-async fn replay_log_message(log_subscribers: &mut Vec<LogSubscriber>, message: &LogMessage) {
-    const MAX_CONSECUTIVE_LOG_SEND_TIMEOUTS: usize = 100;
-    for subscriber in log_subscribers.iter_mut() {
-        let send_result =
-            tokio::time::timeout(Duration::from_millis(100), subscriber.send_message(message))
-                .await;
-        match send_result {
-            // Actually enqueued — the subscriber is keeping up, clear the streak.
-            Ok(Ok(true)) => {
-                subscriber.reset_timeout_streak();
-            }
-            // Dropped by the level filter — not a delivery attempt, so leave the
-            // streak untouched (resetting here would let below-filter traffic
-            // keep a stuck subscriber alive forever).
-            Ok(Ok(false)) => {}
-            Ok(Err(_)) => {
-                subscriber.close();
-            }
-            Err(_) => {
-                let timeouts = subscriber.record_timeout();
-                if timeouts >= MAX_CONSECUTIVE_LOG_SEND_TIMEOUTS {
-                    tracing::warn!(
-                        timeouts,
-                        "closing slow log subscriber after repeated send timeouts"
-                    );
-                    subscriber.close();
-                } else {
-                    tracing::warn!(
-                        timeouts,
-                        "timed out sending log message to CLI subscriber; keeping subscription active"
-                    );
-                }
-            }
-        }
-    }
-    log_subscribers.retain(|s| !s.is_closed());
-}
-
-/// How long a log subscriber's channel may stay full, with every line in
-/// between dropped, before the subscriber is closed.
-pub(crate) const LOG_SUBSCRIBER_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Forward a live log line to every subscriber without waiting.
 ///
 /// This runs inline in the coordinator's event loop for every log line, so
-/// it must never wait on a reader (#3794): one slow `dora logs -f` would
-/// otherwise pace the whole coordinator. Logs are best-effort, so a reader
-/// whose channel is full misses the line and is later told how many it
-/// missed; a reader whose channel stays full for
-/// [`LOG_SUBSCRIBER_STALL_TIMEOUT`] is closed.
+/// it must never wait on a reader (#3794): one connection that reads slowly
+/// would otherwise pace the whole coordinator. A connection with more than
+/// `MAX_QUEUED_LOG_BYTES` still queued misses the line and is told how many
+/// it missed with the next line it gets.
 pub(crate) fn send_log_message(log_subscribers: &mut Vec<LogSubscriber>, message: &LogMessage) {
-    let now = tokio::time::Instant::now();
+    deliver_log_message(log_subscribers, message, Admission::Capped);
+}
+
+/// Forward a one-off status line from the coordinator itself, such as
+/// "dataflow finished", a spawn or build-timeout error, or an orphaned
+/// dataflow waiting for its daemons.
+///
+/// Unlike [`send_log_message`] it is never dropped over the byte cap, and it
+/// carries any pending dropped-lines notice: it is often the last line the
+/// subscribers get before they are dropped with their dataflow or build.
+pub(crate) fn send_status_log_message(
+    log_subscribers: &mut Vec<LogSubscriber>,
+    message: &LogMessage,
+) {
+    deliver_log_message(log_subscribers, message, Admission::Always);
+}
+
+fn deliver_log_message(
+    log_subscribers: &mut Vec<LogSubscriber>,
+    message: &LogMessage,
+    admission: Admission,
+) {
     for subscriber in log_subscribers.iter_mut() {
-        match subscriber.try_send_message(message, now) {
-            // A filtered line is not a delivery attempt, so it neither starts
-            // nor ends a stall.
-            Ok(Delivery::Sent | Delivery::Filtered) => {}
-            Ok(Delivery::Full { stalled }) => {
-                if stalled >= LOG_SUBSCRIBER_STALL_TIMEOUT {
-                    tracing::warn!(?stalled, "closing log subscriber whose channel stayed full");
-                    subscriber.close();
-                }
-            }
-            Err(_) => subscriber.close(),
+        if subscriber.send(message, admission).is_err() {
+            subscriber.close();
         }
     }
     log_subscribers.retain(|s| !s.is_closed());
@@ -883,6 +842,7 @@ async fn destroy_daemons(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::log_subscriber::{LogQueue, log_queue};
     use crate::state::DaemonConnection;
     use crate::topic_subscriber::TopicSubscriber;
 
@@ -1253,7 +1213,7 @@ mod tests {
             dataflow_id: None,
             node_id: None,
             daemon_id: None,
-            // Warn passes an Info-level subscriber, so `send_message` actually
+            // Warn passes an Info-level subscriber, so `send` actually
             // enqueues rather than dropping it at the level filter.
             level: dora_message::common::LogLevel::Warn.into(),
             target: None,
@@ -1271,188 +1231,134 @@ mod tests {
         event["payload"]["message"].as_str().unwrap().to_owned()
     }
 
-    /// A reader whose channel is full must not make the event loop wait
-    /// (#3794): the line is dropped, and once the reader drains, it is told
-    /// how many lines it missed before the next one.
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn send_log_message_drops_lines_for_a_full_reader_and_reports_them() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(2);
-        let mut subscribers = vec![LogSubscriber::new(log::LevelFilter::Info, tx)];
+    /// A log line whose encoding is just over 1 MiB, so that
+    /// `MAX_QUEUED_LOG_BYTES` holds fewer than 16 of them.
+    fn big_log_message() -> LogMessage {
+        let mut message = test_log_message();
+        message.message = "x".repeat(1024 * 1024);
+        message
+    }
 
-        let mut first = test_log_message();
-        first.message = "first".into();
-        send_log_message(&mut subscribers, &first);
-        send_log_message(&mut subscribers, &first);
-        // The channel is now full: these are dropped, not awaited.
-        for _ in 0..3 {
+    fn subscriber() -> (LogSubscriber, LogQueue) {
+        let (sink, queue) = log_queue();
+        (LogSubscriber::new(log::LevelFilter::Info, sink), queue)
+    }
+
+    fn drain(queue: &mut LogQueue) -> Vec<String> {
+        std::iter::from_fn(|| queue.try_recv())
+            .map(|line| log_text(&line))
+            .collect()
+    }
+
+    /// The event loop never waits on a reader (#3794), and below the byte
+    /// cap nothing is dropped, however many lines a burst has.
+    #[test]
+    fn send_log_message_queues_a_burst_without_waiting_or_dropping() {
+        let (subscriber, mut queue) = subscriber();
+        let mut subscribers = vec![subscriber];
+        for _ in 0..10_000 {
             send_log_message(&mut subscribers, &test_log_message());
         }
-        assert_eq!(subscribers.len(), 1, "subscriber must not be evicted");
-        assert_eq!(log_text(&rx.try_recv().unwrap()), "first");
-
-        // One free slot: the notice takes it, so the next line is dropped too.
-        let mut last = test_log_message();
-        last.message = "last".into();
-        send_log_message(&mut subscribers, &last);
-        assert_eq!(log_text(&rx.try_recv().unwrap()), "first");
-        assert_eq!(
-            log_text(&rx.try_recv().unwrap()),
-            "dropped 3 log line(s) because this reader fell behind"
-        );
-
-        // Room for both: the notice for the one line dropped meanwhile, then
-        // the line itself.
-        send_log_message(&mut subscribers, &last);
-        assert_eq!(
-            log_text(&rx.try_recv().unwrap()),
-            "dropped 1 log line(s) because this reader fell behind"
-        );
-        assert_eq!(log_text(&rx.try_recv().unwrap()), "last");
-        assert!(rx.try_recv().is_err());
+        assert_eq!(subscribers.len(), 1);
+        assert_eq!(drain(&mut queue).len(), 10_000);
     }
 
-    /// A reader whose channel stays full is closed after
-    /// `LOG_SUBSCRIBER_STALL_TIMEOUT`, however many lines arrive meanwhile;
-    /// one that frees a slot in between starts over.
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn send_log_message_closes_a_reader_full_for_the_stall_timeout() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let mut subscribers = vec![LogSubscriber::new(log::LevelFilter::Info, tx)];
-        send_log_message(&mut subscribers, &test_log_message());
+    /// Over the byte cap, live lines are dropped and counted. The next line
+    /// that fits goes out right after a notice of how many were dropped: the
+    /// notice does not take the place of that line, so a reader that drains
+    /// at all keeps getting real lines.
+    #[test]
+    fn send_log_message_drops_over_the_byte_cap_and_reports_with_the_next_line() {
+        let (subscriber, mut queue) = subscriber();
+        let mut subscribers = vec![subscriber];
+        const SENT: usize = 20;
+        for _ in 0..SENT {
+            send_log_message(&mut subscribers, &big_log_message());
+        }
+        assert_eq!(subscribers.len(), 1, "a slow reader must not be evicted");
+        let queued = drain(&mut queue).len();
+        assert!(
+            queued < SENT,
+            "the cap must drop some of {SENT} 1 MiB lines"
+        );
 
-        send_log_message(&mut subscribers, &test_log_message());
-        tokio::time::advance(LOG_SUBSCRIBER_STALL_TIMEOUT - Duration::from_secs(1)).await;
-        send_log_message(&mut subscribers, &test_log_message());
-        assert_eq!(subscribers.len(), 1, "evicted before the stall timeout");
+        let mut next = test_log_message();
+        next.message = "next".into();
+        send_log_message(&mut subscribers, &next);
+        let dropped = SENT - queued;
+        assert_eq!(
+            drain(&mut queue),
+            [
+                format!("dropped {dropped} log line(s) because this reader fell behind"),
+                "next".to_owned(),
+            ]
+        );
+    }
 
-        // The reader drains once: the notice goes out and the stall restarts.
-        rx.try_recv().unwrap();
+    /// The notice carries `DROPPED_LOG_LINES_FIELD`, which the CLI uses to
+    /// show it past its node and pattern filters.
+    #[test]
+    fn dropped_lines_notice_carries_its_field() {
+        let (subscriber, mut queue) = subscriber();
+        let mut subscribers = vec![subscriber];
+        for _ in 0..20 {
+            send_log_message(&mut subscribers, &big_log_message());
+        }
+        while queue.try_recv().is_some() {}
         send_log_message(&mut subscribers, &test_log_message());
-        tokio::time::advance(Duration::from_secs(2)).await;
-        send_log_message(&mut subscribers, &test_log_message());
-        assert_eq!(subscribers.len(), 1, "a draining reader must be kept");
+        let notice: serde_json::Value = serde_json::from_str(&queue.try_recv().unwrap()).unwrap();
+        assert!(
+            notice["payload"]["fields"]
+                .get(dora_message::common::DROPPED_LOG_LINES_FIELD)
+                .is_some()
+        );
+    }
 
-        // A filtered line neither ends nor triggers the stall.
-        tokio::time::advance(LOG_SUBSCRIBER_STALL_TIMEOUT).await;
+    /// A coordinator status line, often the last one before the subscribers
+    /// are dropped with their dataflow, is never dropped over the cap and
+    /// flushes a pending notice, even when the line itself is filtered.
+    #[test]
+    fn send_status_log_message_bypasses_the_cap_and_flushes_the_notice() {
+        let (subscriber, mut queue) = subscriber();
+        let mut subscribers = vec![subscriber];
+        for _ in 0..20 {
+            send_log_message(&mut subscribers, &big_log_message());
+        }
+        let mut finished = test_log_message();
+        finished.message = "dataflow finished".into();
+        send_status_log_message(&mut subscribers, &finished);
+        let lines = drain(&mut queue);
+        assert!(lines[lines.len() - 2].starts_with("dropped "));
+        assert_eq!(lines.last().unwrap(), "dataflow finished");
+
+        // Over the cap again, then a status line below the subscriber's
+        // level: the notice still goes out, the line does not.
+        for _ in 0..20 {
+            send_log_message(&mut subscribers, &big_log_message());
+        }
         let mut debug = test_log_message();
         debug.level = dora_message::common::LogLevel::Debug.into();
-        send_log_message(&mut subscribers, &debug);
-        assert_eq!(subscribers.len(), 1);
-        send_log_message(&mut subscribers, &test_log_message());
-        assert!(subscribers.is_empty(), "a stalled reader must be closed");
+        send_status_log_message(&mut subscribers, &debug);
+        let lines = drain(&mut queue);
+        assert!(lines.last().unwrap().starts_with("dropped "));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn replay_log_message_resets_timeout_streak_on_successful_send() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        let mut subscriber = LogSubscriber::new(log::LevelFilter::Info, tx);
-        // Prime the counter: simulate 3 prior timeouts.
-        assert_eq!(subscriber.record_timeout(), 1);
-        assert_eq!(subscriber.record_timeout(), 2);
-        assert_eq!(subscriber.record_timeout(), 3);
-
-        let mut subscribers = vec![subscriber];
-        // A real send should succeed (channel has capacity) and reset the streak.
-        replay_log_message(&mut subscribers, &test_log_message()).await;
-
-        assert!(
-            rx.try_recv().is_ok(),
-            "subscriber should receive the log message"
-        );
-        assert_eq!(subscribers.len(), 1, "subscriber must not be evicted");
-        assert_eq!(
-            subscribers[0].record_timeout(),
-            1,
-            "streak must be back to 0 after a successful send"
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn replay_log_message_closes_subscriber_after_100_consecutive_timeouts() {
-        // Capacity 1 + pre-filled + rx never drained = every send times out.
-        // `start_paused = true` makes tokio auto-advance through the 100 × 100ms
-        // timeouts without real wall-clock delay.
-        let (tx, _rx_never_drained) = tokio::sync::mpsc::channel(1);
-        tx.send("prefill".to_string()).await.unwrap();
-
-        let mut subscribers = vec![LogSubscriber::new(log::LevelFilter::Info, tx)];
-
-        for i in 1..=99 {
-            replay_log_message(&mut subscribers, &test_log_message()).await;
-            assert_eq!(
-                subscribers.len(),
-                1,
-                "subscriber evicted prematurely at iteration {i}"
-            );
-        }
-        // 100th consecutive timeout triggers the close + retain eviction.
-        replay_log_message(&mut subscribers, &test_log_message()).await;
-        assert!(
-            subscribers.is_empty(),
-            "subscriber should be evicted after 100 consecutive timeouts"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn replay_log_message_filtered_message_does_not_reset_streak() {
-        // A message dropped by the level filter is not a delivery attempt, so
-        // it must leave the timeout streak untouched — otherwise below-filter
-        // traffic could keep a stuck subscriber alive forever.
-        let (tx, _rx) = tokio::sync::mpsc::channel(4);
-        let mut subscriber = LogSubscriber::new(log::LevelFilter::Info, tx);
-        assert_eq!(subscriber.record_timeout(), 1);
-        assert_eq!(subscriber.record_timeout(), 2);
-        let mut subscribers = vec![subscriber];
-
-        // Debug is below the Info filter, so this is not delivered.
-        let mut msg = test_log_message();
-        msg.level = dora_message::common::LogLevel::Debug.into();
-        replay_log_message(&mut subscribers, &msg).await;
-
-        assert_eq!(subscribers.len(), 1, "subscriber must not be evicted");
-        // Streak preserved at 2, so the next timeout yields 3 (not reset to 1).
-        assert_eq!(
-            subscribers[0].record_timeout(),
-            3,
-            "a filtered message must not reset the timeout streak"
-        );
-    }
-
-    /// Attaching to a dataflow that buffered more logs than the subscriber's
-    /// channel holds must deliver the whole backlog. The WS task only drains
-    /// the channel after `found_tx` fires, so answering it after the replay
-    /// left the channel full: the replay hit 100 send timeouts, stalled the
-    /// event loop and evicted the subscriber with most of the backlog lost.
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn attach_log_subscriber_delivers_backlog_larger_than_channel() {
-        const BACKLOG: usize = 200;
-        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+    /// Attaching replays the whole backlog, even one larger than the byte
+    /// cap: it is already held in memory and a reader that just attached
+    /// must get all of it.
+    #[test]
+    fn attach_log_subscriber_replays_a_backlog_over_the_byte_cap() {
+        const BACKLOG: usize = 20;
+        let (subscriber, mut queue) = subscriber();
         let (found_tx, found_rx) = tokio::sync::oneshot::channel::<bool>();
-
-        // Mirrors `ws_control`: wait for the subscribe answer, then drain.
-        let drain = tokio::spawn(async move {
-            assert!(found_rx.await.expect("found_tx dropped"));
-            let mut received = 0;
-            while rx.recv().await.is_some() {
-                received += 1;
-            }
-            received
-        });
-
         let mut subscribers = Vec::new();
-        let mut buffered = vec![test_log_message(); BACKLOG];
-        attach_log_subscriber(
-            &mut subscribers,
-            &mut buffered,
-            LogSubscriber::new(log::LevelFilter::Info, tx),
-            found_tx,
-        )
-        .await;
+        let mut buffered = vec![big_log_message(); BACKLOG];
+        attach_log_subscriber(&mut subscribers, &mut buffered, subscriber, found_tx);
 
+        assert_eq!(found_rx.blocking_recv(), Ok(true));
         assert!(buffered.is_empty(), "the backlog is handed over once");
-        assert_eq!(subscribers.len(), 1, "subscriber must not be evicted");
-        drop(subscribers); // close the channel so the drain task finishes
-        assert_eq!(drain.await.unwrap(), BACKLOG);
+        assert_eq!(subscribers.len(), 1);
+        assert_eq!(drain(&mut queue).len(), BACKLOG);
     }
 
     /// A topic subscriber that got closed (its CLI went away) is evicted when

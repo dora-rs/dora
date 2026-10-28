@@ -1,28 +1,100 @@
-use crate::timeout_streak::TimeoutStreak;
-use dora_message::coordinator_to_cli::LogMessage;
+use dora_message::{common::DROPPED_LOG_LINES_FIELD, coordinator_to_cli::LogMessage};
 use eyre::{Context, ContextCompat};
-use tokio::sync::mpsc::error::TrySendError;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use tokio::sync::mpsc;
 
-/// Outcome of [`LogSubscriber::try_send_message`].
+/// How many bytes of encoded log lines one WS connection may have queued
+/// before live lines to it are dropped.
+///
+/// The coordinator's event loop never waits on a log reader (#3794), so this
+/// queue is what absorbs a reader that falls behind. It is bounded by bytes,
+/// not by entries, because a single line can be up to 1 MiB.
+pub(crate) const MAX_QUEUED_LOG_BYTES: usize = 16 * 1024 * 1024;
+
+/// Create the log queue of one WS connection: the coordinator pushes into
+/// the [`LogSink`] and the connection's task drains the [`LogQueue`].
+pub(crate) fn log_queue() -> (LogSink, LogQueue) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let queued = Arc::new(AtomicUsize::new(0));
+    (
+        LogSink {
+            tx,
+            queued: queued.clone(),
+        },
+        LogQueue { rx, queued },
+    )
+}
+
+/// The sending half of a connection's log queue.
+#[derive(Debug, Clone)]
+pub struct LogSink {
+    tx: mpsc::UnboundedSender<String>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl LogSink {
+    fn has_room_for(&self, line: &str) -> bool {
+        self.queued.load(Ordering::Relaxed) + line.len() <= MAX_QUEUED_LOG_BYTES
+    }
+
+    pub(crate) fn push(&self, line: String) -> eyre::Result<()> {
+        let len = line.len();
+        self.queued.fetch_add(len, Ordering::Relaxed);
+        self.tx.send(line).map_err(|_| {
+            self.queued.fetch_sub(len, Ordering::Relaxed);
+            eyre::eyre!("WS log subscriber channel closed")
+        })
+    }
+
+    fn is_closed(&self) -> bool {
+        self.tx.is_closed()
+    }
+}
+
+/// The receiving half of a connection's log queue.
+pub(crate) struct LogQueue {
+    rx: mpsc::UnboundedReceiver<String>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl LogQueue {
+    pub(crate) async fn recv(&mut self) -> Option<String> {
+        let line = self.rx.recv().await?;
+        self.queued.fetch_sub(line.len(), Ordering::Relaxed);
+        Some(line)
+    }
+
+    pub(crate) fn try_recv(&mut self) -> Option<String> {
+        let line = self.rx.try_recv().ok()?;
+        self.queued.fetch_sub(line.len(), Ordering::Relaxed);
+        Some(line)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.rx.len()
+    }
+}
+
+/// Whether a line may be dropped when the connection's queue is over
+/// [`MAX_QUEUED_LOG_BYTES`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Delivery {
-    /// Enqueued for the reader.
-    Sent,
-    /// Below the subscriber's level filter; not a delivery attempt.
-    Filtered,
-    /// The reader's channel was full, so the line was dropped. `stalled` is
-    /// how long the channel has been full without anything going out.
-    Full { stalled: std::time::Duration },
+pub(crate) enum Admission {
+    /// A live line: dropped (and counted) when the queue is over its cap.
+    Capped,
+    /// Always queued: the backlog replayed on attach, which is already held
+    /// in memory, and the last line a subscriber gets before it is dropped,
+    /// which also carries any pending dropped-lines notice.
+    Always,
 }
 
 pub struct LogSubscriber {
     pub level: log::LevelFilter,
-    sender: Option<tokio::sync::mpsc::Sender<String>>,
-    timeouts: TimeoutStreak,
-    /// Lines dropped on a full channel since the last one that went out.
+    sink: Option<LogSink>,
+    /// Live lines dropped over the byte cap since the last one that went out.
     dropped: u64,
-    /// When the channel was first found full since the last successful send.
-    full_since: Option<tokio::time::Instant>,
 }
 
 fn encode(message: &LogMessage) -> eyre::Result<String> {
@@ -34,6 +106,9 @@ fn encode(message: &LogMessage) -> eyre::Result<String> {
 }
 
 /// The line a reader gets in place of the `dropped` lines it fell behind on.
+///
+/// It carries [`DROPPED_LOG_LINES_FIELD`] so the CLI shows it even when it
+/// filters the stream by node or pattern.
 fn dropped_lines_notice(next: &LogMessage, dropped: u64) -> LogMessage {
     LogMessage {
         build_id: next.build_id,
@@ -47,91 +122,46 @@ fn dropped_lines_notice(next: &LogMessage, dropped: u64) -> LogMessage {
         line: None,
         message: format!("dropped {dropped} log line(s) because this reader fell behind"),
         timestamp: next.timestamp,
-        fields: None,
+        fields: Some([(DROPPED_LOG_LINES_FIELD.to_owned(), dropped.to_string())].into()),
     }
 }
 
 impl LogSubscriber {
-    pub fn new(level: log::LevelFilter, sender: tokio::sync::mpsc::Sender<String>) -> Self {
+    pub(crate) fn new(level: log::LevelFilter, sink: LogSink) -> Self {
         Self {
             level,
-            sender: Some(sender),
-            timeouts: TimeoutStreak::default(),
+            sink: Some(sink),
             dropped: 0,
-            full_since: None,
         }
     }
 
-    /// Deliver `message` to this subscriber, waiting for channel space.
+    /// Queue `message` for this subscriber without waiting.
     ///
-    /// Only for the one-time replay of buffered logs when the subscriber
-    /// attaches (bounded by the caller's timeout); live logs go through the
-    /// non-blocking [`Self::try_send_message`].
-    ///
-    /// Returns `Ok(true)` when the message was actually enqueued and
-    /// `Ok(false)` when it was dropped by the level filter (not a delivery
-    /// attempt). The caller uses this to keep the timeout streak meaningful:
-    /// a filtered message must not reset the streak, or a stuck subscriber
-    /// that keeps seeing below-filter traffic would never be evicted.
-    pub async fn send_message(&mut self, message: &LogMessage) -> eyre::Result<bool> {
+    /// A [`Admission::Capped`] line is dropped and counted when the
+    /// connection's queue is over [`MAX_QUEUED_LOG_BYTES`]. The next line
+    /// that is queued goes out right after a notice of how many were
+    /// dropped, so a reader that drains at all keeps getting real lines.
+    pub(crate) fn send(&mut self, message: &LogMessage, admission: Admission) -> eyre::Result<()> {
+        let sink = self.sink.as_ref().context("subscriber is closed")?;
         if !self.passes_filter(message) {
-            return Ok(false);
+            // A last line below the filter still flushes the notice, since
+            // no later line will.
+            if admission == Admission::Always && self.dropped > 0 {
+                sink.push(encode(&dropped_lines_notice(message, self.dropped))?)?;
+                self.dropped = 0;
+            }
+            return Ok(());
         }
-        let sender = self.sender.as_ref().context("subscriber is closed")?;
-        sender
-            .send(encode(message)?)
-            .await
-            .map_err(|_e| eyre::eyre!("WS log subscriber channel closed"))?;
-        Ok(true)
-    }
-
-    /// Deliver `message` without waiting: the coordinator's event loop calls
-    /// this for every live log line, so a slow `dora logs -f` reader must not
-    /// pace it (#3794).
-    ///
-    /// When the channel is full the line is dropped and counted. Once space
-    /// frees, the reader first gets one line saying how many were dropped.
-    /// `now` dates the start of a stall: anything enqueued ends it.
-    pub fn try_send_message(
-        &mut self,
-        message: &LogMessage,
-        now: tokio::time::Instant,
-    ) -> eyre::Result<Delivery> {
-        if !self.passes_filter(message) {
-            return Ok(Delivery::Filtered);
+        let line = encode(message)?;
+        if admission == Admission::Capped && !sink.has_room_for(&line) {
+            self.dropped += 1;
+            return Ok(());
         }
         if self.dropped > 0 {
-            let notice = dropped_lines_notice(message, self.dropped);
-            if !self.try_enqueue(&notice)? {
-                return Ok(self.drop_line(now));
-            }
+            sink.push(encode(&dropped_lines_notice(message, self.dropped))?)?;
             self.dropped = 0;
         }
-        if self.try_enqueue(message)? {
-            Ok(Delivery::Sent)
-        } else {
-            Ok(self.drop_line(now))
-        }
-    }
-
-    /// Enqueue `message` if the channel has room; `Ok(false)` if it is full.
-    fn try_enqueue(&mut self, message: &LogMessage) -> eyre::Result<bool> {
-        let sender = self.sender.as_ref().context("subscriber is closed")?;
-        match sender.try_send(encode(message)?) {
-            Ok(()) => {
-                self.full_since = None;
-                Ok(true)
-            }
-            Err(TrySendError::Full(_)) => Ok(false),
-            Err(TrySendError::Closed(_)) => eyre::bail!("WS log subscriber channel closed"),
-        }
-    }
-
-    fn drop_line(&mut self, now: tokio::time::Instant) -> Delivery {
-        self.dropped += 1;
-        Delivery::Full {
-            stalled: now - *self.full_since.get_or_insert(now),
-        }
+        sink.push(line)
     }
 
     fn passes_filter(&self, message: &LogMessage) -> bool {
@@ -141,25 +171,15 @@ impl LogSubscriber {
         }
     }
 
-    /// Reset the consecutive-timeout streak after a successful send.
-    pub fn reset_timeout_streak(&mut self) {
-        self.timeouts.reset();
-    }
-
-    /// Record a send timeout and return the new consecutive-timeout count.
-    pub fn record_timeout(&mut self) -> usize {
-        self.timeouts.record()
-    }
-
     pub fn is_closed(&self) -> bool {
-        match &self.sender {
+        match &self.sink {
             None => true,
-            Some(sender) => sender.is_closed(),
+            Some(sink) => sink.is_closed(),
         }
     }
 
     pub fn close(&mut self) {
-        self.sender = None;
+        self.sink = None;
     }
 }
 
@@ -167,26 +187,33 @@ impl LogSubscriber {
 mod tests {
     use super::*;
 
-    fn new_subscriber(capacity: usize) -> (LogSubscriber, tokio::sync::mpsc::Receiver<String>) {
-        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
-        (LogSubscriber::new(log::LevelFilter::Info, tx), rx)
-    }
-
-    #[test]
-    fn record_timeout_is_monotonic_and_resets() {
-        let (mut sub, _rx) = new_subscriber(1);
-        assert_eq!(sub.record_timeout(), 1);
-        assert_eq!(sub.record_timeout(), 2);
-        assert_eq!(sub.record_timeout(), 3);
-        sub.reset_timeout_streak();
-        assert_eq!(sub.record_timeout(), 1);
-    }
-
     #[test]
     fn close_marks_subscriber_closed() {
-        let (mut sub, _rx) = new_subscriber(1);
+        let (sink, _queue) = log_queue();
+        let mut sub = LogSubscriber::new(log::LevelFilter::Info, sink);
         assert!(!sub.is_closed());
         sub.close();
         assert!(sub.is_closed());
+    }
+
+    #[test]
+    fn dropping_the_queue_closes_the_subscriber() {
+        let (sink, queue) = log_queue();
+        let sub = LogSubscriber::new(log::LevelFilter::Info, sink);
+        drop(queue);
+        assert!(sub.is_closed());
+    }
+
+    #[test]
+    fn queued_bytes_track_what_the_connection_has_not_drained() {
+        let (sink, mut queue) = log_queue();
+        sink.push("abc".into()).unwrap();
+        sink.push("de".into()).unwrap();
+        assert_eq!(sink.queued.load(Ordering::Relaxed), 5);
+        assert_eq!(queue.try_recv().as_deref(), Some("abc"));
+        assert_eq!(sink.queued.load(Ordering::Relaxed), 2);
+        assert_eq!(queue.try_recv().as_deref(), Some("de"));
+        assert_eq!(sink.queued.load(Ordering::Relaxed), 0);
+        assert_eq!(queue.try_recv(), None);
     }
 }

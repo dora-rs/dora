@@ -529,8 +529,7 @@ impl Coordinator {
                         &mut dataflow.buffered_log_messages,
                         LogSubscriber::new(level, sender),
                         found_tx,
-                    )
-                    .await;
+                    );
                 } else if self.archived_dataflows.contains_key(&dataflow_id) {
                     // Dataflow already finished before the CLI could subscribe.
                     // Acknowledge the subscription so the CLI doesn't error, then
@@ -552,8 +551,7 @@ impl Coordinator {
                         &mut build.buffered_log_messages,
                         LogSubscriber::new(level, sender),
                         found_tx,
-                    )
-                    .await;
+                    );
                 } else {
                     let _ = found_tx.send(false);
                 }

@@ -16,14 +16,14 @@ pub enum ControlEvent {
     LogSubscribe {
         dataflow_id: Uuid,
         level: log::LevelFilter,
-        sender: mpsc::Sender<String>,
+        sender: crate::log_subscriber::LogSink,
         /// Sends `true` if the dataflow exists, `false` otherwise.
         found_tx: oneshot::Sender<bool>,
     },
     BuildLogSubscribe {
         build_id: BuildId,
         level: log::LevelFilter,
-        sender: mpsc::Sender<String>,
+        sender: crate::log_subscriber::LogSink,
         /// Sends `true` if the build exists, `false` otherwise.
         found_tx: oneshot::Sender<bool>,
     },
