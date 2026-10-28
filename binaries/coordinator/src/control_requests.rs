@@ -21,12 +21,13 @@ use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
 use dora_message::{
     BuildId, SessionId,
     cli_to_coordinator::ControlRequest,
+    config::{Input, InputMapping},
     coordinator_to_cli::{
         CleanFailure, ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry,
         DataflowResult, DataflowStatus,
     },
     coordinator_to_daemon::{DaemonCoordinatorEvent, StateCatchUpOperation, Timestamped},
-    descriptor::{Descriptor, Node},
+    descriptor::{CoreNodeKind, Descriptor, Node, ResolvedNode},
     id::{DataId, NodeId},
 };
 use eyre::{Result, bail, eyre};
@@ -1241,11 +1242,15 @@ impl Coordinator {
                     // #2877).
                     match resolve_single_node(node, &dataflow.descriptor) {
                         Ok((node_id, resolved_node)) => {
-                            // Honour the node's `_unstable_deploy`
-                            // placement among the dataflow's daemons
-                            // (#3672).
+                            // Honour the node's `deploy` placement
+                            // among the dataflow's daemons (#3672).
+                            let producer_daemons = upstream_node_ids(&resolved_node)
+                                .filter_map(|source| dataflow.node_to_daemon.get(source))
+                                .cloned()
+                                .collect();
                             let daemon_id = self.daemon_connections.resolve_add_node_daemon(
                                 &dataflow.daemons,
+                                &producer_daemons,
                                 resolved_node.deploy.as_ref(),
                             );
                             match daemon_id {
@@ -1627,4 +1632,21 @@ async fn lock_param_target(
     };
     let lock = daemon_connections.get(daemon_id)?.param_write_lock.clone();
     Some(lock.lock_owned().await)
+}
+
+/// The ids of the nodes whose outputs `node` subscribes to (its `User` input
+/// mappings, across all operators of a runtime node).
+pub(crate) fn upstream_node_ids(node: &ResolvedNode) -> impl Iterator<Item = &NodeId> {
+    let inputs: Vec<&Input> = match &node.kind {
+        CoreNodeKind::Custom(n) => n.run_config.inputs.values().collect(),
+        CoreNodeKind::Runtime(n) => n
+            .operators
+            .iter()
+            .flat_map(|op| op.config.inputs.values())
+            .collect(),
+    };
+    inputs.into_iter().filter_map(|input| match &input.mapping {
+        InputMapping::User(mapping) => Some(&mapping.source),
+        _ => None,
+    })
 }

@@ -6341,7 +6341,7 @@ fn deploy_from(value: serde_json::Value) -> dora_message::descriptor::Deploy {
 #[test]
 fn add_node_daemon_honours_deploy_placement() {
     // #3672: `dora node add` used to spawn on whichever daemon of the
-    // dataflow sorted first, ignoring the node's `_unstable_deploy`.
+    // dataflow sorted first, ignoring the node's `deploy` placement.
     let daemon_a = DaemonId::new(Some("machine-a".to_string()));
     let daemon_b = DaemonId::new(Some("machine-b".to_string()));
     let outsider = DaemonId::new(Some("machine-c".to_string()));
@@ -6371,7 +6371,7 @@ fn add_node_daemon_honours_deploy_placement() {
     let by_machine = deploy_from(serde_json::json!({ "machine": "machine-b" }));
     assert_eq!(
         daemon_connections
-            .resolve_add_node_daemon(&dataflow_daemons, Some(&by_machine))
+            .resolve_add_node_daemon(&dataflow_daemons, &BTreeSet::new(), Some(&by_machine))
             .unwrap(),
         daemon_b
     );
@@ -6380,7 +6380,7 @@ fn add_node_daemon_honours_deploy_placement() {
     let by_labels = deploy_from(serde_json::json!({ "labels": { "camera": "true" } }));
     assert_eq!(
         daemon_connections
-            .resolve_add_node_daemon(&dataflow_daemons, Some(&by_labels))
+            .resolve_add_node_daemon(&dataflow_daemons, &BTreeSet::new(), Some(&by_labels))
             .unwrap(),
         daemon_b
     );
@@ -6389,22 +6389,65 @@ fn add_node_daemon_honours_deploy_placement() {
     let other_machine = deploy_from(serde_json::json!({ "machine": "machine-c" }));
     assert!(
         daemon_connections
-            .resolve_add_node_daemon(&dataflow_daemons, Some(&other_machine))
+            .resolve_add_node_daemon(&dataflow_daemons, &BTreeSet::new(), Some(&other_machine))
             .is_err()
     );
     let other_labels = deploy_from(serde_json::json!({ "labels": { "gpu": "true" } }));
     assert!(
         daemon_connections
-            .resolve_add_node_daemon(&dataflow_daemons, Some(&other_labels))
+            .resolve_add_node_daemon(&dataflow_daemons, &BTreeSet::new(), Some(&other_labels))
             .is_err()
     );
 
     // no placement keeps working on a dataflow without unnamed daemons
     assert_eq!(
         daemon_connections
-            .resolve_add_node_daemon(&dataflow_daemons, None)
+            .resolve_add_node_daemon(&dataflow_daemons, &BTreeSet::new(), None)
             .unwrap(),
         daemon_a
+    );
+}
+
+#[test]
+fn add_node_daemon_must_run_beside_its_upstream_producers() {
+    // `AddNode` only wires the new node's inputs on the daemon it is sent
+    // to, so placing it on another daemon than its producers would leave it
+    // without inputs while the CLI reports `NodeAdded`.
+    let daemon_a = DaemonId::new(Some("machine-a".to_string()));
+    let daemon_b = DaemonId::new(Some("machine-b".to_string()));
+    let dataflow_daemons = BTreeSet::from([daemon_a.clone(), daemon_b.clone()]);
+    let on_b = BTreeSet::from([daemon_b.clone()]);
+    let daemon_connections = DaemonConnections::default();
+
+    // without a placement, the producers' daemon is picked over the first one
+    assert_eq!(
+        daemon_connections
+            .resolve_add_node_daemon(&dataflow_daemons, &on_b, None)
+            .unwrap(),
+        daemon_b
+    );
+
+    // a placement on the producers' daemon is accepted
+    let by_machine_b = deploy_from(serde_json::json!({ "machine": "machine-b" }));
+    assert_eq!(
+        daemon_connections
+            .resolve_add_node_daemon(&dataflow_daemons, &on_b, Some(&by_machine_b))
+            .unwrap(),
+        daemon_b
+    );
+
+    // a placement away from the producers is rejected, not silently starved
+    let by_machine_a = deploy_from(serde_json::json!({ "machine": "machine-a" }));
+    let err = daemon_connections
+        .resolve_add_node_daemon(&dataflow_daemons, &on_b, Some(&by_machine_a))
+        .unwrap_err();
+    assert!(format!("{err}").contains("not supported"), "{err}");
+
+    // producers spread over several daemons can't all be local to one node
+    assert!(
+        daemon_connections
+            .resolve_add_node_daemon(&dataflow_daemons, &dataflow_daemons, None)
+            .is_err()
     );
 }
 
@@ -6417,13 +6460,13 @@ fn add_node_daemon_without_placement_prefers_unnamed_daemon() {
 
     assert_eq!(
         daemon_connections
-            .resolve_add_node_daemon(&dataflow_daemons, None)
+            .resolve_add_node_daemon(&dataflow_daemons, &BTreeSet::new(), None)
             .unwrap(),
         unnamed
     );
     assert!(
         daemon_connections
-            .resolve_add_node_daemon(&BTreeSet::new(), None)
+            .resolve_add_node_daemon(&BTreeSet::new(), &BTreeSet::new(), None)
             .is_err()
     );
 }
@@ -6612,4 +6655,24 @@ async fn clean_keeps_a_dataflow_awaiting_reclaim() {
         "the Recovering record must survive `dora clean`"
     );
     assert!(coordinator.dataflow_results.contains_key(&dataflow_id));
+}
+
+#[test]
+fn upstream_node_ids_lists_node_sources_only() {
+    let running = running_descriptor_with_operator_producer(serde_json::json!(null));
+    let added: Node = serde_json::from_value(serde_json::json!({
+        "id": "consumer",
+        "path": "consumer",
+        "inputs": {
+            "reading": "producer/result",
+            "tick": "dora/timer/millis/100",
+        },
+    }))
+    .expect("valid node");
+    let (_, resolved) = resolve_single_node(added, &running).expect("node resolves");
+
+    let sources: Vec<String> = crate::control_requests::upstream_node_ids(&resolved)
+        .map(|id| id.to_string())
+        .collect();
+    assert_eq!(sources, ["producer"]);
 }

@@ -180,20 +180,27 @@ impl DaemonConnections {
     }
 
     /// Pick the daemon that should run a node added to a running dataflow
-    /// (`dora node add`), honouring the node's `_unstable_deploy` the same way
+    /// (`dora node add`), honouring the node's `deploy` placement the same way
     /// the static spawn path does (machine > labels > unnamed), but only among
     /// `dataflow_daemons`, the daemons that already run the dataflow.
     ///
     /// A declared machine or label set that no daemon of the dataflow matches
     /// is an error rather than a silent fallback, so the node never runs on a
-    /// host it did not ask for (#3672). Without a placement, an unnamed daemon
-    /// is preferred like in the static path, then any daemon of the dataflow.
+    /// host it did not ask for (#3672). Without a placement, the daemon that
+    /// hosts the node's upstream producers is preferred, then an unnamed
+    /// daemon like in the static path, then any daemon of the dataflow.
+    ///
+    /// `producer_daemons` are the daemons hosting the nodes whose outputs the
+    /// new node subscribes to. `AddNode` only wires inputs on the daemon it is
+    /// sent to, so a node placed anywhere else would never receive them; that
+    /// is rejected until cross-daemon dynamic topology is supported.
     pub(crate) fn resolve_add_node_daemon(
         &self,
         dataflow_daemons: &BTreeSet<DaemonId>,
+        producer_daemons: &BTreeSet<DaemonId>,
         deploy: Option<&Deploy>,
     ) -> eyre::Result<DaemonId> {
-        match deploy {
+        let chosen = match deploy {
             Some(Deploy {
                 machine: Some(machine),
                 ..
@@ -201,7 +208,9 @@ impl DaemonConnections {
                 .iter()
                 .find(|id| id.matches_machine_id(machine))
                 .cloned()
-                .ok_or_else(|| eyre!("no daemon of this dataflow matches machine id `{machine}`")),
+                .ok_or_else(|| {
+                    eyre!("no daemon of this dataflow matches machine id `{machine}`")
+                })?,
             Some(d) if !d.labels.is_empty() => dataflow_daemons
                 .iter()
                 .find(|id| {
@@ -210,14 +219,28 @@ impl DaemonConnections {
                     })
                 })
                 .cloned()
-                .ok_or_else(|| eyre!("no daemon of this dataflow matches labels {:?}", d.labels)),
-            _ => dataflow_daemons
+                .ok_or_else(|| eyre!("no daemon of this dataflow matches labels {:?}", d.labels))?,
+            _ => producer_daemons
                 .iter()
-                .find(|id| id.machine_id().is_none())
-                .or_else(|| dataflow_daemons.iter().next())
+                .filter(|_| producer_daemons.len() == 1)
+                .chain(
+                    dataflow_daemons
+                        .iter()
+                        .filter(|id| id.machine_id().is_none()),
+                )
+                .chain(dataflow_daemons.iter())
+                .next()
                 .cloned()
-                .ok_or_else(|| eyre!("no daemons registered for this dataflow")),
+                .ok_or_else(|| eyre!("no daemons registered for this dataflow"))?,
+        };
+        if producer_daemons.iter().any(|producer| *producer != chosen) {
+            eyre::bail!(
+                "the node would run on daemon `{chosen}`, but its inputs come from \
+                 daemon(s) {producer_daemons:?}; adding a node on a different daemon \
+                 than its upstream producers is not supported yet"
+            );
         }
+        Ok(chosen)
     }
 }
 
