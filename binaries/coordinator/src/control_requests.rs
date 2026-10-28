@@ -361,8 +361,13 @@ impl Coordinator {
                             .unnamed()
                             .next()
                             .and_then(|id| self.daemon_connections.get(id))
-                            .and_then(|connection| connection.peer_addr)
-                            .map(crate::ws_control::peer_ip);
+                            .and_then(|connection| {
+                                let remote = connection.peer_addr?;
+                                Some(crate::ws_control::peer_ip(
+                                    remote,
+                                    connection.coordinator_local_addr,
+                                ))
+                            });
                         let _ =
                             reply_sender.send(Ok(ControlRequestReply::CliAndDefaultDaemonIps {
                                 default_daemon,

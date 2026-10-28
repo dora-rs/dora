@@ -193,7 +193,7 @@ async fn await_reply_forwarding_pushes(
 /// and forward binary frames with `subscription_id ++ payload` format.
 pub(crate) async fn handle_control_ws(
     socket: WebSocket,
-    cli_addr: SocketAddr,
+    cli: crate::ws_server::PeerInfo,
     event_tx: mpsc::Sender<Event>,
     clock: Arc<dora_core::uhlc::HLC>,
 ) {
@@ -521,7 +521,7 @@ pub(crate) async fn handle_control_ws(
                     break;
                 };
 
-                let reply = fill_in_cli_ip(reply, cli_addr);
+                let reply = fill_in_cli_ip(reply, cli);
                 let stop = matches!(reply, ControlRequestReply::CoordinatorStopped);
 
                 let resp_json = format_response_json(req.id, &reply);
@@ -562,12 +562,16 @@ pub(crate) async fn handle_control_ws(
 /// The IP a peer reached the coordinator from, as compared by
 /// `CliAndDefaultDaemonOnSameMachine`.
 ///
-/// Canonicalized, since a dual-stack socket reports an IPv4 peer as
-/// `::ffff:a.b.c.d`, and with every loopback address collapsed to
-/// `127.0.0.1`, so a CLI on `::1` and a daemon on `127.0.0.1` still match.
-pub(crate) fn peer_ip(addr: SocketAddr) -> IpAddr {
-    let ip = addr.ip().to_canonical();
-    if ip.is_loopback() {
+/// Every peer on the coordinator's own host maps to `127.0.0.1`: one that
+/// connected over loopback (any spelling, `::1` included), and one that
+/// dialed this host's own IP, which it then also connects *from* (`remote`
+/// equals `local`). So a CLI on `127.0.0.1` and a daemon that was pointed at
+/// the host's LAN IP still match. IPs are canonicalized first, since a
+/// dual-stack socket reports an IPv4 peer as `::ffff:a.b.c.d`.
+pub(crate) fn peer_ip(remote: SocketAddr, local: Option<SocketAddr>) -> IpAddr {
+    let ip = remote.ip().to_canonical();
+    let dialed_this_host = local.is_some_and(|local| local.ip().to_canonical() == ip);
+    if ip.is_loopback() || dialed_this_host {
         IpAddr::V4(Ipv4Addr::LOCALHOST)
     } else {
         ip
@@ -580,14 +584,17 @@ pub(crate) fn peer_ip(addr: SocketAddr) -> IpAddr {
 /// CLI's, which only this connection has. The CLI treats equal IPs as "same
 /// machine" and then sends its own working directory for the daemon to run
 /// in, so a CLI on another host must not compare equal.
-fn fill_in_cli_ip(reply: ControlRequestReply, cli_addr: SocketAddr) -> ControlRequestReply {
+pub(crate) fn fill_in_cli_ip(
+    reply: ControlRequestReply,
+    cli: crate::ws_server::PeerInfo,
+) -> ControlRequestReply {
     match reply {
         ControlRequestReply::CliAndDefaultDaemonIps {
             default_daemon,
             cli: None,
         } => ControlRequestReply::CliAndDefaultDaemonIps {
             default_daemon,
-            cli: Some(peer_ip(cli_addr)),
+            cli: Some(peer_ip(cli.remote, cli.local)),
         },
         other => other,
     }
@@ -688,21 +695,41 @@ fn encode_topic_ipc(array: &arrow::array::UInt8Array) -> eyre::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// A connection from `remote`, accepted on the coordinator's `local`.
+    pub(crate) fn peer(remote: &str, local: Option<&str>) -> crate::ws_server::PeerInfo {
+        crate::ws_server::PeerInfo {
+            remote: remote.parse().unwrap(),
+            local: local.map(|local| local.parse().unwrap()),
+        }
+    }
+
     /// What the CLI's `cli_and_daemon_on_same_machine` concludes from the
-    /// reply, given the addresses the two reached the coordinator from.
-    fn same_machine(cli: &str, daemon: Option<&str>) -> bool {
+    /// reply, given the connections the two reached the coordinator over.
+    fn same_machine_via(
+        cli: crate::ws_server::PeerInfo,
+        daemon: Option<crate::ws_server::PeerInfo>,
+    ) -> bool {
         let event_loop_reply = ControlRequestReply::CliAndDefaultDaemonIps {
-            default_daemon: daemon.map(|addr| peer_ip(addr.parse().unwrap())),
+            default_daemon: daemon.map(|daemon| peer_ip(daemon.remote, daemon.local)),
             cli: None,
         };
+        cli_concludes_same_machine(fill_in_cli_ip(event_loop_reply, cli))
+    }
+
+    /// The CLI's check in `binaries/cli/src/common.rs`.
+    pub(crate) fn cli_concludes_same_machine(reply: ControlRequestReply) -> bool {
         let ControlRequestReply::CliAndDefaultDaemonIps {
             default_daemon,
             cli,
-        } = fill_in_cli_ip(event_loop_reply, cli.parse().unwrap())
+        } = reply
         else {
-            unreachable!()
+            panic!("unexpected reply {reply:?}")
         };
         default_daemon.is_some() && default_daemon == cli
+    }
+
+    fn same_machine(cli: &str, daemon: Option<&str>) -> bool {
+        same_machine_via(peer(cli, None), daemon.map(|daemon| peer(daemon, None)))
     }
 
     /// A CLI on another host must not be told it shares a machine with a
@@ -723,6 +750,28 @@ mod tests {
         assert!(same_machine(
             "[::ffff:192.0.2.7]:50000",
             Some("192.0.2.7:40000")
+        ));
+    }
+
+    /// A peer that dialed the coordinator host's own IP connects from that
+    /// IP too, so it is on the coordinator's host even without loopback:
+    /// `dora up` on `127.0.0.1` plus a CLI pointed at the LAN IP, or the
+    /// other way round, still shares the machine.
+    #[test]
+    fn a_peer_that_dialed_the_hosts_own_ip_is_on_the_coordinators_host() {
+        let lan = Some("192.168.1.5:6013");
+        assert!(same_machine_via(
+            peer("127.0.0.1:50000", Some("127.0.0.1:6013")),
+            Some(peer("192.168.1.5:40000", lan)),
+        ));
+        assert!(same_machine_via(
+            peer("192.168.1.5:50000", lan),
+            Some(peer("127.0.0.1:40000", Some("127.0.0.1:6013"))),
+        ));
+        // Another host on the same LAN is still another machine.
+        assert!(!same_machine_via(
+            peer("192.168.1.9:50000", lan),
+            Some(peer("127.0.0.1:40000", Some("127.0.0.1:6013"))),
         ));
     }
 
@@ -755,7 +804,10 @@ mod tests {
                     ws.on_upgrade(move |socket| {
                         handle_control_ws(
                             socket,
-                            SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+                            crate::ws_server::PeerInfo {
+                                remote: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+                                local: None,
+                            },
                             event_tx,
                             clock,
                         )

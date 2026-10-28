@@ -8,7 +8,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
-    serve::ListenerExt,
 };
 use dora_coordinator_store::CoordinatorStore;
 use dora_core::uhlc::HLC;
@@ -24,6 +23,57 @@ use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc},
 };
 use tower::{ServiceBuilder, limit::ConcurrencyLimitLayer};
+
+/// Both ends of an accepted WS connection, as `ConnectInfo`.
+///
+/// The local address is what tells a peer on the coordinator's own host
+/// apart from a remote one when it did not connect over loopback: a process
+/// that dials this host's LAN IP connects *from* that IP too.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PeerInfo {
+    pub(crate) remote: SocketAddr,
+    pub(crate) local: Option<SocketAddr>,
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, KeepaliveListener>>
+    for PeerInfo
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, KeepaliveListener>) -> Self {
+        Self {
+            remote: *stream.remote_addr(),
+            local: stream.io().local_addr().ok(),
+        }
+    }
+}
+
+/// A `TcpListener` that enables TCP keepalive on every accepted connection.
+///
+/// Each open WebSocket holds one of `MAX_WS_CONNECTIONS` slots until it
+/// closes. Neither the CLI nor the daemon pings, so a peer that vanished
+/// without a FIN (sleep, partition, NAT timeout) would keep its slot forever;
+/// TCP keepalive lets the kernel detect it and error the socket.
+///
+/// A named type rather than `ListenerExt::tap_io`, so that [`PeerInfo`] can
+/// implement `Connected` for its streams.
+struct KeepaliveListener(TcpListener);
+
+impl axum::serve::Listener for KeepaliveListener {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (tcp, addr) = axum::serve::Listener::accept(&mut self.0).await;
+        let keepalive = socket2::TcpKeepalive::new().with_time(WS_TCP_KEEPALIVE_IDLE);
+        if let Err(err) = socket2::SockRef::from(&tcp).set_tcp_keepalive(&keepalive) {
+            tracing::warn!("failed to enable TCP keepalive on WS connection: {err}");
+        }
+        (tcp, addr)
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.0.local_addr()
+    }
+}
 
 /// Maximum message size for control plane JSON messages (1 MiB).
 const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
@@ -188,11 +238,12 @@ async fn health() -> &'static str {
 
 async fn ws_control_handler(
     State(state): State<Arc<WsState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ConnectInfo(peer): ConnectInfo<PeerInfo>,
     headers: HeaderMap,
     Query(_query): Query<TokenQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, StatusCode> {
+    let addr = peer.remote;
     if !state.rate_limiter.check(addr.ip()) {
         tracing::warn!("rate-limited WS control connection from {}", addr.ip());
         return Err(StatusCode::TOO_MANY_REQUESTS);
@@ -204,17 +255,18 @@ async fn ws_control_handler(
         .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
         .on_upgrade(move |socket| async move {
             let _permit = permit;
-            handle_control_ws(socket, addr, state.event_tx.clone(), state.clock.clone()).await
+            handle_control_ws(socket, peer, state.event_tx.clone(), state.clock.clone()).await
         }))
 }
 
 async fn ws_daemon_handler(
     State(state): State<Arc<WsState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ConnectInfo(peer): ConnectInfo<PeerInfo>,
     headers: HeaderMap,
     Query(_query): Query<TokenQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<impl IntoResponse, StatusCode> {
+    let addr = peer.remote;
     if !state.rate_limiter.check(addr.ip()) {
         tracing::warn!("rate-limited WS daemon connection from {}", addr.ip());
         return Err(StatusCode::TOO_MANY_REQUESTS);
@@ -232,7 +284,7 @@ async fn ws_daemon_handler(
                 state.topic_debug_tx.clone(),
                 state.clock.clone(),
                 state.store.clone(),
-                addr,
+                peer,
                 state.daemon_peer_addrs.clone(),
             )
             .await
@@ -241,11 +293,12 @@ async fn ws_daemon_handler(
 
 async fn artifact_handler(
     State(state): State<Arc<WsState>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ConnectInfo(peer): ConnectInfo<PeerInfo>,
     headers: HeaderMap,
     Query(_query): Query<TokenQuery>,
     Path((build_id, node_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, StatusCode> {
+    let addr = peer.remote;
     if !state.rate_limiter.check(addr.ip()) {
         return Err(StatusCode::TOO_MANY_REQUESTS);
     }
@@ -306,21 +359,12 @@ pub(crate) async fn serve(
     let app = router(state);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-    // Each open WebSocket holds one of `MAX_WS_CONNECTIONS` slots until it
-    // closes. Neither the CLI nor the daemon pings, so a peer that vanished
-    // without a FIN (sleep, partition, NAT timeout) would keep its slot
-    // forever; TCP keepalive lets the kernel detect it and error the socket.
-    let listener = listener.tap_io(|tcp| {
-        let keepalive = socket2::TcpKeepalive::new().with_time(WS_TCP_KEEPALIVE_IDLE);
-        if let Err(err) = socket2::SockRef::from(&*tcp).set_tcp_keepalive(&keepalive) {
-            tracing::warn!("failed to enable TCP keepalive on WS connection: {err}");
-        }
-    });
+    let listener = KeepaliveListener(listener);
 
     let future = async move {
         axum::serve(
             listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
+            app.into_make_service_with_connect_info::<PeerInfo>(),
         )
         .with_graceful_shutdown(async {
             let _ = shutdown_rx.await;

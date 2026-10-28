@@ -2324,6 +2324,108 @@ async fn replay_takes_param_write_lock_before_reading_the_param() {
     assert_eq!(seen, vec![("gain".to_string(), serde_json::json!(2))]);
 }
 
+/// Ask a coordinator whose default daemon connected over `daemon` whether a
+/// CLI connected over `cli` shares its machine, through the event loop and
+/// the control connection's completion of the reply, as `dora start` does.
+async fn cli_and_default_daemon_on_same_machine(
+    cli: crate::ws_server::PeerInfo,
+    daemon: Option<crate::ws_server::PeerInfo>,
+) -> bool {
+    let mut daemon_connections = DaemonConnections::default();
+    if let Some(daemon) = daemon {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<String>(8);
+        let mut connection = crate::state::DaemonConnection::new(
+            tx,
+            Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            BTreeMap::new(),
+        );
+        connection.peer_addr = Some(daemon.remote);
+        connection.coordinator_local_addr = daemon.local;
+        daemon_connections.add(DaemonId::new(None), connection);
+    }
+    let mut coordinator = test_coordinator(
+        HashMap::new(),
+        daemon_connections,
+        Arc::new(InMemoryStore::new()),
+    );
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_control_event(ControlEvent::IncomingRequest {
+            request: Box::new(
+                dora_message::cli_to_coordinator::ControlRequest::CliAndDefaultDaemonOnSameMachine,
+            ),
+            reply_sender,
+        })
+        .await
+        .unwrap();
+    let reply = crate::ws_control::fill_in_cli_ip(reply.await.unwrap().unwrap(), cli);
+    // The CLI's check in `binaries/cli/src/common.rs`.
+    let ControlRequestReply::CliAndDefaultDaemonIps {
+        default_daemon,
+        cli,
+    } = reply
+    else {
+        panic!("unexpected reply {reply:?}")
+    };
+    default_daemon.is_some() && default_daemon == cli
+}
+
+fn peer(remote: &str, local: &str) -> crate::ws_server::PeerInfo {
+    crate::ws_server::PeerInfo {
+        remote: remote.parse().unwrap(),
+        local: Some(local.parse().unwrap()),
+    }
+}
+
+/// A CLI on another host must not be told it shares the default daemon's
+/// machine: it would send its own working directory, which does not exist
+/// there. The coordinator used to answer `127.0.0.1` for both whenever an
+/// unnamed daemon was connected.
+#[tokio::test]
+async fn a_remote_cli_does_not_share_the_default_daemons_machine() {
+    // Daemon next to the coordinator, CLI on a laptop.
+    assert!(
+        !cli_and_default_daemon_on_same_machine(
+            peer("192.0.2.7:50000", "192.0.2.1:6013"),
+            Some(peer("127.0.0.1:40000", "127.0.0.1:6013")),
+        )
+        .await
+    );
+    // Daemon on another host, CLI next to the coordinator.
+    assert!(
+        !cli_and_default_daemon_on_same_machine(
+            peer("127.0.0.1:50000", "127.0.0.1:6013"),
+            Some(peer("192.0.2.8:40000", "192.0.2.1:6013")),
+        )
+        .await
+    );
+    // No default daemon at all.
+    assert!(
+        !cli_and_default_daemon_on_same_machine(peer("127.0.0.1:50000", "127.0.0.1:6013"), None)
+            .await
+    );
+}
+
+#[tokio::test]
+async fn a_local_cli_shares_the_default_daemons_machine() {
+    // Both over loopback.
+    assert!(
+        cli_and_default_daemon_on_same_machine(
+            peer("127.0.0.1:50000", "127.0.0.1:6013"),
+            Some(peer("127.0.0.1:40000", "127.0.0.1:6013")),
+        )
+        .await
+    );
+    // The daemon dialed the host's LAN IP, the CLI loopback.
+    assert!(
+        cli_and_default_daemon_on_same_machine(
+            peer("127.0.0.1:50000", "127.0.0.1:6013"),
+            Some(peer("192.168.1.5:40000", "192.168.1.5:6013")),
+        )
+        .await
+    );
+}
+
 /// A `Coordinator` around the given state, with everything else empty.
 fn test_coordinator(
     running_dataflows: HashMap<DataflowId, RunningDataflow>,
