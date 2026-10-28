@@ -128,33 +128,38 @@ pub(super) fn should_warn_drop(count: u64) -> bool {
 /// a replay hands them back to the node (`IncomingEvent::Input::metadata`).
 ///
 /// Dora's internal framing keys only describe how this one delivery was
-/// encoded, so they are left out. A non-finite float has no JSON
-/// representation (it would be written as `null`, which the replay loader
-/// rejects, making the whole recording unloadable), so a parameter holding one
-/// is left out too.
+/// encoded, and the OpenTelemetry context belongs to the recorded run's trace,
+/// so they are left out. A non-finite float has no JSON representation (it
+/// would be written as `null`, which the replay loader rejects, making the
+/// whole recording unloadable), so a parameter holding one is left out too.
+///
+/// Returns how many parameters were left out for holding a non-finite float.
 fn insert_recorded_metadata(
     event_json: &mut serde_json::Map<String, serde_json::Value>,
     parameters: &dora_message::metadata::MetadataParameters,
-) -> eyre::Result<()> {
-    use dora_message::metadata::Parameter;
+) -> eyre::Result<u64> {
+    use dora_message::metadata::{OPEN_TELEMETRY_CONTEXT, Parameter};
 
     if parameters.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     let mut parameters = parameters.clone();
     dora_message::metadata::strip_internal_parameters(&mut parameters);
+    parameters.remove(OPEN_TELEMETRY_CONTEXT);
+    let before = parameters.len();
     parameters.retain(|_, value| match value {
         Parameter::Float(f) => f.is_finite(),
         Parameter::ListFloat(list) => list.iter().all(|f| f.is_finite()),
         _ => true,
     });
+    let non_finite = (before - parameters.len()) as u64;
     if !parameters.is_empty() {
         event_json.insert(
             "metadata".into(),
             serde_json::to_value(&parameters).context("failed to serialize input metadata")?,
         );
     }
-    Ok(())
+    Ok(non_finite)
 }
 
 /// Asynchronous iterator over the incoming [`Event`]s destined for this node.
@@ -445,6 +450,7 @@ impl EventStream {
                     file,
                     events_buffer: Vec::new(),
                     poisoned: None,
+                    non_finite_params_dropped: 0,
                 })
             }
             None => None,
@@ -1265,7 +1271,10 @@ impl EventStream {
                             false,
                         )?;
                         event_json.insert("type".into(), "Input".into());
-                        insert_recorded_metadata(&mut event_json, &metadata.parameters)?;
+                        write_events_to.note_non_finite_params(insert_recorded_metadata(
+                            &mut event_json,
+                            &metadata.parameters,
+                        )?);
                         Some(event_json.into())
                     }
                     NodeEvent::InputClosed { id } => Some(control_event_json(
@@ -1297,7 +1306,10 @@ impl EventStream {
                         false,
                     )?;
                     event_json.insert("type".into(), "Input".into());
-                    insert_recorded_metadata(&mut event_json, &metadata.parameters)?;
+                    write_events_to.note_non_finite_params(insert_recorded_metadata(
+                        &mut event_json,
+                        &metadata.parameters,
+                    )?);
                     Some(event_json.into())
                 }
                 _ => None,
@@ -2282,6 +2294,9 @@ pub(crate) struct WriteEventsTo {
     /// pipelines) can detect partial recordings instead of silently
     /// treating a syntactically-valid file as complete (#1857).
     poisoned: Option<PoisonInfo>,
+    /// Input metadata parameters left out of the recording because they hold
+    /// a non-finite float, which JSON cannot represent.
+    non_finite_params_dropped: u64,
 }
 
 #[derive(Debug)]
@@ -2298,6 +2313,28 @@ pub(crate) struct PoisonInfo {
 }
 
 impl WriteEventsTo {
+    /// Count input metadata parameters left out for holding a non-finite
+    /// float, warning on a power-of-two cadence: the replay will hand the
+    /// node different metadata than the recorded run saw.
+    fn note_non_finite_params(&mut self, dropped: u64) {
+        if dropped == 0 {
+            return;
+        }
+        let before = self.non_finite_params_dropped;
+        self.non_finite_params_dropped += dropped;
+        let after = self.non_finite_params_dropped;
+        // Warn when the running count reaches or passes a power of two.
+        if (before + 1..=after).any(should_warn_drop) {
+            tracing::warn!(
+                node = %self.node_id,
+                dropped = after,
+                "left input metadata parameters holding NaN or infinity out of the \
+                 `write_events_to` recording (JSON cannot represent them); a replay \
+                 will not see them"
+            );
+        }
+    }
+
     /// Mark the recording poisoned. First call captures the failure
     /// detail; later calls just bump `additional_failures`.
     fn mark_poisoned(&mut self, err: &eyre::Report, time_offset_secs: f64) {
@@ -2324,6 +2361,7 @@ impl WriteEventsTo {
             file,
             events_buffer,
             poisoned,
+            non_finite_params_dropped: _,
         } = self;
         let mut inputs_file = serde_json::Map::new();
         inputs_file.insert("id".into(), node_id.to_string().into());
@@ -2605,6 +2643,7 @@ mod tests {
             file,
             events_buffer: Vec::new(),
             poisoned: None,
+            non_finite_params_dropped: 0,
         };
         (w, path)
     }
@@ -3182,10 +3221,13 @@ mod tests {
 
     /// A recorded input keeps its user metadata parameters, so a replay hands
     /// a node the same `request_id`, `width`, ... the recorded run saw.
-    /// Internal framing keys and unrepresentable floats are left out.
+    /// Internal framing keys, the trace context and unrepresentable floats
+    /// (scalar and list) are left out, and the left-out floats are counted.
     #[test]
     fn recording_keeps_input_metadata_parameters() {
-        use dora_message::metadata::{FRAMING, FRAMING_ARROW_IPC, MetadataParameters, Parameter};
+        use dora_message::metadata::{
+            FRAMING, FRAMING_ARROW_IPC, MetadataParameters, OPEN_TELEMETRY_CONTEXT, Parameter,
+        };
 
         let (_node, mut events) = test_event_stream();
         let (w, path) = write_events_to_with_tempfile();
@@ -3203,6 +3245,14 @@ mod tests {
         metadata
             .parameters
             .insert("gain".to_string(), Parameter::Float(f64::NAN));
+        metadata.parameters.insert(
+            "bounds".to_string(),
+            Parameter::ListFloat(vec![0.0, f64::INFINITY]),
+        );
+        metadata.parameters.insert(
+            OPEN_TELEMETRY_CONTEXT.to_string(),
+            Parameter::String("traceparent=00-abc".to_string()),
+        );
         let metadata = Arc::new(metadata);
         for item in [
             EventItem::NodeEvent {
@@ -3226,6 +3276,15 @@ mod tests {
         ] {
             events.record_event(&item).unwrap();
         }
+        // `gain` and `bounds`, on each of the two inputs.
+        assert_eq!(
+            events
+                .write_events_to
+                .as_ref()
+                .unwrap()
+                .non_finite_params_dropped,
+            4
+        );
         drop(events);
 
         let text = std::fs::read_to_string(&path).unwrap();
