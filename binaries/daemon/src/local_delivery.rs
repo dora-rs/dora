@@ -286,54 +286,12 @@ fn offer_event<'a>(
     }
 }
 
-/// Who produced an output that is delivered to local receivers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OutputSource {
-    /// The node sent it. A node can only send once the ready barrier has
-    /// released, which waits for every node to subscribe, so a live receiver
-    /// without an event stream is a routing loss (dora-rs/dora#3201).
-    Node,
-    /// The daemon captured it from the node's stdout or logs
-    /// (`send_stdout_as`/`send_logs_as`). Capture starts when the process
-    /// spawns, before the ready barrier, so a consumer that has not
-    /// subscribed yet (or is restarting) is expected and not a loss
-    /// (dora-rs/dora#3935).
-    CapturedLogs,
-}
-
-/// [`send_output_to_local_receivers_from`] for an output the node sent.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn send_output_to_local_receivers(
-    output_id: &OutputId,
-    dataflow: &mut RunningDataflow,
-    metadata: &metadata::Metadata,
-    data: Option<DataMessage>,
-    clock: &HLC,
-    ft_stats: Option<&FaultToleranceStats>,
-    need_data_bytes: bool,
-    deferred: Option<&mut Vec<DeferredDelivery>>,
-) -> Result<Option<AVec<u8, ConstAlign<128>>>, eyre::ErrReport> {
-    send_output_to_local_receivers_from(
-        OutputSource::Node,
-        output_id,
-        dataflow,
-        metadata,
-        data,
-        clock,
-        ft_stats,
-        need_data_bytes,
-        deferred,
-    )
-    .await
-}
-
 /// `deferred` is where deliveries to a full backpressure receiver go instead
 /// of being dropped (see [`DeferredDelivery`]); `None` means no one can wait
 /// for room on the caller's behalf (a remote forward, a benchmark), and such
 /// a delivery is dropped and counted like any other.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn send_output_to_local_receivers_from(
-    source: OutputSource,
+pub(crate) async fn send_output_to_local_receivers(
     output_id: &OutputId,
     dataflow: &mut RunningDataflow,
     metadata: &metadata::Metadata,
@@ -438,15 +396,18 @@ pub(crate) async fn send_output_to_local_receivers_from(
                     }
                 }
             }
-        } else if source == OutputSource::CapturedLogs {
-            // A captured stdout/log line can be produced before its consumer
-            // has subscribed (a slow import, a restart): not a routing loss,
-            // so neither a counted drop nor a warning per edge.
+        } else if dataflow.pending_nodes.is_pending(receiver_id) {
+            // Spawned but not subscribed yet: still gating the ready barrier.
+            // A node's own outputs cannot get here (it sends only once the
+            // barrier releases), but its captured stdout/logs
+            // (`send_stdout_as`/`send_logs_as`) start at spawn, so a consumer
+            // that is still starting up misses them without anything having
+            // gone wrong — not a routing loss (dora-rs/dora#3935).
             tracing::debug!(
                 receiver = %receiver_id,
                 input = %input_id,
                 output = %output_id.1,
-                "dropping log line `{}/{}` to `{receiver_id}`: no daemon event stream",
+                "dropping `{}/{}` to `{receiver_id}`: node has not subscribed yet",
                 output_id.0,
                 output_id.1,
             );

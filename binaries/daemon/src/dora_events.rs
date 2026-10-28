@@ -4,9 +4,9 @@
 use crate::{
     Daemon, DoraEvent, ProcessOperation, break_input,
     extract_err_from_stderr::extract_err_from_stderr, extract_node_results, finish_drain_grace,
-    health_check_should_kill, is_sigkill_like_exit, is_sigterm_like_exit,
-    local_delivery::OutputSource, node_communication, reclaim_extensions_of_exited_node,
-    running_dataflow, send_with_timestamp, spawn_stack_sample_capture, startup_timeout_should_kill,
+    health_check_should_kill, is_sigkill_like_exit, is_sigterm_like_exit, node_communication,
+    reclaim_extensions_of_exited_node, running_dataflow, send_with_timestamp,
+    spawn_stack_sample_capture, startup_timeout_should_kill,
 };
 use dora_core::config::NodeId;
 use dora_message::{
@@ -321,12 +321,8 @@ impl Daemon {
                 // for this output is a normal configuration and costs nothing
                 // here beyond the lookups. A failed forward loses this log
                 // line only; it must not stop the daemon's event loop.
-                // Capture starts at spawn, before consumers subscribe, so a
-                // local consumer without an event stream is not a routing
-                // loss here (`OutputSource::CapturedLogs`, dora-rs/dora#3935).
                 if let Err(err) = self
                     .send_out(
-                        OutputSource::CapturedLogs,
                         dataflow_id,
                         output_id.0,
                         output_id.1,

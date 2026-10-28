@@ -3,7 +3,7 @@ use crate::coordinator_events::{
     apply_state_catch_up_entries, deliver_param_delete_strict, deliver_param_update_strict,
 };
 use crate::node_exit::{DEFAULT_FINISH_DRAIN_GRACE, parse_finish_drain_grace};
-use crate::pending::DataflowStatus;
+use crate::pending::{DataflowStatus, PendingNodes};
 use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
 use crate::test_tracing::LevelCapture;
 use std::sync::Arc;
@@ -571,11 +571,12 @@ async fn stdout_output_reaches_local_and_remote_consumers() {
 
 /// Stdout/log capture starts when the process spawns, before the ready
 /// barrier, so a consumer that is spawned but has not subscribed yet (a slow
-/// import) or is restarting misses lines without anything having gone wrong.
-/// Routing captured lines through `send_out` (#3923) must not turn that into
-/// the #3201 routing-loss path: no warning and no drop, which on a
-/// backpressure input would fail `--fail-on-lost-backpressure-messages`
-/// (dora-rs/dora#3935).
+/// import) misses lines without anything having gone wrong. Routing captured
+/// lines through `send_out` (#3923) must not turn that into the #3201
+/// routing-loss path — locally or on the consumer's daemon when the producer
+/// runs elsewhere: no warning and no drop, which on a backpressure input
+/// would fail `--fail-on-lost-backpressure-messages` (dora-rs/dora#3935).
+/// Once the consumer has subscribed, a missing stream is a loss again.
 #[test]
 fn stdout_line_to_unsubscribed_consumer_is_not_a_lost_message() {
     use dora_message::config::QueuePolicy;
@@ -589,62 +590,92 @@ fn stdout_line_to_unsubscribed_consumer_is_not_a_lost_message() {
     let mut daemon = rt.block_on(daemon_reporting_to(coordinator_sender, clock.clone()));
     let mut dataflow = test_dataflow();
     let dataflow_id = dataflow.id;
-    let producer = NodeId::from("producer".to_string());
-    let output_id = OutputId(producer, DataId::from("stdout".to_string()));
+    let local = OutputId(
+        NodeId::from("producer".to_string()),
+        DataId::from("stdout".to_string()),
+    );
+    // Same output name on a producer that runs on another daemon.
+    let remote = OutputId(
+        NodeId::from("remote".to_string()),
+        DataId::from("stdout".to_string()),
+    );
     let consumer = NodeId::from("consumer".to_string());
-    let input = DataId::from("logs".to_string());
-    dataflow
-        .mappings
-        .entry(output_id.clone())
-        .or_default()
-        .insert((consumer.clone(), input.clone()));
-    let inputs = BTreeMap::from([(
-        input,
-        user_input("producer", "stdout", Some(QueuePolicy::Backpressure)),
-    )]);
+    let mut inputs = BTreeMap::new();
+    for (output, input) in [(&local, "logs"), (&remote, "remote_logs")] {
+        let input = DataId::from(input.to_string());
+        dataflow
+            .mappings
+            .entry(output.clone())
+            .or_default()
+            .insert((consumer.clone(), input.clone()));
+        inputs.insert(
+            input,
+            user_input(
+                &output.0.to_string(),
+                &output.1.to_string(),
+                Some(QueuePolicy::Backpressure),
+            ),
+        );
+    }
     // Spawned (in `running_nodes`) but not subscribed yet.
     dataflow
         .running_nodes
-        .insert(consumer, running_node_with(inputs, None));
+        .insert(consumer.clone(), running_node_with(inputs, None));
+    dataflow.pending_nodes.insert(consumer);
     daemon.running.insert(dataflow_id, dataflow);
 
+    let logs = |clock: &HLC| DoraEvent::Logs {
+        dataflow_id,
+        output_id: local.clone(),
+        message: DataMessage::Vec(AVec::from_slice(128, b"hello")),
+        metadata: metadata::Metadata::new(clock.new_timestamp()),
+    };
     // Capture only the delivery, not the daemon's startup.
     let capture = LevelCapture::new();
     tracing::subscriber::with_default(capture.clone(), || {
         rt.block_on(async {
             for _ in 0..2 {
-                daemon
-                    .handle_dora_event(DoraEvent::Logs {
-                        dataflow_id,
-                        output_id: output_id.clone(),
-                        message: DataMessage::Vec(AVec::from_slice(128, b"hello")),
-                        metadata: metadata::Metadata::new(clock.new_timestamp()),
-                    })
-                    .await
-                    .unwrap();
+                daemon.handle_dora_event(logs(&clock)).await.unwrap();
             }
+            daemon
+                .handle_inter_daemon_event(InterDaemonEvent::Output {
+                    dataflow_id,
+                    node_id: remote.0.clone(),
+                    output_id: remote.1.clone(),
+                    metadata: metadata::Metadata::new(clock.new_timestamp()),
+                    data: Some(AVec::from_slice(128, b"hello")),
+                })
+                .await
+                .unwrap();
         });
     });
-
-    assert_eq!(
+    let dropped = |daemon: &Daemon| {
         daemon
             .ft_stats
             .dropped_messages
-            .load(atomic::Ordering::Relaxed),
-        0
-    );
-    assert_eq!(
+            .load(atomic::Ordering::Relaxed)
+    };
+    let lost = |daemon: &Daemon| {
         daemon
             .ft_stats
             .lost_backpressure_messages
-            .load(atomic::Ordering::Relaxed),
-        0
-    );
-    let levels = capture.levels.lock().unwrap();
+            .load(atomic::Ordering::Relaxed)
+    };
+    assert_eq!(dropped(&daemon), 0);
+    assert_eq!(lost(&daemon), 0);
+    let levels = capture.levels.lock().unwrap().clone();
     assert!(
         !levels.contains(&tracing::Level::WARN),
         "no warning for a consumer that has not subscribed yet: {levels:?}"
     );
+
+    // Subscribed since (no longer gating the barrier), then lost its stream
+    // without re-subscribing: the #3201 mode, which must stay visible.
+    daemon.running.get_mut(&dataflow_id).unwrap().pending_nodes =
+        PendingNodes::new(dataflow_id, DaemonId::new(None));
+    rt.block_on(daemon.handle_dora_event(logs(&clock))).unwrap();
+    assert_eq!(dropped(&daemon), 1);
+    assert_eq!(lost(&daemon), 1);
 }
 
 /// `AddNode` re-registers a node's `dora/logs` inputs. An entry left by an
