@@ -157,15 +157,20 @@ impl RecordEntry {
         2 + self.node_id.len() + 2 + self.output_id.len() + 8 + 4 + self.event_bytes.len()
     }
 
-    /// Parse a record body into an owned entry.
-    fn from_record(record_buf: &[u8]) -> eyre::Result<Self> {
-        let (node_id, output_id, timestamp_offset_nanos, payload) = parse_record(record_buf)?;
-        Ok(Self {
+    /// Build an owned entry from a record's fields, as [`parse_record`]
+    /// returns them.
+    fn from_parts(
+        node_id: &str,
+        output_id: &str,
+        timestamp_offset_nanos: u64,
+        payload: &[u8],
+    ) -> Self {
+        Self {
             node_id: node_id.to_string(),
             output_id: output_id.to_string(),
             timestamp_offset_nanos,
-            event_bytes: record_buf[payload].to_vec(),
-        })
+            event_bytes: payload.to_vec(),
+        }
     }
 }
 
@@ -347,11 +352,15 @@ impl<R: Read> RecordingReader<R> {
         if !self.read_next_record()? {
             return Ok(None);
         }
-        let entry = RecordEntry::from_record(&self.record_buf)?;
-        self.last_timestamp_offset_nanos = self
-            .last_timestamp_offset_nanos
-            .max(entry.timestamp_offset_nanos);
-        Ok(Some(entry))
+        let (node_id, output_id, timestamp_offset_nanos, payload) = parse_record(&self.record_buf)?;
+        self.last_timestamp_offset_nanos =
+            self.last_timestamp_offset_nanos.max(timestamp_offset_nanos);
+        Ok(Some(RecordEntry::from_parts(
+            node_id,
+            output_id,
+            timestamp_offset_nanos,
+            &self.record_buf[payload],
+        )))
     }
 
     /// Read the next entry's metadata, *without* its event payload. Returns
@@ -393,12 +402,17 @@ impl<R: Read> RecordingReader<R> {
             if !self.read_next_record()? {
                 return Ok(None);
             }
-            let (node_id, _, timestamp_offset_nanos, _) = parse_record(&self.record_buf)?;
-            let is_own = node_id == node;
+            let (node_id, output_id, timestamp_offset_nanos, payload) =
+                parse_record(&self.record_buf)?;
             self.last_timestamp_offset_nanos =
                 self.last_timestamp_offset_nanos.max(timestamp_offset_nanos);
-            if is_own {
-                return RecordEntry::from_record(&self.record_buf).map(Some);
+            if node_id == node {
+                return Ok(Some(RecordEntry::from_parts(
+                    node_id,
+                    output_id,
+                    timestamp_offset_nanos,
+                    &self.record_buf[payload],
+                )));
             }
         }
     }
