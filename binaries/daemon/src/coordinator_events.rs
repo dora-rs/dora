@@ -537,11 +537,22 @@ impl Daemon {
             } => {
                 let finish_when = {
                     let mut logger = self.logger.for_dataflow(dataflow_id);
+                    // The coordinator stops the daemons one after another, so
+                    // a dataflow can finish here before its stop arrives: a
+                    // node stopped on an earlier daemon closes the inputs of
+                    // the nodes here (#3888). Its finish report is still held
+                    // then, and the stop is already done.
+                    let already_finished =
+                        self.pending_finished_dataflows.contains_key(&dataflow_id)
+                            || self
+                                .unconfirmed_finished_dataflows
+                                .contains_key(&dataflow_id);
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
                         .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"));
                     let (reply, future) = match dataflow {
+                        Err(_) if already_finished => (Ok(()), None),
                         Ok(dataflow) => {
                             let future = dataflow.stop_all(
                                 &mut self.coordinator_sender,

@@ -1235,14 +1235,6 @@ impl RunningDataflow {
             .is_some_and(|inputs| !inputs.is_empty())
     }
 
-    /// All output ids produced by `node_id`, whether they are consumed by a
-    /// local node (recorded in `mappings`) or only by nodes on another daemon
-    /// (recorded in `open_external_mappings`).
-    ///
-    /// Deriving the set from `mappings` alone misses outputs that have no local
-    /// consumer, so their remote consumers would never receive the
-    /// `OutputClosed` event when the producing node finishes (dora-rs/dora#2152
-    /// region — graceful cross-daemon shutdown).
     /// Whether `receiver`'s `input_id` declares `queue_policy: backpressure`,
     /// judged from the live node config. Static and dynamic nodes alike have
     /// an entry from spawn time (a dynamic node's config is served from it
@@ -1315,6 +1307,14 @@ impl RunningDataflow {
         })
     }
 
+    /// All output ids produced by `node_id`, whether they are consumed by a
+    /// local node (recorded in `mappings`) or only by nodes on another daemon
+    /// (recorded in `open_external_mappings`).
+    ///
+    /// Deriving the set from `mappings` alone misses outputs that have no local
+    /// consumer, so their remote consumers would never receive the
+    /// `OutputClosed` event when the producing node finishes (dora-rs/dora#2152
+    /// region — graceful cross-daemon shutdown).
     pub(crate) fn node_output_ids(&self, node_id: &NodeId) -> BTreeSet<DataId> {
         node_output_ids(&self.mappings, &self.open_external_mappings, node_id)
     }
