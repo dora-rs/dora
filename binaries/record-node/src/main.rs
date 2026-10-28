@@ -319,6 +319,39 @@ fn record_entry<W: Write>(
     }
 }
 
+/// Skip a frame whose Arrow IPC payload alone is over the per-record cap:
+/// count it and warn once. Returns whether the frame was skipped.
+///
+/// The recorded event embeds the IPC bytes verbatim, next to the ids and
+/// timestamp, so its [`RecordEntry::encoded_len`] is always larger: a frame
+/// refused here is one `write_entry_skip_oversized` would refuse anyway, only
+/// after two more full-size copies of it.
+fn skip_oversized_ipc(
+    ipc_len: usize,
+    summary: &mut RunSummary,
+    warned: &mut bool,
+    node: &NodeId,
+    output: &DataId,
+) -> bool {
+    if ipc_len <= dora_recording::MAX_RECORD_BYTES {
+        return false;
+    }
+    summary.note_oversized();
+    warn_oversized_once(warned, ipc_len, node, output);
+    true
+}
+
+/// Print the oversized-frame warning the first time a frame is skipped.
+fn warn_oversized_once(warned: &mut bool, len: usize, node: &NodeId, output: &DataId) {
+    if !*warned {
+        *warned = true;
+        eprintln!(
+            "dora-record-node: WARNING: skipping a {len}-byte message from {node}/{output} \
+             that exceeds the per-record limit — this recording will be incomplete."
+        );
+    }
+}
+
 /// The original descriptor YAML, from [`dora_recording::DESCRIPTOR_ENV`]
 /// (compressed and base64-encoded, because `env:` values are `$VAR`-expanded
 /// on the way here) or, from an older CLI, the raw
@@ -442,6 +475,18 @@ fn main() -> eyre::Result<()> {
                     let encoded: AVec<u8, ConstAlign<128>> =
                         match arrow_utils::ipc_encode::PreparedIpc::new(arrow_data) {
                             Some(prepared) => {
+                                // Skip an over-cap frame before the two full-size
+                                // copies below (the aligned buffer and the postcard
+                                // event) rather than after them.
+                                if skip_oversized_ipc(
+                                    prepared.byte_len(),
+                                    &mut summary,
+                                    &mut warned_about_oversized,
+                                    source_node,
+                                    source_output,
+                                ) {
+                                    continue;
+                                }
                                 let mut buf: AVec<u8, ConstAlign<128>> =
                                     AVec::__from_elem(128, 0, prepared.byte_len());
                                 prepared
@@ -489,14 +534,12 @@ fn main() -> eyre::Result<()> {
                 // propagating the error out of `main` (which would lose every
                 // later message too). Genuine I/O errors still propagate.
                 if let Some(oversized_len) = record_entry(&mut writer, &entry, &mut summary)? {
-                    if !warned_about_oversized {
-                        warned_about_oversized = true;
-                        eprintln!(
-                            "dora-record-node: WARNING: skipping a {oversized_len}-byte message \
-                             from {source_node}/{source_output} that exceeds the per-record \
-                             limit — this recording will be incomplete."
-                        );
-                    }
+                    warn_oversized_once(
+                        &mut warned_about_oversized,
+                        oversized_len,
+                        source_node,
+                        source_output,
+                    );
                     continue;
                 }
                 flush_policy.after_write(&mut writer)?;
@@ -637,6 +680,57 @@ mod tests {
             timestamp_offset_nanos: 0,
             event_bytes: payload,
         }
+    }
+
+    #[test]
+    fn early_ipc_skip_never_drops_a_frame_the_writer_would_accept() {
+        // `main` skips a frame by its IPC length before building the record.
+        // That must only refuse frames `write_entry_skip_oversized` would refuse
+        // too: build the real recorded event around an IPC payload just past the
+        // cap and check the writer rejects the resulting entry as well.
+        let ipc_len = OVER_LIMIT_PAYLOAD;
+        let (node, output): (NodeId, DataId) =
+            ("camera".parse().unwrap(), "image".parse().unwrap());
+        let mut summary = RunSummary::default();
+        let mut warned = false;
+        assert!(!skip_oversized_ipc(
+            dora_recording::MAX_RECORD_BYTES,
+            &mut summary,
+            &mut warned,
+            &node,
+            &output,
+        ));
+        assert_eq!(summary.oversized_dropped, 0);
+        assert!(skip_oversized_ipc(
+            ipc_len,
+            &mut summary,
+            &mut warned,
+            &node,
+            &output,
+        ));
+        assert_eq!(summary.oversized_dropped, 1);
+        assert_eq!(summary.msg_count, 0);
+
+        let event = Timestamped {
+            inner: InterDaemonEvent::Output {
+                dataflow_id: uuid::Uuid::nil(),
+                node_id: "camera".parse().unwrap(),
+                output_id: "image".parse().unwrap(),
+                metadata: dora_message::metadata::Metadata::new(
+                    dora_node_api::uhlc::HLC::default().new_timestamp(),
+                ),
+                data: Some(AVec::__from_elem(128, 0u8, ipc_len)),
+            },
+            timestamp: dora_node_api::uhlc::HLC::default().new_timestamp(),
+        };
+        let big = entry("camera", "image", event.serialize().unwrap());
+        assert!(big.encoded_len() > ipc_len);
+
+        let mut writer = writer_over_vec();
+        assert_eq!(
+            record_entry(&mut writer, &big, &mut summary).unwrap(),
+            Some(big.encoded_len()),
+        );
     }
 
     #[test]
