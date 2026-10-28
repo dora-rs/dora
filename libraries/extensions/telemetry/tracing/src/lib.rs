@@ -121,24 +121,6 @@ fn stdout_filter(filter: &str, env_log: &str) -> EnvFilter {
     with_target_default(parsed, env_log, "zenoh", "zenoh=warn")
 }
 
-/// Setup tracing with a default configuration.
-///
-/// This will set up a global subscriber that logs to stdout with a filter level of "warn".
-/// Outputs structured JSONL that the dora daemon parses as `LogMessage`,
-/// so `tracing::info!()` calls in user nodes are automatically routed through
-/// the dora log pipeline (file, coordinator, `dora/logs` subscribers).
-///
-/// Should **ONLY** be used in `DoraNode` implementations.
-pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
-    TracingBuilder::new(name)
-        .with_node_stdout("warn")
-        .build()
-        .wrap_err(format!(
-            "failed to set tracing global subscriber for {name}"
-        ))?;
-    Ok(())
-}
-
 pub struct OtelGuard {
     tracer_provider: SdkTracerProvider,
     meter_provider: SdkMeterProvider,
@@ -290,25 +272,6 @@ impl TracingBuilder {
             .add_directive(directive("dora_core=info"));
         let layer = span_store::SpanCaptureLayer::new(store).with_filter(filter);
         self.layers.push(layer.boxed());
-        self
-    }
-
-    pub fn add_layer<L>(mut self, layer: L) -> Self
-    where
-        L: Layer<Registry> + Send + Sync + 'static,
-    {
-        self.layers.push(layer.boxed());
-        self
-    }
-
-    pub fn with_layers<I, L>(mut self, layers: I) -> Self
-    where
-        I: IntoIterator<Item = L>,
-        L: Layer<Registry> + Send + Sync + 'static,
-    {
-        for layer in layers {
-            self.layers.push(layer.boxed());
-        }
         self
     }
 

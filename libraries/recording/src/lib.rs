@@ -157,26 +157,20 @@ impl RecordEntry {
         2 + self.node_id.len() + 2 + self.output_id.len() + 8 + 4 + self.event_bytes.len()
     }
 
-    /// Parse a record body into an owned entry, or `None` when `only_node` is
-    /// set and the record belongs to another node (nothing is allocated for
-    /// it). The payload keeps the record's own allocation (its bytes are
-    /// shifted to the front) instead of being copied into a fresh one, which
-    /// for a multi-megabyte payload costs far more than the move.
-    fn from_record(mut record_buf: Vec<u8>, only_node: Option<&str>) -> eyre::Result<Option<Self>> {
-        let (node_id, output_id, timestamp_offset_nanos, payload) = parse_record(&record_buf)?;
-        if only_node.is_some_and(|node| node != node_id) {
-            return Ok(None);
-        }
-        let node_id = node_id.to_string();
-        let output_id = output_id.to_string();
-        record_buf.truncate(payload.end);
-        record_buf.drain(..payload.start);
-        Ok(Some(Self {
-            node_id,
-            output_id,
+    /// Build an owned entry from a record's fields, as [`parse_record`]
+    /// returns them.
+    fn from_parts(
+        node_id: &str,
+        output_id: &str,
+        timestamp_offset_nanos: u64,
+        payload: &[u8],
+    ) -> Self {
+        Self {
+            node_id: node_id.to_string(),
+            output_id: output_id.to_string(),
             timestamp_offset_nanos,
-            event_bytes: record_buf,
-        }))
+            event_bytes: payload.to_vec(),
+        }
     }
 }
 
@@ -313,6 +307,16 @@ impl<W: Write> RecordingWriter<W> {
 pub struct RecordingReader<R: Read> {
     reader: BufReader<R>,
     header: RecordingHeader,
+    /// The current record body, reused from record to record: a replay
+    /// process reads every node's records to find its own, so a fresh
+    /// buffer per record would allocate (and, past the allocator's mmap
+    /// threshold, page-fault in) every payload of the recording just to drop
+    /// it. Only the payload of a record that is returned gets its own
+    /// allocation. Keeps the capacity of the largest record read so far, at
+    /// most [`MAX_RECORD_BYTES`].
+    record_buf: Vec<u8>,
+    /// See [`last_timestamp_offset_nanos`](Self::last_timestamp_offset_nanos).
+    last_timestamp_offset_nanos: u64,
 }
 
 impl<R: Read> RecordingReader<R> {
@@ -320,7 +324,12 @@ impl<R: Read> RecordingReader<R> {
     pub fn open(inner: R) -> eyre::Result<Self> {
         let mut reader = BufReader::new(inner);
         let header = read_header(&mut reader)?;
-        Ok(Self { reader, header })
+        Ok(Self {
+            reader,
+            header,
+            record_buf: Vec::new(),
+            last_timestamp_offset_nanos: 0,
+        })
     }
 
     /// The recording header parsed by [`open`](Self::open).
@@ -328,12 +337,30 @@ impl<R: Read> RecordingReader<R> {
         &self.header
     }
 
+    /// The largest [`RecordEntry::timestamp_offset_nanos`] among the records
+    /// read so far, from *any* node — including the ones
+    /// [`next_entry_for_node`](Self::next_entry_for_node) skipped. Once a
+    /// `next_*` call has returned `None`, this is the offset of the
+    /// recording's last message: the length of one pass, which every replay
+    /// node of a `--loop` replay must agree on to stay aligned.
+    pub fn last_timestamp_offset_nanos(&self) -> u64 {
+        self.last_timestamp_offset_nanos
+    }
+
     /// Read the next entry. Returns `None` at EOF or footer.
     pub fn next_entry(&mut self) -> eyre::Result<Option<RecordEntry>> {
-        let Some(record_buf) = self.read_next_record()? else {
+        if !self.read_next_record()? {
             return Ok(None);
-        };
-        RecordEntry::from_record(record_buf, None)
+        }
+        let (node_id, output_id, timestamp_offset_nanos, payload) = parse_record(&self.record_buf)?;
+        self.last_timestamp_offset_nanos =
+            self.last_timestamp_offset_nanos.max(timestamp_offset_nanos);
+        Ok(Some(RecordEntry::from_parts(
+            node_id,
+            output_id,
+            timestamp_offset_nanos,
+            &self.record_buf[payload],
+        )))
     }
 
     /// Read the next entry's metadata, *without* its event payload. Returns
@@ -345,10 +372,13 @@ impl<R: Read> RecordingReader<R> {
     /// of returned. Use this when the caller needs the entry's ids or timing but
     /// not the payload — e.g. counting how many messages each output recorded.
     pub fn next_entry_header(&mut self) -> eyre::Result<Option<RecordEntryHeader>> {
-        let Some(record_buf) = self.read_next_record()? else {
+        if !self.read_next_record()? {
             return Ok(None);
-        };
-        let (node_id, output_id, timestamp_offset_nanos, _payload) = parse_record(&record_buf)?;
+        }
+        let (node_id, output_id, timestamp_offset_nanos, _payload) =
+            parse_record(&self.record_buf)?;
+        self.last_timestamp_offset_nanos =
+            self.last_timestamp_offset_nanos.max(timestamp_offset_nanos);
         Ok(Some(RecordEntryHeader {
             node_id: node_id.to_string(),
             output_id: output_id.to_string(),
@@ -361,7 +391,7 @@ impl<R: Read> RecordingReader<R> {
     ///
     /// Foreign entries are still fully read from the stream and validated (so
     /// corruption is rejected exactly as by [`next_entry`](Self::next_entry)),
-    /// but nothing is copied out of the record buffer for them — neither the
+    /// but nothing is allocated or copied out for them — neither the
     /// (potentially multi-megabyte) event payload nor the ids. `dora replay`
     /// spawns one replay process per node, each scanning the whole recording
     /// and keeping only its own node's entries; using
@@ -369,24 +399,33 @@ impl<R: Read> RecordingReader<R> {
     /// entry for every *other* node's payload just to discard it.
     pub fn next_entry_for_node(&mut self, node: &str) -> eyre::Result<Option<RecordEntry>> {
         loop {
-            let Some(record_buf) = self.read_next_record()? else {
+            if !self.read_next_record()? {
                 return Ok(None);
-            };
-            if let Some(entry) = RecordEntry::from_record(record_buf, Some(node))? {
-                return Ok(Some(entry));
+            }
+            let (node_id, output_id, timestamp_offset_nanos, payload) =
+                parse_record(&self.record_buf)?;
+            self.last_timestamp_offset_nanos =
+                self.last_timestamp_offset_nanos.max(timestamp_offset_nanos);
+            if node_id == node {
+                return Ok(Some(RecordEntry::from_parts(
+                    node_id,
+                    output_id,
+                    timestamp_offset_nanos,
+                    &self.record_buf[payload],
+                )));
             }
         }
     }
 
-    /// Read the next record body from the stream, or `None` at EOF/footer.
-    /// Shared framing for [`next_entry`](Self::next_entry),
+    /// Read the next record body from the stream into `record_buf`, or
+    /// return `false` at EOF/footer. Shared framing for [`next_entry`](Self::next_entry),
     /// [`next_entry_header`](Self::next_entry_header), and
     /// [`next_entry_for_node`](Self::next_entry_for_node).
-    fn read_next_record(&mut self) -> eyre::Result<Option<Vec<u8>>> {
+    fn read_next_record(&mut self) -> eyre::Result<bool> {
         let mut len_buf = [0u8; 4];
         match self.reader.read_exact(&mut len_buf) {
             Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(false),
             Err(e) => return Err(e).wrap_err("failed to read record length"),
         }
 
@@ -399,16 +438,22 @@ impl<R: Read> RecordingReader<R> {
         // outcomes of that check already meant "stop", so reading them was dead
         // work.)
         if len_buf == FOOTER_MAGIC[..4] {
-            return Ok(None);
+            return Ok(false);
         }
 
         let record_len = u32::from_le_bytes(len_buf) as usize;
         if record_len > MAX_RECORD_BYTES {
             eyre::bail!("record too large: {record_len} bytes (max {MAX_RECORD_BYTES})");
         }
-        let mut record_buf = vec![0u8; record_len];
-        match self.reader.read_exact(&mut record_buf) {
-            Ok(()) => {}
+        // Read straight into the reused buffer's spare capacity: no fresh
+        // allocation, and no zero-fill ahead of a read that overwrites it.
+        self.record_buf.clear();
+        self.record_buf.reserve(record_len);
+        match (&mut self.reader)
+            .take(record_len as u64)
+            .read_to_end(&mut self.record_buf)
+        {
+            Ok(n) if n == record_len => {}
             // A crash (SIGKILL / Ctrl-C) can flush a record's 4-byte length
             // prefix but only part of the record body that follows. Treat such
             // a torn trailing record the same way as a torn length prefix
@@ -417,19 +462,19 @@ impl<R: Read> RecordingReader<R> {
             // `truncated record`. Genuine intra-record corruption in a
             // *complete* record is still rejected by the bounds checks in
             // `read_array` / `read_slice` (see `parse_record`).
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+            Ok(_) => return Ok(false),
             Err(e) => return Err(e).wrap_err("failed to read record"),
         }
 
-        Ok(Some(record_buf))
+        Ok(true)
     }
 }
 
 /// Parse a record body into its `(node_id, output_id, timestamp_offset_nanos,
 /// payload)` fields: the ids **borrowed** from `record_buf`, the payload as its
 /// byte range there. Callers copy out only the fields they keep —
-/// [`RecordEntry::from_record`] compares the borrowed node id and skips a
-/// foreign record without allocating anything.
+/// [`RecordingReader::next_entry_for_node`] compares the borrowed node id and
+/// skips a foreign record without allocating anything.
 /// Every length field is bounds-checked via [`read_array`] / [`read_slice`], so
 /// a corrupt or crafted record fails gracefully rather than panicking.
 fn parse_record(record_buf: &[u8]) -> eyre::Result<(&str, &str, u64, Range<usize>)> {
@@ -1003,6 +1048,76 @@ mod tests {
             assert_eq!(got.timestamp_offset_nanos, expected.timestamp_offset_nanos);
         }
         assert!(reader.next_entry_header().unwrap().is_none());
+    }
+
+    /// The reader reuses one record buffer; a record shorter than the one
+    /// before it must come back exactly, with none of the longer record's
+    /// bytes left behind, through every read path.
+    #[test]
+    fn records_of_shrinking_and_growing_size_read_back_exactly() {
+        let header = sample_header();
+        let entries = vec![
+            sample_entry("lidar", "points", 0, &[0xAA; 4096]),
+            sample_entry("cam", "frame", 1, b"\x01\x02"),
+            sample_entry("lidar", "points", 2, &[0xBB; 3]),
+            sample_entry("cam", "frame", 3, &[0xCC; 8192]),
+            sample_entry("cam", "frame", 4, b""),
+        ];
+
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        for e in &entries {
+            writer.write_entry(e).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        for expected in &entries {
+            assert_eq!(&reader.next_entry().unwrap().unwrap(), expected);
+        }
+        assert!(reader.next_entry().unwrap().is_none());
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        for expected in entries.iter().filter(|e| e.node_id == "cam") {
+            assert_eq!(
+                &reader.next_entry_for_node("cam").unwrap().unwrap(),
+                expected
+            );
+        }
+        assert!(reader.next_entry_for_node("cam").unwrap().is_none());
+    }
+
+    /// A filtered read still learns the offsets of the entries it skips, so a
+    /// node whose own last entry comes early sees the recording's true end —
+    /// the shared loop period of a `dora replay --loop`.
+    #[test]
+    fn last_timestamp_offset_counts_skipped_entries() {
+        let header = sample_header();
+        let entries = vec![
+            sample_entry("cam", "frame", 0, b"\x01"),
+            sample_entry("cam", "frame", 9_000_000_000, b"\x02"),
+            sample_entry("lidar", "points", 10_000_000_000, b"\x03"),
+        ];
+
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        for e in &entries {
+            writer.write_entry(e).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        assert_eq!(reader.last_timestamp_offset_nanos(), 0);
+        while reader.next_entry_for_node("cam").unwrap().is_some() {}
+        assert_eq!(reader.last_timestamp_offset_nanos(), 10_000_000_000);
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        while reader.next_entry().unwrap().is_some() {}
+        assert_eq!(reader.last_timestamp_offset_nanos(), 10_000_000_000);
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        while reader.next_entry_header().unwrap().is_some() {}
+        assert_eq!(reader.last_timestamp_offset_nanos(), 10_000_000_000);
     }
 
     /// `next_entry_for_node` returns only the requested node's entries, in

@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use futures::{FutureExt, select};
+use futures::{FutureExt, select_biased};
 use thiserror::Error;
 use zenoh::{
     Wait,
@@ -303,7 +303,10 @@ impl RawServiceClient {
         let mut deadline = futures_timer::Delay::new(timeout).fuse();
         loop {
             let mut receive = replies.recv_async().fuse();
-            select! {
+            // Replies first: a caller that polls late (e.g. the generated C++
+            // client's pump while it waits for room in the event stream) must
+            // get a reply that arrived in time, not the expired deadline.
+            select_biased! {
                 reply = receive => match reply {
                     Ok(reply) => match reply.into_result() {
                         Ok(sample) => {
@@ -402,7 +405,9 @@ pub async fn wait_for_service(
         let changed = graph.wait_for_change(snapshot.generation).fuse();
         let timer = futures_timer::Delay::new(remaining).fuse();
         futures::pin_mut!(changed, timer);
-        select! {
+        // Graph changes first, so a server that appeared in time is found even
+        // when this is polled after the deadline.
+        select_biased! {
             result = changed => match result { Ok(_) => {}, Err(GraphError::Closed) => return Err(ServiceError::TransportClosed), Err(error) => return Err(ServiceError::Zenoh(error.to_string())) },
             _ = timer => return Err(ServiceError::Timeout),
         }

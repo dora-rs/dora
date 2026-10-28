@@ -394,6 +394,13 @@ pub struct RunningDataflow {
     /// after `stop_all` moved the previously-known handles out of
     /// `running_nodes` must use this same policy.
     pub(crate) stop_process_policy: Option<StopProcessPolicy>,
+    /// Kill switches for the processes a graceful `stop_all` handed to their
+    /// grace timers. The handles leave `running_nodes` then, so without these
+    /// a later force stop (`dora stop --force`, the second Ctrl-C of
+    /// `dora start --attach`) finds nothing to kill and the nodes run out the
+    /// grace period (dora-rs/dora#3969). Plain senders, not `ProcessHandle`s:
+    /// dropping one must not kill the process.
+    pub(crate) graceful_stops: Vec<(NodeId, u64, flume::Sender<ProcessOperation>)>,
     pub(crate) empty_set: BTreeSet<DataId>,
     pub(crate) cascading_error_causes: CascadingErrorCauses,
     /// Planned-stop kill markers keyed by `(node id, generation)`: scoped to
@@ -514,6 +521,7 @@ impl RunningDataflow {
             timers_gate_drain: true,
             stop_sent: false,
             stop_process_policy: None,
+            graceful_stops: Vec::new(),
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
             grace_duration_kills: Default::default(),
@@ -822,6 +830,20 @@ impl RunningDataflow {
             StopProcessPolicy::Graceful(grace_duration.unwrap_or(DEFAULT_STOP_GRACE))
         };
         self.stop_process_policy = Some(stop_process_policy);
+        if force {
+            for (node_id, generation, op_tx) in self.graceful_stops.drain(..) {
+                // `try_send`: the process task keeps `op_rx` open but unread
+                // until its log forwarding ends, and a blocking send into the
+                // full channel would stall the daemon loop. A full channel
+                // already holds the grace timer's kill.
+                match op_tx.try_send(ProcessOperation::Kill) {
+                    Ok(()) | Err(flume::TrySendError::Full(_)) => {
+                        self.grace_duration_kills.insert((node_id, generation));
+                    }
+                    Err(flume::TrySendError::Disconnected(_)) => {}
+                }
+            }
+        }
 
         for (node_id, channel) in self.subscribe_channels.drain() {
             if send_with_timestamp(&channel, NodeEvent::Stop, clock).ok() == Some(true)
@@ -838,6 +860,10 @@ impl RunningDataflow {
             .collect();
         for (node_id, generation, process) in running_processes {
             if let Some(process) = process {
+                if !force {
+                    self.graceful_stops
+                        .push((node_id.clone(), generation, process.op_tx.clone()));
+                }
                 self.schedule_process_stop(node_id, generation, process, stop_process_policy);
             }
         }
@@ -882,12 +908,16 @@ impl RunningDataflow {
     }
 
     pub(crate) fn stop_rejected_replacement(
-        &self,
+        &mut self,
         node_id: &NodeId,
         generation: u64,
         process: ProcessHandle,
     ) {
         if let Some(policy) = self.stop_process_policy {
+            if let StopProcessPolicy::Graceful(_) = policy {
+                self.graceful_stops
+                    .push((node_id.clone(), generation, process.op_tx.clone()));
+            }
             self.schedule_process_stop(node_id.clone(), generation, process, policy);
         } else {
             // Restarts can also be disabled by AllInputsClosed. That path has
@@ -1235,14 +1265,6 @@ impl RunningDataflow {
             .is_some_and(|inputs| !inputs.is_empty())
     }
 
-    /// All output ids produced by `node_id`, whether they are consumed by a
-    /// local node (recorded in `mappings`) or only by nodes on another daemon
-    /// (recorded in `open_external_mappings`).
-    ///
-    /// Deriving the set from `mappings` alone misses outputs that have no local
-    /// consumer, so their remote consumers would never receive the
-    /// `OutputClosed` event when the producing node finishes (dora-rs/dora#2152
-    /// region — graceful cross-daemon shutdown).
     /// Whether `receiver`'s `input_id` declares `queue_policy: backpressure`,
     /// judged from the live node config. Static and dynamic nodes alike have
     /// an entry from spawn time (a dynamic node's config is served from it
@@ -1315,6 +1337,14 @@ impl RunningDataflow {
         })
     }
 
+    /// All output ids produced by `node_id`, whether they are consumed by a
+    /// local node (recorded in `mappings`) or only by nodes on another daemon
+    /// (recorded in `open_external_mappings`).
+    ///
+    /// Deriving the set from `mappings` alone misses outputs that have no local
+    /// consumer, so their remote consumers would never receive the
+    /// `OutputClosed` event when the producing node finishes (dora-rs/dora#2152
+    /// region — graceful cross-daemon shutdown).
     pub(crate) fn node_output_ids(&self, node_id: &NodeId) -> BTreeSet<DataId> {
         node_output_ids(&self.mappings, &self.open_external_mappings, node_id)
     }
