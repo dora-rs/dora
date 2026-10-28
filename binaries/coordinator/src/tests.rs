@@ -6886,10 +6886,12 @@ fn upstream_node_ids_lists_node_sources_only() {
 }
 
 #[test]
-fn producer_daemons_rejects_a_known_but_unmapped_producer() {
+fn producer_daemons_waits_only_while_the_producers_daemon_is_away() {
     // After a coordinator restart or reclaim, `node_to_daemon` only holds
-    // nodes whose daemon has already reported back. A known producer with
-    // no mapping must not be skipped, or the placement check fails open.
+    // nodes whose daemon has reported them as running. An unmapped producer
+    // must block the add while its last daemon is away (else the placement
+    // check fails open), but not once that daemon is back: then the producer
+    // has exited, and waiting for it would block the add for good.
     let running = running_descriptor_with_operator_producer(serde_json::json!(null));
     let added: Node = serde_json::from_value(serde_json::json!({
         "id": "consumer",
@@ -6907,51 +6909,108 @@ fn producer_daemons_rejects_a_known_but_unmapped_producer() {
         }),
     );
     let nodes = BTreeMap::from([(producer.clone(), producer_node)]);
+    let old_daemon = DaemonId::new(Some("machine-a".to_string()));
+    let persisted = BTreeMap::from([(producer.to_string(), old_daemon.to_string())]);
+    let producer_daemons = |node_to_daemon: &BTreeMap<NodeId, DaemonId>,
+                            persisted: &BTreeMap<String, String>,
+                            connections: &DaemonConnections| {
+        crate::control_requests::producer_daemons(
+            &resolved,
+            &nodes,
+            node_to_daemon,
+            persisted,
+            connections,
+        )
+    };
 
-    let err = crate::control_requests::producer_daemons(&resolved, &nodes, &BTreeMap::new(), true)
-        .unwrap_err();
-    assert!(format!("{err}").contains("producer"), "{err}");
+    // the producer's machine has no daemon connected: wait
+    let mut connections = DaemonConnections::default();
+    let err = producer_daemons(&BTreeMap::new(), &persisted, &connections).unwrap_err();
+    assert!(format!("{err}").contains("has not reconnected"), "{err}");
 
-    // once every daemon is back, an unmapped producer has exited (daemons
-    // only report running nodes) and no longer constrains the placement
+    // the machine is back under a new id without reporting the producer:
+    // it has exited and doesn't constrain the placement
+    let new_daemon = DaemonId::new(Some("machine-a".to_string()));
+    let (tx, _rx) = tokio::sync::mpsc::channel::<String>(1);
+    let pending = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    connections.add(
+        new_daemon.clone(),
+        crate::state::DaemonConnection::new(tx, pending, BTreeMap::new()),
+    );
     assert!(
-        crate::control_requests::producer_daemons(&resolved, &nodes, &BTreeMap::new(), false)
+        producer_daemons(&BTreeMap::new(), &persisted, &connections)
             .unwrap()
             .is_empty()
     );
 
-    let daemon = DaemonId::new(Some("machine-a".to_string()));
-    let mapped = BTreeMap::from([(producer, daemon.clone())]);
+    // no stored placement: never block the add for good
+    assert!(
+        producer_daemons(
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &DaemonConnections::default()
+        )
+        .unwrap()
+        .is_empty()
+    );
+
+    // a mapped producer is placed by its live daemon
+    let mapped = BTreeMap::from([(producer, new_daemon.clone())]);
     assert_eq!(
-        crate::control_requests::producer_daemons(&resolved, &nodes, &mapped, true).unwrap(),
-        BTreeSet::from([daemon])
+        producer_daemons(&mapped, &persisted, &DaemonConnections::default()).unwrap(),
+        BTreeSet::from([new_daemon])
     );
 }
 
-#[test]
-fn daemons_still_reconnecting_matches_by_machine_id_and_unnamed_count() {
-    use crate::control_requests::daemons_still_reconnecting;
-    let old_a = DaemonId::new(Some("machine-a".to_string()));
-    let old_b = DaemonId::new(Some("machine-b".to_string()));
-    let old_unnamed = DaemonId::new(None);
-    // re-registration hands out new ids for the same machines
-    let new_a = DaemonId::new(Some("machine-a".to_string()));
-    let new_b = DaemonId::new(Some("machine-b".to_string()));
-    let new_unnamed = DaemonId::new(None);
+#[tokio::test]
+async fn producer_daemons_waits_for_a_reclaimed_dataflows_daemon() {
+    // Drive the real reclaim path: the disconnect cleanup empties
+    // `df.daemons`, so the reclaim persists no `daemon_ids`. The persisted
+    // `node_to_daemon` must still name the producer's machine, so an add
+    // made before that daemon is back waits instead of failing open.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon = DaemonId::new(Some("machine-a".to_string()));
+    let producer: NodeId = "sender".to_string().into();
+    let df = test_running_dataflow(dataflow_id, daemon, producer.clone());
+    let descriptor = df.descriptor.clone();
+    let nodes = df.nodes.clone();
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        Default::default(),
+        store.clone(),
+    );
+    coordinator
+        .running_dataflows
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .daemons
+        .clear();
+    crate::daemon_liveness::begin_orphaned_dataflow_reclaim(
+        dataflow_id,
+        &mut coordinator.running_dataflows,
+        &coordinator.clock,
+        store.as_ref(),
+    )
+    .await;
+    let record = store.get_dataflow(&dataflow_id).unwrap().expect("record");
+    assert!(record.daemon_ids.is_empty());
 
-    let persisted = [old_a, old_b, old_unnamed];
-    assert!(daemons_still_reconnecting(
-        &persisted,
-        &BTreeSet::from([new_a.clone()])
-    ));
-    assert!(daemons_still_reconnecting(
-        &persisted,
-        &BTreeSet::from([new_a.clone(), new_b.clone()])
-    ));
-    assert!(!daemons_still_reconnecting(
-        &persisted,
-        &BTreeSet::from([new_a.clone(), new_b, new_unnamed])
-    ));
-    // no persisted record (e.g. nothing stored): nothing to wait for
-    assert!(!daemons_still_reconnecting(&[], &BTreeSet::from([new_a])));
+    let added: Node = serde_json::from_value(serde_json::json!({
+        "id": "consumer",
+        "path": "consumer",
+        "inputs": { "reading": "sender/message" },
+    }))
+    .expect("valid node");
+    let (_, resolved) = resolve_single_node(added, &descriptor).expect("node resolves");
+
+    let err = crate::control_requests::producer_daemons(
+        &resolved,
+        &nodes,
+        &BTreeMap::new(),
+        &record.node_to_daemon,
+        &DaemonConnections::default(),
+    )
+    .unwrap_err();
+    assert!(format!("{err}").contains("`sender`"), "{err}");
 }

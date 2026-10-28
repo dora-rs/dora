@@ -179,6 +179,16 @@ impl DaemonConnections {
         })
     }
 
+    /// Whether a daemon on the same machine as `daemon` is connected. A
+    /// re-registering daemon gets a new `DaemonId`, so named daemons are
+    /// matched by machine id and an unnamed one by any unnamed daemon.
+    pub(crate) fn has_daemon_on_machine_of(&self, daemon: &DaemonId) -> bool {
+        match daemon.machine_id() {
+            Some(machine) => self.get_matching_daemon_id(machine).is_some(),
+            None => self.unnamed().next().is_some(),
+        }
+    }
+
     /// Pick the daemon that should run a node added to a running dataflow
     /// (`dora node add`), honouring the node's `deploy` placement the same way
     /// the static spawn path does (machine > labels > unnamed), but only among
