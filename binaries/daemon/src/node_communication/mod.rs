@@ -639,9 +639,8 @@ impl Listener {
             }
             // Defensive: every variant this daemon knows is matched above. A
             // variant it predates (from a node built against a newer
-            // dora-node-api) cannot reach here — it fails to decode, and
-            // `TcpConnection::receive_message` closes the connection so the
-            // node sees EOF rather than hanging on a reply.
+            // dora-node-api) cannot reach here: it fails to decode, and
+            // `TcpConnection::receive_message` answers it with an error.
             other => {
                 let reply = DaemonReply::Result(Err(format!(
                     "unsupported request `{}` from node",
