@@ -2992,6 +2992,19 @@ async fn drain_clock_starts_when_all_inputs_closed_is_sent() {
         None,
         "not drained while AllInputsClosed waits"
     );
+    // However long the receiver has been silent, the straggler watchdog
+    // leaves it alone: it cannot act on a close it has not been sent.
+    df.connected_nodes.insert(receiver.clone());
+    df.data_inputs
+        .entry(receiver.clone())
+        .or_default()
+        .insert("a".to_string().into());
+    let an_hour_later = crate::node_communication::current_millis() + 3_600_000;
+    assert!(
+        df.finish_stragglers(Duration::from_millis(1), an_hour_later)
+            .is_empty(),
+        "a receiver whose AllInputsClosed waits is not escalated"
+    );
 
     let waited = Duration::from_millis(200);
     std::thread::sleep(waited);
