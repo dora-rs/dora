@@ -1606,7 +1606,11 @@ pub enum GitRepoRev {
 // `dora-schema.json`.)
 //
 // A native YAML/JSON bool or number keeps its type, except an integer
-// above `i64::MAX`, which keeps its exact digits as a string. A string has its
+// in `i64::MAX + 1 ..= u64::MAX`, which keeps its exact digits as a string.
+// An integer outside `i64::MIN ..= u64::MAX` is a parse error in YAML, but
+// serde_json hands it over as an `f64`, so a JSON descriptor still rounds it
+// (the CLI -> coordinator -> daemon hops are unaffected: by then such a value
+// is already a string). Quote it to keep it exact. A string has its
 // `$VAR` / `${VAR}` references expanded and is then typed as a bool or
 // number only when that is lossless, i.e. when the typed value prints
 // back as exactly the same text. `"8080"` and `${PORT}` (= 8080) still
