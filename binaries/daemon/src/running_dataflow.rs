@@ -1354,6 +1354,18 @@ impl RunningDataflow {
         node_output_ids(&self.mappings, &self.open_external_mappings, node_id)
     }
 
+    /// How long ago `node_id` was sent `AllInputsClosed`. `None` if it was
+    /// not, including while the event still waits behind a held backpressure
+    /// message (`DrainSignal::all_inputs_closed_sent`).
+    pub(crate) fn drained_for(&self, node_id: &NodeId) -> Option<Duration> {
+        let decided = *self.all_inputs_closed_at.get(node_id)?;
+        let sent = match self.drain_signals.get(node_id) {
+            Some(drained) => drained.all_inputs_closed_sent(decided)?,
+            None => decided,
+        };
+        Some(sent.elapsed())
+    }
+
     /// Nodes blocking an otherwise-finished dataflow (dora-rs/dora#2152).
     ///
     /// Returns nodes that should be force-stopped because the dataflow is
@@ -1376,18 +1388,6 @@ impl RunningDataflow {
     ///
     /// `now_millis` is the current `node_communication::current_millis()`, the
     /// clock `RunningNode::last_activity` is stamped against.
-    /// How long ago `node_id` was sent `AllInputsClosed`. `None` if it was
-    /// not, including while the event still waits behind a held backpressure
-    /// message (`DrainSignal::all_inputs_closed_sent`).
-    pub(crate) fn drained_for(&self, node_id: &NodeId) -> Option<Duration> {
-        let decided = *self.all_inputs_closed_at.get(node_id)?;
-        let sent = match self.drain_signals.get(node_id) {
-            Some(drained) => drained.all_inputs_closed_sent(decided)?,
-            None => decided,
-        };
-        Some(sent.elapsed())
-    }
-
     pub(crate) fn finish_stragglers(&self, grace: Duration, now_millis: u64) -> Vec<NodeId> {
         if self.stop_sent {
             return Vec::new();
