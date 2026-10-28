@@ -283,10 +283,15 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
     // the ones that matched a node, so a typo'd package name can't silently
     // fall through to a distributed build or clobber the lockfile.
     if !hub_override_dirs.is_empty() {
-        if coordinator_addr.is_some() || coordinator_port.is_some() {
+        // `--local` wins over the coordinator settings (see the build-kind
+        // selection below), so they can't conflict with the override then.
+        // They may come from `DORA_COORDINATOR_ADDR`/`_PORT` rather than flags.
+        if !force_local && (coordinator_addr.is_some() || coordinator_port.is_some()) {
             eyre::bail!(
                 "`--hub-override` is a local build feature and cannot be combined with a remote \
-                 coordinator (`--coordinator-addr`/`--coordinator-port`)"
+                 coordinator (`--coordinator-addr`/`--coordinator-port`, or the \
+                 `DORA_COORDINATOR_ADDR`/`DORA_COORDINATOR_PORT` environment variables). Use \
+                 `--local` to force a fully local build if that is what you want."
             );
         }
         if !force_local && dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some()) {

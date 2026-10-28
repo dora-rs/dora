@@ -352,19 +352,26 @@ impl Coordinator {
                         )));
                     }
                     ControlRequest::CliAndDefaultDaemonOnSameMachine => {
-                        // With WS we can't inspect peer addresses.
-                        // If an unnamed (local) daemon is connected, assume same
-                        // machine by returning localhost for both.
-                        let has_unnamed = self.daemon_connections.unnamed().next().is_some();
-                        let ip = if has_unnamed {
-                            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
-                        } else {
-                            None
-                        };
+                        // The default daemon is the one `run` places an
+                        // undeployed node on. `cli` is left for the control
+                        // connection to fill in: only it knows the CLI's
+                        // address (`ws_control::fill_in_cli_ip`).
+                        let default_daemon = self
+                            .daemon_connections
+                            .unnamed()
+                            .next()
+                            .and_then(|id| self.daemon_connections.get(id))
+                            .and_then(|connection| {
+                                let remote = connection.peer_addr?;
+                                Some(crate::ws_control::peer_ip(
+                                    remote,
+                                    connection.coordinator_local_addr,
+                                ))
+                            });
                         let _ =
                             reply_sender.send(Ok(ControlRequestReply::CliAndDefaultDaemonIps {
-                                default_daemon: ip,
-                                cli: ip,
+                                default_daemon,
+                                cli: None,
                             }));
                     }
                     ControlRequest::GetNodeInfo => self.handle_get_node_info(reply_sender).await?,
