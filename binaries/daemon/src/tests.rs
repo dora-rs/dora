@@ -611,8 +611,8 @@ fn stdout_line_to_unsubscribed_consumer_is_not_a_lost_message() {
         inputs.insert(
             input,
             user_input(
-                &output.0.to_string(),
-                &output.1.to_string(),
+                output.0.as_ref(),
+                output.1.as_ref(),
                 Some(QueuePolicy::Backpressure),
             ),
         );
