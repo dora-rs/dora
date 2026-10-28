@@ -9,7 +9,6 @@ license = "Apache-2.0"
 
 [dependencies]
 anyhow = "1.0"
-heck = "0.5"
 nom = "8"
 proc-macro2 = "1.0"
 quote = "1.0"
@@ -27,3 +26,7 @@ prettyplease = { version = "0.2", features = ["verbatim"] }
 quick-xml = "0.41.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# `syn::visit` walks the generated code in the codegen tests.
+syn = { version = "2.0", features = ["visit"] }

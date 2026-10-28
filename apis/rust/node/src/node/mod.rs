@@ -790,6 +790,9 @@ pub struct DoraNode {
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
     interactive: bool,
+    /// Outputs an `interactive` node closed via `close_outputs`. Such a node
+    /// has no static output declaration to remove them from.
+    closed_interactive_outputs: BTreeSet<DataId>,
     restart_count: u32,
 
     /// Runtime type checking state. `None` when off (zero overhead).
@@ -964,9 +967,16 @@ impl DoraNode {
 
     /// Dynamic initialization function for nodes that are sometimes used as dynamic nodes.
     ///
-    /// This function first tries initializing the traditional way through
-    /// [`init_from_env`][Self::init_from_env]. If this fails, it falls back to
+    /// If the `DORA_NODE_CONFIG` environment variable is set (the node was
+    /// spawned by a dora daemon), this initializes through
+    /// [`init_from_env`][Self::init_from_env] and ignores `node_id`. Otherwise
+    /// it connects as a dynamic node through
     /// [`init_from_node_id`][Self::init_from_node_id].
+    ///
+    /// The choice is made only on whether the variable is present: if
+    /// `init_from_env` fails (for example on a malformed `DORA_NODE_CONFIG` or
+    /// an unreachable daemon), that error is returned as is, with no fallback
+    /// to `init_from_node_id`.
     pub fn init_flexible(node_id: NodeId) -> NodeResult<(Self, EventStream)> {
         if std::env::var("DORA_NODE_CONFIG").is_ok() {
             info!(
@@ -1027,9 +1037,11 @@ impl DoraNode {
     /// We see that both the `stdout` output of the node and also the output messages that it sends
     /// are printed to the terminal. Then we get another prompt for the next input.
     ///
-    /// If you want to send an input with data, you can either send it as text (for string data)
-    /// or as a JSON object (for struct, string, or array data). Other data types are not supported
-    /// currently.
+    /// If you want to send an input with data, enter it in one of these forms:
+    ///
+    /// - plain text (for string data) or JSON (for struct, string, or array data);
+    /// - `FILE:<path.arrow>` to send the single column of the first batch of an Arrow IPC file;
+    /// - `HEX:<hexbytes>` to send raw bytes as a `UInt8` array (e.g. `HEX:deadbeef`).
     ///
     /// Empty input IDs are interpreted as stop instructions:
     ///
@@ -1427,6 +1439,7 @@ impl DoraNode {
             large_send_diag_count: 0,
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
+            closed_interactive_outputs: BTreeSet::new(),
             interactive: false,
             restart_count,
             runtime_type_checks,
@@ -1469,12 +1482,18 @@ impl DoraNode {
     /// Check whether `output_id` is declared as an output of this node.
     ///
     /// Returns `true` if the output is declared (or this node is `interactive`,
-    /// which has no static output declaration); `false` and emits a one-time
+    /// which has no static output declaration, and has not closed it); `false`
+    /// and emits a one-time
     /// warning if the output is unknown. Public so callers building higher-level
     /// send helpers (e.g. the Python `send_output_raw` zero-copy path) can
     /// validate before allocating a buffer.
     pub fn validate_output(&mut self, output_id: &DataId) -> bool {
-        if !self.node_config.outputs.contains(output_id) && !self.interactive {
+        let declared = if self.interactive {
+            !self.closed_interactive_outputs.contains(output_id)
+        } else {
+            self.node_config.outputs.contains(output_id)
+        };
+        if !declared {
             if !self.warned_unknown_output.contains(output_id) {
                 warn!("Ignoring output `{output_id}` not in node's output list.");
                 self.warned_unknown_output.insert(output_id.clone());
@@ -1532,7 +1551,9 @@ impl DoraNode {
         // it — avoids rebuilding the layout + IPC headers for the length query.
         let prepared = ipc_encode::PreparedUint8Ipc::new(data_len)
             .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-        let mut sample = self.allocate_data_sample(prepared.byte_len())?;
+        let mut sample = self
+            .sample_allocator
+            .allocate_for_path(prepared.byte_len(), self.output_direct_ready(&output_id))?;
         let offset = prepared
             .encode_header_into(&mut sample)
             .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
@@ -1553,8 +1574,11 @@ impl DoraNode {
     /// …) and dora moves it into shared memory for an efficient, near-zero-copy
     /// transfer to downstream nodes.
     ///
-    /// Uses shared memory for efficient data transfer if suitable. This method
-    /// might copy the message once to move it to shared memory.
+    /// Payloads of at least [`ZERO_COPY_THRESHOLD`] bytes on an output that
+    /// publishes directly to its consumers are encoded into shared memory.
+    /// An output pinned to the daemon path (e.g. a `backpressure` or
+    /// cross-machine consumer) is encoded into a heap buffer instead, since
+    /// that path sends a heap buffer without a further copy.
     ///
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
@@ -1592,7 +1616,9 @@ impl DoraNode {
         let arrow_array = dora_arrow_convert::internal::array_ref(&data).to_data();
         self.check_output_type(&output_id, arrow_array.data_type(), &parameters)?;
 
-        let encoded = self.sample_allocator.encode_arrow_data(&arrow_array)?;
+        let encoded = self
+            .sample_allocator
+            .encode_arrow_data_for_path(&arrow_array, self.output_direct_ready(&output_id))?;
         self.send_encoded_unchecked(output_id, parameters, encoded.sample)
     }
 
@@ -1926,19 +1952,26 @@ impl DoraNode {
     /// Returns [`NodeError::Output`] if any id is not a declared output of this node. Unlike
     /// [`send_output`](Self::send_output), which silently ignores unknown outputs, this validates
     /// the whole batch *before* closing any output, so on error none of them are closed.
+    /// A node in interactive or testing mode has no output declaration, so it accepts any id,
+    /// as its `send_output*` methods do.
     pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> NodeResult<()> {
-        // Validate the whole batch before mutating any local state. Removing
-        // outputs eagerly would leave the node's local output set out of sync
-        // with the daemon if a later id is unknown: the early ones would be
-        // gone locally, yet `report_closed_outputs` is skipped on error so the
-        // daemon never learns about them.
-        for output_id in &outputs_ids {
-            if !self.node_config.outputs.contains(output_id) {
-                return Err(NodeError::Output(format!("unknown output {output_id}")));
+        if self.interactive {
+            self.closed_interactive_outputs
+                .extend(outputs_ids.iter().cloned());
+        } else {
+            // Validate the whole batch before mutating any local state. Removing
+            // outputs eagerly would leave the node's local output set out of sync
+            // with the daemon if a later id is unknown: the early ones would be
+            // gone locally, yet `report_closed_outputs` is skipped on error so the
+            // daemon never learns about them.
+            for output_id in &outputs_ids {
+                if !self.node_config.outputs.contains(output_id) {
+                    return Err(NodeError::Output(format!("unknown output {output_id}")));
+                }
             }
-        }
-        for output_id in &outputs_ids {
-            self.node_config.outputs.remove(output_id);
+            for output_id in &outputs_ids {
+                self.node_config.outputs.remove(output_id);
+            }
         }
 
         self.control_channel
@@ -2043,7 +2076,9 @@ impl DoraNode {
                 }
                 publisher
                     .put(sbuf)
-                    .attachment(&metadata_bytes[..])
+                    // Move the encoded metadata in: `ZBytes::from(&[u8])`
+                    // copies, `ZBytes::from(Vec<u8>)` takes ownership.
+                    .attachment(metadata_bytes)
                     .wait()
                     .map_err(|e| eyre::eyre!("zenoh SHM publish failed: {e}"))?;
                 Ok(PublishOutcome::Published)
@@ -2100,11 +2135,7 @@ impl DoraNode {
                                          copied SHM buffer (dora-rs/dora#2742 diagnostic)"
                                     );
                                 }
-                                return match publisher
-                                    .put(sbuf)
-                                    .attachment(&metadata_bytes[..])
-                                    .wait()
-                                {
+                                return match publisher.put(sbuf).attachment(metadata_bytes).wait() {
                                     Ok(()) => Ok(PublishOutcome::Published),
                                     Err(e) => {
                                         tracing::warn!(
@@ -2177,9 +2208,6 @@ impl DoraNode {
                 // schema change at a segment boundary is just the one-time
                 // re-prime window any schema-once output has, not the per-message
                 // alternation that makes service/action lossy.
-                //
-                // `schema_once` is bound here, not inside the match, so its
-                // attachment bytes outlive the `put` below.
                 let schema_once = if schema_once_eligible(
                     avec.len(),
                     self.sample_allocator.zero_copy_threshold,
@@ -2208,22 +2236,20 @@ impl DoraNode {
                 // pairing is chosen by `select_zenoh_put` (unit-tested pure
                 // decision) — mispairing here silently drops messages at the
                 // receiver (dora-rs/dora#2366).
-                let choice = select_zenoh_put(
-                    schema_once.as_deref(),
-                    arrow_utils::ipc_encode::batch_slice(&avec),
-                );
-                let fallback_meta;
-                let (payload, attachment): (&[u8], &[u8]) = match choice {
+                let choice =
+                    select_zenoh_put(schema_once, arrow_utils::ipc_encode::batch_slice(&avec));
+                // Both attachments are encoded per message, so move them in:
+                // a borrowed `&[u8]` would make zenoh copy them again.
+                let (payload, attachment): (&[u8], zenoh::bytes::ZBytes) = match choice {
                     ZenohPutChoice::SchemaOnce {
                         payload,
                         attachment,
-                    } => (payload, attachment),
+                    } => (payload, attachment.into()),
                     ZenohPutChoice::FullStream => {
                         let Some(bytes) = encode_metadata() else {
                             return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)));
                         };
-                        fallback_meta = bytes;
-                        (&avec[..], &fallback_meta[..])
+                        (&avec[..], bytes.into())
                     }
                 };
                 match publisher.put(payload).attachment(attachment).wait() {
@@ -2333,8 +2359,9 @@ impl DoraNode {
     }
 
     /// Maximum serialized size of the log `fields` object before it is
-    /// dropped (60 KB). Matches the downstream 64 KB parse limit with headroom
-    /// for the message envelope. Measured on the serialized JSON (see
+    /// dropped (60 KB). Keeps a structured entry far below the daemon's 1 MiB
+    /// per-line limit, past which the JSON line would be cut and no longer
+    /// parse as structured. Measured on the serialized JSON (see
     /// [`log_fields_within_budget`]), not the raw key/value byte sum.
     const MAX_LOG_FIELDS_BYTES: usize = 60 * 1024;
 
@@ -2645,12 +2672,12 @@ impl DoraNode {
 
 /// Return the serialized log `fields` object when it fits `limit`, else `None`.
 ///
-/// The budget guards a downstream JSON-line parse limit, so it must measure
-/// the *serialized* size: `"fields":{...}` adds structural bytes (quotes,
+/// The budget keeps the structured entry well under the daemon's 1 MiB
+/// per-line limit, past which the line is cut and no longer parses as
+/// structured, so it must measure the *serialized* size: `"fields":{...}` adds structural bytes (quotes,
 /// colons, commas) and JSON escaping — a value full of `"`/`\` doubles and
 /// control characters expand ~6x via `\uXXXX`. Summing raw key/value byte
-/// lengths can pass a map whose serialized form is well over the limit, which
-/// the downstream parser then drops or truncates whole.
+/// lengths can pass a map whose serialized form is well over the budget.
 fn log_fields_within_budget(
     fields: &std::collections::BTreeMap<String, String>,
     limit: usize,
@@ -2968,7 +2995,26 @@ impl SampleAllocator {
     /// heap-allocated, 128-byte-aligned buffer; the SHM provider is
     /// page-aligned, so dedicating a full page to a small message is pure waste.
     pub fn allocate(&self, data_len: usize) -> NodeResult<DataSample> {
-        if data_len >= self.zero_copy_threshold
+        self.allocate_for_path(data_len, true)
+    }
+
+    /// [`allocate`](Self::allocate) for a sample whose delivery path is
+    /// already known: `direct` is whether it will be published straight to
+    /// zenoh ([`DoraNode::output_direct_ready`]).
+    ///
+    /// An SHM buffer only pays off on the direct path, where it is moved into
+    /// zenoh's `put`. An output pinned to the daemon path (a `backpressure` or
+    /// cross-machine consumer, or a handshake frozen at init) copies every
+    /// sample out into a `DataMessage::Vec` anyway, so an SHM buffer would only
+    /// add that copy and take pool space from the direct outputs; it gets a
+    /// heap buffer, which the daemon path sends without a copy.
+    pub(crate) fn allocate_for_path(
+        &self,
+        data_len: usize,
+        direct: bool,
+    ) -> NodeResult<DataSample> {
+        if direct
+            && data_len >= self.zero_copy_threshold
             && let Some(provider) = &self.shm_provider
         {
             use zenoh::Wait;
@@ -3045,11 +3091,21 @@ impl SampleAllocator {
 
     /// Same, for dora-internal callers that already hold an [`ArrayData`].
     pub(crate) fn encode_arrow_data(&self, array: &ArrayData) -> NodeResult<EncodedSample> {
+        self.encode_arrow_data_for_path(array, true)
+    }
+
+    /// [`encode_arrow_data`](Self::encode_arrow_data) into a sample allocated
+    /// for a known delivery path — see [`allocate_for_path`](Self::allocate_for_path).
+    pub(crate) fn encode_arrow_data_for_path(
+        &self,
+        array: &ArrayData,
+        direct: bool,
+    ) -> NodeResult<EncodedSample> {
         let sample = match ipc_encode::PreparedIpc::from_data(array) {
             Some(prepared) => {
                 // Prepare once: size the sample from the prepared layout, then
                 // encode into it — avoids rebuilding the layout + IPC headers.
-                let mut sample = self.allocate(prepared.byte_len())?;
+                let mut sample = self.allocate_for_path(prepared.byte_len(), direct)?;
                 prepared
                     .encode_into(&mut sample)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
@@ -3057,8 +3113,8 @@ impl SampleAllocator {
             }
             None => {
                 let bytes = ipc_encode::encode_ipc_to_vec_data(array)
-                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-                let mut sample = self.allocate(bytes.len())?;
+                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e:#}")))?;
+                let mut sample = self.allocate_for_path(bytes.len(), direct)?;
                 sample.copy_from_slice(&bytes);
                 sample
             }
@@ -3200,12 +3256,8 @@ impl FinalizedSample {
     fn into_data_message(self) -> DataMessage {
         match self {
             FinalizedSample::Vec(v) => DataMessage::Vec(v),
-            FinalizedSample::Shm(sbuf) => {
-                let bytes = sbuf.as_ref();
-                let mut avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, bytes.len());
-                avec.copy_from_slice(bytes);
-                DataMessage::Vec(avec)
-            }
+            // One copy, without zero-filling the buffer first.
+            FinalizedSample::Shm(sbuf) => DataMessage::Vec(AVec::from_slice(128, sbuf.as_ref())),
         }
     }
 }
@@ -3430,9 +3482,12 @@ enum ZenohPutChoice<'a> {
     /// schema-tagged `attachment` from [`publish_schema_once`]. No metadata is
     /// re-encoded — the receiver primes its decoder from the `@schema` subtopic
     /// and matches this batch by the schema hash carried in the attachment.
+    ///
+    /// The attachment is owned so it moves into zenoh's `ZBytes` without a
+    /// copy.
     SchemaOnce {
         payload: &'a [u8],
-        attachment: &'a [u8],
+        attachment: Vec<u8>,
     },
     /// Fallback: send the whole IPC payload as a self-describing stream, with
     /// the caller-encoded [`Metadata`] blob as the attachment, so the message
@@ -3448,10 +3503,7 @@ enum ZenohPutChoice<'a> {
 /// schema-tagged blob for this message) and a schema-less `batch_slice` could
 /// be taken. If either is absent the message must go out as a full
 /// self-describing stream so it decodes standalone at the receiver.
-fn select_zenoh_put<'a>(
-    schema_att: Option<&'a [u8]>,
-    batch_slice: Option<&'a [u8]>,
-) -> ZenohPutChoice<'a> {
+fn select_zenoh_put(schema_att: Option<Vec<u8>>, batch_slice: Option<&[u8]>) -> ZenohPutChoice<'_> {
     match (schema_att, batch_slice) {
         (Some(attachment), Some(payload)) => ZenohPutChoice::SchemaOnce {
             payload,
@@ -3544,10 +3596,12 @@ pub fn init_tracing(
     #[cfg(feature = "metrics")]
     if let Ok(endpoint) = std::env::var("DORA_OTLP_ENDPOINT") {
         let id = format!("{dataflow_id}/{node_id}");
+        // the bare node id, as the node's tracing uses for its service name
+        let service_name = node_id.to_string();
         let monitor_task = async move {
             use dora_metrics::run_metrics_monitor;
 
-            if let Err(e) = run_metrics_monitor(id.clone(), &endpoint)
+            if let Err(e) = run_metrics_monitor(&service_name, id, &endpoint)
                 .await
                 .wrap_err("metrics monitor exited unexpectedly")
             {
@@ -3724,8 +3778,8 @@ mod tests {
         // budget by the old raw-sum measure — but made entirely of control
         // characters, each of which JSON-escapes to `` (6 bytes). Its
         // serialized form is ~120 KB, over the budget, so it must be dropped.
-        // The pre-fix raw-byte check would have let it through and blown the
-        // downstream parse limit.
+        // The pre-fix raw-byte check would have let it through, well past the
+        // budget.
         let mut big = BTreeMap::new();
         big.insert("k".to_string(), "\u{1}".repeat(20 * 1024));
         assert!(big.values().map(String::len).sum::<usize>() < limit);
@@ -4188,6 +4242,37 @@ mod tests {
         assert_eq!(outputs[0]["id"], "out");
     }
 
+    /// A testing/interactive node has no static output declaration, so every
+    /// `send_output*` accepts any id. `close_outputs` must accept them too —
+    /// otherwise a node that closes an output early works under a daemon but
+    /// fails in `init_testing` with "unknown output" — and a closed output
+    /// must then be ignored, as it is for a daemon-run node.
+    #[test]
+    fn interactive_node_can_close_outputs() {
+        let (mut node, events, mut rx) = test_node();
+        assert!(node.interactive);
+        let out: DataId = "out".into();
+
+        node.send_output_sample(out.clone(), Default::default(), None)
+            .unwrap();
+        node.close_outputs(vec![out.clone()])
+            .expect("an interactive node must be able to close any output");
+        node.send_output_sample(out.clone(), Default::default(), None)
+            .unwrap();
+        node.send_output_sample("other".into(), Default::default(), None)
+            .unwrap();
+
+        drop(node);
+        drop(events);
+        let outputs = drain_outputs(&mut rx);
+        let ids: Vec<_> = outputs.iter().map(|o| o["id"].clone()).collect();
+        assert_eq!(
+            ids,
+            ["out", "other"],
+            "the send after closing `out` must be dropped"
+        );
+    }
+
     /// `close_outputs` must be atomic: if any id in the batch is unknown, the
     /// call fails *without* removing the valid ids from the local output set.
     /// Otherwise the daemon (never notified, because `report_closed_outputs` is
@@ -4196,6 +4281,8 @@ mod tests {
     #[test]
     fn close_outputs_is_atomic_on_unknown_id() {
         let (mut node, events, _rx) = test_node();
+        // Enforce a real output declaration (the testing node is interactive).
+        node.interactive = false;
         let valid: DataId = "valid".into();
         node.node_config.outputs.insert(valid.clone());
 
@@ -4447,7 +4534,7 @@ mod tests {
 
     #[test]
     fn select_zenoh_put_takes_fast_path_only_when_primed_and_sliceable() {
-        let schema_att: &[u8] = b"schema-tagged-attachment";
+        let schema_att = b"schema-tagged-attachment".to_vec();
         let batch: &[u8] = b"schema-less-batch";
 
         // Primed (schema attachment present) AND a batch slice could be taken →
@@ -4455,10 +4542,10 @@ mod tests {
         // the attachment; pinning this pairing guards against the silent-drop
         // swap of dora-rs/dora#2366.
         assert_eq!(
-            select_zenoh_put(Some(schema_att), Some(batch)),
+            select_zenoh_put(Some(schema_att.clone()), Some(batch)),
             ZenohPutChoice::SchemaOnce {
                 payload: batch,
-                attachment: schema_att,
+                attachment: schema_att.clone(),
             }
         );
 
@@ -4714,6 +4801,48 @@ mod operator_boundary_tests {
             .expect("the sample must be a well-formed Arrow IPC stream");
 
         assert_eq!(decoded, array);
+    }
+
+    /// A sample bound for the daemon path must come from the heap even when an
+    /// SHM provider exists: that path copies an SHM sample out into a
+    /// `DataMessage::Vec` (the heap one moves without a copy), and the SHM
+    /// buffer would take pool space from the direct-path outputs. The direct
+    /// path keeps SHM for payloads at or above the threshold.
+    #[test]
+    fn daemon_path_samples_skip_shared_memory() {
+        use zenoh::Wait;
+        use zenoh::shm::{AllocAlignment, MemoryLayout, ShmProviderBuilder};
+
+        let layout = MemoryLayout::new(
+            1 << 20,
+            AllocAlignment::new(crate::arrow_utils::ARROW_BUFFER_ALIGNMENT_EXPONENT).unwrap(),
+        )
+        .unwrap();
+        let Ok(provider) = ShmProviderBuilder::default_backend(layout).wait() else {
+            eprintln!("skipping: no zenoh SHM provider on this host");
+            return;
+        };
+        let allocator = SampleAllocator {
+            shm_provider: Some(Arc::new(provider)),
+            zero_copy_threshold: ZERO_COPY_THRESHOLD,
+        };
+        let is_shm = |sample: &DataSample| matches!(sample.storage, SampleStorage::Shm(_));
+        let len = ZERO_COPY_THRESHOLD * 2;
+
+        assert!(is_shm(&allocator.allocate_for_path(len, true).unwrap()));
+        assert!(!is_shm(&allocator.allocate_for_path(len, false).unwrap()));
+        assert!(is_shm(&allocator.allocate(len).unwrap()));
+
+        let (array, _released) = foreign_owned_array(len);
+        let direct = allocator.encode_arrow_data_for_path(&array, true).unwrap();
+        let daemon = allocator.encode_arrow_data_for_path(&array, false).unwrap();
+        assert!(is_shm(&direct.sample));
+        assert!(!is_shm(&daemon.sample));
+        assert_eq!(direct.as_bytes(), daemon.as_bytes());
+
+        // The daemon-path copy of an SHM sample is byte-identical.
+        let DataMessage::Vec(copied) = direct.sample.finalize().into_data_message();
+        assert_eq!(&copied[..], daemon.as_bytes());
     }
 
     /// The allocator is handed to operator threads, so it has to cross thread

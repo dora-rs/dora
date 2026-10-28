@@ -18,7 +18,7 @@ use eyre::Context;
 use flume::Sender;
 use uuid::Uuid;
 
-use crate::coordinator::CoordinatorSender;
+use crate::coordinator::{CoordinatorSender, MAX_COORDINATOR_MESSAGE_BYTES};
 
 pub fn log_path(working_dir: &Path, dataflow_id: &Uuid, node_id: &NodeId) -> PathBuf {
     let dataflow_dir = working_dir.join("out").join(dataflow_id.to_string());
@@ -34,6 +34,25 @@ pub fn log_path_rotated(
 ) -> PathBuf {
     let dataflow_dir = working_dir.join("out").join(dataflow_id.to_string());
     dataflow_dir.join(format!("log_{node_id}.{index}.jsonl"))
+}
+
+/// Open a node's current log file for appending, creating it if needed, and
+/// return it with its current length.
+///
+/// A node restarted by its `restart_policy` (or `dora node restart`) is
+/// spawned again under the same dataflow id, so the file may already hold the
+/// previous incarnation's output — including the panic or traceback that
+/// caused the restart. Appending keeps those lines, and returning the length
+/// lets the caller count them toward `max_log_size`, so rotation keeps the
+/// documented disk bound.
+pub async fn open_log_file_for_append(path: &Path) -> std::io::Result<(tokio::fs::File, u64)> {
+    let file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+    let len = file.metadata().await?.len();
+    Ok((file, len))
 }
 
 /// Default max rotated files (excluding the current file).
@@ -493,16 +512,26 @@ impl Logger {
     }
 
     async fn log_to_coordinator(
-        message: Timestamped<CoordinatorRequest>,
+        mut message: Timestamped<CoordinatorRequest>,
         sender: &CoordinatorSender,
     ) {
-        let msg = match serde_json::to_vec(&message) {
+        let msg = match encode_log_event(&mut message) {
             Ok(msg) => msg,
             Err(err) => {
                 tracing::warn!("failed to serialize log message: {err}");
                 return;
             }
         };
+        if msg.len() > MAX_COORDINATOR_MESSAGE_BYTES - EVENT_ENVELOPE_RESERVE {
+            // Too large even after cutting its text: the coordinator would
+            // close the daemon connection on it.
+            tracing::warn!(
+                "not forwarding a {}-byte log message to dora-coordinator: \
+                 it exceeds the coordinator's message limit",
+                msg.len()
+            );
+            return;
+        }
         match sender
             .send_event(&msg)
             .await
@@ -511,6 +540,61 @@ impl Logger {
             Ok(()) => (),
             Err(err) => tracing::warn!("{err:?}"),
         }
+    }
+}
+
+/// Room left in a coordinator message for the `daemon_event` envelope that
+/// [`CoordinatorSender::send_event`] wraps around the serialized event.
+const EVENT_ENVELOPE_RESERVE: usize = 256;
+
+/// Serialize a log event for the coordinator, cutting the end off its text
+/// when the event would not fit in one coordinator message.
+///
+/// A node's output line may be up to 1 MiB, and JSON escaping can double it
+/// or more, while the coordinator closes the daemon connection on any
+/// message past [`MAX_COORDINATOR_MESSAGE_BYTES`]. When even an empty text
+/// would not fit (the excess is elsewhere in the event), the event is left
+/// as is and `log_to_coordinator` drops it.
+fn encode_log_event(message: &mut Timestamped<CoordinatorRequest>) -> serde_json::Result<Vec<u8>> {
+    const BUDGET: usize = MAX_COORDINATOR_MESSAGE_BYTES - EVENT_ENVELOPE_RESERVE;
+    const NOTE_RESERVE: usize = 64;
+
+    let msg = serde_json::to_vec(message)?;
+    if msg.len() <= BUDGET {
+        return Ok(msg);
+    }
+    let CoordinatorRequest::Event {
+        event: DaemonEvent::Log(log),
+        ..
+    } = &mut message.inner
+    else {
+        return Ok(msg);
+    };
+    let text = &mut log.message;
+    let text_json: usize = text.chars().map(json_escaped_len).sum();
+    let Some(keep_json) = text_json.checked_sub(msg.len() - BUDGET + NOTE_RESERVE) else {
+        return Ok(msg);
+    };
+    let mut used = 0;
+    let keep = text
+        .char_indices()
+        .find(|&(_, c)| {
+            used += json_escaped_len(c);
+            used > keep_json
+        })
+        .map_or(text.len(), |(i, _)| i);
+    let dropped = text.len() - keep;
+    text.truncate(keep);
+    text.push_str(&format!(" [... {dropped} bytes truncated]"));
+    serde_json::to_vec(message)
+}
+
+/// The bytes `serde_json` writes for `c` inside a JSON string.
+fn json_escaped_len(c: char) -> usize {
+    match c {
+        '"' | '\\' | '\u{8}' | '\u{c}' | '\n' | '\r' | '\t' => 2,
+        c if c < ' ' => 6,
+        c => c.len_utf8(),
     }
 }
 
@@ -588,6 +672,7 @@ impl std::fmt::Display for Indent<'_> {
 mod tests {
     use super::*;
     use crate::coordinator::CoordinatorSender;
+    use crate::test_tracing::LevelCapture;
 
     /// #2029 P2: a per-node log-forwarding clone captured at spawn must follow a
     /// later reconnect — after `update_coordinator_target`, the clone emits under
@@ -629,6 +714,117 @@ mod tests {
         );
     }
 
+    fn log_event(text: String) -> Timestamped<CoordinatorRequest> {
+        let clock = uhlc::HLC::default();
+        Timestamped {
+            inner: CoordinatorRequest::Event {
+                daemon_id: DaemonId::new(None),
+                event: DaemonEvent::Log(LogMessage {
+                    build_id: None,
+                    dataflow_id: Some(Uuid::nil()),
+                    node_id: Some(NodeId::from("node".to_string())),
+                    daemon_id: None,
+                    level: LogLevelOrStdout::Stdout,
+                    target: None,
+                    module_path: None,
+                    file: None,
+                    line: None,
+                    message: text,
+                    timestamp: chrono::Utc::now(),
+                    fields: None,
+                }),
+            },
+            timestamp: clock.new_timestamp(),
+        }
+    }
+
+    fn forwarded_text(message: &Timestamped<CoordinatorRequest>) -> &str {
+        match &message.inner {
+            CoordinatorRequest::Event {
+                event: DaemonEvent::Log(log),
+                ..
+            } => &log.message,
+            _ => unreachable!(),
+        }
+    }
+
+    /// A node output line up to the 1 MiB capture cap, or a shorter one that
+    /// JSON escaping blows up, must still fit in one coordinator message: the
+    /// coordinator closes the daemon connection on a larger one.
+    #[tokio::test]
+    async fn an_oversized_log_line_is_truncated_to_fit_the_coordinator_limit() {
+        for text in [
+            "x".repeat(1024 * 1024),
+            "\"".repeat(600 * 1024),
+            "\u{1}".repeat(300 * 1024),
+            "é".repeat(512 * 1024),
+        ] {
+            let (sender, mut rx) = CoordinatorSender::for_test();
+            Logger::log_to_coordinator(log_event(text.clone()), &sender).await;
+            let sent = rx.try_recv().expect("the log line must still be forwarded");
+            assert!(
+                sent.len() <= MAX_COORDINATOR_MESSAGE_BYTES,
+                "{} bytes exceeds the coordinator limit",
+                sent.len()
+            );
+
+            let mut event = log_event(text.clone());
+            encode_log_event(&mut event).unwrap();
+            let forwarded = forwarded_text(&event);
+            let (kept, note) = forwarded.rsplit_once(" [... ").unwrap();
+            assert!(text.starts_with(kept));
+            // Only what doesn't fit is cut, however heavily the text escapes.
+            assert!(
+                sent.len() > MAX_COORDINATOR_MESSAGE_BYTES - 1024,
+                "cut more than needed: {} bytes sent",
+                sent.len()
+            );
+            assert_eq!(
+                note,
+                format!("{} bytes truncated]", text.len() - kept.len())
+            );
+        }
+    }
+
+    #[test]
+    fn json_escaped_len_matches_serde_json() {
+        for c in [
+            'a', 'é', '😀', '"', '\\', '\n', '\t', '\u{1}', '\u{1f}', '\u{7f}', '/',
+        ] {
+            let encoded = serde_json::to_string(&c.to_string()).unwrap();
+            assert_eq!(json_escaped_len(c), encoded.len() - 2, "{c:?}");
+        }
+    }
+
+    /// When the excess is not in the text, cutting the text cannot help, so
+    /// the event is left whole rather than stripped of its message.
+    #[test]
+    fn a_log_event_too_large_outside_its_text_is_left_unchanged() {
+        let mut event = log_event("hello".to_string());
+        if let CoordinatorRequest::Event {
+            event: DaemonEvent::Log(log),
+            ..
+        } = &mut event.inner
+        {
+            log.fields = Some(std::collections::BTreeMap::from([(
+                "payload".to_string(),
+                "x".repeat(MAX_COORDINATOR_MESSAGE_BYTES),
+            )]));
+        }
+        let encoded = encode_log_event(&mut event).unwrap();
+        assert!(encoded.len() > MAX_COORDINATOR_MESSAGE_BYTES);
+        assert_eq!(forwarded_text(&event), "hello");
+    }
+
+    #[test]
+    fn a_log_line_that_fits_is_forwarded_unchanged() {
+        let text = "x".repeat(512 * 1024);
+        let mut event = log_event(text.clone());
+        let encoded = encode_log_event(&mut event).unwrap();
+        assert_eq!(forwarded_text(&event), text);
+        assert!(encoded.len() < MAX_COORDINATOR_MESSAGE_BYTES);
+    }
+
     #[test]
     fn log_path_format() {
         let dir = Path::new("/tmp/work");
@@ -650,6 +846,32 @@ mod tests {
         assert_eq!(
             p,
             PathBuf::from("/tmp/work/out/00000000-0000-0000-0000-000000000000/log_sensor.3.jsonl")
+        );
+    }
+
+    #[tokio::test]
+    async fn reopening_a_log_file_keeps_the_previous_incarnation() {
+        use tokio::io::AsyncWriteExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("log_n.jsonl");
+
+        let (mut file, len) = open_log_file_for_append(&path).await.unwrap();
+        assert_eq!(len, 0);
+        file.write_all(b"panicked at main.rs\n").await.unwrap();
+        file.flush().await.unwrap();
+        drop(file);
+
+        // The respawned incarnation opens the same path.
+        let (mut file, len) = open_log_file_for_append(&path).await.unwrap();
+        assert_eq!(len, "panicked at main.rs\n".len() as u64);
+        file.write_all(b"restarted\n").await.unwrap();
+        file.flush().await.unwrap();
+        drop(file);
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "panicked at main.rs\nrestarted\n"
         );
     }
 
@@ -838,30 +1060,6 @@ mod tests {
         assert_eq!(out, "");
     }
 
-    /// Minimal `tracing::Subscriber` that records the level of every event it
-    /// receives, so a test can assert which severities the `Tracing` log
-    /// destination actually forwards.
-    #[derive(Clone, Default)]
-    struct LevelCapture {
-        levels: Arc<Mutex<Vec<tracing::Level>>>,
-    }
-
-    impl tracing::Subscriber for LevelCapture {
-        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-            true
-        }
-        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            self.levels.lock().unwrap().push(*event.metadata().level());
-        }
-        fn enter(&self, _span: &tracing::span::Id) {}
-        fn exit(&self, _span: &tracing::span::Id) {}
-    }
-
     fn log_message_at(level: LogLevel, message: &str) -> LogMessage {
         LogMessage {
             build_id: None,
@@ -885,7 +1083,7 @@ mod tests {
     /// just like `Debug` and above.
     #[test]
     fn tracing_destination_forwards_trace_level() {
-        let capture = LevelCapture::default();
+        let capture = LevelCapture::new();
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();

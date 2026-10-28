@@ -369,7 +369,7 @@ fn deserialize(session_file: &Path) -> eyre::Result<DataflowSession> {
     })
 }
 
-fn session_file_path(dataflow_path: &Path) -> eyre::Result<PathBuf> {
+pub(crate) fn session_file_path(dataflow_path: &Path) -> eyre::Result<PathBuf> {
     let file_stem = dataflow_path
         .file_stem()
         .wrap_err("dataflow path has no file stem")?
@@ -924,35 +924,40 @@ nodes:
     fn fingerprint_unchanged_when_only_operator_yaml_order_changes() {
         // Operators within a node are stored in a Vec (not a BTreeMap), so
         // the fingerprint code sorts them by `id` before canonicalizing.
-        // Verify reordering in YAML doesn't churn the fingerprint.
-        let ab = resolved(
+        // Verify reordering in YAML doesn't churn the fingerprint. Resolution
+        // rejects a runtime node with several operators, so the nodes are
+        // built directly; the sort still guards the fingerprint itself.
+        let runtime_node = |yaml: &str| {
+            let node: ResolvedNode =
+                serde_yaml::from_str(yaml).expect("yaml parses as ResolvedNode");
+            BTreeMap::from([(node.id.clone(), node)])
+        };
+        let ab = runtime_node(
             "\
-nodes:
-  - id: foo
-    operators:
-      - id: a
-        python: ./a.py
-        inputs: {}
-        outputs: []
-      - id: b
-        python: ./b.py
-        inputs: {}
-        outputs: []
+id: foo
+operators:
+  - id: a
+    python: ./a.py
+    inputs: {}
+    outputs: []
+  - id: b
+    python: ./b.py
+    inputs: {}
+    outputs: []
 ",
         );
-        let ba = resolved(
+        let ba = runtime_node(
             "\
-nodes:
-  - id: foo
-    operators:
-      - id: b
-        python: ./b.py
-        inputs: {}
-        outputs: []
-      - id: a
-        python: ./a.py
-        inputs: {}
-        outputs: []
+id: foo
+operators:
+  - id: b
+    python: ./b.py
+    inputs: {}
+    outputs: []
+  - id: a
+    python: ./a.py
+    inputs: {}
+    outputs: []
 ",
         );
         assert_eq!(

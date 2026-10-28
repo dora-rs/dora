@@ -343,7 +343,7 @@ Add new test files in the `tests/` directory. For tests that need the full CLI s
 2. Clean up stale processes with `dora down`
 3. Start cluster with `dora up`
 4. Run dataflow with `dora start --detach`
-5. Poll `dora list --json` for completion
+5. Poll `dora list --format json` for completion
 6. Clean up with `dora stop --all` and `dora down`
 
 **Local pattern** (single-process, in-process coordinator):

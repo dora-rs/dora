@@ -3,7 +3,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
+use dora_message::{
+    common::Timestamped,
+    daemon_to_daemon::InterDaemonEvent,
+    metadata::{MetadataParameters, strip_internal_parameters},
+};
 use dora_node_api::{
     DoraArray, DoraNode, Event, EventStream, IntoArrow, TryRecvError,
     arrow_utils::decode_arrow_ipc, arrow_v59::array::NullArray,
@@ -35,20 +39,30 @@ fn replay_emitted_nothing_usable(replayed: u64, skipped: u64) -> bool {
     replayed == 0 && skipped > 0
 }
 
-/// Nanoseconds to sleep before emitting an entry, given the previous entry's
-/// recording offset, this entry's offset, and the replay `speed`.
+/// How long to wait before emitting an entry, given the time `elapsed` since
+/// the current replay pass started, the entry's recording offset, and the
+/// replay `speed`.
 ///
-/// `prev_offset` starts at 0 (recording start), so the very first entry sleeps
+/// Pacing is against an absolute schedule: the entry is due `entry_offset /
+/// speed` after the pass started. Waiting only the gap to the *previous*
+/// entry would add every entry's decode/send time and every timer overshoot to
+/// the schedule, so a long replay would drift later and later and different
+/// replay nodes (which drift at different rates) would lose their relative
+/// alignment. An entry that is already late is emitted immediately, letting
+/// the replay catch up.
+///
+/// The schedule starts at 0 (recording start), so the very first entry waits
 /// for its own `timestamp_offset_nanos` — the delay from recording-start to the
-/// node's first output. Dropping that initial gap (by starting the baseline at
-/// the first entry's own offset) would emit every node's first message at ~t=0
-/// and destroy cross-node alignment on replay (dora-rs/dora#2602).
-fn pacing_sleep_nanos(prev_offset: u64, entry_offset: u64, speed: f64) -> u64 {
+/// node's first output. Dropping that initial gap would emit every node's first
+/// message at ~t=0 and destroy cross-node alignment on replay
+/// (dora-rs/dora#2602).
+fn pacing_gap(elapsed: Duration, entry_offset: u64, speed: f64) -> Duration {
     if speed <= 0.0 {
-        return 0;
+        return Duration::ZERO;
     }
-    let delta_nanos = entry_offset.saturating_sub(prev_offset);
-    (delta_nanos as f64 / speed) as u64
+    // `as u64` saturates, so a tiny `speed` cannot overflow.
+    let due = Duration::from_nanos((entry_offset as f64 / speed) as u64);
+    due.saturating_sub(elapsed)
 }
 
 /// Whether the replay loop should keep going or wind down.
@@ -141,23 +155,19 @@ fn main() -> eyre::Result<()> {
             File::open(&replay_file).wrap_err_with(|| format!("failed to open {replay_file}"))?;
         let mut reader = RecordingReader::open(file).wrap_err("failed to read recording")?;
 
-        // Baseline for inter-message pacing. Seeded to 0 (recording start)
-        // rather than the first entry's own offset so the initial gap — each
-        // node's `timestamp_offset_nanos` from recording-start to its first
-        // output — is honored, preserving cross-node alignment on replay.
-        let mut prev_offset: u64 = 0;
+        // Start of this pass's pacing schedule; see `pacing_gap`.
+        let pass_start = Instant::now();
         let mut replayed = 0u64;
         let mut skipped = 0u64;
         let mut stopped = false;
 
         while let Some(entry) = reader.next_entry_for_node(&replay_node)? {
             // Wait out the pacing gap, watching for `Stop` while we do.
-            let sleep_nanos = pacing_sleep_nanos(prev_offset, entry.timestamp_offset_nanos, speed);
-            if wait_out_gap(&mut events, Duration::from_nanos(sleep_nanos)) == Replay::Stop {
+            let gap = pacing_gap(pass_start.elapsed(), entry.timestamp_offset_nanos, speed);
+            if wait_out_gap(&mut events, gap) == Replay::Stop {
                 stopped = true;
                 break;
             }
-            prev_offset = entry.timestamp_offset_nanos;
 
             let timestamped: Timestamped<InterDaemonEvent> =
                 match Timestamped::deserialize_inter_daemon_event(&entry.event_bytes) {
@@ -199,7 +209,7 @@ fn main() -> eyre::Result<()> {
                             continue;
                         }
                     };
-                    node.send_output(output_id, metadata.parameters, array)
+                    node.send_output(output_id, replay_parameters(metadata.parameters), array)
                         .wrap_err("failed to send replay output")?;
                     replayed += 1;
                 }
@@ -259,16 +269,41 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
+/// The metadata parameters to re-send for a recorded output.
+///
+/// Recordings made with `dora record --proxy` before the proxy learned to
+/// strip it carry the daemon's debug-only `_wire_size` stamp on every
+/// message. Drop internal keys here, so they never reach downstream nodes.
+fn replay_parameters(mut parameters: MetadataParameters) -> MetadataParameters {
+    strip_internal_parameters(&mut parameters);
+    parameters
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        Replay, classify_event, decode_recorded_payload, pacing_sleep_nanos,
-        replay_emitted_nothing_usable,
+        Replay, classify_event, decode_recorded_payload, pacing_gap, replay_emitted_nothing_usable,
+        replay_parameters,
     };
     use dora_node_api::DoraArray;
     use dora_node_api::arrow_utils::encode_arrow_ipc;
     use dora_node_api::arrow_v59::array::Int32Array;
     use dora_node_api::{Event, StopCause};
+    use std::time::Duration;
+
+    #[test]
+    fn replay_drops_the_debug_wire_size_stamp() {
+        use dora_message::metadata::{MetadataParameters, Parameter, WIRE_SIZE};
+
+        let mut parameters = MetadataParameters::default();
+        parameters.insert(WIRE_SIZE.to_string(), Parameter::Integer(42));
+        parameters.insert("user_key".to_string(), Parameter::Integer(7));
+
+        let replayed = replay_parameters(parameters);
+
+        assert!(!replayed.contains_key(WIRE_SIZE));
+        assert!(replayed.contains_key("user_key"));
+    }
 
     #[test]
     fn stop_event_ends_the_replay() {
@@ -310,34 +345,61 @@ mod tests {
         );
     }
 
+    const MS: u64 = 1_000_000;
+    const SEC: u64 = 1_000_000_000;
+
     #[test]
     fn first_entry_honors_its_initial_offset() {
         // A node whose first output was recorded 1s after recording-start must
-        // sleep ~1s before emitting it, not fire immediately (dora-rs/dora#2602).
-        let one_sec = 1_000_000_000;
-        assert_eq!(pacing_sleep_nanos(0, one_sec, 1.0), one_sec);
-    }
-
-    #[test]
-    fn subsequent_entries_sleep_the_inter_message_delta() {
-        // From offset 1s to offset 1.25s the pacing sleeps only the 250ms gap.
+        // wait ~1s before emitting it, not fire immediately (dora-rs/dora#2602).
         assert_eq!(
-            pacing_sleep_nanos(1_000_000_000, 1_250_000_000, 1.0),
-            250_000_000
+            pacing_gap(Duration::ZERO, SEC, 1.0),
+            Duration::from_nanos(SEC)
         );
     }
 
     #[test]
-    fn speed_scales_the_sleep() {
-        // 2x speed halves the sleep; a non-positive speed disables pacing.
-        assert_eq!(pacing_sleep_nanos(0, 1_000_000_000, 2.0), 500_000_000);
-        assert_eq!(pacing_sleep_nanos(0, 1_000_000_000, 0.0), 0);
+    fn time_spent_since_the_previous_entry_is_not_waited_again() {
+        // Entry due at 1.25s; 1.2s have already passed (the 1s entry was
+        // emitted, and decoding/sending it plus timer overshoot took 200ms).
+        // Only the remaining 50ms is waited, so that overhead does not
+        // accumulate into drift over a long replay.
+        assert_eq!(
+            pacing_gap(Duration::from_millis(1200), 1250 * MS, 1.0),
+            Duration::from_millis(50)
+        );
     }
 
     #[test]
-    fn non_monotonic_offset_saturates_to_zero() {
-        // A later entry with a smaller offset must not underflow into a huge sleep.
-        assert_eq!(pacing_sleep_nanos(1_000_000_000, 500_000_000, 1.0), 0);
+    fn late_entry_is_emitted_immediately() {
+        assert_eq!(pacing_gap(Duration::from_secs(2), SEC, 1.0), Duration::ZERO);
+        // A non-monotonic (earlier) offset is simply late: no underflow.
+        assert_eq!(
+            pacing_gap(Duration::from_secs(1), 500 * MS, 1.0),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn speed_scales_the_schedule() {
+        // 2x speed halves the due time; a non-positive speed disables pacing.
+        assert_eq!(
+            pacing_gap(Duration::ZERO, SEC, 2.0),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            pacing_gap(Duration::from_millis(400), SEC, 2.0),
+            Duration::from_millis(100)
+        );
+        assert_eq!(pacing_gap(Duration::ZERO, SEC, 0.0), Duration::ZERO);
+    }
+
+    #[test]
+    fn tiny_speed_saturates_instead_of_overflowing() {
+        assert_eq!(
+            pacing_gap(Duration::ZERO, u64::MAX, f64::MIN_POSITIVE),
+            Duration::from_nanos(u64::MAX)
+        );
     }
 
     #[test]
@@ -377,5 +439,18 @@ mod tests {
         // behavior the `main` loop relies on to stay resilient.
         let garbage = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03];
         assert!(decode_recorded_payload(Some(&garbage)).is_err());
+    }
+
+    #[test]
+    fn payload_claiming_a_huge_body_is_skipped_not_an_abort() {
+        // Found by fuzzing (#3863): this stream's record batch claims an
+        // enormous body. The decoder must return `Err` (the record is skipped)
+        // instead of trying to allocate that size and aborting the replay node.
+        let hex = "ffffffff780000001000000000000a000c000a00090004000a00000010000000000104000800080000000400080000000400000001000000140000001000160010000e000f0004000000080010000000180000001c00000000000102180000000000060008000400060000000800000000000000040000006441746100000000ffffffffb8000000100000000c001a0018001700040008000c00000020000000800000000000400000000000000000000304000a0018000c00080004000a0000002c000000100000000300000000000000000000000100000003000000000000000000000000000000000000000200000000000000000000000100000000000000400000000000000003000000000000000000000000000000ffffff7f0000000000000000000000000000000000000000000000000000000000000000000000";
+        let payload: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        assert!(decode_recorded_payload(Some(&payload)).is_err());
     }
 }

@@ -213,15 +213,61 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
 /// runs this for every node; call it directly for a node that joins a running
 /// dataflow (`dora node add` / `dora node replace`), which never goes through
 /// whole-dataflow validation.
+///
+/// This also enforces the `startup_timeout` rule for dynamic nodes, which is
+/// a descriptor-policy check rather than a panic guard. The spawn path of an
+/// existing dataflow (`dora start`) must not apply that rule to a descriptor
+/// that started fine before, so it calls [`check_node_timing_values`] instead.
 pub fn check_node_timing(node: &ResolvedNode) -> eyre::Result<()> {
+    check_node_timing_values(node)?;
+    if let descriptor::CoreNodeKind::Custom(custom) = &node.kind
+        && custom.path.as_str() == DYNAMIC_SOURCE
+        && custom.startup_timeout.is_some()
+    {
+        bail!(
+            "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
+            node.id
+        );
+    }
+    Ok(())
+}
+
+/// A runtime node must hold exactly one operator: the operator runtime
+/// (`dora_runtime_api::main`, shared by the shared-library and Python
+/// backends) refuses to start with zero or several. Without this check such a
+/// descriptor passes validation and only fails when the runtime process
+/// starts.
+///
+/// Like [`check_operator_ids`], descriptor resolution runs this for every
+/// node, so `dora start`, `dora node add/replace` and recovery are covered.
+pub fn check_runtime_operator_count(node: &ResolvedNode) -> eyre::Result<()> {
+    if let descriptor::CoreNodeKind::Runtime(runtime) = &node.kind
+        && runtime.operators.len() != 1
+    {
+        bail!(
+            "runtime node `{}` has {} operators, but a runtime node runs exactly one \
+             operator; split them into one node per operator",
+            node.id,
+            runtime.operators.len()
+        );
+    }
+    Ok(())
+}
+
+/// The panic-guard half of [`check_node_timing`]: reject only the values the
+/// daemon would panic on in `Duration::from_secs_f64`, with no
+/// descriptor-policy rules on top.
+///
+/// `dora start` never ran whole-dataflow validation before, so applying a
+/// policy rule there would reject descriptors that start fine on 1.0.x and
+/// never panicked -- a dynamic node carrying an (ignored) `startup_timeout`,
+/// for one. The spawn path therefore guards against the panic only, and
+/// leaves the policy rules to `dora run` / `dora validate`
+/// ([`check_dataflow_static`]) and to the node-join path
+/// ([`check_node_timing`]).
+pub fn check_node_timing_values(node: &ResolvedNode) -> eyre::Result<()> {
     if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
         check_timing_fields(&node.id, custom)?;
-        if custom.path.as_str() == DYNAMIC_SOURCE && custom.startup_timeout.is_some() {
-            bail!(
-                "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
-                node.id
-            );
-        }
     }
     // `input_timeout` is a second-valued `f64` that the daemon also feeds
     // to `Duration::from_secs_f64`, on both the initial-spawn and the
@@ -312,6 +358,37 @@ fn check_seconds_field(
                  (must be a finite, {requirement} number of seconds smaller than {})",
                 std::time::Duration::MAX.as_secs_f64()
             );
+        }
+    }
+    Ok(())
+}
+
+/// Reject a runtime operator id that cannot prefix a `DataId`.
+///
+/// The daemon and the operator runtime expose each operator input/output as
+/// the `DataId` `{operator_id}/{id}`, built with `DataId::from`, which panics
+/// on an invalid id. `OperatorId` itself accepts any string (its `FromStr` is
+/// infallible), so an id such as `my op` or `""` would otherwise pass
+/// validation and crash the daemon when it spawns the node. The id must also
+/// be a single path segment, or the `{operator_id}/{id}` split is ambiguous.
+///
+/// Descriptor resolution (`resolve_aliases_and_set_defaults`) runs this for
+/// every node, so every coordinator path is covered. The daemon also calls it
+/// on the nodes it is asked to spawn, so an older coordinator cannot crash it.
+pub fn check_operator_ids(node: &ResolvedNode) -> eyre::Result<()> {
+    let CoreNodeKind::Runtime(runtime) = &node.kind else {
+        return Ok(());
+    };
+    for operator in &runtime.operators {
+        let id: &str = operator.id.as_ref();
+        if id.contains('/') {
+            bail!(
+                "node `{}`: invalid operator id `{id}`: must not contain `/`",
+                node.id
+            );
+        }
+        if let Err(err) = id.parse::<DataId>() {
+            bail!("node `{}`: invalid operator id `{id}`: {err}", node.id);
         }
     }
     Ok(())
@@ -1451,6 +1528,73 @@ operators:
         .unwrap()
     }
 
+    #[test]
+    fn runtime_node_with_several_operators_is_rejected() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: op1
+      - id: op2
+        shared-library: op2
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("runtime-node") && err.contains("2 operators"),
+            "error should name the node and the operator count, got: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_node_with_no_operators_is_rejected() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators: []
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("runtime-node") && err.contains("0 operators"),
+            "error should name the node and the operator count, got: {err}"
+        );
+    }
+
+    /// `dora start`, `dora node add/replace` and recovery resolve the
+    /// descriptor without running `check_dataflow_static`, so the count must
+    /// be enforced by resolution itself.
+    #[test]
+    fn resolution_rejects_a_runtime_node_with_several_operators() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: op1
+      - id: op2
+        shared-library: op2
+"#,
+        )
+        .unwrap();
+        let err = descriptor
+            .resolve_aliases_and_set_defaults()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("2 operators"), "got: {err}");
+    }
+
+    #[test]
+    fn runtime_node_with_one_operator_passes_the_operator_count_check() {
+        check_runtime_operator_count(&runtime_node()).unwrap();
+    }
+
     fn custom_node() -> dora_message::descriptor::CustomNode {
         dora_message::descriptor::CustomNode::new("node".to_string())
     }
@@ -1492,6 +1636,48 @@ operators:
         );
     }
 
+    /// The daemon and the runtime join each operator id with its input and
+    /// output ids into `DataId`s (`{operator}/{id}`), and `DataId::from`
+    /// panics on an invalid one. An operator id that is not itself a valid,
+    /// slash-free `DataId` must therefore be rejected up front, not crash the
+    /// daemon at spawn.
+    #[test]
+    fn invalid_operator_id_is_rejected() {
+        for (form, id) in [
+            ("operators", "my op"),
+            ("operators", "a/b"),
+            ("operators", "\"\""),
+            ("operator", "my op"),
+        ] {
+            let yaml = if form == "operators" {
+                format!(
+                    "nodes:\n  - id: rt\n    operators:\n      - id: {id}\n        \
+                     python: op.py\n        outputs:\n          - out\n"
+                )
+            } else {
+                format!(
+                    "nodes:\n  - id: rt\n    operator:\n      id: {id}\n      \
+                     python: op.py\n      outputs:\n        - out\n"
+                )
+            };
+            let descriptor: Descriptor = serde_yaml::from_str(&yaml).unwrap();
+            let err = check_dataflow_static(&descriptor)
+                .expect_err(&format!("operator id {id:?} ({form}) must be rejected"))
+                .to_string();
+            assert!(
+                err.contains("invalid operator id"),
+                "error should name the operator id problem, got: {err}"
+            );
+        }
+
+        let ok: Descriptor = serde_yaml::from_str(
+            "nodes:\n  - id: rt\n    operators:\n      - id: my-op.v2\n        \
+             python: op.py\n        outputs:\n          - out\n",
+        )
+        .unwrap();
+        check_dataflow_static(&ok).unwrap();
+    }
+
     #[test]
     fn dynamic_node_rejects_startup_timeout() {
         let descriptor: Descriptor = serde_yaml::from_str(
@@ -1507,6 +1693,55 @@ nodes:
         assert!(
             err.contains("dynamic node `dyn` cannot specify `startup_timeout`"),
             "error should explain dynamic node startup_timeout rejection, got: {err}"
+        );
+    }
+
+    /// `check_node_timing_values` is the panic guard the `dora start` path
+    /// uses, so it must stop at the values `Duration::from_secs_f64` panics
+    /// on and leave the dynamic-node `startup_timeout` policy rule to
+    /// `check_node_timing` (`dora node add` / `replace`) and
+    /// `check_dataflow_static` (`dora run` / `validate`). Were the policy
+    /// rule in both, `dora start` would reject a descriptor that starts fine
+    /// on 1.0.x.
+    #[test]
+    fn timing_values_check_skips_the_dynamic_node_policy_rule() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: dyn
+    path: dynamic
+    startup_timeout: 5.0
+"#,
+        )
+        .unwrap();
+        let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+        let node = nodes.values().next().unwrap();
+
+        check_node_timing_values(node)
+            .expect("an ignored startup_timeout is not a panic risk, so the spawn path allows it");
+        let err = check_node_timing(node).unwrap_err().to_string();
+        assert!(
+            err.contains("dynamic node `dyn` cannot specify `startup_timeout`"),
+            "the node-join path keeps the policy rule, got: {err}"
+        );
+
+        // The panic guard itself is unchanged by the split.
+        let bad: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: dyn
+    path: dynamic
+    restart_delay: -1.0
+"#,
+        )
+        .unwrap();
+        let bad_nodes = bad.resolve_aliases_and_set_defaults().unwrap();
+        let err = check_node_timing_values(bad_nodes.values().next().unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("restart_delay"),
+            "the spawn path still rejects a panicking value, got: {err}"
         );
     }
 

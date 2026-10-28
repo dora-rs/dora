@@ -35,8 +35,11 @@ pub enum ControlEvent {
     },
     TopicCheck {
         dataflow_id: Uuid,
-        topics: Vec<(NodeId, DataId)>,
-        found_tx: oneshot::Sender<bool>,
+        node_id: NodeId,
+        output_id: DataId,
+        /// Sends the resolved output id to publish under, or `None` if the
+        /// output can't be published to.
+        found_tx: oneshot::Sender<Option<DataId>>,
     },
     TopicUnsubscribe {
         subscription_id: Uuid,

@@ -1021,6 +1021,16 @@ if (server->matches(event)) {
 
 See `examples/ros2-bridge/c++/{turtle,service-server,action-client,action-server}/`.
 
+On native Zenoh (`init_ros2_context_with_transport` with `ZenohHumble` or
+`ZenohRep2016`), C++ topics and services work; actions still require DDS.
+A Zenoh service client returns responses from `downcast` in the order the
+requests were sent, even when the server answers them out of order (on DDS,
+responses come in the order they arrive). So a request that gets no response
+holds back the ones after it: after 30 s it arrives as an error from
+`downcast`, and the others follow. At most 64 requests are in flight; up to
+64 more wait to be sent (their 30 s start when they are sent), and
+`send_request` fails once that queue is full.
+
 ### Discovery & RMW notes (native servers)
 
 - **A Dora-hosted *server* is not discoverable by a real `rcl`/`rclcpp`/`rclpy`
@@ -1057,12 +1067,31 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 
 This applies to **all** bridge surfaces (YAML and native code APIs).
 
-- **Built for ROS 2 Humble**: The bridge enables `ros2-client`'s `humble`
-  distro feature, which selects the **24-byte `Gid`** used by
-  `rmw_dds_common` graph discovery. ROS 2 changed `Gid` from 24 to 16 bytes
-  between Humble and Iron, so graph *discovery* against an Iron-or-newer stack
-  will not match. Topic, service, and action **payloads are unaffected** --
-  those are ordinary CDR and interoperate across distros regardless.
+- **Pick one distro for the whole build.** `ros2-client`'s distro features form a chain (`kilted` -> `jazzy` -> `iron` -> `humble` -> `galactic`) and it compiles for the *newest* one it sees. `dora-ros2-bridge`, `dora-ros2-bridge-arrow`, the YAML bridge node, and the Python bridge each expose `ros2-humble` (default), `ros2-iron`, `ros2-jazzy`, and `ros2-kilted`, mapped 1:1 onto that chain. They are a selector, not an additive set: `ros2-jazzy` doesn't add Jazzy support next to Humble, it replaces Humble's `Gid` layout for the entire build, and no dora feature turns that back off.
+- **Humble is a floor, not a lock.** The workspace keeps `features = ["humble"]` on its `ros2-client` line, so `ros2-humble` is on by default and a `--no-default-features` build still resolves to Humble instead of `ros2-client`'s Galactic fallback. A newer distro enabled anywhere in the build wins over it; there is no way to force "exactly Humble".
+- **The `Gid` width is what changes.** Humble and Galactic use the **24-byte `Gid`**, Iron and newer the **16-byte** one, and that is the `rmw_dds_common` graph-discovery wire format. ROS 2 changed it between Humble and Iron, so graph *discovery* against an Iron-or-newer stack will not match a Humble build. Topic, service, and action **payloads are unaffected** -- those are ordinary CDR and interoperate across distros regardless.
+- **Feature unification can switch the distro from outside dora.** Cargo compiles one `ros2-client` per build with the union of every enabled feature. If any other crate in the dependency graph enables a newer distro, the bridge becomes that distro too, with nothing in dora to stop it. Depending on `ros2-client` with its default features does exactly that, because its default is `jazzy`. Match the whole build, not just the bridge's own features.
+- **Nothing warns at build time.** The only signal is `ros2-client`'s runtime check on the first `Context`: it logs an error when `ROS_DISTRO` is set and doesn't match the build, and a warning when it is unset. Check that startup log line.
+
+### Building for your ROS distro
+
+Published artifacts are Humble builds. To target another distro, build from a checkout with the matching feature. A mismatch is what produces `ROS_DISTRO='jazzy' but ros2-client was built for 'humble'`.
+
+**YAML bridge.** The `dora-ros2-bridge-node` binary isn't distributed, so build it and put it on `PATH` (the descriptor resolver spawns it by name):
+
+```bash
+cargo install --git https://github.com/dora-rs/dora dora-ros2-bridge-node --features ros2-jazzy
+```
+
+**In-process Python.** The `dora-rs` wheel links `dora-ros2-bridge-python` unconditionally, so `from dora import Ros2Context` only changes distro with a rebuild:
+
+```bash
+maturin build -m apis/python/node/Cargo.toml --features ros2-jazzy
+```
+
+The standalone bridge module used by the Zenoh interop harness builds the same way, with `--manifest-path libraries/extensions/ros2-bridge/python/Cargo.toml`.
+
+**C++ nodes.** `dora-node-api-cxx` has no `ros2-*` features of its own, so a C++ build gets the Humble default. Select another distro through the bridge directly, with `--features dora-ros2-bridge/ros2-jazzy` (the `ros2-bridge` feature has to be on).
 
 ---
 

@@ -90,15 +90,16 @@ pub enum Event<'a> {
     /// The runtime requested a graceful shutdown. The operator should finish
     /// any pending work and return [`DoraStatus::Stop`].
     Stop,
-    /// The runtime reported an error on the event stream itself — for example a
-    /// payload that could not be deserialized, an unrecognized daemon event, or
-    /// a fatal stream failure.
+    /// An error on the event stream itself, as opposed to
+    /// [`InputParseError`](Event::InputParseError), which is tied to a specific
+    /// input id.
     ///
-    /// This is distinct from [`InputParseError`](Event::InputParseError), which
-    /// is tied to a specific input id; an `Error` concerns the stream as a
-    /// whole. The operator can log or surface it and decide how to proceed;
-    /// returning `Err` from `on_event` reports it as fatal and stops the
-    /// operator.
+    /// The dora runtime does not deliver this event today: when its own event
+    /// stream reports an error (a payload that could not be deserialized, a
+    /// fatal stream failure, …) it treats the error as fatal and exits, which
+    /// stops every operator of the node, before any operator sees it. The
+    /// variant is kept so an operator that matches on it keeps compiling and
+    /// is ready if the runtime starts forwarding non-fatal stream errors.
     Error {
         /// A human-readable description of the error.
         error: &'a str,
@@ -462,5 +463,60 @@ mod tests {
             matches!(result.status, DoraStatus::Stop),
             "panic must stop the operator"
         );
+    }
+
+    struct PanicInDefault;
+
+    impl Default for PanicInDefault {
+        fn default() -> Self {
+            panic!("missing MODEL env var");
+        }
+    }
+
+    impl DoraOperator for PanicInDefault {
+        fn on_event(
+            &mut self,
+            _event: &Event,
+            _output_sender: &mut DoraOutputSender,
+        ) -> Result<DoraStatus, String> {
+            Ok(DoraStatus::Continue)
+        }
+    }
+
+    /// A panic in the operator's `Default` impl must come back as an init
+    /// error, not unwind out of the `extern "C"` shim and abort the runtime.
+    #[test]
+    fn init_panic_is_reported_as_error() {
+        let result = unsafe { raw::dora_init_operator::<PanicInDefault>() };
+        let error = result.result.error.expect("init panic must be an error");
+        assert!(error.contains("operator init panicked: missing MODEL env var"));
+        assert!(result.operator_context.is_null());
+    }
+
+    struct PanicInDrop;
+
+    impl Drop for PanicInDrop {
+        fn drop(&mut self) {
+            panic!("teardown failed");
+        }
+    }
+
+    /// Likewise, a panic in the operator's `Drop` impl must be reported.
+    #[test]
+    fn drop_panic_is_reported_as_error() {
+        let ptr: *mut PanicInDrop = Box::leak(Box::new(PanicInDrop));
+        let result = unsafe { raw::dora_drop_operator::<PanicInDrop>(ptr.cast()) };
+        let error = result.error.expect("drop panic must be an error");
+        assert!(error.contains("operator drop panicked: teardown failed"));
+    }
+
+    #[test]
+    fn init_and_drop_succeed_without_panic() {
+        let result = unsafe { raw::dora_init_operator::<RecordingOperator>() };
+        assert!(result.result.error.is_none());
+        assert!(!result.operator_context.is_null());
+        let dropped =
+            unsafe { raw::dora_drop_operator::<RecordingOperator>(result.operator_context) };
+        assert!(dropped.error.is_none());
     }
 }

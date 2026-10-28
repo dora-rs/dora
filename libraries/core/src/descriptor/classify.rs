@@ -767,11 +767,7 @@ outputs: [out]
             .and_then(serde_json::Value::as_object)
             .expect("Node schema should expose properties");
 
-        let mut actual: BTreeSet<_> = properties.keys().map(String::as_str).collect();
-        // `deploy` is a real `Node` field, but is intentionally skipped in the
-        // generated schema because it uses the unstable `_unstable_deploy`
-        // YAML surface.
-        actual.insert("deploy");
+        let actual: BTreeSet<_> = properties.keys().map(String::as_str).collect();
         let mut classified: BTreeSet<_> = SHARED_FIELDS.iter().copied().collect();
         classified.extend(ALL_CHECKABLE_FIELDS.iter().map(|field| field.name));
         classified.extend(["operators", "operator", "ros2", "module"]);

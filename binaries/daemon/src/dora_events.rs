@@ -296,59 +296,27 @@ impl Daemon {
                 message,
                 metadata,
             } => {
-                let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
-                    tracing::warn!("Logs event for unknown dataflow `{dataflow_id}`");
-                    return Ok(());
-                };
-
-                let Some(subscribers) = dataflow.mappings.get(&output_id) else {
-                    // A node with `send_stdout_as`/`send_stderr_as` emits a
-                    // `Logs` event for every log line regardless of whether
-                    // anyone subscribes to the resulting output, so an output
-                    // with no consumer is a normal configuration — not a
-                    // warning. Return silently (previously this logged a WARN
-                    // per log line and `Debug`-formatted the entire edge map
-                    // on that hot path).
-                    return Ok(());
-                };
-
-                let metadata = Arc::new(metadata);
-                let message = Arc::new(message);
-                let mut closed = Vec::new();
-                for (receiver_id, input_id) in subscribers {
-                    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
-                        // A subscriber is mapped to this output but has no live
-                        // channel (e.g. not yet connected, or already gone).
-                        // Diagnosable at debug level without the per-log-line
-                        // WARN spam the previous `warn!` here produced.
-                        tracing::debug!(
-                            "no subscriber channel for `{receiver_id}` on {output_id:?}; \
-                             dropping log line"
-                        );
-                        continue;
-                    };
-
-                    let send_result = send_with_timestamp(
-                        channel,
-                        NodeEvent::Input {
-                            id: input_id.clone(),
-                            metadata: metadata.clone(),
-                            data: Some(message.clone()),
-                        },
-                        &self.clock,
-                    );
-                    match send_result {
-                        Ok(true) => {
-                            dataflow.inc_pending(receiver_id);
-                        }
-                        Ok(false) => { /* event dropped (channel full) */ }
-                        Err(_) => {
-                            closed.push(receiver_id);
-                        }
-                    }
-                }
-                for id in closed {
-                    dataflow.subscribe_channels.remove(id);
+                // The daemon produces `send_stdout_as`/`send_logs_as` outputs
+                // on the node's behalf, so route them like any node output:
+                // local receivers (with their deadline and circuit-breaker
+                // bookkeeping), consumers on other daemons, and `dora topic`
+                // watchers. Delivering only to local receivers left a consumer
+                // on another machine waiting forever. A node with no consumer
+                // for this output is a normal configuration and costs nothing
+                // here beyond the lookups. A failed forward loses this log
+                // line only; it must not stop the daemon's event loop.
+                if let Err(err) = self
+                    .send_out(
+                        dataflow_id,
+                        output_id.0,
+                        output_id.1,
+                        metadata,
+                        Some(message),
+                        None,
+                    )
+                    .await
+                {
+                    tracing::warn!("failed to send log output: {err:#}");
                 }
             }
             DoraEvent::LogBroadcast {
@@ -359,7 +327,14 @@ impl Daemon {
                     return Ok(());
                 };
 
-                if dataflow.log_subscribers.is_empty() {
+                // Skip the encode below unless some subscriber is connected:
+                // a subscriber that exited keeps its entry (its `dora/logs`
+                // edge) but has no channel until it is restarted.
+                if !dataflow
+                    .log_subscribers
+                    .iter()
+                    .any(|sub| dataflow.subscribe_channels.contains_key(&sub.node_id))
+                {
                     return Ok(());
                 }
 
@@ -447,13 +422,15 @@ impl Daemon {
                         }
                     }
                 }
+                // Drop only the dead channel, like the timer path does. The
+                // `log_subscribers` entry is the node's `dora/logs` edge, which
+                // only spawn and `dora node add` ever create: pruning it here
+                // would leave a node that crashed and restarted (and so
+                // re-subscribed) without logs for the rest of the run.
+                // `dora node remove` drops the entry when the edge really goes.
                 for id in &closed {
                     dataflow.subscribe_channels.remove(id);
                 }
-                // Prune stale log subscribers whose channels were just removed
-                dataflow
-                    .log_subscribers
-                    .retain(|sub| !closed.contains(&sub.node_id));
             }
             DoraEvent::SpawnedNodeResult {
                 dataflow_id,

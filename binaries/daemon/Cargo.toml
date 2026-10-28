@@ -51,10 +51,6 @@ crossbeam = "0.8.4"
 crossbeam-skiplist = "0.1.3"
 zenoh = { workspace = true }
 zenoh-ext = { workspace = true }
-url = "2.5.8"
-git2 = { workspace = true }
-dunce = "1.0.5"
-itertools = "0.15"
 process-wrap = { version = "9.1.0", features = ["tokio1"] }
 memchr = "2.8.2"
 chrono = { version = "0.4", features = ["serde"] }
@@ -69,7 +65,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-criterion = { version = "0.8", features = ["html_reports"] }
+criterion = { version = "6", package = "codspeed-criterion-compat" }
 # `test-util` enables `start_paused` so the 30s TCP read-timeout guard can be
 # exercised without a real 30s wait (socket_stream_utils tests, #2027).
 tokio = { workspace = true, features = ["full", "test-util"] }

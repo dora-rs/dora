@@ -1,9 +1,10 @@
 //! **Internal to dora — not a public API.**
 //!
 //! This crate is published to crates.io only because cargo requires every
-//! dependency of a published crate to be published; `dora-node-api` and
-//! `dora-cli` depend on it. It is not covered by dora's 1.0 stability
-//! guarantee and may change in any release, including a patch.
+//! dependency of a published crate to be published; `dora-cli`,
+//! `dora-daemon` and `dora-runtime-shared-lib` depend on it. It is not covered
+//! by dora's 1.0 stability guarantee and may change in any release, including
+//! a patch.
 //!
 //! Depend on it directly at your own risk. See the "Stability scope at 1.0"
 //! section of `docs/api-rust.md`.
@@ -176,8 +177,9 @@ fn filename_from_url(url: &reqwest::Url) -> Option<String> {
 /// reject Windows reserved device names. Returns `None` when nothing usable
 /// survives — e.g. `".."` or `"."` (which `Path::file_name` maps to `None`),
 /// a name over 255 bytes / containing a NUL, a name that is only dots and
-/// spaces, or a reserved device name such as `NUL`. (A trailing slash such as
-/// `"dir/"` keeps its last component: `Path::file_name` returns `"dir"`.)
+/// spaces, a dotfile name such as `.bashrc`, or a reserved device name such
+/// as `NUL`. (A trailing slash such as `"dir/"` keeps its last component:
+/// `Path::file_name` returns `"dir"`.)
 ///
 /// The `Content-Disposition` header is attacker-influenced, so the returned
 /// name is a name a hostile server could pick. The two hardening steps below
@@ -199,6 +201,14 @@ fn sanitize_filename(name: &str) -> Option<String> {
     // Trim them and reject a name that trims away to nothing.
     let sanitized = sanitized.trim_end_matches(['.', ' ']);
     if sanitized.is_empty() {
+        return None;
+    }
+    // The CLI downloads a dataflow URL into the current directory, often
+    // `$HOME`, and the file is renamed over any existing one and made
+    // executable. Neither source is trusted — the header is the server's, and
+    // so is the final URL after a redirect — so refuse a dotfile name: a
+    // hostile server must not be able to replace `~/.bashrc` or `~/.profile`.
+    if sanitized.starts_with('.') {
         return None;
     }
     // `tokio::fs::File::create(dir/NUL)` opens the *null device* on Windows
@@ -722,6 +732,36 @@ mod tests {
         // A name that is nothing but dots/spaces trims to empty and is rejected.
         assert_eq!(sanitize_filename("..."), None);
         assert_eq!(sanitize_filename("   "), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_dotfile_names() {
+        for name in [".bashrc", ".profile", "../.ssh/.config", ".hidden.bin"] {
+            assert_eq!(
+                sanitize_filename(name),
+                None,
+                "dotfile name {name:?} must be rejected"
+            );
+        }
+        // A dot elsewhere in the name is fine.
+        assert_eq!(
+            sanitize_filename("flow.v1.yml"),
+            Some("flow.v1.yml".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_url_when_header_names_a_dotfile() {
+        assert_eq!(
+            resolve(
+                Some("attachment; filename=\".bashrc\""),
+                "https://example.com/flow.yml"
+            ),
+            Some("flow.yml".to_string())
+        );
+        // A redirect is followed before the URL is read, so a dotfile URL
+        // segment is server-controlled too.
+        assert_eq!(resolve(None, "https://example.com/.bashrc"), None);
     }
 
     // --- read timeout (stalled body) ---

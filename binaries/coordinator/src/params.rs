@@ -1,19 +1,18 @@
 //! Dataflow parameters: forwarding `SetParam`/`DeleteParam` to daemons and
 //! replaying persisted parameters to a daemon that (re)joins a dataflow.
 
+use crate::nodes_on_daemon;
 use crate::state::{DaemonConnections, RunningDataflow};
-use crate::{FALLBACK_REPLAY_BACKOFF, nodes_on_daemon};
 use dora_core::uhlc::HLC;
 use dora_message::{DataflowId, common::DaemonId, daemon_to_coordinator::DaemonCoordinatorReply};
 use eyre::eyre;
 use serde::Serialize;
 use serde_json::value::RawValue;
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
 pub(crate) struct ParamReplayItem {
     pub(crate) node_id: dora_core::config::NodeId,
     pub(crate) key: String,
-    pub(crate) value_json: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
@@ -22,81 +21,76 @@ pub(crate) struct ParamReplaySummary {
     pub(crate) failed: usize,
 }
 
-pub(crate) async fn handle_pruned_state_catchup_fallback(
+/// State catch-up for a daemon whose ack is behind the pruned part of the
+/// state log, so the entries it missed can no longer be sent to it.
+///
+/// It gets the full persisted state instead, from a param replay: the one
+/// the caller already started for it in the same status report
+/// (`params_replay_started`, the ready-barrier replay), or the one that
+/// releasing the barrier sends to every daemon of the dataflow, or else one
+/// started here. Replaying a second time would only send the same store
+/// contents again (#3684).
+///
+/// The ack advances to the current `state_log_sequence` right away, without
+/// waiting for the replay: every entry up to it is already in the store
+/// (`dora param set`/`delete` persist before appending to the log), and the
+/// replay reads each param from the store when it queues it. Later changes
+/// are forwarded and acked one by one (`ack_applied_state_log_entry`), which
+/// only works once the ack is past the pruned gap. Left behind it, the
+/// daemon would also hold back log pruning for every daemon.
+///
+/// A failed replay leaves the daemon's params behind the store until it
+/// reconnects, as before: the daemon sends one status report per
+/// connection, so nothing retried a failed replay earlier either, and the
+/// reconnect replays every param regardless of the ack.
+pub(crate) fn catch_up_daemon_behind_pruned_log(
     dataflow_id: DataflowId,
     dataflow: &mut RunningDataflow,
     daemon_id: &DaemonId,
-    store: Arc<dyn dora_coordinator_store::CoordinatorStore>,
-    daemon_connections: &mut DaemonConnections,
-    clock: Arc<HLC>,
-    now: Instant,
+    params_replay_started: bool,
+    daemon_connections: &DaemonConnections,
+    store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
+    clock: &Arc<HLC>,
 ) {
-    if let Some(last_replay_attempt) = dataflow.last_replay_attempt.get(daemon_id)
-        && now.duration_since(*last_replay_attempt) < FALLBACK_REPLAY_BACKOFF
-    {
-        tracing::debug!(
-            "skipping fallback replay for dataflow {dataflow_id} on daemon {daemon_id}: \
-                 backoff active"
+    if params_replay_started {
+        tracing::info!(
+            "state catch-up: log pruned for dataflow {dataflow_id}; daemon {daemon_id} \
+             gets every persisted param from the ready-barrier replay"
         );
-        return;
-    }
-
-    let Some(connection) = daemon_connections.get_mut(daemon_id).cloned() else {
+    } else if !dataflow.ready_barrier_released {
+        tracing::info!(
+            "state catch-up: log pruned for dataflow {dataflow_id}; daemon {daemon_id} \
+             gets every persisted param when the ready barrier releases"
+        );
+    } else if spawn_param_replay_to_daemon(
+        dataflow_id,
+        dataflow,
+        daemon_id,
+        daemon_connections,
+        store,
+        clock,
+    ) {
+        tracing::info!(
+            "state catch-up: log pruned for dataflow {dataflow_id}, \
+             falling back to full param replay for daemon {daemon_id}"
+        );
+    } else {
         tracing::warn!(
             "failed to run fallback replay for dataflow {dataflow_id}: \
              daemon {daemon_id} is not connected"
         );
         return;
-    };
-
-    let node_ids_on_daemon: Vec<_> = dataflow
-        .node_to_daemon
-        .iter()
-        .filter(|(_, did)| *did == daemon_id)
-        .map(|(node_id, _)| node_id.clone())
-        .collect();
-    dataflow.last_replay_attempt.insert(daemon_id.clone(), now);
-
-    let replay_summary = replay_persisted_params_for_daemon(
-        dataflow_id,
-        daemon_id.clone(),
-        node_ids_on_daemon,
-        store,
-        connection,
-        clock,
-    )
-    .await;
-
-    let last_ack = dataflow
-        .daemon_ack_sequence
-        .get(daemon_id)
-        .copied()
-        .unwrap_or(0);
-    if replay_summary.failed == 0 {
-        // Mark daemon as caught up only when full replay succeeds:
-        // replay is authoritative for pruned history, and advancing
-        // ack on partial failure can silently diverge runtime/store state.
-        // Individual SetParam events don't trigger StateCatchUpAck, so
-        // we set ack here for successful full replay to avoid repeated
-        // fallback replays on every status-report cycle.
-        dataflow
-            .daemon_ack_sequence
-            .insert(daemon_id.clone(), dataflow.state_log_sequence);
-    } else {
-        tracing::warn!(
-            "fallback replay incomplete for dataflow {dataflow_id} on daemon \
-             {daemon_id}: attempted={}, failed={}; leaving ack at {}",
-            replay_summary.attempted,
-            replay_summary.failed,
-            last_ack
-        );
     }
+    dataflow.mark_daemon_caught_up(daemon_id);
 }
 
-/// Load the persisted params of every node on a daemon, flattened into
-/// replay items. Also returns how many nodes' params could not be loaded:
-/// the caller must count those as failed, or a store read error would look
-/// like "nothing to replay" and let the daemon be marked caught up.
+/// List the persisted params of every node on a daemon, flattened into
+/// replay items. Only the keys are kept: the replay re-reads each value under
+/// the connection's param write lock, since it may have changed by then.
+///
+/// Also returns how many nodes' params could not be loaded: the caller must
+/// count those as failed, or a store read error would look like "nothing to
+/// replay" and let the daemon be marked caught up.
 pub(crate) fn collect_param_replay_items(
     dataflow_id: DataflowId,
     node_ids_on_daemon: &[dora_core::config::NodeId],
@@ -115,11 +109,10 @@ pub(crate) fn collect_param_replay_items(
                 continue;
             }
         };
-        for (key, bytes) in params {
+        for (key, _) in params {
             items.push(ParamReplayItem {
                 node_id: node_id.clone(),
                 key,
-                value_json: bytes,
             });
         }
     }
@@ -200,37 +193,67 @@ pub(crate) fn ensure_delete_param_forward_applied(
 pub(crate) fn schedule_param_replay_for_ready_dataflow(
     dataflow_id: DataflowId,
     dataflow: &RunningDataflow,
-    daemon_connections: &mut DaemonConnections,
+    daemon_connections: &DaemonConnections,
     store: Arc<dyn dora_coordinator_store::CoordinatorStore>,
     clock: Arc<HLC>,
 ) {
     // Replay persisted runtime parameters once nodes are ready.
     // This restores desired node state after restart/recovery.
-    let daemon_ids: Vec<_> = dataflow.daemons.iter().cloned().collect();
-    for daemon_id in daemon_ids {
-        let Some(connection) = daemon_connections.get_mut(&daemon_id).cloned() else {
+    for daemon_id in &dataflow.daemons {
+        if !spawn_param_replay_to_daemon(
+            dataflow_id,
+            dataflow,
+            daemon_id,
+            daemon_connections,
+            &store,
+            &clock,
+        ) {
             tracing::warn!(
                 "cannot replay params for dataflow {dataflow_id}: no connection for daemon {daemon_id}"
             );
-            continue;
-        };
-        let node_ids_on_daemon = nodes_on_daemon(dataflow, &daemon_id);
-        let store = store.clone();
-        let clock = clock.clone();
-        tokio::spawn(async move {
-            replay_persisted_params_for_daemon(
-                dataflow_id,
-                daemon_id,
-                node_ids_on_daemon,
-                store,
-                connection,
-                clock,
-            )
-            .await;
-        });
+        }
     }
 }
 
+/// Start replaying every persisted param of `daemon_id`'s nodes to it, in a
+/// spawned task. Returns `false`, without starting one, when the daemon is
+/// not connected.
+pub(crate) fn spawn_param_replay_to_daemon(
+    dataflow_id: DataflowId,
+    dataflow: &RunningDataflow,
+    daemon_id: &DaemonId,
+    daemon_connections: &DaemonConnections,
+    store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
+    clock: &Arc<HLC>,
+) -> bool {
+    let Some(connection) = daemon_connections.get(daemon_id).cloned() else {
+        return false;
+    };
+    tokio::spawn(replay_persisted_params_for_daemon(
+        dataflow_id,
+        daemon_id.clone(),
+        nodes_on_daemon(dataflow, daemon_id),
+        store.clone(),
+        connection,
+        clock.clone(),
+    ));
+    true
+}
+
+/// Send every persisted param of the daemon's nodes to it, one `SetParam` at
+/// a time.
+///
+/// This runs in a spawned task, concurrently with `dora param set`/`delete`
+/// on the event loop. Each item is therefore read from the store and queued
+/// to the daemon while holding the connection's `param_write_lock`, which
+/// those handlers hold from persisting a change to queuing its forward. The
+/// daemon applies commands in queue order, so it ends up with the newest
+/// value either way: the replay reads a change that was persisted before it,
+/// and a change persisted after it is forwarded after it. A param deleted
+/// since the keys were listed is skipped (#3683).
+///
+/// The lock is released before waiting for the daemon's reply, so a slow
+/// daemon delays neither the event loop nor writes to other daemons.
 pub(crate) async fn replay_persisted_params_for_daemon(
     dataflow_id: DataflowId,
     daemon_id: DaemonId,
@@ -257,12 +280,34 @@ pub(crate) async fn replay_persisted_params_for_daemon(
     );
 
     for item in replay_items {
+        let write_guard = connection.param_write_lock.lock().await;
+        let value_json = match store.get_node_param(&dataflow_id, &item.node_id, &item.key) {
+            Ok(Some(value_json)) => value_json,
+            Ok(None) => {
+                tracing::debug!(
+                    "not replaying param {dataflow_id}/{}/{}: deleted since replay started",
+                    item.node_id,
+                    item.key
+                );
+                continue;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "failed to load persisted param {dataflow_id}/{}/{}: {err}",
+                    item.node_id,
+                    item.key
+                );
+                summary.attempted += 1;
+                summary.failed += 1;
+                continue;
+            }
+        };
         summary.attempted += 1;
         let message = match build_set_param_message_from_raw_json(
             dataflow_id,
             &item.node_id,
             &item.key,
-            &item.value_json,
+            &value_json,
             clock.new_timestamp(),
         ) {
             Ok(msg) => msg,
@@ -277,7 +322,13 @@ pub(crate) async fn replay_persisted_params_for_daemon(
             }
         };
 
-        let reply_raw = match connection.send_and_receive(&message).await {
+        let sent = connection.send_request(&message).await;
+        drop(write_guard);
+        let reply = match sent {
+            Ok(pending) => pending.wait().await,
+            Err(err) => Err(err),
+        };
+        let reply_raw = match reply {
             Ok(reply) => reply,
             Err(err) => {
                 tracing::warn!(

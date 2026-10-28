@@ -1,7 +1,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use arrow_array::UInt8Array;
-use dora_node_api::{DoraNode, Event, EventStream, arrow_v59::array::AsArray};
+use dora_node_api::{DoraNode, Event, EventStream};
 use eyre::Context;
 use std::{
     ffi::{c_int, c_void},
@@ -165,7 +164,9 @@ pub unsafe extern "C" fn read_dora_input_id(
 /// A payload of any other Arrow type (for example an `Int32`/`Float` array
 /// from another node) also yields a null pointer and length `0` (and logs an
 /// error), so a null result is not by itself proof that the message carried no
-/// data.
+/// data. The same goes for a `UInt8` array with null slots: the bytes behind a
+/// null are unspecified and this API has no way to report which slots were
+/// null.
 ///
 /// ## Safety
 ///
@@ -186,17 +187,24 @@ pub unsafe extern "C" fn read_dora_input_data(
         // type is read from the array itself.
         Event::Input { data, .. } => match data.as_array().data_type() {
             dora_node_api::arrow_v59::datatypes::DataType::UInt8 => {
-                let array: &UInt8Array = data.as_array().as_primitive();
-                let values = array.values();
                 // A zero-length payload carries no data. `values().as_ptr()`
                 // returns a non-null, dangling-but-aligned pointer for an empty
                 // buffer, so report it as "no data" (null pointer, length 0) to
                 // honor the documented `out_ptr == NULL` contract and match the
                 // `Null` arm below; otherwise expose the actual buffer.
-                let (ptr, len) = if values.is_empty() {
-                    (ptr::null(), 0)
-                } else {
-                    (values.as_ptr(), values.len())
+                //
+                // The shared `&[u8]` conversion (also behind the C operator
+                // API's `dora_read_data`) refuses an array with null slots: the
+                // bytes behind a null are unspecified and the caller cannot see
+                // the validity bitmap, so it is reported as "no data" too
+                // rather than read as if every byte were set.
+                let (ptr, len) = match <&[u8]>::try_from(data) {
+                    Ok([]) => (ptr::null(), 0),
+                    Ok(values) => (values.as_ptr(), values.len()),
+                    Err(err) => {
+                        tracing::error!("read_dora_input_data: {err:#}");
+                        (ptr::null(), 0)
+                    }
                 };
                 unsafe {
                     *out_ptr = ptr;
@@ -234,6 +242,12 @@ pub unsafe extern "C" fn read_dora_input_data(
 /// Reads out the timestamp of the given input event from metadata.
 ///
 /// Returns `0` if the given event is not an input event.
+///
+/// The value is the hybrid logical clock timestamp in NTP64 format, **not**
+/// nanoseconds: a 32.32 fixed-point number whose upper 32 bits are whole
+/// seconds since the UNIX epoch and whose lower 32 bits are the fraction of
+/// a second in units of 2^-32 s. In nanoseconds since the epoch it is
+/// `(ts >> 32) * 1e9 + (((ts & 0xFFFFFFFF) * 1e9) >> 32)` (integer math).
 ///
 /// ## Safety
 ///
@@ -401,10 +415,33 @@ mod tests {
     use super::*;
     use dora_node_api::{
         DoraArray, Metadata,
-        arrow_v59::array::{ArrayRef, Int32Array},
+        arrow_v59::array::{ArrayRef, Int32Array, UInt8Array},
         uhlc::HLC,
     };
     use std::sync::Arc;
+
+    /// `read_dora_input_timestamp` returns NTP64, not nanoseconds; the
+    /// integer conversion documented on it (and in `node_api.h`,
+    /// `docs/api-c.md`) must match uhlc's own conversion of the same value.
+    #[test]
+    fn read_dora_input_timestamp_converts_to_nanos_as_documented() {
+        let timestamp = HLC::default().new_timestamp();
+        let event = Event::Input {
+            id: "my_input".into(),
+            metadata: Metadata::new(timestamp),
+            data: DoraArray::from(Arc::new(UInt8Array::from(vec![1u8])) as ArrayRef),
+        };
+        let ts = unsafe { read_dora_input_timestamp((&event as *const Event).cast()) };
+
+        let nanos = (ts >> 32) * 1_000_000_000 + (((ts & 0xFFFF_FFFF) * 1_000_000_000) >> 32);
+        let expected = timestamp.get_time().to_duration().as_nanos() as u64;
+        // uhlc rounds the sub-second part up, the documented formula down.
+        assert!(expected.abs_diff(nanos) <= 1, "{nanos} vs {expected}");
+        // And it is a plausible wall-clock time (after 2020), unlike the raw
+        // value read as nanoseconds (~2^62, i.e. year 2116+).
+        assert!(nanos > 1_577_836_800_000_000_000);
+        assert!(ts > nanos);
+    }
 
     /// Regression test for #2030: a non-UInt8 input (e.g. Int32 from another
     /// node) must not abort the process. The caller should instead observe
@@ -433,6 +470,36 @@ mod tests {
             "expected null out_ptr for non-UInt8 input"
         );
         assert_eq!(out_len, 0, "expected zero out_len for non-UInt8 input");
+    }
+
+    /// A `UInt8` input with null slots must report "no data": the bytes
+    /// behind a null are unspecified and the C caller cannot see the validity
+    /// bitmap, so exposing `values()` would hand it garbage as real data.
+    #[test]
+    fn read_dora_input_data_uint8_with_nulls_returns_null() {
+        let array: ArrayRef = Arc::new(UInt8Array::from(vec![Some(1), None, Some(3)]));
+        let event = Event::Input {
+            id: "my_input".into(),
+            metadata: Metadata::new(HLC::default().new_timestamp()),
+            data: DoraArray::from(array),
+        };
+        let event_ptr: *const () = (&event as *const Event).cast();
+
+        let sentinel: u8 = 0;
+        let mut out_ptr: *const u8 = &sentinel;
+        let mut out_len: usize = 42;
+        unsafe {
+            read_dora_input_data(event_ptr, &mut out_ptr, &mut out_len);
+        }
+
+        assert!(
+            out_ptr.is_null(),
+            "expected null out_ptr for UInt8 input with nulls"
+        );
+        assert_eq!(
+            out_len, 0,
+            "expected zero out_len for UInt8 input with nulls"
+        );
     }
 
     /// An empty `UInt8` input payload (a node emitting a zero-length byte

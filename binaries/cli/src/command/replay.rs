@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -233,13 +232,6 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         return Ok(());
     }
 
-    // Write to temp file and run
-    let mut tmp =
-        tempfile::NamedTempFile::with_suffix(".yml").wrap_err("failed to create temp file")?;
-    tmp.write_all(modified_yaml.as_bytes())?;
-    tmp.flush()?;
-    let tmp_path = tmp.into_temp_path();
-
     eprintln!(
         "Replaying {} nodes from {}",
         nodes_to_replace.len(),
@@ -255,7 +247,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     );
     eprintln!("Speed: {}x\n", args.speed);
 
-    // The modified YAML lives in /tmp, but the original descriptor's
+    // The modified YAML lives in a temp dir, but the original descriptor's
     // `build: cargo build -p <node>` directives need to run in a dir where
     // Cargo.toml is reachable and the descriptor's relative `path:` entries
     // resolve. Mirror `dora record`'s fix (#1674) with the .drec file's
@@ -273,7 +265,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let run = Run::new(tmp_path.to_string_lossy().to_string()).with_working_dir(recording_dir);
+    let (_tmp_dir, run) = Run::for_generated_dataflow(&modified_yaml, recording_dir)?;
     // A replay exists to reproduce the recording: every replayed input is a
     // backpressure input, and a message lost on one makes the run exit
     // non-zero rather than warn (dora-rs/dora#3397).
@@ -282,8 +274,11 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
 
 /// Rewrites each recorded node in the descriptor into a replay node: swaps its
 /// `path` for the `dora-replay-node` binary, strips the build/source/operator
-/// keys and its `inputs`, republishes its recorded `outputs`, and injects the
-/// `DORA_REPLAY_*` env the replay node reads (file, node id, speed, loop).
+/// keys (including `hub:`/`ros2:`, which are exclusive with `path`, and a
+/// `path_sha256` that would now point at the local replay binary), its
+/// `inputs`/`input_types` and its `send_stdout_as`/`send_logs_as`,
+/// republishes its recorded `outputs`, and injects the `DORA_REPLAY_*` env the
+/// replay node reads (file, node id, speed, loop).
 fn replace_recorded_nodes_with_replay(
     nodes: &mut serde_yaml::Sequence,
     nodes_to_replace: &BTreeSet<String>,
@@ -317,7 +312,19 @@ fn replace_recorded_nodes_with_replay(
                 "operators",
                 "custom",
                 "args",
+                "hub",
+                "ros2",
+                "path_sha256",
                 "inputs",
+                "input_types",
+                // The daemon turns every line the process prints into an
+                // output under these names. The process is now
+                // `dora-replay-node`, which re-sends the recorded messages of
+                // those outputs itself, so its own stderr status lines would
+                // otherwise reach downstream nodes as extra, never-recorded
+                // messages.
+                "send_stdout_as",
+                "send_logs_as",
             ] {
                 map.remove(serde_yaml::Value::String(key.to_string()));
             }
@@ -734,6 +741,97 @@ mod tests {
             parsed["nodes"][2]["inputs"]["image"].as_str(),
             Some("single/image")
         );
+    }
+
+    #[test]
+    fn replay_replacement_strips_log_outputs_but_keeps_them_declared() {
+        let out = replaced_with_replay(
+            concat!(
+                "nodes:\n",
+                "- id: cam\n",
+                "  path: cam.py\n",
+                "  send_stdout_as: text\n",
+                "  send_logs_as: logs\n",
+                "  outputs:\n",
+                "    - image\n",
+                "    - text\n",
+                "    - logs\n",
+                "- id: logger\n",
+                "  path: logger.py\n",
+                "  send_stdout_as: text\n",
+                "  inputs:\n",
+                "    t: cam/text\n",
+                "  outputs:\n",
+                "    - text\n",
+            ),
+            &["cam"],
+        );
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+
+        let cam = &parsed["nodes"][0];
+        assert!(cam.get("send_stdout_as").is_none(), "{out}");
+        assert!(cam.get("send_logs_as").is_none(), "{out}");
+        // The recorded messages of those outputs are replayed, so the outputs
+        // themselves stay declared for downstream inputs.
+        let outputs: Vec<_> = cam["outputs"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(outputs, ["image", "text", "logs"]);
+        // A node that is not replayed keeps its own setting.
+        assert_eq!(parsed["nodes"][1]["send_stdout_as"].as_str(), Some("text"));
+    }
+
+    #[test]
+    fn replay_replacement_strips_fields_exclusive_with_path() {
+        let out = replaced_with_replay(
+            concat!(
+                "nodes:\n",
+                "- id: detector\n",
+                "  hub: dora-yolo@^0.5\n",
+                "  inputs:\n",
+                "    image: camera/image\n",
+                "  input_types:\n",
+                "    image: std/media/v1/Image\n",
+                "  outputs:\n",
+                "    - bbox\n",
+                "- id: bridge\n",
+                "  ros2:\n",
+                "    topic: /chatter\n",
+                "    message_type: std_msgs/String\n",
+                "  outputs:\n",
+                "    - chatter\n",
+                "- id: downloaded\n",
+                "  path: https://example.com/node\n",
+                "  path_sha256: 0000000000000000000000000000000000000000000000000000000000000000\n",
+                "  outputs:\n",
+                "    - data\n",
+            ),
+            &["detector", "bridge", "downloaded"],
+        );
+        let descriptor: dora_message::descriptor::Descriptor =
+            serde_yaml::from_str(&out).expect("rewritten descriptor must deserialize");
+        for node in &descriptor.nodes {
+            assert!(node.hub.is_none(), "`{}` kept `hub`", node.id);
+            assert!(node.ros2.is_none(), "`{}` kept `ros2`", node.id);
+            assert!(
+                node.path_sha256.is_none(),
+                "`{}` kept `path_sha256`",
+                node.id
+            );
+            assert!(
+                node.input_types.is_empty(),
+                "`{}` kept `input_types`",
+                node.id
+            );
+            assert_eq!(node.path.as_deref(), Some("/tmp/dora-replay-node"));
+            dora_core::descriptor::NodeExt::kind(node)
+                .unwrap_or_else(|err| panic!("`{}` is not a valid node: {err}", node.id));
+        }
+        assert_eq!(descriptor.nodes[0].outputs.len(), 1);
+        assert_eq!(descriptor.nodes[1].outputs.len(), 1);
     }
 
     #[test]

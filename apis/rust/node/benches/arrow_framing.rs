@@ -6,7 +6,7 @@
 //!   * `ipc_official` — `encode_arrow_ipc` (`StreamWriter`, stages a body `Vec`)
 //!
 //! Decode strategies:
-//!   * `ipc_streamreader_copy`      — `decode_arrow_ipc` (`StreamReader`, copies)
+//!   * `ipc_streamreader_copy`      — `decode_arrow_ipc` (copies the input, then `StreamDecoder`)
 //!   * `ipc_streamdecoder_zerocopy` — `decode_arrow_ipc_zero_copy` (aliases input)
 //!
 //! Run with: `cargo bench -p dora-node-api --bench arrow_framing`
