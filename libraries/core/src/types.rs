@@ -71,7 +71,8 @@ impl TypeDef {
 
     /// Build an Arrow `Schema` resolving nested struct refs and `List<T>` via the registry.
     ///
-    /// Returns `None` if the type has no field definitions or none could be resolved.
+    /// Returns `None` if the type has no field definitions or any of them could
+    /// not be resolved.
     pub fn to_arrow_schema_with_registry(&self, registry: &TypeRegistry) -> Option<Schema> {
         self.build_schema(|t| resolve_field_type(t, registry, 0))
     }
@@ -174,8 +175,11 @@ fn resolve_field_type(type_str: &str, registry: &TypeRegistry, depth: u8) -> Opt
         .or_else(|| registry.resolve_short_name(type_str))?;
 
     if def.fields.is_empty() {
-        // Struct with no field definitions — can't build a DataType
-        return None;
+        // A primitive-backed type (`std/core/v1/String`, `Bytes`, ...) maps to
+        // its own `arrow:` type, which `TypeRegistry::field_type_resolves`
+        // already accepts as a field type. A `Struct` with no field
+        // definitions still can't build a DataType and stays `None`.
+        return def.arrow_data_type();
     }
 
     let fields: Vec<Field> = def
@@ -366,14 +370,64 @@ pub struct TypeRule {
 
 /// Graph of type compatibility rules for checking implicit conversions.
 pub struct CompatibilityGraph {
-    /// Adjacency list: from-URN -> set of to-URNs
-    edges: BTreeMap<String, Vec<String>>,
+    /// Adjacency list keyed by the base of each rule's `from` URN.
+    edges: BTreeMap<String, Vec<Edge>>,
+}
+
+/// One compatibility rule, stored under the base of its `from` URN.
+struct Edge {
+    /// Parameters of the rule's `from` URN, which the source must agree with.
+    from_params: BTreeMap<String, String>,
+    /// Base of the rule's `to` URN.
+    to_base: String,
+    /// Parameters of the rule's `to` URN.
+    to_params: BTreeMap<String, String>,
+    /// Whether the source's parameters survive the conversion, overridden by
+    /// the rule's own `to` parameters. True for the built-in widening within
+    /// one numeric family (`Int32[unit=s]` is an `Int64[unit=s]`) and for a
+    /// user rule within one base, which changes only the parameters it names.
+    /// Across a user rule between two types the same key may mean something
+    /// else, so only the rule's `to` parameters hold.
+    keeps_params: bool,
+}
+
+impl Edge {
+    /// The parameters known after following this edge from `params`.
+    fn next_params(&self, params: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+        let mut next = if self.keeps_params {
+            params.clone()
+        } else {
+            BTreeMap::new()
+        };
+        next.extend(self.to_params.iter().map(|(k, v)| (k.clone(), v.clone())));
+        next
+    }
+}
+
+/// Split a URN into base and parameters, treating an unparseable one as a
+/// bare base (the same fallback `is_compatible` applies to its arguments).
+fn base_and_params(urn: &str) -> (String, BTreeMap<String, String>) {
+    match parse_urn(urn) {
+        Some(parsed) => (parsed.base, parsed.params),
+        None => (urn.to_string(), BTreeMap::new()),
+    }
 }
 
 impl CompatibilityGraph {
     /// Create a new compatibility graph with hardcoded rules + optional user rules.
     pub fn new(user_rules: &[TypeRule]) -> Self {
-        let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut edges: BTreeMap<String, Vec<Edge>> = BTreeMap::new();
+        let mut add = |from: &str, to: &str, builtin: bool| {
+            let (from_base, from_params) = base_and_params(from);
+            let (to_base, to_params) = base_and_params(to);
+            let keeps_params = builtin || from_base == to_base;
+            edges.entry(from_base).or_default().push(Edge {
+                from_params,
+                to_base,
+                to_params,
+                keeps_params,
+            });
+        };
 
         // Hardcoded widening rules
         let builtins = [
@@ -383,18 +437,14 @@ impl CompatibilityGraph {
             ("std/core/v1/Float32", "std/core/v1/Float64"),
         ];
         for (from, to) in builtins {
-            edges
-                .entry(from.to_string())
-                .or_default()
-                .push(to.to_string());
+            add(from, to, true);
         }
 
-        // User-defined rules
+        // User-defined rules. A rule endpoint may carry parameters
+        // (`acme/Image[encoding=jpeg]`): edges are keyed by base, and the
+        // parameters are matched with the same agreement rule as `types_match`.
         for rule in user_rules {
-            edges
-                .entry(rule.from.clone())
-                .or_default()
-                .push(rule.to.clone());
+            add(&rule.from, &rule.to, false);
         }
 
         Self { edges }
@@ -436,44 +486,51 @@ impl CompatibilityGraph {
             return true;
         }
 
-        // Parse URNs once and reuse for both matching and BFS
-        let from_parsed = parse_urn(from);
-        let to_parsed = parse_urn(to);
-        let from_base = from_parsed
-            .as_ref()
-            .map(|p| p.base.as_str())
-            .unwrap_or(from);
-        let to_base = to_parsed.as_ref().map(|p| p.base.as_str()).unwrap_or(to);
+        // Parse URNs once and reuse for both matching and BFS. An unparsed
+        // side (no params map) is treated as a wildcard.
+        let (from_base, from_params) = base_and_params(from);
+        let (to_base, to_params) = base_and_params(to);
 
-        // Check parameterized match using already-parsed URNs
+        // Same base — check params via the shared agreement rule. Disagreeing
+        // params can only be bridged by a single rule within that base
+        // (`Image[encoding=bgr8]` -> `Image[encoding=rgb8]`), which keeps the
+        // params it does not name. A detour through other types drops params
+        // and would hide a mismatch, so it is not searched.
         if from_base == to_base {
-            // Same base — check params via the shared agreement rule. An
-            // unparsed side (no params map) is treated as a wildcard, matching
-            // the previous behavior.
-            if let (Some(fp), Some(tp)) = (from_parsed.as_ref(), to_parsed.as_ref()) {
-                return params_agree(&fp.params, &tp.params);
-            }
-            return true;
+            return params_agree(&from_params, &to_params)
+                || self.edges.get(&from_base).is_some_and(|edges| {
+                    edges.iter().any(|edge| {
+                        edge.to_base == to_base
+                            && params_agree(&edge.from_params, &from_params)
+                            && params_agree(&edge.next_params(&from_params), &to_params)
+                    })
+                });
         }
 
-        // BFS with depth limit 3
+        // BFS with depth limit 3. Each state carries the parameters known so
+        // far: a rule applies when they agree with its `from` parameters, and
+        // the next state is `Edge::next_params`.
         let mut queue = std::collections::VecDeque::new();
         let mut visited = std::collections::BTreeSet::new();
-        queue.push_back((from_base.to_string(), 0u32));
-        visited.insert(from_base.to_string());
+        queue.push_back((from_base.as_str(), from_params, 0u32));
 
-        while let Some((current, depth)) = queue.pop_front() {
+        while let Some((current, params, depth)) = queue.pop_front() {
             if depth >= 3 {
                 continue;
             }
-            if let Some(neighbors) = self.edges.get(&current) {
-                for next in neighbors {
-                    if next == to_base {
-                        return true;
-                    }
-                    if visited.insert(next.clone()) {
-                        queue.push_back((next.clone(), depth + 1));
-                    }
+            let Some(neighbors) = self.edges.get(current) else {
+                continue;
+            };
+            for edge in neighbors {
+                if !params_agree(&edge.from_params, &params) {
+                    continue;
+                }
+                let next_params = edge.next_params(&params);
+                if edge.to_base == to_base && params_agree(&next_params, &to_params) {
+                    return true;
+                }
+                if visited.insert((edge.to_base.as_str(), next_params.clone())) {
+                    queue.push_back((edge.to_base.as_str(), next_params, depth + 1));
                 }
             }
         }
@@ -1134,6 +1191,89 @@ mod tests {
         assert!(g.is_compatible("myproject/SensorV1", "myproject/SensorV2"));
     }
 
+    #[test]
+    fn compat_user_rule_with_parameterized_endpoints() {
+        let rule = |from: &str, to: &str| TypeRule {
+            from: from.into(),
+            to: to.into(),
+        };
+        let g = CompatibilityGraph::new(&[
+            rule("acme/Img[enc=jpeg]", "acme/Blob"),
+            rule("acme/Scan", "acme/Cloud[frame=lidar]"),
+        ]);
+        // parameterized `from`: matches a source that agrees with its params
+        assert!(g.is_compatible("acme/Img[enc=jpeg]", "acme/Blob"));
+        assert!(g.is_compatible("acme/Img", "acme/Blob"));
+        assert!(!g.is_compatible("acme/Img[enc=png]", "acme/Blob"));
+        // parameterized `to`: reaches a target that agrees with its params
+        assert!(g.is_compatible("acme/Scan", "acme/Cloud[frame=lidar]"));
+        assert!(g.is_compatible("acme/Scan", "acme/Cloud"));
+        assert!(!g.is_compatible("acme/Scan", "acme/Cloud[frame=radar]"));
+    }
+
+    #[test]
+    fn compat_params_carry_across_a_hop() {
+        let g = CompatibilityGraph::new(&[TypeRule {
+            from: "std/core/v1/Int64[unit=m]".into(),
+            to: "acme/Meters".into(),
+        }]);
+        // Int32 -> Int64 keeps `unit`, so only metres reach the metres rule
+        assert!(g.is_compatible("std/core/v1/Int32[unit=m]", "acme/Meters"));
+        assert!(!g.is_compatible("std/core/v1/Int32[unit=s]", "acme/Meters"));
+        assert!(!g.is_compatible("std/core/v1/Int32[unit=s]", "std/core/v1/Int64[unit=m]"));
+    }
+
+    #[test]
+    fn compat_user_rule_does_not_carry_source_params() {
+        // a parameter-free rule between two types matches on base alone, as
+        // before: `encoding` on `Raw` says nothing about `encoding` on `Compressed`
+        let g = CompatibilityGraph::new(&[TypeRule {
+            from: "acme/Raw".into(),
+            to: "acme/Compressed".into(),
+        }]);
+        assert!(g.is_compatible("acme/Raw[encoding=rgb8]", "acme/Compressed[encoding=jpeg]"));
+    }
+
+    #[test]
+    fn compat_rule_between_params_of_one_type() {
+        let rule = |from: &str, to: &str| TypeRule {
+            from: from.into(),
+            to: to.into(),
+        };
+        let g = CompatibilityGraph::new(&[
+            rule("acme/Image[encoding=bgr8]", "acme/Image[encoding=rgb8]"),
+            rule("acme/A", "acme/B"),
+            rule("acme/B", "acme/A"),
+        ]);
+        assert!(g.is_compatible("acme/Image[encoding=bgr8]", "acme/Image[encoding=rgb8]"));
+        assert!(!g.is_compatible("acme/Image[encoding=rgb8]", "acme/Image[encoding=bgr8]"));
+        assert!(!g.is_compatible("acme/Image[encoding=yuv]", "acme/Image[encoding=rgb8]"));
+        // a parameter-free cycle does not convert between params of one type
+        assert!(!g.is_compatible("acme/A[x=1]", "acme/A[x=2]"));
+        // a same-base rule changes only the params it names
+        assert!(g.is_compatible(
+            "acme/Image[encoding=bgr8,frame=cam0]",
+            "acme/Image[encoding=rgb8,frame=cam0]"
+        ));
+        assert!(!g.is_compatible(
+            "acme/Image[encoding=bgr8,frame=cam0]",
+            "acme/Image[encoding=rgb8,frame=cam1]"
+        ));
+    }
+
+    #[test]
+    fn compat_detour_does_not_hide_a_same_base_mismatch() {
+        let rule = |from: &str, to: &str| TypeRule {
+            from: from.into(),
+            to: to.into(),
+        };
+        let g = CompatibilityGraph::new(&[
+            rule("acme/Image", "acme/Blob"),
+            rule("acme/Blob", "acme/Image[encoding=raw]"),
+        ]);
+        assert!(!g.is_compatible("acme/Image[frame=cam0]", "acme/Image[frame=cam1]"));
+    }
+
     // --- Phase 5: metadata pattern tests ---
 
     #[test]
@@ -1472,6 +1612,71 @@ mod tests {
                 "{urn} has no resolvable schema"
             );
         }
+    }
+
+    #[test]
+    fn primitive_backed_std_field_types_resolve() {
+        // `field_type_resolves` admits registry types backed by a primitive
+        // Arrow type, so the schema builder must materialize them too rather
+        // than failing closed on a field the validator accepted.
+        let field = |name: &str, ty: &str| FieldDef {
+            name: name.to_string(),
+            r#type: ty.to_string(),
+            nullable: true,
+        };
+        let def = TypeDef {
+            arrow: "Struct".to_string(),
+            description: None,
+            params: vec![],
+            fields: vec![
+                field("label", "String"),
+                field("value", "std/core/v1/Float32"),
+                field("blob", "std/core/v1/Bytes"),
+                field("tags", "List<String>"),
+            ],
+            metadata: vec![],
+        };
+        let reg = TypeRegistry::new();
+        for f in &def.fields {
+            assert!(reg.field_type_resolves(&f.r#type), "{}", f.r#type);
+        }
+        let schema = def
+            .to_arrow_schema_with_registry(&reg)
+            .expect("primitive-backed field types must resolve");
+        assert_eq!(schema.field(0).data_type(), &DataType::Utf8);
+        assert_eq!(schema.field(1).data_type(), &DataType::Float32);
+        assert_eq!(schema.field(2).data_type(), &DataType::LargeBinary);
+        assert_eq!(
+            schema.field(3).data_type(),
+            &DataType::LargeList(Arc::new(Field::new("item", DataType::Utf8, true)))
+        );
+    }
+
+    #[test]
+    fn field_less_struct_field_type_returns_none() {
+        let mut reg = TypeRegistry::new();
+        reg.insert_type(
+            "acme/v1/Opaque",
+            TypeDef {
+                arrow: "Struct".to_string(),
+                description: None,
+                params: vec![],
+                fields: vec![],
+                metadata: vec![],
+            },
+        );
+        let def = TypeDef {
+            arrow: "Struct".to_string(),
+            description: None,
+            params: vec![],
+            fields: vec![FieldDef {
+                name: "inner".to_string(),
+                r#type: "acme/v1/Opaque".to_string(),
+                nullable: true,
+            }],
+            metadata: vec![],
+        };
+        assert!(def.to_arrow_schema_with_registry(&reg).is_none());
     }
 
     #[test]

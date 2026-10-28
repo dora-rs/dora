@@ -37,6 +37,8 @@
 //! `Struct` fields to the struct's `len`, a `FixedSizeList` child to
 //! `len * value_size`, and a `List`/`LargeList` child to its last offset.
 
+use std::sync::Arc;
+
 use arrow::array::ArrayData;
 use arrow::buffer::Buffer as ArrowBuffer;
 use arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
@@ -305,7 +307,7 @@ fn read_offset(offsets: &ArrowBuffer, index: usize, width: usize) -> Option<usiz
 /// Everything needed to write the stream, plus the exact total length.
 struct Prepared {
     layout: Layout,
-    schema_message: Vec<u8>,
+    schema_message: Arc<[u8]>,
     record_batch_message: Vec<u8>,
     schema_block: usize,
     record_batch_block: usize,
@@ -341,6 +343,39 @@ fn uint8_schema_message() -> eyre::Result<&'static [u8]> {
     }
     let message = build_schema_message(&DataType::UInt8)?;
     Ok(MESSAGE.get_or_init(|| message))
+}
+
+/// How many distinct output types [`cached_schema_message`] remembers per
+/// thread. A node typically sends a handful of types (an image and its
+/// metadata, say) from one thread; a small list covers that without
+/// unbounded growth.
+const SCHEMA_CACHE_ENTRIES: usize = 8;
+
+/// The schema message for `data_type`, reusing one this thread already built
+/// for the same type.
+///
+/// An output almost always sends the same type message after message, and
+/// building the schema flatbuffer (a `Schema`/`Field` allocation plus the
+/// arrow IPC generator) costs on the order of a microsecond per send — more
+/// than copying a small payload. When the list is full the oldest entry is
+/// dropped, so a node cycling through more types than that just rebuilds as
+/// before.
+fn cached_schema_message(data_type: &DataType) -> eyre::Result<Arc<[u8]>> {
+    thread_local! {
+        static CACHE: std::cell::RefCell<Vec<(DataType, Arc<[u8]>)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    CACHE.with_borrow_mut(|cache| {
+        if let Some((_, message)) = cache.iter().find(|(cached, _)| cached == data_type) {
+            return Ok(message.clone());
+        }
+        let message: Arc<[u8]> = build_schema_message(data_type)?.into();
+        if cache.len() == SCHEMA_CACHE_ENTRIES {
+            cache.remove(0);
+        }
+        cache.push((data_type.clone(), message.clone()));
+        Ok(message)
+    })
 }
 
 /// Hand-build the RecordBatch IPC message flatbuffer (header only — no body),
@@ -380,7 +415,7 @@ fn build_record_batch_message(
 
 fn prepare(array: &ArrayData) -> Option<Prepared> {
     let layout = build_layout(array)?;
-    let schema_message = build_schema_message(array.data_type()).ok()?;
+    let schema_message = cached_schema_message(array.data_type()).ok()?;
     let record_batch_message = build_record_batch_message(
         array.len(),
         &layout.nodes,
@@ -993,7 +1028,7 @@ impl InputDecoder {
                 None => return Ok(None),
             }
         }
-        match decode_one_batch(&mut self.decoder, buffer) {
+        match decode_one_batch(&mut self.decoder, super::align_for_decode(buffer)) {
             Ok(array) => {
                 // `decode_one_batch` yields a non-empty batch *before* the
                 // trailing end-of-stream marker is consumed, and a 0-row batch
@@ -1041,22 +1076,24 @@ fn prime_with_schema(
     decoder: &mut arrow::ipc::reader::StreamDecoder,
     mut buffer: ArrowBuffer,
 ) -> eyre::Result<()> {
-    while !buffer.is_empty() {
-        let before = buffer.len();
-        if decoder
-            .decode(&mut buffer)
-            .map_err(|e| eyre!("failed to decode IPC schema message: {e}"))?
-            .is_some()
-        {
-            bail!("expected a schema message but got a record batch");
+    super::catch_arrow_panic(|| {
+        while !buffer.is_empty() {
+            let before = buffer.len();
+            if decoder
+                .decode(&mut buffer)
+                .map_err(|e| eyre!("failed to decode IPC schema message: {e}"))?
+                .is_some()
+            {
+                bail!("expected a schema message but got a record batch");
+            }
+            // Guard against a crafted/truncated payload that decodes to no batch
+            // without consuming bytes — otherwise this loop spins forever.
+            if buffer.len() == before {
+                bail!("IPC schema decoder made no progress on a partial/corrupt message");
+            }
         }
-        // Guard against a crafted/truncated payload that decodes to no batch
-        // without consuming bytes — otherwise this loop spins forever.
-        if buffer.len() == before {
-            bail!("IPC schema decoder made no progress on a partial/corrupt message");
-        }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Feed a record-batch message to `decoder` and return the single decoded array.
@@ -1075,6 +1112,13 @@ fn prime_with_schema(
 /// resetting after each. A poisoned decoder is instead recovered on the error
 /// path of [`InputDecoder::decode_batch`].
 fn decode_one_batch(
+    decoder: &mut arrow::ipc::reader::StreamDecoder,
+    buffer: ArrowBuffer,
+) -> eyre::Result<arrow::array::ArrayData> {
+    super::catch_arrow_panic(|| decode_one_batch_unguarded(decoder, buffer))
+}
+
+fn decode_one_batch_unguarded(
     decoder: &mut arrow::ipc::reader::StreamDecoder,
     mut buffer: ArrowBuffer,
 ) -> eyre::Result<arrow::array::ArrayData> {
@@ -1121,6 +1165,44 @@ mod tests {
         let mut buf = vec![0u8; len];
         encode_ipc_into_data(array, &mut buf).expect("fast-path encode");
         buf
+    }
+
+    /// The per-thread schema cache must never hand back a stale header when
+    /// the type changes between sends, including after eviction: every send
+    /// must carry exactly the schema message a fresh build does, and the
+    /// stream must still decode to the sent array.
+    #[test]
+    fn schema_cache_follows_type_changes() {
+        let float: ArrayRef = Arc::new(Float32Array::from(vec![1.0, 2.0]));
+        let int: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
+        let strukt: ArrayRef = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("x", DataType::Float32, true)),
+            float.clone(),
+        )]));
+        let mut sends = vec![&float, &int, &float, &strukt, &strukt, &int];
+        // More distinct types than the cache holds, then the first ones again
+        // after they have been evicted.
+        let lists: Vec<ArrayRef> = (0..SCHEMA_CACHE_ENTRIES)
+            .map(|i| {
+                let field = Arc::new(Field::new(format!("item{i}"), DataType::Int32, true));
+                Arc::new(ListArray::new(
+                    field,
+                    arrow::buffer::OffsetBuffer::from_lengths([1]),
+                    Arc::new(Int32Array::from(vec![i as i32])),
+                    None,
+                )) as ArrayRef
+            })
+            .collect();
+        sends.extend(lists.iter());
+        sends.extend([&float, &int, &strukt]);
+        for array in sends {
+            let data = array.to_data();
+            assert_eq!(
+                &*cached_schema_message(data.data_type()).unwrap(),
+                build_schema_message(data.data_type()).unwrap().as_slice(),
+            );
+            assert_eq!(read_official(&fast_encode(&data)), data);
+        }
     }
 
     /// Decode a complete IPC stream with the OFFICIAL arrow `StreamReader` (the
@@ -2079,5 +2161,129 @@ mod tests {
             };
             assert_fast_roundtrip(&array);
         }
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// A schema from a peer (the `@schema` subtopic) that makes arrow-ipc panic
+    /// is an error, not a panic, and leaves the decoder usable (#3863).
+    #[test]
+    fn a_schema_that_panics_arrow_is_an_error() {
+        let corrupt = hex(
+            "ffffffff320000001000000000000a0000000000090004000a00000000000000000100000000000000000000000000000000000000000000000000",
+        );
+        let mut decoder = InputDecoder::new();
+        let err = decoder
+            .set_schema_raw(1, Buffer::from(corrupt))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the decoder panicked: "), "got: {err}");
+        assert!(!decoder.knows_schema(1));
+    }
+
+    /// A valid schema-less dense-union batch on a buffer that is not aligned (a
+    /// borrowed zenoh network payload can start anywhere) decodes: arrow's own
+    /// realignment panics on a dense union (#3863).
+    #[test]
+    fn a_misaligned_dense_union_batch_decodes() {
+        use arrow::array::UnionArray;
+        use arrow::buffer::ScalarBuffer;
+        use arrow_schema::UnionFields;
+
+        let fields: UnionFields = [
+            (0i8, Arc::new(Field::new("a", DataType::Int32, false))),
+            (1i8, Arc::new(Field::new("b", DataType::Utf8, false))),
+        ]
+        .into_iter()
+        .collect();
+        let union = UnionArray::try_new(
+            fields,
+            ScalarBuffer::from(vec![0i8, 1, 0]),
+            Some(ScalarBuffer::from(vec![0i32, 0, 1])),
+            vec![
+                Arc::new(Int32Array::from(vec![10, 20])),
+                Arc::new(StringArray::from(vec!["x"])),
+            ],
+        )
+        .unwrap();
+        let data = union.into_data();
+        let full = crate::arrow_utils::encode_arrow_ipc_data(&data).unwrap();
+        let block = schema_block_len(&full).unwrap();
+        let batch = batch_slice(&full).unwrap();
+
+        let mut decoder = InputDecoder::new();
+        decoder
+            .set_schema_raw(1, Buffer::from(&full[..block]))
+            .unwrap();
+        let mut shifted = vec![0u8; batch.len() + 1];
+        shifted[1..].copy_from_slice(batch);
+        let misaligned = Buffer::from_vec(shifted).slice(1);
+        let decoded = decoder.decode_batch_raw(misaligned, 1).unwrap().unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    /// A schema-less batch from a peer that makes arrow-ipc panic is an error,
+    /// not a panic (which the zenoh callback would turn into a fatal error),
+    /// and the next valid batch still decodes (#3863). Found by fuzzing.
+    #[test]
+    fn a_batch_that_panics_arrow_is_an_error_and_decoding_continues() {
+        let data = Int32Array::from(vec![1, 2, 3]).into_data();
+        let mut full = vec![0u8; ipc_fast_path_len_data(&data).unwrap()];
+        encode_ipc_into_data(&data, &mut full).unwrap();
+        let block = schema_block_len(&full).unwrap();
+        let mut decoder = InputDecoder::new();
+        decoder
+            .set_schema_raw(1, Buffer::from(&full[..block]))
+            .unwrap();
+
+        let corrupt = hex(
+            "ffffffffb8000000100000000c001a0018001700040008000c000000200000008000000000000000000000000000000304000a0018000c00080004000a0000002c000000100000000300000000000000000000000100000003000000000000000000000000000000000000000200000000000000000000000100000000000000400000000000ff000c00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000020000000300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffff00000000",
+        );
+        let err = decoder
+            .decode_batch_raw(Buffer::from(corrupt), 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("the decoder panicked: "), "got: {err}");
+
+        let mut batch = vec![0u8; batch_fast_path_len_data(&data).unwrap()];
+        encode_batch_into_data(&data, &mut batch).unwrap();
+        let decoded = decoder
+            .decode_batch_raw(Buffer::from(batch), 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded, data);
+    }
+
+    /// A run-end-encoded array whose run end was changed in transit passes
+    /// arrow's validation, so it decodes; sending it on (what `dora replay`
+    /// and forwarding nodes do) makes arrow's writer panic, which must be an
+    /// error, not a crash (#3863).
+    #[test]
+    fn sending_a_corrupted_run_end_array_is_an_error() {
+        use arrow::array::RunArray;
+        use arrow::datatypes::Int32Type;
+        let array =
+            RunArray::<Int32Type>::try_new(&Int32Array::from(vec![2]), &Int32Array::from(vec![42]))
+                .unwrap();
+        let mut bytes = crate::arrow_utils::encode_arrow_ipc_data(&array.to_data()).unwrap();
+        // The body holds the run end (2) and then the value (42).
+        let value = bytes.windows(4).rposition(|w| w == [42, 0, 0, 0]).unwrap();
+        let run_end = bytes[..value]
+            .windows(4)
+            .rposition(|w| w == [2, 0, 0, 0])
+            .unwrap();
+        bytes[run_end] = 1;
+        let decoded = decode_arrow_ipc_zero_copy_raw(Buffer::from(bytes)).unwrap();
+        assert_eq!(decoded.len(), 2);
+
+        let Err(err) = crate::SampleAllocator::heap().encode_arrow_data(&decoded) else {
+            panic!("a corrupted run-end array was sent");
+        };
+        assert!(err.to_string().contains("arrow panicked"), "got: {err}");
     }
 }

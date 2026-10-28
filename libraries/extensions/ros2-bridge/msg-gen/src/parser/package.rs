@@ -9,19 +9,22 @@ use glob::glob;
 use super::{action::parse_action_file, message::parse_message_file, service::parse_service_file};
 use crate::types::Package;
 
-fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Package>> {
+fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs_in: &[P]) -> Result<Vec<Package>> {
     let mut map: HashMap<String, Package> = HashMap::new();
 
     let ros_formats = ["msg", "srv", "action"];
 
     // An empty entry, as a leading, trailing or doubled `:` in
     // AMENT_PREFIX_PATH leaves, names no prefix. Skip it rather than
-    // discarding the packages found under the other entries.
-    let root_dirs: Vec<&Path> = root_dirs
-        .iter()
-        .map(AsRef::as_ref)
-        .filter(|root_dir| *root_dir != Path::new(""))
-        .collect();
+    // discarding the packages found under the other entries. A prefix listed
+    // twice is scanned once: its packages would otherwise pass the
+    // first-prefix check below and have every message parsed twice.
+    let mut root_dirs: Vec<&Path> = Vec::new();
+    for root_dir in root_dirs_in.iter().map(AsRef::as_ref) {
+        if root_dir != Path::new("") && !root_dirs.contains(&root_dir) {
+            root_dirs.push(root_dir);
+        }
+    }
     if root_dirs.is_empty() {
         println!("cargo::warning=AMENT_PREFIX_PATH pointed to ''");
         return Ok(Vec::new());
@@ -31,7 +34,6 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
         for ros_format in ros_formats.iter() {
             let pattern =
                 root_dir.to_string_lossy().to_string() + "/**/" + ros_format + "/*." + ros_format;
-            let mut visited_files = vec![];
             for entry in glob(&pattern).context("Failed to read glob pattern")? {
                 let path = entry.context("Could not glob given path")?;
                 let file_name = path
@@ -57,20 +59,26 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
                 // Hack
                 if file_name == "libstatistics_collector" {
                     continue;
-                } else if visited_files.contains(&(package.clone(), file_name.clone())) {
+                }
+                // Each `Package` keeps the directory it was first found in.
+                // AMENT_PREFIX_PATH lists overlays before underlays, so the
+                // first copy of a package shadows every later one, as it does
+                // in ROS itself. Without this, a package rebuilt in an overlay
+                // and also installed in `/opt/ros/<distro>` was parsed from
+                // both prefixes into one `Package`, holding each message
+                // twice, and the generated bindings defined every struct twice.
+                let p = map.entry(package.clone()).or_insert_with(|| {
+                    let mut p = Package::new(package.clone());
+                    p.path = package_path.to_owned();
+                    p
+                });
+                if p.path != package_path {
                     println!(
                         "cargo::warning=found two versions of package: {:?}, message: {:?}. will skip the one in: {:#?}",
                         package, file_name, path
                     );
                     continue;
-                } else {
-                    visited_files.push((package.clone(), file_name.clone()));
                 }
-
-                let p = map
-                    .entry(package.clone())
-                    .or_insert_with(|| Package::new(package.clone()));
-                p.path = PathBuf::from(package_path);
 
                 match *ros_format {
                     "msg" => {
@@ -275,6 +283,30 @@ mod tests {
         let packages = get_ros_msgs_each_package(&[&root]).unwrap();
         assert_eq!(dependencies_of(&packages, "a"), ["b"]);
         assert_eq!(dependencies_of(&packages, "b"), ["a"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// An overlay that rebuilds a package also installed in an underlay must
+    /// shadow it, not be merged with it: each message is parsed once, from the
+    /// first prefix on the path.
+    #[test]
+    fn a_package_in_two_prefixes_is_taken_from_the_first() {
+        let overlay = prefix("overlay", &[("a", &[])]);
+        let underlay = prefix("underlay", &[("a", &[])]);
+        let packages = get_ros_msgs_each_package(&[&overlay, &underlay]).unwrap();
+        let a = packages.iter().find(|p| p.name == "a").unwrap();
+        assert_eq!(a.messages.len(), 1);
+        assert!(a.path.starts_with(&overlay), "path: {}", a.path.display());
+        std::fs::remove_dir_all(overlay).unwrap();
+        std::fs::remove_dir_all(underlay).unwrap();
+    }
+
+    #[test]
+    fn a_prefix_listed_twice_is_parsed_once() {
+        let root = prefix("twice", &[("a", &[])]);
+        let packages = get_ros_msgs_each_package(&[&root, &root]).unwrap();
+        let a = packages.iter().find(|p| p.name == "a").unwrap();
+        assert_eq!(a.messages.len(), 1);
         std::fs::remove_dir_all(root).unwrap();
     }
 

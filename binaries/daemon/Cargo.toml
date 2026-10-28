@@ -65,7 +65,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-criterion = { version = "0.8", features = ["html_reports"] }
+criterion = { version = "6", package = "codspeed-criterion-compat" }
 # `test-util` enables `start_paused` so the 30s TCP read-timeout guard can be
 # exercised without a real 30s wait (socket_stream_utils tests, #2027).
 tokio = { workspace = true, features = ["full", "test-util"] }

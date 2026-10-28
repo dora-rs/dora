@@ -366,6 +366,10 @@ mod lifecycle {
             self.domain
         }
 
+        pub fn namespace(&self) -> &str {
+            &self.namespace
+        }
+
         pub fn session(&self) -> &zenoh::Session {
             &self.session
         }
