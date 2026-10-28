@@ -61,8 +61,7 @@ pub struct PoolState {
     /// Persistent direct-TCP connections to peer daemons' data listeners (the
     /// origin side). Keyed by the peer's `SocketAddr`; a dead connection is
     /// dropped on write failure and re-established lazily.
-    pub(crate) cross_data_conns:
-        Arc<std::sync::Mutex<HashMap<std::net::SocketAddr, tokio::net::TcpStream>>>,
+    pub(crate) cross_data_conns: CrossDataConns,
     /// Direct-TCP endpoint per cross-machine pool: `(dataflow id, pool id)` ->
     /// peer's `SocketAddr`. Populated when the register ack carries a data
     /// port; absent pools fall back to the zenoh relay.

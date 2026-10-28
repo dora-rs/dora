@@ -346,6 +346,26 @@ pub(crate) fn stop_topic_debug_stream(
     )
 }
 
+/// The subset of `subscription_ids` that some running dataflow still has a
+/// subscriber for.
+///
+/// The coordinator drops subscribers on its own (a reader that stayed too
+/// slow, a dataflow that ended); a WS connection uses this to free the slots
+/// such ids still take up in its per-connection list.
+pub(crate) fn live_topic_subscriptions(
+    running_dataflows: &HashMap<DataflowId, RunningDataflow>,
+    subscription_ids: Vec<Uuid>,
+) -> Vec<Uuid> {
+    subscription_ids
+        .into_iter()
+        .filter(|id| {
+            running_dataflows
+                .values()
+                .any(|df| df.topic_subscribers.contains_key(id))
+        })
+        .collect()
+}
+
 /// Forward a daemon's topic debug frame to its CLI subscribers.
 ///
 /// A subscriber that got closed on the way (its CLI went away, or it stayed

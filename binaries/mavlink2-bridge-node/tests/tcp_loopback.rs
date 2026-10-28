@@ -64,7 +64,21 @@ fn transport_connect_receives_heartbeat_over_tcp() -> Result<(), Box<dyn std::er
 
     let url = Url::parse(&format!("tcp://127.0.0.1:{port}"))?;
     let client = transport::connect(&url)?;
-    let (_header, msg) = client.recv()?;
+    // mavlink-core's TCP client sets a 100 ms socket read timeout, so `recv`
+    // returns `WouldBlock`/`TimedOut` whenever the server thread is slower
+    // than that to send — routine on a loaded CI runner. Keep reading until
+    // the HEARTBEAT arrives or a generous deadline passes.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let (_header, msg) = loop {
+        match client.recv() {
+            Err(mavlink::error::MessageReadError::Io(err))
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) && std::time::Instant::now() < deadline => {}
+            other => break other?,
+        }
+    };
 
     match msg {
         MavMessage::HEARTBEAT(d) => {
