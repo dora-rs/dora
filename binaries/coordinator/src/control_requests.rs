@@ -1225,6 +1225,16 @@ impl Coordinator {
         node: Node,
         reply_sender: ReplySender,
     ) -> eyre::Result<()> {
+        // The daemons the dataflow ran on before a coordinator restart or
+        // reclaim, to tell a producer whose daemon has not reconnected yet
+        // from one that exited (see `producer_daemons`).
+        let persisted_daemons = self
+            .store
+            .get_dataflow(&dataflow_id)
+            .ok()
+            .flatten()
+            .map(|record| record.daemon_ids)
+            .unwrap_or_default();
         let result = match self.running_dataflows.get_mut(&dataflow_id) {
             Some(dataflow) => {
                 if dataflow.node_to_daemon.contains_key(&node.id) {
@@ -1253,6 +1263,7 @@ impl Coordinator {
                                 &resolved_node,
                                 &dataflow.nodes,
                                 &dataflow.node_to_daemon,
+                                daemons_still_reconnecting(&persisted_daemons, &dataflow.daemons),
                             )
                             .and_then(|producer_daemons| {
                                 self.daemon_connections.resolve_add_node_daemon(
@@ -1661,14 +1672,19 @@ pub(crate) fn upstream_node_ids(node: &ResolvedNode) -> impl Iterator<Item = &No
 
 /// The daemons hosting the nodes whose outputs `node` subscribes to.
 ///
-/// Fails when such a producer is a node of the dataflow but has no daemon
-/// mapping yet (after a coordinator restart or reclaim, until its daemon
-/// reconnects): placing the new node without knowing where its producer
-/// runs could put it on a daemon that never forwards the producer's data.
+/// After a coordinator restart or reclaim, `node_to_daemon` only holds the
+/// nodes each reconnected daemon reported as running. A known producer
+/// without a mapping is then either on a daemon that has not reconnected
+/// yet, or it has exited. While `awaiting_daemons` is set the add fails
+/// with a retry hint, since placing the new node without knowing where its
+/// producer runs could starve it. Once every daemon is back, an unmapped
+/// producer has exited, sends nothing more, and so doesn't constrain the
+/// placement.
 pub(crate) fn producer_daemons(
     node: &ResolvedNode,
     nodes: &BTreeMap<NodeId, ResolvedNode>,
     node_to_daemon: &BTreeMap<NodeId, DaemonId>,
+    awaiting_daemons: bool,
 ) -> eyre::Result<BTreeSet<DaemonId>> {
     let mut daemons = BTreeSet::new();
     for source in upstream_node_ids(node) {
@@ -1676,12 +1692,29 @@ pub(crate) fn producer_daemons(
             Some(daemon) => {
                 daemons.insert(daemon.clone());
             }
-            None if nodes.contains_key(source) => bail!(
-                "the daemon running upstream node `{source}` is not known yet \
-                 (is it still reconnecting?); retry `dora node add` later"
+            None if awaiting_daemons && nodes.contains_key(source) => bail!(
+                "the daemon running upstream node `{source}` has not reconnected \
+                 yet; retry `dora node add` later"
             ),
             None => {}
         }
     }
     Ok(daemons)
+}
+
+/// Whether some daemon the dataflow ran on before a coordinator restart
+/// (`persisted`) has not reconnected yet. A re-registering daemon gets a new
+/// `DaemonId`, so named daemons are matched by machine id and unnamed ones
+/// by count.
+pub(crate) fn daemons_still_reconnecting(
+    persisted: &[DaemonId],
+    current: &BTreeSet<DaemonId>,
+) -> bool {
+    let unnamed = |id: &&DaemonId| id.machine_id().is_none();
+    let named_missing = persisted.iter().any(|old| {
+        old.machine_id()
+            .is_some_and(|machine| !current.iter().any(|new| new.matches_machine_id(machine)))
+    });
+    named_missing
+        || persisted.iter().filter(unnamed).count() > current.iter().filter(unnamed).count()
 }

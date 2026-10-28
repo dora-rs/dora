@@ -6700,14 +6700,50 @@ fn producer_daemons_rejects_a_known_but_unmapped_producer() {
     );
     let nodes = BTreeMap::from([(producer.clone(), producer_node)]);
 
-    let err =
-        crate::control_requests::producer_daemons(&resolved, &nodes, &BTreeMap::new()).unwrap_err();
+    let err = crate::control_requests::producer_daemons(&resolved, &nodes, &BTreeMap::new(), true)
+        .unwrap_err();
     assert!(format!("{err}").contains("producer"), "{err}");
+
+    // once every daemon is back, an unmapped producer has exited (daemons
+    // only report running nodes) and no longer constrains the placement
+    assert!(
+        crate::control_requests::producer_daemons(&resolved, &nodes, &BTreeMap::new(), false)
+            .unwrap()
+            .is_empty()
+    );
 
     let daemon = DaemonId::new(Some("machine-a".to_string()));
     let mapped = BTreeMap::from([(producer, daemon.clone())]);
     assert_eq!(
-        crate::control_requests::producer_daemons(&resolved, &nodes, &mapped).unwrap(),
+        crate::control_requests::producer_daemons(&resolved, &nodes, &mapped, true).unwrap(),
         BTreeSet::from([daemon])
     );
+}
+
+#[test]
+fn daemons_still_reconnecting_matches_by_machine_id_and_unnamed_count() {
+    use crate::control_requests::daemons_still_reconnecting;
+    let old_a = DaemonId::new(Some("machine-a".to_string()));
+    let old_b = DaemonId::new(Some("machine-b".to_string()));
+    let old_unnamed = DaemonId::new(None);
+    // re-registration hands out new ids for the same machines
+    let new_a = DaemonId::new(Some("machine-a".to_string()));
+    let new_b = DaemonId::new(Some("machine-b".to_string()));
+    let new_unnamed = DaemonId::new(None);
+
+    let persisted = [old_a, old_b, old_unnamed];
+    assert!(daemons_still_reconnecting(
+        &persisted,
+        &BTreeSet::from([new_a.clone()])
+    ));
+    assert!(daemons_still_reconnecting(
+        &persisted,
+        &BTreeSet::from([new_a.clone(), new_b.clone()])
+    ));
+    assert!(!daemons_still_reconnecting(
+        &persisted,
+        &BTreeSet::from([new_a.clone(), new_b, new_unnamed])
+    ));
+    // no persisted record (e.g. nothing stored): nothing to wait for
+    assert!(!daemons_still_reconnecting(&[], &BTreeSet::from([new_a])));
 }
