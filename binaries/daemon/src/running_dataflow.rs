@@ -1612,11 +1612,6 @@ fn select_finish_stragglers<'a>(
         .collect()
 }
 
-/// Drops every entry of an `OutputId`-keyed map whose output belongs to
-/// `node_id`, keeping all others. Extracted so the keying can be unit-tested:
-/// its one production caller purges [`RunningDataflow::publishers`], whose value
-/// type (`ControlPublisher`, holding a zenoh publisher) can't be constructed in-process, so a
-/// direct map-shape test of that field isn't possible.
 /// A cached publisher on an output's inter-daemon control topic
 /// (`zenoh_daemon_control_topic`).
 pub(crate) struct ControlPublisher {
@@ -1628,6 +1623,11 @@ pub(crate) struct ControlPublisher {
     pub(crate) has_subscribers: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Drops every entry of an `OutputId`-keyed map whose output belongs to
+/// `node_id`, keeping all others. Extracted so the keying can be unit-tested:
+/// its one production caller purges [`RunningDataflow::publishers`], whose value
+/// type (`ControlPublisher`, holding a zenoh publisher) can't be constructed in-process, so a
+/// direct map-shape test of that field isn't possible.
 fn retain_other_nodes<V>(map: &mut BTreeMap<OutputId, V>, node_id: &NodeId) {
     map.retain(|output_id, _| &output_id.0 != node_id);
 }
