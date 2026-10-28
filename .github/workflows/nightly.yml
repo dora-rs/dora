@@ -99,7 +99,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -248,7 +248,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -322,7 +322,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -617,7 +617,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -1416,6 +1416,10 @@ jobs:
         # still compiling zenoh when the step was force-killed (#2742). 45 min
         # gives the release build margin without masking a genuine hang.
         timeout-minutes: 45
+        # Zenoh face/route and scouting/connect debug logs, to diagnose a run
+        # where the two daemons never link (#3711). Adds ~500 lines per run.
+        env:
+          RUST_LOG: info,zenoh::net::routing=debug,zenoh::net::runtime=debug
         run: cargo run --example multiple-daemons
       - name: C Dataflow example
         timeout-minutes: 15
@@ -1682,7 +1686,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -1986,7 +1990,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Install pyarrow + numpy
@@ -2001,6 +2005,11 @@ jobs:
         run: cargo check -p dora-ros2-bridge --no-default-features
       - name: Test ROS2 message generator
         run: cargo test -p dora-ros2-bridge-msg-gen
+      # Compiles the generated C++ bindings against a fixture package (nothing
+      # else in CI does, since no ROS messages are installed) and runs a C++
+      # service round trip over native Zenoh.
+      - name: Generated C++ services over Zenoh
+        run: scripts/ros2-cxx-zenoh-roundtrip.sh
       - name: Test ROS2 Python bridge basics
         run: cargo test -p dora-ros2-bridge-python
 

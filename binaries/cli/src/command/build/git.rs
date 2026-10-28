@@ -18,11 +18,19 @@ pub fn fetch_commit_hash(repo_url: String, rev: Option<GitRepoRev>) -> eyre::Res
         None => "HEAD".into(),
     };
 
+    // An annotated tag is advertised twice: `refs/tags/<tag>` carries the id
+    // of the tag *object*, and `refs/tags/<tag>^{}` the commit it points to.
+    // Pin the commit: the clone is later verified against `HEAD`, which is
+    // always a commit, so a tag-object id never matches it.
+    let peeled_name = format!("{expected_name}^{{}}");
     let mut commit_hash = None;
     for head in references {
-        if head.name() == expected_name {
+        if head.name() == peeled_name {
             commit_hash = Some(head.oid().to_string());
             break;
+        }
+        if head.name() == expected_name {
+            commit_hash = Some(head.oid().to_string());
         }
     }
 
@@ -59,7 +67,51 @@ fn looks_like_commit_hash(rev: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::looks_like_commit_hash;
+    use super::{fetch_commit_hash, looks_like_commit_hash};
+    use dora_message::descriptor::GitRepoRev;
+
+    /// A repo with one commit, tagged both lightweight (`light`) and
+    /// annotated (`annotated`). Returns the commit id.
+    fn tagged_repo(dir: &std::path::Path) -> git2::Oid {
+        let repo = git2::Repository::init(dir).unwrap();
+        let sig = git2::Signature::now("dora", "dora@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let commit_id = repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let commit = repo.find_object(commit_id, None).unwrap();
+        repo.tag_lightweight("light", &commit, false).unwrap();
+        repo.tag("annotated", &commit, &sig, "release", false)
+            .unwrap();
+        commit_id
+    }
+
+    fn repo_url(dir: &std::path::Path) -> String {
+        dir.to_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn annotated_tag_resolves_to_its_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let commit_id = tagged_repo(dir.path());
+        let source = fetch_commit_hash(
+            repo_url(dir.path()),
+            Some(GitRepoRev::Tag("annotated".into())),
+        )
+        .unwrap();
+        assert_eq!(source.commit_hash, commit_id.to_string());
+    }
+
+    #[test]
+    fn lightweight_tag_and_head_resolve_to_the_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let commit_id = tagged_repo(dir.path());
+        for rev in [Some(GitRepoRev::Tag("light".into())), None] {
+            let source = fetch_commit_hash(repo_url(dir.path()), rev).unwrap();
+            assert_eq!(source.commit_hash, commit_id.to_string());
+        }
+    }
 
     #[test]
     fn accepts_short_and_full_hashes() {

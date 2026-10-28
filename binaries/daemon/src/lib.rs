@@ -1325,6 +1325,9 @@ impl Daemon {
             })
             .await
             .wrap_err("failed to open zenoh session")?;
+        // Lets another daemon's link-probe diagnostics, which list the zids it
+        // is linked to, be matched against this daemon (#3711).
+        tracing::info!("zenoh session open with id {}", zenoh_session.zid());
         // Same-host control notifications (`PeerMessage::Register`/`PeerMessage::Free`) go over
         // zenoh SHM: the payload stays in shared memory and peer daemons
         if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {
@@ -1461,15 +1464,18 @@ impl Daemon {
         dataflow_id: Uuid,
         result: &DataflowDaemonResult,
     ) -> eyre::Result<()> {
-        let msg = serde_json::to_vec(&Timestamped {
-            inner: CoordinatorRequest::Event {
-                daemon_id: self.daemon_id.clone(),
-                event: DaemonEvent::AllNodesFinished {
-                    dataflow_id,
-                    result: result.clone(),
+        let timestamp = self.clock.new_timestamp();
+        let msg = extract_err_from_stderr::encode_bounded_finish_report(result, |result| {
+            Ok(serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::AllNodesFinished {
+                        dataflow_id,
+                        result: result.clone(),
+                    },
                 },
-            },
-            timestamp: self.clock.new_timestamp(),
+                timestamp,
+            })?)
         })?;
         sender
             .send_event(&msg)

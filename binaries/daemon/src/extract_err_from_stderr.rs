@@ -1,3 +1,9 @@
+use crate::coordinator::MAX_COORDINATOR_MESSAGE_BYTES;
+use dora_message::{
+    common::{NodeError, NodeErrorCause},
+    daemon_to_coordinator::DataflowDaemonResult,
+};
+
 /// Largest error cause reported for one node.
 ///
 /// The cause travels to the coordinator inside the dataflow's finish report,
@@ -6,8 +12,57 @@
 /// exception repr, a dumped buffer) would drop the daemon connection, and the
 /// same report is resent on every reconnect.
 /// The bound is per node, and the report holds one cause per failed node, so
-/// it is kept small enough for dozens of failing nodes to fit.
+/// [`encode_bounded_finish_report`] bounds the report as a whole.
 const MAX_ERROR_CAUSE_BYTES: usize = 16 * 1024;
+
+/// Largest encoded finish report: the coordinator's limit for daemon messages,
+/// minus headroom for the envelope `send_event` wraps it in.
+const MAX_FINISH_REPORT_BYTES: usize = MAX_COORDINATOR_MESSAGE_BYTES - 64 * 1024;
+
+/// Encode a dataflow's finish report with `encode`, shrinking the failed
+/// nodes' causes until the encoding fits in [`MAX_FINISH_REPORT_BYTES`].
+///
+/// [`MAX_ERROR_CAUSE_BYTES`] alone does not bound the report: it holds one
+/// cause per failed node, and JSON escaping grows control characters (ANSI
+/// colours) up to sixfold. An oversized report drops the daemon connection
+/// and is resent on every reconnect, so it would never be recorded (#3900).
+/// The per-node budget is halved until the report fits, down to only the
+/// elision markers, and then the causes are dropped. Only a report whose
+/// node results alone overflow (tens of thousands of failed nodes) is
+/// returned oversized.
+pub fn encode_bounded_finish_report(
+    result: &DataflowDaemonResult,
+    encode: impl Fn(&DataflowDaemonResult) -> eyre::Result<Vec<u8>>,
+) -> eyre::Result<Vec<u8>> {
+    let msg = encode(result)?;
+    if msg.len() <= MAX_FINISH_REPORT_BYTES {
+        return Ok(msg);
+    }
+    // `None` once even the elision markers did not fit
+    let mut budget = Some(MAX_ERROR_CAUSE_BYTES);
+    loop {
+        budget = budget.and_then(|b| (b > 0).then_some(b / 2));
+        // elide each round from the cause as reported, not from the previous
+        // round's text, so a cause carries a single marker
+        let mut bounded = result.clone();
+        for node_result in bounded.node_results.values_mut() {
+            if let Err(NodeError {
+                cause: NodeErrorCause::Other { stderr: text } | NodeErrorCause::FailedToSpawn(text),
+                ..
+            }) = node_result
+            {
+                *text = match budget {
+                    Some(budget) => elide_middle(std::mem::take(text), budget),
+                    None => String::new(),
+                };
+            }
+        }
+        let msg = encode(&bounded)?;
+        if msg.len() <= MAX_FINISH_REPORT_BYTES || budget.is_none() {
+            return Ok(msg);
+        }
+    }
+}
 
 pub fn extract_err_from_stderr(stderr: Vec<String>) -> String {
     const FALLBACK_LINES: usize = 10;
@@ -121,7 +176,14 @@ impl StderrMatcher {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_ERROR_CAUSE_BYTES, extract_err_from_stderr};
+    use super::{
+        MAX_ERROR_CAUSE_BYTES, MAX_FINISH_REPORT_BYTES, encode_bounded_finish_report,
+        extract_err_from_stderr,
+    };
+    use dora_message::{
+        common::{NodeError, NodeErrorCause, NodeExitStatus},
+        daemon_to_coordinator::DataflowDaemonResult,
+    };
 
     fn lines(s: &str) -> Vec<String> {
         s.lines().map(|l| format!("{}\n", l)).collect()
@@ -299,5 +361,105 @@ mod tests {
         assert!(result.starts_with("Error: boom\n"));
         assert!(result.ends_with("ValueError: last line\n"));
         assert!(result.contains(" bytes elided ...]"));
+    }
+
+    fn report(failed_nodes: usize, cause: &str) -> DataflowDaemonResult {
+        let clock = dora_message::uhlc::HLC::default();
+        DataflowDaemonResult {
+            timestamp: clock.new_timestamp(),
+            node_results: (0..failed_nodes)
+                .map(|i| {
+                    let error = NodeError {
+                        timestamp: clock.new_timestamp(),
+                        cause: NodeErrorCause::Other {
+                            stderr: cause.to_owned(),
+                        },
+                        exit_status: NodeExitStatus::ExitCode(1),
+                    };
+                    (format!("node-{i}").into(), Err(error))
+                })
+                .collect(),
+        }
+    }
+
+    fn encode(result: &DataflowDaemonResult) -> eyre::Result<Vec<u8>> {
+        Ok(serde_json::to_vec(result)?)
+    }
+
+    // Each cause is capped, but a report with enough failed nodes, and JSON
+    // escaping of ANSI colours, still exceeded the coordinator's 1 MiB limit
+    // (#3900).
+    #[test]
+    fn test_finish_report_with_many_failed_nodes_is_bounded() {
+        let ansi = "\x1b[31mError:\x1b[0m boom\n".repeat(1024);
+        let cause = extract_err_from_stderr(vec![
+            "Error: first line\n".to_string(),
+            ansi,
+            "ValueError: last line\n".to_string(),
+        ]);
+        let result = report(100, &cause);
+        assert!(encode(&result).unwrap().len() > 1024 * 1024);
+
+        let msg = encode_bounded_finish_report(&result, encode).unwrap();
+        assert!(msg.len() <= MAX_FINISH_REPORT_BYTES, "{}", msg.len());
+        let bounded: DataflowDaemonResult = serde_json::from_slice(&msg).unwrap();
+        assert_eq!(bounded.node_results.len(), 100);
+        for node_result in bounded.node_results.values() {
+            let Err(NodeError {
+                cause: NodeErrorCause::Other { stderr },
+                ..
+            }) = node_result
+            else {
+                panic!("unexpected node result {node_result:?}");
+            };
+            assert!(stderr.starts_with("Error: first line\n"), "{stderr}");
+            assert!(stderr.ends_with("ValueError: last line\n"), "{stderr}");
+            assert!(stderr.contains(" bytes elided ...]"), "{stderr}");
+        }
+    }
+
+    // A report that already fits is sent unchanged.
+    #[test]
+    fn test_small_finish_report_is_unchanged() {
+        let result = report(3, &"Error: boom\n".repeat(1000));
+        let msg = encode_bounded_finish_report(&result, encode).unwrap();
+        assert_eq!(msg, encode(&result).unwrap());
+    }
+
+    fn causes(msg: &[u8]) -> Vec<String> {
+        let result: DataflowDaemonResult = serde_json::from_slice(msg).unwrap();
+        result
+            .node_results
+            .into_values()
+            .map(|node_result| match node_result {
+                Err(NodeError {
+                    cause: NodeErrorCause::Other { stderr },
+                    ..
+                }) => stderr,
+                other => panic!("unexpected node result {other:?}"),
+            })
+            .collect()
+    }
+
+    // When even the elision markers don't fit, the causes are dropped and
+    // the node results still reach the coordinator.
+    #[test]
+    fn test_finish_report_drops_causes_when_markers_do_not_fit() {
+        let result = report(5_000, &"Error: boom\n".repeat(100));
+        let msg = encode_bounded_finish_report(&result, encode).unwrap();
+        assert!(msg.len() <= MAX_FINISH_REPORT_BYTES, "{}", msg.len());
+        let causes = causes(&msg);
+        assert_eq!(causes.len(), 5_000);
+        assert!(causes.iter().all(String::is_empty));
+    }
+
+    // A report whose node results alone overflow is the one case left
+    // oversized; the encoder still terminates.
+    #[test]
+    fn test_finish_report_bounding_terminates() {
+        let result = report(10_000, "Error: boom\n");
+        let msg = encode_bounded_finish_report(&result, encode).unwrap();
+        assert!(msg.len() > MAX_FINISH_REPORT_BYTES);
+        assert!(causes(&msg).iter().all(String::is_empty));
     }
 }

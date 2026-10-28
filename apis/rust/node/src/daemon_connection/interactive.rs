@@ -131,50 +131,22 @@ impl InteractiveEvents {
         let data = loop {
             let stdout_lock = stdout().lock();
             let data = inquire::Text::new("Data")
-                .with_help_message("String/JSON, FILE:<path.arrow>, HEX:<hexbytes>, or esc to skip")
+                .with_help_message(
+                    "String/JSON, FILE:<path.arrow>, HEX:<hexbytes>, or empty for no data",
+                )
                 .prompt_skippable()?;
             std::mem::drop(stdout_lock);
-            let typed_data = if let Some(data) = data {
-                let array_data = if let Some(path) = data.strip_prefix("FILE:") {
-                    match read_arrow_ipc_file(Path::new(path.trim())) {
-                        Ok(d) => d,
-                        Err(err) => {
-                            eprintln!("{}", format!("{err}").red());
-                            continue;
-                        }
-                    }
-                } else if let Some(hex) = data.strip_prefix("HEX:") {
-                    match decode_hex_as_uint8_array(hex.trim()) {
-                        Ok(d) => d,
-                        Err(err) => {
-                            eprintln!("{}", format!("{err}").red());
-                            continue;
-                        }
-                    }
-                } else {
-                    // JSON or plain text
-                    match read_json_bytes_as_arrow(data.as_bytes()) {
-                        Ok(d) => d,
-                        Err(err) => {
-                            eprintln!("{}", format!("{err}").red());
-                            continue;
-                        }
-                    }
-                };
-
-                // The receive side decodes a self-describing Arrow IPC
-                // stream, so encode the array into one here.
-                match encode_arrow_ipc(&dora_arrow_convert::internal::from_array_data(array_data)) {
-                    Ok(buf) => Some(buf),
-                    Err(err) => {
-                        eprintln!("{}", format!("{err}").red());
-                        continue;
-                    }
-                }
-            } else {
-                None
-            };
-            break typed_data;
+            // esc (`None`) and an empty answer both mean "no data". The receive
+            // side decodes a self-describing Arrow IPC stream, so encode the
+            // array into one here.
+            let typed_data = parse_data(data.as_deref().unwrap_or_default()).and_then(|d| {
+                d.map(|d| encode_arrow_ipc(&dora_arrow_convert::internal::from_array_data(d)))
+                    .transpose()
+            });
+            match typed_data {
+                Ok(typed_data) => break typed_data,
+                Err(err) => eprintln!("{}", format!("{err}").red()),
+            }
         };
 
         Ok(Some(NodeEvent::Input {
@@ -185,6 +157,26 @@ impl InteractiveEvents {
             }),
         }))
     }
+}
+
+/// Parse what the user typed at the `Data` prompt. An empty answer means "no
+/// data" (`None`), like skipping the prompt with esc: pressing Enter on an
+/// empty prompt submits `""`, which would otherwise go through the JSON
+/// fallback and arrive as a one-element `[""]` string array. An explicit empty
+/// string is still available as `""`.
+fn parse_data(data: &str) -> eyre::Result<Option<arrow::array::ArrayData>> {
+    if data.is_empty() {
+        return Ok(None);
+    }
+    let array_data = if let Some(path) = data.strip_prefix("FILE:") {
+        read_arrow_ipc_file(Path::new(path.trim()))?
+    } else if let Some(hex) = data.strip_prefix("HEX:") {
+        decode_hex_as_uint8_array(hex.trim())?
+    } else {
+        // JSON or plain text
+        read_json_bytes_as_arrow(data.as_bytes())?
+    };
+    Ok(Some(array_data))
 }
 
 /// Parse a `DataId` typed at the interactive `Input ID` prompt.
@@ -284,6 +276,23 @@ mod tests {
             &*parse_input_id("valid_id.0-1/sub").expect("valid id should parse"),
             "valid_id.0-1/sub"
         );
+    }
+
+    #[test]
+    fn empty_data_means_no_data() {
+        assert!(parse_data("").unwrap().is_none());
+        // An explicit JSON empty string is still a one-element string array.
+        let data = parse_data("\"\"").unwrap().unwrap();
+        let arr = arrow::array::make_array(data);
+        let strings = arr
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+        assert_eq!(strings.len(), 1);
+        assert_eq!(strings.value(0), "");
+        // Other input is parsed as before.
+        assert_eq!(parse_data("HEX:00ff").unwrap().unwrap().len(), 2);
+        assert!(parse_data("HEX:0").is_err());
     }
 
     #[test]

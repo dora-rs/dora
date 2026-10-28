@@ -256,6 +256,8 @@ Asynchronous iterator over incoming events destined for this node. Implements th
 
 The event stream closes itself after a `Stop` event is received. Nodes should exit once the stream ends.
 
+A `Stop(StopCause::AllInputsClosed)` is only returned once every input queued before it has been returned, so breaking out of the loop on it loses no inputs. A `Stop(StopCause::Manual)` (`dora stop`, Ctrl-C) is returned ahead of queued inputs so the node can react quickly.
+
 ```rust
 // Block until the next event arrives. Returns None when the stream closes.
 // Uses an internal EventScheduler that may reorder events for fairness.
@@ -340,6 +342,7 @@ pub enum StopCause {
     Manual,
 
     // All inputs were closed (upstream nodes exited). Only sent if the node has inputs.
+    // `recv`/`recv_async` yield it only once no inputs are left queued.
     AllInputsClosed,
 }
 ```
@@ -459,8 +462,9 @@ impl DoraArray {
 
 Data from `Event::Input` arrives as `DoraArray`. Use the `TryFrom<&DoraArray>`
 conversions (`bool`, the primitive integer/float types, `String`, `&str`, the
-`chrono` date/time types, `&[T]`, `Vec<T>`) or `into_vec::<T>()` to extract
-typed values without naming an Arrow type.
+`chrono` date/time types, `&[T]` and `Vec<T>` of the primitive types,
+`Vec<bool>`, `Vec<String>`) or `into_vec::<T>()` to extract typed values
+without naming an Arrow type.
 
 To reach the Arrow array itself, enable the feature naming your Arrow major —
 see [Arrow version policy](#arrow-version-policy).
