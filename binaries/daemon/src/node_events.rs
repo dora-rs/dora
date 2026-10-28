@@ -23,7 +23,11 @@ use dora_message::{
     node_to_daemon::{DynamicNodeEvent, Timestamped},
 };
 use eyre::{Context, ContextCompat, Result, eyre};
-use std::{collections::BTreeSet, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::Arc,
+    time::Instant,
+};
 use tokio::sync::{mpsc, oneshot};
 use tracing::error;
 use uuid::Uuid;
@@ -37,6 +41,46 @@ use zenoh::qos::{CongestionControl, Priority};
 /// stale-node case that is the reason it is a warning at all.
 pub(crate) const MAX_WARNED_LATE_OUTPUT_NODES: usize = 1024;
 
+/// Picks the running dataflow a connecting dynamic node `node_id` belongs to.
+///
+/// Only a live dataflow that declares `node_id` as dynamic counts: a static
+/// node with the same id in another dataflow, or a dataflow that is already
+/// stopping, must not make the join ambiguous. If no dataflow qualifies, any
+/// dataflow with that id is returned so that `dynamic_node_config` reports
+/// why (not dynamic, or stopping).
+pub(crate) fn dataflow_for_dynamic_node<'a>(
+    running: &'a mut HashMap<DataflowId, RunningDataflow>,
+    node_id: &NodeId,
+) -> Result<&'a mut RunningDataflow, String> {
+    let no_node = || format!("no node with ID `{node_id}`");
+    let mut dynamic = running
+        .iter()
+        .filter(|(_, df)| {
+            !df.stop_sent
+                && df
+                    .running_nodes
+                    .get(node_id)
+                    .is_some_and(|node| node.node_config.dynamic)
+        })
+        .map(|(id, _)| *id);
+    let id = match (dynamic.next(), dynamic.next()) {
+        (Some(_), Some(_)) => {
+            return Err(format!(
+                "multiple dataflows contain dynamic node id {node_id}. \
+                Please only have one running dataflow with the specified \
+                node id if you want to use dynamic node",
+            ));
+        }
+        (Some(id), None) => id,
+        (None, _) => running
+            .iter()
+            .find(|(_, df)| df.running_nodes.contains_key(node_id))
+            .map(|(id, _)| *id)
+            .ok_or_else(no_node)?,
+    };
+    running.get_mut(&id).ok_or_else(no_node)
+}
+
 impl Daemon {
     pub(crate) async fn handle_dynamic_node_event(
         &mut self,
@@ -47,32 +91,16 @@ impl Daemon {
                 event: DynamicNodeEvent::NodeConfig { node_id },
                 reply_tx,
             } => {
-                // Scan the running dataflows once (no allocation) instead of
-                // walking `self.running` twice — once to count, once to locate
-                // — with a duplicated predicate. Pulling two matches is enough
-                // to tell apart the none/one/many cases.
-                let mut matching = self
-                    .running
-                    .iter_mut()
-                    .filter(|(_id, dataflow)| dataflow.running_nodes.contains_key(&node_id));
-                let first = matching.next();
-                let has_more = matching.next().is_some();
-
-                let node_config = match first {
-                    None => Err(format!("no node with ID `{node_id}`")),
-                    Some(_) if has_more => Err(format!(
-                        "multiple dataflows contain dynamic node id {node_id}. \
-                        Please only have one running dataflow with the specified \
-                        node id if you want to use dynamic node",
-                    )),
-                    Some((_, dataflow)) => dataflow
-                        .dynamic_node_config(&node_id, self.zenoh_listen_endpoint.as_deref())
-                        .map_err(|err| {
-                            format!(
-                                "failed to get dynamic node config within given dataflow: {err}"
-                            )
-                        }),
-                };
+                let node_config =
+                    dataflow_for_dynamic_node(&mut self.running, &node_id).and_then(|dataflow| {
+                        dataflow
+                            .dynamic_node_config(&node_id, self.zenoh_listen_endpoint.as_deref())
+                            .map_err(|err| {
+                                format!(
+                                    "failed to get dynamic node config within given dataflow: {err}"
+                                )
+                            })
+                    });
 
                 let (result, zenoh) = match node_config {
                     Ok((config, peering)) => (Ok(config), Some(peering)),

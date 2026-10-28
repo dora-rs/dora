@@ -428,8 +428,8 @@ fn append_arrow_array_json(
 /// round-trip those through the reader anyway.
 fn restore_float_values(source: &dyn arrow::array::Array, json: &mut [Option<serde_json::Value>]) {
     use arrow::array::{
-        Array, FixedSizeListArray, Float32Array, Float64Array, LargeListArray, ListArray,
-        StructArray,
+        Array, FixedSizeListArray, Float16Array, Float32Array, Float64Array, LargeListArray,
+        ListArray, StructArray,
     };
 
     let source = source.as_any();
@@ -442,6 +442,13 @@ fn restore_float_values(source: &dyn arrow::array::Array, json: &mut [Option<ser
         overwrite_floats(
             json,
             (0..a.len()).map(|i| (!a.is_null(i)).then(|| a.value(i) as f64)),
+        );
+    } else if let Some(a) = source.downcast_ref::<Float16Array>() {
+        // f16 -> f64 is exact, and the reader parses the shortest f64 text
+        // back to the same f16.
+        overwrite_floats(
+            json,
+            (0..a.len()).map(|i| (!a.is_null(i)).then(|| a.value(i).to_f64())),
         );
     } else if let Some(a) = source.downcast_ref::<StructArray>() {
         restore_in_struct_fields(a, json);
@@ -856,6 +863,30 @@ mod tests {
         assert!(back.value(1).is_nan());
         assert_eq!(back.value(2), f32::NEG_INFINITY);
         assert_eq!(back.null_count(), 0);
+    }
+
+    #[test]
+    fn non_finite_f16_round_trips() {
+        use arrow::{
+            array::Float16Array,
+            datatypes::{ArrowPrimitiveType, Float16Type},
+        };
+        type F16 = <Float16Type as ArrowPrimitiveType>::Native;
+        let array: ArrayRef = Arc::new(Float16Array::from(vec![
+            Some(F16::from_f32(1.5)),
+            Some(F16::NAN),
+            Some(F16::NEG_INFINITY),
+            None,
+            Some(F16::from_f32(0.1)),
+        ]));
+        let back = Float16Array::from(roundtrip(array).expect("should replay"));
+
+        assert_eq!(back.value(0), F16::from_f32(1.5));
+        assert!(back.value(1).is_nan());
+        assert_eq!(back.value(2), F16::NEG_INFINITY);
+        assert!(back.is_null(3));
+        assert_eq!(back.value(4), F16::from_f32(0.1));
+        assert_eq!(back.null_count(), 1);
     }
 
     #[test]
