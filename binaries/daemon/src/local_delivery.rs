@@ -596,6 +596,21 @@ pub(crate) async fn send_output_to_local_receivers(
                     }
                 }
             }
+        } else if dataflow.pending_nodes.is_pending(receiver_id) {
+            // Spawned but not subscribed yet: still gating the ready barrier.
+            // A node's own outputs cannot get here (it sends only once the
+            // barrier releases), but its captured stdout/logs
+            // (`send_stdout_as`/`send_logs_as`) start at spawn, so a consumer
+            // that is still starting up misses them without anything having
+            // gone wrong — not a routing loss (dora-rs/dora#3935).
+            tracing::debug!(
+                receiver = %receiver_id,
+                input = %input_id,
+                output = %output_id.1,
+                "dropping `{}/{}` to `{receiver_id}`: node has not subscribed yet",
+                output_id.0,
+                output_id.1,
+            );
         } else if dataflow.running_nodes.contains_key(receiver_id)
             && !dataflow.dropped_event_streams.contains(receiver_id)
         {
