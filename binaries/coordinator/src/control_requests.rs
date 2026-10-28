@@ -15,7 +15,7 @@ use crate::{
     log_subscriber::LogSubscriber,
     resolve_param_target, resolve_single_node, start_topic_debug_stream,
     state::{LaunchContext, ParamTarget, RunningDataflow},
-    stop_topic_debug_stream, topic_debug_enabled, topic_outputs_by_daemon,
+    stop_topic_debug_stream, topic_publish_output_id,
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
 use dora_message::{
@@ -31,7 +31,7 @@ use dora_message::{
 };
 use eyre::{Result, bail, eyre};
 use petname::petname;
-use std::{path::PathBuf, time::Duration};
+use std::{collections::BTreeSet, path::PathBuf, time::Duration};
 use uuid::Uuid;
 
 type ReplySender = tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>;
@@ -578,13 +578,16 @@ impl Coordinator {
             }
             ControlEvent::TopicCheck {
                 dataflow_id,
-                topics,
+                node_id,
+                output_id,
                 found_tx,
             } => {
-                let found = topic_outputs_by_daemon(&self.running_dataflows, dataflow_id, &topics)
-                    .is_ok()
-                    && topic_debug_enabled(&self.running_dataflows, dataflow_id).unwrap_or(false);
-                let _ = found_tx.send(found);
+                let _ = found_tx.send(topic_publish_output_id(
+                    &self.running_dataflows,
+                    dataflow_id,
+                    node_id,
+                    output_id,
+                ));
             }
             ControlEvent::TopicUnsubscribe {
                 subscription_id,
@@ -881,28 +884,6 @@ impl Coordinator {
         // `StoreDataflowStatus::Succeeded | Failed` in the
         // startup loop). Per-candidate tuple:
         // (uuid, name, cli-facing status, in_memory).
-        let mut candidates: Vec<(Uuid, Option<String>, DataflowStatus, bool)> = Vec::new();
-
-        for (uuid, results) in self.dataflow_results.iter() {
-            if self.running_dataflows.contains_key(uuid) {
-                // Multi-daemon dataflow still completing —
-                // keep partial results so the final status
-                // is computed correctly when the last daemon
-                // completes.
-                continue;
-            }
-            let name = self
-                .archived_dataflows
-                .get(uuid)
-                .and_then(|d| d.name.clone());
-            let status = if results.values().all(|r| r.is_ok()) {
-                DataflowStatus::Finished
-            } else {
-                DataflowStatus::Failed
-            };
-            candidates.push((*uuid, name, status, true));
-        }
-
         // Hard-fail if we can't enumerate the persisted
         // store. With a partial view we cannot honor the
         // "trim disk state" contract, and silently
@@ -926,6 +907,48 @@ impl Coordinator {
                 return Ok(());
             }
         };
+        // A dataflow whose record is `Recovering` (an orphan reclaim
+        // waiting for a daemon to reconnect) is not finished, whatever
+        // partial `dataflow_results` it has.
+        let recovering: BTreeSet<Uuid> = records
+            .iter()
+            .filter(|record| matches!(record.status, StoreDataflowStatus::Recovering))
+            .map(|record| record.uuid)
+            .collect();
+
+        let mut candidates: Vec<(Uuid, Option<String>, DataflowStatus, bool)> = Vec::new();
+
+        for (uuid, results) in self.dataflow_results.iter() {
+            if self.running_dataflows.contains_key(uuid) {
+                // Multi-daemon dataflow still completing —
+                // keep partial results so the final status
+                // is computed correctly when the last daemon
+                // completes.
+                continue;
+            }
+            if recovering.contains(uuid) {
+                // Every daemon dropped off after some had already
+                // reported their share, so the partial results
+                // outlive the `running_dataflows` entry while the
+                // record waits (`Recovering`) for a daemon to
+                // reconnect and re-report it. Deleting the record
+                // here would leave that daemon's nodes running with
+                // nothing to reconcile them against, and would
+                // drop the partial results the final status needs.
+                continue;
+            }
+            let name = self
+                .archived_dataflows
+                .get(uuid)
+                .and_then(|d| d.name.clone());
+            let status = if results.values().all(|r| r.is_ok()) {
+                DataflowStatus::Finished
+            } else {
+                DataflowStatus::Failed
+            };
+            candidates.push((*uuid, name, status, true));
+        }
+
         for record in records {
             if self.running_dataflows.contains_key(&record.uuid) {
                 continue;
@@ -1050,6 +1073,12 @@ impl Coordinator {
                                 )?;
                                 let bytes = serde_json::to_vec(&value)
                                     .map_err(|e| eyre!("failed to serialize param value: {e}"))?;
+                                // Held from persisting until the forward is queued, so a
+                                // concurrent persisted-param replay to this daemon cannot
+                                // queue a value it read before this change after it (#3683).
+                                // Released before waiting for the daemon's reply.
+                                let write_guard =
+                                    lock_param_target(&target, &self.daemon_connections).await;
                                 // Persist first (source of truth), then attempt synchronous
                                 // runtime forwarding. If forwarding fails, caller gets Error(...)
                                 // but persisted value will be replayed on catch-up/reconnect.
@@ -1082,17 +1111,19 @@ impl Coordinator {
                                         eyre!("failed to serialize SetParam event for node `{node_id}`: {e}")
                                     })?;
 
-                                    let conn =
-                                        self.daemon_connections.get_mut(&daemon_id).ok_or_else(|| {
-                                            eyre!(
-                                                "param persisted in store but daemon `{daemon_id}` is not connected"
-                                            )
-                                        })?;
-                                    let reply_raw = conn.send_and_receive(&msg).await.map_err(|e| {
+                                    let conn = self.daemon_connections.get(&daemon_id).ok_or_else(|| {
+                                        eyre!(
+                                            "param persisted in store but daemon `{daemon_id}` is not connected"
+                                        )
+                                    })?;
+                                    let forward_error = |e: eyre::Report| {
                                         eyre!(
                                             "failed to forward SetParam to daemon `{daemon_id}` for node `{node_id}`: {e}"
                                         )
-                                    })?;
+                                    };
+                                    let pending = conn.send_request(&msg).await.map_err(forward_error)?;
+                                    drop(write_guard);
+                                    let reply_raw = pending.wait().await.map_err(forward_error)?;
                                     ensure_set_param_forward_applied(&reply_raw, &node_id)?;
                                     if let Some(df) = self.running_dataflows.get_mut(&dataflow_id) {
                                         df.ack_applied_state_log_entry(sequence, &daemon_id);
@@ -1119,6 +1150,12 @@ impl Coordinator {
                                     &dataflow_id,
                                     &node_id,
                                 )?;
+                                // Held from persisting until the forward is queued, so a
+                                // concurrent persisted-param replay to this daemon cannot
+                                // queue a value it read before this change after it (#3683).
+                                // Released before waiting for the daemon's reply.
+                                let write_guard =
+                                    lock_param_target(&target, &self.daemon_connections).await;
                                 // Persist first (source of truth), then attempt synchronous
                                 // runtime forwarding. If forwarding fails, caller gets Error(...)
                                 // but delete is still reflected in persisted state/catch-up log.
@@ -1151,17 +1188,19 @@ impl Coordinator {
                                         )
                                     })?;
 
-                                    let conn =
-                                        self.daemon_connections.get_mut(&daemon_id).ok_or_else(|| {
-                                            eyre!(
-                                                "param deleted in store but daemon `{daemon_id}` is not connected"
-                                            )
-                                        })?;
-                                    let reply_raw = conn.send_and_receive(&msg).await.map_err(|e| {
+                                    let conn = self.daemon_connections.get(&daemon_id).ok_or_else(|| {
+                                        eyre!(
+                                            "param deleted in store but daemon `{daemon_id}` is not connected"
+                                        )
+                                    })?;
+                                    let forward_error = |e: eyre::Report| {
                                         eyre!(
                                             "failed to forward DeleteParam to daemon `{daemon_id}` for node `{node_id}`: {e}"
                                         )
-                                    })?;
+                                    };
+                                    let pending = conn.send_request(&msg).await.map_err(forward_error)?;
+                                    drop(write_guard);
+                                    let reply_raw = pending.wait().await.map_err(forward_error)?;
                                     ensure_delete_param_forward_applied(&reply_raw, &node_id)?;
                                     if let Some(df) = self.running_dataflows.get_mut(&dataflow_id) {
                                         df.ack_applied_state_log_entry(sequence, &daemon_id);
@@ -1570,4 +1609,18 @@ impl Coordinator {
         let _ = reply_sender.send(result);
         Ok(())
     }
+}
+
+/// Take the param write lock of the connection a change to `target` is
+/// forwarded on (`DaemonConnection::param_write_lock`). `None` when it is not
+/// forwarded: the dataflow is not running, or its daemon is not connected.
+async fn lock_param_target(
+    target: &ParamTarget,
+    daemon_connections: &crate::state::DaemonConnections,
+) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+    let ParamTarget::Running { daemon_id } = target else {
+        return None;
+    };
+    let lock = daemon_connections.get(daemon_id)?.param_write_lock.clone();
+    Some(lock.lock_owned().await)
 }

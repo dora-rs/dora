@@ -1,9 +1,11 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    io::Write,
     path::PathBuf,
     time::{Instant, SystemTime},
 };
 
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use clap::Args;
 use dora_core::descriptor::{Descriptor, Node};
 use dora_message::{
@@ -314,10 +316,102 @@ fn build_record_inputs(topic_map: &BTreeMap<&str, &str>, queue_size: u64) -> ser
     inputs
 }
 
+/// The record node's `env:` entries that carry the original descriptor.
+///
+/// Every `env:` value goes through `$VAR` expansion each time the
+/// descriptor is parsed (by the CLI, then again by the daemon), so the raw
+/// YAML must not travel as one: a `$NAME` anywhere in it, even in a
+/// comment, failed `dora record` when unset, and was substituted otherwise,
+/// writing e.g. the value of an `${API_TOKEN}` reference into the
+/// recording's header. [`dora_recording::DESCRIPTOR_ENV`] carries it
+/// compressed and base64-encoded instead.
+///
+/// With `legacy`, the raw [`dora_recording::LEGACY_DESCRIPTOR_ENV`] is set as
+/// well when expansion cannot touch it (valid UTF-8 without `$`), because
+/// `dora record` reuses whatever `dora-record-node` it finds, and one from
+/// before the encoded variable reads only the raw one.
+fn descriptor_env(yaml: &[u8], legacy: bool) -> eyre::Result<Vec<(String, String)>> {
+    let mut deflate = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::best());
+    deflate
+        .write_all(yaml)
+        .and_then(|()| deflate.try_finish())
+        .wrap_err("failed to compress the descriptor")?;
+    let encoded = BASE64_STANDARD.encode(deflate.get_ref());
+    let mut env = vec![(dora_recording::DESCRIPTOR_ENV.to_string(), encoded)];
+    if legacy
+        && let Ok(text) = std::str::from_utf8(yaml)
+        && !text.contains('$')
+    {
+        env.push((
+            dora_recording::LEGACY_DESCRIPTOR_ENV.to_string(),
+            text.to_string(),
+        ));
+    }
+    Ok(env)
+}
+
+/// Linux's `MAX_ARG_STRLEN`: the longest single `NAME=value` env entry.
+///
+/// The daemon hands every node the whole submitted descriptor, this
+/// record node's `env:` included, in one `DORA_NODE_CONFIG` entry, so the
+/// submitted YAML must stay below it.
+const MAX_ENV_ENTRY_LEN: usize = 128 * 1024;
+/// Room left in `DORA_NODE_CONFIG` for the node config's other fields before
+/// the raw legacy copy is dropped to make space.
+const NODE_CONFIG_HEADROOM: usize = 16 * 1024;
+
+/// `descriptor` with `record_node` appended, as YAML, with the
+/// descriptor's env entries for the record node (see [`descriptor_env`]).
+///
+/// The raw legacy copy is left out when it would push the result near
+/// [`MAX_ENV_ENTRY_LEN`]. On Linux, a result over that limit is refused,
+/// since every node's spawn would otherwise fail with a bare `E2BIG`.
+fn descriptor_with_record_node(
+    descriptor: serde_yaml::Value,
+    record_node: serde_yaml::Mapping,
+    yaml: &[u8],
+) -> eyre::Result<String> {
+    let build = |legacy: bool| -> eyre::Result<String> {
+        let mut record_node = record_node.clone();
+        let env = record_node
+            .entry(serde_yaml::Value::String("env".to_string()))
+            .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()))
+            .as_mapping_mut()
+            .ok_or_else(|| eyre::eyre!("record node `env` is not a mapping"))?;
+        for (key, value) in descriptor_env(yaml, legacy)? {
+            env.insert(
+                serde_yaml::Value::String(key),
+                serde_yaml::Value::String(value),
+            );
+        }
+        let mut descriptor = descriptor.clone();
+        descriptor
+            .get_mut("nodes")
+            .and_then(|v| v.as_sequence_mut())
+            .ok_or_else(|| eyre::eyre!("descriptor has no nodes array"))?
+            .push(serde_yaml::Value::Mapping(record_node));
+        serde_yaml::to_string(&descriptor).wrap_err("failed to serialize modified descriptor")
+    };
+    let mut modified = build(true)?;
+    if modified.len() + NODE_CONFIG_HEADROOM > MAX_ENV_ENTRY_LEN {
+        modified = build(false)?;
+    }
+    if cfg!(target_os = "linux") && modified.len() > MAX_ENV_ENTRY_LEN {
+        eyre::bail!(
+            "the dataflow is too large for `dora record`: with the record node \
+             added, its descriptor is {} bytes, and the daemon passes it to \
+             every node in one environment variable, which Linux limits to \
+             {MAX_ENV_ENTRY_LEN} bytes",
+            modified.len(),
+        );
+    }
+    Ok(modified)
+}
+
 fn run_record(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
         std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
-    let mut descriptor: serde_yaml::Value =
+    let descriptor: serde_yaml::Value =
         serde_yaml::from_slice(&yaml_bytes).wrap_err("failed to parse descriptor YAML")?;
 
     let all_outputs = discover_descriptor_outputs(&descriptor)?;
@@ -385,10 +479,6 @@ fn run_record(args: Record) -> eyre::Result<()> {
         serde_yaml::Value::String("DORA_RECORD_TOPICS".to_string()),
         serde_yaml::Value::String(topics_json),
     );
-    env_mapping.insert(
-        serde_yaml::Value::String("DORA_RECORD_DESCRIPTOR".to_string()),
-        serde_yaml::Value::String(String::from_utf8_lossy(&yaml_bytes).to_string()),
-    );
 
     // Build the record node YAML entry
     let mut record_node = serde_yaml::Mapping::new();
@@ -409,15 +499,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
         serde_yaml::Value::Mapping(env_mapping),
     );
 
-    // Append record node to descriptor
-    let nodes_mut = descriptor
-        .get_mut("nodes")
-        .and_then(|v| v.as_sequence_mut())
-        .ok_or_else(|| eyre::eyre!("descriptor has no nodes array"))?;
-    nodes_mut.push(serde_yaml::Value::Mapping(record_node));
-
-    let modified_yaml =
-        serde_yaml::to_string(&descriptor).wrap_err("failed to serialize modified descriptor")?;
+    let modified_yaml = descriptor_with_record_node(descriptor, record_node, &yaml_bytes)?;
 
     // If --output-yaml, just write and exit
     if let Some(yaml_output_path) = args.output_yaml {
@@ -896,6 +978,131 @@ mod tests {
             .into_iter()
             .map(|(node, output)| format!("{node}/{output}"))
             .collect()
+    }
+
+    /// Parse `descriptor_env`'s entries the way the daemon does, `$VAR`
+    /// expansion included.
+    fn expanded_descriptor_env(yaml: &[u8]) -> BTreeMap<String, String> {
+        let env = serde_yaml::Mapping::from_iter(
+            descriptor_env(yaml, true)
+                .unwrap()
+                .into_iter()
+                .map(|(k, v)| (serde_yaml::Value::String(k), serde_yaml::Value::String(v))),
+        );
+        let parsed: BTreeMap<String, dora_message::descriptor::EnvValue> =
+            serde_yaml::from_value(serde_yaml::Value::Mapping(env))
+                .expect("the descriptor env entries must parse as env values");
+        parsed
+            .into_iter()
+            .map(|(k, v)| (k, v.to_string()))
+            .collect()
+    }
+
+    /// The descriptor reaches the record node through `env:` values, which
+    /// are `$VAR`-expanded on every parse. The encoded one must survive that
+    /// unchanged, whatever `$` references the YAML contains, and the raw one
+    /// must then be left out.
+    #[test]
+    fn descriptor_env_value_survives_env_expansion() {
+        let yaml = b"# set $DORA_TEST_SURELY_UNSET_VAR first\nnodes:\n- id: a\n  env:\n    TOKEN: ${HOME}\n";
+        let env = expanded_descriptor_env(yaml);
+        assert_eq!(decoded_descriptor(&env), yaml);
+        assert!(
+            !env.contains_key(dora_recording::LEGACY_DESCRIPTOR_ENV),
+            "a raw descriptor containing `$` must not be passed: {env:?}"
+        );
+    }
+
+    /// Without `$`, the raw descriptor is passed too, unchanged, so a record
+    /// node that predates the encoded variable still records it.
+    #[test]
+    fn descriptor_env_keeps_the_raw_value_for_older_record_nodes() {
+        let yaml = b"nodes:\n- id: a\n  path: ./a\n";
+        let env = expanded_descriptor_env(yaml);
+        assert_eq!(
+            env[dora_recording::LEGACY_DESCRIPTOR_ENV].as_bytes(),
+            yaml.as_slice()
+        );
+        assert_eq!(decoded_descriptor(&env), yaml);
+    }
+
+    /// What the record node gets out of [`dora_recording::DESCRIPTOR_ENV`].
+    fn decoded_descriptor(env: &BTreeMap<String, String>) -> Vec<u8> {
+        use std::io::Read;
+        let compressed = BASE64_STANDARD
+            .decode(&env[dora_recording::DESCRIPTOR_ENV])
+            .expect("valid base64");
+        let mut yaml = Vec::new();
+        flate2::read::DeflateDecoder::new(compressed.as_slice())
+            .read_to_end(&mut yaml)
+            .expect("valid deflate stream");
+        yaml
+    }
+
+    /// `len` bytes of YAML comment that barely compress, with no `$`.
+    fn incompressible_yaml(len: usize) -> Vec<u8> {
+        const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        let mut yaml = b"# ".to_vec();
+        while yaml.len() < len {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            yaml.push(CHARS[(state % CHARS.len() as u64) as usize]);
+        }
+        yaml
+    }
+
+    /// Whether the record node in `submitted` carries the raw legacy copy.
+    fn has_raw_copy(submitted: &str) -> bool {
+        submitted.contains(&format!("{}:", dora_recording::LEGACY_DESCRIPTOR_ENV))
+    }
+
+    fn submitted(yaml: &[u8]) -> eyre::Result<String> {
+        descriptor_with_record_node(
+            serde_yaml::from_str("nodes: []").unwrap(),
+            serde_yaml::Mapping::from_iter([(
+                serde_yaml::Value::String("id".into()),
+                serde_yaml::Value::String("__dora_record__".into()),
+            )]),
+            yaml,
+        )
+    }
+
+    /// The daemon passes the whole submitted descriptor to every node in one
+    /// `DORA_NODE_CONFIG` entry, so the record node's descriptor copies must
+    /// keep it under Linux's per-variable limit: a typical dataflow keeps the
+    /// raw copy for older record nodes, and the descriptor copy adds far less
+    /// than the file itself.
+    #[test]
+    fn submitted_descriptor_keeps_the_raw_copy_when_it_fits() {
+        let yaml = "nodes:\n- id: camera\n  path: ./camera\n  outputs: [image]\n".repeat(400);
+        let submitted = submitted(yaml.as_bytes()).unwrap();
+        assert!(has_raw_copy(&submitted));
+        assert!(
+            submitted.len() < 2 * yaml.len(),
+            "{} bytes submitted for a {}-byte file",
+            submitted.len(),
+            yaml.len()
+        );
+    }
+
+    /// A descriptor too large to also carry the raw copy drops it instead of
+    /// making every node's spawn fail.
+    #[test]
+    fn submitted_descriptor_drops_the_raw_copy_when_it_would_not_fit() {
+        let submitted = submitted(&incompressible_yaml(60 * 1024)).unwrap();
+        assert!(!has_raw_copy(&submitted));
+        assert!(submitted.len() <= MAX_ENV_ENTRY_LEN);
+    }
+
+    /// One that cannot fit even so is refused with a clear error, not left to
+    /// fail every node's spawn with `E2BIG`.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn submitted_descriptor_over_the_env_limit_is_refused() {
+        let err = submitted(&incompressible_yaml(140 * 1024)).unwrap_err();
+        assert!(format!("{err}").contains("too large"), "{err}");
     }
 
     #[test]

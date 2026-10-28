@@ -59,7 +59,37 @@ pub struct LogMessageHelper {
     line: Option<u32>,
     message: Option<String>,
     timestamp: DateTime<Utc>,
+    #[serde(default, deserialize_with = "deserialize_stringified_fields")]
     fields: Option<BTreeMap<String, String>>,
+}
+
+/// Read a `tracing` JSON `fields` object, turning every non-string value into
+/// its JSON text.
+///
+/// `tracing-subscriber`'s JSON formatter writes a numeric or boolean field
+/// (`info!(frame = 42, "got frame")`) as a JSON number or bool, not a string.
+/// Requiring strings here made the whole line fail to parse, so the daemon
+/// fell back to treating it as raw `stdout` text — which loses its level and
+/// drops it entirely under any `min_log_level` or `dora/logs/<level>` filter.
+fn deserialize_stringified_fields<'de, D>(
+    deserializer: D,
+) -> Result<Option<BTreeMap<String, String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let fields = Option::<BTreeMap<String, serde_json::Value>>::deserialize(deserializer)?;
+    Ok(fields.map(|fields| {
+        fields
+            .into_iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    serde_json::Value::String(s) => s,
+                    other => other.to_string(),
+                };
+                (key, value)
+            })
+            .collect()
+    }))
 }
 
 impl From<LogMessageHelper> for LogMessage {
@@ -564,6 +594,31 @@ mod tests {
         let serialized = serde_yaml::to_string(&log_message).unwrap();
         let deserialized: LogMessageHelper = serde_yaml::from_str(&serialized).unwrap();
         assert_eq!(log_message, LogMessage::from(deserialized));
+    }
+
+    /// A `tracing` JSON line whose structured fields include numbers or bools
+    /// must still parse, keeping its level, instead of falling back to raw
+    /// `stdout` text that a level filter then drops.
+    #[test]
+    fn log_line_with_non_string_fields_keeps_its_level() {
+        let line = r#"{"timestamp":"2024-01-01T00:00:00Z","level":"INFO","fields":{"message":"got frame","frame":42,"ok":true,"ratio":0.5,"tag":null},"target":"node"}"#;
+        let helper: LogMessageHelper = serde_json::from_str(line).unwrap();
+        let message = LogMessage::from(helper);
+        assert_eq!(message.level, LogLevelOrStdout::LogLevel(LogLevel::Info));
+        assert_eq!(message.message, "got frame");
+        let fields = message.fields.unwrap();
+        assert_eq!(fields["frame"], "42");
+        assert_eq!(fields["ok"], "true");
+        assert_eq!(fields["ratio"], "0.5");
+        assert_eq!(fields["tag"], "null");
+    }
+
+    /// A line without a `fields` key still parses, with no fields.
+    #[test]
+    fn log_line_without_fields_parses() {
+        let line = r#"{"timestamp":"2024-01-01T00:00:00Z","level":"WARN","message":"m"}"#;
+        let helper: LogMessageHelper = serde_json::from_str(line).unwrap();
+        assert!(LogMessage::from(helper).fields.is_none());
     }
 
     #[test]

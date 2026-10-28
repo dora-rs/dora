@@ -209,7 +209,9 @@ pub fn dora_free_input_id(_input_id: char_p_boxed) {}
 /// # Ownership
 ///
 /// The returned vector is an owned copy of the payload; free it with
-/// [`dora_free_data`] when it is no longer needed.
+/// [`dora_free_data`] when it is no longer needed. A `None` result reaches C
+/// as a vector whose `ptr` is `NULL`; passing it to [`dora_free_data`] is a
+/// no-op, so a caller may free every result unconditionally.
 #[ffi_export]
 pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
     // `eprintln!`, not `tracing::error!`: this function is compiled into the
@@ -243,8 +245,17 @@ pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
     Some(bytes.to_owned().into())
 }
 
+/// Free a vector returned by [`dora_read_data`].
+///
+/// Like `free(NULL)`, a vector whose `ptr` is `NULL` (the `None` result of
+/// [`dora_read_data`]) is accepted and ignored.
+//
+// The parameter is an `Option` so that the null case is a valid value: as a
+// plain `Vec`, `ffi_export` treats a null `ptr` as an invalid bit pattern,
+// which panics (an abort across the C boundary) in debug builds and is
+// undefined behavior in release builds. The C layout is the same either way.
 #[ffi_export]
-pub fn dora_free_data(_data: safer_ffi::Vec<u8>) {}
+pub fn dora_free_data(_data: Option<safer_ffi::Vec<u8>>) {}
 
 /// Send an output from a C/C++ operator.
 ///
@@ -350,5 +361,30 @@ mod tests {
 
         assert!(dora_read_data(&mut input).is_some());
         assert!(dora_read_data(&mut input).is_none());
+    }
+    /// C code frees every `dora_read_data` result, including the `None` one
+    /// (a `NULL` `ptr`) returned for a timer tick or a non-`UInt8` payload.
+    /// That must be a no-op through the exported C symbol, not an invalid
+    /// argument (an abort in debug builds, UB in release builds).
+    #[test]
+    fn dora_free_data_accepts_the_none_result() {
+        type CVec = safer_ffi::layout::CLayoutOf<Option<safer_ffi::Vec<u8>>>;
+        unsafe extern "C" {
+            #[link_name = "dora_free_data"]
+            fn c_dora_free_data(data: CVec);
+        }
+
+        let array: arrow::array::ArrayRef = std::sync::Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let none = dora_read_data(&mut test_input(array));
+        assert!(none.is_none());
+        let some = dora_read_data(&mut test_input(std::sync::Arc::new(
+            arrow::array::UInt8Array::from(vec![1u8, 2, 3]),
+        )));
+        assert!(some.is_some());
+
+        unsafe {
+            c_dora_free_data(safer_ffi::layout::into_raw(none));
+            c_dora_free_data(safer_ffi::layout::into_raw(some));
+        }
     }
 }
