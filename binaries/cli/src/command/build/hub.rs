@@ -602,6 +602,21 @@ pub fn resolve_hub_nodes(
                         .join("\n  - ")
                 );
             }
+            // hold the checkout to the same identity rule as an index entry:
+            // the shipped-type namespace gate above runs against the manifest's
+            // own `namespace`, so a checkout of another package (or a fork that
+            // renamed its namespace) must not stand in for this reference
+            let manifest_name = manifest.name.as_deref().unwrap_or_default();
+            if manifest.namespace != reference.namespace || manifest_name != reference.name {
+                eyre::bail!(
+                    "node `{}`: --hub-override for `{}` points at `{}`, whose \
+                     {MANIFEST_FILENAME} declares package `{}/{manifest_name}`",
+                    node.id,
+                    reference.key(),
+                    local_dir.display(),
+                    manifest.namespace,
+                );
+            }
             let label = format!("{} (local override)", reference.key());
             register_shipped_types(
                 &node.id,
