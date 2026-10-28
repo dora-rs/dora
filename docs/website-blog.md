@@ -7,6 +7,8 @@ posts here; there is no separate website copy to maintain.
 Use a filename like `YYYY-MM-DD-post-title.md`, an H1 title, and an introductory
 paragraph. The filename provides the publication date and stable URL at
 `https://dora-rs.ai/blog/YYYY-MM-DD-post-title/`. No frontmatter is required.
+Use Markdown image links to static SVG diagrams in `docs/blog/images/`; the
+website copies and serves those assets without a diagram renderer.
 Keep drafts outside `docs/blog`: all dated posts on `main` are published.
 
 When a change under `docs/blog/**` reaches `main`, the
