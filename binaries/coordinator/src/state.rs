@@ -496,6 +496,15 @@ pub(crate) struct RunningDataflow {
     pub(crate) nodes: BTreeMap<NodeId, ResolvedNode>,
     /// Maps each node to the daemon it's running on
     pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
+    /// The daemon the store last recorded for each node that a dataflow
+    /// rebuilt after a coordinator restart or reclaim
+    /// ([`RunningDataflow::recovered`]) has not seen reported yet. Only
+    /// nodes running on a reconnected daemon enter `node_to_daemon`, so
+    /// without this a re-persist would drop the placement of producers on
+    /// daemons still away, and `dora node add` could no longer tell those
+    /// from exited ones (#3672). Empty for a dataflow spawned by this
+    /// coordinator.
+    pub(crate) persisted_placement: BTreeMap<NodeId, String>,
     /// Latest metrics for each node (from daemons)
     pub(crate) node_metrics: BTreeMap<NodeId, NodeMetrics>,
     /// Nodes the daemon has reported as finalized via `DaemonEvent::NodeStopped`.
@@ -796,6 +805,12 @@ impl RunningDataflow {
                 .map(|n| NodeId::from(n.clone()))
                 .collect(),
             ready_barrier_released: record.ready_barrier_released,
+            persisted_placement: record
+                .node_to_daemon
+                .iter()
+                .map(|(node, daemon)| (NodeId::from(node.clone()), daemon.clone()))
+                .filter(|(node, _)| !reported_nodes.contains(node))
+                .collect(),
             nodes,
             node_to_daemon,
             node_metrics: BTreeMap::new(),
@@ -868,9 +883,17 @@ impl RunningDataflow {
             status,
             daemon_ids: self.daemons.iter().cloned().collect(),
             node_to_daemon: self
-                .node_to_daemon
+                .persisted_placement
                 .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .filter(|(node, _)| {
+                    self.nodes.contains_key(*node) && !self.node_to_daemon.contains_key(*node)
+                })
+                .map(|(node, daemon)| (node.to_string(), daemon.clone()))
+                .chain(
+                    self.node_to_daemon
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string())),
+                )
                 .collect(),
             uv: self.uv,
             ready_barrier_released: self.ready_barrier_released,

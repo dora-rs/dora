@@ -301,6 +301,7 @@ fn test_running_dataflow(
         ready_barrier_released: false,
         nodes,
         node_to_daemon,
+        persisted_placement: BTreeMap::new(),
         node_metrics: BTreeMap::new(),
         node_finalized: BTreeSet::new(),
         node_stopped_at: BTreeMap::new(),
@@ -7013,4 +7014,67 @@ async fn producer_daemons_waits_for_a_reclaimed_dataflows_daemon() {
     )
     .unwrap_err();
     assert!(format!("{err}").contains("`sender`"), "{err}");
+}
+
+#[test]
+fn recovered_dataflow_keeps_unreported_placement_when_re_persisted() {
+    // After a coordinator restart, `recovered` maps only the nodes a
+    // reconnected daemon reported. The next `make_record` (e.g. after a
+    // successful `dora node add`) must not drop the stored placement of a
+    // producer whose daemon is still away, or a later add would treat that
+    // producer as exited and place the node away from it (#3672).
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_a = DaemonId::new(Some("machine-a".to_string()));
+    let producer: NodeId = "sender".to_string().into();
+    let mut original = test_running_dataflow(dataflow_id, daemon_a.clone(), producer.clone());
+    let record = original
+        .make_record(StoreDataflowStatus::Running)
+        .expect("record");
+
+    let daemon_b = DaemonId::new(Some("machine-b".to_string()));
+    let mut recovered = RunningDataflow::recovered(
+        &record,
+        original.descriptor.clone(),
+        original.nodes.clone(),
+        daemon_b,
+        &[],
+    );
+    assert!(recovered.node_to_daemon.is_empty());
+    let re_persisted = recovered
+        .make_record(StoreDataflowStatus::Running)
+        .expect("record");
+    assert_eq!(
+        re_persisted.node_to_daemon.get("sender"),
+        Some(&daemon_a.to_string())
+    );
+
+    let added: Node = serde_json::from_value(serde_json::json!({
+        "id": "consumer",
+        "path": "consumer",
+        "inputs": { "reading": "sender/message" },
+    }))
+    .expect("valid node");
+    let (_, resolved) = resolve_single_node(added, &recovered.descriptor).expect("node resolves");
+    assert!(
+        crate::control_requests::producer_daemons(
+            &resolved,
+            &recovered.nodes,
+            &recovered.node_to_daemon,
+            &re_persisted.node_to_daemon,
+            &DaemonConnections::default(),
+        )
+        .is_err(),
+        "a producer on a daemon that is still away must keep blocking the add"
+    );
+
+    // once its daemon reports it, the live mapping takes over
+    recovered.node_to_daemon.insert(producer, daemon_a.clone());
+    assert_eq!(
+        recovered
+            .make_record(StoreDataflowStatus::Running)
+            .expect("record")
+            .node_to_daemon
+            .get("sender"),
+        Some(&daemon_a.to_string())
+    );
 }
