@@ -100,7 +100,7 @@ pub enum DaemonReply {
     NodeConfig {
         result: Result<NodeConfig, String>,
     },
-    /// Reply to [`DaemonRequest::ExtensionLoad`]. `None` means the key is not
+    /// Reply to [`DaemonRequest::ExtensionLoad`](crate::node_to_daemon::DaemonRequest::ExtensionLoad). `None` means the key is not
     /// in the table — either never stored, or already dropped.
     ExtensionValue {
         value: Option<Vec<u8>>,

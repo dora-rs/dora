@@ -71,7 +71,13 @@ impl serde::Serialize for TypedValue<'_> {
                 self.type_info.message_name
             )))?;
         }
-        let mut s = serializer.serialize_tuple_struct(DUMMY_STRUCT_NAME, message.members.len())?;
+        let len = message.members.len().max(1);
+        let mut s = serializer.serialize_tuple_struct(DUMMY_STRUCT_NAME, len)?;
+        if message.members.is_empty() {
+            // ROS gives a message with no fields one `uint8` member
+            // (`structure_needs_at_least_one_member`), so it is one byte.
+            s.serialize_field(&0u8)?;
+        }
         for field in message.members.iter() {
             let column: Cow<_> = match input.column_by_name(&field.name) {
                 Some(input) => Cow::Borrowed(input),
@@ -174,15 +180,7 @@ impl TypedValue<'_> {
                             check_not_null(string_array, "LargeStringArray")?;
                             string_array.value(0)
                         };
-                        if let GenericString::BoundedString(max) = t
-                            && string.len() > *max
-                        {
-                            return Err(error(format!(
-                                "string length {} exceeds BoundedString max {}",
-                                string.len(),
-                                max
-                            )));
-                        }
+                        check_string_bound(string, string_bound(t))?;
                         s.serialize_field(string)?;
                     }
                     GenericString::WString | GenericString::BoundedWString(_) => {
@@ -198,17 +196,7 @@ impl TypedValue<'_> {
                             check_not_null(string_array, "LargeStringArray (WString)")?;
                             string_array.value(0)
                         };
-                        if let GenericString::BoundedWString(max) = t {
-                            let utf16_len = string.encode_utf16().count();
-                            if utf16_len > *max {
-                                return Err(error(format!(
-                                    "wstring length {} exceeds BoundedWString max {}",
-                                    utf16_len, max
-                                )));
-                            }
-                        }
-                        let utf16: Vec<u16> = string.encode_utf16().collect();
-                        s.serialize_field(&utf16)?;
+                        s.serialize_field(&encode_wstring(string, string_bound(t))?)?;
                     }
                 },
             },
@@ -276,6 +264,42 @@ fn check_not_null<E: serde::ser::Error>(
         )));
     }
     Ok(())
+}
+
+/// The maximum length of a `string<=N>` (bytes) or `wstring<=N>` (UTF-16
+/// code units), or `None` for an unbounded `string`/`wstring`.
+fn string_bound(ty: &GenericString) -> Option<usize> {
+    match ty {
+        GenericString::BoundedString(max) | GenericString::BoundedWString(max) => Some(*max),
+        GenericString::String | GenericString::WString => None,
+    }
+}
+
+/// Reject a `string<=N>` value longer than `N` bytes.
+///
+/// Applies to a scalar field and to every element of a `string<=N>[]` /
+/// `string<=N>[M]` column alike: ROS bounds each string, wherever it sits.
+fn check_string_bound<E: serde::ser::Error>(string: &str, bound: Option<usize>) -> Result<(), E> {
+    match bound {
+        Some(max) if string.len() > max => Err(error(format!(
+            "string length {} exceeds BoundedString max {max}",
+            string.len()
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Encode a `wstring` as UTF-16, rejecting a `wstring<=N>` value longer than
+/// `N` code units.
+fn encode_wstring<E: serde::ser::Error>(string: &str, bound: Option<usize>) -> Result<Vec<u16>, E> {
+    let utf16: Vec<u16> = string.encode_utf16().collect();
+    match bound {
+        Some(max) if utf16.len() > max => Err(error(format!(
+            "wstring length {} exceeds BoundedWString max {max}",
+            utf16.len()
+        ))),
+        _ => Ok(utf16),
+    }
 }
 
 /// Reject a null element in a ROS2 `string[]`/`string[N]` (or wstring) column.
@@ -569,5 +593,87 @@ mod tests {
                 "{member_type:?}: expected a null-rejection error, got: {err}"
             );
         }
+    }
+
+    /// `test_msgs/Empty` (no fields) and `test_msgs/Outer { Empty e; int32 x }`.
+    fn empty_and_outer() -> Arc<HashMap<String, HashMap<String, Message>>> {
+        use dora_ros2_bridge_msg_gen::types::primitives::NamedType;
+        let mut package = HashMap::new();
+        for (name, members) in [
+            ("Empty", vec![]),
+            (
+                "Outer",
+                vec![
+                    Member {
+                        name: "e".to_string(),
+                        r#type: MemberType::NestableType(NestableType::NamedType(NamedType(
+                            "Empty".to_string(),
+                        ))),
+                        default: None,
+                    },
+                    Member {
+                        name: "x".to_string(),
+                        r#type: MemberType::NestableType(NestableType::BasicType(BasicType::I32)),
+                        default: None,
+                    },
+                ],
+            ),
+        ] {
+            let message = Message {
+                package: "test_msgs".to_string(),
+                name: name.to_string(),
+                members,
+                constants: vec![],
+            };
+            package.insert(name.to_string(), message);
+        }
+        Arc::new(HashMap::from([("test_msgs".to_string(), package)]))
+    }
+
+    fn serialize_as(
+        messages: &Arc<HashMap<String, HashMap<String, Message>>>,
+        message_name: &str,
+        value: &ArrayRef,
+    ) -> Vec<u8> {
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed(message_name),
+            messages: messages.clone(),
+        };
+        let typed = TypedValue {
+            value,
+            type_info: &type_info,
+        };
+        cdr_encoding::to_vec::<_, LittleEndian>(&typed).unwrap()
+    }
+
+    /// ROS gives a message with no fields one `uint8` member
+    /// (`structure_needs_at_least_one_member`, from rosidl_adapter's
+    /// `struct.idl.em`), so it is one byte on the wire, nested or not.
+    #[test]
+    fn an_empty_message_is_one_byte_like_ros() {
+        let messages = empty_and_outer();
+        let empty: ArrayRef = Arc::new(StructArray::new_empty_fields(1, None));
+        assert_eq!(serialize_as(&messages, "Empty", &empty), [0]);
+
+        let outer: ArrayRef = Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new(
+                    "e",
+                    DataType::Struct(arrow::datatypes::Fields::empty()),
+                    true,
+                )),
+                empty,
+            ),
+            (
+                Arc::new(Field::new("x", DataType::Int32, true)),
+                Arc::new(Int32Array::from(vec![7])) as ArrayRef,
+            ),
+        ]));
+        // The byte, three bytes of padding to align the int32, then `x`.
+        assert_eq!(
+            serialize_as(&messages, "Outer", &outer),
+            [0, 0, 0, 0, 7, 0, 0, 0]
+        );
     }
 }

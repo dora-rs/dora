@@ -11,9 +11,10 @@
 //! | `serial://COM1?baud=N` (Windows)      | `serial:COM1:N`              | n/a       |
 //!
 //! An optional `?proto=` query selects the MAVLink protocol version and is
-//! honored uniformly across every scheme (see [`parse_proto_query`]): absent
-//! defaults to V2, `v1`/`v2` (and the `1`/`2`/`1.0`/`2.0` spellings) select
-//! that version, and any other value is a hard error.
+//! honored uniformly across every scheme: absent defaults to
+//! [`MAVLINK_VERSION`](crate::MAVLINK_VERSION) (V2), `v1`/`v2` (and the
+//! `1`/`2`/`1.0`/`2.0` spellings) select that version, and any other value is
+//! a hard error.
 //!
 //! ## Known limitations (intentional, not bugs)
 //!
@@ -52,11 +53,11 @@ pub const DEFAULT_UDP_PORT: u16 = 14550;
 /// Default serial baud rate used when the `?baud=` query is missing.
 pub const DEFAULT_SERIAL_BAUD: u32 = 115_200;
 
-/// Open a MAVLink 2 transport described by `url`.
+/// Open a MAVLink transport described by `url`.
 ///
-/// The returned connection is pre-configured for MAVLink V2 and is
-/// `Send + Sync`, so reader and writer threads may share an `Arc<_>`
-/// without an extra mutex.
+/// The returned connection speaks MAVLink V2 unless the URL's `?proto=`
+/// query selects V1 (see the module docs). It is `Send + Sync`, so
+/// reader and writer threads may share an `Arc<_>` without an extra mutex.
 pub fn connect(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
     match url.scheme() {
         "tcp" => connect_tcp(url),
@@ -157,7 +158,7 @@ fn open_mavlink_versioned(
 /// Resolve the MAVLink protocol version from an optional `?proto=` query
 /// parameter.
 ///
-/// - absent → the [`MavlinkVersion::V2`] default;
+/// - absent → the [`MAVLINK_VERSION`](crate::MAVLINK_VERSION) default (V2);
 /// - `v1`/`1`/`1.0` or `v2`/`2`/`2.0` (case-insensitive) → that version;
 /// - anything else → a [`BridgeError::Config`].
 ///
@@ -167,7 +168,7 @@ fn open_mavlink_versioned(
 /// parameter is distinct from an invalid one and still defaults quietly.
 fn parse_proto_query(url: &Url) -> BridgeResult<MavlinkVersion> {
     match url.query_pairs().find(|(k, _)| k == "proto") {
-        None => Ok(MavlinkVersion::V2),
+        None => Ok(crate::MAVLINK_VERSION),
         Some((_, v)) => match v.to_ascii_lowercase().as_str() {
             "v1" | "1" | "1.0" => Ok(MavlinkVersion::V1),
             "v2" | "2" | "2.0" => Ok(MavlinkVersion::V2),

@@ -90,7 +90,9 @@ pub trait IntoArrow {
 ///   `String` and `&str` accept all three Arrow string encodings (`Utf8`,
 ///   `LargeUtf8` and `Utf8View`).
 /// - **Slice / `Vec`** conversions (`&[T]` and `Vec<T>` for the primitive
-///   types) accept **any length** but still reject **any null values**.
+///   types, plus `Vec<bool>` and `Vec<String>`) accept **any length** but
+///   still reject **any null values**. `Vec<String>` accepts the same three
+///   string encodings as `String`.
 ///
 /// # Example
 ///
@@ -111,6 +113,15 @@ pub trait IntoArrow {
 /// let data = vec![1_i32, 2, 3].into_arrow();
 /// let values: Vec<i32> = (&data).try_into()?;
 /// assert_eq!(values, vec![1, 2, 3]);
+///
+/// // `Vec<bool>` and `Vec<String>` read back the same way.
+/// let data = vec![true, false].into_arrow();
+/// let flags: Vec<bool> = (&data).try_into()?;
+/// assert_eq!(flags, vec![true, false]);
+///
+/// let data = vec!["a".to_string(), "b".to_string()].into_arrow();
+/// let labels: Vec<String> = (&data).try_into()?;
+/// assert_eq!(labels, vec!["a", "b"]);
 ///
 /// // A multi-element array cannot be read as a scalar.
 /// let data = vec![1_i32, 2, 3].into_arrow();

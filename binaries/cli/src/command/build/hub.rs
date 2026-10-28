@@ -147,18 +147,30 @@ fn resolve_node_bytes(
                 platform,
             });
         }
-        // no artifact for this platform: degrade to a source build if the
-        // entry offers one (cargo-binstall model), else hard-fail.
-        if let Some(fallback) = &source.fallback_git {
-            let (git, rev) = fallback.git_pin()?;
-            return git_bytes(git, rev, fallback.subdir.clone());
-        }
-        eyre::bail!(
-            "no prebuilt binary for platform `{platform}` and no `fallback-git` to build from"
-        );
     }
-    let (git, rev) = source.git_pin()?;
-    git_bytes(git, rev, source.subdir.clone())
+    // no binary entry, or no artifact for this platform: build from source,
+    // degrading a binary entry to its `fallback-git` (cargo-binstall model)
+    let Some(git_source) = git_build_source(source) else {
+        eyre::bail!(
+            "no prebuilt binary for platform `{}` and no `fallback-git` to build from",
+            current_platform()
+        );
+    };
+    let (git, rev) = git_source.git_pin()?;
+    git_bytes(git, rev, git_source.subdir.clone())
+}
+
+/// The git source a node builds from when no prebuilt binary is used: the
+/// entry's own source, or the `fallback-git` of a binary entry (`None` when a
+/// binary entry has none).
+fn git_build_source(
+    source: &dora_hub_client::index::SourceSpec,
+) -> Option<&dora_hub_client::index::SourceSpec> {
+    if source.binary.is_empty() {
+        Some(source)
+    } else {
+        source.fallback_git.as_deref()
+    }
 }
 
 /// Resolve a node whose lockfile entry is a binary pin (`--locked`): the
@@ -345,12 +357,19 @@ fn resolve_locked_git(
                 .unwrap_or_default()
         ));
     }
-    match entry.source.git_pin() {
-        Ok((git, rev))
-            if normalize_git_source_url(git) != pin.repo
+    // compare against the source `resolve_node_bytes` pinned (for a binary
+    // entry, its `fallback-git`: a binary-only top level has no git pin)
+    let stale =
+        match git_build_source(&entry.source).map(|source| (source.git_pin(), &source.subdir)) {
+            // a binary entry without `fallback-git`: the pinned git source is gone
+            None => Ok(true),
+            Some((Ok((git, rev)), subdir)) => Ok(normalize_git_source_url(git) != pin.repo
                 || rev != pin.commit_hash
-                || entry.source.subdir != pin.subdir =>
-        {
+                || *subdir != pin.subdir),
+            Some((Err(err), _)) => Err(err),
+        };
+    match stale {
+        Ok(true) => {
             resolution.warnings.push(format!(
                 "node `{node_id}`: the index entry for `{}@{version}` no longer matches the \
                  lockfile pin — the index may have been rewritten; the lockfile pin is used",
@@ -1088,6 +1107,61 @@ mod tests {
                  `acme/a (local override)`"
             ),
             "{err}"
+        );
+    }
+
+    #[test]
+    fn locked_fallback_git_pin_matches_its_entry() {
+        use dora_hub_client::index::IndexCatalog;
+
+        use super::{HubResolution, NodeBytes, PackageRef, resolve_locked_git, resolve_node_bytes};
+
+        // a binary entry with no artifact for this host, built from `fallback-git`
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("dora-rs/lidar");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("2.1.0.yml"),
+            format!(
+                "manifest:\n  apiVersion: 1\n  name: lidar\n  namespace: dora-rs\n  \
+                 runtime: python\n  entrypoint: lidar\n\
+                 source:\n  binary:\n    - platform: nonexistent-arch\n      \
+                 url: https://example.com/lidar\n      sha256: {}\n  \
+                 fallback-git:\n    git: https://github.com/acme/lidar\n    \
+                 rev: {}\n    subdir: node\n",
+                "a".repeat(64),
+                "b".repeat(40),
+            ),
+        )
+        .unwrap();
+        let catalog = IndexCatalog::open(tmp.path()).unwrap();
+        let reference = PackageRef::parse("dora-rs/lidar@^2").unwrap();
+        let resolved = catalog.resolve(&reference).unwrap();
+        let NodeBytes::Git(pin) = resolve_node_bytes(
+            &resolved.entry.source,
+            &resolved.entry.manifest,
+            &reference,
+            &resolved.version,
+        )
+        .unwrap() else {
+            panic!("expected the fallback-git source");
+        };
+
+        let node_id = "lidar".parse().unwrap();
+        let warnings = |pin| {
+            let mut resolution = HubResolution::default();
+            resolve_locked_git(pin, &catalog, &reference, &node_id, &mut resolution).unwrap();
+            resolution.warnings
+        };
+        assert_eq!(warnings(&pin), Vec::<String>::new());
+
+        // a pin that no longer matches the fallback is still reported
+        let mut stale = pin.clone();
+        stale.commit_hash = "c".repeat(40);
+        let stale_warnings = warnings(&stale);
+        assert!(
+            stale_warnings[0].contains("no longer matches the lockfile pin"),
+            "{stale_warnings:?}"
         );
     }
 }
