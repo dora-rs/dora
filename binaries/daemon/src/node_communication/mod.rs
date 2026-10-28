@@ -270,10 +270,7 @@ impl Listener {
                             Ok(()) => {}
                             Err(err) => tracing::error!("{err:?}"),
                         }
-                        // The subscribe channel's receiver goes with this
-                        // listener: wake anyone waiting for room in it so
-                        // they see it closed.
-                        listener.drained.notify.notify_waiters();
+                        listener.close_event_stream();
                     }
                     (Err(err), _) => {
                         tracing::warn!("failed to register node {dataflow_id}/{node_id}: {err}");
@@ -721,6 +718,14 @@ impl Listener {
         }
     }
 
+    /// The subscribe channel's receiver goes with this listener: closes it
+    /// first, then wakes anyone held for room in it, so they see it closed
+    /// and end at once instead of after another stall tick.
+    fn close_event_stream(&mut self) {
+        drop(self.subscribed_events.take());
+        self.drained.notify.notify_waiters();
+    }
+
     /// Wakes a producer held for this node's full channel
     /// (`DeferredDelivery::drained`). Only worth the waiter-list lock while
     /// one could be waiting, i.e. while the channel is at or below the
@@ -803,7 +808,7 @@ impl Listener {
 /// waited for any longer: the event is dropped, loudly, and counted as lost,
 /// and the receiver is marked `gave_up` so that its producers are not held
 /// for it again until it drains.
-async fn deliver_when_room(
+pub(crate) async fn deliver_when_room(
     delivery: DeferredDelivery,
     last_activity: &AtomicU64,
     ft_stats: &FaultToleranceStats,
@@ -814,6 +819,9 @@ async fn deliver_when_room(
         pending,
         drained,
         mut event,
+        // Dropped on return, once the event is in or given up on: a close
+        // waiting for it goes out only then (dora-rs/dora#3619).
+        held: _held,
     } = delivery;
     let mut stalled = Duration::ZERO;
     loop {
@@ -986,10 +994,48 @@ mod tests {
             receiver: NodeId::from("sink".to_string()),
             channel: channel.clone(),
             pending: Some(pending.clone()),
+            held: drained.hold(&DataId::from("in".to_string())),
             drained: drained.clone(),
             event,
         };
         (delivery, pending)
+    }
+
+    /// Listener teardown closes the receiver's event channel and wakes the
+    /// deliveries held for it, so they end at once instead of waiting a
+    /// stall tick (or the stall limit) on a channel nobody reads any more.
+    /// Their waiting closes are released with them (dora-rs/dora#3619).
+    #[tokio::test(start_paused = true)]
+    async fn listener_teardown_ends_held_deliveries() {
+        let (mut listener, tx) = listener();
+        let clock = listener.clock.clone();
+        for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
+            tx.try_send(input(&clock, 0)).unwrap();
+        }
+        let (delivery, pending) = deferred(&tx, &listener.drained, input(&clock, 0));
+        let ft_stats = listener.backpressure.ft_stats.clone();
+        let deliver = tokio::spawn(async move {
+            deliver_when_room(delivery, &AtomicU64::new(0), &ft_stats).await
+        });
+        tokio::task::yield_now().await;
+        assert!(listener.drained.is_held(&DataId::from("in".to_string())));
+
+        listener.close_event_stream();
+        tokio::time::timeout(BACKPRESSURE_STALL_TICK / 2, deliver)
+            .await
+            .expect("the held delivery ends on teardown, without waiting a stall tick")
+            .unwrap();
+        assert_eq!(pending.load(Ordering::Relaxed), 0);
+        assert!(!listener.drained.is_held(&DataId::from("in".to_string())));
+        assert_eq!(
+            listener
+                .backpressure
+                .ft_stats
+                .lost_backpressure_messages
+                .load(Ordering::Relaxed),
+            1,
+            "a receiver that went away without dropping its stream lost the message"
+        );
     }
 
     /// A deferred delivery lands only once the receiver's channel has the

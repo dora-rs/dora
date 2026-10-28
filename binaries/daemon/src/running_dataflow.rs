@@ -1150,6 +1150,38 @@ impl RunningDataflow {
         }
     }
 
+    /// The inputs whose circuit breaker should fire now, with their timeouts.
+    pub(crate) fn timed_out_inputs(&self) -> Vec<(NodeId, DataId, Duration)> {
+        let mut timed_out = Vec::new();
+        for ((node_id, input_id), deadline) in &self.input_deadlines {
+            // Skip inputs already tracked as broken (avoids duplicate warnings)
+            if self
+                .broken_inputs
+                .contains_key(&(node_id.clone(), input_id.clone()))
+            {
+                continue;
+            }
+            // A message for this input is held for its full channel: the
+            // producer is alive, and the break's `InputClosed` could land
+            // ahead of that message. Check again once it is delivered.
+            if self
+                .drain_signals
+                .get(node_id)
+                .is_some_and(|drained| drained.is_held(input_id))
+            {
+                continue;
+            }
+            // Only count elapsed time once the input has actually
+            // received a message. Inputs that never saw traffic are
+            // considered "not yet armed" — see InputDeadline::is_timed_out
+            // (dora-rs/adora#149).
+            if deadline.is_timed_out() {
+                timed_out.push((node_id.clone(), input_id.clone(), deadline.timeout));
+            }
+        }
+        timed_out
+    }
+
     pub(crate) fn open_inputs(&self, node_id: &NodeId) -> &BTreeSet<DataId> {
         self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
     }
@@ -1179,6 +1211,9 @@ impl RunningDataflow {
             .entry(target_node.clone())
             .or_default()
             .insert(target_input.clone());
+        if let Some(drained) = self.drain_signals.get(&target_node) {
+            drained.reopen_input(&target_input);
+        }
         // A mapping is by construction a node-to-node edge, so this is a
         // data input and must gate the drain like any other. Without it
         // the opt-in would not see the new input at all, and could report
@@ -1349,6 +1384,30 @@ impl RunningDataflow {
         node_output_ids(&self.mappings, &self.open_external_mappings, node_id)
     }
 
+    /// Whether `node_id` was told to finish but its `AllInputsClosed` still
+    /// waits behind a held backpressure message.
+    pub(crate) fn all_inputs_closed_waiting(&self, node_id: &NodeId) -> bool {
+        self.all_inputs_closed_at
+            .get(node_id)
+            .is_some_and(|decided| {
+                self.drain_signals
+                    .get(node_id)
+                    .is_some_and(|drained| drained.all_inputs_closed_sent(*decided).is_none())
+            })
+    }
+
+    /// How long ago `node_id` was sent `AllInputsClosed`. `None` if it was
+    /// not, including while the event still waits behind a held backpressure
+    /// message (`DrainSignal::all_inputs_closed_sent`).
+    pub(crate) fn drained_for(&self, node_id: &NodeId) -> Option<Duration> {
+        let decided = *self.all_inputs_closed_at.get(node_id)?;
+        let sent = match self.drain_signals.get(node_id) {
+            Some(drained) => drained.all_inputs_closed_sent(decided)?,
+            None => decided,
+        };
+        Some(sent.elapsed())
+    }
+
     /// Nodes blocking an otherwise-finished dataflow (dora-rs/dora#2152).
     ///
     /// Returns nodes that should be force-stopped because the dataflow is
@@ -1392,7 +1451,7 @@ impl RunningDataflow {
                     // presence so a node that dropped its event stream but is
                     // still alive remains a candidate (dora#2270 review).
                     connected: self.connected_nodes.contains(id),
-                    drained_for: self.all_inputs_closed_at.get(id).map(Instant::elapsed),
+                    drained_for: self.drained_for(id),
                     silent_for: Duration::from_millis(now_millis.saturating_sub(last)),
                     node_grace: node.finish_grace_secs,
                     remote_output_open: self
@@ -1400,6 +1459,7 @@ impl RunningDataflow {
                         .iter()
                         .any(|output| &output.0 == id),
                     blocked_by_remote_output_chain: remote_blocked_nodes.contains(id),
+                    close_waiting: self.all_inputs_closed_waiting(id),
                 }
             }),
             &self.finish_escalated,
@@ -1537,6 +1597,13 @@ struct StragglerNode<'a> {
     /// This node is still waiting on a local chain rooted at an open
     /// cross-daemon edge.
     blocked_by_remote_output_chain: bool,
+    /// The node was told to finish, but its `AllInputsClosed` still waits
+    /// behind a held backpressure message, possibly one queued for another
+    /// receiver ([`RunningDataflow::all_inputs_closed_waiting`]). It is
+    /// draining within grace: it neither vetoes nor is escalated, however
+    /// long it has been silent, since it cannot act on a close it has not
+    /// been sent (dora-rs/dora#3623 review).
+    close_waiting: bool,
 }
 
 /// Pure core of [`RunningDataflow::node_output_ids`].
@@ -1578,6 +1645,9 @@ fn select_finish_stragglers<'a>(
         // Per-node `finish_grace_secs` overrides the global grace so that nodes
         // with long post-input compute (ML training, large-batch inference) are
         // not SIGKILLed while legitimately busy (dora-rs/dora#2284).
+        if node.close_waiting {
+            continue;
+        }
         let effective_grace = node.node_grace.unwrap_or(grace);
         match node.drained_for {
             // draining: ready past grace; still within grace it is progressing
@@ -2180,6 +2250,7 @@ mod tests {
             node_grace: None,
             remote_output_open: false,
             blocked_by_remote_output_chain: false,
+            close_waiting: false,
         }
     }
 
@@ -2195,7 +2266,31 @@ mod tests {
             node_grace: None,
             remote_output_open: false,
             blocked_by_remote_output_chain: false,
+            close_waiting: false,
         }
+    }
+
+    /// A node whose `AllInputsClosed` still waits behind a held message is
+    /// draining within grace however long it has been silent: it is not
+    /// escalated, and does not stop a wedged peer from being escalated
+    /// (dora-rs/dora#3623 review).
+    #[test]
+    fn node_with_a_waiting_close_is_neither_escalated_nor_a_veto() {
+        let waiting = node_id("waiting");
+        let wedged = node_id("wedged");
+        let selected = select_finish_stragglers(
+            [
+                StragglerNode {
+                    close_waiting: true,
+                    ..never_drained(&waiting, PAST_GRACE)
+                },
+                never_drained(&wedged, PAST_GRACE),
+            ]
+            .into_iter(),
+            &BTreeSet::new(),
+            TEST_GRACE,
+        );
+        assert_eq!(selected, vec![wedged]);
     }
 
     #[test]
@@ -2236,6 +2331,7 @@ mod tests {
             node_grace: None,
             remote_output_open: false,
             blocked_by_remote_output_chain: false,
+            close_waiting: false,
         };
         let selected = select_finish_stragglers(
             [source_node, drained(&sink, PAST_GRACE)].into_iter(),
@@ -2259,6 +2355,7 @@ mod tests {
             node_grace: None,
             remote_output_open: false,
             blocked_by_remote_output_chain: false,
+            close_waiting: false,
         };
         let selected = select_finish_stragglers(
             [dynamic_node, drained(&sink, PAST_GRACE)].into_iter(),
@@ -2338,6 +2435,7 @@ mod tests {
             node_grace: None,
             remote_output_open: true,
             blocked_by_remote_output_chain: false,
+            close_waiting: false,
         };
 
         let selected = select_finish_stragglers(
@@ -2641,6 +2739,7 @@ mod tests {
             node_grace: None,
             remote_output_open: false,
             blocked_by_remote_output_chain: false,
+            close_waiting: false,
         };
         let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert!(selected.is_empty());
@@ -2681,6 +2780,7 @@ mod tests {
             node_grace: None,
             remote_output_open: false,
             blocked_by_remote_output_chain: false,
+            close_waiting: false,
         };
         let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert!(selected.is_empty());
@@ -2719,6 +2819,7 @@ mod tests {
             node_grace: Some(Duration::from_secs(600)),
             remote_output_open: false,
             blocked_by_remote_output_chain: false,
+            close_waiting: false,
         };
         let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert!(
@@ -2742,6 +2843,7 @@ mod tests {
             node_grace: Some(long_grace),
             remote_output_open: false,
             blocked_by_remote_output_chain: false,
+            close_waiting: false,
         };
         let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert_eq!(selected, vec![node_id("trainer")]);
@@ -2768,6 +2870,7 @@ mod tests {
             node_grace: Some(long_grace),
             remote_output_open: false,
             blocked_by_remote_output_chain: false,
+            close_waiting: false,
         };
         let selected = select_finish_stragglers(
             [drained(&sink, PAST_GRACE), trainer_node].into_iter(),
@@ -2803,6 +2906,7 @@ mod tests {
             node_grace: Some(long_grace),
             remote_output_open: false,
             blocked_by_remote_output_chain: false,
+            close_waiting: false,
         };
         let selected = select_finish_stragglers(
             [drained(&sink, PAST_GRACE), trainer_node].into_iter(),
