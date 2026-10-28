@@ -256,6 +256,8 @@ Asynchronous iterator over incoming events destined for this node. Implements th
 
 The event stream closes itself after a `Stop` event is received. Nodes should exit once the stream ends.
 
+A `Stop(StopCause::AllInputsClosed)` is only returned once every input queued before it has been returned, so breaking out of the loop on it loses no inputs. A `Stop(StopCause::Manual)` (`dora stop`, Ctrl-C) is returned ahead of queued inputs so the node can react quickly.
+
 ```rust
 // Block until the next event arrives. Returns None when the stream closes.
 // Uses an internal EventScheduler that may reorder events for fairness.
