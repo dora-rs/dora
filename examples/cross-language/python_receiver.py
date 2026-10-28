@@ -23,8 +23,10 @@ def main():
                 sys.exit(1)
             print(f"python-receiver: validated value {values[0]}")
             received_count += 1
-        elif event["type"] == "STOP":
-            break
+        # No `break` on STOP: the event stream yields lifecycle events ahead
+        # of queued inputs, so the sender exiting can deliver
+        # STOP (all inputs closed) while most of its values are still
+        # queued. The iterator ends on its own once they are drained.
 
     if received_count < 5:
         print(f"python-receiver: ERROR got only {received_count} messages from Rust sender (expected >= 5)")

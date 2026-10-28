@@ -36,9 +36,12 @@ fn run(_node: DoraNode, mut events: EventStream) -> eyre::Result<()> {
                 eprintln!("rust-receiver: validated value {value}");
                 received_count += 1;
             }
+            // No `break`: the event stream yields lifecycle events ahead of
+            // queued inputs, so the sender exiting can deliver
+            // `Stop(AllInputsClosed)` while most of its values are still
+            // queued. `recv` returns `None` once they are drained.
             Event::Stop(_) => {
-                eprintln!("rust-receiver: stopping after {received_count} messages");
-                break;
+                eprintln!("rust-receiver: stop received after {received_count} messages");
             }
             _ => {}
         }
