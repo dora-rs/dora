@@ -474,15 +474,16 @@ fn same_type_contract(a: &TypeDef, b: &TypeDef) -> bool {
 /// was chosen by the user, and the package's ports would otherwise be
 /// contract-checked against the earlier one. A different body in `types/` is
 /// the user's own override, so it wins (as it does for `path:` manifests,
-/// see `inject_adjacent_manifests`), with a warning that the package ships
-/// something else.
+/// see `inject_adjacent_manifests`), with a note that the package ships
+/// something else. A note, not a warning: `dora validate --strict` counts hub
+/// warnings, and a deliberate override must not fail it.
 fn register_shipped_types(
     node_id: &NodeId,
     label: &str,
     manifest: &NodeManifest,
     registry: &mut TypeRegistry,
     shipped_by: &mut BTreeMap<String, String>,
-    warnings: &mut Vec<String>,
+    notes: &mut Vec<String>,
 ) -> eyre::Result<()> {
     for (urn, def) in &manifest.types {
         if let Some(existing) = registry.resolve(urn) {
@@ -496,7 +497,7 @@ fn register_shipped_types(
                      definition per dataflow"
                 ),
                 None => {
-                    warnings.push(format!(
+                    notes.push(format!(
                         "node `{node_id}`: the `{label}` package ships type `{urn}` with a \
                          different definition than the dataflow's `types/` directory — \
                          using the `types/` definition"
@@ -608,7 +609,7 @@ pub fn resolve_hub_nodes(
                 &manifest,
                 registry,
                 &mut shipped_by,
-                &mut resolution.warnings,
+                &mut resolution.notes,
             )?;
             let mut contracts = InjectionResult::default();
             apply_manifest_contracts(node, &manifest, &label, registry, &mut contracts);
@@ -765,7 +766,7 @@ pub fn resolve_hub_nodes(
             manifest,
             registry,
             &mut shipped_by,
-            &mut resolution.warnings,
+            &mut resolution.notes,
         )?;
         let mut contracts = InjectionResult::default();
         apply_manifest_contracts(node, manifest, &label, registry, &mut contracts);
@@ -994,7 +995,7 @@ mod tests {
         let node: dora_message::id::NodeId = "b".to_string().into();
         let mut registry = dora_core::types::TypeRegistry::new();
         let mut shipped_by = std::collections::BTreeMap::new();
-        let mut warnings = Vec::new();
+        let mut notes = Vec::new();
 
         register_shipped_types(
             &node,
@@ -1002,7 +1003,7 @@ mod tests {
             &pose_manifest("a", "x", "first"),
             &mut registry,
             &mut shipped_by,
-            &mut warnings,
+            &mut notes,
         )
         .unwrap();
         // same contract, only the description differs: the same type
@@ -1012,7 +1013,7 @@ mod tests {
             &pose_manifest("a", "x", "reworded"),
             &mut registry,
             &mut shipped_by,
-            &mut warnings,
+            &mut notes,
         )
         .unwrap();
         // a different field: rejected, naming both packages
@@ -1022,14 +1023,14 @@ mod tests {
             &pose_manifest("b", "y", "first"),
             &mut registry,
             &mut shipped_by,
-            &mut warnings,
+            &mut notes,
         )
         .unwrap_err()
         .to_string();
         assert!(err.contains("`acme/b@2.0.0`"), "{err}");
         assert!(err.contains("`acme/a@1.0.0`"), "{err}");
         assert!(err.contains(POSE_URN), "{err}");
-        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(notes.is_empty(), "{notes:?}");
         // the first definition is kept
         let def = registry.resolve(POSE_URN).unwrap();
         assert_eq!(def.fields[0].name, "x");
@@ -1046,23 +1047,19 @@ mod tests {
                 pose_manifest("local", "z", "local").types[POSE_URN].clone(),
             )
             .unwrap();
-        let mut warnings = Vec::new();
+        let mut notes = Vec::new();
         register_shipped_types(
             &node,
             "acme/a@1.0.0",
             &pose_manifest("a", "x", "first"),
             &mut registry,
             &mut std::collections::BTreeMap::new(),
-            &mut warnings,
+            &mut notes,
         )
         .unwrap();
         assert_eq!(registry.resolve(POSE_URN).unwrap().fields[0].name, "z");
-        assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert!(
-            warnings[0].contains("`types/` directory"),
-            "{}",
-            warnings[0]
-        );
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("`types/` directory"), "{}", notes[0]);
     }
 
     /// End to end through `resolve_hub_nodes`: two hub packages (here both
@@ -1108,6 +1105,57 @@ mod tests {
             ),
             "{err}"
         );
+    }
+
+    /// A `types/` override of a hub package's type is reported as a note, not
+    /// a warning: `dora validate` counts hub warnings in `--strict` mode, and a
+    /// deliberate override must not fail it.
+    #[test]
+    fn resolve_hub_nodes_notes_a_types_dir_override() {
+        use dora_core::descriptor::DescriptorExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("a");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(super::MANIFEST_FILENAME),
+            pose_manifest_yaml("a", "x", "pose"),
+        )
+        .unwrap();
+        let overrides = std::collections::BTreeMap::from([("acme/a".to_string(), dir)]);
+        let mut dataflow = dora_message::descriptor::Descriptor::parse(
+            b"nodes:\n  - id: a\n    hub: acme/a@^1\n".to_vec(),
+        )
+        .unwrap();
+        let mut registry = dora_core::types::TypeRegistry::new();
+        // stands in for a definition `TypeRegistry::load_from_dir` read from `types/`
+        registry
+            .add_user_type(
+                POSE_URN,
+                pose_manifest("local", "z", "local").types[POSE_URN].clone(),
+            )
+            .unwrap();
+
+        let resolution = resolve_hub_nodes(
+            &mut dataflow,
+            &mut registry,
+            true,
+            None,
+            None,
+            false,
+            &overrides,
+        )
+        .unwrap();
+        assert!(resolution.warnings.is_empty(), "{:?}", resolution.warnings);
+        assert!(
+            resolution
+                .notes
+                .iter()
+                .any(|n| n.contains("using the `types/` definition")),
+            "{:?}",
+            resolution.notes
+        );
+        assert_eq!(registry.resolve(POSE_URN).unwrap().fields[0].name, "z");
     }
 
     #[test]
