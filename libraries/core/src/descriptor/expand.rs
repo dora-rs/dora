@@ -1084,10 +1084,27 @@ fn propagate_module_node_env(
 
 /// Substitute `${_param.name}` and `$PARAM_<NAME>` references in a node's args
 /// and inject params into the node's env map as `EnvValue::String` entries.
+/// A nested module node gets them in its own `params` instead.
 fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>) {
     // Substitute in args
     if let Some(ref mut args) = node.args {
         *args = substitute_params_in_str(args, params);
+    }
+
+    // A nested module node expands later with its own `params` only. Resolve
+    // a forwarded `speed: $PARAM_SPEED` against ours and hand down the params
+    // it does not set; its own expansion then substitutes them into its inner
+    // nodes' args and injects them as env, as for a direct child.
+    if node.module.is_some() {
+        for value in node.params.values_mut() {
+            *value = substitute_params_in_str(value, params);
+        }
+        for (key, value) in params {
+            if !node.params.keys().any(|k| k.eq_ignore_ascii_case(key)) {
+                node.params.insert(key.clone(), value.clone());
+            }
+        }
+        return;
     }
 
     // Inject params into env map (caller params override inner defaults)
@@ -2647,15 +2664,27 @@ nodes:
         assert_eq!(worker.env, None);
     }
 
-    #[test]
-    fn expand_outer_params_reach_nested_module_inner_nodes_as_env() {
+    /// Expand `outer` (given `speed: "2.0"`) nesting `inner`, whose `worker`
+    /// reads `$PARAM_SPEED` in its args; `nested_speed` is the nested module
+    /// node's own `speed` param, and `worker_env_speed` the worker's own
+    /// `env: PARAM_SPEED` default, if any.
+    fn expand_nested_param_worker(
+        nested_speed: Option<&str>,
+        worker_env_speed: Option<&str>,
+    ) -> Node {
+        let nested_params = nested_speed
+            .map(|speed| format!("    params:\n      speed: {speed}"))
+            .unwrap_or_default();
+        let worker_env = worker_env_speed
+            .map(|speed| format!("    env:\n      PARAM_SPEED: {speed}"))
+            .unwrap_or_default();
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
-
         write_file(
             base,
             "inner.yml",
-            r#"
+            &format!(
+                r#"
 module:
   name: inner
   inputs: [data]
@@ -2664,17 +2693,20 @@ module:
 nodes:
   - id: worker
     path: worker.py
+    args: --speed $PARAM_SPEED
+{worker_env}
     inputs:
       data: _mod/data
     outputs:
       - out
-"#,
+"#
+            ),
         );
-
         write_file(
             base,
             "outer.yml",
-            r#"
+            &format!(
+                r#"
 module:
   name: outer
   inputs: [data]
@@ -2685,9 +2717,10 @@ nodes:
     module: inner.yml
     inputs:
       data: _mod/data
-"#,
+{nested_params}
+"#
+            ),
         );
-
         let desc = parse_descriptor(
             r#"
 nodes:
@@ -2702,13 +2735,48 @@ nodes:
       speed: "2.0"
 "#,
         );
-
         let expanded = expand_modules(&desc, base).unwrap();
-        let worker = expanded
+        expanded
             .nodes
-            .iter()
+            .into_iter()
             .find(|n| n.id.to_string() == "outer.inner.worker")
-            .unwrap();
+            .unwrap()
+    }
+
+    /// An outer module's params reach a nested module's inner nodes as env vars
+    /// and in `args`: the daemon does not expand `$PARAM_*` in args, so a
+    /// left-over reference would reach the process verbatim.
+    #[test]
+    fn expand_outer_params_reach_nested_module_inner_nodes() {
+        let worker = expand_nested_param_worker(None, None);
+        assert_eq!(worker.args.as_deref(), Some("--speed 2.0"));
+        let env = worker.env.as_ref().unwrap();
+        assert_eq!(env["PARAM_SPEED"], EnvValue::String("2.0".to_string()));
+    }
+
+    /// A nested module node forwarding a param with `$PARAM_*` gets the outer
+    /// value, not the literal reference.
+    #[test]
+    fn expand_nested_module_forwarded_param_is_substituted() {
+        let worker = expand_nested_param_worker(Some("$PARAM_SPEED"), None);
+        assert_eq!(worker.args.as_deref(), Some("--speed 2.0"));
+        let env = worker.env.as_ref().unwrap();
+        assert_eq!(env["PARAM_SPEED"], EnvValue::String("2.0".to_string()));
+    }
+
+    /// A nested module node's own param value wins over the outer one.
+    #[test]
+    fn expand_nested_module_own_param_overrides_outer() {
+        let worker = expand_nested_param_worker(Some("\"3.0\""), None);
+        assert_eq!(worker.args.as_deref(), Some("--speed 3.0"));
+    }
+
+    /// An outer param overrides a nested module's inner node's own
+    /// `env: PARAM_*` default, as it does for a direct child. (Before outer
+    /// params were handed down, the inner default won here.)
+    #[test]
+    fn expand_outer_param_overrides_nested_inner_env_default() {
+        let worker = expand_nested_param_worker(None, Some("\"1.0\""));
         let env = worker.env.as_ref().unwrap();
         assert_eq!(env["PARAM_SPEED"], EnvValue::String("2.0".to_string()));
     }
