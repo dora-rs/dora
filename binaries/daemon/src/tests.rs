@@ -1328,6 +1328,52 @@ async fn force_stop_after_graceful_stop_kills_immediately() {
     );
 }
 
+/// A restart replacement that lost the race against a graceful stop is in a
+/// grace timer too, so a later force stop must reach it as well.
+#[tokio::test(start_paused = true)]
+async fn force_stop_kills_a_replacement_stopped_gracefully() {
+    let clock = Arc::new(HLC::default());
+    let mut daemon_logger = test_logger(clock.clone());
+    let mut logger = daemon_logger.for_dataflow(Uuid::nil());
+    let mut df = test_dataflow();
+    df.stop_process_policy = Some(StopProcessPolicy::Graceful(Duration::from_secs(4)));
+    let node_id: NodeId = "test".to_string().into();
+    let (op_tx, op_rx) = flume::bounded(4);
+    df.stop_rejected_replacement(&node_id, 8, ProcessHandle::new(op_tx));
+    tokio::task::yield_now().await;
+    assert!(
+        op_rx.try_recv().is_err(),
+        "a graceful stop waits out the grace"
+    );
+
+    let _ = df
+        .stop_all(&mut None, &clock, None, true, &mut logger)
+        .await
+        .unwrap();
+    assert!(matches!(op_rx.try_recv(), Ok(ProcessOperation::Kill)));
+    assert!(df.grace_duration_kills.contains(&(node_id, 8)));
+}
+
+/// The force-stop kill must not block when the op channel is full: the
+/// process task leaves it unread while its log forwarding drains.
+#[tokio::test(start_paused = true)]
+async fn force_stop_does_not_block_on_a_full_op_channel() {
+    let clock = Arc::new(HLC::default());
+    let mut daemon_logger = test_logger(clock.clone());
+    let mut logger = daemon_logger.for_dataflow(Uuid::nil());
+    let mut df = test_dataflow();
+    let node_id: NodeId = "test".to_string().into();
+    let (op_tx, _op_rx) = flume::bounded(1);
+    op_tx.send(ProcessOperation::SoftKill).unwrap();
+    df.graceful_stops.push((node_id.clone(), 7, op_tx));
+
+    let _ = df
+        .stop_all(&mut None, &clock, None, true, &mut logger)
+        .await
+        .unwrap();
+    assert!(df.grace_duration_kills.contains(&(node_id, 7)));
+}
+
 #[tokio::test(start_paused = true)]
 async fn teardown_replacement_uses_configured_grace_period() {
     let mut dataflow = test_dataflow();

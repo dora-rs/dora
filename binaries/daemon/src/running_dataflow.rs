@@ -832,8 +832,15 @@ impl RunningDataflow {
         self.stop_process_policy = Some(stop_process_policy);
         if force {
             for (node_id, generation, op_tx) in self.graceful_stops.drain(..) {
-                if op_tx.send(ProcessOperation::Kill).is_ok() {
-                    self.grace_duration_kills.insert((node_id, generation));
+                // `try_send`: the process task keeps `op_rx` open but unread
+                // until its log forwarding ends, and a blocking send into the
+                // full channel would stall the daemon loop. A full channel
+                // already holds the grace timer's kill.
+                match op_tx.try_send(ProcessOperation::Kill) {
+                    Ok(()) | Err(flume::TrySendError::Full(_)) => {
+                        self.grace_duration_kills.insert((node_id, generation));
+                    }
+                    Err(flume::TrySendError::Disconnected(_)) => {}
                 }
             }
         }
@@ -901,12 +908,16 @@ impl RunningDataflow {
     }
 
     pub(crate) fn stop_rejected_replacement(
-        &self,
+        &mut self,
         node_id: &NodeId,
         generation: u64,
         process: ProcessHandle,
     ) {
         if let Some(policy) = self.stop_process_policy {
+            if let StopProcessPolicy::Graceful(_) = policy {
+                self.graceful_stops
+                    .push((node_id.clone(), generation, process.op_tx.clone()));
+            }
             self.schedule_process_stop(node_id.clone(), generation, process, policy);
         } else {
             // Restarts can also be disabled by AllInputsClosed. That path has
