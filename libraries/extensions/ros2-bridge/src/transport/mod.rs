@@ -131,20 +131,6 @@ pub enum Subscription<D, T = Vec<u8>> {
     _Value(std::marker::PhantomData<fn() -> T>),
 }
 
-/// A service client backed by DDS or native Zenoh.
-pub enum ServiceClient<D> {
-    Dds(D),
-    #[cfg(feature = "rmw-zenoh")]
-    Zenoh(Box<zenoh::service::RawServiceClient>),
-}
-
-/// A service server backed by DDS or native Zenoh.
-pub enum ServiceServer<D> {
-    Dds(D),
-    #[cfg(feature = "rmw-zenoh")]
-    Zenoh(Box<zenoh::service::RawServiceServer>),
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

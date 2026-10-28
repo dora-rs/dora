@@ -75,7 +75,7 @@ Instead, use the following functions to read and destructure the event:
 For Arrow-based inputs, you can use the following functions to receive typed data along with metadata:
 
 - `event_as_arrow_input(event, out_array, out_schema)` - Returns only the Arrow array data (original function)
-- `event_as_arrow_input_with_info(event, out_array, out_schema)` - Returns Arrow array data plus input ID and metadata as JSON
+- `event_as_arrow_input_with_info(event, out_array, out_schema)` - Returns Arrow array data plus the input ID and a `Metadata` handle (typed getters, or `to_json()` for the whole map)
 
 **Example using `event_as_arrow_input_with_info`:**
 
@@ -103,12 +103,14 @@ std::cout << "Input ID: " << input_info.id << std::endl;
 auto metadata = std::move(input_info.metadata);
 std::cout << "Metadata timestamp: " << metadata->timestamp() << std::endl;
 
-// Timestamp parameters use i64 nanoseconds since Unix epoch
+// Timestamp parameters use i64 nanoseconds since the Unix epoch (Unix time,
+// which does not count leap seconds)
 auto nanos = metadata->get_timestamp("sensor_time");
 metadata->set_timestamp("event_time", nanos);
 
-// Convert to std::chrono::utc_clock::time_point (C++20)
-auto tp = std::chrono::utc_clock::time_point(std::chrono::nanoseconds(nanos));
+// Convert to a std::chrono::system_clock time point (C++20). Not utc_clock:
+// its epoch counts leap seconds, so the same count lands 27 s early.
+auto tp = std::chrono::sys_time<std::chrono::nanoseconds>(std::chrono::nanoseconds(nanos));
 
 auto keys = metadata->list_keys();
 for (std::size_t i = 0; i < keys.size(); i++) {

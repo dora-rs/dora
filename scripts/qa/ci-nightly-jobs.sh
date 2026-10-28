@@ -2041,6 +2041,7 @@ job_ros2_bridge() {
   # Basic checks -- mirror nightly.yml `ros2-bridge` (no ROS distro required).
   timeout -k 30s 600s cargo check -p dora-ros2-bridge --no-default-features
   timeout -k 30s 600s cargo test -p dora-ros2-bridge-msg-gen
+  timeout -k 30s 1200s scripts/ros2-cxx-zenoh-roundtrip.sh
   # dora-ros2-bridge-python's test_utils.py imports numpy + pyarrow. The
   # workflow installs them (`pip install pyarrow numpy`); do the same here in a
   # throwaway venv so this runs cleanly on a Linux box without ROS2 instead of

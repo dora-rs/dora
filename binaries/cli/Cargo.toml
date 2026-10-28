@@ -110,3 +110,6 @@ dist = true
 # `dora recording export` round-trip test to assemble the recorded `Output`
 # payload.
 aligned-vec = { version = "0.6.4", features = ["serde"] }
+# The version arrow-ipc pins; used only to build a crafted IPC schema message
+# in the `topic info` tests.
+flatbuffers = "25.12.19"

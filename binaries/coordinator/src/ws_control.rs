@@ -413,8 +413,23 @@ pub(crate) async fn handle_control_ws(
                         continue;
                     }
                     ControlRequest::TopicUnsubscribe { subscription_id } => {
+                        // Only this connection's own subscriptions may be torn
+                        // down: the event loop looks the id up across every
+                        // dataflow, so forwarding a foreign id would silently
+                        // stop another client's stream (dora-rs/dora#3873).
+                        let before = topic_subscriptions.len();
                         topic_subscriptions
                             .retain(|active| active.subscription_id != *subscription_id);
+                        if topic_subscriptions.len() == before {
+                            let resp = WsResponse::err(
+                                req.id,
+                                format!(
+                                    "no topic subscription with id {subscription_id} on this connection"
+                                ),
+                            );
+                            let _ = send_ws_response(&mut ws_tx, &resp).await;
+                            continue;
+                        }
                         let (done_tx, done_rx) = oneshot::channel();
                         let _ = event_tx
                             .send(Event::Control(ControlEvent::TopicUnsubscribe {
@@ -440,11 +455,11 @@ pub(crate) async fn handle_control_ws(
                         let (found_tx, found_rx) = oneshot::channel();
                         let _ = event_tx.send(Event::Control(ControlEvent::TopicCheck {
                             dataflow_id: *dataflow_id,
-                            topics: vec![(node_id.clone(), output_id.clone())],
+                            node_id: node_id.clone(),
+                            output_id: output_id.clone(),
                             found_tx,
                         })).await;
-                        let found = found_rx.await.unwrap_or(false);
-                        if !found {
+                        let Some(resolved_output_id) = found_rx.await.ok().flatten() else {
                             let resp = WsResponse::err(
                                 req.id,
                                 format!(
@@ -453,12 +468,12 @@ pub(crate) async fn handle_control_ws(
                             );
                             let _ = send_ws_response(&mut ws_tx, &resp).await;
                             continue;
-                        }
+                        };
 
                         let resp = match publish_topic(
                             *dataflow_id,
                             node_id,
-                            output_id,
+                            &resolved_output_id,
                             data_json,
                             &clock,
                             &mut publish_session,
