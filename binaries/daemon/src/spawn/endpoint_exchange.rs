@@ -1152,6 +1152,45 @@ mod tests {
         assert!(state.contains("zenoh routers none"), "{state}");
     }
 
+    /// A client-mode session (a `ZENOH_CONFIG` in client mode, or a routed
+    /// deployment) is linked only to its router, which `peers_zid` does not
+    /// list: the diagnostic must still name that link.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_link_state_names_a_router_link() {
+        let endpoint =
+            dora_core::topics::reserve_loopback_zenoh_endpoint().expect("reserve a loopback port");
+        let mut router = no_scouting_config();
+        router.insert_json5("mode", r#""router""#).unwrap();
+        router
+            .insert_json5("listen/endpoints", &format!("[{endpoint:?}]"))
+            .unwrap();
+        let router = zenoh::open(router).await.expect("open router session");
+        let mut client = no_scouting_config();
+        client.insert_json5("mode", r#""client""#).unwrap();
+        client
+            .insert_json5("connect/endpoints", &format!("[{endpoint:?}]"))
+            .unwrap();
+        let client = zenoh::open(client).await.expect("open client session");
+
+        let router_zid = router.zid().to_string();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let state = loop {
+            let state = link_state(&client).await;
+            if state.contains(&router_zid) {
+                break state;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the router must be listed: {state}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert!(
+            state.contains(&format!("zenoh routers [{router_zid}]")),
+            "{state}"
+        );
+    }
+
     /// The probe that runs after an unanswered exchange returns as soon as the
     /// daemon does answer — the "linked late" case, which is what multicast
     /// scouting or a slow peer spawn looks like.
