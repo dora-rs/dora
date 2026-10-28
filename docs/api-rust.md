@@ -340,6 +340,7 @@ pub enum StopCause {
     Manual,
 
     // All inputs were closed (upstream nodes exited). Only sent if the node has inputs.
+    // `recv`/`recv_async` yield it only once no inputs are left queued.
     AllInputsClosed,
 }
 ```

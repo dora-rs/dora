@@ -92,6 +92,18 @@ fn is_stop(event: &EventItem) -> bool {
     )
 }
 
+/// Returns `true` if the event is the daemon's
+/// [`AllInputsClosed`][NodeEvent::AllInputsClosed] notice.
+fn is_all_inputs_closed(event: &EventItem) -> bool {
+    matches!(
+        event,
+        EventItem::NodeEvent {
+            event: NodeEvent::AllInputsClosed,
+            ..
+        }
+    )
+}
+
 /// Outcome of `select_eviction`.
 enum Eviction {
     /// Remove event at this index from the queue and push the incoming event.
@@ -214,6 +226,11 @@ static NON_INPUT_EVENT_ID: LazyLock<DataId> =
 ///     Usually, the `Stop` event is the last event that is sent to a node before the event stream
 ///     is closed. Because of the reordering, the stream might return more events after a `Stop`
 ///     event.
+///
+///   The exception is the `Stop` caused by all inputs being closed
+///   ([`StopCause::AllInputsClosed`][super::StopCause::AllInputsClosed]): it is only yielded
+///   once every queued input has been returned, so a node that stops reading at `Stop` does not
+///   lose the inputs it had not caught up on yet.
 /// - **Input events are grouped by ID** and yielded in a **least-recently used order (by ID)**.
 ///
 ///   The scheduler keeps a separate queue for each input ID, where the incoming input events are
@@ -471,9 +488,17 @@ impl Scheduler {
     }
 
     pub(crate) fn next(&mut self) -> Option<EventItem> {
-        // Retrieve message from the non input event first that have priority over input message.
-        if let Some(event) = self.non_input.pop_front() {
-            return Some(event);
+        // Control events have priority over inputs, except `AllInputsClosed`:
+        // it waits until every queued input is delivered. Nodes see it as
+        // `Stop` and commonly break on it, which would otherwise discard the
+        // inputs the node had not caught up on yet. It is never the only thing
+        // left, so holding it back cannot stall the stream.
+        if let Some(index) = self
+            .non_input
+            .iter()
+            .position(|event| !is_all_inputs_closed(event) || !self.inputs_queued())
+        {
+            return self.non_input.remove(index);
         }
 
         // Yield from the first non-empty input queue in least-recently-used
@@ -496,11 +521,13 @@ impl Scheduler {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.non_input.is_empty()
-            && self
-                .event_queues
-                .iter()
-                .all(|(_id, (_size, queue))| queue.is_empty())
+        self.non_input.is_empty() && !self.inputs_queued()
+    }
+
+    fn inputs_queued(&self) -> bool {
+        self.event_queues
+            .values()
+            .any(|(_size, queue)| !queue.is_empty())
     }
 }
 
@@ -1152,6 +1179,86 @@ mod tests {
                 .iter()
                 .any(|e| request_id_of_zenoh(e).as_deref() == Some("req-1")),
             "correlated ZenohInput was dropped even though non-correlated events were available"
+        );
+    }
+
+    fn make_all_inputs_closed() -> EventItem {
+        EventItem::NodeEvent {
+            event: NodeEvent::AllInputsClosed,
+        }
+    }
+
+    fn kind(event: &EventItem) -> &'static str {
+        match event {
+            EventItem::NodeEvent {
+                event: NodeEvent::Input { .. },
+                ..
+            }
+            | EventItem::ZenohInput { .. } => "input",
+            EventItem::NodeEvent {
+                event: NodeEvent::AllInputsClosed,
+                ..
+            } => "all-inputs-closed",
+            EventItem::NodeEvent {
+                event: NodeEvent::Stop,
+                ..
+            } => "stop",
+            _ => "other",
+        }
+    }
+
+    fn drain_kinds(sched: &mut Scheduler) -> Vec<&'static str> {
+        std::iter::from_fn(|| sched.next())
+            .map(|e| kind(&e))
+            .collect()
+    }
+
+    // A node that falls behind has inputs queued when its last upstream exits.
+    // `AllInputsClosed` (which the node sees as `Stop`) must not overtake them,
+    // or a node that breaks on `Stop` silently loses the tail of its inputs.
+    #[test]
+    fn all_inputs_closed_waits_for_queued_inputs() {
+        let (mut sched, _id) = make_scheduler(10);
+
+        for _ in 0..3 {
+            sched.add_event(make_input("audio", MetadataParameters::new()));
+        }
+        sched.add_event(make_all_inputs_closed());
+
+        assert_eq!(
+            drain_kinds(&mut sched),
+            ["input", "input", "input", "all-inputs-closed"]
+        );
+    }
+
+    // Zenoh data can still land after `AllInputsClosed` (it takes a different
+    // path than the daemon's control events). It is delivered before it too.
+    #[test]
+    fn all_inputs_closed_waits_for_inputs_queued_after_it() {
+        let (mut sched, _id) = make_scheduler(10);
+
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_all_inputs_closed());
+        sched.add_event(make_zenoh_input("audio", MetadataParameters::new()));
+
+        assert_eq!(
+            drain_kinds(&mut sched),
+            ["input", "input", "all-inputs-closed"]
+        );
+    }
+
+    // A daemon `Stop` keeps its priority, even past a held `AllInputsClosed`.
+    #[test]
+    fn stop_still_overtakes_queued_inputs() {
+        let (mut sched, _id) = make_scheduler(10);
+
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_all_inputs_closed());
+        sched.add_event(make_stop());
+
+        assert_eq!(
+            drain_kinds(&mut sched),
+            ["stop", "input", "all-inputs-closed"]
         );
     }
 }
