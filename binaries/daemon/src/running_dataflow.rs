@@ -394,6 +394,13 @@ pub struct RunningDataflow {
     /// after `stop_all` moved the previously-known handles out of
     /// `running_nodes` must use this same policy.
     pub(crate) stop_process_policy: Option<StopProcessPolicy>,
+    /// Kill switches for the processes a graceful `stop_all` handed to their
+    /// grace timers. The handles leave `running_nodes` then, so without these
+    /// a later force stop (`dora stop --force`, the second Ctrl-C of
+    /// `dora start --attach`) finds nothing to kill and the nodes run out the
+    /// grace period (dora-rs/dora#3969). Plain senders, not `ProcessHandle`s:
+    /// dropping one must not kill the process.
+    pub(crate) graceful_stops: Vec<(NodeId, u64, flume::Sender<ProcessOperation>)>,
     pub(crate) empty_set: BTreeSet<DataId>,
     pub(crate) cascading_error_causes: CascadingErrorCauses,
     /// Planned-stop kill markers keyed by `(node id, generation)`: scoped to
@@ -514,6 +521,7 @@ impl RunningDataflow {
             timers_gate_drain: true,
             stop_sent: false,
             stop_process_policy: None,
+            graceful_stops: Vec::new(),
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
             grace_duration_kills: Default::default(),
@@ -822,6 +830,13 @@ impl RunningDataflow {
             StopProcessPolicy::Graceful(grace_duration.unwrap_or(DEFAULT_STOP_GRACE))
         };
         self.stop_process_policy = Some(stop_process_policy);
+        if force {
+            for (node_id, generation, op_tx) in self.graceful_stops.drain(..) {
+                if op_tx.send(ProcessOperation::Kill).is_ok() {
+                    self.grace_duration_kills.insert((node_id, generation));
+                }
+            }
+        }
 
         for (node_id, channel) in self.subscribe_channels.drain() {
             if send_with_timestamp(&channel, NodeEvent::Stop, clock).ok() == Some(true)
@@ -838,6 +853,10 @@ impl RunningDataflow {
             .collect();
         for (node_id, generation, process) in running_processes {
             if let Some(process) = process {
+                if !force {
+                    self.graceful_stops
+                        .push((node_id.clone(), generation, process.op_tx.clone()));
+                }
                 self.schedule_process_stop(node_id, generation, process, stop_process_policy);
             }
         }

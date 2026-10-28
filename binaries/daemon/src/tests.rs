@@ -1292,6 +1292,42 @@ fn teardown_rejects_matching_handle_replacement() {
     let _ = node.process.take();
 }
 
+/// A force stop after a graceful one must kill the nodes now, even though the
+/// graceful stop already moved their process handles into its grace timers
+/// (dora-rs/dora#3969).
+#[tokio::test(start_paused = true)]
+async fn force_stop_after_graceful_stop_kills_immediately() {
+    let clock = Arc::new(HLC::default());
+    let mut daemon_logger = test_logger(clock.clone());
+    let mut logger = daemon_logger.for_dataflow(Uuid::nil());
+    let mut df = test_dataflow();
+    let node_id: NodeId = "test".to_string().into();
+    let (op_tx, op_rx) = flume::bounded(4);
+    let mut node = test_running_node();
+    node.process = Some(ProcessHandle::new(op_tx));
+    df.running_nodes.insert(node_id.clone(), node);
+
+    let _ = df
+        .stop_all(&mut None, &clock, None, false, &mut logger)
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+    assert!(
+        op_rx.try_recv().is_err(),
+        "a graceful stop waits out the grace"
+    );
+
+    let _ = df
+        .stop_all(&mut None, &clock, None, true, &mut logger)
+        .await
+        .unwrap();
+    assert!(matches!(op_rx.try_recv(), Ok(ProcessOperation::Kill)));
+    assert!(
+        df.grace_duration_kills.contains(&(node_id, 7)),
+        "the kill must be classified as daemon-initiated"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn teardown_replacement_uses_configured_grace_period() {
     let mut dataflow = test_dataflow();
