@@ -68,16 +68,23 @@ fn default_output_path(input: &str) -> String {
         .into_owned()
 }
 
+/// Parse `--topics` into `(node_id, output_id)` pairs, dropping repeats.
+///
+/// A repeated topic must not get its own slot: matching records only the
+/// first slot a message hits, so the repeat would never be marked matched and
+/// the export would warn that a topic it did export "matched no messages".
 fn parse_topic_filter(topics: &[String]) -> eyre::Result<Vec<(String, String)>> {
-    topics
-        .iter()
-        .map(|topic| {
-            let (node, output) = topic
-                .split_once('/')
-                .ok_or_else(|| eyre!("invalid topic `{topic}`, expected `node_id/output_id`"))?;
-            Ok((node.to_string(), output.to_string()))
-        })
-        .collect()
+    let mut filter = Vec::with_capacity(topics.len());
+    for topic in topics {
+        let (node, output) = topic
+            .split_once('/')
+            .ok_or_else(|| eyre!("invalid topic `{topic}`, expected `node_id/output_id`"))?;
+        let entry = (node.to_string(), output.to_string());
+        if !filter.contains(&entry) {
+            filter.push(entry);
+        }
+    }
+    Ok(filter)
 }
 
 fn run_export(args: Export) -> eyre::Result<()> {
@@ -594,6 +601,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_topic_filter_drops_repeated_topics() {
+        let topics = ["a/b", "x/y", "a/b"].map(String::from);
+        let filter = super::parse_topic_filter(&topics).expect("parse");
+        assert_eq!(
+            filter,
+            vec![
+                ("a".to_string(), "b".to_string()),
+                ("x".to_string(), "y".to_string())
+            ]
+        );
+    }
+
+    #[test]
     fn parse_topic_filter_rejects_missing_output_slash() {
         let err = super::parse_topic_filter(&["camera".to_string()]).expect_err("must reject");
         assert!(
@@ -1017,11 +1037,10 @@ mod tests {
             // rejects it after the first message is already in the temp file.
             let mut full = fs::read(&recording_path).expect("read recording");
             let at = full.len() - 24; // start of the 8-byte magic + two u64s
-            // `MAX_RECORD_BYTES` is 64 MB and private to the recording crate, so
-            // name the number the reader compares against: anything over it is
-            // rejected, and 4 GB also happens to start with the footer magic's
-            // first four bytes, so pick a value clear of that.
-            let over_cap = 0x1000_0000u32;
+            // Anything over the cap is rejected; one byte past it also stays
+            // clear of the footer magic's first four bytes, which the reader
+            // would take as a clean end of the recording instead.
+            let over_cap = (dora_recording::MAX_RECORD_BYTES + 1) as u32;
             full.splice(at..at, over_cap.to_le_bytes());
             fs::write(&recording_path, &full).expect("write oversized record prefix");
         }

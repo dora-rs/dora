@@ -1,11 +1,12 @@
 use std::{
     collections::{BTreeMap, HashMap},
     fs::File,
-    io::Write,
+    io::{Read, Write},
     time::{Duration, Instant, SystemTime},
 };
 
 use aligned_vec::{AVec, ConstAlign};
+use base64::prelude::{BASE64_STANDARD, Engine as _};
 use dora_message::{
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
@@ -318,17 +319,89 @@ fn record_entry<W: Write>(
     }
 }
 
+/// Skip a frame whose Arrow IPC payload alone is over the per-record cap:
+/// count it and warn once. Returns whether the frame was skipped.
+///
+/// The recorded event embeds the IPC bytes verbatim, next to the ids and
+/// timestamp, so its [`RecordEntry::encoded_len`] is always larger: a frame
+/// refused here is one `write_entry_skip_oversized` would refuse anyway, only
+/// after two more full-size copies of it.
+fn skip_oversized_ipc(
+    ipc_len: usize,
+    summary: &mut RunSummary,
+    warned: &mut bool,
+    node: &NodeId,
+    output: &DataId,
+) -> bool {
+    if ipc_len <= dora_recording::MAX_RECORD_BYTES {
+        return false;
+    }
+    summary.note_oversized();
+    warn_oversized_once(warned, ipc_len, node, output);
+    true
+}
+
+/// Print the oversized-frame warning the first time a frame is skipped.
+fn warn_oversized_once(warned: &mut bool, len: usize, node: &NodeId, output: &DataId) {
+    if !*warned {
+        *warned = true;
+        eprintln!(
+            "dora-record-node: WARNING: skipping a {len}-byte message from {node}/{output} \
+             that exceeds the per-record limit — this recording will be incomplete."
+        );
+    }
+}
+
+/// The original descriptor YAML, from [`dora_recording::DESCRIPTOR_ENV`]
+/// (compressed and base64-encoded, because `env:` values are `$VAR`-expanded
+/// on the way here) or, from an older CLI, the raw
+/// [`dora_recording::LEGACY_DESCRIPTOR_ENV`].
+fn descriptor_from_env(var: impl Fn(&str) -> Option<String>) -> eyre::Result<Vec<u8>> {
+    use dora_recording::{DESCRIPTOR_ENV, LEGACY_DESCRIPTOR_ENV};
+    match var(DESCRIPTOR_ENV) {
+        Some(encoded) => {
+            let compressed = BASE64_STANDARD
+                .decode(encoded)
+                .wrap_err_with(|| format!("{DESCRIPTOR_ENV} is not valid base64"))?;
+            let mut yaml = Vec::new();
+            flate2::read::DeflateDecoder::new(compressed.as_slice())
+                .read_to_end(&mut yaml)
+                .wrap_err_with(|| format!("{DESCRIPTOR_ENV} is not a valid deflate stream"))?;
+            Ok(yaml)
+        }
+        None => Ok(var(LEGACY_DESCRIPTOR_ENV).unwrap_or_default().into_bytes()),
+    }
+}
+
+/// The header of the recording `node` makes.
+///
+/// It carries the id of the dataflow `node` runs in, which is the one being
+/// recorded, as `dora record --proxy` does, so `dora recording export` names
+/// a dataflow `dora list` knows.
+fn recording_header(
+    node: &DoraNode,
+    start_nanos: u64,
+    descriptor_yaml: Vec<u8>,
+) -> RecordingHeader {
+    RecordingHeader {
+        version: dora_recording::FORMAT_VERSION,
+        start_nanos,
+        dataflow_id: *node.dataflow_id(),
+        descriptor_yaml,
+    }
+}
+
 fn main() -> eyre::Result<()> {
     let output_file =
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
     let topics_json =
         std::env::var("DORA_RECORD_TOPICS").wrap_err("DORA_RECORD_TOPICS env var not set")?;
-    let descriptor_yaml = std::env::var("DORA_RECORD_DESCRIPTOR").unwrap_or_default();
+    let descriptor_yaml = descriptor_from_env(|name| std::env::var(name).ok())?;
 
     // Build reverse map: input_id -> (source_node_id, source_output_id).
     let reverse_map = build_reverse_map(&topics_json)?;
 
-    let (_node, mut events) = DoraNode::init_from_env()?;
+    let (node, mut events) = DoraNode::init_from_env()?;
 
     // The header keeps the wall-clock start (it says *when* the capture
     // began); entry offsets use this monotonic base instead (see
@@ -336,12 +409,7 @@ fn main() -> eyre::Result<()> {
     let start_nanos = unix_nanos(SystemTime::now());
     let start = Instant::now();
 
-    let header = RecordingHeader {
-        version: dora_recording::FORMAT_VERSION,
-        start_nanos,
-        dataflow_id: uuid::Uuid::new_v4(),
-        descriptor_yaml: descriptor_yaml.into_bytes(),
-    };
+    let header = recording_header(&node, start_nanos, descriptor_yaml);
 
     let file =
         File::create(&output_file).wrap_err_with(|| format!("failed to create {output_file}"))?;
@@ -402,13 +470,27 @@ fn main() -> eyre::Result<()> {
                     // previous code always went through the official writer
                     // (which stages the body in an internal `Vec`, ~2 payload
                     // copies) and then copied the result a third time into the
-                    // `AVec`, on every recorded message.
+                    // `AVec`, on every recorded message. `PreparedIpc` sizes
+                    // and encodes from one layout + header build.
                     let encoded: AVec<u8, ConstAlign<128>> =
-                        match arrow_utils::ipc_encode::ipc_fast_path_len(arrow_data) {
-                            Some(len) => {
+                        match arrow_utils::ipc_encode::PreparedIpc::new(arrow_data) {
+                            Some(prepared) => {
+                                // Skip an over-cap frame before the two full-size
+                                // copies below (the aligned buffer and the postcard
+                                // event) rather than after them.
+                                if skip_oversized_ipc(
+                                    prepared.byte_len(),
+                                    &mut summary,
+                                    &mut warned_about_oversized,
+                                    source_node,
+                                    source_output,
+                                ) {
+                                    continue;
+                                }
                                 let mut buf: AVec<u8, ConstAlign<128>> =
-                                    AVec::__from_elem(128, 0, len);
-                                arrow_utils::ipc_encode::encode_ipc_into(arrow_data, &mut buf)
+                                    AVec::__from_elem(128, 0, prepared.byte_len());
+                                prepared
+                                    .encode_into(&mut buf)
                                     .wrap_err("failed to Arrow-IPC-encode recorded output")?;
                                 buf
                             }
@@ -452,14 +534,12 @@ fn main() -> eyre::Result<()> {
                 // propagating the error out of `main` (which would lose every
                 // later message too). Genuine I/O errors still propagate.
                 if let Some(oversized_len) = record_entry(&mut writer, &entry, &mut summary)? {
-                    if !warned_about_oversized {
-                        warned_about_oversized = true;
-                        eprintln!(
-                            "dora-record-node: WARNING: skipping a {oversized_len}-byte message \
-                             from {source_node}/{source_output} that exceeds the per-record \
-                             limit — this recording will be incomplete."
-                        );
-                    }
+                    warn_oversized_once(
+                        &mut warned_about_oversized,
+                        oversized_len,
+                        source_node,
+                        source_output,
+                    );
                     continue;
                 }
                 flush_policy.after_write(&mut writer)?;
@@ -522,6 +602,33 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
+    #[test]
+    fn recording_header_carries_the_recorded_dataflow_id() {
+        use dora_node_api::integration_testing::{
+            IntegrationTestInput, TestingInput, TestingOptions, TestingOutput, output_channel,
+        };
+        let (output, _outputs) = output_channel();
+        let (node, _events) = DoraNode::init_testing(
+            TestingInput::Input(IntegrationTestInput::new(
+                "record".parse().unwrap(),
+                Vec::new(),
+            )),
+            TestingOutput::ToChannel(output),
+            TestingOptions::default(),
+        )
+        .unwrap();
+        let dataflow_id = *node.dataflow_id();
+        let header = recording_header(&node, 42, b"nodes: []".to_vec());
+
+        let mut buf = Vec::new();
+        RecordingWriter::new(&mut buf, &header).unwrap();
+        let reader = dora_recording::RecordingReader::open(std::io::Cursor::new(buf)).unwrap();
+
+        assert_eq!(reader.header().dataflow_id, dataflow_id);
+        assert_eq!(reader.header().start_nanos, 42);
+        assert_eq!(reader.header().descriptor_yaml, b"nodes: []");
+    }
+
     // ---- #3282: an incomplete recording must say so ----
 
     fn tally_with(counts: &[(&str, u64)]) -> DropTally {
@@ -553,9 +660,8 @@ mod tests {
         assert!(DropTally::default().report(&camera_lidar_map()).is_none());
     }
 
-    // Per-record size limit; kept in sync with `dora_recording`'s private
-    // `MAX_RECORD_BYTES` (64 MiB). A frame one byte past it must be skipped.
-    const OVER_LIMIT_PAYLOAD: usize = 64 * 1024 * 1024 + 1;
+    // A frame one byte past the per-record size limit must be skipped.
+    const OVER_LIMIT_PAYLOAD: usize = dora_recording::MAX_RECORD_BYTES + 1;
 
     fn writer_over_vec() -> RecordingWriter<Vec<u8>> {
         let header = RecordingHeader {
@@ -574,6 +680,57 @@ mod tests {
             timestamp_offset_nanos: 0,
             event_bytes: payload,
         }
+    }
+
+    #[test]
+    fn early_ipc_skip_never_drops_a_frame_the_writer_would_accept() {
+        // `main` skips a frame by its IPC length before building the record.
+        // That must only refuse frames `write_entry_skip_oversized` would refuse
+        // too: build the real recorded event around an IPC payload just past the
+        // cap and check the writer rejects the resulting entry as well.
+        let ipc_len = OVER_LIMIT_PAYLOAD;
+        let (node, output): (NodeId, DataId) =
+            ("camera".parse().unwrap(), "image".parse().unwrap());
+        let mut summary = RunSummary::default();
+        let mut warned = false;
+        assert!(!skip_oversized_ipc(
+            dora_recording::MAX_RECORD_BYTES,
+            &mut summary,
+            &mut warned,
+            &node,
+            &output,
+        ));
+        assert_eq!(summary.oversized_dropped, 0);
+        assert!(skip_oversized_ipc(
+            ipc_len,
+            &mut summary,
+            &mut warned,
+            &node,
+            &output,
+        ));
+        assert_eq!(summary.oversized_dropped, 1);
+        assert_eq!(summary.msg_count, 0);
+
+        let event = Timestamped {
+            inner: InterDaemonEvent::Output {
+                dataflow_id: uuid::Uuid::nil(),
+                node_id: "camera".parse().unwrap(),
+                output_id: "image".parse().unwrap(),
+                metadata: dora_message::metadata::Metadata::new(
+                    dora_node_api::uhlc::HLC::default().new_timestamp(),
+                ),
+                data: Some(AVec::__from_elem(128, 0u8, ipc_len)),
+            },
+            timestamp: dora_node_api::uhlc::HLC::default().new_timestamp(),
+        };
+        let big = entry("camera", "image", event.serialize().unwrap());
+        assert!(big.encoded_len() > ipc_len);
+
+        let mut writer = writer_over_vec();
+        assert_eq!(
+            record_entry(&mut writer, &big, &mut summary).unwrap(),
+            Some(big.encoded_len()),
+        );
     }
 
     #[test]
@@ -965,6 +1122,48 @@ mod tests {
         assert!(
             sink.flushed_len() > 0,
             "count bound must flush every {FLUSH_EVERY_N_RECORDS} records"
+        );
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let pairs: BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name| pairs.get(name).cloned()
+    }
+
+    #[test]
+    fn descriptor_prefers_the_encoded_variable() {
+        let mut deflate = flate2::write::DeflateEncoder::new(Vec::new(), Default::default());
+        deflate.write_all(b"a: $X").unwrap();
+        let encoded = BASE64_STANDARD.encode(deflate.finish().unwrap());
+        let descriptor = descriptor_from_env(vars(&[
+            (dora_recording::DESCRIPTOR_ENV, &encoded),
+            (dora_recording::LEGACY_DESCRIPTOR_ENV, "stale"),
+        ]))
+        .unwrap();
+        assert_eq!(descriptor, b"a: $X");
+    }
+
+    #[test]
+    fn descriptor_falls_back_to_the_raw_variable_of_an_older_cli() {
+        let descriptor = descriptor_from_env(vars(&[(
+            dora_recording::LEGACY_DESCRIPTOR_ENV,
+            "nodes: []",
+        )]))
+        .unwrap();
+        assert_eq!(descriptor, b"nodes: []");
+        assert!(descriptor_from_env(vars(&[])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn invalid_base64_descriptor_is_an_error() {
+        let err = descriptor_from_env(vars(&[(dora_recording::DESCRIPTOR_ENV, "not base64!")]))
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains(dora_recording::DESCRIPTOR_ENV),
+            "{err:#}"
         );
     }
 }

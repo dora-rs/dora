@@ -232,6 +232,28 @@ pub fn check_node_timing(node: &ResolvedNode) -> eyre::Result<()> {
     Ok(())
 }
 
+/// A runtime node must hold exactly one operator: the operator runtime
+/// (`dora_runtime_api::main`, shared by the shared-library and Python
+/// backends) refuses to start with zero or several. Without this check such a
+/// descriptor passes validation and only fails when the runtime process
+/// starts.
+///
+/// Like [`check_operator_ids`], descriptor resolution runs this for every
+/// node, so `dora start`, `dora node add/replace` and recovery are covered.
+pub fn check_runtime_operator_count(node: &ResolvedNode) -> eyre::Result<()> {
+    if let descriptor::CoreNodeKind::Runtime(runtime) = &node.kind
+        && runtime.operators.len() != 1
+    {
+        bail!(
+            "runtime node `{}` has {} operators, but a runtime node runs exactly one \
+             operator; split them into one node per operator",
+            node.id,
+            runtime.operators.len()
+        );
+    }
+    Ok(())
+}
+
 /// The panic-guard half of [`check_node_timing`]: reject only the values the
 /// daemon would panic on in `Duration::from_secs_f64`, with no
 /// descriptor-policy rules on top.
@@ -1504,6 +1526,73 @@ operators:
 "#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn runtime_node_with_several_operators_is_rejected() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: op1
+      - id: op2
+        shared-library: op2
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("runtime-node") && err.contains("2 operators"),
+            "error should name the node and the operator count, got: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_node_with_no_operators_is_rejected() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators: []
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("runtime-node") && err.contains("0 operators"),
+            "error should name the node and the operator count, got: {err}"
+        );
+    }
+
+    /// `dora start`, `dora node add/replace` and recovery resolve the
+    /// descriptor without running `check_dataflow_static`, so the count must
+    /// be enforced by resolution itself.
+    #[test]
+    fn resolution_rejects_a_runtime_node_with_several_operators() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: op1
+      - id: op2
+        shared-library: op2
+"#,
+        )
+        .unwrap();
+        let err = descriptor
+            .resolve_aliases_and_set_defaults()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("2 operators"), "got: {err}");
+    }
+
+    #[test]
+    fn runtime_node_with_one_operator_passes_the_operator_count_check() {
+        check_runtime_operator_count(&runtime_node()).unwrap();
     }
 
     fn custom_node() -> dora_message::descriptor::CustomNode {

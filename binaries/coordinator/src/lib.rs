@@ -35,8 +35,6 @@ use std::{
 };
 use tokio_stream::wrappers::ReceiverStream;
 
-const FALLBACK_REPLAY_BACKOFF: Duration = Duration::from_secs(5);
-
 /// Cap on the in-memory archived-dataflow history. Mirrors the local constant
 /// used by the `DataflowFinishedOnDaemon` teardown path; lifted to module
 /// scope so the spawn-timeout watchdog can use the same cap for archived
@@ -144,9 +142,8 @@ pub(crate) use daemon_liveness::{
     stop_orphaned_dataflow_on_daemon,
 };
 pub(crate) use params::{
-    ensure_delete_param_forward_applied, ensure_set_param_forward_applied,
-    handle_pruned_state_catchup_fallback, replay_persisted_params_for_daemon,
-    schedule_param_replay_for_ready_dataflow,
+    catch_up_daemon_behind_pruned_log, ensure_delete_param_forward_applied,
+    ensure_set_param_forward_applied, schedule_param_replay_for_ready_dataflow,
 };
 pub(crate) use ready_barrier::{
     broadcast_all_nodes_ready, nodes_on_daemon, replay_all_nodes_ready,
@@ -157,8 +154,7 @@ pub(crate) use spawn_build::{
 };
 pub(crate) use topic_debug::{
     close_topic_subscribers_on_finish, restore_topic_debug_streams_for_daemon,
-    start_topic_debug_stream, stop_topic_debug_stream, topic_debug_enabled,
-    topic_outputs_by_daemon,
+    start_topic_debug_stream, stop_topic_debug_stream, topic_publish_output_id,
 };
 pub(crate) use topology::{
     ensure_add_mapping_applied, ensure_add_node_applied, ensure_remove_mapping_applied,
@@ -283,7 +279,7 @@ async fn start_with_events(
         // exporter then resolves its target from the OTel-standard
         // `OTEL_EXPORTER_OTLP_ENDPOINT` env vars (defaulting to localhost).
         let endpoint = std::env::var("DORA_OTLP_ENDPOINT").ok();
-        let provider = dora_metrics::init_metrics(endpoint.as_deref())?;
+        let provider = dora_metrics::init_metrics("dora-coordinator", endpoint.as_deref())?;
         opentelemetry::global::set_meter_provider(provider.clone());
         provider
     };

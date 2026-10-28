@@ -437,6 +437,168 @@ async fn node_stop_does_not_block_on_a_full_event_channel() {
     );
 }
 
+/// A `dora/logs` subscriber whose channel closed (its node crashed) must keep
+/// its subscription: once the restarted node re-subscribes it has to receive
+/// log inputs again. The broadcast used to prune the subscriber entry along
+/// with the dead channel, and nothing ever re-added it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn log_subscriber_receives_logs_again_after_restart() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let mut dataflow = test_dataflow();
+    let dataflow_id = dataflow.id;
+    let monitor = NodeId::from("monitor".to_string());
+    dataflow
+        .log_subscribers
+        .push(crate::running_dataflow::LogSubscriber {
+            node_id: monitor.clone(),
+            input_id: DataId::from("logs".to_string()),
+            filter: dora_message::config::LogSubscriptionFilter {
+                min_level: None,
+                node_filter: None,
+            },
+        });
+    // The crashed incarnation's listener is gone, but its sender is still
+    // registered until the restarted node subscribes again.
+    let (dead_tx, dead_rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    drop(dead_rx);
+    dataflow.subscribe_channels.insert(monitor.clone(), dead_tx);
+    daemon.running.insert(dataflow_id, dataflow);
+
+    let log_message = || dora_message::common::LogMessage {
+        build_id: None,
+        dataflow_id: Some(dataflow_id),
+        node_id: Some(NodeId::from("other".to_string())),
+        daemon_id: None,
+        level: dora_core::build::LogLevelOrStdout::LogLevel(LogLevel::Info),
+        target: None,
+        module_path: None,
+        file: None,
+        line: None,
+        message: "hello".into(),
+        timestamp: chrono::Utc::now(),
+        fields: None,
+    };
+    daemon
+        .handle_dora_event(DoraEvent::LogBroadcast {
+            dataflow_id,
+            log_message: log_message(),
+        })
+        .await
+        .unwrap();
+
+    // The restarted incarnation re-subscribes.
+    let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    let dataflow = daemon.running.get_mut(&dataflow_id).unwrap();
+    Daemon::subscribe(dataflow, monitor.clone(), tx, &clock).await;
+    daemon
+        .handle_dora_event(DoraEvent::LogBroadcast {
+            dataflow_id,
+            log_message: log_message(),
+        })
+        .await
+        .unwrap();
+
+    let event = rx.try_recv().map(|event| event.inner);
+    assert!(
+        matches!(event, Ok(NodeEvent::Input { .. })),
+        "restarted log subscriber received {event:?}"
+    );
+}
+
+/// A `send_stdout_as` output is produced by the daemon, not the node, and
+/// must be routed like any node output: to local receivers (refreshing their
+/// input deadline) and to consumers on other daemons. The `Logs` handler used
+/// to deliver to local receivers only, so a consumer on another machine never
+/// received anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn stdout_output_reaches_local_and_remote_consumers() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let mut dataflow = test_dataflow();
+    let dataflow_id = dataflow.id;
+    let producer = NodeId::from("producer".to_string());
+    let output_id = OutputId(producer, DataId::from("stdout".to_string()));
+    let local = NodeId::from("local".to_string());
+    let input = DataId::from("logs".to_string());
+    dataflow
+        .mappings
+        .entry(output_id.clone())
+        .or_default()
+        .insert((local.clone(), input.clone()));
+    dataflow.input_deadlines.insert(
+        (local.clone(), input.clone()),
+        InputDeadline {
+            timeout: Duration::from_secs(60),
+            last_received: None,
+        },
+    );
+    let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    dataflow.subscribe_channels.insert(local.clone(), tx);
+    // A consumer of this output runs on another daemon.
+    dataflow.open_external_mappings.insert(output_id.clone());
+    daemon.running.insert(dataflow_id, dataflow);
+
+    daemon
+        .handle_dora_event(DoraEvent::Logs {
+            dataflow_id,
+            output_id: output_id.clone(),
+            message: DataMessage::Vec(AVec::from_slice(128, b"hello")),
+            metadata: metadata::Metadata::new(clock.new_timestamp()),
+        })
+        .await
+        .unwrap();
+
+    let event = rx.try_recv().map(|event| event.inner);
+    assert!(
+        matches!(event, Ok(NodeEvent::Input { ref id, .. }) if *id == input),
+        "local consumer received {event:?}"
+    );
+    let dataflow = &daemon.running[&dataflow_id];
+    assert!(
+        dataflow.input_deadlines[&(local, input)]
+            .last_received
+            .is_some(),
+        "delivery must refresh the consumer's input deadline"
+    );
+    assert!(
+        dataflow.publishers.contains_key(&output_id),
+        "the line must be published for the consumer on the other daemon"
+    );
+}
+
+/// `AddNode` re-registers a node's `dora/logs` inputs. An entry left by an
+/// earlier incarnation (kept across a crash, see the test above) must be
+/// replaced, not duplicated, or every log line reaches the node twice.
+#[test]
+fn unsubscribe_node_from_logs_drops_only_that_nodes_entries() {
+    let subscriber = |node: &str, input: &str| crate::running_dataflow::LogSubscriber {
+        node_id: NodeId::from(node.to_string()),
+        input_id: DataId::from(input.to_string()),
+        filter: dora_message::config::LogSubscriptionFilter {
+            min_level: None,
+            node_filter: None,
+        },
+    };
+    let mut dataflow = test_dataflow();
+    dataflow.log_subscribers = vec![
+        subscriber("monitor", "logs"),
+        subscriber("monitor", "old_logs"),
+        subscriber("other", "logs"),
+    ];
+
+    dataflow.unsubscribe_node_from_logs(&NodeId::from("monitor".to_string()));
+
+    let remaining: Vec<_> = dataflow
+        .log_subscribers
+        .iter()
+        .map(|sub| (sub.node_id.to_string(), sub.input_id.to_string()))
+        .collect();
+    assert_eq!(remaining, [("other".to_string(), "logs".to_string())]);
+}
+
 /// The coordinator sends `Logs` with `send_and_receive`, and the WS layer
 /// drops a `None` reply, so a `Logs` request for a dataflow this daemon does
 /// not know must still get an explicit error reply instead of leaving the
@@ -465,6 +627,45 @@ async fn logs_for_unknown_dataflow_replies_with_an_error() {
             assert!(err.contains(&dataflow_id.to_string()), "{err}");
         }
         other => panic!("expected a Logs error reply, got {other:?}"),
+    }
+}
+
+/// The coordinator stops a dataflow's daemons one after another, so the
+/// dataflow can finish on a later daemon before that daemon's stop arrives.
+/// The stop must then succeed rather than fail `dora stop` / `dora cluster
+/// restart` with "no running dataflow" (dora-rs/dora#3888), while a stop for
+/// a dataflow the daemon never ran still fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn stop_of_a_just_finished_dataflow_succeeds() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let finished = Uuid::new_v4();
+    daemon.running.insert(finished, test_dataflow());
+    daemon
+        .finish_dataflow(finished)
+        .await
+        .expect("the report is queued for the writer");
+
+    for (dataflow_id, expect_ok) in [(finished, true), (Uuid::new_v4(), false)] {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _status = daemon
+            .handle_coordinator_event(
+                DaemonCoordinatorEvent::StopDataflow {
+                    dataflow_id,
+                    grace_duration: None,
+                    force: false,
+                },
+                reply_tx,
+            )
+            .await
+            .expect("StopDataflow must not fail the daemon loop");
+        match reply_rx.await.expect("a reply must be sent") {
+            Some(DaemonCoordinatorReply::StopResult(result)) => {
+                assert_eq!(result.is_ok(), expect_ok, "{dataflow_id}: {result:?}");
+            }
+            other => panic!("expected a StopResult reply, got {other:?}"),
+        }
     }
 }
 
@@ -716,6 +917,60 @@ fn dynamic_join_rejects_static_nodes_and_stopping_dataflows() {
             .contains("stopping")
     );
     assert!(df.zenoh_peering.is_empty());
+}
+
+fn dataflow_with_node(id: Uuid, node: &NodeId, dynamic: bool) -> RunningDataflow {
+    let mut df = RunningDataflow::new(id, DaemonId::new(None), Descriptor::new(vec![]));
+    let mut running = test_running_node();
+    running.node_config.node_id = node.clone();
+    running.node_config.dynamic = dynamic;
+    df.running_nodes.insert(node.clone(), running);
+    df
+}
+
+#[test]
+fn dynamic_join_ignores_a_static_node_with_the_same_id_elsewhere() {
+    use crate::node_events::dataflow_for_dynamic_node;
+    let camera = NodeId::from("camera".to_owned());
+    let (static_id, dynamic_id) = (Uuid::new_v4(), Uuid::new_v4());
+    let mut running = HashMap::new();
+    running.insert(static_id, dataflow_with_node(static_id, &camera, false));
+    running.insert(dynamic_id, dataflow_with_node(dynamic_id, &camera, true));
+    // Whatever the map's iteration order, the dynamic declaration wins.
+    let picked = dataflow_for_dynamic_node(&mut running, &camera).unwrap();
+    assert_eq!(picked.id, dynamic_id);
+
+    // Two dynamic declarations are still ambiguous.
+    let other = Uuid::new_v4();
+    running.insert(other, dataflow_with_node(other, &camera, true));
+    let err = dataflow_for_dynamic_node(&mut running, &camera)
+        .err()
+        .unwrap();
+    assert!(err.contains("multiple dataflows"), "{err}");
+
+    // ... unless one of them is already stopping.
+    running.get_mut(&other).unwrap().stop_sent = true;
+    let picked = dataflow_for_dynamic_node(&mut running, &camera).unwrap();
+    assert_eq!(picked.id, dynamic_id);
+    running.remove(&other);
+
+    // Only static declarations: hand one back so the caller reports it is
+    // not dynamic, rather than calling it ambiguous.
+    running.retain(|id, _| *id == static_id);
+    running.insert(other, dataflow_with_node(other, &camera, false));
+    let picked = dataflow_for_dynamic_node(&mut running, &camera).unwrap();
+    assert!(
+        picked
+            .dynamic_node_config(&camera, None)
+            .unwrap_err()
+            .to_string()
+            .contains("not dynamic")
+    );
+
+    let err = dataflow_for_dynamic_node(&mut running, &NodeId::from("lidar".to_owned()))
+        .err()
+        .unwrap();
+    assert!(err.contains("no node with ID"), "{err}");
 }
 
 fn user_input(
@@ -1146,20 +1401,22 @@ fn stop_debug_stream_scan_cleans_up_watchers() {
     let sub_b = uuid::Uuid::new_v4();
 
     // Two subs, both watching out_1; only sub_a watches out_2.
-    df.debug_topic_watchers
-        .entry(OutputId(node_a.clone(), out_1.clone()))
-        .or_default()
-        .extend([sub_a, sub_b]);
-    df.debug_topic_watchers
-        .entry(OutputId(node_a.clone(), out_2.clone()))
-        .or_default()
-        .insert(sub_a);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_1.clone()), sub_a);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_1.clone()), sub_b);
+    df.add_debug_topic_watcher(OutputId(node_a.clone(), out_2.clone()), sub_a);
 
-    // Mirror the production stop path exactly.
-    df.debug_topic_watchers.retain(|_output_id, watchers| {
-        watchers.remove(&sub_a);
-        !watchers.is_empty()
-    });
+    df.remove_debug_topic_subscription(sub_a);
+
+    // The set shared with the debug subscriber tasks mirrors the map's keys,
+    // so out_2 samples are dropped before they are copied (dora-rs/dora#3781).
+    assert!(
+        df.debug_watched_outputs
+            .contains(&OutputId(node_a.clone(), out_1.clone()))
+    );
+    assert!(
+        !df.debug_watched_outputs
+            .contains(&OutputId(node_a.clone(), out_2.clone()))
+    );
 
     // out_1 still has sub_b → entry retained with just sub_b.
     let out_1_watchers = df

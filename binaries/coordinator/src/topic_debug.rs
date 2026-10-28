@@ -127,6 +127,27 @@ pub(crate) fn runtime_node_outputs(node: &RuntimeNode) -> BTreeSet<DataId> {
         .collect()
 }
 
+/// The output id `dora topic pub` must publish `node_id/output_id` under, or
+/// `None` if the dataflow has no such output or doesn't allow debug
+/// publishing.
+///
+/// The daemons subscribe under the resolved id, so a single-operator runtime
+/// node's bare `image` has to go out as `op/image`, as for `dora topic echo`.
+pub(crate) fn topic_publish_output_id(
+    running_dataflows: &HashMap<DataflowId, RunningDataflow>,
+    dataflow_id: DataflowId,
+    node_id: dora_message::id::NodeId,
+    output_id: DataId,
+) -> Option<DataId> {
+    if !topic_debug_enabled(running_dataflows, dataflow_id).unwrap_or(false) {
+        return None;
+    }
+    let outputs =
+        topic_outputs_by_daemon(running_dataflows, dataflow_id, &[(node_id, output_id)]).ok()?;
+    let (_, resolved) = outputs.into_values().flatten().next()?;
+    Some(resolved)
+}
+
 pub(crate) fn topic_debug_enabled(
     running_dataflows: &HashMap<DataflowId, RunningDataflow>,
     dataflow_id: DataflowId,
@@ -189,11 +210,11 @@ pub(crate) async fn start_topic_debug_stream(
                 match reply {
                     DaemonCoordinatorReply::StartTopicDebugStreamResult(Ok(())) => Ok(()),
                     DaemonCoordinatorReply::StartTopicDebugStreamResult(Err(err)) => {
-                        Err(eyre!(err))
+                        Err(StartFailure::Rejected(eyre!(err)))
                     }
-                    other => Err(eyre!(
-                        "unexpected start-topic-debug-stream reply: {other:?}"
-                    )),
+                    other => {
+                        Err(eyre!("unexpected start-topic-debug-stream reply: {other:?}").into())
+                    }
                 }
             }
             .await;
@@ -210,16 +231,26 @@ pub(crate) async fn start_topic_debug_stream(
         .topic_subscribers
         .insert(subscription_id, subscriber);
 
-    let mut started_daemons = Vec::new();
+    // Every daemon that didn't explicitly reject the start may be streaming:
+    // one whose reply timed out or got lost can still have registered the
+    // watcher. The daemon treats a stop for an unknown subscription as a
+    // no-op, so stopping those too is safe.
+    let mut daemons_to_stop = Vec::new();
     let mut first_error = None;
     for (daemon_id, result) in join_all(start_requests).await {
-        match result {
-            Ok(()) => started_daemons.push(daemon_id),
-            Err(err) => {
-                if first_error.is_none() {
-                    first_error = Some(err);
-                }
+        let err = match result {
+            Ok(()) => {
+                daemons_to_stop.push(daemon_id);
+                continue;
             }
+            Err(StartFailure::Rejected(err)) => err,
+            Err(StartFailure::Other(err)) => {
+                daemons_to_stop.push(daemon_id);
+                err
+            }
+        };
+        if first_error.is_none() {
+            first_error = Some(err);
         }
     }
 
@@ -229,59 +260,63 @@ pub(crate) async fn start_topic_debug_stream(
             daemon_connections,
             dataflow_id,
             subscription_id,
-            &started_daemons,
+            daemons_to_stop,
             clock,
-        )
-        .await?;
+        );
         return Err(err);
     }
 
     Ok(subscription_id)
 }
 
-pub(crate) async fn rollback_topic_debug_stream(
+/// Why a daemon's `StartTopicDebugStream` request failed.
+enum StartFailure {
+    /// The daemon answered with an error, so it did not start the stream.
+    Rejected(eyre::Report),
+    /// The request or its reply failed, so the daemon may have started it.
+    Other(eyre::Report),
+}
+
+impl From<eyre::Report> for StartFailure {
+    fn from(err: eyre::Report) -> Self {
+        Self::Other(err)
+    }
+}
+
+/// Stop the daemon streams of a subscription whose start failed part-way.
+///
+/// Every daemon in `daemon_ids` gets a stop, even if another one can't be
+/// reached: the subscriber is removed first, so nothing could tear a leftover
+/// stream down later. The stops are sent without waiting for their replies
+/// (see [`spawn_topic_debug_teardown`]). A failure is only logged, so that the
+/// caller can return the daemon's reason for rejecting the subscription.
+pub(crate) fn rollback_topic_debug_stream(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     daemon_connections: &mut DaemonConnections,
     dataflow_id: DataflowId,
     subscription_id: Uuid,
-    started_daemons: &[DaemonId],
+    daemon_ids: Vec<DaemonId>,
     clock: &HLC,
-) -> eyre::Result<()> {
+) {
     let Some(_) = running_dataflows
         .get_mut(&dataflow_id)
         .and_then(|dataflow| dataflow.topic_subscribers.remove(&subscription_id))
     else {
-        return Ok(());
+        return;
     };
 
-    for daemon_id in started_daemons {
-        let Some(connection) = daemon_connections.get_mut(daemon_id).cloned() else {
-            continue;
-        };
-        let message = serde_json::to_vec(&Timestamped {
-            inner: DaemonCoordinatorEvent::StopTopicDebugStream {
-                dataflow_id,
-                subscription_id,
-            },
-            timestamp: clock.new_timestamp(),
-        })?;
-        let reply_raw = connection
-            .send_and_receive(&message)
-            .await
-            .wrap_err("failed to roll back start-topic-debug-stream message")?;
-        let reply: DaemonCoordinatorReply = serde_json::from_slice(&reply_raw)
-            .wrap_err("failed to deserialize rollback stop-topic-debug-stream reply")?;
-        match reply {
-            DaemonCoordinatorReply::StopTopicDebugStreamResult(Ok(())) => {}
-            DaemonCoordinatorReply::StopTopicDebugStreamResult(Err(err)) => {
-                tracing::warn!(%daemon_id, %subscription_id, "failed to roll back topic debug stream: {err}");
-            }
-            other => {
-                tracing::warn!(%daemon_id, %subscription_id, "unexpected rollback reply: {other:?}");
-            }
-        }
+    if let Err(err) = spawn_topic_debug_teardown(
+        daemon_connections,
+        dataflow_id,
+        subscription_id,
+        daemon_ids,
+        clock,
+    ) {
+        tracing::warn!(
+            %subscription_id,
+            "failed to roll back topic debug stream: {err:?}"
+        );
     }
-    Ok(())
 }
 
 /// Remove a CLI topic subscription and stop its daemon streams.

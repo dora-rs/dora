@@ -8,7 +8,7 @@ use super::{Executable, default_tracing};
 use crate::common::parse_duration;
 use crate::{
     common::{
-        CoordinatorOptions, error_indicates_dataflow_finished, expect_reply,
+        CoordinatorOptions, coordinator_rejected, error_indicates_dataflow_finished, expect_reply,
         resolve_dataflow_identifier_interactive, send_control_request,
     },
     output::{
@@ -132,6 +132,7 @@ impl Executable for LogsArgs {
                         &config,
                     )
                 }
+                Err(err) if coordinator_rejected(&err) => local_logs_after_rejection(&self, err),
                 Err(_) => dispatch_local_logs(&self),
             };
         }
@@ -160,6 +161,7 @@ impl Executable for LogsArgs {
                     &config,
                 )
             }
+            Err(err) if coordinator_rejected(&err) => local_logs_after_rejection(&self, err),
             Err(_) => {
                 // Coordinator unavailable, fall back to local
                 dispatch_local_logs(&self)
@@ -181,6 +183,24 @@ fn dispatch_local_logs(args: &LogsArgs) -> Result<()> {
     } else {
         read_local_logs(args)
     }
+}
+
+/// Fall back to the local `out/` logs after a coordinator refused this CLI
+/// (rejected `--auth` token or version handshake).
+///
+/// The coordinator that refused us is not necessarily the one that ran the
+/// dataflow: a plain `dora run` never uses one, yet still finds it on the
+/// port, for example an older `dora up` left running across a CLI upgrade, or
+/// another user's `--auth` coordinator. So the local logs are still the right
+/// source, but say why the coordinator wasn't used. Without an `out/`
+/// directory there is nothing local to show, and the rejection, with its hint,
+/// is the useful error.
+fn local_logs_after_rejection(args: &LogsArgs, rejection: eyre::Report) -> Result<()> {
+    if !Path::new("out").exists() {
+        return Err(rejection);
+    }
+    eprintln!("warning: reading local logs from out/ instead: {rejection:#}\n");
+    dispatch_local_logs(args)
 }
 
 fn reject_legacy_node_arg(args: &LogsArgs) -> Result<()> {

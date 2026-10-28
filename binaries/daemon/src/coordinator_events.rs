@@ -537,11 +537,22 @@ impl Daemon {
             } => {
                 let finish_when = {
                     let mut logger = self.logger.for_dataflow(dataflow_id);
+                    // The coordinator stops the daemons one after another, so
+                    // a dataflow can finish here before its stop arrives: a
+                    // node stopped on an earlier daemon closes the inputs of
+                    // the nodes here (#3888). Its finish report is still held
+                    // then, and the stop is already done.
+                    let already_finished =
+                        self.pending_finished_dataflows.contains_key(&dataflow_id)
+                            || self
+                                .unconfirmed_finished_dataflows
+                                .contains_key(&dataflow_id);
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
                         .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"));
                     let (reply, future) = match dataflow {
+                        Err(_) if already_finished => (Ok(()), None),
                         Ok(dataflow) => {
                             let future = dataflow.stop_all(
                                 &mut self.coordinator_sender,
@@ -725,6 +736,11 @@ impl Daemon {
                         .get_mut(&dataflow_id)
                         .ok_or_else(|| eyre!("dataflow disappeared during spawn"))?;
 
+                    // A re-added id may still hold the `dora/logs` entries of
+                    // an earlier incarnation that exited without `RemoveNode`
+                    // (they are kept across a crash for its restart).
+                    dataflow.unsubscribe_node_from_logs(&node_id);
+
                     // Register inputs (open_inputs, mappings, timers, deadlines)
                     for (input_id, input) in &inputs {
                         dataflow
@@ -889,9 +905,7 @@ impl Daemon {
                     // Cancels the timer task of any interval left with no
                     // subscribers (#2585); see the method for details.
                     dataflow.unsubscribe_node_from_timers(&node_id);
-                    dataflow
-                        .log_subscribers
-                        .retain(|sub| sub.node_id != node_id);
+                    dataflow.unsubscribe_node_from_logs(&node_id);
 
                     // Clean up remaining state for this node.
                     if dataflow
@@ -1448,10 +1462,7 @@ impl Daemon {
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     for (node_id, data_id) in outputs {
                         dataflow
-                            .debug_topic_watchers
-                            .entry(OutputId(node_id, data_id))
-                            .or_default()
-                            .insert(subscription_id);
+                            .add_debug_topic_watcher(OutputId(node_id, data_id), subscription_id);
                     }
                     Ok(())
                 } else {
@@ -1467,15 +1478,7 @@ impl Daemon {
                 subscription_id,
             } => {
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    // Scan watchers rather than maintain an inverse map. Unsubscribe
-                    // is rare; scan is bounded by the count of outputs with active
-                    // subscribers. retain() drops empty entries in one pass.
-                    dataflow
-                        .debug_topic_watchers
-                        .retain(|_output_id, watchers| {
-                            watchers.remove(&subscription_id);
-                            !watchers.is_empty()
-                        });
+                    dataflow.remove_debug_topic_subscription(subscription_id);
                     Ok(())
                 } else {
                     Err(format!("no running dataflow with ID `{dataflow_id}`"))

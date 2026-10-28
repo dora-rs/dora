@@ -402,14 +402,16 @@ pub mod zenoh {
             if snapshot.closed {
                 return Err(ActionTransportError::Closed);
             }
+            // Name and type identity only, not QoS: like rmw_zenoh, a client
+            // finds a server whatever QoS either side declared.
             let matches = |kind: EntityKind, token: &TopicToken| {
                 snapshot.entities.iter().any(|entity| {
                     entity.token.kind == kind
-                        && entity
-                            .token
-                            .topic
-                            .as_ref()
-                            .is_some_and(|topic| topic == token)
+                        && entity.token.topic.as_ref().is_some_and(|topic| {
+                            topic.name == token.name
+                                && topic.type_name == token.type_name
+                                && topic.type_hash == token.type_hash
+                        })
                 })
             };
             if matches(EntityKind::Service, &tokens.send_goal)

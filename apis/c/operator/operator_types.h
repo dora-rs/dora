@@ -172,7 +172,12 @@ typedef struct Metadata {
     Vec_uint8_t open_telemetry_context;
 } Metadata_t;
 
-/** <No documentation available> */
+/** \brief
+ *  Free a vector returned by [`dora_read_data`].
+ *
+ *  Like `free(NULL)`, a vector whose `ptr` is `NULL` (the `None` result of
+ *  [`dora_read_data`]) is accepted and ignored.
+ */
 void
 dora_free_data (
     Vec_uint8_t _data);
@@ -209,7 +214,9 @@ dora_free_input_id (
  *  # Ownership
  *
  *  The returned vector is an owned copy of the payload; free it with
- *  [`dora_free_data`] when it is no longer needed.
+ *  [`dora_free_data`] when it is no longer needed. A `None` result reaches C
+ *  as a vector whose `ptr` is `NULL`; passing it to [`dora_free_data`] is a
+ *  no-op, so a caller may free every result unconditionally.
  */
 Vec_uint8_t
 dora_read_data (

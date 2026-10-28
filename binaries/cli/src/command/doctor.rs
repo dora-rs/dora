@@ -79,11 +79,8 @@ fn doctor(args: Doctor) -> eyre::Result<()> {
             pass(&mut stdout, &format!("Coordinator: reachable at {addr}"))?;
             Some(session)
         }
-        Err(_) => {
-            fail(
-                &mut stdout,
-                &format!("Coordinator: not reachable at {addr}"),
-            )?;
+        Err(e) => {
+            fail(&mut stdout, &coordinator_connect_failure(&e))?;
             failures += 1;
             None
         }
@@ -491,6 +488,65 @@ mod shm_tests {
         fs::create_dir(&shm).unwrap();
         fs::set_permissions(&shm, fs::Permissions::from_mode(0o1777)).unwrap();
         assert!(matches!(evaluate_shm(&shm), ShmState::Ok));
+    }
+}
+
+/// The FAIL line for a failed coordinator connection.
+///
+/// Keeps the error instead of a generic "not reachable": a coordinator that
+/// answers with 401 (missing/stale `--auth` token) or rejects the protocol
+/// handshake (CLI/coordinator version mismatch) *is* reachable, and the
+/// error already carries the matching hint (#3824). Continuation lines are
+/// indented so they read as part of the FAIL entry.
+fn coordinator_connect_failure(err: &eyre::Report) -> String {
+    format!("Coordinator: {err:#}").replace('\n', "\n      ")
+}
+
+#[cfg(test)]
+mod coordinator_connect_tests {
+    use super::coordinator_connect_failure;
+    use crate::common::connect_to_coordinator;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn auth_failure_is_reported_not_as_unreachable() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            stream
+                .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+
+        let err = connect_to_coordinator(addr)
+            .err()
+            .expect("401 must fail the connection");
+        server.join().unwrap();
+        let line = coordinator_connect_failure(&err);
+        assert!(line.contains("authentication failed"), "{line}");
+        assert!(line.contains("DORA_AUTH_TOKEN"), "{line}");
+        assert!(!line.contains("not reachable"), "{line}");
+    }
+
+    #[test]
+    fn refused_connection_points_at_dora_up() {
+        let addr = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let err = connect_to_coordinator(addr)
+            .err()
+            .expect("closed port must fail the connection");
+        let line = coordinator_connect_failure(&err);
+        assert!(
+            line.contains(&format!("cannot connect to coordinator at {addr}")),
+            "{line}"
+        );
+        assert!(line.contains("dora up"), "{line}");
     }
 }
 
