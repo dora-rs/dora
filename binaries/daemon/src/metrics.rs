@@ -499,10 +499,15 @@ impl Daemon {
 mod disk_rate_tests {
     use super::*;
 
-    /// A tick that lands while the previous collection still runs must skip
-    /// its cycle rather than start a second full scan from an empty `System`.
+    /// A collection must hold the metrics state for as long as it runs, so a
+    /// tick that lands meanwhile skips its cycle rather than starting a
+    /// second full scan from an empty `System`.
+    ///
+    /// The running collection is a real one, held up in `send_event` by a
+    /// full coordinator channel; on the old code the state was already free
+    /// again at that point.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_tick_during_a_running_collection_is_skipped() {
+    async fn a_running_collection_holds_the_state_until_it_is_done() {
         let state = Arc::new(tokio::sync::Mutex::new(MetricsState::default()));
         let clock = Arc::new(uhlc::HLC::default());
         let (sender, mut sent) = coordinator::CoordinatorSender::for_test();
@@ -525,30 +530,66 @@ mod disk_rate_tests {
             }]
         };
 
-        // Stands in for a collection that is still refreshing.
-        let running = state.clone().try_lock_owned().unwrap();
-        collect_and_send_metrics_bg(
+        // Fill the coordinator channel so the next send blocks.
+        let mut queued = 0;
+        while tokio::time::timeout(Duration::from_millis(50), sender.send_event(b"null"))
+            .await
+            .is_ok()
+        {
+            queued += 1;
+        }
+
+        let running = tokio::spawn(collect_and_send_metrics_bg(
             this_process(),
             state.clone(),
             sender.clone(),
             DaemonId::new(None),
             clock.clone(),
-        )
-        .await
-        .unwrap();
+        ));
+        // Wait until it has refreshed and is blocked sending its metrics.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while state.try_lock().is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "the collection never took the metrics state"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
-            sent.try_recv().is_err(),
-            "a second collection ran while the first held the state"
+            state.try_lock().is_err(),
+            "the metrics state was released while the collection was still sending"
         );
 
-        drop(running);
-        collect_and_send_metrics_bg(this_process(), state, sender, DaemonId::new(None), clock)
-            .await
-            .unwrap();
+        // A tick now skips: it finishes at once without queueing anything.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            collect_and_send_metrics_bg(
+                this_process(),
+                state.clone(),
+                sender.clone(),
+                DaemonId::new(None),
+                clock.clone(),
+            ),
+        )
+        .await
+        .expect("an overlapping tick must skip, not wait")
+        .unwrap();
+
+        // Draining lets the running collection finish and release the state.
+        for _ in 0..queued {
+            sent.recv().await.unwrap();
+        }
+        running.await.unwrap().unwrap();
         assert!(
-            sent.try_recv().is_ok(),
-            "the next collection must run once the previous one ended"
+            sent.recv().await.is_some(),
+            "the running collection's metrics"
         );
+        assert!(
+            sent.try_recv().is_err(),
+            "the overlapping tick must not have sent anything"
+        );
+        assert!(state.try_lock().is_ok());
     }
 
     #[test]
