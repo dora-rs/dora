@@ -92,12 +92,16 @@ fn restart_backoff(
 }
 
 /// Truncate a log line to `MAX_LOG_LINE_BYTES`, respecting UTF-8 char boundaries.
+///
+/// The cut drops the line's `\n`, so the marker ends with one: otherwise the
+/// stderr ring would join this line with the next when it builds a node's
+/// error cause.
 fn truncate_log_line(content: &mut String) {
     if content.len() > MAX_LOG_LINE_BYTES {
         // Truncate at the last valid UTF-8 char boundary at or before
         // MAX_LOG_LINE_BYTES so the retained prefix stays valid UTF-8.
         content.truncate(content.floor_char_boundary(MAX_LOG_LINE_BYTES));
-        content.push_str("... [truncated]");
+        content.push_str("... [truncated]\n");
     }
 }
 
@@ -1364,6 +1368,18 @@ mod tests {
         assert_eq!(restart_backoff(base, 16, Some(max)), max);
         assert_eq!(restart_backoff(base, 16, None), Duration::MAX);
         assert_eq!(restart_backoff(Duration::MAX, 2, None), Duration::MAX);
+    }
+
+    #[test]
+    fn truncated_log_line_keeps_a_line_terminator() {
+        let mut long = "x".repeat(MAX_LOG_LINE_BYTES + 1);
+        truncate_log_line(&mut long);
+        assert!(long.ends_with("... [truncated]\n"));
+        let next = "Error: boom\n".to_string();
+        assert_eq!(
+            crate::extract_err_from_stderr::extract_err_from_stderr(vec![long, next]),
+            "Error: boom\n"
+        );
     }
 
     #[test]

@@ -6,6 +6,18 @@ use crate::{
     versions_compatible,
 };
 
+/// A request from a node to its daemon.
+///
+/// # Adding a variant
+///
+/// Every new variant must expect a binary [`DaemonReply`](crate::daemon_to_node::DaemonReply),
+/// i.e. [`expects_tcp_binary_reply`](Self::expects_tcp_binary_reply) must
+/// return `true` for it. A daemon cannot decode a variant it predates, so it
+/// cannot tell whether the sender waits for an answer. With this rule, an
+/// undecodable request always waits for one, and the daemon can answer it
+/// with an error while keeping the connection open. Only `SendMessage`,
+/// `OutputSent` and `NodeConfig` get no binary reply; they are part of the
+/// frozen 1.x wire format. See "Stability scope at 1.0" in `docs/api-rust.md`.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
@@ -49,7 +61,7 @@ pub enum DaemonRequest {
         remove: bool,
     },
     /// Drop an opaque value. Every node that stored or loaded the key is sent
-    /// [`NodeEvent::ExtensionDropped`] so it can release whatever the value
+    /// [`NodeEvent::ExtensionDropped`](crate::daemon_to_node::NodeEvent::ExtensionDropped) so it can release whatever the value
     /// referred to.
     ExtensionDrop {
         namespace: String,
@@ -98,6 +110,8 @@ impl DaemonRequest {
     pub fn expects_tcp_binary_reply(&self) -> bool {
         #[allow(clippy::match_like_matches_macro)]
         match self {
+            // Frozen set: don't add variants here. A new request must expect a
+            // binary reply (see the `DaemonRequest` docs).
             DaemonRequest::SendMessage { .. }
             | DaemonRequest::OutputSent { .. }
             | DaemonRequest::NodeConfig { .. } => false,
@@ -239,5 +253,91 @@ mod register_version_tests {
             err.contains("wire-format") && err.contains(&Metadata::CURRENT_VERSION.to_string()),
             "error should name the wire-format mismatch and the expected version, got: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod reply_policy_tests {
+    use super::*;
+
+    /// The frozen set of requests that get no binary reply.
+    ///
+    /// Matched exhaustively, so a new `DaemonRequest` variant fails to compile
+    /// here until it is classified. It belongs in the `false` arm: a new
+    /// request must expect a binary reply (see the `DaemonRequest` docs).
+    fn is_frozen_no_binary_reply(request: &DaemonRequest) -> bool {
+        match request {
+            DaemonRequest::SendMessage { .. }
+            | DaemonRequest::OutputSent { .. }
+            | DaemonRequest::NodeConfig { .. } => true,
+            DaemonRequest::Register(_)
+            | DaemonRequest::Subscribe
+            | DaemonRequest::CloseOutputs(_)
+            | DaemonRequest::OutputsDone
+            | DaemonRequest::NextEvent
+            | DaemonRequest::EventStreamDropped
+            | DaemonRequest::ExtensionStore { .. }
+            | DaemonRequest::ExtensionLoad { .. }
+            | DaemonRequest::ExtensionDrop { .. }
+            | DaemonRequest::ExtensionRequest { .. } => false,
+        }
+    }
+
+    fn one_of_each() -> Vec<DaemonRequest> {
+        let metadata = || Metadata::new(uhlc::HLC::default().new_timestamp());
+        let text = || "x".to_string();
+        vec![
+            DaemonRequest::Register(NodeRegisterRequest::new(
+                uuid::Uuid::nil(),
+                NodeId::from(text()),
+            )),
+            DaemonRequest::Subscribe,
+            DaemonRequest::SendMessage {
+                output_id: DataId::from(text()),
+                metadata: metadata(),
+                data: None,
+            },
+            DaemonRequest::OutputSent {
+                output_id: DataId::from(text()),
+                metadata: metadata(),
+            },
+            DaemonRequest::CloseOutputs(Vec::new()),
+            DaemonRequest::OutputsDone,
+            DaemonRequest::NextEvent,
+            DaemonRequest::EventStreamDropped,
+            DaemonRequest::NodeConfig {
+                node_id: NodeId::from(text()),
+            },
+            DaemonRequest::ExtensionStore {
+                namespace: text(),
+                key: text(),
+                value: Vec::new(),
+            },
+            DaemonRequest::ExtensionLoad {
+                namespace: text(),
+                key: text(),
+                remove: false,
+            },
+            DaemonRequest::ExtensionDrop {
+                namespace: text(),
+                key: text(),
+            },
+            DaemonRequest::ExtensionRequest {
+                namespace: text(),
+                payload: Vec::new(),
+            },
+        ]
+    }
+
+    #[test]
+    fn only_the_frozen_requests_skip_the_binary_reply() {
+        for request in one_of_each() {
+            assert_eq!(
+                request.expects_tcp_binary_reply(),
+                !is_frozen_no_binary_reply(&request),
+                "a request other than SendMessage, OutputSent and NodeConfig must \
+                 expect a binary reply: {request:?}"
+            );
+        }
     }
 }

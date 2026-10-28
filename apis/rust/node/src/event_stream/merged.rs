@@ -1,7 +1,7 @@
 //! Merge external stream into an [`EventStream`][super::EventStream].
 //!
 //! Sometimes nodes need to listen to external events, in addition to Dora events.
-//! This module provides support for that by providing the [`MergeExternal`] trait.
+//! This module provides support for that by providing the [`MergeExternal`](crate::merged::MergeExternal) trait.
 
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;

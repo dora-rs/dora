@@ -74,7 +74,7 @@ uuid = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "6", package = "codspeed-criterion-compat" }
 # The bench and `tests/copy_count.rs` exercise the *public* encoder surface,
 # which is now `DoraArray`-typed. They build the payload arrays themselves, so
 # they need the Arrow 59 accessors — enabled here rather than on the library so

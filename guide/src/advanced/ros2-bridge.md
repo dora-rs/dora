@@ -1094,6 +1094,16 @@ if (server->matches(event)) {
 
 See `examples/ros2-bridge/c++/{turtle,service-server,action-client,action-server}/`.
 
+On native Zenoh (`init_ros2_context_with_transport` with `ZenohHumble` or
+`ZenohRep2016`), C++ topics and services work; actions still require DDS.
+A Zenoh service client returns responses from `downcast` in the order the
+requests were sent, even when the server answers them out of order (on DDS,
+responses come in the order they arrive). So a request that gets no response
+holds back the ones after it: after 30 s it arrives as an error from
+`downcast`, and the others follow. At most 64 requests are in flight; up to
+64 more wait to be sent (their 30 s start when they are sent), and
+`send_request` fails once that queue is full.
+
 ### Discovery & RMW notes (native servers)
 
 - **A Dora-hosted *server* is not discoverable by a real `rcl`/`rclcpp`/`rclpy`

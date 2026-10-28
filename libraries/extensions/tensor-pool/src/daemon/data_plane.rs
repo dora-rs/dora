@@ -462,7 +462,10 @@ pub(crate) async fn send_cross_data_frame(
             }
         }
     };
-    let mut buf = Vec::with_capacity(4 + 16 + 4 + shared_memory_id.len() + 8 + 8 + data.len());
+    // Header only: the payload goes out in its own `write_all` below, so
+    // reserving `data.len()` here would allocate a tensor-sized buffer per
+    // frame that is never written to.
+    let mut buf = Vec::with_capacity(4 + 16 + 4 + shared_memory_id.len() + 8 + 8);
     buf.extend_from_slice(&CROSS_DATA_MAGIC.to_be_bytes());
     buf.extend_from_slice(dataflow_id.as_bytes());
     buf.extend_from_slice(&(shared_memory_id.len() as u32).to_be_bytes());
