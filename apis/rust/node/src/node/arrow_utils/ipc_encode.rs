@@ -37,6 +37,8 @@
 //! `Struct` fields to the struct's `len`, a `FixedSizeList` child to
 //! `len * value_size`, and a `List`/`LargeList` child to its last offset.
 
+use std::sync::Arc;
+
 use arrow::array::ArrayData;
 use arrow::buffer::Buffer as ArrowBuffer;
 use arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
@@ -305,7 +307,7 @@ fn read_offset(offsets: &ArrowBuffer, index: usize, width: usize) -> Option<usiz
 /// Everything needed to write the stream, plus the exact total length.
 struct Prepared {
     layout: Layout,
-    schema_message: Vec<u8>,
+    schema_message: Arc<[u8]>,
     record_batch_message: Vec<u8>,
     schema_block: usize,
     record_batch_block: usize,
@@ -341,6 +343,39 @@ fn uint8_schema_message() -> eyre::Result<&'static [u8]> {
     }
     let message = build_schema_message(&DataType::UInt8)?;
     Ok(MESSAGE.get_or_init(|| message))
+}
+
+/// How many distinct output types [`cached_schema_message`] remembers per
+/// thread. A node typically sends a handful of types (an image and its
+/// metadata, say) from one thread; a small list covers that without
+/// unbounded growth.
+const SCHEMA_CACHE_ENTRIES: usize = 8;
+
+/// The schema message for `data_type`, reusing one this thread already built
+/// for the same type.
+///
+/// An output almost always sends the same type message after message, and
+/// building the schema flatbuffer (a `Schema`/`Field` allocation plus the
+/// arrow IPC generator) costs on the order of a microsecond per send — more
+/// than copying a small payload. When the list is full the oldest entry is
+/// dropped, so a node cycling through more types than that just rebuilds as
+/// before.
+fn cached_schema_message(data_type: &DataType) -> eyre::Result<Arc<[u8]>> {
+    thread_local! {
+        static CACHE: std::cell::RefCell<Vec<(DataType, Arc<[u8]>)>> =
+            const { std::cell::RefCell::new(Vec::new()) };
+    }
+    CACHE.with_borrow_mut(|cache| {
+        if let Some((_, message)) = cache.iter().find(|(cached, _)| cached == data_type) {
+            return Ok(message.clone());
+        }
+        let message: Arc<[u8]> = build_schema_message(data_type)?.into();
+        if cache.len() == SCHEMA_CACHE_ENTRIES {
+            cache.remove(0);
+        }
+        cache.push((data_type.clone(), message.clone()));
+        Ok(message)
+    })
 }
 
 /// Hand-build the RecordBatch IPC message flatbuffer (header only — no body),
@@ -380,7 +415,7 @@ fn build_record_batch_message(
 
 fn prepare(array: &ArrayData) -> Option<Prepared> {
     let layout = build_layout(array)?;
-    let schema_message = build_schema_message(array.data_type()).ok()?;
+    let schema_message = cached_schema_message(array.data_type()).ok()?;
     let record_batch_message = build_record_batch_message(
         array.len(),
         &layout.nodes,
@@ -1130,6 +1165,44 @@ mod tests {
         let mut buf = vec![0u8; len];
         encode_ipc_into_data(array, &mut buf).expect("fast-path encode");
         buf
+    }
+
+    /// The per-thread schema cache must never hand back a stale header when
+    /// the type changes between sends, including after eviction: every send
+    /// must carry exactly the schema message a fresh build does, and the
+    /// stream must still decode to the sent array.
+    #[test]
+    fn schema_cache_follows_type_changes() {
+        let float: ArrayRef = Arc::new(Float32Array::from(vec![1.0, 2.0]));
+        let int: ArrayRef = Arc::new(Int32Array::from(vec![Some(1), None, Some(3)]));
+        let strukt: ArrayRef = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("x", DataType::Float32, true)),
+            float.clone(),
+        )]));
+        let mut sends = vec![&float, &int, &float, &strukt, &strukt, &int];
+        // More distinct types than the cache holds, then the first ones again
+        // after they have been evicted.
+        let lists: Vec<ArrayRef> = (0..SCHEMA_CACHE_ENTRIES)
+            .map(|i| {
+                let field = Arc::new(Field::new(format!("item{i}"), DataType::Int32, true));
+                Arc::new(ListArray::new(
+                    field,
+                    arrow::buffer::OffsetBuffer::from_lengths([1]),
+                    Arc::new(Int32Array::from(vec![i as i32])),
+                    None,
+                )) as ArrayRef
+            })
+            .collect();
+        sends.extend(lists.iter());
+        sends.extend([&float, &int, &strukt]);
+        for array in sends {
+            let data = array.to_data();
+            assert_eq!(
+                &*cached_schema_message(data.data_type()).unwrap(),
+                build_schema_message(data.data_type()).unwrap().as_slice(),
+            );
+            assert_eq!(read_official(&fast_encode(&data)), data);
+        }
     }
 
     /// Decode a complete IPC stream with the OFFICIAL arrow `StreamReader` (the
