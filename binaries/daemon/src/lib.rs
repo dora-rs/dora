@@ -467,7 +467,7 @@ pub struct Daemon {
     pub(crate) builds: BTreeMap<BuildId, BuildInfo>,
     pub(crate) git_manager: GitManager,
     /// Carry-over state for the `dora top` metrics sampler. See [`MetricsState`].
-    pub(crate) metrics_state: Arc<std::sync::Mutex<MetricsState>>,
+    pub(crate) metrics_state: Arc<tokio::sync::Mutex<MetricsState>>,
     /// Opaque, dataflow-scoped store for out-of-tree extensions. See
     /// `extension_table` and `docs/extensions.md`.
     pub(crate) extensions: ExtensionTable,
@@ -1411,7 +1411,7 @@ impl Daemon {
             pool: dora_tensor_pool::daemon::PoolState::new(),
             builds,
             sessions: Default::default(),
-            metrics_state: Arc::new(std::sync::Mutex::new(MetricsState::default())),
+            metrics_state: Arc::new(tokio::sync::Mutex::new(MetricsState::default())),
         };
 
         Ok((daemon, dora_events_rx))
