@@ -6594,6 +6594,82 @@ async fn node_topology_changes_are_persisted() {
     daemon_task.await.unwrap();
 }
 
+/// #3872: the WS handler's per-connection subscription list is not told when
+/// the coordinator drops a subscriber on its own (a stalled reader evicted,
+/// the dataflow ended). `live_topic_subscriptions` reports which of the ids
+/// are still registered, so the handler can free the slots of the rest.
+#[test]
+fn live_topic_subscriptions_keeps_only_registered_ids() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "sender".to_string().into();
+    let live_id = Uuid::new_v4();
+    let evicted_id = Uuid::new_v4();
+
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id);
+    let (frame_tx, _frame_rx) =
+        tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    dataflow.topic_subscribers.insert(
+        live_id,
+        crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), frame_tx),
+    );
+    let running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+
+    let live =
+        crate::topic_debug::live_topic_subscriptions(&running_dataflows, vec![live_id, evicted_id]);
+
+    assert_eq!(live, vec![live_id]);
+}
+
+/// #3872: a subscriber the coordinator evicts on its own, here because its
+/// receiver went away, must stop being reported live. That is what lets the
+/// WS handler free the slot instead of counting it against the cap forever.
+#[tokio::test]
+async fn evicted_topic_subscriber_is_no_longer_live() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "sender".to_string().into();
+    let live_id = Uuid::new_v4();
+    let evicted_id = Uuid::new_v4();
+
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id);
+    let (live_tx, _live_rx) = tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    let (evicted_tx, evicted_rx) =
+        tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    drop(evicted_rx);
+    dataflow.topic_subscribers.insert(
+        live_id,
+        crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), live_tx),
+    );
+    dataflow.topic_subscribers.insert(
+        evicted_id,
+        crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), evicted_tx),
+    );
+    let mut running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+    let ids = vec![live_id, evicted_id];
+    assert_eq!(
+        crate::topic_debug::live_topic_subscriptions(&running_dataflows, ids.clone()),
+        ids,
+        "both subscribers are live before the frame"
+    );
+
+    crate::topic_debug::forward_topic_frames(
+        &mut running_dataflows,
+        &mut DaemonConnections::default(),
+        dataflow_id,
+        ids.clone(),
+        vec![1, 2, 3],
+        &HLC::default(),
+    )
+    .await;
+
+    assert_eq!(
+        crate::topic_debug::live_topic_subscriptions(&running_dataflows, ids),
+        vec![live_id],
+        "the subscriber whose receiver closed must no longer be live"
+    );
+}
+
 /// `dora clean` must leave a dataflow alone while it waits for a daemon to
 /// reconnect. Once one daemon of a multi-daemon dataflow has finished, the
 /// dataflow has partial `dataflow_results`; if the remaining daemon then drops
