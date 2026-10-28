@@ -99,7 +99,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -248,7 +248,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -322,7 +322,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -617,7 +617,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -1686,7 +1686,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -1990,7 +1990,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
       - name: Install pyarrow + numpy
