@@ -146,11 +146,7 @@ nodes:
       - result
 ```
 
-Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MODE`) into every node inside the module.
-
-Params reach a nested module's nodes the same way. A nested module node can
-also set its own params, which take precedence, or forward one under a new
-name with a reference such as `max_speed: $PARAM_SPEED`.
+Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MODE`) into every node inside the module, overriding a node's own `env:` entry of the same name.
 
 ## Expansion Rules
 
@@ -199,6 +195,14 @@ Only outputs declared by a nested module are visible to its parent. A parent
 module can wire or re-export `inner/processed` from the example above because
 `processed` is listed in `inner_module.yml`'s `module.outputs`; it cannot reach
 private outputs produced by nodes inside `inner_module.yml`.
+
+Params passed to the outer module reach the nodes of every nested module, in
+`args:` and as env vars, and override an inner node's own `env: PARAM_<KEY>`
+default just as they do for a direct child. A nested module node can set its
+own `params:`, which take precedence over the outer ones, and can reference
+outer params there: `max_speed: $PARAM_SPEED` passes the outer `speed` down
+as `max_speed` as well. The original `speed` is still handed down too, so
+inner nodes see both.
 
 ## Optional Inputs
 
