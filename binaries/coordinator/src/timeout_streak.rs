@@ -1,11 +1,10 @@
 /// Tracks a run of consecutive send timeouts to a bounded-channel WS
 /// subscriber.
 ///
-/// A transiently-slow `dora logs -f` / topic-debug reader can keep its channel
-/// full for a single 100 ms send window; that must not evict it. Both
-/// `LogSubscriber` and `TopicSubscriber` embed this counter and only close a
-/// subscriber once the streak reaches their eviction threshold, so the two
-/// paths share one definition of "how many timeouts in a row is too many".
+/// A transiently-slow topic-debug reader can keep its channel full for a
+/// single 100 ms send window; that must not evict it. `TopicSubscriber`
+/// embeds this counter and only closes a subscriber once the streak reaches
+/// its eviction threshold.
 #[derive(Debug, Default)]
 pub(crate) struct TimeoutStreak {
     consecutive: usize,

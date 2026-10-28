@@ -120,18 +120,19 @@ async fn send_topic_frame(
 /// Wait for a control request's reply while still draining the connection's
 /// pushed log lines and topic frames to the CLI.
 ///
-/// The coordinator event loop fills `log_rx`/`binary_rx` (64 slots each) and
-/// only this connection empties them. Awaiting the reply alone would leave
-/// them undrained for as long as the request takes, which for `WaitForBuild`
-/// or `Stop` is the whole build or shutdown: once full, every further log line
-/// costs the event loop a 100 ms send timeout and the subscriber is dropped
-/// after 100 of them, losing the rest of the log.
+/// The coordinator event loop fills `log_rx` and `binary_rx` and only this
+/// connection empties them. Awaiting the reply alone would leave them
+/// undrained for as long as the request takes, which for `WaitForBuild` or
+/// `Stop` is the whole build or shutdown: live log lines past
+/// `MAX_QUEUED_LOG_BYTES` would be dropped, and once the 64 `binary_rx`
+/// frames are full every further topic frame costs the event loop a 100 ms
+/// send timeout.
 ///
 /// `Err` means the WebSocket send failed (the connection is gone).
 async fn await_reply_forwarding_pushes(
     mut reply_rx: oneshot::Receiver<eyre::Result<ControlRequestReply>>,
     ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
-    log_rx: &mut mpsc::Receiver<String>,
+    log_rx: &mut crate::log_subscriber::LogQueue,
     binary_rx: &mut mpsc::Receiver<crate::topic_subscriber::TopicFrame>,
 ) -> Result<ControlRequestReply, ()> {
     let reply = loop {
@@ -146,7 +147,7 @@ async fn await_reply_forwarding_pushes(
     // now, though: draining until empty would let a producer that outpaces the
     // socket hold the reply back for as long as its burst lasts.
     for _ in 0..log_rx.len() {
-        let Ok(log_json) = log_rx.try_recv() else {
+        let Some(log_json) = log_rx.try_recv() else {
             break;
         };
         send_log_line(ws_tx, log_json).await?;
@@ -191,8 +192,10 @@ pub(crate) async fn handle_control_ws(
     clock: Arc<dora_core::uhlc::HLC>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-    // Channel for log events to push back on same WS connection
-    let (log_tx, mut log_rx) = mpsc::channel::<String>(64);
+    // Log events to push back on the same WS connection. The event loop never
+    // waits on it (#3794): it is bounded by bytes, and live lines past the
+    // cap are dropped and reported to the reader.
+    let (log_tx, mut log_rx) = crate::log_subscriber::log_queue();
     // Channel for binary topic data frames
     let (binary_tx, mut binary_rx) = mpsc::channel::<crate::topic_subscriber::TopicFrame>(64);
     let mut topic_subscriptions: Vec<Uuid> = Vec::new();
@@ -766,7 +769,10 @@ mod tests {
     /// when the build ends -- must not stop the connection from forwarding
     /// the log lines pushed to it meanwhile. Before the fix the WS loop sat in
     /// `reply_rx.await`, so after 64 lines the coordinator's sends blocked
-    /// (and in production timed out, then dropped the subscriber).
+    /// (and in production timed out, then dropped the subscriber). Pushes no
+    /// longer block, but an undrained queue still drops live lines past
+    /// `MAX_QUEUED_LOG_BYTES`, so the stand-in only replies once the client
+    /// has received every line: without the drain the test times out.
     #[tokio::test]
     async fn logs_keep_flowing_while_a_reply_is_pending() {
         use futures::{SinkExt as _, StreamExt as _};
@@ -774,6 +780,7 @@ mod tests {
         use tokio_tungstenite::tungstenite::Message as ClientMessage;
 
         const LINES: usize = 500;
+        let (all_received_tx, all_received_rx) = tokio::sync::oneshot::channel::<()>();
 
         let (event_tx, mut event_rx) = mpsc::channel(16);
         let clock = Arc::new(dora_core::uhlc::HLC::default());
@@ -802,7 +809,8 @@ mod tests {
         tokio::spawn(async move { axum::serve(listener, app).await });
 
         // Stand-in for the coordinator event loop: accept the log subscription,
-        // then push LINES log lines before answering the pending request.
+        // then push LINES log lines and answer the pending request only after
+        // the client has received all of them.
         let coordinator = tokio::spawn(async move {
             let mut log_sender = None;
             while let Some(event) = event_rx.recv().await {
@@ -816,14 +824,13 @@ mod tests {
                     Event::Control(ControlEvent::IncomingRequest { reply_sender, .. }) => {
                         let sender = log_sender.take().expect("subscribed before the request");
                         for i in 0..LINES {
-                            tokio::time::timeout(
-                                Duration::from_secs(5),
-                                sender.send(format!("{{\"line\":{i}}}")),
-                            )
-                            .await
-                            .expect("log channel not drained while the reply was pending")
-                            .expect("log channel closed");
+                            sender
+                                .push(format!("{{\"line\":{i}}}"))
+                                .expect("log channel closed");
                         }
+                        all_received_rx
+                            .await
+                            .expect("client stopped before receiving every line");
                         let _ = reply_sender.send(Ok(ControlRequestReply::TopicPublished));
                         return;
                     }
@@ -858,6 +865,7 @@ mod tests {
         let wait_id = send(ControlRequest::WaitForBuild { build_id }).await;
 
         let mut lines = 0;
+        let mut all_received_tx = Some(all_received_tx);
         loop {
             let msg = tokio::time::timeout(Duration::from_secs(30), ws.next())
                 .await
@@ -871,6 +879,11 @@ mod tests {
             if value.get("line").is_some() {
                 assert_eq!(value["line"], lines, "log lines must arrive in order");
                 lines += 1;
+                if lines == LINES
+                    && let Some(tx) = all_received_tx.take()
+                {
+                    let _ = tx.send(());
+                }
             } else if value["id"] == serde_json::json!(wait_id) {
                 break;
             }
