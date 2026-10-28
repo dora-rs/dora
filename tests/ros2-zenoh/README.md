@@ -7,4 +7,6 @@ always removes its Compose project. These jobs are intentionally nightly until
 the compatibility matrix has stabilized.
 
 The matrix covers both topic directions, both service roles, both action roles,
-graph discovery, domain isolation, namespaces, and transient-local QoS.
+graph discovery, domain isolation, namespaces, transient-local QoS, ROS 2
+parameters (the six `rcl_interfaces` services and `/parameter_events`), and the
+`/rosout` publisher.
