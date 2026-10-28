@@ -11,7 +11,7 @@ use crate::{
         reload_dataflow, resolve_name, restart_node, retrieve_logs, start_dataflow, stop_dataflow,
         stop_node,
     },
-    initiate_restart,
+    initiate_restart, live_topic_subscriptions,
     log_subscriber::LogSubscriber,
     resolve_param_target, resolve_single_node, start_topic_debug_stream,
     state::{LaunchContext, ParamTarget, RunningDataflow},
@@ -352,19 +352,26 @@ impl Coordinator {
                         )));
                     }
                     ControlRequest::CliAndDefaultDaemonOnSameMachine => {
-                        // With WS we can't inspect peer addresses.
-                        // If an unnamed (local) daemon is connected, assume same
-                        // machine by returning localhost for both.
-                        let has_unnamed = self.daemon_connections.unnamed().next().is_some();
-                        let ip = if has_unnamed {
-                            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
-                        } else {
-                            None
-                        };
+                        // The default daemon is the one `run` places an
+                        // undeployed node on. `cli` is left for the control
+                        // connection to fill in: only it knows the CLI's
+                        // address (`ws_control::fill_in_cli_ip`).
+                        let default_daemon = self
+                            .daemon_connections
+                            .unnamed()
+                            .next()
+                            .and_then(|id| self.daemon_connections.get(id))
+                            .and_then(|connection| {
+                                let remote = connection.peer_addr?;
+                                Some(crate::ws_control::peer_ip(
+                                    remote,
+                                    connection.coordinator_local_addr,
+                                ))
+                            });
                         let _ =
                             reply_sender.send(Ok(ControlRequestReply::CliAndDefaultDaemonIps {
-                                default_daemon: ip,
-                                cli: ip,
+                                default_daemon,
+                                cli: None,
                             }));
                     }
                     ControlRequest::GetNodeInfo => self.handle_get_node_info(reply_sender).await?,
@@ -600,6 +607,15 @@ impl Coordinator {
                     tracing::warn!("failed to unsubscribe topic debug stream: {err:?}");
                 }
                 let _ = done_tx.send(());
+            }
+            ControlEvent::TopicSubscriptionsLive {
+                subscription_ids,
+                live_tx,
+            } => {
+                let _ = live_tx.send(live_topic_subscriptions(
+                    &self.running_dataflows,
+                    subscription_ids,
+                ));
             }
         }
         Ok(())
@@ -1219,7 +1235,13 @@ impl Coordinator {
     ) -> eyre::Result<()> {
         let result = match self.running_dataflows.get_mut(&dataflow_id) {
             Some(dataflow) => {
-                if dataflow.node_to_daemon.contains_key(&node.id) {
+                // Check the stored topology, not `node_to_daemon`: a dataflow
+                // rebuilt after a coordinator restart or orphan reclaim maps
+                // only the nodes its reconnected daemons still run, so an
+                // exited node (or one on a daemon that has not reported yet)
+                // would pass, and the push below would persist a duplicate id
+                // that the next re-establish fails to resolve (#3759).
+                if dataflow.descriptor.nodes.iter().any(|n| n.id == node.id) {
                     Err(eyre!(
                         "node '{}' already exists in dataflow {dataflow_id}",
                         node.id

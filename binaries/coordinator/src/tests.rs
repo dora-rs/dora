@@ -2324,6 +2324,108 @@ async fn replay_takes_param_write_lock_before_reading_the_param() {
     assert_eq!(seen, vec![("gain".to_string(), serde_json::json!(2))]);
 }
 
+/// Ask a coordinator whose default daemon connected over `daemon` whether a
+/// CLI connected over `cli` shares its machine, through the event loop and
+/// the control connection's completion of the reply, as `dora start` does.
+async fn cli_and_default_daemon_on_same_machine(
+    cli: crate::ws_server::PeerInfo,
+    daemon: Option<crate::ws_server::PeerInfo>,
+) -> bool {
+    let mut daemon_connections = DaemonConnections::default();
+    if let Some(daemon) = daemon {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<String>(8);
+        let mut connection = crate::state::DaemonConnection::new(
+            tx,
+            Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            BTreeMap::new(),
+        );
+        connection.peer_addr = Some(daemon.remote);
+        connection.coordinator_local_addr = daemon.local;
+        daemon_connections.add(DaemonId::new(None), connection);
+    }
+    let mut coordinator = test_coordinator(
+        HashMap::new(),
+        daemon_connections,
+        Arc::new(InMemoryStore::new()),
+    );
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_control_event(ControlEvent::IncomingRequest {
+            request: Box::new(
+                dora_message::cli_to_coordinator::ControlRequest::CliAndDefaultDaemonOnSameMachine,
+            ),
+            reply_sender,
+        })
+        .await
+        .unwrap();
+    let reply = crate::ws_control::fill_in_cli_ip(reply.await.unwrap().unwrap(), cli);
+    // The CLI's check in `binaries/cli/src/common.rs`.
+    let ControlRequestReply::CliAndDefaultDaemonIps {
+        default_daemon,
+        cli,
+    } = reply
+    else {
+        panic!("unexpected reply {reply:?}")
+    };
+    default_daemon.is_some() && default_daemon == cli
+}
+
+fn peer(remote: &str, local: &str) -> crate::ws_server::PeerInfo {
+    crate::ws_server::PeerInfo {
+        remote: remote.parse().unwrap(),
+        local: Some(local.parse().unwrap()),
+    }
+}
+
+/// A CLI on another host must not be told it shares the default daemon's
+/// machine: it would send its own working directory, which does not exist
+/// there. The coordinator used to answer `127.0.0.1` for both whenever an
+/// unnamed daemon was connected.
+#[tokio::test]
+async fn a_remote_cli_does_not_share_the_default_daemons_machine() {
+    // Daemon next to the coordinator, CLI on a laptop.
+    assert!(
+        !cli_and_default_daemon_on_same_machine(
+            peer("192.0.2.7:50000", "192.0.2.1:6013"),
+            Some(peer("127.0.0.1:40000", "127.0.0.1:6013")),
+        )
+        .await
+    );
+    // Daemon on another host, CLI next to the coordinator.
+    assert!(
+        !cli_and_default_daemon_on_same_machine(
+            peer("127.0.0.1:50000", "127.0.0.1:6013"),
+            Some(peer("192.0.2.8:40000", "192.0.2.1:6013")),
+        )
+        .await
+    );
+    // No default daemon at all.
+    assert!(
+        !cli_and_default_daemon_on_same_machine(peer("127.0.0.1:50000", "127.0.0.1:6013"), None)
+            .await
+    );
+}
+
+#[tokio::test]
+async fn a_local_cli_shares_the_default_daemons_machine() {
+    // Both over loopback.
+    assert!(
+        cli_and_default_daemon_on_same_machine(
+            peer("127.0.0.1:50000", "127.0.0.1:6013"),
+            Some(peer("127.0.0.1:40000", "127.0.0.1:6013")),
+        )
+        .await
+    );
+    // The daemon dialed the host's LAN IP, the CLI loopback.
+    assert!(
+        cli_and_default_daemon_on_same_machine(
+            peer("127.0.0.1:50000", "127.0.0.1:6013"),
+            Some(peer("192.168.1.5:40000", "192.168.1.5:6013")),
+        )
+        .await
+    );
+}
+
 /// A `Coordinator` around the given state, with everything else empty.
 fn test_coordinator(
     running_dataflows: HashMap<DataflowId, RunningDataflow>,
@@ -6458,8 +6560,114 @@ async fn node_topology_changes_are_persisted() {
         [("sender".to_string(), Some("sender".to_string()))]
     );
 
+    // A dataflow rebuilt after a coordinator restart only maps the nodes its
+    // reconnected daemons still run (`RunningDataflow::recovered`), so an
+    // exited `sender` is in the descriptor but not in `node_to_daemon`.
+    // Re-adding it must be rejected, as it is without a restart, and the
+    // stored descriptor left untouched: a duplicate id makes the next
+    // re-establish fail to resolve it (#3759).
+    coordinator
+        .running_dataflows
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .node_to_daemon
+        .clear();
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_add_node(dataflow_id, node("sender", "sender-v2"), reply_tx)
+        .await
+        .unwrap();
+    let err = reply_rx
+        .await
+        .unwrap()
+        .expect_err("re-adding an existing id must be rejected");
+    assert!(
+        err.to_string().contains("already exists"),
+        "unexpected error: {err:?}"
+    );
+    assert_eq!(
+        stored_nodes(),
+        [("sender".to_string(), Some("sender".to_string()))]
+    );
+
     drop(coordinator);
     daemon_task.await.unwrap();
+}
+
+/// #3872: the WS handler's per-connection subscription list is not told when
+/// the coordinator drops a subscriber on its own (a stalled reader evicted,
+/// the dataflow ended). `live_topic_subscriptions` reports which of the ids
+/// are still registered, so the handler can free the slots of the rest.
+#[test]
+fn live_topic_subscriptions_keeps_only_registered_ids() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "sender".to_string().into();
+    let live_id = Uuid::new_v4();
+    let evicted_id = Uuid::new_v4();
+
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id);
+    let (frame_tx, _frame_rx) =
+        tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    dataflow.topic_subscribers.insert(
+        live_id,
+        crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), frame_tx),
+    );
+    let running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+
+    let live =
+        crate::topic_debug::live_topic_subscriptions(&running_dataflows, vec![live_id, evicted_id]);
+
+    assert_eq!(live, vec![live_id]);
+}
+
+/// #3872: a subscriber the coordinator evicts on its own, here because its
+/// receiver went away, must stop being reported live. That is what lets the
+/// WS handler free the slot instead of counting it against the cap forever.
+#[tokio::test]
+async fn evicted_topic_subscriber_is_no_longer_live() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "sender".to_string().into();
+    let live_id = Uuid::new_v4();
+    let evicted_id = Uuid::new_v4();
+
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id);
+    let (live_tx, _live_rx) = tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    let (evicted_tx, evicted_rx) =
+        tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    drop(evicted_rx);
+    dataflow.topic_subscribers.insert(
+        live_id,
+        crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), live_tx),
+    );
+    dataflow.topic_subscribers.insert(
+        evicted_id,
+        crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), evicted_tx),
+    );
+    let mut running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+    let ids = vec![live_id, evicted_id];
+    assert_eq!(
+        crate::topic_debug::live_topic_subscriptions(&running_dataflows, ids.clone()),
+        ids,
+        "both subscribers are live before the frame"
+    );
+
+    crate::topic_debug::forward_topic_frames(
+        &mut running_dataflows,
+        &mut DaemonConnections::default(),
+        dataflow_id,
+        ids.clone(),
+        vec![1, 2, 3],
+        &HLC::default(),
+    )
+    .await;
+
+    assert_eq!(
+        crate::topic_debug::live_topic_subscriptions(&running_dataflows, ids),
+        vec![live_id],
+        "the subscriber whose receiver closed must no longer be live"
+    );
 }
 
 /// `dora clean` must leave a dataflow alone while it waits for a daemon to

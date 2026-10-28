@@ -542,16 +542,21 @@ impl PoolState {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .insert((dataflow_id, shared_memory_id.clone(), seq), reply_sender);
-                // The seq the pending entry is live under. Starts at `seq`;
-                // a direct-TCP → zenoh failover re-keys the entry to a fresh
-                // `relay_seq` below and advances this to match, so the
-                // safety-net timeout removes the entry under whatever seq is
-                // actually live. Keying the timeout to the pre-failover seq
-                // (as it did) makes it a no-op after a re-key, leaving the
-                // node's write blocked forever (#3193).
-                let effective_seq = Arc::new(std::sync::atomic::AtomicU64::new(seq));
-                let timeout_seq = effective_seq.clone();
-                let timeout_pool = shared_memory_id.clone();
+                // Safety net: if the ack never arrives (peer restart, lost
+                // ack), fail the write rather than hang the node. The direct
+                // attempt must finish within its transfer budget from the
+                // request, and the net fires a margin after that — so a
+                // slow-but-successful direct transfer is never failed while
+                // the mirror commits it (#3688). A relay pushes the net out
+                // and re-arms it (see `CrossWriteNet`).
+                let started = tokio::time::Instant::now();
+                let direct_deadline = started + cross_transfer_budget(size);
+                let net = CrossWriteNet::new(seq, started + cross_write_ack_timeout(size));
+                tokio::spawn(run_cross_write_net(
+                    dataflow_id,
+                    shared_memory_id.clone(),
+                    net.clone(),
+                ));
                 // Direct-TCP data plane: when the register ack reported a
                 // data listener, writes bypass the zenoh relay entirely —
                 // one user-space copy on this side (segment → send
@@ -605,7 +610,7 @@ impl PoolState {
                             return;
                         }
                     };
-                    let mut relay_seq = seq;
+                    let mut direct_failed = false;
                     if let Some(endpoint) = direct_endpoint {
                         match send_cross_data_frame(
                             &cross_data_conns,
@@ -614,6 +619,7 @@ impl PoolState {
                             &shared_memory_id,
                             seq,
                             &tensor_data,
+                            direct_deadline,
                         )
                         .await
                         {
@@ -642,46 +648,43 @@ impl PoolState {
                                          (warned once; recovery will be logged)"
                                     );
                                 }
-                                // The direct attempt for this seq is
-                                // abandoned. On a mid-frame disconnect the
-                                // mirror has already parsed the header and
-                                // publishes ok:false(old seq) the instant
-                                // its read fails — which would win the race
-                                // against the relay's ok:true (published
-                                // only after the re-sent frame is memcpy'd)
-                                // and fail the node's write even though the
-                                // zenoh fallback delivers the frame
-                                // byte-for-byte. Re-key the pending entry to
-                                // a fresh seq for the relay hop so the stale
-                                // ok:false is dropped by the first-wins
-                                // resolver, keep the per-pool counter
-                                // monotonic so the next write cannot collide
-                                // with this re-keyed seq (bot review
-                                // 5307022693), and advance `effective_seq`
-                                // so the safety-net timeout follows it (#3193).
-                                match rekey_cross_write_to_relay(
-                                    dataflow_id,
-                                    &shared_memory_id,
-                                    seq,
-                                    &effective_seq,
-                                ) {
-                                    Some(new_seq) => relay_seq = new_seq,
-                                    // Nothing was pending under `seq`, so this
-                                    // write is already resolved: the mirror's
-                                    // stale ok:false won the race, the safety
-                                    // net fired, or `finish_dataflow` drained
-                                    // it. Falling through would publish the
-                                    // whole payload to the mirror anyway — it
-                                    // would memcpy the frame and advance the
-                                    // seqlock, so a receiver there reads as
-                                    // "stable" a frame this daemon already told
-                                    // the sender had failed, and a full-size WAN
-                                    // transfer burns with nobody awaiting it.
-                                    None => return,
-                                }
+                                direct_failed = true;
                             }
                         }
                     }
+                    // Hand the write to the relay. After a failed direct
+                    // attempt the pending entry moves to a fresh seq, so the
+                    // mirror's stale ok:false for the abandoned direct frame
+                    // cannot fail a write the relay delivers. `None` means the
+                    // write is already resolved (the stale ok:false won, the
+                    // net fired, or `finish_dataflow` drained it): relaying
+                    // would still memcpy the frame on the mirror, so a
+                    // receiver there would read as "stable" a frame the sender
+                    // was told had failed.
+                    // While the frame is handed to zenoh the net waits for a
+                    // relay at half the expected minimum rate; past that it
+                    // only stops a stalled put from blocking the node forever.
+                    let relay_deadline =
+                        tokio::time::Instant::now() + 2 * cross_transfer_budget(size);
+                    let Some(relay_seq) = begin_cross_write_relay(
+                        dataflow_id,
+                        &shared_memory_id,
+                        &net,
+                        direct_failed,
+                        relay_deadline,
+                    ) else {
+                        return;
+                    };
+                    // Re-arm the net once the relayed frame is out,
+                    // however the publish ends. Declared before `message`, so
+                    // the frame is freed first.
+                    struct RearmNet(Arc<CrossWriteNet>);
+                    impl Drop for RearmNet {
+                        fn drop(&mut self) {
+                            self.0.arm(tokio::time::Instant::now() + CROSS_ACK_MARGIN);
+                        }
+                    }
+                    let _rearm = RearmNet(net);
                     let message = PeerMessage::Write {
                         shared_memory_id: shared_memory_id.clone(),
                         tensor_data,
@@ -711,16 +714,6 @@ impl PoolState {
                             ))));
                         }
                     }
-                });
-                // Safety net: if the ack never arrives (peer restart,
-                // lost ack), fail the write rather than hang the node.
-                // `fire_cross_write_timeout` reads the effective seq itself,
-                // under the pending-map guard, so the removal follows any
-                // direct-TCP → relay re-key that happened meanwhile — including
-                // one that lands while this task is waking up (#3193).
-                tokio::spawn(async move {
-                    tokio::time::sleep(CROSS_WRITE_ACK_TIMEOUT).await;
-                    fire_cross_write_timeout(dataflow_id, &timeout_pool, &timeout_seq);
                 });
             }
             NodeRequest::RegisterCrossMachine {
@@ -1282,7 +1275,7 @@ impl PoolState {
         }
         // Fail any cross-machine write replies still pending for this
         // dataflow. Without it a node whose write was in flight at finish
-        // hangs until the 120s safety-net timeout, and a relay entry orphaned
+        // hangs until the ack-timeout safety net, and a relay entry orphaned
         // by a failover (#3193) would leak for the daemon's lifetime.
         //
         // Must run *before* the `CROSS_WRITE_SEQ` retain below: a spawned
