@@ -6,6 +6,8 @@ This example exercises Dora's pinned memory-pool transport for repeated tensor t
 
 Beyond the single-daemon scenarios, the `*_cross*.yml` dataflows exercise the **same-host multi-daemon** and **cross-machine** topologies: `register_tensor_pool(machine=...)` mirrors the pool on another daemon (same host or another machine), with zero-copy direct reads when the daemons share a host and a reliable zenoh/TCP data plane when they do not.
 
+Single-machine Ascend scenarios use the same sender and receiver. Set `sender_device` / `receiver_device` to `npu` or `npu:N`. The NPU side needs `torch_npu` and CANN; Ascend IPC stays on one machine.
+
 ## Install
 
 ```bash
@@ -24,6 +26,12 @@ For CUDA receiver scenarios (`cpu2cuda.yml`, `cuda2cpu.yml`), also verify CUDA i
 python -c "import torch; assert torch.cuda.is_available()"
 ```
 
+For Ascend scenarios, verify `torch_npu` and the NPU runtime instead. These YAMLs have no `build:` step, so `--uv` will not install CANN or `torch_npu`:
+
+```bash
+python -c "import torch_npu, torch; assert torch.npu.is_available()"
+```
+
 ## Files
 
 - `sender.py` — registers and updates a memory pool from the sender side. Reads `cross_machine` (target machine id) from the environment to switch to cross-machine registration.
@@ -31,6 +39,12 @@ python -c "import torch; assert torch.cuda.is_available()"
 - `cpu2cpu.yml` — positive throughput test for CPU sender → CPU receiver (GPU-less CI safe).
 - `cpu2cuda.yml` — positive throughput test for CPU sender → CUDA receiver.
 - `cuda2cpu.yml` — positive throughput test for CUDA sender → CPU receiver.
+- `npu2cpu.yml` — positive throughput test for Ascend NPU sender → CPU receiver.
+- `cpu2npu.yml` — positive throughput test for CPU sender → Ascend NPU receiver.
+- `npu_inner.yml` — same-card NPU sender → NPU receiver (`npu:0` → `npu:0`).
+- `npu2npu.yml` — cross-card NPU sender → NPU receiver (`npu:0` → `npu:1`); uses peer access when the devices allow it.
+- `npu2npu_nop2p.yml` — cross-card NPU → NPU through host transit (peer access disabled).
+- `bench_h2d_d2d.py` — times host-to-device and same-device copies. Does not start a dataflow.
 - `duplicate_free.yml` — receiver frees the same memory pool twice (CPU receiver).
 - `read_after_free.yml` — receiver frees, then reads the same memory pool again (CPU receiver).
 - `write_after_free.yml` — sender frees, then writes the same memory pool again (CPU receiver).
@@ -53,6 +67,24 @@ Expected behavior:
 - the sender and receiver print preview tensors
 - the receiver prints average throughput
 - no crash or obvious memory error occurs
+
+### Single-machine Ascend
+
+```bash
+dora run libraries/extensions/tensor-pool/examples/npu2cpu.yml
+dora run libraries/extensions/tensor-pool/examples/cpu2npu.yml
+dora run libraries/extensions/tensor-pool/examples/npu_inner.yml
+dora run libraries/extensions/tensor-pool/examples/npu2npu.yml
+dora run libraries/extensions/tensor-pool/examples/npu2npu_nop2p.yml
+```
+
+Expected behavior matches the positive throughput scenarios above. `npu2npu.yml` needs two visible NPUs. On `npu2npu_nop2p.yml` the sender prints `Ascend NPU IPC path: host transit`.
+
+`bench_h2d_d2d.py` is not a dataflow. Run it in the environment that already has `torch_npu` or CUDA:
+
+```bash
+python libraries/extensions/tensor-pool/examples/bench_h2d_d2d.py --device npu:0
+```
 
 ### Same-host multi-daemon (`cpu2cpu_cross_local.yml`)
 
@@ -161,6 +193,7 @@ Expected warnings/info:
 - The scenario is controlled through the `memory_pool_scenario` environment variable in each YAML file.
 - `cpu2cpu.yml` and the four negative-lifecycle YAMLs use CPU-only receiver (`receiver_device: cpu`) and are safe for GPU-less CI runners.
 - The CUDA receiver scenarios (`cpu2cuda.yml`, `cuda2cpu.yml`) require a working CUDA runtime.
+- The Ascend scenarios require `torch_npu` and CANN. `npu2npu.yml` and `npu2npu_nop2p.yml` need two visible NPUs. None of them run in CI.
 - The negative scenarios use a reduced message count to keep lifecycle validation short and focused.
 - When running with `--uv`, each YAML's `build:` step provisions torch (CPU-only from `download.pytorch.org/whl/cpu`) into per-node managed environments, so no pre-installed torch is needed.
 - The cross-machine YAMLs (`*_cross*.yml`) need two daemons and therefore cannot run on standard CI; the same-host variant (`cpu2cpu_cross_local.yml`) is covered by the torch-gated `memory-pool-smoke` nightly job.
