@@ -507,6 +507,52 @@ fn hub_override_unused_is_warned() {
     );
 }
 
+/// An override whose checkout is a different package (wrong name, or a fork
+/// under another namespace) is rejected instead of building that package's
+/// entrypoint and contracts for this node (#3848).
+#[test]
+fn hub_override_rejects_mismatched_package() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub override mismatch test");
+        return;
+    }
+    let fixture = build_fixture();
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+
+    for (name, namespace) in [("hub-smoke-other", "test"), ("hub-smoke-hello", "acme")] {
+        let checkout = fixture.root.join(format!("checkouts/{namespace}-{name}"));
+        write(
+            &checkout.join("dora-node.yml"),
+            &format!(
+                "apiVersion: 1\nname: {name}\nnamespace: {namespace}\nruntime: rust\n\
+                 entrypoint: target/release/{name}\nbuild: cargo build --release\n"
+            ),
+        );
+        let out = dora(&fixture)
+            .args([
+                "build",
+                flow.to_str().unwrap(),
+                "--hub-override",
+                &format!("test/hub-smoke-hello={}", checkout.display()),
+            ])
+            .output()
+            .unwrap();
+        let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+        assert!(
+            !out.status.success(),
+            "override with a `{namespace}/{name}` checkout must fail, got:\n{combined}"
+        );
+        assert!(
+            combined.contains(&format!("declares package `{namespace}/{name}`")),
+            "expected a package-mismatch error, got:\n{combined}"
+        );
+    }
+}
+
 /// An override is also surfaced when the dataflow has *no* hub nodes at all —
 /// the resolver early-returns in that case, so the warning must fire there too.
 #[test]
@@ -610,6 +656,48 @@ fn hub_override_rejects_remote_coordinator_even_if_unmatched() {
     assert!(
         stderr(&out).contains("remote") && stderr(&out).contains("coordinator"),
         "expected a remote-coordinator rejection, got: {}",
+        stderr(&out)
+    );
+}
+
+/// `--local` takes precedence over a coordinator address, so `--hub-override`
+/// must not be rejected when `DORA_COORDINATOR_ADDR` is merely exported in the
+/// environment (#3929). `--write-lockfile` stops the build at the next check,
+/// which proves the coordinator check was passed without building the node.
+#[test]
+fn hub_override_local_ignores_coordinator_env() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub override coordinator env test");
+        return;
+    }
+    let fixture = build_fixture();
+    let checkout = fixture.root.join("source/node-hub/hello");
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let out = dora(&fixture)
+        .env("DORA_COORDINATOR_ADDR", "127.0.0.1")
+        .env("DORA_COORDINATOR_PORT", "6013")
+        .args([
+            "build",
+            flow.to_str().unwrap(),
+            "--local",
+            "--write-lockfile",
+            "--hub-override",
+            &format!("test/hub-smoke-hello={}", checkout.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !stderr(&out).contains("remote coordinator"),
+        "--local must skip the remote-coordinator rejection, got: {}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("`--hub-override` cannot be combined with `--write-lockfile`"),
+        "expected to reach the write-lockfile rejection, got: {}",
         stderr(&out)
     );
 }

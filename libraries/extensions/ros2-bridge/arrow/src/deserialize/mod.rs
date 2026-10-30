@@ -123,7 +123,9 @@ impl<'de> serde::de::DeserializeSeed<'de> for StructDeserializer<'_> {
         let message = lookup_message(type_info).map_err(error)?;
 
         let visitor = StructVisitor { type_info, message };
-        deserializer.deserialize_tuple_struct(DUMMY_STRUCT_NAME, message.members.len(), visitor)
+        // A message with no fields still has ROS's one-byte member.
+        let len = message.members.len().max(1);
+        deserializer.deserialize_tuple_struct(DUMMY_STRUCT_NAME, len, visitor)
     }
 }
 
@@ -148,6 +150,14 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
         A: serde::de::SeqAccess<'de>,
     {
         let message = self.message;
+        if message.members.is_empty() {
+            // ROS gives a message with no fields one `uint8` member
+            // (`structure_needs_at_least_one_member`); skip its byte so the
+            // fields after a nested empty message are read from the right place.
+            data.next_element::<u8>()?.ok_or_else(|| {
+                serde::de::Error::invalid_length(0, &"the one byte of a message with no fields")
+            })?;
+        }
 
         let mut fields = vec![];
         for member in &message.members {
@@ -363,8 +373,9 @@ mod tests {
             messages: Arc::new(messages),
         };
 
-        // An empty message has no fields, so the CDR body is empty.
-        let bytes: Vec<u8> = Vec::new();
+        // ROS sends one byte for a message with no fields (its
+        // `structure_needs_at_least_one_member`).
+        let bytes: Vec<u8> = vec![0];
 
         let seed = StructDeserializer::new(Cow::Owned(type_info));
         let mut deserializer = cdr_encoding::CdrDeserializer::<LittleEndian>::new(&bytes);
@@ -376,5 +387,55 @@ mod tests {
         // One struct row with no columns.
         assert_eq!(empty.len(), 1);
         assert_eq!(empty.num_columns(), 0);
+    }
+
+    /// `Outer { Empty e; int32 x }` as ROS writes it: the empty message's one
+    /// byte, three bytes of padding, then `x`. Reading no byte for `e` would
+    /// read `x` from the padding.
+    #[test]
+    fn a_nested_empty_message_from_ros_decodes_the_fields_after_it() {
+        let empty = Message {
+            package: "test_pkg".to_string(),
+            name: "Empty".to_string(),
+            members: vec![],
+            constants: vec![],
+        };
+        let outer = Message {
+            package: "test_pkg".to_string(),
+            name: "Outer".to_string(),
+            members: vec![
+                member(
+                    "e",
+                    MemberType::NestableType(NestableType::NamedType(NamedType(
+                        "Empty".to_string(),
+                    ))),
+                ),
+                member(
+                    "x",
+                    MemberType::NestableType(NestableType::BasicType(BasicType::I32)),
+                ),
+            ],
+            constants: vec![],
+        };
+        let package = HashMap::from([("Empty".to_string(), empty), ("Outer".to_string(), outer)]);
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_pkg"),
+            message_name: Cow::Borrowed("Outer"),
+            messages: Arc::new(HashMap::from([("test_pkg".to_string(), package)])),
+        };
+
+        let bytes = [0u8, 0, 0, 0, 7, 0, 0, 0];
+        let seed = StructDeserializer::new(Cow::Owned(type_info));
+        let mut deserializer = cdr_encoding::CdrDeserializer::<LittleEndian>::new(&bytes);
+        let data = serde::de::DeserializeSeed::deserialize(seed, &mut deserializer)
+            .expect("Outer must deserialize");
+
+        let array = make_array(data);
+        let x = array
+            .as_struct()
+            .column_by_name("x")
+            .unwrap()
+            .as_primitive::<arrow::datatypes::Int32Type>();
+        assert_eq!(x.value(0), 7);
     }
 }

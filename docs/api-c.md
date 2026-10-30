@@ -104,7 +104,7 @@ Reads the raw data bytes from an `DoraEventType_Input` event. Writes the data st
 
 Sets `*out_ptr = NULL` and `*out_len = 0` if the event is not an input event or the input carries no data.
 
-Currently only `UInt8` Arrow arrays are supported. Other Arrow data types will cause a runtime panic. Future versions will use the Arrow C Data Interface for full type support.
+Currently only `UInt8` Arrow arrays are supported. Any other Arrow data type, and a `UInt8` array with null slots (whose bytes are unspecified), also yields `*out_ptr = NULL` and `*out_len = 0` and logs an error, so a `NULL` result does not by itself mean the message was empty. Future versions will use the Arrow C Data Interface for full type support.
 
 The returned pointer borrows from the event. It becomes invalid after `free_dora_event` is called.
 

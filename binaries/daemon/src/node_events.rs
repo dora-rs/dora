@@ -7,7 +7,7 @@ use crate::{
     ZENOH_OUTPUT_QUEUE_CAPACITY, ZENOH_PUBLISH_TIMEOUT, ZENOH_REQUIRED_ACK_TIMEOUT, ZenohOutbound,
     close_inputs_best_effort, drop_extension_and_notify, extension_table::ExtensionKey,
     local_delivery::DeferredDelivery, note_output_sent_to_local_receivers,
-    send_output_to_local_receivers, send_with_timestamp,
+    running_dataflow::ControlPublisher, send_output_to_local_receivers, send_with_timestamp,
 };
 use dora_core::{
     config::{DataId, NodeId, OperatorId},
@@ -26,7 +26,10 @@ use dora_message::{
 use eyre::{Context, ContextCompat, Result, eyre};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    sync::{Arc, atomic},
+    sync::{
+        Arc,
+        atomic::{self, AtomicBool, Ordering},
+    },
     time::Instant,
 };
 use tokio::sync::{mpsc, oneshot};
@@ -81,6 +84,54 @@ pub(crate) fn dataflow_for_dynamic_node<'a>(
             .ok_or_else(no_node)?,
     };
     running.get_mut(&id).ok_or_else(no_node)
+}
+
+/// The control publisher for `output_id`, declared on first use and cached
+/// per output. The cache is hit on every later message, so it is probed by
+/// reference and the `OutputId` key (two heap strings) is cloned only on the
+/// one-time miss.
+async fn control_publisher<'a>(
+    session: &zenoh::Session,
+    publishers: &'a mut BTreeMap<OutputId, ControlPublisher>,
+    dataflow_id: Uuid,
+    output_id: &OutputId,
+) -> eyre::Result<&'a ControlPublisher> {
+    if !publishers.contains_key(output_id) {
+        let publish_topic = zenoh_daemon_control_topic(dataflow_id, &output_id.0, &output_id.1);
+        tracing::debug!("declaring control publisher on {publish_topic}");
+        let publisher = session
+            .declare_publisher(publish_topic)
+            .congestion_control(CongestionControl::Drop)
+            .express(true)
+            .priority(Priority::RealTime)
+            .await
+            .map_err(|err| eyre!(err))
+            .context("failed to create zenoh publisher")?;
+        let has_subscribers = Arc::new(AtomicBool::new(false));
+        let flag = has_subscribers.clone();
+        // Lives as long as the publisher; registered before the initial read
+        // so no change between the two is missed.
+        publisher
+            .matching_listener()
+            .callback(move |status| flag.store(status.matching(), Ordering::Relaxed))
+            .background()
+            .await
+            .map_err(|err| eyre!(err))
+            .context("failed to watch the zenoh publisher's subscribers")?;
+        if let Ok(status) = publisher.matching_status().await
+            && status.matching()
+        {
+            has_subscribers.store(true, Ordering::Relaxed);
+        }
+        publishers.insert(
+            output_id.clone(),
+            ControlPublisher {
+                publisher: Arc::new(publisher),
+                has_subscribers,
+            },
+        );
+    }
+    Ok(&publishers[output_id])
 }
 
 impl Daemon {
@@ -489,8 +540,36 @@ impl Daemon {
         // per-message clone of the `NodeId`/`DataId` on this output-dispatch hot
         // path.
         let output_id_key = OutputId(node_id, output_id);
+        // An output takes the remote path when a remote daemon has an input
+        // mapped to it, or, in a `--debug` dataflow, while anyone subscribes
+        // to its control topic (a user's own zenoh client, for example; dora's
+        // tools go through `has_debug_watchers` below). Publishing a `--debug`
+        // dataflow's outputs unconditionally would copy and serialize every
+        // payload for nobody, so ask zenoh whether a subscriber matches. A
+        // subscriber misses what is sent before its declaration propagates,
+        // which is fine for a debug tap.
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
-            || dataflow.enable_debug_inspection;
+            || (dataflow.enable_debug_inspection
+                && match control_publisher(
+                    &self.zenoh_session,
+                    &mut dataflow.publishers,
+                    dataflow.id,
+                    &output_id_key,
+                )
+                .await
+                {
+                    Ok(publisher) => publisher.has_subscribers.load(Ordering::Relaxed),
+                    // Local delivery below must not depend on zenoh: treat a
+                    // failed lookup as "nobody subscribed" and move on.
+                    Err(err) => {
+                        tracing::warn!(
+                            "debug publishing of `{}/{}` disabled for this message: {err:?}",
+                            output_id_key.0,
+                            output_id_key.1
+                        );
+                        false
+                    }
+                });
         let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
         let mut deferred = Vec::new();
         let data_bytes = send_output_to_local_receivers(
@@ -633,15 +712,23 @@ impl Daemon {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
 
-        let publisher =
-            remote_receiver_data_publisher(&self.zenoh_session, dataflow, output_id).await?;
+        let publisher = control_publisher(
+            &self.zenoh_session,
+            &mut dataflow.publishers,
+            dataflow.id,
+            output_id,
+        )
+        .await?
+        .publisher
+        .clone();
         let queue = remote_output_publish_queue(dataflow, output_id).await?;
         let outbound = zenoh_outbound(dataflow, publisher, serialized_event, None);
-        handle_publish_enqueue_result(
-            dataflow,
-            try_enqueue_zenoh_outbound(&queue, outbound),
-            "regular inter-daemon output",
-        );
+        let remote_backpressured = dataflow.remote_backpressured_outputs.contains(output_id);
+        let enqueue_result = try_enqueue_zenoh_outbound(&queue, outbound);
+        if enqueue_result != ZenohEnqueueResult::Queued {
+            self.ft_stats.record_drop(1, remote_backpressured);
+        }
+        handle_publish_enqueue_result(dataflow, enqueue_result, "regular inter-daemon output");
 
         Ok(())
     }
@@ -1158,22 +1245,6 @@ pub(crate) fn reload_target<'a>(
         }
         None => Ok(None),
     }
-}
-
-async fn remote_receiver_data_publisher(
-    zenoh_session: &zenoh::Session,
-    dataflow: &mut RunningDataflow,
-    output_id: &OutputId,
-) -> eyre::Result<Arc<zenoh::pubsub::Publisher<'static>>> {
-    let dataflow_id = dataflow.id;
-    remote_receiver_publisher(
-        zenoh_session,
-        &mut dataflow.publishers,
-        dataflow_id,
-        output_id,
-        CongestionControl::Drop,
-    )
-    .await
 }
 
 async fn remote_receiver_control_publisher(

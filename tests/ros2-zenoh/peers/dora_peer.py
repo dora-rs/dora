@@ -19,7 +19,13 @@ if a.case == "domain":
 
 transport = dora.Ros2Transport.zenoh(a.profile, a.config)
 context = dora.Ros2Context([a.ament], transport)
-node = context.new_node("dora_native_peer", "/dora_test", dora.Ros2NodeOptions(False))
+parameters = {"speed": 1.5, "gains": [1.0, 2.0]} if a.case == "parameters" else None
+node = context.new_node(
+    "dora_native_peer",
+    "/dora_test",
+    dora.Ros2NodeOptions(rosout=a.case == "rosout"),
+    parameters,
+)
 qos = dora.Ros2QosPolicies(reliable=True, keep_last=10)
 
 def emit(event, **fields):
@@ -113,6 +119,16 @@ elif a.case == "qos-transient-local":
     value = wait_until(subscription.next)
     if value[0].as_py()["data"] != "dora-rmw-zenoh":
         raise SystemExit("transient-local replay mismatch")
+elif a.case == "parameters":
+    # The ROS peer sets speed to 8.0 last; answer with a local set, then wait
+    # for its "done" (10.0) and give that reply time to leave.
+    wait_until(lambda: True if node.get_parameter("speed") == 8.0 else None, 40)
+    node.set_parameter("speed", 9.0)
+    wait_until(lambda: True if node.get_parameter("speed") == 10.0 else None)
+    time.sleep(1)
+elif a.case == "rosout":
+    # Longer than the ROS peer waits for `/rosout` (15 s) plus its 2 s settle.
+    time.sleep(20)
 else:
     raise SystemExit(f"unsupported Dora peer case: {a.case}")
 emit("PASS")

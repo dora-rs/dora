@@ -106,7 +106,8 @@ pub struct Run {
     #[clap(skip)]
     pub working_dir: Option<PathBuf>,
     /// Substitute a local checkout for a hub package (UC11 inner loop):
-    /// `--hub-override <namespace>/<name>=<path>`. Same as `dora build
+    /// `--hub-override <namespace>/<name>=<path>`. The checkout's manifest must
+    /// declare the same `namespace` and `name`. Same as `dora build
     /// --hub-override`; `dora run` is always local, so it applies directly.
     #[clap(long = "hub-override", value_name = "PKG=PATH")]
     pub hub_override: Vec<String>,

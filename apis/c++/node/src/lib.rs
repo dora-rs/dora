@@ -14,12 +14,9 @@ use dora_node_api::merged::MergeExternal;
 use dora_node_api::{
     self, Event, EventStream, Metadata as DoraMetadata,
     MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, PatternError,
-    TryRecvError,
-    arrow_v59::array::{AsArray, UInt8Array},
-    dora_core::config::NodeId,
-    merged::MergedEvent,
+    TryRecvError, dora_core::config::NodeId, merged::MergedEvent,
 };
-use eyre::{Result as EyreResult, bail, eyre};
+use eyre::{Result as EyreResult, WrapErr as _, bail, eyre};
 use futures_lite::future::{block_on, or};
 use futures_timer::Delay;
 use serde::Serialize;
@@ -682,8 +679,12 @@ fn event_as_input_with_metadata(event: Box<DoraEvent>) -> eyre::Result<ffi::Dora
 fn input_bytes(data: &dora_node_api::DoraArray) -> eyre::Result<Vec<u8>> {
     match data.as_array().data_type() {
         dora_node_api::arrow_v59::datatypes::DataType::UInt8 => {
-            let array: &UInt8Array = data.as_array().as_primitive();
-            Ok(array.values().to_vec())
+            // The shared conversion refuses an array with null slots: the
+            // bytes behind a null are unspecified, and a byte vector cannot
+            // say which slots were null.
+            Vec::<u8>::try_from(data).wrap_err(
+                "cannot read UInt8 input as bytes; use event_as_arrow_input for typed access",
+            )
         }
         dora_node_api::arrow_v59::datatypes::DataType::Null => Ok(vec![]),
         other => {
@@ -1664,7 +1665,7 @@ mod tests {
     use super::*;
     use dora_node_api::{
         DoraArray,
-        arrow_v59::array::{ArrayRef, Int32Array},
+        arrow_v59::array::{ArrayRef, Int32Array, UInt8Array},
         uhlc::HLC,
     };
     use std::sync::Arc;
@@ -1683,6 +1684,23 @@ mod tests {
 
         let result = event_as_input(event);
         assert!(result.is_err(), "expected Err for non-UInt8 input, got Ok");
+    }
+
+    /// A UInt8 input with null slots must be refused: the bytes behind a null
+    /// are unspecified, and a byte vector cannot say which slots were null.
+    #[test]
+    fn event_as_input_uint8_with_nulls_returns_err() {
+        let array: ArrayRef = Arc::new(UInt8Array::from(vec![Some(1), None, Some(3)]));
+        let event = Box::new(DoraEvent(EventOrReason::Event(Event::Input {
+            id: "my_input".into(),
+            metadata: DoraMetadata::new(HLC::default().new_timestamp()),
+            data: DoraArray::from(array),
+        })));
+
+        let Err(err) = event_as_input(event) else {
+            panic!("expected Err for UInt8 input with nulls, got Ok");
+        };
+        assert!(format!("{err:#}").contains("nulls"), "got: {err:#}");
     }
 
     /// Pins the shape `Metadata::to_json` hands to C++ (documented in the

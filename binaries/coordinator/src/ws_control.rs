@@ -11,7 +11,10 @@ use dora_message::{
     ws_protocol::{WsRequest, WsResponse},
 };
 use futures::{SinkExt, StreamExt};
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
@@ -36,13 +39,6 @@ fn check_topic_protocol(client_version: Option<u16>) -> Result<(), String> {
 
 /// Maximum concurrent topic subscriptions per WebSocket connection.
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 16;
-
-#[derive(Clone)]
-struct ActiveTopicSubscription {
-    subscription_id: Uuid,
-    dataflow_id: Uuid,
-    topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
-}
 
 /// Serialize a `WsResponse` and send it over the WS connection.
 /// Returns `Err` if the WS send fails (connection closed).
@@ -124,18 +120,19 @@ async fn send_topic_frame(
 /// Wait for a control request's reply while still draining the connection's
 /// pushed log lines and topic frames to the CLI.
 ///
-/// The coordinator event loop fills `log_rx`/`binary_rx` (64 slots each) and
-/// only this connection empties them. Awaiting the reply alone would leave
-/// them undrained for as long as the request takes, which for `WaitForBuild`
-/// or `Stop` is the whole build or shutdown: once full, every further log line
-/// costs the event loop a 100 ms send timeout and the subscriber is dropped
-/// after 100 of them, losing the rest of the log.
+/// The coordinator event loop fills `log_rx` and `binary_rx` and only this
+/// connection empties them. Awaiting the reply alone would leave them
+/// undrained for as long as the request takes, which for `WaitForBuild` or
+/// `Stop` is the whole build or shutdown: live log lines past
+/// `MAX_QUEUED_LOG_BYTES` would be dropped, and once the 64 `binary_rx`
+/// frames are full every further topic frame costs the event loop a 100 ms
+/// send timeout.
 ///
 /// `Err` means the WebSocket send failed (the connection is gone).
 async fn await_reply_forwarding_pushes(
     mut reply_rx: oneshot::Receiver<eyre::Result<ControlRequestReply>>,
     ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
-    log_rx: &mut mpsc::Receiver<String>,
+    log_rx: &mut crate::log_subscriber::LogQueue,
     binary_rx: &mut mpsc::Receiver<crate::topic_subscriber::TopicFrame>,
 ) -> Result<ControlRequestReply, ()> {
     let reply = loop {
@@ -150,7 +147,7 @@ async fn await_reply_forwarding_pushes(
     // now, though: draining until empty would let a producer that outpaces the
     // socket hold the reply back for as long as its burst lasts.
     for _ in 0..log_rx.len() {
-        let Ok(log_json) = log_rx.try_recv() else {
+        let Some(log_json) = log_rx.try_recv() else {
             break;
         };
         send_log_line(ws_tx, log_json).await?;
@@ -190,15 +187,18 @@ async fn await_reply_forwarding_pushes(
 /// and forward binary frames with `subscription_id ++ payload` format.
 pub(crate) async fn handle_control_ws(
     socket: WebSocket,
+    cli: crate::ws_server::PeerInfo,
     event_tx: mpsc::Sender<Event>,
     clock: Arc<dora_core::uhlc::HLC>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-    // Channel for log events to push back on same WS connection
-    let (log_tx, mut log_rx) = mpsc::channel::<String>(64);
+    // Log events to push back on the same WS connection. The event loop never
+    // waits on it (#3794): it is bounded by bytes, and live lines past the
+    // cap are dropped and reported to the reader.
+    let (log_tx, mut log_rx) = crate::log_subscriber::log_queue();
     // Channel for binary topic data frames
     let (binary_tx, mut binary_rx) = mpsc::channel::<crate::topic_subscriber::TopicFrame>(64);
-    let mut topic_subscriptions: Vec<ActiveTopicSubscription> = Vec::new();
+    let mut topic_subscriptions: Vec<Uuid> = Vec::new();
     let mut publish_session: Option<zenoh::Session> = None;
 
     loop {
@@ -320,24 +320,6 @@ pub(crate) async fn handle_control_ws(
                             continue;
                         }
 
-                        let mut normalized_topics = topics.clone();
-                        normalized_topics.sort();
-
-                        if let Some(existing) = topic_subscriptions.iter().find(|subscription| {
-                            subscription.dataflow_id == *dataflow_id
-                                && subscription.topics == normalized_topics
-                        }) {
-                            let reply = ControlRequestReply::TopicSubscribed {
-                                subscription_id: existing.subscription_id,
-                                protocol_version: Some(TOPIC_DATA_PROTOCOL_VERSION),
-                            };
-                            let resp_json = format_response_json(req.id, &reply);
-                            if ws_tx.send(Message::Text(resp_json.into())).await.is_err() {
-                                break;
-                            }
-                            continue;
-                        }
-
                         // Validate topic count
                         if topics.len() > MAX_TOPICS_PER_SUBSCRIBE {
                             let resp = WsResponse::err(
@@ -352,7 +334,22 @@ pub(crate) async fn handle_control_ws(
                             continue;
                         }
 
-                        // Validate subscription count
+                        // Validate subscription count. The coordinator drops
+                        // subscribers without telling this list (a stalled
+                        // reader evicted, the dataflow ended), so free the
+                        // slots of those before refusing (dora-rs/dora#3872).
+                        if topic_subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+                            let (live_tx, live_rx) = oneshot::channel();
+                            let _ = event_tx
+                                .send(Event::Control(ControlEvent::TopicSubscriptionsLive {
+                                    subscription_ids: topic_subscriptions.clone(),
+                                    live_tx,
+                                }))
+                                .await;
+                            if let Ok(live) = live_rx.await {
+                                topic_subscriptions = live;
+                            }
+                        }
                         if topic_subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
                             let resp = WsResponse::err(
                                 req.id,
@@ -376,11 +373,7 @@ pub(crate) async fn handle_control_ws(
 
                         let subscription_id = match done_rx.await {
                             Ok(Ok(subscription_id)) => {
-                                topic_subscriptions.push(ActiveTopicSubscription {
-                                    subscription_id,
-                                    dataflow_id: *dataflow_id,
-                                    topics: normalized_topics,
-                                });
+                                topic_subscriptions.push(subscription_id);
                                 subscription_id
                             }
                             Ok(Err(err)) => {
@@ -414,13 +407,12 @@ pub(crate) async fn handle_control_ws(
                         // dataflow, so forwarding a foreign id would silently
                         // stop another client's stream (dora-rs/dora#3873).
                         let before = topic_subscriptions.len();
-                        topic_subscriptions
-                            .retain(|active| active.subscription_id != *subscription_id);
+                        topic_subscriptions.retain(|active| active != subscription_id);
                         if topic_subscriptions.len() == before {
                             let resp = WsResponse::err(
                                 req.id,
                                 format!(
-                                    "no topic subscription with id {subscription_id} on this connection"
+                                    "no active topic subscription with id {subscription_id} on this connection (it may already have ended)"
                                 ),
                             );
                             let _ = send_ws_response(&mut ws_tx, &resp).await;
@@ -451,11 +443,11 @@ pub(crate) async fn handle_control_ws(
                         let (found_tx, found_rx) = oneshot::channel();
                         let _ = event_tx.send(Event::Control(ControlEvent::TopicCheck {
                             dataflow_id: *dataflow_id,
-                            topics: vec![(node_id.clone(), output_id.clone())],
+                            node_id: node_id.clone(),
+                            output_id: output_id.clone(),
                             found_tx,
                         })).await;
-                        let found = found_rx.await.unwrap_or(false);
-                        if !found {
+                        let Some(resolved_output_id) = found_rx.await.ok().flatten() else {
                             let resp = WsResponse::err(
                                 req.id,
                                 format!(
@@ -464,12 +456,12 @@ pub(crate) async fn handle_control_ws(
                             );
                             let _ = send_ws_response(&mut ws_tx, &resp).await;
                             continue;
-                        }
+                        };
 
                         let resp = match publish_topic(
                             *dataflow_id,
                             node_id,
-                            output_id,
+                            &resolved_output_id,
                             data_json,
                             &clock,
                             &mut publish_session,
@@ -517,6 +509,7 @@ pub(crate) async fn handle_control_ws(
                     break;
                 };
 
+                let reply = fill_in_cli_ip(reply, cli);
                 let stop = matches!(reply, ControlRequestReply::CoordinatorStopped);
 
                 let resp_json = format_response_json(req.id, &reply);
@@ -539,10 +532,7 @@ pub(crate) async fn handle_control_ws(
         }
     }
 
-    for subscription_id in topic_subscriptions
-        .into_iter()
-        .map(|active| active.subscription_id)
-    {
+    for subscription_id in topic_subscriptions {
         let (done_tx, done_rx) = oneshot::channel();
         let _ = event_tx
             .send(Event::Control(ControlEvent::TopicUnsubscribe {
@@ -551,6 +541,47 @@ pub(crate) async fn handle_control_ws(
             }))
             .await;
         let _ = done_rx.await;
+    }
+}
+
+/// The IP a peer reached the coordinator from, as compared by
+/// `CliAndDefaultDaemonOnSameMachine`.
+///
+/// Every peer on the coordinator's own host maps to `127.0.0.1`: one that
+/// connected over loopback (any spelling, `::1` included), and one that
+/// dialed this host's own IP, which it then also connects *from* (`remote`
+/// equals `local`). So a CLI on `127.0.0.1` and a daemon that was pointed at
+/// the host's LAN IP still match. IPs are canonicalized first, since a
+/// dual-stack socket reports an IPv4 peer as `::ffff:a.b.c.d`.
+pub(crate) fn peer_ip(remote: SocketAddr, local: Option<SocketAddr>) -> IpAddr {
+    let ip = remote.ip().to_canonical();
+    let dialed_this_host = local.is_some_and(|local| local.ip().to_canonical() == ip);
+    if ip.is_loopback() || dialed_this_host {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    } else {
+        ip
+    }
+}
+
+/// Complete a `CliAndDefaultDaemonIps` reply with the CLI's own address.
+///
+/// The event loop fills in the default daemon's address but cannot know the
+/// CLI's, which only this connection has. The CLI treats equal IPs as "same
+/// machine" and then sends its own working directory for the daemon to run
+/// in, so a CLI on another host must not compare equal.
+pub(crate) fn fill_in_cli_ip(
+    reply: ControlRequestReply,
+    cli: crate::ws_server::PeerInfo,
+) -> ControlRequestReply {
+    match reply {
+        ControlRequestReply::CliAndDefaultDaemonIps {
+            default_daemon,
+            cli: None,
+        } => ControlRequestReply::CliAndDefaultDaemonIps {
+            default_daemon,
+            cli: Some(peer_ip(cli.remote, cli.local)),
+        },
+        other => other,
     }
 }
 
@@ -649,11 +680,99 @@ fn encode_topic_ipc(array: &arrow::array::UInt8Array) -> eyre::Result<Vec<u8>> {
 mod tests {
     use super::*;
 
+    /// A connection from `remote`, accepted on the coordinator's `local`.
+    pub(crate) fn peer(remote: &str, local: Option<&str>) -> crate::ws_server::PeerInfo {
+        crate::ws_server::PeerInfo {
+            remote: remote.parse().unwrap(),
+            local: local.map(|local| local.parse().unwrap()),
+        }
+    }
+
+    /// What the CLI's `cli_and_daemon_on_same_machine` concludes from the
+    /// reply, given the connections the two reached the coordinator over.
+    fn same_machine_via(
+        cli: crate::ws_server::PeerInfo,
+        daemon: Option<crate::ws_server::PeerInfo>,
+    ) -> bool {
+        let event_loop_reply = ControlRequestReply::CliAndDefaultDaemonIps {
+            default_daemon: daemon.map(|daemon| peer_ip(daemon.remote, daemon.local)),
+            cli: None,
+        };
+        cli_concludes_same_machine(fill_in_cli_ip(event_loop_reply, cli))
+    }
+
+    /// The CLI's check in `binaries/cli/src/common.rs`.
+    pub(crate) fn cli_concludes_same_machine(reply: ControlRequestReply) -> bool {
+        let ControlRequestReply::CliAndDefaultDaemonIps {
+            default_daemon,
+            cli,
+        } = reply
+        else {
+            panic!("unexpected reply {reply:?}")
+        };
+        default_daemon.is_some() && default_daemon == cli
+    }
+
+    fn same_machine(cli: &str, daemon: Option<&str>) -> bool {
+        same_machine_via(peer(cli, None), daemon.map(|daemon| peer(daemon, None)))
+    }
+
+    /// A CLI on another host must not be told it shares a machine with a
+    /// daemon running next to the coordinator: it would then send its own
+    /// local working directory, which does not exist on the daemon's host.
+    #[test]
+    fn remote_cli_is_not_on_the_default_daemons_machine() {
+        assert!(!same_machine("192.0.2.7:50000", Some("127.0.0.1:40000")));
+        assert!(!same_machine("192.0.2.7:50000", Some("192.0.2.8:40000")));
+    }
+
+    #[test]
+    fn local_cli_is_on_the_default_daemons_machine() {
+        assert!(same_machine("127.0.0.1:50000", Some("127.0.0.1:40000")));
+        // Different loopback spellings are still the same host.
+        assert!(same_machine("[::1]:50000", Some("127.0.0.1:40000")));
+        // A dual-stack listener reports IPv4 peers as IPv4-mapped IPv6.
+        assert!(same_machine(
+            "[::ffff:192.0.2.7]:50000",
+            Some("192.0.2.7:40000")
+        ));
+    }
+
+    /// A peer that dialed the coordinator host's own IP connects from that
+    /// IP too, so it is on the coordinator's host even without loopback:
+    /// `dora up` on `127.0.0.1` plus a CLI pointed at the LAN IP, or the
+    /// other way round, still shares the machine.
+    #[test]
+    fn a_peer_that_dialed_the_hosts_own_ip_is_on_the_coordinators_host() {
+        let lan = Some("192.168.1.5:6013");
+        assert!(same_machine_via(
+            peer("127.0.0.1:50000", Some("127.0.0.1:6013")),
+            Some(peer("192.168.1.5:40000", lan)),
+        ));
+        assert!(same_machine_via(
+            peer("192.168.1.5:50000", lan),
+            Some(peer("127.0.0.1:40000", Some("127.0.0.1:6013"))),
+        ));
+        // Another host on the same LAN is still another machine.
+        assert!(!same_machine_via(
+            peer("192.168.1.9:50000", lan),
+            Some(peer("127.0.0.1:40000", Some("127.0.0.1:6013"))),
+        ));
+    }
+
+    #[test]
+    fn no_default_daemon_is_never_the_same_machine() {
+        assert!(!same_machine("127.0.0.1:50000", None));
+    }
+
     /// A request whose reply is held back -- `WaitForBuild` is answered only
     /// when the build ends -- must not stop the connection from forwarding
     /// the log lines pushed to it meanwhile. Before the fix the WS loop sat in
     /// `reply_rx.await`, so after 64 lines the coordinator's sends blocked
-    /// (and in production timed out, then dropped the subscriber).
+    /// (and in production timed out, then dropped the subscriber). Pushes no
+    /// longer block, but an undrained queue still drops live lines past
+    /// `MAX_QUEUED_LOG_BYTES`, so the stand-in only replies once the client
+    /// has received every line: without the drain the test times out.
     #[tokio::test]
     async fn logs_keep_flowing_while_a_reply_is_pending() {
         use futures::{SinkExt as _, StreamExt as _};
@@ -661,26 +780,37 @@ mod tests {
         use tokio_tungstenite::tungstenite::Message as ClientMessage;
 
         const LINES: usize = 500;
+        let (all_received_tx, all_received_rx) = tokio::sync::oneshot::channel::<()>();
 
         let (event_tx, mut event_rx) = mpsc::channel(16);
         let clock = Arc::new(dora_core::uhlc::HLC::default());
-        let app =
-            axum::Router::new().route(
-                "/",
-                axum::routing::any(move |ws: axum::extract::WebSocketUpgrade| {
-                    let event_tx = event_tx.clone();
-                    let clock = clock.clone();
-                    async move {
-                        ws.on_upgrade(move |socket| handle_control_ws(socket, event_tx, clock))
-                    }
-                }),
-            );
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::any(move |ws: axum::extract::WebSocketUpgrade| {
+                let event_tx = event_tx.clone();
+                let clock = clock.clone();
+                async move {
+                    ws.on_upgrade(move |socket| {
+                        handle_control_ws(
+                            socket,
+                            crate::ws_server::PeerInfo {
+                                remote: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+                                local: None,
+                            },
+                            event_tx,
+                            clock,
+                        )
+                    })
+                }
+            }),
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await });
 
         // Stand-in for the coordinator event loop: accept the log subscription,
-        // then push LINES log lines before answering the pending request.
+        // then push LINES log lines and answer the pending request only after
+        // the client has received all of them.
         let coordinator = tokio::spawn(async move {
             let mut log_sender = None;
             while let Some(event) = event_rx.recv().await {
@@ -694,14 +824,13 @@ mod tests {
                     Event::Control(ControlEvent::IncomingRequest { reply_sender, .. }) => {
                         let sender = log_sender.take().expect("subscribed before the request");
                         for i in 0..LINES {
-                            tokio::time::timeout(
-                                Duration::from_secs(5),
-                                sender.send(format!("{{\"line\":{i}}}")),
-                            )
-                            .await
-                            .expect("log channel not drained while the reply was pending")
-                            .expect("log channel closed");
+                            sender
+                                .push(format!("{{\"line\":{i}}}"))
+                                .expect("log channel closed");
                         }
+                        all_received_rx
+                            .await
+                            .expect("client stopped before receiving every line");
                         let _ = reply_sender.send(Ok(ControlRequestReply::TopicPublished));
                         return;
                     }
@@ -736,6 +865,7 @@ mod tests {
         let wait_id = send(ControlRequest::WaitForBuild { build_id }).await;
 
         let mut lines = 0;
+        let mut all_received_tx = Some(all_received_tx);
         loop {
             let msg = tokio::time::timeout(Duration::from_secs(30), ws.next())
                 .await
@@ -749,6 +879,11 @@ mod tests {
             if value.get("line").is_some() {
                 assert_eq!(value["line"], lines, "log lines must arrive in order");
                 lines += 1;
+                if lines == LINES
+                    && let Some(tx) = all_received_tx.take()
+                {
+                    let _ = tx.send(());
+                }
             } else if value["id"] == serde_json::json!(wait_id) {
                 break;
             }
