@@ -1,6 +1,6 @@
 //! Rewrite a dora recording (`.drec`) as an MCAP (`.mcap`) file. With the
-//! default `--schema arrow`, the recorded payload bytes are remuxed without
-//! decoding or re-encoding them; `--schema foxglove` re-encodes image outputs
+//! default `--format arrow`, the recorded payload bytes are remuxed without
+//! decoding or re-encoding them; `--format foxglove` re-encodes image outputs
 //! as JSON Foxglove images (see the `foxglove` module).
 //!
 //! Each recorded `Output` entry becomes one MCAP message on an `arrow-ipc`
@@ -60,12 +60,12 @@ pub struct Export {
     /// byte for byte. `foxglove` re-encodes recognised image outputs as
     /// Foxglove's `RawImage` / `CompressedImage` (JSON) so Foxglove can
     /// display them; other outputs stay `arrow`.
-    #[clap(long, value_enum, default_value_t = ExportSchema::Arrow)]
-    schema: ExportSchema,
+    #[clap(long, value_enum, default_value_t = ExportFormat::Arrow)]
+    format: ExportFormat,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum ExportSchema {
+enum ExportFormat {
     Arrow,
     Foxglove,
 }
@@ -134,7 +134,7 @@ fn run_export(args: Export) -> eyre::Result<()> {
     let out_file = File::create(&tmp_path)
         .wrap_err_with(|| eyre!("failed to create `{}`", tmp_path.display()))?;
     let message_count =
-        match write_mcap(&mut reader, &filter, args.schema, BufWriter::new(out_file)) {
+        match write_mcap(&mut reader, &filter, args.format, BufWriter::new(out_file)) {
             Ok(count) => count,
             Err(err) => {
                 let _ = fs::remove_file(&tmp_path);
@@ -176,7 +176,7 @@ fn temp_output_path(output: &str) -> eyre::Result<PathBuf> {
 fn write_mcap<W: Write + Seek>(
     reader: &mut RecordingReader<File>,
     filter: &[(String, String)],
-    schema: ExportSchema,
+    format: ExportFormat,
     out: W,
 ) -> eyre::Result<u64> {
     let (start_nanos, dataflow_id, descriptor_yaml) = {
@@ -190,7 +190,7 @@ fn write_mcap<W: Write + Seek>(
 
     // A descriptor that does not parse declares nothing: export still works,
     // converting only undeclared compressed frames.
-    let foxglove = (schema == ExportSchema::Foxglove).then(|| {
+    let foxglove = (format == ExportFormat::Foxglove).then(|| {
         foxglove::Mapper::from_descriptor_yaml(&descriptor_yaml).unwrap_or_else(|err| {
             eprintln!(
                 "warning: could not read the image types declared in the recorded descriptor \
@@ -265,7 +265,7 @@ fn write_mcap<W: Write + Seek>(
 
         let topic = format!("{}/{}", entry.node_id, entry.output_id);
 
-        // With `--schema foxglove`, a topic's first message decides whether it
+        // With `--format foxglove`, a topic's first message decides whether it
         // is an image topic (JSON channel) or stays Arrow. On an image topic,
         // a message that cannot be converted is dropped and reported: it
         // cannot go on a JSON channel as Arrow.
@@ -497,7 +497,7 @@ mod tests {
     };
 
     use super::{
-        Export, ExportSchema, default_output_path, run_export, unmatched_topics, write_mcap,
+        Export, ExportFormat, default_output_path, run_export, unmatched_topics, write_mcap,
     };
     use aligned_vec::AVec;
     use dora_message::{
@@ -630,7 +630,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec![],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         };
         run_export(args).expect("run export");
 
@@ -711,7 +711,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec!["camera/image".to_string()],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         };
         run_export(args).expect("run export");
 
@@ -798,7 +798,7 @@ mod tests {
             input: path.to_string_lossy().into(),
             output: Some(path.to_string_lossy().into()),
             topics: vec![],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         });
         assert!(
             err.contains("refusing to truncate"),
@@ -820,7 +820,7 @@ mod tests {
             input: path.to_string_lossy().into(),
             output: Some(alias.to_string_lossy().into()),
             topics: vec![],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         });
         assert!(
             err.contains("refusing to truncate"),
@@ -842,7 +842,7 @@ mod tests {
             input: path.to_string_lossy().into(),
             output: Some(alias.to_string_lossy().into()),
             topics: vec![],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         });
         assert!(
             err.contains("refusing to truncate"),
@@ -861,7 +861,7 @@ mod tests {
             input: path.to_string_lossy().into(),
             output: Some(out.to_string_lossy().into()),
             topics: vec![],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         };
         run_export(args).expect("fresh output must succeed");
         assert!(!fs::read(&out).expect("read mcap").is_empty());
@@ -892,7 +892,7 @@ mod tests {
             input: "sample.drec".to_string(),
             output: Some("sample.drec".to_string()),
             topics: vec![],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         })
         .expect_err("must refuse output = input")
         .to_string();
@@ -915,7 +915,7 @@ mod tests {
             input: "sample.drec".to_string(),
             output: Some("fresh.mcap".to_string()),
             topics: vec![],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         });
 
         result.expect("fresh bare-relative output must succeed");
@@ -977,7 +977,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec![],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         })
         .expect("run export");
 
@@ -1027,7 +1027,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: None,
             topics: vec![],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         })
         .expect("run export");
 
@@ -1077,7 +1077,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec![],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         })
         .expect("one bad record must not fail the whole export");
 
@@ -1128,7 +1128,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec![],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         })
         .expect_err("an export that emitted nothing must not report success");
 
@@ -1192,7 +1192,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec![],
-            schema: ExportSchema::Arrow,
+            format: ExportFormat::Arrow,
         })
         .expect_err("an unreadable record must fail the export");
 
@@ -1274,7 +1274,7 @@ mod tests {
         let err = write_mcap(
             &mut reader,
             &[],
-            ExportSchema::Arrow,
+            ExportFormat::Arrow,
             FailsOnFlush(std::io::Cursor::new(Vec::new())),
         )
         .expect_err("a flush that fails must fail the export");
@@ -1300,7 +1300,31 @@ mod tests {
         );
     }
 
-    // ---- `--schema foxglove` ----
+    /// The flag is `--format` (`arrow` by default); `--schema` is not
+    /// accepted: in MCAP a schema is the per-channel schema record.
+    #[test]
+    fn the_flag_is_format_not_schema() {
+        use clap::Parser;
+
+        let parse = |args: &[&str]| {
+            crate::Args::try_parse_from(
+                [&["dora", "recording", "export", "rec.drec"], args].concat(),
+            )
+        };
+        let format = |args: &[&str]| match parse(args).expect("parses").command {
+            crate::command::Command::Recording(super::super::Recording::Export(export)) => {
+                export.format
+            }
+            _ => panic!("not `dora recording export`"),
+        };
+        assert_eq!(format(&[]), ExportFormat::Arrow);
+        assert_eq!(format(&["--format", "arrow"]), ExportFormat::Arrow);
+        assert_eq!(format(&["--format", "foxglove"]), ExportFormat::Foxglove);
+        let err = parse(&["--schema", "foxglove"]).expect_err("--schema is gone");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    // ---- `--format foxglove` ----
 
     use arrow::array::{ArrayRef, Float32Array, LargeBinaryArray, UInt8Array, UInt16Array};
     use dora_message::metadata::Parameter;
@@ -1380,7 +1404,7 @@ mod tests {
     }
 
     /// Records `events` (node, output, event bytes) under a dataflow
-    /// `descriptor`, exports them with `--schema foxglove` and returns the
+    /// `descriptor`, exports them with `--format foxglove` and returns the
     /// MCAP bytes.
     fn export_foxglove(descriptor: &str, events: Vec<(&str, &str, Vec<u8>)>) -> Vec<u8> {
         let dir = tempdir().expect("tempdir");
@@ -1410,7 +1434,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec![],
-            schema: ExportSchema::Foxglove,
+            format: ExportFormat::Foxglove,
         })
         .expect("run export");
         fs::read(&mcap_path).expect("read mcap")
@@ -1927,7 +1951,7 @@ mod tests {
         panic!("no record batch in the payload");
     }
 
-    /// A corrupt payload must not crash the export (`--schema arrow` copies it
+    /// A corrupt payload must not crash the export (`--format arrow` copies it
     /// fine): undeclared it stays Arrow unchanged, declared it is dropped and
     /// reported.
     #[test]

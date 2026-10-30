@@ -534,7 +534,7 @@ dora replay <FILE> [OPTIONS]
 
 #### `dora recording export`
 
-Convert a recorded `.drec` file to MCAP (Apache Arrow IPC encoding). Sinks like Foxglove display plain arrow-ipc channels but do not render them natively.
+Convert a recorded `.drec` file to MCAP (Apache Arrow IPC encoding by default; see `--format`). Sinks like Foxglove display plain arrow-ipc channels but do not render them natively.
 
 ```
 dora recording export <RECORDING> [OPTIONS]
@@ -545,9 +545,9 @@ dora recording export <RECORDING> [OPTIONS]
 | `<RECORDING>` | required | Path to `.drec` recording |
 | `-o, --output <PATH>` | `<RECORDING>` with the extension replaced (`capture.drec` → `capture.mcap`) | Output MCAP file path |
 | `--topics <TOPICS>` | all | Comma-separated `node/output` topics to export |
-| `--schema <SCHEMA>` | `arrow` | `arrow` copies payloads verbatim; `foxglove` writes image outputs in Foxglove's own schemas so Foxglove can display them |
+| `--format <FORMAT>` | `arrow` | `arrow` copies payloads verbatim; `foxglove` writes image outputs in Foxglove's own schemas so Foxglove can display them |
 
-With the default `--schema arrow`, payloads are remuxed verbatim, never decoded
+With the default `--format arrow`, payloads are remuxed verbatim, never decoded
 and re-encoded. Two limits worth knowing before you point a consumer at the
 output:
 
@@ -558,7 +558,7 @@ output:
 - Chunks are uncompressed, because `mcap` is built with
   `default-features = false`. Compress the `.mcap` afterwards if size matters.
 
-`--schema foxglove` re-encodes image outputs as JSON `foxglove.RawImage` or
+`--format foxglove` re-encodes image outputs as JSON `foxglove.RawImage` or
 `foxglove.CompressedImage` messages, which Foxglove renders. Everything else is
 exported as with `arrow`. An output counts as an image when:
 

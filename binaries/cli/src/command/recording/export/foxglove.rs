@@ -1,4 +1,4 @@
-//! `dora recording export --schema foxglove`: re-encode image outputs as
+//! `dora recording export --format foxglove`: re-encode image outputs as
 //! Foxglove's well-known `foxglove.RawImage` / `foxglove.CompressedImage`
 //! schemas, JSON-encoded, so Foxglove can display them. The Arrow channels
 //! the default export writes are valid MCAP but Foxglove does not render
@@ -67,7 +67,7 @@ const COMPRESSED_IMAGE_SCHEMA: &str = concat!(
 
 /// What the mapper made of one recorded message.
 pub(super) enum Recognition {
-    /// Not an image: export it as Arrow like the default schema does.
+    /// Not an image: export it as Arrow, as `--format arrow` does.
     NotRecognised,
     /// The JSON message for this Foxglove schema.
     Converted(Kind, Vec<u8>),
@@ -135,7 +135,7 @@ impl Mapper {
         // Recordings have no checksum, and arrow-ipc panics on many kinds of
         // damaged payload (bad schema bits, impossible lengths, offsets out
         // of range). A damaged message is then one that can't be converted,
-        // like any other; `--schema arrow` copies it without decoding.
+        // like any other; `--format arrow` copies it without decoding.
         quiet_conversion_panics();
         CONVERTING.set(true);
         let converted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
