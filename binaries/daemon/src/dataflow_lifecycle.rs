@@ -591,6 +591,12 @@ impl Daemon {
                     })
                     .unwrap_or(base_working_dir.clone())
                     .clone();
+                if node_working_dir != base_working_dir {
+                    self.node_log_dirs
+                        .entry(dataflow_id)
+                        .or_default()
+                        .insert(node_id.clone(), node_working_dir.clone());
+                }
                 let node_write_events_to = write_events_to
                     .as_ref()
                     .map(|p| p.join(format!("inputs-{}.json", node.id)));

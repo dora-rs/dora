@@ -415,6 +415,11 @@ pub struct Daemon {
     pub(crate) machine_id: Option<String>,
     pub(crate) running: HashMap<DataflowId, RunningDataflow>,
     pub(crate) working_dir: HashMap<DataflowId, PathBuf>,
+    /// Nodes whose working directory differs from the dataflow's base
+    /// `working_dir` (a `deploy.working_dir`, or a git/hub clone dir). A
+    /// node's log is written under its own working directory, so `dora logs`
+    /// must look there; nodes absent from this map log under the base one.
+    pub(crate) node_log_dirs: HashMap<DataflowId, BTreeMap<NodeId, PathBuf>>,
     pub(crate) events_tx: mpsc::Sender<Timestamped<Event>>,
     pub(crate) coordinator_sender: Option<coordinator::CoordinatorSender>,
     pub(crate) last_coordinator_heartbeat: Instant,
@@ -1383,6 +1388,7 @@ impl Daemon {
             .for_daemon(daemon_id.clone()),
             running: HashMap::new(),
             working_dir: HashMap::new(),
+            node_log_dirs: HashMap::new(),
             events_tx: dora_events_tx,
             coordinator_sender,
             last_coordinator_heartbeat: Instant::now(),
