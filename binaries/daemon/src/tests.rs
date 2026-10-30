@@ -3,7 +3,7 @@ use crate::coordinator_events::{
     apply_state_catch_up_entries, deliver_param_delete_strict, deliver_param_update_strict,
 };
 use crate::node_exit::{DEFAULT_FINISH_DRAIN_GRACE, parse_finish_drain_grace};
-use crate::pending::DataflowStatus;
+use crate::pending::{DataflowStatus, PendingNodes};
 use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
 use crate::test_tracing::LevelCapture;
 use std::sync::Arc;
@@ -507,6 +507,177 @@ async fn log_subscriber_receives_logs_again_after_restart() {
     );
 }
 
+/// A `send_stdout_as` output is produced by the daemon, not the node, and
+/// must be routed like any node output: to local receivers (refreshing their
+/// input deadline) and to consumers on other daemons. The `Logs` handler used
+/// to deliver to local receivers only, so a consumer on another machine never
+/// received anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn stdout_output_reaches_local_and_remote_consumers() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let mut dataflow = test_dataflow();
+    let dataflow_id = dataflow.id;
+    let producer = NodeId::from("producer".to_string());
+    let output_id = OutputId(producer, DataId::from("stdout".to_string()));
+    let local = NodeId::from("local".to_string());
+    let input = DataId::from("logs".to_string());
+    dataflow
+        .mappings
+        .entry(output_id.clone())
+        .or_default()
+        .insert((local.clone(), input.clone()));
+    dataflow.input_deadlines.insert(
+        (local.clone(), input.clone()),
+        InputDeadline {
+            timeout: Duration::from_secs(60),
+            last_received: None,
+        },
+    );
+    let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    dataflow.subscribe_channels.insert(local.clone(), tx);
+    // A consumer of this output runs on another daemon.
+    dataflow.open_external_mappings.insert(output_id.clone());
+    daemon.running.insert(dataflow_id, dataflow);
+
+    daemon
+        .handle_dora_event(DoraEvent::Logs {
+            dataflow_id,
+            output_id: output_id.clone(),
+            message: DataMessage::Vec(AVec::from_slice(128, b"hello")),
+            metadata: metadata::Metadata::new(clock.new_timestamp()),
+        })
+        .await
+        .unwrap();
+
+    let event = rx.try_recv().map(|event| event.inner);
+    assert!(
+        matches!(event, Ok(NodeEvent::Input { ref id, .. }) if *id == input),
+        "local consumer received {event:?}"
+    );
+    let dataflow = &daemon.running[&dataflow_id];
+    assert!(
+        dataflow.input_deadlines[&(local, input)]
+            .last_received
+            .is_some(),
+        "delivery must refresh the consumer's input deadline"
+    );
+    assert!(
+        dataflow.publishers.contains_key(&output_id),
+        "the line must be published for the consumer on the other daemon"
+    );
+}
+
+/// Stdout/log capture starts when the process spawns, before the ready
+/// barrier, so a consumer that is spawned but has not subscribed yet (a slow
+/// import) misses lines without anything having gone wrong. Routing captured
+/// lines through `send_out` (#3923) must not turn that into the #3201
+/// routing-loss path — locally or on the consumer's daemon when the producer
+/// runs elsewhere: no warning and no drop, which on a backpressure input
+/// would fail `--fail-on-lost-backpressure-messages` (dora-rs/dora#3935).
+/// Once the consumer has subscribed, a missing stream is a loss again.
+#[test]
+fn stdout_line_to_unsubscribed_consumer_is_not_a_lost_message() {
+    use dora_message::config::QueuePolicy;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let clock = Arc::new(HLC::default());
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = rt.block_on(daemon_reporting_to(coordinator_sender, clock.clone()));
+    let mut dataflow = test_dataflow();
+    let dataflow_id = dataflow.id;
+    let local = OutputId(
+        NodeId::from("producer".to_string()),
+        DataId::from("stdout".to_string()),
+    );
+    // Same output name on a producer that runs on another daemon.
+    let remote = OutputId(
+        NodeId::from("remote".to_string()),
+        DataId::from("stdout".to_string()),
+    );
+    let consumer = NodeId::from("consumer".to_string());
+    let mut inputs = BTreeMap::new();
+    for (output, input) in [(&local, "logs"), (&remote, "remote_logs")] {
+        let input = DataId::from(input.to_string());
+        dataflow
+            .mappings
+            .entry(output.clone())
+            .or_default()
+            .insert((consumer.clone(), input.clone()));
+        inputs.insert(
+            input,
+            user_input(
+                output.0.as_ref(),
+                output.1.as_ref(),
+                Some(QueuePolicy::Backpressure),
+            ),
+        );
+    }
+    // Spawned (in `running_nodes`) but not subscribed yet.
+    dataflow
+        .running_nodes
+        .insert(consumer.clone(), running_node_with(inputs, None));
+    dataflow.pending_nodes.insert(consumer);
+    daemon.running.insert(dataflow_id, dataflow);
+
+    let logs = |clock: &HLC| DoraEvent::Logs {
+        dataflow_id,
+        output_id: local.clone(),
+        message: DataMessage::Vec(AVec::from_slice(128, b"hello")),
+        metadata: metadata::Metadata::new(clock.new_timestamp()),
+    };
+    // Capture only the delivery, not the daemon's startup.
+    let capture = LevelCapture::new();
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            for _ in 0..2 {
+                daemon.handle_dora_event(logs(&clock)).await.unwrap();
+            }
+            daemon
+                .handle_inter_daemon_event(InterDaemonEvent::Output {
+                    dataflow_id,
+                    node_id: remote.0.clone(),
+                    output_id: remote.1.clone(),
+                    metadata: metadata::Metadata::new(clock.new_timestamp()),
+                    data: Some(AVec::from_slice(128, b"hello")),
+                })
+                .await
+                .unwrap();
+        });
+    });
+    let dropped = |daemon: &Daemon| {
+        daemon
+            .ft_stats
+            .dropped_messages
+            .load(atomic::Ordering::Relaxed)
+    };
+    let lost = |daemon: &Daemon| {
+        daemon
+            .ft_stats
+            .lost_backpressure_messages
+            .load(atomic::Ordering::Relaxed)
+    };
+    assert_eq!(dropped(&daemon), 0);
+    assert_eq!(lost(&daemon), 0);
+    let levels = capture.levels.lock().unwrap().clone();
+    assert!(
+        !levels.contains(&tracing::Level::WARN),
+        "no warning for a consumer that has not subscribed yet: {levels:?}"
+    );
+
+    // Subscribed since (no longer gating the barrier), then lost its stream
+    // without re-subscribing: the #3201 mode, which must stay visible.
+    daemon.running.get_mut(&dataflow_id).unwrap().pending_nodes =
+        PendingNodes::new(dataflow_id, DaemonId::new(None));
+    rt.block_on(daemon.handle_dora_event(logs(&clock))).unwrap();
+    assert_eq!(dropped(&daemon), 1);
+    assert_eq!(lost(&daemon), 1);
+}
+
 /// `AddNode` re-registers a node's `dora/logs` inputs. An entry left by an
 /// earlier incarnation (kept across a crash, see the test above) must be
 /// replaced, not duplicated, or every log line reaches the node twice.
@@ -565,6 +736,45 @@ async fn logs_for_unknown_dataflow_replies_with_an_error() {
             assert!(err.contains(&dataflow_id.to_string()), "{err}");
         }
         other => panic!("expected a Logs error reply, got {other:?}"),
+    }
+}
+
+/// The coordinator stops a dataflow's daemons one after another, so the
+/// dataflow can finish on a later daemon before that daemon's stop arrives.
+/// The stop must then succeed rather than fail `dora stop` / `dora cluster
+/// restart` with "no running dataflow" (dora-rs/dora#3888), while a stop for
+/// a dataflow the daemon never ran still fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn stop_of_a_just_finished_dataflow_succeeds() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let finished = Uuid::new_v4();
+    daemon.running.insert(finished, test_dataflow());
+    daemon
+        .finish_dataflow(finished)
+        .await
+        .expect("the report is queued for the writer");
+
+    for (dataflow_id, expect_ok) in [(finished, true), (Uuid::new_v4(), false)] {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _status = daemon
+            .handle_coordinator_event(
+                DaemonCoordinatorEvent::StopDataflow {
+                    dataflow_id,
+                    grace_duration: None,
+                    force: false,
+                },
+                reply_tx,
+            )
+            .await
+            .expect("StopDataflow must not fail the daemon loop");
+        match reply_rx.await.expect("a reply must be sent") {
+            Some(DaemonCoordinatorReply::StopResult(result)) => {
+                assert_eq!(result.is_ok(), expect_ok, "{dataflow_id}: {result:?}");
+            }
+            other => panic!("expected a StopResult reply, got {other:?}"),
+        }
     }
 }
 
@@ -1189,6 +1399,88 @@ fn teardown_rejects_matching_handle_replacement() {
     );
     assert!(live_rx.try_recv().is_err());
     let _ = node.process.take();
+}
+
+/// A force stop after a graceful one must kill the nodes now, even though the
+/// graceful stop already moved their process handles into its grace timers
+/// (dora-rs/dora#3969).
+#[tokio::test(start_paused = true)]
+async fn force_stop_after_graceful_stop_kills_immediately() {
+    let clock = Arc::new(HLC::default());
+    let mut daemon_logger = test_logger(clock.clone());
+    let mut logger = daemon_logger.for_dataflow(Uuid::nil());
+    let mut df = test_dataflow();
+    let node_id: NodeId = "test".to_string().into();
+    let (op_tx, op_rx) = flume::bounded(4);
+    let mut node = test_running_node();
+    node.process = Some(ProcessHandle::new(op_tx));
+    df.running_nodes.insert(node_id.clone(), node);
+
+    let _ = df
+        .stop_all(&mut None, &clock, None, false, &mut logger)
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+    assert!(
+        op_rx.try_recv().is_err(),
+        "a graceful stop waits out the grace"
+    );
+
+    let _ = df
+        .stop_all(&mut None, &clock, None, true, &mut logger)
+        .await
+        .unwrap();
+    assert!(matches!(op_rx.try_recv(), Ok(ProcessOperation::Kill)));
+    assert!(
+        df.grace_duration_kills.contains(&(node_id, 7)),
+        "the kill must be classified as daemon-initiated"
+    );
+}
+
+/// A restart replacement that lost the race against a graceful stop is in a
+/// grace timer too, so a later force stop must reach it as well.
+#[tokio::test(start_paused = true)]
+async fn force_stop_kills_a_replacement_stopped_gracefully() {
+    let clock = Arc::new(HLC::default());
+    let mut daemon_logger = test_logger(clock.clone());
+    let mut logger = daemon_logger.for_dataflow(Uuid::nil());
+    let mut df = test_dataflow();
+    df.stop_process_policy = Some(StopProcessPolicy::Graceful(Duration::from_secs(4)));
+    let node_id: NodeId = "test".to_string().into();
+    let (op_tx, op_rx) = flume::bounded(4);
+    df.stop_rejected_replacement(&node_id, 8, ProcessHandle::new(op_tx));
+    tokio::task::yield_now().await;
+    assert!(
+        op_rx.try_recv().is_err(),
+        "a graceful stop waits out the grace"
+    );
+
+    let _ = df
+        .stop_all(&mut None, &clock, None, true, &mut logger)
+        .await
+        .unwrap();
+    assert!(matches!(op_rx.try_recv(), Ok(ProcessOperation::Kill)));
+    assert!(df.grace_duration_kills.contains(&(node_id, 8)));
+}
+
+/// The force-stop kill must not block when the op channel is full: the
+/// process task leaves it unread while its log forwarding drains.
+#[tokio::test(start_paused = true)]
+async fn force_stop_does_not_block_on_a_full_op_channel() {
+    let clock = Arc::new(HLC::default());
+    let mut daemon_logger = test_logger(clock.clone());
+    let mut logger = daemon_logger.for_dataflow(Uuid::nil());
+    let mut df = test_dataflow();
+    let node_id: NodeId = "test".to_string().into();
+    let (op_tx, _op_rx) = flume::bounded(1);
+    op_tx.send(ProcessOperation::SoftKill).unwrap();
+    df.graceful_stops.push((node_id.clone(), 7, op_tx));
+
+    let _ = df
+        .stop_all(&mut None, &clock, None, true, &mut logger)
+        .await
+        .unwrap();
+    assert!(df.grace_duration_kills.contains(&(node_id, 7)));
 }
 
 #[tokio::test(start_paused = true)]
@@ -2346,6 +2638,124 @@ async fn data_bytes_returned_with_and_without_local_receivers() {
     assert!(matches_event(&events[0], "Input"));
 }
 
+/// A `--debug` dataflow, as `send_out` sees it: a daemon running one
+/// dataflow with debug inspection on and no mapped receivers.
+async fn debug_dataflow_daemon() -> (Daemon, Uuid, Arc<HLC>) {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let dataflow_id = Uuid::new_v4();
+    let mut dataflow = test_dataflow();
+    dataflow.id = dataflow_id;
+    dataflow.enable_debug_inspection = true;
+    daemon.running.insert(dataflow_id, dataflow);
+    (daemon, dataflow_id, clock)
+}
+
+async fn send_debug_output(daemon: &mut Daemon, dataflow_id: Uuid, clock: &HLC) {
+    daemon
+        .send_out(
+            dataflow_id,
+            NodeId::from("sender".to_string()),
+            DataId::from("output".to_string()),
+            metadata::Metadata::new(clock.new_timestamp()),
+            Some(DataMessage::Vec(AVec::from_slice(128, &[1u8, 2, 3, 4]))),
+            None,
+        )
+        .await
+        .unwrap();
+}
+
+/// With nobody subscribed to an output's control topic, a `--debug`
+/// dataflow must not copy, serialize and publish it: no remote daemon has
+/// it mapped, and dora's own inspection is served by `debug_topic_watchers`.
+#[tokio::test(flavor = "multi_thread")]
+async fn debug_inspection_does_not_publish_without_subscribers() {
+    let (mut daemon, dataflow_id, clock) = debug_dataflow_daemon().await;
+    send_debug_output(&mut daemon, dataflow_id, &clock).await;
+    send_debug_output(&mut daemon, dataflow_id, &clock).await;
+
+    // Anything handed to the drain task would be counted once published.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let sent = daemon.running[&dataflow_id]
+        .net_messages_sent
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(sent, 0, "published to a control topic nobody subscribes to");
+}
+
+/// A user's own zenoh subscriber on the control topic of a `--debug`
+/// dataflow keeps receiving its outputs, as documented for the flag, also
+/// when it joins after the output was first sent: the publisher then
+/// already exists, and only its matching listener can notice the subscriber.
+#[tokio::test(flavor = "multi_thread")]
+async fn debug_inspection_publishes_to_a_zenoh_subscriber() {
+    let (mut daemon, dataflow_id, clock) = debug_dataflow_daemon().await;
+    send_debug_output(&mut daemon, dataflow_id, &clock).await;
+
+    let topic = dora_core::topics::zenoh_daemon_control_topic(
+        dataflow_id,
+        &NodeId::from("sender".to_string()),
+        &DataId::from("output".to_string()),
+    );
+    let subscriber = daemon
+        .zenoh_session
+        .declare_subscriber(topic)
+        .await
+        .unwrap();
+
+    // The subscriber's declaration reaches the publisher's matching status
+    // asynchronously, so earlier outputs may be skipped.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        send_debug_output(&mut daemon, dataflow_id, &clock).await;
+        if let Ok(Some(_)) =
+            tokio::time::timeout(Duration::from_millis(100), subscriber.recv_async())
+                .await
+                .map(Result::ok)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the zenoh subscriber never received an output"
+        );
+    }
+}
+
+/// Local delivery must not depend on zenoh: if declaring the debug control
+/// publisher fails, a `--debug` dataflow's output still reaches its local
+/// receivers.
+#[tokio::test(flavor = "multi_thread")]
+async fn debug_publisher_failure_does_not_block_local_delivery() {
+    let (mut daemon, dataflow_id, clock) = debug_dataflow_daemon().await;
+    let receiver: NodeId = "receiver".to_string().into();
+    let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    {
+        let dataflow = daemon.running.get_mut(&dataflow_id).unwrap();
+        dataflow
+            .mappings
+            .entry(OutputId(
+                NodeId::from("sender".to_string()),
+                DataId::from("output".to_string()),
+            ))
+            .or_default()
+            .insert((receiver.clone(), DataId::from("input".to_string())));
+        dataflow.subscribe_channels.insert(receiver, tx);
+    }
+    // Every declaration on a closed session fails.
+    daemon.zenoh_session.close().await.unwrap();
+
+    send_debug_output(&mut daemon, dataflow_id, &clock).await;
+
+    let events = drain_events(&mut rx);
+    assert_eq!(
+        events.len(),
+        1,
+        "the local receiver must still get the output"
+    );
+    assert!(matches_event(&events[0], "Input"));
+}
+
 // -- Regression tests for dora-rs/dora#3201: a receiver whose event
 //    stream is gone must not be silently starved. --
 
@@ -2635,6 +3045,347 @@ fn missing_event_stream_drops_are_counted_per_message() {
         .unwrap();
         assert_eq!(ft_stats.dropped_messages.load(atomic::Ordering::Relaxed), 2);
     });
+}
+
+/// A dataflow with one `receiver` that has a `queue_policy: backpressure`
+/// input per entry of `inputs`, each fed by its own producer
+/// `<input>-src/out`, and whose event channel is one slot short of the
+/// control-event headroom: a message to it is held, not delivered.
+fn full_backpressure_receiver(
+    inputs: &[&str],
+) -> (
+    RunningDataflow,
+    NodeId,
+    mpsc::Receiver<Timestamped<NodeEvent>>,
+    Arc<crate::local_delivery::DrainSignal>,
+) {
+    use dora_message::config::QueuePolicy;
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let receiver: NodeId = "receiver".to_string().into();
+    let mut configs = BTreeMap::new();
+    for input in inputs {
+        let input: DataId = input.to_string().into();
+        let source = format!("{input}-src");
+        df.mappings.insert(
+            OutputId(source.clone().into(), "out".to_string().into()),
+            BTreeSet::from([(receiver.clone(), input.clone())]),
+        );
+        df.open_inputs
+            .entry(receiver.clone())
+            .or_default()
+            .insert(input.clone());
+        configs.insert(
+            input,
+            user_input(&source, "out", Some(QueuePolicy::Backpressure)),
+        );
+    }
+    df.running_nodes
+        .insert(receiver.clone(), running_node_with(configs, None));
+    let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    for _ in 0..NODE_EVENT_CHANNEL_CAPACITY - (CONTROL_EVENT_HEADROOM - 1) {
+        tx.try_send(Timestamped {
+            inner: NodeEvent::Stop,
+            timestamp: clock.new_timestamp(),
+        })
+        .unwrap();
+    }
+    df.subscribe_channels.insert(receiver.clone(), tx);
+    df.pending_messages
+        .insert(receiver.clone(), Arc::new(AtomicU64::new(0)));
+    let drained = Arc::new(crate::local_delivery::DrainSignal::default());
+    df.drain_signals.insert(receiver.clone(), drained.clone());
+    (df, receiver, rx, drained)
+}
+
+/// Sends one message on `<input>-src/out` to the full receiver, and runs
+/// the delivery that is held for it the way the producer's listener does.
+async fn send_held(
+    df: &mut RunningDataflow,
+    input: &str,
+    clock: &HLC,
+    ft_stats: &Arc<FaultToleranceStats>,
+) -> tokio::task::JoinHandle<()> {
+    let mut deferred = Vec::new();
+    send_output_to_local_receivers(
+        &OutputId(format!("{input}-src").into(), "out".to_string().into()),
+        df,
+        &metadata::Metadata::new(clock.new_timestamp()),
+        None,
+        clock,
+        Some(ft_stats.as_ref()),
+        false,
+        Some(&mut deferred),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        deferred.len(),
+        1,
+        "the message is held for the full receiver"
+    );
+    let ft_stats = ft_stats.clone();
+    let task = tokio::spawn(async move {
+        let last_activity = AtomicU64::new(0);
+        for delivery in deferred {
+            crate::node_communication::deliver_when_room(delivery, &last_activity, &ft_stats).await;
+        }
+    });
+    // Let it find no room and start waiting.
+    tokio::task::yield_now().await;
+    task
+}
+
+/// What the receiver saw besides the filler: inputs and closes, in order.
+fn seen(events: &[NodeEvent]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            NodeEvent::Input { id, .. } => Some(format!("Input({id})")),
+            NodeEvent::InputClosed { id } => Some(format!("InputClosed({id})")),
+            NodeEvent::AllInputsClosed => Some("AllInputsClosed".to_string()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The receiver takes everything out of its channel, and its listener wakes
+/// the held deliveries (`Listener::note_drained`); then the held delivery
+/// finishes and the receiver takes what it put in.
+async fn drain_and_finish(
+    rx: &mut mpsc::Receiver<Timestamped<NodeEvent>>,
+    drained: &crate::local_delivery::DrainSignal,
+    held: tokio::task::JoinHandle<()>,
+) -> Vec<NodeEvent> {
+    let mut events = drain_events(rx);
+    drained.notify.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(5), held)
+        .await
+        .expect("the held delivery finishes once the receiver has room")
+        .unwrap();
+    events.extend(drain_events(rx));
+    events
+}
+
+fn lost(ft_stats: &FaultToleranceStats) -> u64 {
+    ft_stats
+        .lost_backpressure_messages
+        .load(atomic::Ordering::Relaxed)
+}
+
+/// A producer that exits while one of its messages is held for a full
+/// backpressure receiver must not lose that message, and the receiver must
+/// not see it after the input's `InputClosed`: the close (and the
+/// `AllInputsClosed` behind it) waits until the held message is in
+/// (dora-rs/dora#3619).
+#[tokio::test]
+async fn held_message_lands_before_its_input_closed() {
+    let _log = tracing::subscriber::set_default(LevelCapture::new());
+    let (mut df, receiver, mut rx, drained) = full_backpressure_receiver(&["a"]);
+    let clock = test_clock();
+    let ft_stats = Arc::new(FaultToleranceStats::default());
+    let held = send_held(&mut df, "a", &clock, &ft_stats).await;
+
+    // The producer exits: `send_output_closed_events` closes its inputs.
+    close_input(&mut df, &receiver, &"a".to_string().into(), &clock);
+    assert!(df.open_inputs(&receiver).is_empty());
+
+    let events = drain_and_finish(&mut rx, &drained, held).await;
+    assert_eq!(
+        seen(&events),
+        ["Input(a)", "InputClosed(a)", "AllInputsClosed"]
+    );
+    assert_eq!(lost(&ft_stats), 0, "nothing promised was lost");
+    assert_eq!(
+        df.pending_messages[&receiver].load(atomic::Ordering::Relaxed),
+        3,
+        "the held message and both closes count as pending"
+    );
+}
+
+/// `AllInputsClosed` must not overtake a close that waits for a held
+/// message, even when the input whose close finishes the node had nothing
+/// held (dora-rs/dora#3619).
+#[tokio::test]
+async fn all_inputs_closed_waits_for_a_held_message() {
+    let _log = tracing::subscriber::set_default(LevelCapture::new());
+    let (mut df, receiver, mut rx, drained) = full_backpressure_receiver(&["a", "b"]);
+    let clock = test_clock();
+    let ft_stats = Arc::new(FaultToleranceStats::default());
+    let held = send_held(&mut df, "a", &clock, &ft_stats).await;
+
+    close_input(&mut df, &receiver, &"a".to_string().into(), &clock);
+    close_input(&mut df, &receiver, &"b".to_string().into(), &clock);
+
+    let events = drain_and_finish(&mut rx, &drained, held).await;
+    assert_eq!(
+        seen(&events),
+        [
+            "InputClosed(b)",
+            "Input(a)",
+            "InputClosed(a)",
+            "AllInputsClosed"
+        ]
+    );
+    assert_eq!(lost(&ft_stats), 0);
+}
+
+/// An input that is mapped again (`dora node connect`, reload) while its
+/// close still waits for a held message is open after all: the close it
+/// was waiting to send, and the `AllInputsClosed` behind it, are dropped.
+#[tokio::test]
+async fn remapping_an_input_cancels_its_waiting_close() {
+    let _log = tracing::subscriber::set_default(LevelCapture::new());
+    let (mut df, receiver, mut rx, drained) = full_backpressure_receiver(&["a"]);
+    let clock = test_clock();
+    let ft_stats = Arc::new(FaultToleranceStats::default());
+    let input: DataId = "a".to_string().into();
+    let held = send_held(&mut df, "a", &clock, &ft_stats).await;
+
+    close_input(&mut df, &receiver, &input, &clock);
+    df.add_mapping(
+        "other".to_string().into(),
+        "out".to_string().into(),
+        receiver.clone(),
+        input.clone(),
+    );
+
+    let events = drain_and_finish(&mut rx, &drained, held).await;
+    assert_eq!(seen(&events), ["Input(a)"]);
+    assert!(df.open_inputs(&receiver).contains(&input));
+    assert_eq!(lost(&ft_stats), 0);
+}
+
+/// A receiver that frees no room for the stall limit still loses the held
+/// message (the documented give-up, counted), and its waiting close goes out
+/// then instead of never.
+#[tokio::test(start_paused = true)]
+async fn waiting_close_goes_out_when_the_held_delivery_gives_up() {
+    let _log = tracing::subscriber::set_default(LevelCapture::new());
+    let (mut df, receiver, mut rx, _drained) = full_backpressure_receiver(&["a"]);
+    let clock = test_clock();
+    let ft_stats = Arc::new(FaultToleranceStats::default());
+    let held = send_held(&mut df, "a", &clock, &ft_stats).await;
+    let channel = df.subscribe_channels[&receiver].clone();
+    let room = || channel.capacity();
+    let before = room();
+
+    close_input(&mut df, &receiver, &"a".to_string().into(), &clock);
+    assert_eq!(room(), before, "the close waits for the held message");
+
+    held.await.unwrap();
+    assert_eq!(lost(&ft_stats), 1, "the stall limit's drop is counted");
+    assert_eq!(
+        seen(&drain_events(&mut rx)),
+        ["InputClosed(a)", "AllInputsClosed"]
+    );
+}
+
+/// The finish drain clock starts when `AllInputsClosed` is sent, not when
+/// the daemon loop decides it: the event can wait behind a held message for
+/// up to a stall limit per delivery queued ahead of it, possibly for another
+/// receiver, and the straggler watchdog must not count that against this one
+/// (dora-rs/dora#3623 review).
+#[tokio::test]
+async fn drain_clock_starts_when_all_inputs_closed_is_sent() {
+    let _log = tracing::subscriber::set_default(LevelCapture::new());
+    let (mut df, receiver, mut rx, drained) = full_backpressure_receiver(&["a"]);
+    let clock = test_clock();
+    let ft_stats = Arc::new(FaultToleranceStats::default());
+    let held = send_held(&mut df, "a", &clock, &ft_stats).await;
+
+    close_input(&mut df, &receiver, &"a".to_string().into(), &clock);
+    assert!(df.all_inputs_closed_at.contains_key(&receiver));
+    assert_eq!(
+        df.drained_for(&receiver),
+        None,
+        "not drained while AllInputsClosed waits"
+    );
+    // However long the receiver has been silent, the straggler watchdog
+    // leaves it alone: it cannot act on a close it has not been sent.
+    df.connected_nodes.insert(receiver.clone());
+    df.data_inputs
+        .entry(receiver.clone())
+        .or_default()
+        .insert("a".to_string().into());
+    let an_hour_later = crate::node_communication::current_millis() + 3_600_000;
+    assert!(
+        df.finish_stragglers(Duration::from_millis(1), an_hour_later)
+            .is_empty(),
+        "a receiver whose AllInputsClosed waits is not escalated"
+    );
+
+    let waited = Duration::from_millis(200);
+    std::thread::sleep(waited);
+    let events = drain_and_finish(&mut rx, &drained, held).await;
+    assert_eq!(
+        seen(&events),
+        ["Input(a)", "InputClosed(a)", "AllInputsClosed"]
+    );
+    let drained_for = df
+        .drained_for(&receiver)
+        .expect("drained once AllInputsClosed is sent");
+    assert!(
+        drained_for < waited,
+        "the clock starts at the send, not the decision: {drained_for:?}"
+    );
+}
+
+/// A receiver whose event channel closes while a close waits for a held
+/// message (it crashed, or is being torn down) ends the wait at once: the
+/// held message is lost to the closed channel like any other, and nothing
+/// hangs on the close. The listener's own teardown is covered by
+/// `node_communication::tests::listener_teardown_ends_held_deliveries`.
+#[tokio::test]
+async fn closed_receiver_ends_a_waiting_close() {
+    let _log = tracing::subscriber::set_default(LevelCapture::new());
+    let (mut df, receiver, rx, drained) = full_backpressure_receiver(&["a"]);
+    let clock = test_clock();
+    let ft_stats = Arc::new(FaultToleranceStats::default());
+    let held = send_held(&mut df, "a", &clock, &ft_stats).await;
+
+    close_input(&mut df, &receiver, &"a".to_string().into(), &clock);
+    // As the receiver's listener does on teardown.
+    drop(rx);
+    drained.notify.notify_waiters();
+
+    tokio::time::timeout(Duration::from_secs(5), held)
+        .await
+        .expect("the held delivery sees the channel closed")
+        .unwrap();
+    assert_eq!(lost(&ft_stats), 1);
+}
+
+/// The circuit breaker does not break an input while a message for it is
+/// held for the receiver's full channel: the break's `InputClosed` could land
+/// ahead of that message, and the producer is alive anyway. Once the held
+/// delivery is done, the timeout fires as usual (dora-rs/dora#3623 review).
+#[test]
+fn input_timeout_waits_for_a_held_delivery() {
+    let mut df = test_dataflow();
+    let node: NodeId = "node".to_string().into();
+    let input: DataId = "input".to_string().into();
+    df.input_deadlines.insert(
+        (node.clone(), input.clone()),
+        InputDeadline {
+            timeout: Duration::from_millis(1),
+            last_received: Some(Instant::now() - Duration::from_secs(10)),
+        },
+    );
+    let drained = Arc::new(crate::local_delivery::DrainSignal::default());
+    df.drain_signals.insert(node.clone(), drained.clone());
+
+    let held = drained.hold(&input);
+    assert!(
+        df.timed_out_inputs().is_empty(),
+        "an input with a held message must not be broken"
+    );
+
+    drop(held);
+    assert_eq!(
+        df.timed_out_inputs(),
+        vec![(node, input, Duration::from_millis(1))]
+    );
 }
 
 /// A receiver whose event channel is still registered but closed (its

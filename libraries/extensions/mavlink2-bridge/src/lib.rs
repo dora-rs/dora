@@ -6,8 +6,8 @@
 //! - Arrow conversion for common-dialect messages via the [`MavlinkArrow`]
 //!   trait.
 //! - Transport builders for TCP, UDP, and serial links (see [`transport`]).
-//! - [`MAVLINK_VERSION`], a compile-time guarantee that the bridge targets
-//!   MAVLink 2.
+//! - [`MAVLINK_VERSION`], the protocol version a transport uses unless its
+//!   URL selects another with `?proto=`.
 //!
 //! The daemon-spawnable bridge node built on top of this crate lives in the
 //! `dora-mavlink2-bridge-node` binary.
@@ -25,5 +25,7 @@ pub use error::{BridgeError, BridgeResult};
 // `dora_mavlink2_bridge::mavlink::dialects::common`.
 pub use mavlink::{self, MavlinkVersion};
 
-/// Compile-time guarantee that this bridge targets MAVLink 2.
+/// Default MAVLink protocol version of a [`transport::connect`]ed link.
+///
+/// A `?proto=v1` query on the transport URL overrides it per link.
 pub const MAVLINK_VERSION: MavlinkVersion = MavlinkVersion::V2;

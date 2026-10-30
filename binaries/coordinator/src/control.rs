@@ -16,14 +16,14 @@ pub enum ControlEvent {
     LogSubscribe {
         dataflow_id: Uuid,
         level: log::LevelFilter,
-        sender: mpsc::Sender<String>,
+        sender: crate::log_subscriber::LogSink,
         /// Sends `true` if the dataflow exists, `false` otherwise.
         found_tx: oneshot::Sender<bool>,
     },
     BuildLogSubscribe {
         build_id: BuildId,
         level: log::LevelFilter,
-        sender: mpsc::Sender<String>,
+        sender: crate::log_subscriber::LogSink,
         /// Sends `true` if the build exists, `false` otherwise.
         found_tx: oneshot::Sender<bool>,
     },
@@ -35,11 +35,19 @@ pub enum ControlEvent {
     },
     TopicCheck {
         dataflow_id: Uuid,
-        topics: Vec<(NodeId, DataId)>,
-        found_tx: oneshot::Sender<bool>,
+        node_id: NodeId,
+        output_id: DataId,
+        /// Sends the resolved output id to publish under, or `None` if the
+        /// output can't be published to.
+        found_tx: oneshot::Sender<Option<DataId>>,
     },
     TopicUnsubscribe {
         subscription_id: Uuid,
         done_tx: oneshot::Sender<()>,
+    },
+    /// Sends back the ids that still have a subscriber in some dataflow.
+    TopicSubscriptionsLive {
+        subscription_ids: Vec<Uuid>,
+        live_tx: oneshot::Sender<Vec<Uuid>>,
     },
 }

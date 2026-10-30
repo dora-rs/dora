@@ -65,6 +65,29 @@ fn pacing_gap(elapsed: Duration, entry_offset: u64, speed: f64) -> Duration {
     due.saturating_sub(elapsed)
 }
 
+/// The end of a `--loop` pass: how long to wait before the next pass, and
+/// where the next pass's pacing schedule starts.
+///
+/// A pass lasts `last_offset / speed`, where `last_offset` is the recording's
+/// last message from *any* node
+/// ([`RecordingReader::last_timestamp_offset_nanos`]), so every replay node
+/// loops on the same period. The next pass is due one period after
+/// `pass_start`, not when the wait returns: reopening the file and timer
+/// overshoot would otherwise add up over the passes, at a different rate in
+/// each replay node. A pass that ran over its period waits for nothing, and
+/// its successor catches up the same way a late entry does in [`pacing_gap`].
+fn end_of_pass(
+    pass_start: Instant,
+    now: Instant,
+    last_offset: u64,
+    speed: f64,
+) -> (Duration, Instant) {
+    let period = pacing_gap(Duration::ZERO, last_offset, speed);
+    let rest_of_pass = period.saturating_sub(now.saturating_duration_since(pass_start));
+    let next_pass_start = pass_start.checked_add(period).unwrap_or(now);
+    (rest_of_pass, next_pass_start)
+}
+
 /// Whether the replay loop should keep going or wind down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Replay {
@@ -92,7 +115,7 @@ fn classify_event(event: Option<&Event>) -> Replay {
 /// Poll the daemon for a `Stop` without blocking.
 ///
 /// Used on the paths that have no pacing gap to wait out: `--speed 0` replays
-/// as fast as possible, and the gap between two `--loop` passes is zero.
+/// as fast as possible, and an entry or a `--loop` pass end can already be due.
 fn poll_stop(events: &mut EventStream) -> Replay {
     match events.try_recv() {
         Ok(event) => classify_event(Some(&event)),
@@ -150,13 +173,13 @@ fn main() -> eyre::Result<()> {
 
     let (mut node, mut events) = DoraNode::init_from_env()?;
 
+    // Start of the current pass's pacing schedule; see `pacing_gap`.
+    let mut pass_start = Instant::now();
     loop {
         let file =
             File::open(&replay_file).wrap_err_with(|| format!("failed to open {replay_file}"))?;
         let mut reader = RecordingReader::open(file).wrap_err("failed to read recording")?;
 
-        // Start of this pass's pacing schedule; see `pacing_gap`.
-        let pass_start = Instant::now();
         let mut replayed = 0u64;
         let mut skipped = 0u64;
         let mut stopped = false;
@@ -256,13 +279,30 @@ fn main() -> eyre::Result<()> {
             break;
         }
 
-        // A pass that matched no entries never reaches the poll inside the loop
-        // above, so check here too — otherwise `--loop` on a recording holding
-        // nothing for this node spins reopening the file with no way to stop.
-        if poll_stop(&mut events) == Replay::Stop {
+        // A pass lasts until the recording's last message from *any* node,
+        // not just this node's last one. Every replay node is its own process;
+        // restarting each at its own last entry would give each a different
+        // loop period, so the nodes would drift a little further apart on
+        // every pass, and this node's first message would follow its last one
+        // with no gap. Wait out the rest of the shared period instead (see
+        // `end_of_pass`).
+        //
+        // This also polls for `Stop` when there is nothing left to wait (or
+        // with `--speed 0`): a pass that matched no entries never reaches the
+        // poll inside the loop above, and without it `--loop` on a recording
+        // holding nothing for this node would spin reopening the file with no
+        // way to stop.
+        let (rest_of_pass, next_pass_start) = end_of_pass(
+            pass_start,
+            Instant::now(),
+            reader.last_timestamp_offset_nanos(),
+            speed,
+        );
+        if wait_out_gap(&mut events, rest_of_pass) == Replay::Stop {
             eprintln!("dora-replay-node[{replay_node}]: stop requested, exiting");
             break;
         }
+        pass_start = next_pass_start;
         eprintln!("dora-replay-node[{replay_node}]: looping...");
     }
 
@@ -282,14 +322,55 @@ fn replay_parameters(mut parameters: MetadataParameters) -> MetadataParameters {
 #[cfg(test)]
 mod tests {
     use super::{
-        Replay, classify_event, decode_recorded_payload, pacing_gap, replay_emitted_nothing_usable,
-        replay_parameters,
+        Replay, classify_event, decode_recorded_payload, end_of_pass, pacing_gap,
+        replay_emitted_nothing_usable, replay_parameters,
     };
     use dora_node_api::DoraArray;
     use dora_node_api::arrow_utils::encode_arrow_ipc;
     use dora_node_api::arrow_v59::array::Int32Array;
     use dora_node_api::{Event, StopCause};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+
+    const SECOND: u64 = 1_000_000_000;
+
+    /// A node whose own last entry was at 9 s of a 10 s recording waits out
+    /// the remaining second, and the next pass starts exactly 10 s after this
+    /// one, the same period every other replay node uses.
+    #[test]
+    fn a_pass_lasts_until_the_recordings_last_message() {
+        let start = Instant::now();
+        let (rest, next) = end_of_pass(start, start + Duration::from_secs(9), 10 * SECOND, 1.0);
+        assert_eq!(rest, Duration::from_secs(1));
+        assert_eq!(next, start + Duration::from_secs(10));
+    }
+
+    /// Overshoot doesn't carry over: a pass whose wait returned late still
+    /// schedules the next one a fixed period after its own start.
+    #[test]
+    fn a_late_pass_end_does_not_shift_the_next_pass() {
+        let start = Instant::now();
+        let (rest, next) = end_of_pass(start, start + Duration::from_secs(12), 10 * SECOND, 1.0);
+        assert_eq!(rest, Duration::ZERO);
+        assert_eq!(next, start + Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_pass_period_scales_with_speed() {
+        let start = Instant::now();
+        let (rest, next) = end_of_pass(start, start + Duration::from_secs(1), 10 * SECOND, 2.0);
+        assert_eq!(rest, Duration::from_secs(4));
+        assert_eq!(next, start + Duration::from_secs(5));
+    }
+
+    /// `--speed 0` replays as fast as possible: nothing to wait, and the
+    /// schedule origin is irrelevant since every gap is zero.
+    #[test]
+    fn speed_zero_loops_without_waiting() {
+        let start = Instant::now();
+        let (rest, next) = end_of_pass(start, start + Duration::from_secs(1), 10 * SECOND, 0.0);
+        assert_eq!(rest, Duration::ZERO);
+        assert_eq!(next, start);
+    }
 
     #[test]
     fn replay_drops_the_debug_wire_size_stamp() {
@@ -439,5 +520,18 @@ mod tests {
         // behavior the `main` loop relies on to stay resilient.
         let garbage = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03];
         assert!(decode_recorded_payload(Some(&garbage)).is_err());
+    }
+
+    #[test]
+    fn payload_claiming_a_huge_body_is_skipped_not_an_abort() {
+        // Found by fuzzing (#3863): this stream's record batch claims an
+        // enormous body. The decoder must return `Err` (the record is skipped)
+        // instead of trying to allocate that size and aborting the replay node.
+        let hex = "ffffffff780000001000000000000a000c000a00090004000a00000010000000000104000800080000000400080000000400000001000000140000001000160010000e000f0004000000080010000000180000001c00000000000102180000000000060008000400060000000800000000000000040000006441746100000000ffffffffb8000000100000000c001a0018001700040008000c00000020000000800000000000400000000000000000000304000a0018000c00080004000a0000002c000000100000000300000000000000000000000100000003000000000000000000000000000000000000000200000000000000000000000100000000000000400000000000000003000000000000000000000000000000ffffff7f0000000000000000000000000000000000000000000000000000000000000000000000";
+        let payload: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        assert!(decode_recorded_payload(Some(&payload)).is_err());
     }
 }

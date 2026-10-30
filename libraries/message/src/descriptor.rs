@@ -1605,7 +1605,12 @@ pub enum GitRepoRev {
 // schemars would publish a doc comment as the `EnvValue` description in
 // `dora-schema.json`.)
 //
-// A native YAML/JSON bool or number keeps its type. A string has its
+// A native YAML/JSON bool or number keeps its type, except an integer
+// in `i64::MAX + 1 ..= u64::MAX`, which keeps its exact digits as a string.
+// An integer outside `i64::MIN ..= u64::MAX` is a parse error in YAML, but
+// serde_json hands it over as an `f64`, so a JSON descriptor still rounds it
+// (the CLI -> coordinator -> daemon hops are unaffected: by then such a value
+// is already a string). Quote it to keep it exact. A string has its
 // `$VAR` / `${VAR}` references expanded and is then typed as a bool or
 // number only when that is lossless, i.e. when the typed value prints
 // back as exactly the same text. `"8080"` and `${PORT}` (= 8080) still
@@ -1629,6 +1634,8 @@ impl<'de> Deserialize<'de> for EnvValue {
         enum Raw {
             Bool(bool),
             Integer(i64),
+            // Before `Float`, which would round it to the nearest `f64`.
+            Unsigned(u64),
             Float(f64),
             #[serde(deserialize_with = "with_expand_envs")]
             String(String),
@@ -1636,6 +1643,8 @@ impl<'de> Deserialize<'de> for EnvValue {
         Ok(match Raw::deserialize(deserializer)? {
             Raw::Bool(b) => EnvValue::Bool(b),
             Raw::Integer(i) => EnvValue::Integer(i),
+            // Above `i64::MAX`, so `Integer` cannot hold it: keep its digits.
+            Raw::Unsigned(u) => EnvValue::String(u.to_string()),
             Raw::Float(f) if f.is_finite() => EnvValue::Float(f),
             // A non-finite native float (`.inf`, `.nan`, or a literal such as
             // `1e400` that overflows): JSON has no encoding for it (serde_json
@@ -2030,6 +2039,25 @@ mod tests {
         for (yaml, text) in [(".inf", "inf"), ("-.inf", "-inf"), (".nan", "NaN")] {
             let value: EnvValue = serde_yaml::from_str(yaml).unwrap();
             assert_eq!(value, EnvValue::String(text.into()), "yaml {yaml}");
+
+            let json = serde_json::to_string(&value).unwrap();
+            let value: EnvValue = serde_json::from_str(&json).unwrap();
+            assert_eq!(value.to_string(), text, "json {json}");
+        }
+    }
+
+    /// A native integer above `i64::MAX` reaches the node with its exact
+    /// digits, not rounded through `f64` (`12345678901234567890` used to
+    /// arrive as `12345678901234567000`).
+    #[test]
+    fn env_value_keeps_large_native_integers_exact() {
+        for text in [
+            "9223372036854775808",
+            "12345678901234567890",
+            "18446744073709551615",
+        ] {
+            let value: EnvValue = serde_yaml::from_str(text).unwrap();
+            assert_eq!(value.to_string(), text, "yaml {text}");
 
             let json = serde_json::to_string(&value).unwrap();
             let value: EnvValue = serde_json::from_str(&json).unwrap();

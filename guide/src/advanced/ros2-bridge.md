@@ -1040,6 +1040,16 @@ node.set_parameter("speed", 2.0)
 print(node.get_parameter("speed"), node.list_parameters())
 ```
 
+On native Zenoh, a node created with at least one parameter in `parameters=`
+serves the same six `rcl_interfaces` parameter services and publishes
+`/parameter_events` on a change, as on DDS. A node without any gets neither,
+not even `use_sim_time`, so the `get/set_parameter` calls fail on it. With
+`rep2016` the services need the `rcl_interfaces` type descriptions in
+`AMENT_PREFIX_PATH` (and `rosout=True` needs `rcl_interfaces/msg/Log` there).
+When they can't be set up (those type descriptions are missing or can't be
+read, or the namespace has no valid Zenoh key, like `/a//b`), the node fails
+to start.
+
 The blocking calls (`call`, `take_*`) release the GIL while waiting. See
 `examples/ros2-bridge/python/{service-client,service-server,action-client,action-server,parameter}/`.
 
@@ -1093,6 +1103,16 @@ if (server->matches(event)) {
 | action server | `<pkg>::create_<Name>_action_server` → `matches` / `downcast` (`get_goal` / `get_goal_id`) / `publish_feedback` / `send_result` |
 
 See `examples/ros2-bridge/c++/{turtle,service-server,action-client,action-server}/`.
+
+On native Zenoh (`init_ros2_context_with_transport` with `ZenohHumble` or
+`ZenohRep2016`), C++ topics and services work; actions still require DDS.
+A Zenoh service client returns responses from `downcast` in the order the
+requests were sent, even when the server answers them out of order (on DDS,
+responses come in the order they arrive). So a request that gets no response
+holds back the ones after it: after 30 s it arrives as an error from
+`downcast`, and the others follow. At most 64 requests are in flight; up to
+64 more wait to be sent (their 30 s start when they are sent), and
+`send_request` fails once that queue is full.
 
 ### Discovery & RMW notes (native servers)
 

@@ -16,7 +16,6 @@ use dora_core::{
 };
 use dora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
 use dora_node_api::{DoraNode, Event, StopCause};
-use dora_tracing::TracingBuilder;
 use eyre::{Context, Result, bail};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
@@ -58,7 +57,7 @@ pub fn main(runner: impl OperatorRunner) -> eyre::Result<()> {
     let node_id = config.node_id.clone();
     #[cfg(feature = "tracing")]
     {
-        TracingBuilder::new(node_id.as_ref())
+        dora_tracing::TracingBuilder::new(node_id.as_ref())
             .with_stdout("warn", false)
             .build()
             .wrap_err("failed to set up tracing subscriber")?;
@@ -200,18 +199,11 @@ async fn run(
         .wrap_err("failed to init an operator")?;
     tracing::info!("All operators are ready, starting runtime");
 
-    let (mut node, mut daemon_events) = DoraNode::init(config)?;
+    let (mut node, daemon_events) = DoraNode::init(config)?;
     // Publish the allocator before any input can reach an operator, so an
     // operator's first `send_output` already has somewhere to encode into.
     let _ = allocator.set(node.sample_allocator());
-    let (daemon_events_tx, daemon_event_stream) = flume::bounded(1);
-    tokio::task::spawn_blocking(move || {
-        while let Some(event) = daemon_events.recv() {
-            if daemon_events_tx.send(RuntimeEvent::Event(event)).is_err() {
-                break;
-            }
-        }
-    });
+    let daemon_event_stream = spawn_daemon_event_forwarder(daemon_events);
     let mut events = (operator_events, daemon_event_stream.into_stream()).merge();
 
     let mut open_operator_inputs: HashMap<_, BTreeSet<_>> = operators
@@ -476,8 +468,9 @@ async fn forward_stop(
 /// This does **not** rescue a send that never returns: the node still owes the
 /// daemon an exit and will be force-killed at the grace period. Bailing out of a
 /// wedged send is not possible from here — the `DoraNode` lives inside the
-/// blocking task, and `Runtime::drop` waits forever for `spawn_blocking` work,
-/// so a real escape needs `shutdown_background()` at the `main()` layer.
+/// blocking task, and `Runtime::drop` waits forever for `spawn_blocking` work
+/// (the reason [`spawn_daemon_event_forwarder`] is async), so a real escape
+/// needs `shutdown_background()` at the `main()` layer.
 async fn await_send_watching_for_stop<S, T>(
     send: &mut tokio::task::JoinHandle<T>,
     events: &mut S,
@@ -514,6 +507,42 @@ where
                 }
             }
         }
+    }
+}
+
+/// Spawn the task that feeds the daemon's events into the main loop, and
+/// return the channel it feeds.
+///
+/// This must be an async task, not `spawn_blocking` around the blocking
+/// `recv`: when `run` returns early (an operator error, panic or
+/// `Event::Error`, or every operator finishing) while the node's inputs are
+/// quiet, the forwarder is parked waiting for the next event. Dropping the
+/// tokio runtime cancels an async task, but waits forever for a blocking one,
+/// so the process neither exited nor reported the error until the daemon
+/// happened to send another event.
+fn spawn_daemon_event_forwarder(
+    mut daemon_events: impl DaemonEvents,
+) -> flume::Receiver<RuntimeEvent> {
+    let (tx, rx) = flume::bounded(1);
+    tokio::spawn(async move {
+        while let Some(event) = daemon_events.next_event().await {
+            if tx.send_async(RuntimeEvent::Event(event)).await.is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+/// The node's event stream, as [`spawn_daemon_event_forwarder`] reads it; a
+/// trait so the forwarder can be tested without a daemon.
+trait DaemonEvents: Send + 'static {
+    fn next_event(&mut self) -> impl Future<Output = Option<Event>> + Send;
+}
+
+impl DaemonEvents for dora_node_api::EventStream {
+    fn next_event(&mut self) -> impl Future<Output = Option<Event>> + Send {
+        self.recv_async()
     }
 }
 
@@ -570,6 +599,35 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod daemon_event_forwarder_tests {
+    use super::*;
+
+    /// Dropping the runtime must not wait for a daemon event that never
+    /// comes; otherwise an operator error leaves the process hanging.
+    #[test]
+    fn a_quiet_event_stream_does_not_block_runtime_shutdown() {
+        struct Quiet;
+        impl DaemonEvents for Quiet {
+            fn next_event(&mut self) -> impl Future<Output = Option<Event>> + Send {
+                std::future::pending()
+            }
+        }
+
+        let runtime = Builder::new_multi_thread().enable_all().build().unwrap();
+        let _events = runtime.block_on(async { spawn_daemon_event_forwarder(Quiet) });
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            drop(runtime);
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("dropping the runtime hung on the event forwarder");
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,33 @@
+name: Rebuild website blog
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/blog/**"
+      - ".github/workflows/website-blog.yml"
+  workflow_dispatch:
+
+# The default token is scoped to this repository. The dispatch uses a separate
+# fine-grained token with Actions: write on dora-rs/dora-rs.github.io only.
+permissions: {}
+
+concurrency:
+  group: website-blog
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    if: github.repository == 'dora-rs/dora' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger website deployment
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::Set WEBSITE_DISPATCH_TOKEN with Actions: write access to dora-rs/dora-rs.github.io. See docs/website-blog.md."
+            exit 1
+          fi
+          gh workflow run deploy.yml --repo dora-rs/dora-rs.github.io --ref main

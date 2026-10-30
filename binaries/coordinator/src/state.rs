@@ -189,6 +189,10 @@ pub(crate) struct DaemonConnection {
     /// registration). Lets other daemons reach this daemon's direct-TCP
     /// memory-pool data listener.
     pub(crate) peer_addr: Option<std::net::SocketAddr>,
+    /// The coordinator's own address on this daemon's WS connection. A
+    /// `peer_addr` equal to it means the daemon runs on the coordinator's
+    /// host even though it did not connect over loopback.
+    pub(crate) coordinator_local_addr: Option<std::net::SocketAddr>,
     pub(crate) last_heartbeat: Instant,
     pub(crate) labels: BTreeMap<String, String>,
     /// Latest fault tolerance stats from this daemon (updated on each heartbeat).
@@ -287,6 +291,7 @@ impl DaemonConnection {
             sender,
             pending_replies,
             peer_addr: None,
+            coordinator_local_addr: None,
             last_heartbeat: Instant::now(),
             labels,
             ft_stats: None,

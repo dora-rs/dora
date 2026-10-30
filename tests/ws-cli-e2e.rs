@@ -2821,6 +2821,135 @@ mod real_dataflow {
         );
     }
 
+    /// dora-rs/dora#3969: the second Ctrl-C of `dora start --attach` must
+    /// actually force-stop the dataflow.
+    ///
+    /// The first Ctrl-C sends a graceful `Stop`, whose reply the coordinator
+    /// parks until the dataflow has finished, and it handles one request at
+    /// a time per connection. The force-stop used to be queued behind it and
+    /// never sent before the CLI exited, so the dataflow ran on under the
+    /// graceful stop. The fixture ignores both `Stop` and SIGTERM, which puts
+    /// the graceful kill at `DEFAULT_STOP_GRACE * 1.5` (15 s); only a force
+    /// stop ends it within the few seconds asserted here.
+    ///
+    /// Unix-only: it sends SIGINT and inspects process state.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_attach_second_ctrl_c_force_stops_the_dataflow() {
+        ensure_built();
+        let dora = dora_bin();
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        let status = Command::new("cargo")
+            .args(["build", "-p", "sigterm-ignoring-node"])
+            .arg("--target-dir")
+            .arg(&target)
+            .status()
+            .expect("failed to build sigterm-ignoring-node");
+        assert!(status.success(), "failed to build sigterm-ignoring-node");
+
+        let home = tempdir().expect("create isolated home");
+        let port = unused_port();
+        let pid_file = home.path().join("stubborn.pid");
+        let yaml = home.path().join("stubborn.yml");
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: stubborn\n    \
+                   path: \"{node}\"\n    \
+                   env:\n      \
+                     DORA_TEST_PID_FILE: \"{pid_file}\"\n    \
+                   inputs:\n      \
+                     tick: dora/timer/millis/100\n",
+                node = target.join("debug/sigterm-ignoring-node").display(),
+                pid_file = pid_file.display(),
+            ),
+        )
+        .expect("write dataflow yaml");
+
+        let (status, stdout, stderr) = run_dora_isolated(&dora, home.path(), port, &["up"]);
+        assert!(
+            status.success(),
+            "dora up failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        struct Down<'a>(&'a str, &'a Path, u16);
+        impl Drop for Down<'_> {
+            fn drop(&mut self) {
+                let _ = run_dora_isolated(self.0, self.1, self.2, &["down"]);
+            }
+        }
+        let _down = Down(&dora, home.path(), port);
+
+        let (child, _out_path, err_path) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["start", yaml.to_str().unwrap(), "--attach"],
+            "start",
+        );
+        let mut child = KillOnDrop(Some(child));
+
+        let node_pid = wait_for_pid_file(&pid_file, Duration::from_secs(30));
+        struct Reaper(u32);
+        impl Drop for Reaper {
+            fn drop(&mut self) {
+                if fixture_alive(self.0) {
+                    let _ = Command::new("kill")
+                        .args(["-9", &self.0.to_string()])
+                        .status();
+                }
+            }
+        }
+        let _reaper = Reaper(node_pid);
+        // The CLI installs its Ctrl-C handler right after the start reply,
+        // which arrives before the node is up; the extra second is slack.
+        std::thread::sleep(Duration::from_secs(1));
+
+        let sigint = |pid: u32| {
+            let status = Command::new("kill")
+                .args(["-INT", &pid.to_string()])
+                .status()
+                .expect("run kill");
+            assert!(status.success(), "kill -INT {pid} failed");
+        };
+        let cli_pid = child.child().id();
+        sigint(cli_pid);
+        std::thread::sleep(Duration::from_secs(1));
+        assert!(
+            fixture_alive(node_pid),
+            "the fixture ignores Stop, so the graceful stop must not end it this early"
+        );
+        sigint(cli_pid);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while fixture_alive(node_pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let stderr = std::fs::read_to_string(&err_path).unwrap_or_default();
+        assert!(
+            !fixture_alive(node_pid),
+            "node {node_pid} still runs 5 s after the second Ctrl-C, so the \
+             force-stop never reached the coordinator; CLI stderr:\n{stderr}"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.child().try_wait().expect("poll dora start") {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "dora start --attach did not exit after the second Ctrl-C"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert_eq!(status.code(), Some(1), "CLI stderr:\n{stderr}");
+        assert!(
+            stderr.contains("force-stopping dataflow"),
+            "CLI stderr:\n{stderr}"
+        );
+    }
+
     /// #3004 review: the same orphan, one level down.
     ///
     /// A node's tracked process is often a wrapper — `uv run python node.py`,

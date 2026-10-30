@@ -60,10 +60,8 @@ pub(crate) struct DataflowMetricsSnapshot {
 /// started, which divided by a two-second window is a large one-sample spike.
 ///
 /// Holding all three in one mutex is what keeps that pairing honest: a
-/// collection takes the whole state at once, so a concurrent collection starts
-/// from `Default` — an empty `System` *and* an empty baseline — and reports no
-/// rate, rather than dividing one collection's total-since-start bytes by the
-/// other's plausible-looking window.
+/// collection holds the lock from the moment it takes the state out until it
+/// puts the refreshed one back, so no other collection can run in between.
 #[derive(Default)]
 pub(crate) struct MetricsState {
     /// The sysinfo handle whose per-process counters the deltas come from.
@@ -224,7 +222,7 @@ fn aggregate_process_tree(
 /// caller (the spawned task logs them).
 pub(crate) async fn collect_and_send_metrics_bg(
     dataflows: Vec<DataflowMetricsSnapshot>,
-    metrics_state: Arc<std::sync::Mutex<MetricsState>>,
+    metrics_state: Arc<tokio::sync::Mutex<MetricsState>>,
     sender: coordinator::CoordinatorSender,
     daemon_id: DaemonId,
     clock: Arc<uhlc::HLC>,
@@ -236,8 +234,10 @@ pub(crate) async fn collect_and_send_metrics_bg(
         .iter()
         .any(|df| df.nodes.iter().any(|n| n.pid.is_some()));
 
-    // Refresh sysinfo on a blocking thread if any nodes are running. `try_lock`
-    // skips the cycle when a previous collection is still in progress.
+    // Refresh sysinfo on a blocking thread if any nodes are running. The owned
+    // guard is held for the whole collection, so a tick that lands while the
+    // previous one is still running fails `try_lock_owned` and skips its cycle
+    // instead of starting a second full scan from an empty `System`.
     //
     // Taking the whole `MetricsState` (see its docs) keeps each delta together
     // with the window and the observed-process set that make it meaningful.
@@ -248,18 +248,18 @@ pub(crate) async fn collect_and_send_metrics_bg(
     // rather than clearing it: nothing refreshed, so the stored baseline still
     // describes the stored `System`, and the next refresh's delta and window
     // both simply span the longer gap.
+    let mut collection = None;
     let (refreshed_state, refresh_window, previous_processes) = if has_any_running {
+        let Ok(mut guard) = metrics_state.try_lock_owned() else {
+            tracing::debug!("metrics: skipping, previous collection still running");
+            return Ok(());
+        };
         let MetricsState {
             system,
             last_refresh,
             processes: previous_processes,
-        } = match metrics_state.try_lock() {
-            Ok(mut guard) => std::mem::take(&mut *guard),
-            Err(_) => {
-                tracing::debug!("metrics: skipping, previous collection still running");
-                return Ok(());
-            }
-        };
+        } = std::mem::take(&mut *guard);
+        collection = Some(guard);
         let refresh_kind = metrics_refresh_kind();
         match tokio::task::spawn_blocking(move || {
             let mut system = system;
@@ -423,11 +423,9 @@ pub(crate) async fn collect_and_send_metrics_bg(
     }
 
     // Return the refreshed System and its matching baseline to the shared mutex
-    // for the next cycle.
-    if let Some(state) = refreshed_state
-        && let Ok(mut guard) = metrics_state.lock()
-    {
-        *guard = state;
+    // for the next cycle; dropping the guard then lets the next one start.
+    if let (Some(state), Some(guard)) = (refreshed_state, collection.as_mut()) {
+        **guard = state;
     }
 
     Ok(())
@@ -500,6 +498,99 @@ impl Daemon {
 #[cfg(test)]
 mod disk_rate_tests {
     use super::*;
+
+    /// A collection must hold the metrics state for as long as it runs, so a
+    /// tick that lands meanwhile skips its cycle rather than starting a
+    /// second full scan from an empty `System`.
+    ///
+    /// The running collection is a real one, held up in `send_event` by a
+    /// full coordinator channel; on the old code the state was already free
+    /// again at that point.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_running_collection_holds_the_state_until_it_is_done() {
+        let state = Arc::new(tokio::sync::Mutex::new(MetricsState::default()));
+        let clock = Arc::new(uhlc::HLC::default());
+        let (sender, mut sent) = coordinator::CoordinatorSender::for_test();
+        let this_process = || {
+            vec![DataflowMetricsSnapshot {
+                dataflow_id: DataflowId::new_v4(),
+                nodes: vec![NodeSnapshot {
+                    node_id: NodeId::from("node".to_string()),
+                    pid: Some(Arc::new(AtomicU32::new(std::process::id()))),
+                    restart_count: Arc::default(),
+                    restarts_disabled: false,
+                    broken_inputs: Vec::new(),
+                    pending_messages: 0,
+                }],
+                net_bytes_sent: Arc::default(),
+                net_bytes_received: Arc::default(),
+                net_messages_sent: Arc::default(),
+                net_messages_received: Arc::default(),
+                net_publish_failures: Arc::default(),
+            }]
+        };
+
+        // Fill the coordinator channel so the next send blocks.
+        let mut queued = 0;
+        while tokio::time::timeout(Duration::from_millis(50), sender.send_event(b"null"))
+            .await
+            .is_ok()
+        {
+            queued += 1;
+        }
+
+        let running = tokio::spawn(collect_and_send_metrics_bg(
+            this_process(),
+            state.clone(),
+            sender.clone(),
+            DaemonId::new(None),
+            clock.clone(),
+        ));
+        // Wait until it has refreshed and is blocked sending its metrics.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while state.try_lock().is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "the collection never took the metrics state"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            state.try_lock().is_err(),
+            "the metrics state was released while the collection was still sending"
+        );
+
+        // A tick now skips: it finishes at once without queueing anything.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            collect_and_send_metrics_bg(
+                this_process(),
+                state.clone(),
+                sender.clone(),
+                DaemonId::new(None),
+                clock.clone(),
+            ),
+        )
+        .await
+        .expect("an overlapping tick must skip, not wait")
+        .unwrap();
+
+        // Draining lets the running collection finish and release the state.
+        for _ in 0..queued {
+            sent.recv().await.unwrap();
+        }
+        running.await.unwrap().unwrap();
+        assert!(
+            sent.recv().await.is_some(),
+            "the running collection's metrics"
+        );
+        assert!(
+            sent.try_recv().is_err(),
+            "the overlapping tick must not have sent anything"
+        );
+        assert!(state.try_lock().is_ok());
+    }
 
     #[test]
     fn no_baseline_reports_no_rate() {

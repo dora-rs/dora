@@ -26,7 +26,7 @@ pub(crate) async fn handle_daemon_ws(
     topic_debug_tx: mpsc::Sender<Event>,
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
-    peer_addr: std::net::SocketAddr,
+    peer: crate::ws_server::PeerInfo,
     daemon_peer_addrs: Arc<
         std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
     >,
@@ -88,7 +88,7 @@ pub(crate) async fn handle_daemon_ws(
                         &store,
                         &mut tracked_daemon_id,
                         &mut tracked_connection_id,
-                        peer_addr,
+                        peer,
                         daemon_peer_addrs.clone(),
                     )
                     .await
@@ -201,7 +201,7 @@ async fn handle_daemon_request(
     store: &Arc<dyn CoordinatorStore>,
     tracked_daemon_id: &mut Option<DaemonId>,
     tracked_connection_id: &mut Option<Uuid>,
-    peer_addr: std::net::SocketAddr,
+    peer: crate::ws_server::PeerInfo,
     daemon_peer_addrs: Arc<
         std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
     >,
@@ -250,7 +250,8 @@ async fn handle_daemon_request(
             let mut connection =
                 DaemonConnection::new(cmd_tx.clone(), pending_replies.clone(), labels.clone());
             connection.supports_hub_sources = supports_hub_sources;
-            connection.peer_addr = Some(peer_addr);
+            connection.peer_addr = Some(peer.remote);
+            connection.coordinator_local_addr = peer.local;
             // Recorded here, so it is on the connection before it is added to
             // the registry — the next daemon's register reply, built later on
             // the same serial event loop, therefore already contains it.

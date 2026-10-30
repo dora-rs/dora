@@ -127,6 +127,27 @@ pub(crate) fn runtime_node_outputs(node: &RuntimeNode) -> BTreeSet<DataId> {
         .collect()
 }
 
+/// The output id `dora topic pub` must publish `node_id/output_id` under, or
+/// `None` if the dataflow has no such output or doesn't allow debug
+/// publishing.
+///
+/// The daemons subscribe under the resolved id, so a single-operator runtime
+/// node's bare `image` has to go out as `op/image`, as for `dora topic echo`.
+pub(crate) fn topic_publish_output_id(
+    running_dataflows: &HashMap<DataflowId, RunningDataflow>,
+    dataflow_id: DataflowId,
+    node_id: dora_message::id::NodeId,
+    output_id: DataId,
+) -> Option<DataId> {
+    if !topic_debug_enabled(running_dataflows, dataflow_id).unwrap_or(false) {
+        return None;
+    }
+    let outputs =
+        topic_outputs_by_daemon(running_dataflows, dataflow_id, &[(node_id, output_id)]).ok()?;
+    let (_, resolved) = outputs.into_values().flatten().next()?;
+    Some(resolved)
+}
+
 pub(crate) fn topic_debug_enabled(
     running_dataflows: &HashMap<DataflowId, RunningDataflow>,
     dataflow_id: DataflowId,
@@ -323,6 +344,26 @@ pub(crate) fn stop_topic_debug_stream(
         subscriber.outputs_by_daemon().keys().cloned(),
         clock,
     )
+}
+
+/// The subset of `subscription_ids` that some running dataflow still has a
+/// subscriber for.
+///
+/// The coordinator drops subscribers on its own (a reader that stayed too
+/// slow, a dataflow that ended); a WS connection uses this to free the slots
+/// such ids still take up in its per-connection list.
+pub(crate) fn live_topic_subscriptions(
+    running_dataflows: &HashMap<DataflowId, RunningDataflow>,
+    subscription_ids: Vec<Uuid>,
+) -> Vec<Uuid> {
+    subscription_ids
+        .into_iter()
+        .filter(|id| {
+            running_dataflows
+                .values()
+                .any(|df| df.topic_subscribers.contains_key(id))
+        })
+        .collect()
 }
 
 /// Forward a daemon's topic debug frame to its CLI subscribers.

@@ -173,7 +173,8 @@ mod zenoh_bind;
 pub(crate) use debug_topic::{DebugSchemaCache, prepare_debug_topic_frame, retain_debug_schema};
 pub(crate) use event_types::{
     CONTROL_EVENT_HEADROOM, DaemonNodeEvent, DoraEvent, Event, InterDaemonEvent,
-    NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound, send_with_timestamp,
+    NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound, send_timestamped,
+    send_with_timestamp,
 };
 pub(crate) use fault_tolerance::{CascadingErrorCauses, FaultToleranceStats};
 pub(crate) use local_delivery::{
@@ -466,7 +467,7 @@ pub struct Daemon {
     pub(crate) builds: BTreeMap<BuildId, BuildInfo>,
     pub(crate) git_manager: GitManager,
     /// Carry-over state for the `dora top` metrics sampler. See [`MetricsState`].
-    pub(crate) metrics_state: Arc<std::sync::Mutex<MetricsState>>,
+    pub(crate) metrics_state: Arc<tokio::sync::Mutex<MetricsState>>,
     /// Opaque, dataflow-scoped store for out-of-tree extensions. See
     /// `extension_table` and `docs/extensions.md`.
     pub(crate) extensions: ExtensionTable,
@@ -1325,6 +1326,9 @@ impl Daemon {
             })
             .await
             .wrap_err("failed to open zenoh session")?;
+        // Lets another daemon's link-probe diagnostics, which list the zids it
+        // is linked to, be matched against this daemon (#3711).
+        tracing::info!("zenoh session open with id {}", zenoh_session.zid());
         // Same-host control notifications (`PeerMessage::Register`/`PeerMessage::Free`) go over
         // zenoh SHM: the payload stays in shared memory and peer daemons
         if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {
@@ -1407,7 +1411,7 @@ impl Daemon {
             pool: dora_tensor_pool::daemon::PoolState::new(),
             builds,
             sessions: Default::default(),
-            metrics_state: Arc::new(std::sync::Mutex::new(MetricsState::default())),
+            metrics_state: Arc::new(tokio::sync::Mutex::new(MetricsState::default())),
         };
 
         Ok((daemon, dora_events_rx))
@@ -1461,15 +1465,18 @@ impl Daemon {
         dataflow_id: Uuid,
         result: &DataflowDaemonResult,
     ) -> eyre::Result<()> {
-        let msg = serde_json::to_vec(&Timestamped {
-            inner: CoordinatorRequest::Event {
-                daemon_id: self.daemon_id.clone(),
-                event: DaemonEvent::AllNodesFinished {
-                    dataflow_id,
-                    result: result.clone(),
+        let timestamp = self.clock.new_timestamp();
+        let msg = extract_err_from_stderr::encode_bounded_finish_report(result, |result| {
+            Ok(serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::AllNodesFinished {
+                        dataflow_id,
+                        result: result.clone(),
+                    },
                 },
-            },
-            timestamp: self.clock.new_timestamp(),
+                timestamp,
+            })?)
         })?;
         sender
             .send_event(&msg)
