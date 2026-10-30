@@ -995,13 +995,21 @@ impl EventStream {
         // returned to the caller before we poll the underlying
         // scheduler, so the caller's main event loop never loses
         // events that arrived during a helper wait (dora-rs/adora#148).
-        if !self.pending_passthrough.is_empty() {
-            self.absorb_ready_events();
-        }
-        if let Some(event) = self.pending_passthrough.pop_front() {
+        if let Some(event) = self.pop_passthrough() {
             return Some(event);
         }
         self.recv_from_stream().await
+    }
+
+    /// Take the next event stashed in `pending_passthrough`, after absorbing
+    /// the ready events (see [`absorb_ready_events`](Self::absorb_ready_events))
+    /// so a waiting `flush: true` chunk discards stale buffered ones first.
+    /// Shared by `recv_async` and `poll_next` so both drain identically.
+    fn pop_passthrough(&mut self) -> Option<Event> {
+        if !self.pending_passthrough.is_empty() {
+            self.absorb_ready_events();
+        }
+        self.pending_passthrough.pop_front()
     }
 
     /// Move the events already waiting in `receiver` into the scheduler without
@@ -2163,7 +2171,7 @@ impl Stream for EventStream {
         // top of `recv_async` so `StreamExt::next()` and `recv()`
         // return the same events in the same order
         // (dora-rs/adora#172).
-        if let Some(event) = self.pending_passthrough.pop_front() {
+        if let Some(event) = self.pop_passthrough() {
             return std::task::Poll::Ready(Some(event));
         }
 
@@ -3461,6 +3469,24 @@ mod tests {
     /// timing of #3834's steps 4–5.
     #[test]
     fn flush_discards_stale_passthrough_chunks() {
+        check_flush_discards_stale_passthrough_chunks(|events| {
+            std::iter::from_fn(|| events.recv()).collect()
+        });
+    }
+
+    /// Same through `StreamExt::next()`, which must drain the buffered chunks
+    /// exactly like `recv()` does.
+    #[test]
+    fn flush_discards_stale_passthrough_chunks_via_stream() {
+        check_flush_discards_stale_passthrough_chunks(|events| {
+            std::iter::from_fn(|| futures::executor::block_on(futures::StreamExt::next(events)))
+                .collect()
+        });
+    }
+
+    fn check_flush_discards_stale_passthrough_chunks(
+        receive_all: impl FnOnce(&mut EventStream) -> Vec<Event>,
+    ) {
         use crate::event_stream::thread::EventItem;
         use dora_message::metadata::{FLUSH, Metadata, MetadataParameters, Parameter};
 
@@ -3502,7 +3528,7 @@ mod tests {
             matches!(e, Event::Input { metadata, .. }
                 if dora_message::metadata::get_bool_param(&metadata.parameters, FLUSH) == Some(true))
         };
-        let received: Vec<_> = std::iter::from_fn(|| events.recv()).collect();
+        let received = receive_all(&mut events);
         assert_eq!(
             received.len(),
             3,
