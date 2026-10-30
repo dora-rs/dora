@@ -62,6 +62,7 @@ pub enum Event {
     },
     NodeMetrics {
         dataflow_id: Uuid,
+        daemon_id: DaemonId,
         metrics: BTreeMap<NodeId, NodeMetrics>,
         network: Option<NetworkMetrics>,
     },

@@ -1061,7 +1061,7 @@ impl Coordinator {
                         node_id: node_id.clone(),
                         daemon_id: daemon_id.clone(),
                         metrics,
-                        network: dataflow.network_metrics.clone(),
+                        network: dataflow.network_metrics.get(daemon_id).cloned(),
                     });
                 }
             }
