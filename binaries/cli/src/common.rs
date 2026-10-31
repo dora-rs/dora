@@ -508,6 +508,28 @@ mod coordinator_rejected_tests {
         );
     }
 
+    /// The hint must point at the file the token is really in. The config
+    /// copy goes to the platform's config directory, which is `~/.config`
+    /// only on Linux, so a hardcoded `~/.config/dora/.dora-token` sent macOS
+    /// and Windows users to a file that does not exist.
+    #[test]
+    fn auth_failure_names_the_real_token_locations() {
+        let (addr, _) = unauthorized_server();
+        let err = connect_to_coordinator(addr)
+            .err()
+            .expect("401 must fail the connection");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("DORA_AUTH_TOKEN"), "{msg}");
+        assert!(
+            msg.contains(".dora-token in the current directory"),
+            "{msg}"
+        );
+        if let Some(config) = dora_message::auth::config_token_path() {
+            assert!(msg.contains(&config.display().to_string()), "{msg}");
+        }
+        assert!(!msg.contains("~/.config/dora/.dora-token"), "{msg}");
+    }
+
     #[test]
     fn refused_connection_is_not_a_rejection() {
         let addr = TcpListener::bind("127.0.0.1:0")
