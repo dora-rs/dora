@@ -13,14 +13,18 @@ use std::{
     path::PathBuf,
 };
 
-/// Wire framing mode for an output.
+/// Wire framing requested for an output via `output_framing`.
+///
+/// Accepted for dora 1.x schema compatibility only: neither value changes
+/// anything. Every output is sent as an Arrow IPC stream (schema + record
+/// batch) regardless of this setting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum OutputFraming {
-    /// Raw Arrow buffer layout (default, current behavior).
+    /// The default.
     #[default]
     Raw,
-    /// Arrow IPC stream format — self-describing, schema + record batches.
+    /// Arrow IPC stream format.
     ArrowIpc,
 }
 
@@ -566,10 +570,9 @@ pub struct Node {
     #[schemars(with = "Option<BTreeMap<DataId, String>>")]
     pub output_types: BTreeMap<DataId, String>,
 
-    /// Per-output framing overrides (default: Raw for all).
-    ///
-    /// Maps output identifiers to their wire framing mode.
-    /// Outputs not listed here use the default `Raw` framing.
+    /// Per-output framing overrides. Accepted for 1.x schema compatibility
+    /// but ignored: every output is sent as an Arrow IPC stream whatever its
+    /// entry here says (see [`OutputFraming`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     // An empty key is YAML `null`, which deserializes to the default.
     #[schemars(with = "Option<BTreeMap<DataId, OutputFraming>>")]
@@ -1264,7 +1267,8 @@ pub struct OperatorConfig {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_types: BTreeMap<DataId, String>,
 
-    /// Per-output framing overrides (default: Raw for all).
+    /// Per-output framing overrides. Ignored: every output is sent as an
+    /// Arrow IPC stream (see [`OutputFraming`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_framing: BTreeMap<DataId, OutputFraming>,
 
