@@ -340,16 +340,64 @@ async fn spawn_rejects_dynamic_node_without_listener() {
     assert!(!daemon.running.contains_key(&dataflow_id));
 }
 
-/// Dynamic nodes are allowed exactly when the listener bound (`AddNode`,
-/// `ReplaceNode` and `spawn_dataflow` all go through this check).
+/// `AddNode` and `ReplaceNode` must refuse a dynamic node too when the
+/// dynamic-node port is taken, with the same error as a spawn.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn dynamic_node_check_follows_listener_state() {
+async fn add_and_replace_reject_dynamic_node_without_listener() {
     let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
     let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
-    let node_id: NodeId = "dyn".to_string().into();
-    assert!(daemon.check_dynamic_node_listener(&node_id).is_ok());
     daemon.dynamic_node_port_unavailable = Some(53291);
-    assert!(daemon.check_dynamic_node_listener(&node_id).is_err());
+
+    let descriptor: Descriptor =
+        serde_json::from_str(r#"{ "nodes": [ { "id": "dyn", "path": "dynamic" } ] }"#).unwrap();
+    let resolved = descriptor
+        .resolve_aliases_and_set_defaults()
+        .unwrap()
+        .into_values()
+        .next()
+        .unwrap();
+    let dataflow_id = Uuid::new_v4();
+    daemon.running.insert(dataflow_id, test_dataflow());
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _status = daemon
+        .handle_coordinator_event(
+            DaemonCoordinatorEvent::AddNode {
+                dataflow_id,
+                node: resolved.clone(),
+                uv: false,
+            },
+            reply_tx,
+        )
+        .await
+        .expect("AddNode must not fail the daemon loop");
+    match reply_rx.await.expect("a reply must be sent") {
+        Some(DaemonCoordinatorReply::AddNodeResult(Err(err))) => {
+            assert!(err.contains("dynamic-node port 53291"), "{err}");
+        }
+        other => panic!("expected an AddNode error, got {other:?}"),
+    }
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _status = daemon
+        .handle_coordinator_event(
+            DaemonCoordinatorEvent::ReplaceNode {
+                dataflow_id,
+                node: resolved,
+                unresolved_node: descriptor.nodes[0].clone(),
+                uv: false,
+                grace_duration: None,
+            },
+            reply_tx,
+        )
+        .await
+        .expect("ReplaceNode must not fail the daemon loop");
+    match reply_rx.await.expect("a reply must be sent") {
+        Some(DaemonCoordinatorReply::ReplaceNodeResult(Err(err))) => {
+            assert!(err.contains("dynamic-node port 53291"), "{err}");
+        }
+        other => panic!("expected a ReplaceNode error, got {other:?}"),
+    }
 }
 
 /// Same for an operator id that is not a valid `DataId` segment: the daemon
