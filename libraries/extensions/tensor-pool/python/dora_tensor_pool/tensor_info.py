@@ -66,6 +66,159 @@ _TORCH_TO_NUMPY_DTYPE_MAP = {
 # ---------------------------------------------------------------------------
 
 
+# DLPack dtype codes: kDLInt=0, kDLUInt=1, kDLFloat=2, kDLBfloat=4.
+_DLPACK_TYPE = {
+    torch.int8: (0, 8),
+    torch.int16: (0, 16),
+    torch.int32: (0, 32),
+    torch.int64: (0, 64),
+    torch.uint8: (1, 8),
+    torch.float16: (2, 16),
+    torch.float32: (2, 32),
+    torch.float64: (2, 64),
+    torch.bool: (1, 8),
+    torch.bfloat16: (4, 16),
+}
+
+
+class _DLDevice(ctypes.Structure):
+    _fields_ = [("device_type", ctypes.c_int32), ("device_id", ctypes.c_int32)]
+
+
+class _DLDataType(ctypes.Structure):
+    _fields_ = [
+        ("code", ctypes.c_uint8),
+        ("bits", ctypes.c_uint8),
+        ("lanes", ctypes.c_uint16),
+    ]
+
+
+class _DLTensor(ctypes.Structure):
+    _fields_ = [
+        ("data", ctypes.c_void_p),
+        ("device", _DLDevice),
+        ("ndim", ctypes.c_int32),
+        ("dtype", _DLDataType),
+        ("shape", ctypes.POINTER(ctypes.c_int64)),
+        ("strides", ctypes.POINTER(ctypes.c_int64)),
+        ("byte_offset", ctypes.c_uint64),
+    ]
+
+
+class _DLManagedTensor(ctypes.Structure):
+    pass
+
+
+_DLPACK_DELETER = ctypes.CFUNCTYPE(None, ctypes.POINTER(_DLManagedTensor))
+
+_DLManagedTensor._fields_ = [
+    ("dl_tensor", _DLTensor),
+    ("manager_ctx", ctypes.c_void_p),
+    ("deleter", _DLPACK_DELETER),
+]
+
+
+_NPU_DLPACK_DEVICE_TYPE = None
+_DLPACK_HOLDERS = {}
+
+
+def _npu_device_index(device: str) -> int:
+    if device == "npu":
+        return 0
+    if device.startswith("npu:"):
+        return int(device.split(":", 1)[1])
+    raise ValueError(f"invalid NPU device `{device}`")
+
+
+def _npu_dlpack_device_type(device_index: int) -> int:
+    """Read torch_npu's DLPack device_type from a throwaway tensor."""
+    global _NPU_DLPACK_DEVICE_TYPE
+    if _NPU_DLPACK_DEVICE_TYPE is not None:
+        return _NPU_DLPACK_DEVICE_TYPE
+    import torch_npu  # noqa: F401
+
+    probe = torch.empty((1,), dtype=torch.uint8, device=f"npu:{device_index}")
+    capsule = probe.__dlpack__()
+    get_pointer = ctypes.pythonapi.PyCapsule_GetPointer
+    get_pointer.restype = ctypes.c_void_p
+    get_pointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
+    managed = ctypes.cast(
+        get_pointer(capsule, b"dltensor"),
+        ctypes.POINTER(_DLManagedTensor),
+    )
+    _NPU_DLPACK_DEVICE_TYPE = int(managed.contents.dl_tensor.device.device_type)
+    return _NPU_DLPACK_DEVICE_TYPE
+
+
+@_DLPACK_DELETER
+def _dlpack_deleter(managed):
+    # IPC device memory is owned by the pool, not this wrapper.
+    if managed:
+        _DLPACK_HOLDERS.pop(ctypes.addressof(managed.contents), None)
+
+
+def _wrap_npu_ptr(ptr, shape, dtype, device, size) -> torch.Tensor:
+    """Wrap an imported NPU pointer with torch.from_dlpack (zero-copy)."""
+    import torch_npu  # noqa: F401
+
+    if any(dim < 0 for dim in shape):
+        raise ValueError(
+            f"tensor shape {shape} has a negative dimension — header may be corrupted"
+        )
+    type_info = _DLPACK_TYPE.get(dtype)
+    if type_info is None:
+        raise ValueError(f"Unsupported dtype for NPU wrap: {dtype}")
+    expected_bytes = dtype.itemsize
+    for dim in shape:
+        expected_bytes *= dim
+    if expected_bytes > size:
+        raise ValueError(
+            f"tensor shape {shape} * {dtype} itemsize = {expected_bytes} bytes "
+            f"exceeds registered size {size} bytes — header may be corrupted"
+        )
+
+    device_index = _npu_device_index(device)
+    torch.npu.set_device(device_index)
+    device_type = _npu_dlpack_device_type(device_index)
+
+    ndim = len(shape)
+    shape_arr = (ctypes.c_int64 * max(ndim, 1))(*([int(d) for d in shape] or [0]))
+    strides = []
+    running = 1
+    for dim in reversed(shape):
+        strides.append(running)
+        running *= int(dim)
+    strides.reverse()
+    stride_arr = (ctypes.c_int64 * max(ndim, 1))(*(strides or [1]))
+    code, bits = type_info
+
+    managed = _DLManagedTensor()
+    managed.dl_tensor.data = ptr
+    managed.dl_tensor.device.device_type = device_type
+    managed.dl_tensor.device.device_id = device_index
+    managed.dl_tensor.ndim = ndim
+    managed.dl_tensor.dtype.code = code
+    managed.dl_tensor.dtype.bits = bits
+    managed.dl_tensor.dtype.lanes = 1
+    managed.dl_tensor.shape = ctypes.cast(shape_arr, ctypes.POINTER(ctypes.c_int64))
+    managed.dl_tensor.strides = ctypes.cast(stride_arr, ctypes.POINTER(ctypes.c_int64))
+    managed.dl_tensor.byte_offset = 0
+    managed.manager_ctx = None
+    managed.deleter = _dlpack_deleter
+    _DLPACK_HOLDERS[ctypes.addressof(managed)] = (managed, shape_arr, stride_arr)
+
+    new_capsule = ctypes.pythonapi.PyCapsule_New
+    new_capsule.restype = ctypes.py_object
+    new_capsule.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+    capsule = new_capsule(ctypes.byref(managed), b"dltensor", None)
+    tensor = torch.from_dlpack(capsule)
+    if tensor.data_ptr() != ptr:
+        raise RuntimeError(
+            f"torch.from_dlpack produced a copy (0x{tensor.data_ptr():x} != 0x{ptr:x})"
+        )
+    return tensor
+
+
 class _ArrayInterface:
     """Minimal object implementing ``__array_interface__`` so that
     ``torch.as_tensor`` can wrap raw CPU memory as a tensor (zero-copy)."""
@@ -114,6 +267,9 @@ def tensor_from_info(tensor_info: dict) -> torch.Tensor:
     size = tensor_info.get("size", 0)
 
     dtype = _DTYPE_MAP.get(dtype_str, torch.int64)
+
+    if device.startswith("npu"):
+        return _wrap_npu_ptr(ptr, shape, dtype, device, size)
 
     if device.startswith("cuda"):
         # CUDA tensor — zero-copy via __cuda_array_interface__

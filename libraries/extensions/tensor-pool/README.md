@@ -1,10 +1,18 @@
-# tensor-pool — pinned-host / CUDA tensor transport
+# tensor-pool — pinned-host / accelerator tensor transport
 
 Zero-copy handoff of large tensors between dora nodes: the producer registers a
 shared-tensor pool once and overwrites it per frame, so a repeated 8 MB camera
 frame does not travel through the normal message path every tick. CUDA sources
 and sinks get DMA and IPC paths on top; a CPU-only machine gets plain shared
 memory.
+
+Ascend support covers single-machine NPU-to-CPU, CPU-to-NPU, and NPU-to-NPU
+(`npu` is device 0; `npu:N` selects a device). An NPU tensor created by
+`torch_npu` is copied into the shared-memory data region through AscendCL on
+the way to CPU. CPU-to-NPU and NPU-to-NPU keep the pool on device and share it
+with Ascend IPC. Same-card NPU-to-NPU fills with a device copy; cross-card
+fills use peer access when the devices allow it, and a host transit otherwise.
+Ascend IPC stays on one machine.
 
 ## ⚠️ Not covered by dora's 1.0 compatibility guarantees
 
@@ -14,8 +22,8 @@ memory.
   the segment layout and the descriptor format are all free to change.
 - **It has known open defects** — see below. They are real, reproducible, and
   not scheduled against 1.0.
-- **Its GPU paths have no automated coverage.** dora's CI has no GPU runners.
-  Only the CPU path is exercised, and only in a nightly job.
+- **Its GPU and NPU paths have no automated coverage.** dora's CI has no GPU
+  or NPU runners. Only the CPU path is exercised, and only in a nightly job.
 
 Everything else in dora — the node APIs, the CLI, the descriptor format, the
 wire protocol — carries the normal 1.0 stability promise. This does not.
@@ -56,8 +64,10 @@ node.write_tensor_pool(pool_id, get_tensor_info(next_tensor))
 node.free_tensor_pool(pool_id)
 ```
 
-Runnable dataflows are in [`examples/`](examples/), covering CPU↔CPU, CPU↔CUDA,
-CUDA↔CUDA and the negative lifecycle cases.
+The same four calls take `device="npu"` or `device="npu:0"` for a
+single-machine Ascend receiver. Runnable dataflows are in
+[`examples/`](examples/), covering CPU↔CPU, CPU↔CUDA, CUDA↔CUDA,
+single-machine Ascend, and the negative lifecycle cases.
 
 ## Known open defects
 
@@ -81,8 +91,8 @@ instead of failing fast; the complete fix is an owner-death pool reclaim.
 ## How it reaches dora
 
 Through the public [extension channel](../../../docs/extensions.md) and nothing
-else. dora has no knowledge of pools, CUDA or the segment layout — it brokers
-the lifetime of an opaque descriptor:
+else. dora has no knowledge of pools, CUDA, Ascend, or the segment layout — it
+brokers the lifetime of an opaque descriptor:
 
 | This transport | dora |
 |---|---|
@@ -112,10 +122,10 @@ the generic channel instead.
 | `src/protocol.rs` | this transport's own messages, carried as opaque bytes by dora |
 | `src/daemon/` | the daemon half (feature `daemon`): mirror segments, seqlock, direct-TCP data plane, cross-machine control flow, and `DaemonServices` — what it asks of the daemon |
 | `src/lib.rs` | `TensorPoolManager` — the pool table and `/dev/shm` reclamation |
-| `python/src/transport.rs` | the transport: segment layout, seqlock, CUDA helpers, the four operations |
+| `python/src/transport.rs` | the transport: segment layout, seqlock, CUDA and Ascend helpers, the four operations |
 | `python/src/seam.rs` | descriptor encode/decode over the extension channel |
 | `python/dora_tensor_pool/` | `get_tensor_info` / `tensor_from_info` and the CUDA IPC helpers, importable as `dora_tensor_pool` |
-| `examples/` | dataflows, CPU and CUDA |
+| `examples/` | dataflows, CPU, CUDA, and single-machine Ascend |
 | `tests/` | smoke tests (need `torch`; not wired to the default suite) |
 
 ## History

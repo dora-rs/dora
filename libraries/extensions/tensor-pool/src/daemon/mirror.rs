@@ -34,12 +34,16 @@ pub(crate) static CROSS_POOL_WRITE_LOCKS_ASYNC: std::sync::LazyLock<CrossPoolWri
     std::sync::LazyLock::new(CrossPoolWriteLocks::default);
 
 // DORADMA shmem layout — must match the node API exactly
-// (apis/python/node/src/lib.rs): [magic:8][json_len:8][data_offset:8]
-// [ipc_present:8][ipc_handle:64][write_gen:8 @96][reserved:152][json:256]
+// (libraries/extensions/tensor-pool/python/src/transport.rs):
+// [magic:8][json_len:8][data_offset:8][device_type:8]
+// [ipc_handle:72 @32][write_gen:8 @104][header_ver:8 @112][reserved][json:256]
 // [data:data_offset]. write_gen is the seqlock generation: even =
 // complete, odd = write in progress.
 pub(crate) const DORADMA_HEADER_SIZE: usize = 256;
 pub(crate) const DORADMA_MAGIC: &[u8; 8] = b"DORADMA\x00";
+pub(crate) const WRITE_GEN_OFFSET: usize = 104;
+pub(crate) const HEADER_VERSION_OFFSET: usize = 112;
+pub(crate) const HEADER_VERSION: u64 = 1;
 
 /// Read 8 consecutive bytes from `ptr` as a little-endian u64. Same
 /// implementation as the node API's `read_header_u64` — the wire layout
@@ -102,7 +106,7 @@ pub(crate) fn write_header_u64(ptr: *mut u8, value: u64) {
     unsafe { std::ptr::copy_nonoverlapping(le.as_ptr(), ptr, 8) };
 }
 
-/// Begins a memory-pool seqlock write at `gen_ptr` (header offset 96)
+/// Begins a memory-pool seqlock write at `gen_ptr` (header offset 104)
 /// **if the generation is even**: marks the generation odd (write in
 /// progress) and returns the even pre-write generation. If the
 /// generation is already odd (leftover from a previous failed write),
@@ -120,7 +124,7 @@ pub(crate) unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
     }
 }
 
-/// Closes a memory-pool seqlock write (header offset 96): publishes
+/// Closes a memory-pool seqlock write (header offset 104): publishes
 /// `pre_write_gen + 2` (even = complete) when the copy succeeded, or
 /// rolls back to `pre_write_gen` when it failed. Bit-identical to the
 /// node API's `seqlock_end`.
@@ -352,7 +356,8 @@ pub(crate) fn create_cross_pool_shmem(
         // receiver read that as a valid frame before the first direct
         // write, so begin odd and let the first `seqlock_end` publish
         // the first even (complete) generation.
-        write_header_u64(ptr.add(96), 1);
+        write_header_u64(ptr.add(WRITE_GEN_OFFSET), 1);
+        write_header_u64(ptr.add(HEADER_VERSION_OFFSET), HEADER_VERSION);
     }
     shmem.set_owner(false);
     Ok(())
@@ -460,7 +465,7 @@ pub(crate) fn write_cross_pool_data(
         return false;
     }
     unsafe {
-        let gen_ptr = shmem_ptr.add(96) as *mut u64;
+        let gen_ptr = shmem_ptr.add(WRITE_GEN_OFFSET) as *mut u64;
         let pre = seqlock_begin_if_even(gen_ptr);
         std::ptr::copy_nonoverlapping(tensor_data.as_ptr(), shmem_ptr.add(data_offset), copy_len);
         seqlock_end(gen_ptr, pre, true);

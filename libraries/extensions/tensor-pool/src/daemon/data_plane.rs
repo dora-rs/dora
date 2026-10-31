@@ -40,7 +40,7 @@ impl DirectMirrorWriter {
     /// generation.
     fn new(shmem: shared_memory_extended::Shmem, data_offset: usize, size: usize) -> Self {
         let shmem_ptr = shmem.as_ptr();
-        let gen_addr = unsafe { shmem_ptr.add(96) } as usize;
+        let gen_addr = unsafe { shmem_ptr.add(WRITE_GEN_OFFSET) } as usize;
         let pre = unsafe { seqlock_begin_if_even(gen_addr as *mut u64) };
         Self {
             _shmem: shmem,

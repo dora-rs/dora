@@ -20,6 +20,11 @@ SCENARIO = os.getenv("memory_pool_scenario", "throughput")
 if SENDER_DEVICE.startswith("cuda"):
     idx = int(SENDER_DEVICE.split(":")[1]) if ":" in SENDER_DEVICE else 0
     torch.cuda.set_device(idx)
+elif SENDER_DEVICE.startswith("npu"):
+    import torch_npu  # noqa: F401
+
+    idx = int(SENDER_DEVICE.split(":")[1]) if ":" in SENDER_DEVICE else 0
+    torch.npu.set_device(idx)
 
 node = Node("sender_node")
 data_generation = np.random.default_rng()

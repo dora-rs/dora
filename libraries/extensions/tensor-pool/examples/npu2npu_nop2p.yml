@@ -1,0 +1,27 @@
+# Cross-card NPU→NPU that must NOT use P2P: forces host transit (D2H→H2D).
+# Sender stdout should print: Ascend NPU IPC path: host transit
+# Requires two visible NPUs, CANN, torch_npu.
+nodes:
+  - id: sender_node
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - data
+    path: sender.py
+    env:
+      sender_device: npu:0
+      receiver_device: npu:1
+      message_num: 100
+      DORA_TENSOR_POOL_ASCEND_DISABLE_P2P: "1"
+
+  - id: receiver_node
+    path: receiver.py
+    inputs:
+      data: sender_node/data
+    outputs:
+      - next_require
+    env:
+      sender_device: npu:0
+      receiver_device: npu:1
+      message_num: 100
+      DORA_TENSOR_POOL_ASCEND_DISABLE_P2P: "1"
