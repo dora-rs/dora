@@ -232,6 +232,7 @@ pub(crate) fn cleanup_disconnected_daemons_from_running_dataflows(
 #[must_use]
 pub(crate) fn reestablish_running_dataflow(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    reclaimed_launches: &mut crate::state::ReclaimedLaunches,
     record: &dora_coordinator_store::DataflowRecord,
     daemon_id: &DaemonId,
     reported_nodes: &[dora_core::config::NodeId],
@@ -271,10 +272,14 @@ pub(crate) fn reestablish_running_dataflow(
             return false;
         }
     };
-    running_dataflows.insert(
-        record.uuid,
-        RunningDataflow::recovered(record, descriptor, nodes, daemon_id.clone(), reported_nodes),
-    );
+    let mut dataflow =
+        RunningDataflow::recovered(record, descriptor, nodes, daemon_id.clone(), reported_nodes);
+    // Kept across an orphan reclaim, so `dora restart` still relaunches the
+    // dataflow the way it was started. Absent after a coordinator restart.
+    if let Some(launch) = reclaimed_launches.remove(&record.uuid) {
+        dataflow.launch = launch;
+    }
+    running_dataflows.insert(record.uuid, dataflow);
     tracing::info!(
         "re-established running dataflow {} in live coordinator state after daemon {daemon_id} reconnect",
         record.uuid
@@ -366,12 +371,14 @@ pub(crate) async fn stop_orphaned_dataflow_on_daemon(
 pub(crate) async fn begin_orphaned_dataflow_reclaim(
     uuid: DataflowId,
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    reclaimed_launches: &mut crate::state::ReclaimedLaunches,
     clock: &HLC,
     store: &dyn dora_coordinator_store::CoordinatorStore,
 ) {
     let Some(mut df) = running_dataflows.remove(&uuid) else {
         return;
     };
+    reclaimed_launches.insert(uuid, df.launch.clone());
     let msg = "all daemons running this dataflow disconnected; \
                waiting for daemon reconnect (Recovering)"
         .to_string();
@@ -424,6 +431,7 @@ pub(crate) async fn begin_orphaned_dataflow_reclaim(
 pub(crate) async fn apply_disconnect_actions(
     actions: Vec<DisconnectAction>,
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    reclaimed_launches: &mut crate::state::ReclaimedLaunches,
     daemon_connections: &mut DaemonConnections,
     store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
     clock: &Arc<HLC>,
@@ -436,8 +444,14 @@ pub(crate) async fn apply_disconnect_actions(
                 }
             }
             DisconnectAction::ReclaimOrphaned(uuid) => {
-                begin_orphaned_dataflow_reclaim(uuid, running_dataflows, clock, store.as_ref())
-                    .await;
+                begin_orphaned_dataflow_reclaim(
+                    uuid,
+                    running_dataflows,
+                    reclaimed_launches,
+                    clock,
+                    store.as_ref(),
+                )
+                .await;
             }
         }
     }
