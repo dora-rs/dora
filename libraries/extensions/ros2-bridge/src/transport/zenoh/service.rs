@@ -32,6 +32,8 @@ pub enum ServiceError {
     PendingLimit { limit: usize },
     #[error("service request is absent")]
     RequestAbsent,
+    #[error("service request id is already pending")]
+    DuplicateRequest,
     #[error("service request expired")]
     RequestExpired,
     #[error("service request timed out")]
@@ -67,9 +69,14 @@ impl<T> PendingRequests<T> {
             expiry,
         }
     }
+    /// Keeps a request until it is answered. Like rmw_zenoh, a request whose
+    /// id is still pending is refused, so the pending one keeps its answer.
     pub fn insert(&mut self, id: RequestId, value: T, now: Duration) -> Result<(), ServiceError> {
         self.expire(now);
-        if self.values.len() >= self.limit && !self.values.contains_key(&id) {
+        if self.values.contains_key(&id) {
+            return Err(ServiceError::DuplicateRequest);
+        }
+        if self.values.len() >= self.limit {
             return Err(ServiceError::PendingLimit { limit: self.limit });
         }
         self.values.insert(id, (value, now));

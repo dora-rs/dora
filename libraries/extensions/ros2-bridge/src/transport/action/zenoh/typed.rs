@@ -84,6 +84,12 @@ struct CancelGoalWire {
     goal_info: GoalInfo,
 }
 
+/// Calls each of the client's action services can have in flight. A
+/// `get_result` call stays open until its goal ends, so this has to cover
+/// every goal a server runs at once (rcl_action servers have no fixed cap,
+/// dora's own allow up to 16).
+const MAX_PENDING_CALLS: usize = 64;
+
 /// Ties the message types to a client or server without owning a value, so
 /// both stay `Send` and `Sync` whatever the types are.
 type TypeMarker<T> = PhantomData<fn() -> T>;
@@ -111,8 +117,15 @@ where
         qos: &Ros2Qos,
         max_payload_size: usize,
     ) -> Result<Self, ActionTransportError> {
-        let endpoints =
-            ActionClient::declare(node, keys, tokens.clone(), qos, max_payload_size).await?;
+        let endpoints = ActionClient::declare_with_pending_calls(
+            node,
+            keys,
+            tokens.clone(),
+            qos,
+            max_payload_size,
+            MAX_PENDING_CALLS,
+        )
+        .await?;
         let (close, closed) = flume::bounded(1);
         Ok(Self {
             endpoints,
@@ -216,9 +229,9 @@ pub struct ActionServerOptions {
     /// Goals the server keeps at once. When full, the oldest finished goal
     /// makes room; if every goal is still running, new goals are rejected.
     pub max_goals: usize,
-    /// A goal that runs this long without being finished is aborted (its
-    /// result is the default value), so a handler that drops goals can't fill
-    /// the server up for good or leave clients waiting forever.
+    /// A goal still running this long after it was accepted is aborted (its
+    /// result is the default value) when the next goal comes in, so a handler
+    /// that drops goals can't fill the server up for good.
     pub goal_timeout: Duration,
 }
 
@@ -387,15 +400,7 @@ async fn run_server<G: DeserializeOwned>(
     shutdown: flume::Receiver<()>,
 ) {
     let endpoints = &shared.endpoints;
-    // How often goals are checked against `goal_timeout`, so a goal is
-    // aborted on time even when no other request comes in.
-    let reap_interval = shared
-        .options
-        .goal_timeout
-        .clamp(Duration::from_millis(10), Duration::from_secs(1));
-    let mut next_reap = Instant::now() + reap_interval;
     loop {
-        let until_reap = next_reap.saturating_duration_since(Instant::now());
         // Every `recv` is a flume `recv_async`, which loses nothing when the
         // `select!` drops it.
         let handled = select! {
@@ -410,10 +415,6 @@ async fn run_server<G: DeserializeOwned>(
             request = endpoints.cancel_goal.recv().fuse() => match request {
                 Ok(request) => shared.handle_cancel_goal(request).await,
                 Err(_) => break,
-            },
-            _ = futures_timer::Delay::new(until_reap).fuse() => {
-                next_reap = Instant::now() + reap_interval;
-                shared.reap_abandoned().await
             },
             // Only ever fires when the server object is dropped.
             _ = shutdown.recv_async().fuse() => break,
@@ -535,16 +536,9 @@ impl Shared {
         Ok(())
     }
 
-    async fn reap_abandoned(&self) -> Result<(), ActionCallError> {
-        let mut goals = self.goals.lock().await;
-        if self.abort_abandoned(&mut goals).await {
-            self.publish_status(&goals).await?;
-        }
-        Ok(())
-    }
-
     /// Aborts goals that ran past `goal_timeout` and answers their result
-    /// waiters. Returns whether any goal changed.
+    /// waiters. Returns whether any goal changed. Runs only when a new goal
+    /// comes in, like the DDS server's check.
     async fn abort_abandoned(&self, goals: &mut [ServerGoal]) -> bool {
         let mut changed = false;
         for goal in goals.iter_mut() {

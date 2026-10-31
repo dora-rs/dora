@@ -29,6 +29,23 @@ fn service_request_cdr_and_request_ids_are_preserved() {
     assert_eq!(pending.take(id(7, 1), Duration::ZERO).unwrap(), cdr);
 }
 
+/// Like rmw_zenoh (`ServiceData::add_new_query`: "duplicate sequence number
+/// in the map"), a request whose id is still pending is refused and the
+/// pending one is kept, so its answer can't go to the newer request.
+#[test]
+fn a_request_id_that_is_still_pending_is_refused() {
+    let mut pending = PendingRequests::new(64, Duration::from_secs(30));
+    pending.insert(id(1, 4), "first", Duration::ZERO).unwrap();
+    assert!(matches!(
+        pending.insert(id(1, 4), "second", Duration::ZERO),
+        Err(ServiceError::DuplicateRequest)
+    ));
+    assert_eq!(pending.take(id(1, 4), Duration::ZERO).unwrap(), "first");
+    // Once answered, the id can be used again.
+    pending.insert(id(1, 4), "third", Duration::ZERO).unwrap();
+    assert_eq!(pending.take(id(1, 4), Duration::ZERO).unwrap(), "third");
+}
+
 #[test]
 fn service_pending_is_bounded_and_expires_with_fake_clock() {
     let mut pending = PendingRequests::new(64, Duration::from_secs(30));

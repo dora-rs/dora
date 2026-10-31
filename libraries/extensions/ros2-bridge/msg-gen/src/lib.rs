@@ -544,9 +544,10 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
 
         /// Bounds of a generated action server: goals past
         /// `ACTION_MAX_CONCURRENT_GOALS` in flight are rejected, and a goal
-        /// whose C++ handler never finishes it is aborted after
-        /// `ACTION_GOAL_TIMEOUT` (the daemon's ACTION_RESULT_TIMEOUT), so
-        /// abandoned goals can't wedge the server at the cap.
+        /// still running `ACTION_GOAL_TIMEOUT` (the daemon's
+        /// ACTION_RESULT_TIMEOUT) after it was accepted is aborted when the
+        /// next goal comes in, so abandoned goals can't wedge the server at
+        /// the cap.
         pub const ACTION_MAX_CONCURRENT_GOALS: usize = 16;
         pub const ACTION_GOAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 

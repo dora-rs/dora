@@ -911,9 +911,9 @@ impl Action {
     ///
     /// That is the DDS backend. On native Zenoh, `TypedActionServer` does the
     /// same job: its pump runs on the node's executor, it applies the same two
-    /// limits (a timer aborts a goal at `ACTION_GOAL_TIMEOUT`, feedback or not),
-    /// and `send_result` stores the result and returns without waiting for the
-    /// client.
+    /// limits (a new goal aborts the goals past `ACTION_GOAL_TIMEOUT`, feedback
+    /// or not), and `send_result` stores the result and returns without
+    /// waiting for the client.
     pub fn cxx_action_server_creation_functions(
         &self,
         package_name: &str,
