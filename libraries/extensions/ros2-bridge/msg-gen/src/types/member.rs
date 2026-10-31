@@ -68,6 +68,15 @@ impl MemberType {
             }
         }
     }
+
+    pub const fn nestable_type(&self) -> &NestableType {
+        match self {
+            Self::NestableType(t) => t,
+            Self::Array(t) => &t.value_type,
+            Self::Sequence(t) => &t.value_type,
+            Self::BoundedSequence(t) => &t.value_type,
+        }
+    }
 }
 
 define_enum_from!(MemberType, NestableType, Self::NestableType);

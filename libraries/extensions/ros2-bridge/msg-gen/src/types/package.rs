@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{
+    collections::{BTreeSet, HashMap, HashSet, VecDeque},
+    path::PathBuf,
+};
 
 use proc_macro2::Span;
 use quote::{ToTokens, format_ident, quote};
@@ -17,6 +20,76 @@ pub struct Package {
 }
 
 impl Package {
+    /// Sorts messages topologically based on internal dependencies within this package.
+    /// If message A references message B (including in fixed arrays, sequences, or nested types),
+    /// message B will precede message A.
+    pub fn sort_messages(&mut self) {
+        let msg_names: HashSet<String> = self.messages.iter().map(|m| m.name.clone()).collect();
+
+        let mut in_degrees: HashMap<String, usize> = HashMap::new();
+        let mut dependents: HashMap<String, Vec<String>> = HashMap::new();
+
+        for msg in &self.messages {
+            let deps: BTreeSet<String> = msg
+                .internal_dependencies()
+                .into_iter()
+                .filter(|dep| dep != &msg.name && msg_names.contains(dep))
+                .collect();
+
+            in_degrees.insert(msg.name.clone(), deps.len());
+            for dep in deps {
+                dependents.entry(dep).or_default().push(msg.name.clone());
+            }
+        }
+
+        let mut ready: VecDeque<String> = self
+            .messages
+            .iter()
+            .filter(|m| in_degrees.get(&m.name).copied().unwrap_or(0) == 0)
+            .map(|m| m.name.clone())
+            .collect();
+
+        let mut sorted_names: Vec<String> = Vec::with_capacity(self.messages.len());
+        let mut visited: HashSet<String> = HashSet::new();
+
+        while let Some(name) = ready.pop_front() {
+            if !visited.insert(name.clone()) {
+                continue;
+            }
+            sorted_names.push(name.clone());
+
+            if let Some(deps) = dependents.get(&name) {
+                for dep in deps {
+                    if let Some(deg) = in_degrees.get_mut(dep) {
+                        *deg = deg.saturating_sub(1);
+                        if *deg == 0 && !visited.contains(dep) {
+                            ready.push_back(dep.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        if sorted_names.len() < self.messages.len() {
+            for m in &self.messages {
+                if visited.insert(m.name.clone()) {
+                    sorted_names.push(m.name.clone());
+                }
+            }
+        }
+
+        let mut msg_map: HashMap<String, Message> = self
+            .messages
+            .drain(..)
+            .map(|m| (m.name.clone(), m))
+            .collect();
+
+        self.messages = sorted_names
+            .into_iter()
+            .filter_map(|name| msg_map.remove(&name))
+            .collect();
+    }
+
     pub const fn new(name: String) -> Self {
         Self {
             name,
@@ -135,5 +208,48 @@ impl Package {
             #service_aliases
             #action_aliases
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{
+        Member,
+        member::MemberType,
+        message::Message,
+        primitives::{NamedType, NestableType},
+        sequences::Array,
+    };
+
+    #[test]
+    fn sorts_messages_with_fixed_array_internal_dependency() {
+        let mut pkg = Package::new("test_pkg".into());
+        let outer = Message {
+            package: "test_pkg".into(),
+            name: "Outer".into(),
+            members: vec![Member {
+                r#type: MemberType::Array(Array {
+                    value_type: NestableType::NamedType(NamedType("Inner".into())),
+                    size: 4,
+                }),
+                name: "inners".into(),
+                default: None,
+            }],
+            constants: vec![],
+        };
+        let inner = Message {
+            package: "test_pkg".into(),
+            name: "Inner".into(),
+            members: vec![],
+            constants: vec![],
+        };
+
+        // Insert Outer before Inner
+        pkg.messages = vec![outer, inner];
+        pkg.sort_messages();
+
+        assert_eq!(pkg.messages[0].name, "Inner");
+        assert_eq!(pkg.messages[1].name, "Outer");
     }
 }
