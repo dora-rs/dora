@@ -189,6 +189,13 @@ impl Coordinator {
                             self.clock.new_timestamp(),
                         )
                         .await;
+                        if result.is_ok()
+                            && let Some(dataflow) = self.running_dataflows.get_mut(&dataflow_id)
+                        {
+                            // Running again, so it constrains `dora node
+                            // add` placement again.
+                            dataflow.exited_nodes.remove(&node_id);
+                        }
                         let reply = result.map(|()| ControlRequestReply::NodeRestarted {
                             dataflow_id,
                             node_id,
@@ -1284,7 +1291,7 @@ impl Coordinator {
                                 &dataflow.nodes,
                                 &dataflow.node_to_daemon,
                                 &dataflow.daemons,
-                                &dataflow.node_finalized,
+                                &dataflow.exited_nodes,
                                 &persisted_placement,
                                 &self.daemon_connections,
                             )
@@ -1361,6 +1368,7 @@ impl Coordinator {
                                                             dataflow
                                                                 .node_finalized
                                                                 .remove(&node_id);
+                                                            dataflow.exited_nodes.remove(&node_id);
                                                             dataflow.node_metrics.remove(&node_id);
                                                             dataflow.persist_topology_change(
                                                                 &*self.store,
@@ -1539,6 +1547,7 @@ impl Coordinator {
                 // (same set AddNode clears).
                 dataflow.node_stopped_at.remove(&node_id);
                 dataflow.node_finalized.remove(&node_id);
+                dataflow.exited_nodes.remove(&node_id);
                 dataflow.node_metrics.remove(&node_id);
                 dataflow.persist_topology_change(&*self.store);
             }
@@ -1697,7 +1706,7 @@ pub(crate) fn upstream_node_ids(node: &ResolvedNode) -> impl Iterator<Item = &No
 /// subscribes to. A producer that has exited sends nothing more, so it
 /// doesn't constrain where the new node may run.
 ///
-/// A producer counts as exited when it is in `finalized`, or when the
+/// A producer counts as exited when it is in `exited`, or when the
 /// daemon it is (or, per the store, was) mapped to is no longer part of the
 /// dataflow while a daemon of that machine has connected and reported its
 /// running nodes: that daemon would have reported the producer if it still
@@ -1716,13 +1725,13 @@ pub(crate) fn producer_daemons(
     nodes: &BTreeMap<NodeId, ResolvedNode>,
     node_to_daemon: &BTreeMap<NodeId, DaemonId>,
     dataflow_daemons: &BTreeSet<DaemonId>,
-    finalized: &BTreeSet<NodeId>,
+    exited: &BTreeSet<NodeId>,
     persisted_placement: &BTreeMap<String, String>,
     connections: &crate::state::DaemonConnections,
 ) -> eyre::Result<BTreeSet<DaemonId>> {
     let mut daemons = BTreeSet::new();
     for source in upstream_node_ids(node) {
-        if !nodes.contains_key(source) || finalized.contains(source) {
+        if !nodes.contains_key(source) || exited.contains(source) {
             continue;
         }
         let last_daemon = match node_to_daemon.get(source) {

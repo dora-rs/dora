@@ -872,6 +872,7 @@ impl Coordinator {
             // in-flight metrics pushes overwriting the row, for
             // BOTH Stopped and Failed.
             dataflow.node_finalized.insert(node_id.clone());
+            dataflow.exited_nodes.insert(node_id.clone());
             // Only arm the auto-expire side-band for clean Stopped
             // rows. Failed rows must stay visible until the dataflow
             // is stopped/destroyed — otherwise a crashed node would

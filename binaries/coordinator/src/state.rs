@@ -537,6 +537,12 @@ pub(crate) struct RunningDataflow {
     /// Cleared by the grace-period sweep (for Stopped) or by `AddNode`
     /// (when the same node id is added back to the dataflow).
     pub(crate) node_finalized: BTreeSet<NodeId>,
+    /// Nodes that have exited (cleanly or not), for as long as the dataflow
+    /// runs. Unlike `node_finalized`, the grace-period sweep does not clear
+    /// this: `dora node add` must keep ignoring an exited producer when
+    /// placing a node, since it sends nothing more (#3672). Cleared when the
+    /// node id is added, replaced or restarted again.
+    pub(crate) exited_nodes: BTreeSet<NodeId>,
     /// When a node entered `NodeStatus::Stopped` (clean teardown only).
     /// Drives the auto-expire sweep: after the grace window the row is
     /// dropped from `node_metrics`/`node_finalized` so `dora node list`
@@ -836,6 +842,7 @@ impl RunningDataflow {
             node_to_daemon,
             node_metrics: BTreeMap::new(),
             node_finalized: BTreeSet::new(),
+            exited_nodes: BTreeSet::new(),
             node_stopped_at: BTreeMap::new(),
             network_metrics: None,
             spawn_result: CachedResult::Cached {

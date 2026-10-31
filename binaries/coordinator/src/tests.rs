@@ -304,6 +304,7 @@ fn test_running_dataflow(
         persisted_placement: BTreeMap::new(),
         node_metrics: BTreeMap::new(),
         node_finalized: BTreeSet::new(),
+        exited_nodes: BTreeSet::new(),
         node_stopped_at: BTreeMap::new(),
         network_metrics: None,
         spawn_result: CachedResult::default(),
@@ -7070,7 +7071,7 @@ fn recovered_dataflow_keeps_unreported_placement_when_re_persisted() {
             &recovered.nodes,
             &recovered.node_to_daemon,
             &recovered.daemons,
-            &recovered.node_finalized,
+            &recovered.exited_nodes,
             &re_persisted.node_to_daemon,
             &DaemonConnections::default(),
         )
@@ -7226,5 +7227,60 @@ async fn status_report_marks_the_connection_as_reported() {
         coordinator
             .daemon_connections
             .has_reported_daemon_on_machine_of(&daemon_id)
+    );
+}
+
+#[tokio::test]
+async fn exited_producer_stays_ignored_after_the_stopped_grace_period() {
+    // `expire_stopped_nodes` clears `node_finalized` for a cleanly stopped
+    // node after `NODE_STOPPED_GRACE`, but the node keeps its
+    // `node_to_daemon` entry. The placement check must still treat it as
+    // exited afterwards, or it pins the new node to that daemon again.
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_b = DaemonId::new(Some("machine-b".to_string()));
+    let producer: NodeId = "sender".to_string().into();
+    let df = test_running_dataflow(dataflow_id, daemon_b.clone(), producer.clone());
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_b.clone(), reported_connection(BTreeMap::new()));
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        daemon_connections,
+        Arc::new(InMemoryStore::new()),
+    );
+
+    coordinator
+        .handle_daemon_node_stopped(daemon_b.clone(), dataflow_id, producer.clone(), true)
+        .await
+        .expect("node stop should be handled");
+    let dataflow = coordinator.running_dataflows.get_mut(&dataflow_id).unwrap();
+    let stopped_at = dataflow
+        .node_stopped_at
+        .get_mut(&producer)
+        .expect("stopped");
+    *stopped_at -= NODE_STOPPED_GRACE + std::time::Duration::from_secs(1);
+    crate::topology::expire_stopped_nodes(dataflow);
+    assert!(!dataflow.node_finalized.contains(&producer));
+    assert_eq!(dataflow.node_to_daemon.get(&producer), Some(&daemon_b));
+
+    let added: Node = serde_json::from_value(serde_json::json!({
+        "id": "consumer",
+        "path": "consumer",
+        "inputs": { "reading": "sender/message" },
+    }))
+    .expect("valid node");
+    let (_, resolved) = resolve_single_node(added, &dataflow.descriptor).expect("node resolves");
+    assert!(
+        crate::control_requests::producer_daemons(
+            &resolved,
+            &dataflow.nodes,
+            &dataflow.node_to_daemon,
+            &dataflow.daemons,
+            &dataflow.exited_nodes,
+            &BTreeMap::new(),
+            &coordinator.daemon_connections,
+        )
+        .unwrap()
+        .is_empty(),
+        "an exited producer must not constrain the placement"
     );
 }
