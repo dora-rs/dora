@@ -411,17 +411,16 @@ impl SampleHandler {
         //    (header pre-written at construction; Python filled the data region
         //    in place), so publish it directly — no copy, no re-encode. For a
         //    shared-memory sample this moves the buffer into zenoh's `put`.
-        //    Like `Node.send_output`, without the GIL.
+        //    Like `Node.send_output`, without the GIL if it is large.
         let mut parameters = meta.parameters;
         parameters.insert(
             dora_message::metadata::FRAMING.to_string(),
             dora_node_api::Parameter::String(dora_message::metadata::FRAMING_ARROW_IPC.to_string()),
         );
-        self.node
-            .detached(py, |node| {
-                node.send_output_sample(meta.data_id, parameters, Some(sample))
-            })
-            .map_err(|e| eyre::eyre!("failed to send sample: {e}"))?;
+        crate::send_on(&self.node, py, self.data_length, |node| {
+            node.send_output_sample(meta.data_id, parameters, Some(sample))
+        })
+        .map_err(|e| eyre::eyre!("failed to send sample: {e}"))?;
         Ok(())
     }
 }

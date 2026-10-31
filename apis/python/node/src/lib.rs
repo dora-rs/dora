@@ -411,9 +411,9 @@ impl Node {
     /// node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
     /// ```
     ///
-    /// The send releases the GIL, so other Python threads keep running while
-    /// it copies ``data``. Don't change ``data`` from another thread until
-    /// ``send_output`` returns.
+    /// Sending 4 KiB or more of data releases the GIL, so other Python
+    /// threads keep running while it copies ``data``. Don't change ``data``
+    /// from another thread until ``send_output`` returns.
     ///
     /// :type output_id: str
     /// :type data: pyarrow.Array
@@ -1260,23 +1260,21 @@ impl Node {
         // through the held node lock, poisoned the node for every later
         // call.
         let output_id = parse_output_id(&output_id)?;
-        // The send copies the payload and waits for the daemon, so it runs
-        // without the GIL.
         if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
             // A `bytes` object is immutable and `data` keeps it alive, so it
             // can be read without the GIL.
             let bytes = py_bytes.as_bytes();
-            self.node
-                .detached(py, |node| {
-                    node.send_output_bytes(output_id, parameters, bytes.len(), bytes)
-                })
-                .wrap_err(bytes_context)?;
+            send_on(&self.node, py, bytes.len(), |node| {
+                node.send_output_bytes(output_id, parameters, bytes.len(), bytes)
+            })
+            .wrap_err(bytes_context)?;
         } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
+            let len = arrow_payload_len(&arrow_array);
             // The send gets a clone, and `array` is dropped here, with the GIL:
             // the array may wrap Python-owned memory, which needs the GIL to
             // be freed (dora-rs/dora#2742).
             let array = arrow::array::make_array(arrow_array);
-            self.node.detached(py, |node| {
+            send_on(&self.node, py, len, |node| {
                 node.send_output(output_id, parameters, array.clone())
             })?;
             drop(array);
@@ -1316,6 +1314,49 @@ impl Node {
 
     #[cfg(not(feature = "tensor-pool"))]
     fn process_pending_tensor_pool_frees(&self, _py: Python) {}
+}
+
+/// Runs a send of a `len`-byte payload on `node`.
+///
+/// A payload of at least `ZERO_COPY_THRESHOLD` bytes is sent without the GIL,
+/// so other Python threads keep running while it is copied. A smaller send
+/// takes microseconds and keeps the GIL unless it has to wait for the node
+/// (see `DelayedCleanup::run`): getting the GIL back can take a switch
+/// interval (5 ms) per busy Python thread.
+pub(crate) fn send_on<R: Send>(
+    node: &DelayedCleanup<DoraNode>,
+    py: Python<'_>,
+    len: usize,
+    send: impl FnOnce(&mut DoraNode) -> R + Send,
+) -> R {
+    if len < dora_node_api::ZERO_COPY_THRESHOLD {
+        node.run(py, send)
+    } else {
+        node.detached(py, send)
+    }
+}
+
+/// The bytes of array data in `data` a send copies; the IPC header, which
+/// grows with the schema, is left out. Only the part of each buffer the array
+/// uses counts, so a slice of a bigger array (pyarrow's `slice`) is small. A
+/// view array (`string_view`) keeps its strings in buffers after the views,
+/// and those count whole. A type that can't be measured counts every buffer.
+fn arrow_payload_len(data: &arrow::array::ArrayData) -> usize {
+    fn view_data_len(data: &arrow::array::ArrayData) -> usize {
+        let own = match data.data_type() {
+            arrow::datatypes::DataType::Utf8View | arrow::datatypes::DataType::BinaryView => data
+                .buffers()
+                .iter()
+                .skip(1)
+                .map(|buffer| buffer.len())
+                .sum(),
+            _ => 0,
+        };
+        own + data.child_data().iter().map(view_data_len).sum::<usize>()
+    }
+    data.get_slice_memory_size()
+        .map(|len| len + view_data_len(data))
+        .unwrap_or_else(|_| data.get_buffer_memory_size())
 }
 
 /// Start a runtime for Operators
@@ -1712,9 +1753,10 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
         }
 
-        /// The gate holds each send until the Python thread has run, so the
-        /// payload size does not matter.
-        const PAYLOAD_LEN: usize = 64;
+        /// The smallest payload whose send releases the GIL. The gate holds
+        /// each send until the Python thread has run, so a larger size would
+        /// prove nothing more.
+        const PAYLOAD_LEN: usize = dora_node_api::ZERO_COPY_THRESHOLD;
 
         /// Opened by a Python thread, which can only run while nothing holds
         /// the GIL.
@@ -1727,10 +1769,15 @@ mod tests {
             armed: Arc<AtomicBool>,
             thread_ran: Arc<AtomicBool>,
             waited: Arc<AtomicBool>,
+            timeout: Duration,
         }
 
         impl Gate {
             fn new() -> Self {
+                Self::with_timeout(Duration::from_secs(5))
+            }
+
+            fn with_timeout(timeout: Duration) -> Self {
                 // A rendezvous channel: `try_send` only succeeds while `wait`
                 // is waiting.
                 let (open, opened) = sync_channel(0);
@@ -1740,16 +1787,14 @@ mod tests {
                     armed: Arc::new(AtomicBool::new(false)),
                     thread_ran: Arc::new(AtomicBool::new(false)),
                     waited: Arc::new(AtomicBool::new(false)),
+                    timeout,
                 }
             }
 
-            /// Waits until the Python thread opens the gate, for at most 5 s.
+            /// Waits until the Python thread opens the gate, for at most
+            /// `timeout`.
             fn wait(&self) {
-                let opened = self
-                    .opened
-                    .lock()
-                    .unwrap()
-                    .recv_timeout(Duration::from_secs(5));
+                let opened = self.opened.lock().unwrap().recv_timeout(self.timeout);
                 self.thread_ran.store(opened.is_ok(), Ordering::SeqCst);
                 self.waited.store(true, Ordering::SeqCst);
             }
@@ -1902,6 +1947,23 @@ mod tests {
             drop(bytes);
         }
 
+        /// A string view array keeps its strings in buffers next to the
+        /// 16-byte views, and those count towards the size too.
+        #[test]
+        fn sending_a_string_view_array_lets_other_python_threads_run() {
+            let _serial = one_at_a_time();
+            let gate = Gate::new();
+            let node = node_with_gate(&gate);
+            // Views take 16 bytes each; the strings are stored after them.
+            let strings = vec!["x".repeat(PAYLOAD_LEN / 2); 2];
+            let array = arrow::array::StringViewArray::from_iter_values(&strings).into_data();
+            let thread_ran = gate.run_with_python_thread(|py| {
+                let data = arrow_object(py, array);
+                node.call_method1(py, "send_output", ("out", data)).unwrap();
+            });
+            assert!(thread_ran);
+        }
+
         #[cfg(Py_3_11)]
         #[test]
         fn sending_a_sample_lets_other_python_threads_run() {
@@ -1915,6 +1977,53 @@ mod tests {
                 sample.call_method0(py, "send").unwrap();
             });
             assert!(thread_ran);
+        }
+
+        /// A send below `PAYLOAD_LEN` keeps the GIL: it takes microseconds,
+        /// while getting the GIL back can take a switch interval per busy
+        /// Python thread.
+        #[test]
+        fn small_sends_keep_the_gil() {
+            type SendFn = fn(Python<'_>, &Py<Node>);
+            let sends: [(&str, SendFn); 4] = [
+                ("bytes", |py, node| {
+                    let data = PyBytes::new(py, &[7; PAYLOAD_LEN - 1]);
+                    node.call_method1(py, "send_output", ("out", data)).unwrap();
+                }),
+                ("arrow", |py, node| {
+                    let array = UInt8Array::from(vec![7; PAYLOAD_LEN - 1]).into_data();
+                    let data = arrow_object(py, array);
+                    node.call_method1(py, "send_output", ("out", data)).unwrap();
+                }),
+                ("sliced arrow", |py, node| {
+                    // One byte at offset `2 * PAYLOAD_LEN - 1` of a bigger
+                    // buffer, as pyarrow exports `array.slice(..)`: only the
+                    // byte is sent.
+                    let array = arrow::array::ArrayData::builder(arrow::datatypes::DataType::UInt8)
+                        .len(1)
+                        .offset(2 * PAYLOAD_LEN - 1)
+                        .add_buffer(Buffer::from(vec![7u8; 2 * PAYLOAD_LEN]))
+                        .build()
+                        .unwrap();
+                    let data = arrow_object(py, array);
+                    node.call_method1(py, "send_output", ("out", data)).unwrap();
+                }),
+                ("sample", |py, node| {
+                    let sample = node
+                        .call_method1(py, "send_output_raw", ("out", PAYLOAD_LEN - 1))
+                        .unwrap();
+                    sample.call_method0(py, "send").unwrap();
+                }),
+            ];
+            let _serial = one_at_a_time();
+            for (name, send) in sends {
+                // The Python thread polls every millisecond, so if the GIL
+                // were free it would open the gate well within this time.
+                let gate = Gate::with_timeout(Duration::from_millis(200));
+                let node = node_with_gate(&gate);
+                let thread_ran = gate.run_with_python_thread(|py| send(py, &node));
+                assert!(!thread_ran, "a small {name} send released the GIL");
+            }
         }
 
         /// A send runs without the GIL while it holds a shared borrow of the
