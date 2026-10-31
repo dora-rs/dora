@@ -739,6 +739,97 @@ async fn logs_for_unknown_dataflow_replies_with_an_error() {
     }
 }
 
+/// A node with its own working directory (`deploy.working_dir`, or a git/hub
+/// clone dir) writes its log there, so `Logs` must read it from there and
+/// not from the dataflow's base working directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn logs_are_read_from_the_nodes_own_working_dir() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let base = tempfile::tempdir().unwrap();
+    let node_dir = base.path().join("sub");
+    let dataflow_id = Uuid::new_v4();
+    let node_id = NodeId::from("node".to_string());
+    let log_file = log::log_path(&node_dir, &dataflow_id, &node_id);
+    std::fs::create_dir_all(log_file.parent().unwrap()).unwrap();
+    std::fs::write(&log_file, b"from the node dir\n").unwrap();
+
+    daemon
+        .working_dir
+        .insert(dataflow_id, base.path().to_path_buf());
+    daemon
+        .node_log_dirs
+        .entry(dataflow_id)
+        .or_default()
+        .insert(node_id.clone(), node_dir);
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _status = daemon
+        .handle_coordinator_event(
+            DaemonCoordinatorEvent::Logs {
+                dataflow_id,
+                node_id,
+                tail: None,
+            },
+            reply_tx,
+        )
+        .await
+        .expect("Logs must not fail the daemon loop");
+
+    match reply_rx.await.expect("a reply must be sent") {
+        Some(DaemonCoordinatorReply::Logs(Ok(contents))) => {
+            assert_eq!(contents, b"from the node dir\n");
+        }
+        other => panic!("expected the node's log, got {other:?}"),
+    }
+}
+
+/// The spawn path is what records a node's own working dir for `Logs`
+/// above: a `deploy.working_dir` node must end up with its directory
+/// registered, a node without one must not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn spawn_records_the_log_dir_of_a_node_with_its_own_working_dir() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let base = tempfile::tempdir().unwrap();
+    let descriptor: Descriptor = serde_json::from_value(serde_json::json!({
+        "nodes": [
+            { "id": "in-sub", "path": "/nonexistent/node", "deploy": { "working_dir": "sub" } },
+            { "id": "in-base", "path": "/nonexistent/node" },
+        ]
+    }))
+    .unwrap();
+    let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+    let spawn_nodes = nodes.keys().cloned().collect();
+    let dataflow_id = Uuid::new_v4();
+    // The node binaries do not exist, so the spawn itself may fail; the
+    // directories are recorded before that.
+    let _ = daemon
+        .spawn_dataflow(
+            None,
+            dataflow_id,
+            base.path().to_path_buf(),
+            nodes,
+            descriptor,
+            spawn_nodes,
+            false,
+            None,
+        )
+        .await;
+
+    let dirs = daemon
+        .node_log_dirs
+        .get(&dataflow_id)
+        .expect("the `deploy.working_dir` node must be recorded");
+    assert_eq!(
+        dirs.get(&NodeId::from("in-sub".to_string())),
+        Some(&base.path().join("sub"))
+    );
+    assert!(!dirs.contains_key(&NodeId::from("in-base".to_string())));
+}
+
 /// The coordinator stops a dataflow's daemons one after another, so the
 /// dataflow can finish on a later daemon before that daemon's stop arrives.
 /// The stop must then succeed rather than fail `dora stop` / `dora cluster
