@@ -4,7 +4,7 @@ use dora_message::{
     coordinator_to_cli::ControlRequestReply,
     id::{DataId, NodeId},
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -30,7 +30,7 @@ pub enum ControlEvent {
     TopicSubscribe {
         dataflow_id: Uuid,
         topics: Vec<(NodeId, DataId)>,
-        sender: mpsc::Sender<crate::topic_subscriber::TopicFrame>,
+        sender: crate::topic_subscriber::TopicFrameSender,
         done_tx: oneshot::Sender<Result<Uuid, String>>,
     },
     TopicCheck {
