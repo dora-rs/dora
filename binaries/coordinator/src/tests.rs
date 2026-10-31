@@ -185,6 +185,26 @@ fn dynamic_node_prefixes_input_referencing_a_single_operator_producer() {
     }
 }
 
+/// A node for `dora node add` / `dora node replace` comes from the user's
+/// YAML, and `path_fallback` is internal (only module expansion sets it).
+#[test]
+fn dynamic_node_cannot_set_path_fallback() {
+    let running = running_descriptor_with_operator_producer(serde_json::json!(null));
+    let added: Node = serde_json::from_value(serde_json::json!({
+        "id": "consumer",
+        "path": "modules/tool",
+        "path_fallback": "tool",
+    }))
+    .expect("valid node");
+
+    let err = resolve_single_node(added, &running).expect_err("path_fallback must be rejected");
+    assert_eq!(
+        format!("{err:#}"),
+        "node `consumer` sets `path_fallback`, which is internal \
+         (module expansion sets it); remove it"
+    );
+}
+
 #[test]
 fn dynamic_node_with_invalid_timing_is_rejected() {
     // `dora node add` / `dora node replace` never run whole-dataflow

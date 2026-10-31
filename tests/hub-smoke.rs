@@ -374,8 +374,8 @@ fn hub_rejects_invalid_shipped_type() {
     );
 }
 
-/// `path_fallback` only applies to a local `path`, so a `hub:` node that sets
-/// it is rejected like one that sets `path`, with or without an override.
+/// `path_fallback` is internal, so a dataflow file that sets it, here on a
+/// `hub:` node, is rejected when it is read, with or without an override.
 #[test]
 fn hub_rejects_path_fallback() {
     if Command::new("git").arg("--version").output().is_err() {
@@ -402,10 +402,10 @@ fn hub_rejects_path_fallback() {
         );
         assert!(
             stderr(&out).contains(
-                "node `hello`: `hub:` is mutually exclusive with `path`, `path_fallback`, \
-                 `git`, `build`, and operator fields — the hub package supplies them"
+                "node `hello` sets `path_fallback`, which is internal \
+                 (module expansion sets it); remove it"
             ),
-            "expected the hub exclusivity error ({extra:?}), got: {}",
+            "expected the internal-field error ({extra:?}), got: {}",
             stderr(&out)
         );
     }

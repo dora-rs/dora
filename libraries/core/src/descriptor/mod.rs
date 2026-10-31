@@ -49,7 +49,7 @@ mod visualize;
 
 pub use expand::{
     ExpandedDescriptor, ModuleBoundaries, check_module_file, expand_modules,
-    expand_modules_with_boundaries,
+    expand_modules_with_boundaries, reject_path_fallback,
 };
 
 /// Operations on a parsed [`Descriptor`].
@@ -491,7 +491,15 @@ impl DescriptorExt for Descriptor {
     }
 
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor> {
-        serde_yaml::from_slice(&buf).context("failed to parse given descriptor")
+        let descriptor: Descriptor =
+            serde_yaml::from_slice(&buf).context("failed to parse given descriptor")?;
+        // A dataflow file must not set the internal `path_fallback`. Checked
+        // here, not in expansion: the daemon also expands a descriptor that
+        // was expanded already (`dora build`'s session), which carries it.
+        for node in &descriptor.nodes {
+            expand::reject_path_fallback(node, None)?;
+        }
+        Ok(descriptor)
     }
 
     fn check(&self, working_dir: &Path) -> eyre::Result<()> {
@@ -1466,6 +1474,26 @@ nodes:
             "a dangling symlink must not resolve (nothing on uv/$PATH matches \
              this name either), got {result:?}"
         );
+    }
+
+    /// `path_fallback` is internal, so a dataflow file must not set it, with
+    /// or without modules. Only reading a file checks this: a descriptor that
+    /// expansion already filled in (`dora build`'s session) keeps it.
+    #[test]
+    fn a_dataflow_file_cannot_set_path_fallback() {
+        for yaml in [
+            "nodes:\n  - id: x\n    path: tool\n    path_fallback: tool\n",
+            "nodes:\n  - id: m\n    module: m.yml\n  - id: x\n    path: ./x\n    path_fallback: x\n",
+        ] {
+            let err = Descriptor::parse(yaml.as_bytes().to_vec()).unwrap_err();
+            assert_eq!(
+                format!("{err:#}"),
+                "node `x` sets `path_fallback`, which is internal \
+                 (module expansion sets it); remove it",
+                "{yaml}"
+            );
+        }
+        Descriptor::parse(b"nodes:\n  - id: x\n    path: tool\n".to_vec()).unwrap();
     }
 
     #[test]

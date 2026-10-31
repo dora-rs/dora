@@ -270,7 +270,10 @@ If no such file exists
 (a folder of that name doesn't count) when the node starts, the name is looked up like a top-level `path:` instead
 (the dataflow directory, the uv environment, then `$PATH`), so a command that a
 `build:` step installs or that is on `$PATH` runs from a module in any
-directory. `dora expand` shows that name as the node's `path_fallback`.
+directory. Expansion keeps that name in the node's `path_fallback`, an
+internal field that `dora expand` leaves out of its output (so running that
+output skips the fallback): a dataflow file, a module file, or a node file for
+`dora node add`/`replace` that sets it is rejected.
 A name with a dot after its first character, such as `worker.py` or
 `node.v2`, counts as having an extension, so it gets no `path_fallback` and
 only means the file next to the module.

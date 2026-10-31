@@ -996,10 +996,10 @@ pub struct Node {
     /// so only `module`, `inputs`, `params`, `env`, `build`, and `deploy` are
     /// meaningful on it. Every other node field is rejected at expansion time
     /// rather than silently discarded -- both the source/kind fields (`path`,
-    /// `args`, `path_sha256`, `path_fallback`, `git`, `hub`, `branch`, `tag`,
-    /// `rev`, `operators`, `operator`, `ros2`) and per-node runtime fields
-    /// (`outputs`, `output_types`, `cpu_affinity`, `restart_policy`, ...).
-    /// The same rule applies at every nesting level.
+    /// `args`, `path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`,
+    /// `operator`, `ros2`) and per-node runtime fields (`outputs`,
+    /// `output_types`, `cpu_affinity`, `restart_policy`, ...). The same rule
+    /// applies at every nesting level.
     ///
     /// `env`, `build`, `deploy`, and `params` *are* accepted: they propagate
     /// into the module's inner nodes.
@@ -1065,12 +1065,15 @@ pub struct Node {
 
     /// What to run when nothing exists at `path`, looked up like a top-level
     /// `path` (working directory, uv environment, then `$PATH`; variables
-    /// are not expanded). Set internally when a module node's `path` is a
-    /// single name without an extension, such as `dora-echo`: `path` points
-    /// next to the module file, and this keeps the name as written; rarely
-    /// set by hand.
+    /// are not expanded). Internal: module expansion sets it when a module
+    /// node's `path` is a single name without an extension, such as
+    /// `dora-echo`: `path` points next to the module file, and this keeps
+    /// the name as written. One written in a dataflow, module or node file is
+    /// rejected, so it is not part of the YAML schema.
     // Appended last so existing fields keep their wire-format order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    #[doc(hidden)]
     pub path_fallback: Option<String>,
 }
 

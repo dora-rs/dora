@@ -859,7 +859,13 @@ outputs: [out]
             .and_then(serde_json::Value::as_object)
             .expect("Node schema should expose properties");
 
-        let actual: BTreeSet<_> = properties.keys().map(String::as_str).collect();
+        let mut actual: BTreeSet<_> = properties.keys().map(String::as_str).collect();
+        // `#[schemars(skip)]`: internal, so not in the YAML schema, but still
+        // classified so a node kind that can't use it rejects it.
+        assert!(
+            actual.insert("path_fallback"),
+            "path_fallback is back in the schema"
+        );
         let mut classified: BTreeSet<_> = SHARED_FIELDS.iter().copied().collect();
         classified.extend(ALL_CHECKABLE_FIELDS.iter().map(|field| field.name));
         classified.extend(["operators", "operator", "ros2", "module"]);

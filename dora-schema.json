@@ -492,7 +492,7 @@
           ]
         },
         "module": {
-          "description": "Path to a module definition file (e.g. `nav_module.yml`).\n\nA module is a reusable sub-dataflow: a group of nodes with declared\ninputs and outputs. At build time the module is expanded inline —\ninternal node IDs are prefixed with `{module_id}.` and all wiring is\nrewritten so the runtime sees only flat nodes.\n\nA module node has no source or per-node runtime configuration of its own,\nso only `module`, `inputs`, `params`, `env`, `build`, and `deploy` are\nmeaningful on it. Every other node field is rejected at expansion time\nrather than silently discarded -- both the source/kind fields (`path`,\n`args`, `path_sha256`, `path_fallback`, `git`, `hub`, `branch`, `tag`,\n`rev`, `operators`, `operator`, `ros2`) and per-node runtime fields\n(`outputs`, `output_types`, `cpu_affinity`, `restart_policy`, ...).\nThe same rule applies at every nesting level.\n\n`env`, `build`, `deploy`, and `params` *are* accepted: they propagate\ninto the module's inner nodes.\n\n## Example\n\n```yaml\nnodes:\n  - id: nav_stack\n    module: modules/navigation_module.yml\n    inputs:\n      goal_pose: localization/goal\n```",
+          "description": "Path to a module definition file (e.g. `nav_module.yml`).\n\nA module is a reusable sub-dataflow: a group of nodes with declared\ninputs and outputs. At build time the module is expanded inline —\ninternal node IDs are prefixed with `{module_id}.` and all wiring is\nrewritten so the runtime sees only flat nodes.\n\nA module node has no source or per-node runtime configuration of its own,\nso only `module`, `inputs`, `params`, `env`, `build`, and `deploy` are\nmeaningful on it. Every other node field is rejected at expansion time\nrather than silently discarded -- both the source/kind fields (`path`,\n`args`, `path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`,\n`operator`, `ros2`) and per-node runtime fields (`outputs`,\n`output_types`, `cpu_affinity`, `restart_policy`, ...). The same rule\napplies at every nesting level.\n\n`env`, `build`, `deploy`, and `params` *are* accepted: they propagate\ninto the module's inner nodes.\n\n## Example\n\n```yaml\nnodes:\n  - id: nav_stack\n    module: modules/navigation_module.yml\n    inputs:\n      goal_pose: localization/goal\n```",
           "type": [
             "string",
             "null"
@@ -584,13 +584,6 @@
         },
         "path": {
           "description": "Path to executable or script that should be run.\n\nSpecifies the path of the executable or script that Dora should run when starting the\ndataflow.\nThis can point to a normal executable (e.g. when using a compiled language such as Rust) or\na Python script.\n\nDora will automatically append a `.exe` extension on Windows systems when the specified\nfile name has no extension.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-example\n    path: target/release/rust-node\n  - id: python-example\n    path: ./receive_data.py\n```\n\n## URL as Path\n\nThe `path` field can also point to a URL instead of a local path.\nIn this case, Dora will download the given file when starting the dataflow.\n\nNote that this is quite an old feature and using this functionality is **not recommended**\nanymore. Instead, we recommend using a [`git`][Self::git] and/or [`build`](Self::build)\nkey.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "path_fallback": {
-          "description": "What to run when nothing exists at `path`, looked up like a top-level\n`path` (working directory, uv environment, then `$PATH`; variables\nare not expanded). Set internally when a module node's `path` is a\nsingle name without an extension, such as `dora-echo`: `path` points\nnext to the module file, and this keeps the name as written; rarely\nset by hand.",
           "type": [
             "string",
             "null"
