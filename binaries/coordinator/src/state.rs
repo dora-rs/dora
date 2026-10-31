@@ -179,14 +179,21 @@ impl DaemonConnections {
         })
     }
 
-    /// Whether a daemon on the same machine as `daemon` is connected. A
-    /// re-registering daemon gets a new `DaemonId`, so named daemons are
-    /// matched by machine id and an unnamed one by any unnamed daemon.
-    pub(crate) fn has_daemon_on_machine_of(&self, daemon: &DaemonId) -> bool {
-        match daemon.machine_id() {
-            Some(machine) => self.get_matching_daemon_id(machine).is_some(),
-            None => self.unnamed().next().is_some(),
-        }
+    /// Whether a daemon on the same machine as `daemon` is connected and its
+    /// status report has been reconciled. A re-registering daemon gets a new
+    /// `DaemonId`, so named daemons are matched by machine id and an unnamed
+    /// one by any unnamed daemon. Registration alone is not enough: the
+    /// daemon's running nodes only enter `node_to_daemon` with its separate
+    /// `StatusReport`, so before that a still-running producer would look
+    /// exited.
+    pub(crate) fn has_reported_daemon_on_machine_of(&self, daemon: &DaemonId) -> bool {
+        self.daemons.iter().any(|(id, conn)| {
+            conn.status_reported
+                && match daemon.machine_id() {
+                    Some(machine) => id.matches_machine_id(machine),
+                    None => id.machine_id().is_none(),
+                }
+        })
     }
 
     /// Pick the daemon that should run a node added to a running dataflow
@@ -221,18 +228,28 @@ impl DaemonConnections {
                 .ok_or_else(|| {
                     eyre!("no daemon of this dataflow matches machine id `{machine}`")
                 })?,
-            Some(d) if !d.labels.is_empty() => dataflow_daemons
-                .iter()
-                .find(|id| {
+            Some(d) if !d.labels.is_empty() => {
+                let matches_labels = |id: &&DaemonId| {
                     self.daemons.get(*id).is_some_and(|conn| {
                         d.labels.iter().all(|(k, v)| conn.labels.get(k) == Some(v))
                     })
-                })
-                .cloned()
-                .ok_or_else(|| eyre!("no daemon of this dataflow matches labels {:?}", d.labels))?,
+                };
+                // Of several matching daemons, take the producers' one so
+                // the co-location check below doesn't reject a request
+                // that a matching daemon can satisfy.
+                dataflow_daemons
+                    .iter()
+                    .filter(|id| producer_daemons.contains(*id))
+                    .chain(dataflow_daemons.iter())
+                    .find(matches_labels)
+                    .cloned()
+                    .ok_or_else(|| {
+                        eyre!("no daemon of this dataflow matches labels {:?}", d.labels)
+                    })?
+            }
             _ => producer_daemons
                 .iter()
-                .filter(|_| producer_daemons.len() == 1)
+                .filter(|id| producer_daemons.len() == 1 && dataflow_daemons.contains(*id))
                 .chain(
                     dataflow_daemons
                         .iter()
@@ -269,6 +286,9 @@ pub(crate) struct DaemonConnection {
     pub(crate) coordinator_local_addr: Option<std::net::SocketAddr>,
     pub(crate) last_heartbeat: Instant,
     pub(crate) labels: BTreeMap<String, String>,
+    /// Whether this connection's `StatusReport` has been reconciled, i.e.
+    /// the nodes it runs are in the dataflows' `node_to_daemon`.
+    pub(crate) status_reported: bool,
     /// Latest fault tolerance stats from this daemon (updated on each heartbeat).
     pub(crate) ft_stats: Option<FaultToleranceSnapshot>,
     /// Whether this daemon can build/spawn hub-sourced git nodes (`subdir` /
@@ -368,6 +388,7 @@ impl DaemonConnection {
             coordinator_local_addr: None,
             last_heartbeat: Instant::now(),
             labels,
+            status_reported: false,
             ft_stats: None,
             // set from the register request at the real registration site;
             // conservative default keeps non-registration constructors safe

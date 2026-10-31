@@ -459,6 +459,9 @@ impl Coordinator {
         // Dataflows whose persisted params are already being replayed to this
         // daemon, along with the ready barrier it missed.
         let mut params_replay_started = BTreeSet::new();
+        if let Some(connection) = self.daemon_connections.get_mut(&daemon_id) {
+            connection.status_reported = true;
+        }
         // Reconcile: if daemon reports a dataflow as running and it exists in
         // the store as Pending/Failed/Recovering, update it to Running.
         //

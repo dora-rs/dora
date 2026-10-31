@@ -6919,6 +6919,8 @@ fn producer_daemons_waits_only_while_the_producers_daemon_is_away() {
             &resolved,
             &nodes,
             node_to_daemon,
+            &node_to_daemon.values().cloned().collect(),
+            &BTreeSet::new(),
             persisted,
             connections,
         )
@@ -6938,6 +6940,11 @@ fn producer_daemons_waits_only_while_the_producers_daemon_is_away() {
         new_daemon.clone(),
         crate::state::DaemonConnection::new(tx, pending, BTreeMap::new()),
     );
+    // registered, but its status report (which maps its running nodes) has
+    // not been reconciled yet: the producer may still be running there
+    let err = producer_daemons(&BTreeMap::new(), &persisted, &connections).unwrap_err();
+    assert!(format!("{err}").contains("has not reconnected"), "{err}");
+    connections.get_mut(&new_daemon).unwrap().status_reported = true;
     assert!(
         producer_daemons(&BTreeMap::new(), &persisted, &connections)
             .unwrap()
@@ -7009,6 +7016,8 @@ async fn producer_daemons_waits_for_a_reclaimed_dataflows_daemon() {
         &resolved,
         &nodes,
         &BTreeMap::new(),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
         &record.node_to_daemon,
         &DaemonConnections::default(),
     )
@@ -7060,6 +7069,8 @@ fn recovered_dataflow_keeps_unreported_placement_when_re_persisted() {
             &resolved,
             &recovered.nodes,
             &recovered.node_to_daemon,
+            &recovered.daemons,
+            &recovered.node_finalized,
             &re_persisted.node_to_daemon,
             &DaemonConnections::default(),
         )
@@ -7076,5 +7087,144 @@ fn recovered_dataflow_keeps_unreported_placement_when_re_persisted() {
             .node_to_daemon
             .get("sender"),
         Some(&daemon_a.to_string())
+    );
+}
+
+/// A connection whose status report has been reconciled.
+fn reported_connection(labels: BTreeMap<String, String>) -> crate::state::DaemonConnection {
+    let (tx, _rx) = tokio::sync::mpsc::channel::<String>(1);
+    let pending = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let mut connection = crate::state::DaemonConnection::new(tx, pending, labels);
+    connection.status_reported = true;
+    connection
+}
+
+#[test]
+fn producer_daemons_ignores_exited_producers() {
+    // An exited producer sends nothing more, so it must not pin the new
+    // node to its daemon, whether the coordinator saw it exit (finalized)
+    // or its daemon's whole share finished (removed from `daemons` but
+    // still mapped and connected).
+    let descriptor: Descriptor = serde_json::from_value(serde_json::json!({
+        "nodes": [
+            { "id": "camera", "path": "camera", "outputs": ["image"] },
+            { "id": "config_loader", "path": "config_loader", "outputs": ["config"] },
+        ]
+    }))
+    .expect("valid descriptor");
+    let nodes = descriptor
+        .resolve_aliases_and_set_defaults()
+        .expect("resolves");
+    let added: Node = serde_json::from_value(serde_json::json!({
+        "id": "consumer",
+        "path": "consumer",
+        "inputs": { "image": "camera/image", "config": "config_loader/config" },
+    }))
+    .expect("valid node");
+    let (_, resolved) = resolve_single_node(added, &descriptor).expect("node resolves");
+
+    let daemon_a = DaemonId::new(Some("machine-a".to_string()));
+    let daemon_b = DaemonId::new(Some("machine-b".to_string()));
+    let node_to_daemon = BTreeMap::from([
+        ("camera".to_string().into(), daemon_a.clone()),
+        ("config_loader".to_string().into(), daemon_b.clone()),
+    ]);
+    let mut connections = DaemonConnections::default();
+    connections.add(daemon_a.clone(), reported_connection(BTreeMap::new()));
+    connections.add(daemon_b.clone(), reported_connection(BTreeMap::new()));
+    let both = BTreeSet::from([daemon_a.clone(), daemon_b.clone()]);
+    let producer_daemons = |dataflow_daemons: &BTreeSet<DaemonId>,
+                            finalized: &BTreeSet<NodeId>,
+                            connections: &DaemonConnections| {
+        crate::control_requests::producer_daemons(
+            &resolved,
+            &nodes,
+            &node_to_daemon,
+            dataflow_daemons,
+            finalized,
+            &BTreeMap::new(),
+            connections,
+        )
+    };
+
+    // both producers running: both daemons constrain the placement
+    assert_eq!(
+        producer_daemons(&both, &BTreeSet::new(), &connections).unwrap(),
+        both
+    );
+    // `config_loader` exited while machine-b keeps running other nodes
+    let finalized = BTreeSet::from(["config_loader".to_string().into()]);
+    assert_eq!(
+        producer_daemons(&both, &finalized, &connections).unwrap(),
+        BTreeSet::from([daemon_a.clone()])
+    );
+    // machine-b's whole share finished: it left `daemons`, stays connected
+    let only_a = BTreeSet::from([daemon_a.clone()]);
+    assert_eq!(
+        producer_daemons(&only_a, &BTreeSet::new(), &connections).unwrap(),
+        BTreeSet::from([daemon_a.clone()])
+    );
+    // machine-b left `daemons` because it disconnected: it may come back
+    let mut without_b = DaemonConnections::default();
+    without_b.add(daemon_a, reported_connection(BTreeMap::new()));
+    assert!(producer_daemons(&only_a, &BTreeSet::new(), &without_b).is_err());
+}
+
+#[test]
+fn add_node_daemon_label_placement_prefers_the_producers_daemon() {
+    // When several daemons match the labels, picking the first one could
+    // fail the co-location check although the producers' daemon matches too.
+    let daemon_a = DaemonId::new(Some("machine-a".to_string()));
+    let daemon_b = DaemonId::new(Some("machine-b".to_string()));
+    let gpu = BTreeMap::from([("gpu".to_string(), "true".to_string())]);
+    let mut connections = DaemonConnections::default();
+    connections.add(daemon_a.clone(), reported_connection(gpu.clone()));
+    connections.add(daemon_b.clone(), reported_connection(gpu));
+    let dataflow_daemons = BTreeSet::from([daemon_a, daemon_b.clone()]);
+
+    let by_labels = deploy_from(serde_json::json!({ "labels": { "gpu": "true" } }));
+    assert_eq!(
+        connections
+            .resolve_add_node_daemon(
+                &dataflow_daemons,
+                &BTreeSet::from([daemon_b.clone()]),
+                Some(&by_labels),
+            )
+            .unwrap(),
+        daemon_b
+    );
+}
+
+#[tokio::test]
+async fn status_report_marks_the_connection_as_reported() {
+    // `dora node add` only treats an unreported producer as exited once a
+    // daemon of its machine has reconciled its status report.
+    let daemon_id = DaemonId::new(Some("machine-a".to_string()));
+    let (tx, _rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(
+        daemon_id.clone(),
+        crate::state::DaemonConnection::new(tx, pending, BTreeMap::new()),
+    );
+    let mut coordinator = test_coordinator(
+        HashMap::new(),
+        daemon_connections,
+        Arc::new(InMemoryStore::new()),
+    );
+    assert!(
+        !coordinator
+            .daemon_connections
+            .has_reported_daemon_on_machine_of(&daemon_id)
+    );
+
+    coordinator
+        .handle_daemon_status_report(daemon_id.clone(), vec![])
+        .await
+        .expect("status report should be handled");
+    assert!(
+        coordinator
+            .daemon_connections
+            .has_reported_daemon_on_machine_of(&daemon_id)
     );
 }

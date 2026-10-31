@@ -1285,6 +1285,8 @@ impl Coordinator {
                                 &resolved_node,
                                 &dataflow.nodes,
                                 &dataflow.node_to_daemon,
+                                &dataflow.daemons,
+                                &dataflow.node_finalized,
                                 &persisted_placement,
                                 &self.daemon_connections,
                             )
@@ -1693,42 +1695,50 @@ pub(crate) fn upstream_node_ids(node: &ResolvedNode) -> impl Iterator<Item = &No
     })
 }
 
-/// The daemons hosting the nodes whose outputs `node` subscribes to.
+/// The daemons hosting the still-running nodes whose outputs `node`
+/// subscribes to. A producer that has exited sends nothing more, so it
+/// doesn't constrain where the new node may run.
 ///
-/// After a coordinator restart or reclaim, `node_to_daemon` only holds the
-/// nodes each reconnected daemon reported as running. A known producer
-/// without a mapping is then either on a daemon that has not reconnected
-/// yet, or it has exited. This is decided per producer from the daemon the
-/// store last recorded for it (`persisted_placement`):
+/// A producer counts as exited when it is in `finalized`, or when the
+/// daemon it is (or, per the store, was) mapped to is no longer part of the
+/// dataflow while a daemon of that machine has connected and reported its
+/// running nodes: that daemon would have reported the producer if it still
+/// ran it. This covers a daemon whose share of the dataflow finished, and a
+/// producer missing from `node_to_daemon` after a coordinator restart or
+/// reclaim (only reported nodes are mapped then).
 ///
-/// - no daemon of that machine is connected: it may still come back, so the
-///   add fails with a retry hint rather than risk starving the new node;
-/// - a daemon of that machine is connected but did not report the producer:
-///   it has exited, sends nothing more, and doesn't constrain the placement.
-///
-/// A producer the store has no placement for is skipped as well, so a stale
-/// record can never block `dora node add` for good.
+/// If no daemon of that machine has reported yet, it may still come back
+/// with the producer running, so the add fails with a retry hint rather
+/// than risk starving the new node. A producer with no known placement at
+/// all is skipped, so a stale record can never block `dora node add` for
+/// good.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn producer_daemons(
     node: &ResolvedNode,
     nodes: &BTreeMap<NodeId, ResolvedNode>,
     node_to_daemon: &BTreeMap<NodeId, DaemonId>,
+    dataflow_daemons: &BTreeSet<DaemonId>,
+    finalized: &BTreeSet<NodeId>,
     persisted_placement: &BTreeMap<String, String>,
     connections: &crate::state::DaemonConnections,
 ) -> eyre::Result<BTreeSet<DaemonId>> {
     let mut daemons = BTreeSet::new();
     for source in upstream_node_ids(node) {
-        if let Some(daemon) = node_to_daemon.get(source) {
-            daemons.insert(daemon.clone());
+        if !nodes.contains_key(source) || finalized.contains(source) {
             continue;
         }
-        if !nodes.contains_key(source) {
-            continue;
-        }
-        let last_daemon = persisted_placement
-            .get(&source.to_string())
-            .and_then(|id| DaemonId::from_display_str(id));
+        let last_daemon = match node_to_daemon.get(source) {
+            Some(daemon) if dataflow_daemons.contains(daemon) => {
+                daemons.insert(daemon.clone());
+                continue;
+            }
+            Some(daemon) => Some(daemon.clone()),
+            None => persisted_placement
+                .get(&source.to_string())
+                .and_then(|id| DaemonId::from_display_str(id)),
+        };
         if let Some(last_daemon) = last_daemon
-            && !connections.has_daemon_on_machine_of(&last_daemon)
+            && !connections.has_reported_daemon_on_machine_of(&last_daemon)
         {
             bail!(
                 "the daemon running upstream node `{source}` ({last_daemon}) has not \
