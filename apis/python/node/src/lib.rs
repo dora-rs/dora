@@ -411,6 +411,10 @@ impl Node {
     /// node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
     /// ```
     ///
+    /// The send releases the GIL, so other Python threads keep running while
+    /// it copies ``data``. Don't change ``data`` from another thread until
+    /// ``send_output`` returns.
+    ///
     /// :type output_id: str
     /// :type data: pyarrow.Array
     /// :type metadata: dict, optional
@@ -484,14 +488,14 @@ impl Node {
         output_id: String,
         data_length: usize,
         metadata: Option<Bound<'_, PyDict>>,
-        _py: Python,
+        py: Python,
     ) -> eyre::Result<SampleHandler> {
         let parameters = pydict_to_metadata(metadata)?;
         let data_id = parse_output_id(&output_id)?;
-        if !self.node.get_mut().validate_output(&data_id) {
+        if !self.node.run(py, |node| node.validate_output(&data_id)) {
             eyre::bail!("Output `{data_id}` not in node's output list.")
         }
-        SampleHandler::new(data_length, data_id, parameters, self.node.clone())
+        SampleHandler::new(data_length, data_id, parameters, self.node.clone(), py)
     }
 
     /// Send a service request, automatically injecting a ``request_id`` into
@@ -598,11 +602,12 @@ impl Node {
         message: &str,
         target: Option<&str>,
         fields: Option<std::collections::HashMap<String, String>>,
+        py: Python<'_>,
     ) {
         let ordered = fields.map(|f| f.into_iter().collect::<std::collections::BTreeMap<_, _>>());
-        self.node
-            .get_mut()
-            .log_with_fields(level, message, target, ordered.as_ref());
+        self.node.run(py, |node| {
+            node.log_with_fields(level, message, target, ordered.as_ref())
+        });
     }
 
     /// Log an error message.
@@ -612,8 +617,8 @@ impl Node {
     /// :param message: The log message
     /// :type message: str
     /// :rtype: None
-    pub fn log_error(&self, message: &str) {
-        self.node.get_mut().log_error(message);
+    pub fn log_error(&self, message: &str, py: Python<'_>) {
+        self.node.run(py, |node| node.log_error(message));
     }
 
     /// Log a warning message.
@@ -623,8 +628,8 @@ impl Node {
     /// :param message: The log message
     /// :type message: str
     /// :rtype: None
-    pub fn log_warn(&self, message: &str) {
-        self.node.get_mut().log_warn(message);
+    pub fn log_warn(&self, message: &str, py: Python<'_>) {
+        self.node.run(py, |node| node.log_warn(message));
     }
 
     /// Log an info message.
@@ -634,8 +639,8 @@ impl Node {
     /// :param message: The log message
     /// :type message: str
     /// :rtype: None
-    pub fn log_info(&self, message: &str) {
-        self.node.get_mut().log_info(message);
+    pub fn log_info(&self, message: &str, py: Python<'_>) {
+        self.node.run(py, |node| node.log_info(message));
     }
 
     /// Log a debug message.
@@ -645,8 +650,8 @@ impl Node {
     /// :param message: The log message
     /// :type message: str
     /// :rtype: None
-    pub fn log_debug(&self, message: &str) {
-        self.node.get_mut().log_debug(message);
+    pub fn log_debug(&self, message: &str, py: Python<'_>) {
+        self.node.run(py, |node| node.log_debug(message));
     }
 
     /// Log a trace message.
@@ -656,8 +661,8 @@ impl Node {
     /// :param message: The log message
     /// :type message: str
     /// :rtype: None
-    pub fn log_trace(&self, message: &str) {
-        self.node.get_mut().log_trace(message);
+    pub fn log_trace(&self, message: &str, py: Python<'_>) {
+        self.node.run(py, |node| node.log_trace(message));
     }
 
     /// Returns the full dataflow descriptor that this node is part of.
@@ -666,17 +671,18 @@ impl Node {
     ///
     /// :rtype: dict
     pub fn dataflow_descriptor(&self, py: Python) -> eyre::Result<Py<PyAny>> {
-        Ok(
-            pythonize::pythonize(py, &self.node.get_mut().dataflow_descriptor()?)
-                .map(|x| x.unbind())?,
-        )
+        let descriptor = self
+            .node
+            .run(py, |node| node.dataflow_descriptor().cloned())?;
+        Ok(pythonize::pythonize(py, &descriptor).map(|x| x.unbind())?)
     }
 
     /// Returns the node configuration.
     ///
     /// :rtype: dict
     pub fn node_config(&self, py: Python) -> eyre::Result<Py<PyAny>> {
-        Ok(pythonize::pythonize(py, &self.node.get_mut().node_config()).map(|x| x.unbind())?)
+        let config = self.node.run(py, |node| node.node_config().clone());
+        Ok(pythonize::pythonize(py, &config).map(|x| x.unbind())?)
     }
 
     /// Returns the dataflow id.
@@ -713,7 +719,9 @@ impl Node {
         name: Option<String>,
         py: Python,
     ) -> eyre::Result<Py<PyAny>> {
-        self.with_pool(|pool| pool.register_tensor_pool(tensor_info, device, machine, name, py))
+        self.with_pool(py, |pool| {
+            pool.register_tensor_pool(tensor_info, device, machine, name, py)
+        })
     }
 
     /// Write tensor data into an existing tensor pool.
@@ -731,7 +739,9 @@ impl Node {
         tensor_info: &Bound<'_, PyDict>,
         py: Python,
     ) -> eyre::Result<()> {
-        self.with_pool(|pool| pool.write_tensor_pool(tensor_pool_id, tensor_info, py))
+        self.with_pool(py, |pool| {
+            pool.write_tensor_pool(tensor_pool_id, tensor_info, py)
+        })
     }
 
     /// Read tensor metadata from a tensor pool (zero-copy).
@@ -747,7 +757,7 @@ impl Node {
         tensor_pool_id: Py<PyAny>,
         py: Python,
     ) -> eyre::Result<Py<PyAny>> {
-        self.with_pool(|pool| pool.read_tensor_pool(tensor_pool_id, py))
+        self.with_pool(py, |pool| pool.read_tensor_pool(tensor_pool_id, py))
     }
 
     /// Free a tensor pool, releasing it for every node that touched it.
@@ -759,7 +769,7 @@ impl Node {
     #[cfg(feature = "tensor-pool")]
     #[pyo3(signature = (tensor_pool_id))]
     pub fn free_tensor_pool(&self, tensor_pool_id: Py<PyAny>, py: Python) -> eyre::Result<()> {
-        self.with_pool(|pool| pool.free_tensor_pool(tensor_pool_id, py))
+        self.with_pool(py, |pool| pool.free_tensor_pool(tensor_pool_id, py))
     }
 
     /// Store an opaque value in the daemon's dataflow-scoped extension table.
@@ -781,14 +791,15 @@ impl Node {
     /// :type value: bytes
     /// :rtype: None
     pub fn extension_store(
-        &mut self,
+        &self,
         namespace: String,
         key: String,
         value: &Bound<'_, PyBytes>,
     ) -> eyre::Result<()> {
+        let py = value.py();
+        let value = value.as_bytes().to_vec();
         self.node
-            .get_mut()
-            .extension_store(namespace, key, value.as_bytes().to_vec())
+            .run(py, |node| node.extension_store(namespace, key, value))
     }
 
     /// Read an opaque value back, returning ``None`` if the key is absent.
@@ -802,13 +813,15 @@ impl Node {
     /// :rtype: bytes | None
     #[pyo3(signature = (namespace, key, remove=false))]
     pub fn extension_load(
-        &mut self,
+        &self,
         namespace: String,
         key: String,
         remove: bool,
         py: Python<'_>,
     ) -> eyre::Result<Option<Py<PyBytes>>> {
-        let value = self.node.get_mut().extension_load(namespace, key, remove)?;
+        let value = self
+            .node
+            .run(py, |node| node.extension_load(namespace, key, remove))?;
         Ok(value.map(|bytes| PyBytes::new(py, &bytes).unbind()))
     }
 
@@ -819,8 +832,14 @@ impl Node {
     /// :type namespace: str
     /// :type key: str
     /// :rtype: None
-    pub fn extension_drop(&mut self, namespace: String, key: String) -> eyre::Result<()> {
-        self.node.get_mut().extension_drop(namespace, key)
+    pub fn extension_drop(
+        &self,
+        namespace: String,
+        key: String,
+        py: Python<'_>,
+    ) -> eyre::Result<()> {
+        self.node
+            .run(py, |node| node.extension_drop(namespace, key))
     }
 
     /// Take the keys in ``namespace`` that have been dropped since the last
@@ -840,8 +859,8 @@ impl Node {
     /// Nodes can use this to decide whether to restore saved state or start fresh.
     ///
     /// :rtype: bool
-    pub fn is_restart(&self) -> bool {
-        self.node.get_mut().is_restart()
+    pub fn is_restart(&self, py: Python<'_>) -> bool {
+        self.node.run(py, |node| node.is_restart())
     }
 
     /// Returns how many times this node has been restarted.
@@ -849,8 +868,8 @@ impl Node {
     /// Returns 0 on the first run, 1 after the first restart, etc.
     ///
     /// :rtype: int
-    pub fn restart_count(&self) -> u32 {
-        self.node.get_mut().restart_count()
+    pub fn restart_count(&self, py: Python<'_>) -> u32 {
+        self.node.run(py, |node| node.restart_count())
     }
 
     /// Returns the current timestamp from the node's Hybrid Logical Clock
@@ -867,17 +886,13 @@ impl Node {
     /// the underlying HLC distinguishes them. For strict ordering use
     /// the Rust API (``DoraNode::timestamp() -> uhlc::Timestamp``).
     ///
-    /// **Threading** — like every other ``Node`` method, this acquires
-    /// the node's internal mutex via ``try_lock`` and will panic if
-    /// another thread is mid-call into the same ``Node`` instance. The
-    /// Python GIL serialises in-process calls, so this is only
-    /// reachable if a caller releases the GIL (e.g. via
-    /// ``allow_threads``) and another thread re-enters the same Node.
-    /// Don't do that.
+    /// **Threading** — this locks the node, so it waits while another
+    /// thread uses the same ``Node`` (for example while that thread sends
+    /// an output, which runs without the GIL).
     ///
     /// :rtype: datetime.datetime
     pub fn timestamp(&self, py: Python) -> eyre::Result<Py<PyAny>> {
-        let ts = self.node.get_mut().timestamp();
+        let ts = self.node.run(py, |node| node.timestamp());
         let system_time = ts.get_time().to_system_time();
         let duration_since_epoch = system_time
             .duration_since(std::time::UNIX_EPOCH)
@@ -1242,21 +1257,29 @@ impl Node {
         // Parse before taking the node lock: `DataId::from(String)` panics on
         // an invalid id, which surfaced in Python as an uncatchable-by-
         // `except Exception` `PanicException` and, since the panic unwound
-        // through the held `get_mut()` guard, poisoned the node for every
-        // later call.
+        // through the held node lock, poisoned the node for every later
+        // call.
         let output_id = parse_output_id(&output_id)?;
+        // The send copies the payload and waits for the daemon, so it runs
+        // without the GIL.
         if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
+            // A `bytes` object is immutable and `data` keeps it alive, so it
+            // can be read without the GIL.
             let bytes = py_bytes.as_bytes();
             self.node
-                .get_mut()
-                .send_output_bytes(output_id, parameters, bytes.len(), bytes)
+                .detached(py, |node| {
+                    node.send_output_bytes(output_id, parameters, bytes.len(), bytes)
+                })
                 .wrap_err(bytes_context)?;
         } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
-            self.node.get_mut().send_output(
-                output_id,
-                parameters,
-                arrow::array::make_array(arrow_array),
-            )?;
+            // The send gets a clone, and `array` is dropped here, with the GIL:
+            // the array may wrap Python-owned memory, which needs the GIL to
+            // be freed (dora-rs/dora#2742).
+            let array = arrow::array::make_array(arrow_array);
+            self.node.detached(py, |node| {
+                node.send_output(output_id, parameters, array.clone())
+            })?;
+            drop(array);
         } else {
             eyre::bail!("invalid `data` type, must be `PyBytes` or arrow array")
         }
@@ -1269,10 +1292,14 @@ impl Node {
     /// `#[pymethods]` to `Node`, so the extension takes what it needs by
     /// reference and the wrappers above stay thin.
     #[cfg(feature = "tensor-pool")]
-    fn with_pool<R>(&self, f: impl FnOnce(&mut dora_tensor_pool_python::Pool<'_>) -> R) -> R {
+    fn with_pool<R>(
+        &self,
+        py: Python<'_>,
+        f: impl FnOnce(&mut dora_tensor_pool_python::Pool<'_>) -> R,
+    ) -> R {
         let node_id = self.node_id.clone();
         let dataflow_id = self.dataflow_id;
-        let mut guard = self.node.get_mut();
+        let mut guard = self.node.lock(py);
         let mut pool = dora_tensor_pool_python::Pool {
             node_id,
             dataflow_id,
@@ -1284,7 +1311,7 @@ impl Node {
     /// Release pools that other nodes freed. No-op without the extension.
     #[cfg(feature = "tensor-pool")]
     fn process_pending_tensor_pool_frees(&self, py: Python) {
-        self.with_pool(|pool| pool.process_pending_tensor_pool_frees(py));
+        self.with_pool(py, |pool| pool.process_pending_tensor_pool_frees(py));
     }
 
     #[cfg(not(feature = "tensor-pool"))]
@@ -1390,6 +1417,7 @@ mod tests {
     use super::*;
     use std::ffi::CString;
 
+    use dora_node_api::integration_testing::TestingOutput;
     use dora_node_api::{Event, StopCause};
     use futures::executor::block_on;
 
@@ -1409,10 +1437,14 @@ mod tests {
     }
 
     fn testing_node() -> Node {
+        let (tx, _rx) = dora_node_api::integration_testing::output_channel();
+        testing_node_with_output(TestingOutput::ToChannel(tx))
+    }
+
+    fn testing_node_with_output(output: TestingOutput) -> Node {
         use dora_node_api::integration_testing::{
-            IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
+            IntegrationTestInput, TestingInput, TestingOptions,
             integration_testing_format::{IncomingEvent, TimedIncomingEvent},
-            output_channel,
         };
 
         let inputs = TestingInput::Input(IntegrationTestInput::new(
@@ -1422,10 +1454,9 @@ mod tests {
                 event: IncomingEvent::Stop,
             }],
         ));
-        let (tx, _rx) = output_channel();
         let (node, events) = DoraNode::init_testing(
             inputs,
-            TestingOutput::ToChannel(tx),
+            output,
             TestingOptions {
                 skip_output_time_offsets: true,
             },
@@ -1655,5 +1686,431 @@ mod tests {
                 .collect();
             assert_eq!(rest, vec![2, 3]);
         });
+    }
+
+    /// A send copies the payload and waits for the daemon's reply: it must not
+    /// hold the GIL meanwhile, or every other Python thread stops until it
+    /// returns. And a call on the node from another thread must wait for the
+    /// node instead of panicking.
+    mod send_gil {
+        use super::*;
+        use arrow::array::{Array, UInt8Array};
+        use arrow::buffer::{Buffer, ScalarBuffer};
+        use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
+        use pyo3::types::{PyCFunction, PyCapsule};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+
+        /// A test that holds the GIL would also stop another test's Python
+        /// thread, so they run one at a time. Taken first thing, before
+        /// attaching: waiting for it while holding the GIL could deadlock.
+        static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+            ONE_AT_A_TIME
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+
+        /// The gate holds each send until the Python thread has run, so the
+        /// payload size does not matter.
+        const PAYLOAD_LEN: usize = 64;
+
+        /// Opened by a Python thread, which can only run while nothing holds
+        /// the GIL.
+        #[derive(Clone)]
+        struct Gate {
+            open: SyncSender<()>,
+            opened: Arc<std::sync::Mutex<Receiver<()>>>,
+            /// Set once `call` starts: the Python thread only tries to open
+            /// the gate after that.
+            armed: Arc<AtomicBool>,
+            thread_ran: Arc<AtomicBool>,
+            waited: Arc<AtomicBool>,
+        }
+
+        impl Gate {
+            fn new() -> Self {
+                // A rendezvous channel: `try_send` only succeeds while `wait`
+                // is waiting.
+                let (open, opened) = sync_channel(0);
+                Self {
+                    open,
+                    opened: Arc::new(std::sync::Mutex::new(opened)),
+                    armed: Arc::new(AtomicBool::new(false)),
+                    thread_ran: Arc::new(AtomicBool::new(false)),
+                    waited: Arc::new(AtomicBool::new(false)),
+                }
+            }
+
+            /// Waits until the Python thread opens the gate, for at most 5 s.
+            fn wait(&self) {
+                let opened = self
+                    .opened
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5));
+                self.thread_ran.store(opened.is_ok(), Ordering::SeqCst);
+                self.waited.store(true, Ordering::SeqCst);
+            }
+
+            /// Starts a Python thread that tries to open the gate every
+            /// millisecond, runs `call`, and returns whether the thread opened
+            /// the gate while `call` waited at it.
+            fn run_with_python_thread(&self, call: impl FnOnce(Python)) -> bool {
+                Python::attach(|py| {
+                    let gate = self.clone();
+                    let poll = PyCFunction::new_closure(py, None, None, move |_, _| {
+                        gate.armed.load(Ordering::SeqCst)
+                            && (gate.open.try_send(()).is_ok()
+                                || gate.waited.load(Ordering::SeqCst))
+                    })
+                    .unwrap();
+                    let globals = PyDict::new(py);
+                    globals.set_item("poll", poll).unwrap();
+                    py.run(
+                        c"import threading, time\n\
+                          def spin():\n    \
+                              for _ in range(10000):\n        \
+                                  if poll():\n            \
+                                      return\n        \
+                                  time.sleep(0.001)\n\
+                          thread = threading.Thread(target=spin, daemon=True)\n\
+                          thread.start()",
+                        Some(&globals),
+                        None,
+                    )
+                    .unwrap();
+                    self.armed.store(true, Ordering::SeqCst);
+                    call(py);
+                    py.run(c"thread.join()", Some(&globals), None).unwrap();
+                });
+                self.thread_ran.load(Ordering::SeqCst)
+            }
+        }
+
+        /// Writes the testing node's outputs, waiting at the gate on the first
+        /// write, i.e. inside the node's first send.
+        struct GateWriter {
+            gate: Option<Gate>,
+        }
+
+        impl std::io::Write for GateWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if let Some(gate) = self.gate.take() {
+                    gate.wait();
+                }
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        fn node_with_gate(gate: &Gate) -> Py<Node> {
+            let writer = GateWriter {
+                gate: Some(gate.clone()),
+            };
+            let node = testing_node_with_output(TestingOutput::ToWriter(Box::new(writer)));
+            Python::attach(|py| Py::new(py, node).unwrap())
+        }
+
+        #[test]
+        fn sending_bytes_lets_other_python_threads_run() {
+            let _serial = one_at_a_time();
+            let gate = Gate::new();
+            let node = node_with_gate(&gate);
+            let thread_ran = gate.run_with_python_thread(|py| {
+                let data = PyBytes::new(py, &[7; PAYLOAD_LEN]);
+                node.call_method1(py, "send_output", ("out", data)).unwrap();
+            });
+            assert!(thread_ran);
+        }
+
+        /// Records whether the buffer it owns was freed while the freeing
+        /// thread held the GIL. A pyarrow buffer that wraps Python memory needs
+        /// the GIL to be freed (dora-rs/dora#2742).
+        struct GilCheckedAllocation {
+            freed_with_gil: Arc<AtomicBool>,
+        }
+
+        // Not in the limited API that `pyo3::ffi` exposes under abi3, but
+        // libpython exports it.
+        unsafe extern "C" {
+            fn PyGILState_Check() -> std::ffi::c_int;
+        }
+
+        impl Drop for GilCheckedAllocation {
+            fn drop(&mut self) {
+                let with_gil = unsafe { PyGILState_Check() } == 1;
+                self.freed_with_gil.store(with_gil, Ordering::SeqCst);
+            }
+        }
+
+        /// A Python object with an `__arrow_c_array__` method returning
+        /// `array`, so `send_output` takes its Arrow branch without pyarrow
+        /// (CI runs these tests without it).
+        fn arrow_object(py: Python<'_>, array: arrow::array::ArrayData) -> Bound<'_, PyAny> {
+            // Taken on the first call, so that only the exported copy keeps
+            // the buffers alive.
+            let array = std::sync::Mutex::new(Some(array));
+            let export = PyCFunction::new_closure(py, None, None, move |args, _| {
+                let py = args.py();
+                let array = array.lock().unwrap().take().unwrap();
+                let schema = FFI_ArrowSchema::try_from(array.data_type()).unwrap();
+                let schema = PyCapsule::new_with_value(py, schema, c"arrow_schema").unwrap();
+                let array = FFI_ArrowArray::new(&array);
+                let array = PyCapsule::new_with_value(py, array, c"arrow_array").unwrap();
+                (schema.unbind(), array.unbind())
+            })
+            .unwrap();
+            let globals = PyDict::new(py);
+            globals.set_item("export", export).unwrap();
+            py.run(
+                c"import types\nobject = types.SimpleNamespace(__arrow_c_array__=export)",
+                Some(&globals),
+                None,
+            )
+            .unwrap();
+            globals.get_item("object").unwrap().unwrap()
+        }
+
+        #[test]
+        fn sending_an_arrow_array_lets_other_python_threads_run() {
+            let _serial = one_at_a_time();
+            let gate = Gate::new();
+            let node = node_with_gate(&gate);
+            let freed_with_gil = Arc::new(AtomicBool::new(false));
+            let bytes = vec![7_u8; PAYLOAD_LEN];
+            let buffer = unsafe {
+                Buffer::from_custom_allocation(
+                    std::ptr::NonNull::new(bytes.as_ptr().cast_mut()).unwrap(),
+                    bytes.len(),
+                    Arc::new(GilCheckedAllocation {
+                        freed_with_gil: freed_with_gil.clone(),
+                    }),
+                )
+            };
+            let array = UInt8Array::new(ScalarBuffer::from(buffer), None).into_data();
+            let thread_ran = gate.run_with_python_thread(|py| {
+                let data = arrow_object(py, array);
+                node.call_method1(py, "send_output", ("out", data)).unwrap();
+            });
+            assert!(thread_ran);
+            assert!(freed_with_gil.load(Ordering::SeqCst));
+            drop(bytes);
+        }
+
+        #[cfg(Py_3_11)]
+        #[test]
+        fn sending_a_sample_lets_other_python_threads_run() {
+            let _serial = one_at_a_time();
+            let gate = Gate::new();
+            let node = node_with_gate(&gate);
+            let thread_ran = gate.run_with_python_thread(|py| {
+                let sample = node
+                    .call_method1(py, "send_output_raw", ("out", PAYLOAD_LEN))
+                    .unwrap();
+                sample.call_method0(py, "send").unwrap();
+            });
+            assert!(thread_ran);
+        }
+
+        /// A send runs without the GIL while it holds a shared borrow of the
+        /// `Node`, so no method may need an exclusive borrow: another thread
+        /// calling it during the send would get "Already borrowed".
+        #[test]
+        fn extension_calls_work_while_the_node_is_borrowed() {
+            type Call = fn(Python<'_>, &Py<Node>) -> PyResult<Py<PyAny>>;
+            let calls: [(&str, Call); 3] = [
+                ("ExtensionStore", |py, node| {
+                    let value = PyBytes::new(py, b"x");
+                    node.call_method1(py, "extension_store", ("ns", "key", value))
+                }),
+                ("ExtensionLoad", |py, node| {
+                    node.call_method1(py, "extension_load", ("ns", "key"))
+                }),
+                ("ExtensionDrop", |py, node| {
+                    node.call_method1(py, "extension_drop", ("ns", "key"))
+                }),
+            ];
+            Python::attach(|py| {
+                for (request, call) in calls {
+                    let node = Py::new(py, testing_node()).unwrap();
+                    let _sending = node.borrow(py);
+                    let err = call(py, &node).unwrap_err().to_string();
+                    // The testing daemon has no extensions, so its refusal
+                    // shows the call reached it.
+                    let reached = format!(
+                        "RuntimeError: unsupported request in integration-testing mode: {request} {{"
+                    );
+                    assert!(err.starts_with(&reached), "{err}");
+                }
+            });
+        }
+
+        /// Taking the GIL back runs Python code: PyO3 then drops the Python
+        /// objects other threads released without the GIL, which runs their
+        /// `__del__`. A call that waited for the node must take the GIL back
+        /// before it locks the node, or a `__del__` that calls the node waits
+        /// for that thread's own lock forever.
+        #[test]
+        fn a_del_run_while_waiting_for_the_node_can_call_the_node() {
+            let _serial = one_at_a_time();
+            let gate = Gate::new();
+            let (node, held, object, called) = Python::attach(|py| {
+                let node = Py::new(py, testing_node()).unwrap();
+                let held = node.borrow(py).node.clone();
+                let globals = PyDict::new(py);
+                globals.set_item("node", node.clone_ref(py)).unwrap();
+                py.run(
+                    c"called = []\n\
+                      class CallsNode:\n    \
+                          def __del__(self):\n        \
+                              node.log_info('from __del__')\n        \
+                              called.append(True)\n\
+                      object = CallsNode()",
+                    Some(&globals),
+                    None,
+                )
+                .unwrap();
+                let object = globals.get_item("object").unwrap().unwrap().unbind();
+                // `__del__` keeps `globals` alive: leave `object` only to us.
+                globals.del_item("object").unwrap();
+                let called = globals.get_item("called").unwrap().unwrap().unbind();
+                (node, held, object, called)
+            });
+            let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    let guard = held.get_mut();
+                    locked_tx.send(()).unwrap();
+                    gate.wait();
+                    // Dropped without the GIL: PyO3 runs its `__del__` the
+                    // next time a thread takes the GIL.
+                    drop(object);
+                    drop(guard);
+                });
+                locked_rx.recv().unwrap();
+                // On its own thread, so that a call that hangs fails the test
+                // instead of blocking it.
+                std::thread::spawn({
+                    let gate = gate.clone();
+                    let node = Python::attach(|py| node.clone_ref(py));
+                    move || {
+                        let thread_ran = gate.run_with_python_thread(|py| {
+                            node.call_method1(py, "log_info", ("x",)).unwrap();
+                        });
+                        let _ = done_tx.send(thread_ran);
+                    }
+                });
+                let thread_ran = done_rx
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("the call waits for its own lock forever");
+                assert!(thread_ran);
+            });
+            let called: Vec<bool> = Python::attach(|py| called.extract(py).unwrap());
+            assert_eq!(called, [true]);
+        }
+
+        /// While another thread holds the node (as a send does now, without
+        /// the GIL), a call must wait for it, and wait without the GIL: the
+        /// holder may need the GIL to finish.
+        #[test]
+        fn calls_wait_for_a_node_held_by_another_thread() {
+            let _serial = one_at_a_time();
+            // Every method that locks the node, with its arguments.
+            let calls: [(&str, &std::ffi::CStr); 17] = [
+                ("send_output", c"('out', b'x')"),
+                ("send_output_raw", c"('out', 1)"),
+                ("log", c"('info', 'x')"),
+                ("log_error", c"('x',)"),
+                ("log_warn", c"('x',)"),
+                ("log_info", c"('x',)"),
+                ("log_debug", c"('x',)"),
+                ("log_trace", c"('x',)"),
+                ("dataflow_descriptor", c"()"),
+                ("node_config", c"()"),
+                ("extension_store", c"('ns', 'key', b'x')"),
+                ("extension_load", c"('ns', 'key')"),
+                ("extension_drop", c"('ns', 'key')"),
+                ("is_restart", c"()"),
+                ("restart_count", c"()"),
+                ("timestamp", c"()"),
+                ("send_service_request", c"('out', b'x')"),
+            ];
+            for (name, args) in calls {
+                let gate = Gate::new();
+                let (node, held) = Python::attach(|py| {
+                    let node = Py::new(py, testing_node()).unwrap();
+                    let held = node.borrow(py).node.clone();
+                    (node, held)
+                });
+                let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+                std::thread::scope(|scope| {
+                    let holder = scope.spawn(|| {
+                        let _guard = held.get_mut();
+                        locked_tx.send(()).unwrap();
+                        gate.wait();
+                    });
+                    locked_rx.recv().unwrap();
+                    let thread_ran = gate.run_with_python_thread(|py| {
+                        let args = py.eval(args, None, None).unwrap();
+                        let args = args.cast_into::<pyo3::types::PyTuple>().unwrap();
+                        // Some calls fail on the testing node (it has no
+                        // extensions), which is fine here. A panic, as from
+                        // the old `try_lock`, still fails the test: PyO3
+                        // resumes it when the call returns.
+                        let _ = node.call_method1(py, name, args);
+                    });
+                    holder.join().unwrap();
+                    assert!(thread_ran, "{name} waited with the GIL held");
+                });
+            }
+        }
+
+        /// The tensor-pool calls hold the node while they run Python code, here
+        /// the pool id's `__arrow_c_array__`. If that code calls the node, the
+        /// call panics as on `main`, instead of waiting for its own thread
+        /// forever.
+        #[cfg(feature = "tensor-pool")]
+        #[test]
+        fn a_tensor_pool_callback_that_calls_the_node_panics_instead_of_hanging() {
+            let _serial = one_at_a_time();
+            let node = Python::attach(|py| Py::new(py, testing_node()).unwrap());
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            // On its own thread, so that a call that hangs fails the test
+            // instead of blocking it.
+            std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Python::attach(|py| {
+                        let globals = PyDict::new(py);
+                        globals.set_item("node", node).unwrap();
+                        py.run(
+                            c"class PoolId:\n    \
+                                  def __arrow_c_array__(self, requested_schema=None):\n        \
+                                      node.log_info('x')\n\
+                              node.read_tensor_pool(PoolId())",
+                            Some(&globals),
+                            None,
+                        )
+                        .map_err(|error| error.to_string())
+                    })
+                }));
+                // PyO3 resumes the panic when it fetches the `PanicException`.
+                let message = result
+                    .map_err(|panic| panic.downcast_ref::<String>().cloned().unwrap_or_default());
+                let _ = done_tx.send(message);
+            });
+            let result = done_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the callback waits for its own thread forever");
+            assert_eq!(
+                result,
+                Err(r#"failed to lock DelayedCleanup: "WouldBlock""#.to_owned())
+            );
+        }
     }
 }
