@@ -124,6 +124,10 @@ const ALL_CHECKABLE_FIELDS: &[CheckableField] = &[
         is_set: |node| node.path_sha256.is_some(),
     },
     CheckableField {
+        name: "path_fallback",
+        is_set: |node| node.path_fallback.is_some(),
+    },
+    CheckableField {
         name: "args",
         is_set: |node| node.args.is_some(),
     },
@@ -289,7 +293,7 @@ fn validate_against_whitelist(node: &Node, allowed: &[&str], kind_name: &str) ->
 // ── Per-kind whitelists and checks ────────────────────────────────
 
 /// Standard node whitelist:
-/// path, git, branch, tag, rev, hub, build, path_sha256, args,
+/// path, git, branch, tag, rev, hub, build, path_sha256, path_fallback, args,
 /// inputs, outputs, output_types, input_types, output_framing,
 /// shared_memory_pool_size, restart_policy, max_restarts,
 /// restart_delay, max_restart_delay, restart_window,
@@ -305,6 +309,7 @@ const STANDARD_ALLOWED: &[&str] = &[
     "hub",
     "build",
     "path_sha256",
+    "path_fallback",
     "args",
     "inputs",
     "outputs",
@@ -333,7 +338,38 @@ const STANDARD_ALLOWED: &[&str] = &[
 fn check_standard(node: &Node) -> Result<()> {
     let mut allowed = SHARED_FIELDS.to_vec();
     allowed.extend(STANDARD_ALLOWED);
-    validate_against_whitelist(node, &allowed, "Standard")
+    validate_against_whitelist(node, &allowed, "Standard")?;
+    // The daemon only falls back for a local `path`; a hub entrypoint, a
+    // URL download and a `dynamic` or `shell` node are resolved without it,
+    // so reject it there rather than silently ignore it (a `path_sha256` on a
+    // local path is rejected at spawn already).
+    if node.path_fallback.is_some()
+        && (node.hub.is_some()
+            || node.path.as_deref().is_some_and(|path| {
+                super::source_is_url(path)
+                    || path == super::DYNAMIC_SOURCE
+                    || path == super::SHELL_SOURCE
+            }))
+    {
+        bail!(
+            "node `{}` has `path_fallback`, which only applies to a local `path`, \
+             not to a `hub:` node, a URL download or a `dynamic` or `shell` node",
+            node.id
+        );
+    }
+    // Expansion only writes a single file name, looked up in the working
+    // directory, uv and on `$PATH`; a path like `bin/x` would also be searched
+    // from the current directory, and `$X` is not expanded.
+    if let Some(fallback) = &node.path_fallback
+        && !super::expand::is_bare_name(fallback)
+    {
+        bail!(
+            "node `{}` has `path_fallback` `{fallback}`, which must be a single file \
+             name without `/`, `\\`, `:`, `$` or an extension",
+            node.id
+        );
+    }
+    Ok(())
 }
 
 /// Runtime node whitelist:
@@ -475,6 +511,10 @@ hub: dora-yolo@^0.5
         let field_cases = [
             ("path", "id: x\npath: ./node\n"),
             ("path_sha256", "id: x\npath: ./node\npath_sha256: abc123\n"),
+            (
+                "path_fallback",
+                "id: x\npath: ./node\npath_fallback: node\n",
+            ),
             ("args", "id: x\npath: ./node\nargs: --foo\n"),
             ("build", "id: x\npath: ./node\nbuild: cargo build\n"),
             (
@@ -577,6 +617,58 @@ hub: dora-yolo@^0.5
             assert!(
                 (field.is_set)(&node),
                 "field `{field_name}` should be detected as set"
+            );
+        }
+    }
+
+    #[test]
+    fn path_fallback_is_rejected_where_the_daemon_would_ignore_it() {
+        for yaml in [
+            // `dora build` rejects this in hub resolution; `dora doctor`, `dora
+            // status --dataflow`, `dora graph` and the coordinator check
+            // without resolving.
+            "id: x\npath: ./node\nhub: dora-yolo@^0.5\npath_fallback: node\n",
+            "id: x\npath: https://example.com/node\npath_fallback: node\n",
+            "id: x\npath: https://example.com/node\npath_sha256: abc123\npath_fallback: node\n",
+            "id: x\npath: dynamic\npath_fallback: node\n",
+            "id: x\npath: shell\npath_fallback: node\n",
+        ] {
+            let err = classify(&parse_node(yaml)).expect_err(yaml).to_string();
+            assert_eq!(
+                err,
+                "node `x` has `path_fallback`, which only applies to a local `path`, \
+                 not to a `hub:` node, a URL download or a `dynamic` or `shell` node"
+            );
+        }
+        classify(&parse_node(
+            "id: x\npath: modules/node\npath_fallback: node\n",
+        ))
+        .unwrap();
+    }
+
+    /// Module expansion only writes a single file name; anything else would
+    /// also be searched from the current directory (`bin/x`) or isn't a name.
+    #[test]
+    fn path_fallback_must_be_a_single_name() {
+        for fallback in [
+            "bin/x",
+            "../x",
+            "x.py",
+            "https://example.com/x",
+            "$X",
+            "C:x",
+            "''",
+            "'  '",
+        ] {
+            let yaml = format!("id: x\npath: modules/node\npath_fallback: {fallback}\n");
+            let err = classify(&parse_node(&yaml)).expect_err(&yaml).to_string();
+            let fallback = fallback.trim_matches('\'');
+            assert_eq!(
+                err,
+                format!(
+                    "node `x` has `path_fallback` `{fallback}`, which must be a single \
+                     file name without `/`, `\\`, `:`, `$` or an extension"
+                )
             );
         }
     }
@@ -767,7 +859,13 @@ outputs: [out]
             .and_then(serde_json::Value::as_object)
             .expect("Node schema should expose properties");
 
-        let actual: BTreeSet<_> = properties.keys().map(String::as_str).collect();
+        let mut actual: BTreeSet<_> = properties.keys().map(String::as_str).collect();
+        // `#[schemars(skip)]`: internal, so not in the YAML schema, but still
+        // classified so a node kind that can't use it rejects it.
+        assert!(
+            actual.insert("path_fallback"),
+            "path_fallback is back in the schema"
+        );
         let mut classified: BTreeSet<_> = SHARED_FIELDS.iter().copied().collect();
         classified.extend(ALL_CHECKABLE_FIELDS.iter().map(|field| field.name));
         classified.extend(["operators", "operator", "ros2", "module"]);

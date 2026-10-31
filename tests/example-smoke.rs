@@ -756,6 +756,98 @@ fn smoke_local_module_dataflow() {
     );
 }
 
+/// #3826: inside a module in a subdirectory, an inner `path:` that is a single
+/// extensionless name runs a program found like a top-level `path:` when no
+/// file of that name is next to the module. Here the program is a prebuilt
+/// example node copied to the dataflow root, the first place a top-level
+/// `path:` is looked up; on main the node fails with "Could not find source
+/// path modules/my-node-3826".
+fn write_module_bare_path_fixture() -> tempfile::TempDir {
+    ensure_rust_nodes_built();
+    // Same target dir as `dora_bin()`.
+    let target_debug = std::env::var("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("target"))
+        .join("debug");
+    let bin = |name: &str| target_debug.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir(dir.path().join("modules")).unwrap();
+    std::fs::copy(
+        bin("rust-dataflow-example-node"),
+        dir.path()
+            .join(format!("my-node-3826{}", std::env::consts::EXE_SUFFIX)),
+    )
+    .expect("prebuilt example node");
+    std::fs::write(
+        dir.path().join("modules/gen.yml"),
+        "module:\n  name: gen\n  inputs: [tick]\n  outputs: [random]\nnodes:\n  \
+         - id: node\n    path: my-node-3826\n    inputs:\n      tick: _mod/tick\n    \
+         outputs:\n      - random\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("dataflow.yml"),
+        format!(
+            "nodes:\n  - id: gen\n    module: modules/gen.yml\n    inputs:\n      \
+             tick: dora/timer/millis/100\n  - id: status\n    path: {status}\n    \
+             inputs:\n      tick: dora/timer/millis/100\n      random: gen/random\n    \
+             outputs:\n      - status\n  - id: sink\n    path: {sink}\n    inputs:\n      \
+             message: status/status\n",
+            status = bin("rust-dataflow-example-status-node").display(),
+            sink = bin("rust-dataflow-example-sink").display(),
+        ),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn smoke_module_bare_path() {
+    let dir = write_module_bare_path_fixture();
+    let yaml = dir.path().join("dataflow.yml");
+    run_smoke_test(
+        "module-bare-path",
+        yaml.to_str().unwrap(),
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_local_module_bare_path() {
+    let dir = write_module_bare_path_fixture();
+    let yaml = dir.path().join("dataflow.yml");
+    run_smoke_test_local("local-module-bare-path", yaml.to_str().unwrap(), 4);
+}
+
+/// Exercise the issue's PATH-only case and prove messages reach a downstream
+/// node, rather than accepting a process that merely starts successfully.
+#[test]
+fn contract_module_bare_path_delivers_messages() {
+    ensure_cli_built();
+    let dir = write_module_bare_path_fixture();
+    let bin_dir = dir.path().join("bin");
+    std::fs::create_dir(&bin_dir).unwrap();
+    let filename = format!("my-node-3826{}", std::env::consts::EXE_SUFFIX);
+    std::fs::rename(dir.path().join(&filename), bin_dir.join(&filename)).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin_dir).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let output = Command::new(dora_bin())
+        .env("PATH", path)
+        .current_dir(dir.path())
+        .args(["run", "dataflow.yml", "--stop-after", "5s"])
+        .output()
+        .expect("run the PATH-only module");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "module failed: {stdout}\n{stderr}");
+    assert!(
+        stdout.contains("sink received message:"),
+        "no downstream delivery: {stdout}\n{stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Service example
 // ---------------------------------------------------------------------------

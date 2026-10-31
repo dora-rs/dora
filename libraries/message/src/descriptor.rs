@@ -191,7 +191,36 @@ pub struct Descriptor {
     pub env: Option<BTreeMap<String, EnvValue>>,
 }
 
+// Wire descriptors must remain readable by peers whose strict `Node` schema
+// predates `path_fallback`. Control requests carry it separately; daemon spawn
+// requests already carry it in the permissive resolved `CustomNode`.
+pub(crate) fn serialize_without_path_fallback<S>(
+    descriptor: &Descriptor,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let mut descriptor = descriptor.clone();
+    for node in &mut descriptor.nodes {
+        node.path_fallback = None;
+    }
+    descriptor.serialize(serializer)
+}
+
 impl Descriptor {
+    /// Fallback commands keyed by expanded node id, for the control protocol.
+    pub fn path_fallbacks(&self) -> BTreeMap<NodeId, String> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                node.path_fallback
+                    .as_ref()
+                    .map(|name| (node.id.clone(), name.clone()))
+            })
+            .collect()
+    }
+
     /// A dataflow of `nodes` with every dataflow-level option left at its
     /// default (the state a YAML file with only a `nodes:` key deserializes
     /// to).
@@ -1033,6 +1062,19 @@ pub struct Node {
     /// Evaluated on each `health_check_interval` tick (default 5s).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_timeout: Option<f64>,
+
+    /// What to run when nothing exists at `path`, looked up like a top-level
+    /// `path` (working directory, uv environment, then `$PATH`; variables
+    /// are not expanded). Internal: module expansion sets it when a module
+    /// node's `path` is a single name without an extension, such as
+    /// `dora-echo`: `path` points next to the module file, and this keeps
+    /// the name as written. One written in a dataflow, module or node file is
+    /// rejected, so it is not part of the YAML schema.
+    // Appended last so existing fields keep their wire-format order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    #[doc(hidden)]
+    pub path_fallback: Option<String>,
 }
 
 impl Node {
@@ -1095,6 +1137,7 @@ impl Node {
             cpu_affinity: None,
             deploy: None,
             startup_timeout: None,
+            path_fallback: None,
         }
     }
 }
@@ -1488,6 +1531,11 @@ pub struct CustomNode {
     // Appended last so existing fields keep their wire-format order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_timeout: Option<f64>,
+    /// What to run when nothing exists at `path`, resolved like a top-level
+    /// `path` (the name a module node's `path:` was written as).
+    // Appended last so existing fields keep their wire-format order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_fallback: Option<String>,
 }
 
 impl CustomNode {
@@ -1519,6 +1567,7 @@ impl CustomNode {
             finish_grace_secs: None,
             run_config: NodeRunConfig::default(),
             startup_timeout: None,
+            path_fallback: None,
         }
     }
 
@@ -1572,6 +1621,7 @@ impl CustomNode {
                 shared_memory_pool_size: node.shared_memory_pool_size.take(),
             },
             startup_timeout: node.startup_timeout.take(),
+            path_fallback: node.path_fallback.take(),
         }
     }
 }

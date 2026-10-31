@@ -49,7 +49,7 @@ mod visualize;
 
 pub use expand::{
     ExpandedDescriptor, ModuleBoundaries, check_module_file, expand_modules,
-    expand_modules_with_boundaries,
+    expand_modules_with_boundaries, reject_path_fallback,
 };
 
 /// Operations on a parsed [`Descriptor`].
@@ -300,9 +300,10 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 );
 
                 // The bridge binary is fixed, so `path` is a constant and
-                // `source` stays at its default. `path_sha256` and `build` are
-                // not accepted on a `ros2:` node (classification rejects them),
-                // so `from_node` finds them unset.
+                // `source` stays at its default. `path_sha256`,
+                // `path_fallback` and `build` are not accepted on a `ros2:`
+                // node (classification rejects them), so `from_node` finds
+                // them unset.
                 let mut custom =
                     CustomNode::from_node(&mut node, "dora-ros2-bridge-node".to_string());
                 custom.envs = Some(envs);
@@ -490,7 +491,15 @@ impl DescriptorExt for Descriptor {
     }
 
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor> {
-        serde_yaml::from_slice(&buf).context("failed to parse given descriptor")
+        let descriptor: Descriptor =
+            serde_yaml::from_slice(&buf).context("failed to parse given descriptor")?;
+        // A dataflow file must not set the internal `path_fallback`. Checked
+        // here, not in expansion: the daemon also expands a descriptor that
+        // was expanded already (`dora build`'s session), which carries it.
+        for node in &descriptor.nodes {
+            expand::reject_path_fallback(node, None)?;
+        }
+        Ok(descriptor)
     }
 
     fn check(&self, working_dir: &Path) -> eyre::Result<()> {
@@ -589,12 +598,7 @@ pub fn source_is_url(source: &str) -> bool {
 /// trusted dataflow files, whereas confined resolution is for untrusted `hub:`
 /// nodes.
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
-    let path = Path::new(&source);
-    let path = if path.extension().is_none() {
-        path.with_extension(EXE_EXTENSION)
-    } else {
-        path.to_owned()
-    };
+    let path = with_exe_extension(source);
 
     // Search path within current working directory.
     let joined = working_dir.join(&path);
@@ -609,6 +613,52 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     } else {
         bail!("Could not find source path {}", path.display())
     }
+}
+
+/// `source` with the platform's executable extension when it has none.
+fn with_exe_extension(source: &str) -> PathBuf {
+    let path = Path::new(source);
+    if path.extension().is_none() {
+        path.with_extension(EXE_EXTENSION)
+    } else {
+        path.to_owned()
+    }
+}
+
+/// [`resolve_path`] for a node's `path`. A node with a `path_fallback` (module
+/// expansion sets it to the name a bare module node `path:` was written as,
+/// #3826) runs the file at `path` if there is one, so a file next to the
+/// module wins, and else the fallback, looked up like a top-level `path`. A
+/// folder at `path` (often a Python package's source, named like its console
+/// script) is not a file, so the fallback is used. `path` itself is not looked
+/// up in uv or on `$PATH` then, where a relative `modules/tool` would be found
+/// from the current directory instead.
+pub fn resolve_node_path(
+    path: &str,
+    fallback: Option<&str>,
+    working_dir: &Path,
+) -> Result<PathBuf> {
+    let Some(fallback) = fallback else {
+        return resolve_path(path, working_dir);
+    };
+    let local = working_dir.join(with_exe_extension(path));
+    if local.is_file() {
+        return absolutize_preserving_symlinks(&local);
+    }
+    resolve_path(fallback, working_dir).wrap_err_with(|| {
+        format!("Could not find source path {path}, nor its `path_fallback` `{fallback}`")
+    })
+}
+
+/// Returns `descriptor` as nodes and the CLI receive it (`NodeConfig`,
+/// `DataflowInfo`): without `path_fallback`, which they never read, and which
+/// a node or CLI built with an older dora rejects as an unknown field.
+pub fn without_path_fallback(descriptor: &Descriptor) -> Descriptor {
+    let mut descriptor = descriptor.clone();
+    for node in &mut descriptor.nodes {
+        node.path_fallback = None;
+    }
+    descriptor
 }
 
 /// Fall back to the ambient `$PATH` when the `uv` lookup failed. If the binary
@@ -1426,6 +1476,134 @@ nodes:
         );
     }
 
+    /// `path_fallback` is internal, so a dataflow file must not set it, with
+    /// or without modules. Only reading a file checks this: a descriptor that
+    /// expansion already filled in (`dora build`'s session) keeps it.
+    #[test]
+    fn a_dataflow_file_cannot_set_path_fallback() {
+        for yaml in [
+            "nodes:\n  - id: x\n    path: tool\n    path_fallback: tool\n",
+            "nodes:\n  - id: m\n    module: m.yml\n  - id: x\n    path: ./x\n    path_fallback: x\n",
+        ] {
+            let err = Descriptor::parse(yaml.as_bytes().to_vec()).unwrap_err();
+            assert_eq!(
+                format!("{err:#}"),
+                "node `x` sets `path_fallback`, which is internal \
+                 (module expansion sets it); remove it",
+                "{yaml}"
+            );
+        }
+        Descriptor::parse(b"nodes:\n  - id: x\n    path: tool\n".to_vec()).unwrap();
+    }
+
+    #[test]
+    fn path_fallbacks_survive_persistence_and_resolution() {
+        let mut descriptor: Descriptor = serde_yaml::from_str(
+            "nodes:\n  - id: module.worker\n    path: modules/worker\n    args: --keep\n",
+        )
+        .unwrap();
+        let fallbacks = BTreeMap::from([("module.worker".parse().unwrap(), "worker".into())]);
+        descriptor.nodes[0].path_fallback = Some("worker".into());
+        let persisted = serde_json::to_vec(&descriptor).unwrap();
+        let restored: Descriptor = serde_json::from_slice(&persisted).unwrap();
+        assert_eq!(restored.path_fallbacks(), fallbacks);
+        let nodes = restored.resolve_aliases_and_set_defaults().unwrap();
+        let CoreNodeKind::Custom(node) = &nodes[&NodeId::from("module.worker".to_owned())].kind
+        else {
+            panic!("expected a custom node");
+        };
+        assert_eq!(node.path_fallback.as_deref(), Some("worker"));
+        assert_eq!(node.args.as_deref(), Some("--keep"));
+    }
+
+    #[test]
+    fn without_path_fallback_clears_it_on_every_node_only() {
+        let nodes =
+            "nodes:\n  - id: a\n    path: modules/a\n  - id: b\n    path: sub/b\n    args: --x\n";
+        let with: Descriptor = serde_yaml::from_str(
+            &nodes
+                .replace(
+                    "path: modules/a\n",
+                    "path: modules/a\n    path_fallback: a\n",
+                )
+                .replace("path: sub/b\n", "path: sub/b\n    path_fallback: b\n"),
+        )
+        .unwrap();
+        assert!(with.nodes.iter().all(|node| node.path_fallback.is_some()));
+        let without: Descriptor = serde_yaml::from_str(nodes).unwrap();
+
+        assert_eq!(
+            serde_yaml::to_value(without_path_fallback(&with)).unwrap(),
+            serde_yaml::to_value(&without).unwrap()
+        );
+    }
+
+    /// #3826: inside a module in a subdirectory, a bare `path:` names either a
+    /// file next to the module or, like a top-level `path:`, something found
+    /// from the working directory, uv or `$PATH`. Expansion still points
+    /// `path` at the module directory; the name as written is the fallback
+    /// when no file is there.
+    #[test]
+    fn a_bare_module_node_path_falls_back_to_a_top_level_lookup() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("modules")).unwrap();
+        std::fs::write(
+            dir.join("modules/m.yml"),
+            "module:\n  name: m\nnodes:\n  - id: worker\n    path: worker-3826\n",
+        )
+        .unwrap();
+        let desc: Descriptor =
+            serde_yaml::from_str("nodes:\n  - id: m\n    module: modules/m.yml\n").unwrap();
+        // `resolve_path` appends `.exe` to an extensionless name on Windows.
+        let file = format!("worker-3826{}", std::env::consts::EXE_SUFFIX);
+
+        let missing = desc.check(dir).expect_err("no file anywhere");
+        let missing = format!("{missing:?}");
+        assert!(
+            missing.contains("nor its `path_fallback` `worker-3826`"),
+            "{missing}"
+        );
+
+        // Only the top-level lookup finds it: the node runs this file.
+        std::fs::write(dir.join(&file), "").unwrap();
+        desc.check(dir).unwrap();
+        let expanded = desc.expand(dir).unwrap();
+        let path = expanded.nodes[0].path.clone().unwrap();
+        let fallback = expanded.nodes[0].path_fallback.as_deref();
+        assert_eq!(Path::new(&path), Path::new("modules").join("worker-3826"));
+        assert_eq!(fallback, Some("worker-3826"));
+        assert_eq!(
+            resolve_node_path(&path, fallback, dir).unwrap(),
+            dir.join(&file)
+        );
+
+        // A file next to the module still wins, as on main.
+        std::fs::write(dir.join("modules").join(&file), "").unwrap();
+        assert_eq!(
+            resolve_node_path(&path, fallback, dir).unwrap(),
+            dir.join("modules").join(&file)
+        );
+    }
+
+    /// A Python package shipped with a module often has a source folder named
+    /// like its console script (`modules/my-node/`). A folder can't be run, so
+    /// it must not stop the fallback lookup.
+    #[test]
+    fn a_folder_next_to_the_module_does_not_block_the_fallback() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir = tmp.path();
+        let file = format!("my-node{}", std::env::consts::EXE_SUFFIX);
+        std::fs::create_dir_all(dir.join("modules").join(&file)).unwrap();
+        std::fs::write(dir.join(&file), "").unwrap();
+
+        let path = Path::new("modules").join("my-node");
+        assert_eq!(
+            resolve_node_path(path.to_str().unwrap(), Some("my-node"), dir).unwrap(),
+            dir.join(&file)
+        );
+    }
+
     #[test]
     fn resolve_path_confined_has_no_path_fallback() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1661,14 +1839,14 @@ nodes:
     }
 
     /// A `path:` node: every shared key and the standard-only `path_sha256` /
-    /// `build` arrive. `source` resolves to `Local`, which is already the
+    /// `path_fallback` / `build` arrive. `source` resolves to `Local`, which is already the
     /// default, and `envs` is set only by the ROS2-bridge arm — the two tests
     /// below cover those.
     #[test]
     fn every_custom_node_field_is_carried_through() {
         let yaml = format!(
             "nodes:\n  - id: full\n    path: ./full-node\n    path_sha256: abc123\n    \
-             build: cargo build{SHARED_CUSTOM_NODE_KEYS}"
+             path_fallback: full-node\n    build: cargo build{SHARED_CUSTOM_NODE_KEYS}"
         );
         let custom = resolve_and_check_carried_through(&yaml, &["source", "envs"]);
         assert!(
@@ -1686,7 +1864,7 @@ nodes:
     fn git_source_is_carried_through() {
         let yaml = format!(
             "nodes:\n  - id: full\n    path: node\n    path_sha256: abc123\n    \
-             build: cargo build\n    git: https://github.com/example/node.git\n    \
+             path_fallback: full-node\n    build: cargo build\n    git: https://github.com/example/node.git\n    \
              branch: main{SHARED_CUSTOM_NODE_KEYS}"
         );
         let custom = resolve_and_check_carried_through(&yaml, &["source", "envs"]);
@@ -1704,8 +1882,8 @@ nodes:
 
     /// The ROS2-bridge arm: `path` is the bridge binary, `envs` carries the
     /// bridge config the binary reads at startup, and every shared key still
-    /// arrives. `path_sha256` and `build` are rejected on a `ros2:` node by
-    /// classification, so they must stay unset.
+    /// arrives. `path_sha256`, `path_fallback` and `build` are rejected on a
+    /// `ros2:` node by classification, so they must stay unset.
     #[test]
     fn ros2_bridge_node_is_carried_through() {
         let yaml = format!(
@@ -1715,7 +1893,14 @@ nodes:
         );
         let custom = resolve_and_check_carried_through(
             &yaml,
-            &["path", "source", "path_sha256", "build", "envs"],
+            &[
+                "path",
+                "source",
+                "path_sha256",
+                "path_fallback",
+                "build",
+                "envs",
+            ],
         );
         assert_eq!(custom.path, "dora-ros2-bridge-node");
         assert!(
@@ -1724,6 +1909,7 @@ nodes:
             custom.source
         );
         assert!(custom.path_sha256.is_none(), "{:?}", custom.path_sha256);
+        assert!(custom.path_fallback.is_none(), "{:?}", custom.path_fallback);
         assert!(custom.build.is_none(), "{:?}", custom.build);
         let envs = custom
             .envs
