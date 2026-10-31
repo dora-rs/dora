@@ -186,7 +186,8 @@ pub async fn start(
 /// Like [`start`] but allows enabling token authentication.
 ///
 /// When `auth` is `true`, the coordinator generates a random token on startup,
-/// writes it to `~/.config/dora/.dora-token`, and requires all clients to
+/// writes it to `.dora-token` in the working directory and in the user config
+/// directory (see [`dora_message::auth::write_token`]), and requires all clients to
 /// present it via the `Authorization: Bearer <token>` header.
 pub async fn start_with_auth(
     bind: SocketAddr,
