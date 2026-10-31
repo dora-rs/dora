@@ -320,6 +320,7 @@ fn test_running_dataflow(
         state_log_sequence: 0,
         state_log: Vec::new(),
         daemon_ack_sequence: BTreeMap::new(),
+        disconnected_daemons: BTreeSet::new(),
     }
 }
 
@@ -1877,13 +1878,12 @@ async fn applied_param_changes_are_acked_and_pruned_from_the_state_log() {
     );
     assert_eq!(df.state_log.len(), 2, "kept for the lagging daemon");
 
-    // Once the lagging daemon is gone, the next applied change empties the log.
-    coordinator
-        .running_dataflows
-        .get_mut(&dataflow_id)
-        .unwrap()
-        .daemons
-        .remove(&lagging);
+    // The lagging daemon disconnects. Its pending delete must survive the
+    // next applied change: the fallback replay after a pruned log only
+    // re-sends stored keys, so a pruned delete would never reach it.
+    let df = coordinator.running_dataflows.get_mut(&dataflow_id).unwrap();
+    df.daemons.remove(&lagging);
+    df.disconnected_daemons.insert(lagging.clone());
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     coordinator
         .handle_delete_param(dataflow_id, node_id, "gain".to_string(), reply_tx)
@@ -1891,10 +1891,94 @@ async fn applied_param_changes_are_acked_and_pruned_from_the_state_log() {
         .unwrap();
     reply_rx.await.unwrap().expect("delete is applied");
 
-    let df = &coordinator.running_dataflows[&dataflow_id];
+    let df = coordinator.running_dataflows.get_mut(&dataflow_id).unwrap();
     assert_eq!(df.daemon_ack_sequence[&owner], 3);
     assert_eq!(df.daemon_ack_sequence[&peer], 3);
-    assert!(df.state_log.is_empty(), "every live daemon applied it");
+    assert_eq!(
+        df.state_log_delta_for_daemon(0, &lagging)
+            .expect("the disconnected daemon can still catch up from the log")
+            .len(),
+        1,
+        "its pending delete is kept"
+    );
+
+    // Once its node is gone, nothing pins the log and it empties.
+    df.node_to_daemon.retain(|_, daemon| *daemon != lagging);
+    df.prune_state_log();
+    assert!(df.state_log.is_empty(), "every remaining daemon applied it");
+}
+
+/// A `DeleteParam` queued for a disconnected daemon's node must reach it
+/// through catch-up even when other changes were applied and pruned while it
+/// was gone: the fallback replay after a gap in the log cannot express a
+/// delete.
+#[test]
+fn a_delete_for_a_disconnected_daemon_survives_earlier_pruned_changes() {
+    let owner = DaemonId::new(Some("owner".to_string()));
+    let gone = DaemonId::new(Some("gone".to_string()));
+    let owner_node: NodeId = "sender".to_string().into();
+    let gone_node: NodeId = "receiver".to_string().into();
+    let mut df = test_running_dataflow(
+        DataflowId::from(Uuid::new_v4()),
+        owner.clone(),
+        owner_node.clone(),
+    );
+    // `gone` runs `gone_node` but has disconnected, caught up so far.
+    df.node_to_daemon.insert(gone_node.clone(), gone.clone());
+    df.disconnected_daemons.insert(gone.clone());
+    df.daemon_ack_sequence = BTreeMap::from([(owner.clone(), 0), (gone.clone(), 0)]);
+
+    let set = df.append_state_log(StateCatchUpOperation::SetParam {
+        node_id: owner_node,
+        key: "gain".to_string(),
+        value: serde_json::json!(1),
+    });
+    df.ack_applied_state_log_entry(set, &owner);
+    assert!(df.state_log.is_empty(), "nobody owes the applied set");
+
+    df.append_state_log(StateCatchUpOperation::DeleteParam {
+        node_id: gone_node,
+        key: "gain".to_string(),
+    });
+    df.prune_state_log();
+
+    let missed = df
+        .state_log_delta_for_daemon(df.daemon_ack_sequence[&gone], &gone)
+        .expect("catches up from the log, not the fallback replay");
+    assert!(
+        matches!(
+            missed.as_slice(),
+            [entry] if matches!(entry.operation, StateCatchUpOperation::DeleteParam { .. })
+        ),
+        "got: {missed:?}"
+    );
+}
+
+/// A daemon that finished its part of the dataflow is gone for good, unlike
+/// a disconnected one: a param change on one of its nodes must not hold the
+/// state log back, or the log grows to its hard cap while the rest of the
+/// dataflow runs.
+#[test]
+fn a_finished_daemon_does_not_pin_the_state_log() {
+    let owner = DaemonId::new(Some("owner".to_string()));
+    let finished = DaemonId::new(Some("finished".to_string()));
+    let owner_node: NodeId = "sender".to_string().into();
+    let finished_node: NodeId = "receiver".to_string().into();
+    let mut df = test_running_dataflow(DataflowId::from(Uuid::new_v4()), owner.clone(), owner_node);
+    // `finished` sent `DataflowFinishedOnDaemon`: out of `daemons`, but its
+    // nodes still map to it.
+    df.node_to_daemon
+        .insert(finished_node.clone(), finished.clone());
+    df.daemon_ack_sequence = BTreeMap::from([(owner.clone(), 0), (finished.clone(), 0)]);
+
+    let set = df.append_state_log(StateCatchUpOperation::SetParam {
+        node_id: finished_node,
+        key: "gain".to_string(),
+        value: serde_json::json!(1),
+    });
+    df.daemon_ack_sequence.insert(owner, set);
+    df.prune_state_log();
+    assert!(df.state_log.is_empty(), "got: {:?}", df.state_log);
 }
 
 /// A `WaitForSpawn` that lands after a failed spawn already tore the

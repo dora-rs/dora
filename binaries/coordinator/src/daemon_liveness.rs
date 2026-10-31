@@ -177,7 +177,10 @@ pub(crate) fn cleanup_disconnected_daemons_from_running_dataflows(
         let pending_was_nonempty = !df.pending_daemons.is_empty();
         let mut affected = false;
         for daemon_id in disconnected {
-            affected |= df.daemons.remove(daemon_id);
+            if df.daemons.remove(daemon_id) {
+                df.disconnected_daemons.insert(daemon_id.clone());
+                affected = true;
+            }
             affected |= df.pending_daemons.remove(daemon_id);
             affected |= df.pending_spawn_results.remove(daemon_id);
         }
@@ -238,6 +241,7 @@ pub(crate) fn reestablish_running_dataflow(
 ) -> bool {
     if let Some(df) = running_dataflows.get_mut(&record.uuid) {
         df.daemons.insert(daemon_id.clone());
+        df.disconnected_daemons.remove(daemon_id);
         df.pending_daemons.remove(daemon_id);
         df.pending_spawn_results.remove(daemon_id);
         for node in reported_nodes {

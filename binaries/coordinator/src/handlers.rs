@@ -775,6 +775,7 @@ pub(crate) async fn start_dataflow(
         log_subscribers: Vec::new(),
         topic_subscribers: BTreeMap::new(),
         daemon_ack_sequence: daemons.iter().map(|d| (d.clone(), 0)).collect(),
+        disconnected_daemons: BTreeSet::new(),
         pending_spawn_results: daemons,
         // Capture the spawn-dispatch start time before any per-daemon
         // spawn RPC has fired so the watchdog can compare against the
@@ -1087,6 +1088,7 @@ mod tests {
             state_log_sequence: 0,
             state_log: Vec::new(),
             daemon_ack_sequence: BTreeMap::new(),
+            disconnected_daemons: BTreeSet::new(),
         }
     }
 

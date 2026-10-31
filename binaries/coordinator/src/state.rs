@@ -479,6 +479,11 @@ pub(crate) struct RunningDataflow {
     pub(crate) state_log: Vec<StateCatchUpEntry>,
     /// Last state_log sequence acknowledged by each daemon.
     pub(crate) daemon_ack_sequence: BTreeMap<DaemonId, u64>,
+    /// Daemons that lost their connection while running part of this
+    /// dataflow and have not reconnected. Unlike a daemon that sent
+    /// `DataflowFinishedOnDaemon`, one of these still runs its nodes and must
+    /// catch up from the state log when it returns.
+    pub(crate) disconnected_daemons: BTreeSet<DaemonId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -583,10 +588,38 @@ impl RunningDataflow {
         // full param replay for *every* daemon (including healthy ones). If a
         // disconnected daemon reconnects after its missed entries were pruned,
         // `state_log_delta` already falls back to a full replay for it.
+        //
+        // That fallback only re-sends the keys still in the store, so it
+        // cannot express a deletion. A disconnected daemon (one that lost its
+        // connection, not one that finished) therefore must catch up from the
+        // log, which needs the log to stay contiguous from its ack. Its ack advances past
+        // the entries it has nothing to apply for, as a live daemon's does,
+        // and while it owes an entry for one of its nodes that ack stays in
+        // the minimum. A log already pruned past its ack is left alone: it
+        // gets the fallback either way.
+        let mut pinned = Vec::new();
+        for daemon in self.disconnected_daemons.clone() {
+            let ack = self.daemon_ack_sequence.get(&daemon).copied().unwrap_or(0);
+            let Some(missed) = self.state_log_delta_for_daemon(ack, &daemon) else {
+                continue;
+            };
+            match missed.first() {
+                Some(first_owed) => {
+                    let ack = first_owed.sequence - 1;
+                    self.daemon_ack_sequence.insert(daemon, ack);
+                    pinned.push(ack);
+                }
+                None => {
+                    self.daemon_ack_sequence
+                        .insert(daemon, self.state_log_sequence);
+                }
+            }
+        }
         let min_ack = self
             .daemons
             .iter()
             .map(|daemon| self.daemon_ack_sequence.get(daemon).copied().unwrap_or(0))
+            .chain(pinned)
             .min()
             .unwrap_or(0);
         self.state_log.retain(|entry| entry.sequence > min_ack);
@@ -747,6 +780,7 @@ impl RunningDataflow {
             state_log_sequence: 0,
             state_log: Vec::new(),
             daemon_ack_sequence: daemons.iter().map(|d| (d.clone(), 0)).collect(),
+            disconnected_daemons: BTreeSet::new(),
         }
     }
 
