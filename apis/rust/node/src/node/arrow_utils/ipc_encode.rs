@@ -873,12 +873,27 @@ pub fn schema_block_len(stream: &[u8]) -> Option<usize> {
 /// block, plus the block itself. This pairing IS the schema-once wire contract
 /// — the producer (`publish_schema_once`), the node receive path (in-band
 /// priming), and the daemon's `dora topic` rebuild all derive the hash from
-/// exactly these bytes via this function; independent re-derivations could
-/// drift and silently break batch↔schema matching.
+/// exactly these bytes via this function (the producer via
+/// `schema_block_and_hash_reusing`, which this wraps); independent
+/// re-derivations could drift and silently break batch↔schema matching.
 pub fn schema_block_and_hash(stream: &[u8]) -> Option<(u64, &[u8])> {
+    schema_block_and_hash_reusing(stream, None)
+}
+
+/// [`schema_block_and_hash`], but returns `known`'s hash without hashing again
+/// when the schema block is byte-identical to `known`'s block. `known` must be
+/// a pair this function returned earlier.
+pub(crate) fn schema_block_and_hash_reusing<'a>(
+    stream: &'a [u8],
+    known: Option<(u64, &[u8])>,
+) -> Option<(u64, &'a [u8])> {
     let block = schema_block_len(stream)?;
     let schema = stream.get(..block)?;
-    Some((dora_message::metadata::fnv1a(schema), schema))
+    let hash = match known {
+        Some((hash, known_schema)) if known_schema == schema => hash,
+        _ => dora_message::metadata::fnv1a(schema),
+    };
+    Some((hash, schema))
 }
 
 /// Given a full IPC stream, return the schema-less record-batch slice —
