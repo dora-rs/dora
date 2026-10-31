@@ -1221,6 +1221,14 @@ fn all_nodes_logs_from_coordinator(
     Ok(())
 }
 
+/// Whether `msg` is the coordinator's notice that this reader missed lines,
+/// which is shown past the node and pattern filters.
+fn is_dropped_lines_notice(msg: &LogMessage) -> bool {
+    msg.fields
+        .as_ref()
+        .is_some_and(|fields| fields.contains_key(dora_message::common::DROPPED_LOG_LINES_FIELD))
+}
+
 /// Returns whether a log message should be kept given an optional node filter.
 /// `None` means no filtering (messages from every node pass); `Some(want)`
 /// keeps only messages whose node id equals `want`.
@@ -1319,6 +1327,13 @@ fn stream_logs_from_coordinator(
             serde_json::from_slice(&raw).context("failed to parse log message");
         match parsed {
             Ok(log_message) => {
+                // The coordinator's notice that this reader missed lines is
+                // about the whole stream, so the node and pattern filters
+                // must not hide it.
+                if is_dropped_lines_notice(&log_message) {
+                    print_log_message(log_message, config);
+                    continue;
+                }
                 if !matches_node_filter(log_message.node_id.as_ref().map(|n| n.as_ref()), want_node)
                 {
                     continue;
@@ -1627,6 +1642,25 @@ mod tests {
         let now = Utc::now();
         let msgs = vec![make_msg("a", None, None, now)];
         assert_eq!(apply_tail(msgs, Some(100)).len(), 1);
+    }
+
+    #[test]
+    fn dropped_lines_notice_is_recognised_by_its_field() {
+        let now = Utc::now();
+        let plain = make_msg("dropped 3 log line(s)", None, Some("coordinator"), now);
+        assert!(!is_dropped_lines_notice(&plain));
+        let mut notice = plain;
+        notice.fields = Some(
+            [(
+                dora_message::common::DROPPED_LOG_LINES_FIELD.to_owned(),
+                "3".to_owned(),
+            )]
+            .into(),
+        );
+        assert!(is_dropped_lines_notice(&notice));
+        // It is shown even though it matches neither of these filters.
+        assert!(!matches_node_filter(None, Some("camera")));
+        assert!(!matches_grep(&notice, Some("camera")));
     }
 
     // --- matches_grep ---

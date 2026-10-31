@@ -411,7 +411,7 @@ pub struct RunningDataflow {
     /// Startup-timeout kill markers keyed by `(node id, generation)`.
     pub(crate) startup_timeout_kills: Arc<crossbeam_skiplist::SkipSet<(NodeId, u64)>>,
     pub(crate) node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
-    pub(crate) publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
+    pub(crate) publishers: BTreeMap<OutputId, ControlPublisher>,
     /// Reverse index from output to the set of CLI subscribers watching it.
     /// Hot-path read on every node output dispatch (`send_topic_debug_frames`)
     /// and on the `has_debug_watchers` check. Unsubscribe scans this map
@@ -1682,10 +1682,21 @@ fn select_finish_stragglers<'a>(
         .collect()
 }
 
+/// A cached publisher on an output's inter-daemon control topic
+/// (`zenoh_daemon_control_topic`).
+pub(crate) struct ControlPublisher {
+    pub(crate) publisher: Arc<zenoh::pubsub::Publisher<'static>>,
+    /// Whether any subscriber currently matches the topic, kept up to date by
+    /// a background matching listener. Lets a `--debug` dataflow skip the
+    /// copy and serialization of outputs nobody is listening to with a single
+    /// atomic load.
+    pub(crate) has_subscribers: Arc<std::sync::atomic::AtomicBool>,
+}
+
 /// Drops every entry of an `OutputId`-keyed map whose output belongs to
 /// `node_id`, keeping all others. Extracted so the keying can be unit-tested:
 /// its one production caller purges [`RunningDataflow::publishers`], whose value
-/// type (`Arc<zenoh::pubsub::Publisher>`) can't be constructed in-process, so a
+/// type (`ControlPublisher`, holding a zenoh publisher) can't be constructed in-process, so a
 /// direct map-shape test of that field isn't possible.
 fn retain_other_nodes<V>(map: &mut BTreeMap<OutputId, V>, node_id: &NodeId) {
     map.retain(|output_id, _| &output_id.0 != node_id);
@@ -1709,7 +1720,7 @@ mod tests {
     fn retain_other_nodes_drops_only_that_nodes_outputs() {
         // Covers the `OutputId` keying of the `publishers` purge in
         // `forget_node_bookkeeping`, whose real value type
-        // (`Arc<zenoh::pubsub::Publisher>`) can't be built in a unit test — a
+        // (`ControlPublisher`, holding a zenoh publisher) can't be built in a unit test — a
         // dummy value stands in for the map shape. Guards against the purge
         // being keyed on the wrong `OutputId` field, which would silently
         // reintroduce the per-dataflow publisher leak across add/remove cycles.

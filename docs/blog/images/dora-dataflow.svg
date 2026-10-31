@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 220" role="img" aria-labelledby="title description">
+  <title id="title">Camera, detector and display dataflow</title>
+  <desc id="description">The camera sends frames to both the detector and display. The detector sends boxes to the display.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10Z" fill="#147d70"/></marker>
+  </defs>
+  <rect width="760" height="220" rx="12" fill="#f5f7fa"/>
+  <g fill="none" stroke="#147d70" stroke-width="2" marker-end="url(#arrow)">
+    <path d="M180 80H310"/>
+    <path d="M450 80H580"/>
+    <path d="M110 110V170H650V110"/>
+  </g>
+  <g fill="#fff" stroke="#53627a" stroke-width="1.5">
+    <rect x="40" y="50" width="140" height="60" rx="8"/>
+    <rect x="310" y="50" width="140" height="60" rx="8"/>
+    <rect x="580" y="50" width="140" height="60" rx="8"/>
+  </g>
+  <g fill="#172235" font-family="system-ui, sans-serif" text-anchor="middle" font-size="18">
+    <text x="110" y="87">camera</text><text x="380" y="87">detector</text><text x="650" y="87">display</text>
+  </g>
+  <g fill="#12695f" font-family="system-ui, sans-serif" text-anchor="middle" font-size="16">
+    <text x="245" y="65">frame</text><text x="515" y="65">boxes</text><text x="380" y="160">frame</text>
+  </g>
+</svg>

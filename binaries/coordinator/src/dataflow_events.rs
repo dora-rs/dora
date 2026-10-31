@@ -5,7 +5,7 @@ use crate::{
     Coordinator, DataflowEvent, MAX_ARCHIVED_DATAFLOWS, MAX_BUFFERED_LOG_MESSAGES,
     broadcast_all_nodes_ready, buffer_log_message, cap_dataflow_results,
     close_topic_subscribers_on_finish, finalize_build, handle_dataflow_spawn_result,
-    handlers::{dataflow_result, send_log_message, start_dataflow},
+    handlers::{dataflow_result, send_log_message, send_status_log_message, start_dataflow},
     replay_all_nodes_ready,
     state::{ArchivedDataflow, CachedResult},
 };
@@ -202,7 +202,7 @@ impl Coordinator {
 
                             close_topic_subscribers_on_finish(&mut finished_dataflow);
                             let dataflow_id = finished_dataflow.uuid;
-                            send_log_message(
+                            send_status_log_message(
                                 &mut finished_dataflow.log_subscribers,
                                 &LogMessage {
                                     build_id: None,
@@ -223,8 +223,7 @@ impl Coordinator {
                                         .into(),
                                     fields: None,
                                 },
-                            )
-                            .await;
+                            );
 
                             let reply = ControlRequestReply::DataflowStopped {
                                 uuid,
@@ -322,7 +321,7 @@ impl Coordinator {
                         );
                     }
                 } else {
-                    send_log_message(&mut dataflow.log_subscribers, &message).await;
+                    send_log_message(&mut dataflow.log_subscribers, &message);
                 }
             }
         } else if let Some(build_id) = message.build_id
@@ -337,7 +336,7 @@ impl Coordinator {
                     );
                 }
             } else {
-                send_log_message(&mut build.log_subscribers, &message).await;
+                send_log_message(&mut build.log_subscribers, &message);
             }
         }
         Ok(())

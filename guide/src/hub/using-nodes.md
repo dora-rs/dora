@@ -139,6 +139,10 @@ without editing the YAML or publishing anything:
 dora build dataflow.yml --hub-override dora-yolo=../my-fork/dora-yolo
 ```
 
+The checkout's `dora-node.yml` must keep the overridden package's identity: here
+`namespace: dora-rs` and `name: dora-yolo`. A fork that renamed either is a
+different package, and the build fails rather than run it in this one's place.
+
 This is a local-build-only inner-loop tool (it cannot combine with
 `--write-lockfile` or distributed builds). See [Reproducible
 Builds](reproducible-builds.md) for the lockfile interactions.
