@@ -78,10 +78,23 @@ pub(crate) fn handle_dataflow_result(
 /// Returns `Err` if the coordinator replies with
 /// [`ControlRequestReply::Error`], so callers don't need to match
 /// on the error variant themselves (dora-rs/adora#153).
+///
+/// A request carrying a descriptor or node is refused first if one of its
+/// `env:` values would be expanded again by the coordinator or daemon
+/// (dora-rs/dora#3947).
 pub(crate) fn send_control_request(
     session: &WsSession,
     request: &ControlRequest,
 ) -> eyre::Result<ControlRequestReply> {
+    match request {
+        ControlRequest::Build { dataflow, .. } | ControlRequest::Start { dataflow, .. } => {
+            crate::env_overrides::ensure_descriptor_env_wire_safe(dataflow)?
+        }
+        ControlRequest::AddNode { node, .. } | ControlRequest::ReplaceNode { node, .. } => {
+            crate::env_overrides::ensure_node_env_wire_safe(node)?
+        }
+        _ => {}
+    }
     let request_bytes =
         serde_json::to_vec(request).wrap_err("failed to serialize control request")?;
     let reply_raw = session
