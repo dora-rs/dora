@@ -1043,19 +1043,28 @@ holds back the ones after it: after 30 s it arrives as an error from
 
 Action differences from DDS:
 
+- `send_goal` fails at once with "service request timed out" while no action
+  server is matched (on DDS it waits until its timeout), so call
+  `wait_for_action` first.
 - `send_result` returns once the result is stored, instead of waiting for the
   client's `request_result`; later requests get the stored result. A server
   keeps 16 goals: a new goal replaces the oldest finished one, whose result is
   then `Unknown`.
-- A client's `cancel_goal` moves the goal to `Canceling` in the status
-  stream. The C++ server gets no event for it (neither does it on DDS), so
-  the goal runs until the server calls `send_result`.
-- A goal the server doesn't finish within 300 s is aborted, even while it
-  publishes feedback; its result is `Aborted` with default values.
-  `request_result` for a goal the server doesn't know returns `Unknown` with
+- A client's `cancel_goal` is accepted: the goal moves to `Canceling` in the
+  status stream. The reply codes follow rcl, as for a server that accepts
+  every cancel (a goal already canceling or finished gives
+  `ERROR_GOAL_TERMINATED`). The C++ server gets no event for it, so the goal
+  runs until the server calls `send_result`. On DDS the server doesn't answer
+  cancel requests at all.
+- `request_result` for a goal the server doesn't know returns `Unknown` with
   default values, as rclcpp does.
 - A client's `request_result` returns an error while 64 earlier calls are
   still waiting for their goal or for their result event to be read.
+
+On both transports, a goal still running 300 s after it was accepted is
+aborted when the next goal comes in, even while it publishes feedback. On
+Zenoh, `request_result` for it then returns `Aborted` with default values; on
+DDS only the status stream shows `Aborted`.
 
 ### Discovery & RMW notes (native servers)
 

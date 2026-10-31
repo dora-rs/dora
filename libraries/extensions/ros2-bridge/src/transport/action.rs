@@ -509,12 +509,6 @@ pub mod zenoh {
         }
     }
 
-    /// Calls each of a client's action services can have in flight. A
-    /// `get_result` call stays open until its goal ends, so this has to cover
-    /// every goal a server runs at once (rcl_action servers have no fixed cap,
-    /// dora's own allow up to 16).
-    const MAX_PENDING_CALLS: usize = 64;
-
     pub struct ActionClient {
         pub send_goal: NodeServiceClient,
         pub get_result: NodeServiceClient,
@@ -531,6 +525,19 @@ pub mod zenoh {
             qos: &Ros2Qos,
             max_payload_size: usize,
         ) -> Result<Self, ActionTransportError> {
+            Self::declare_with_pending_calls(node, keys, tokens, qos, max_payload_size, 8).await
+        }
+
+        /// Like [`declare`](Self::declare), with room for `max_pending_calls`
+        /// calls in flight on each of the three action services.
+        async fn declare_with_pending_calls(
+            node: &Node,
+            keys: &ActionKeys,
+            tokens: ActionTokens,
+            qos: &Ros2Qos,
+            max_payload_size: usize,
+            max_pending_calls: usize,
+        ) -> Result<Self, ActionTransportError> {
             let decode = Arc::new(|bytes: &[u8]| Ok(bytes.to_vec()));
             let status_qos = action_status_qos(qos);
             Ok(Self {
@@ -538,21 +545,21 @@ pub mod zenoh {
                     node,
                     &keys.send_goal,
                     tokens.send_goal,
-                    MAX_PENDING_CALLS,
+                    max_pending_calls,
                 )
                 .await?,
                 get_result: NodeServiceClient::declare(
                     node,
                     &keys.get_result,
                     tokens.get_result,
-                    MAX_PENDING_CALLS,
+                    max_pending_calls,
                 )
                 .await?,
                 cancel_goal: NodeServiceClient::declare(
                     node,
                     &keys.cancel_goal,
                     tokens.cancel_goal,
-                    MAX_PENDING_CALLS,
+                    max_pending_calls,
                 )
                 .await?,
                 feedback: NodeSubscription::declare(

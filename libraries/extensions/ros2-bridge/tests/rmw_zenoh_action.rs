@@ -775,8 +775,11 @@ mod typed {
         assert_eq!(goal.order, 3);
     }
 
+    /// Like the DDS server, a goal still running `goal_timeout` after it was
+    /// accepted is aborted when the next goal comes in, not on a timer: a
+    /// long goal keeps running while no other goal arrives.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn an_abandoned_goal_is_aborted_and_its_result_waiter_answered() {
+    async fn an_abandoned_goal_is_aborted_by_the_next_goal() {
         let Fixture {
             client,
             server,
@@ -785,20 +788,35 @@ mod typed {
         } = fixture(
             56,
             ActionServerOptions {
-                max_goals: 1,
+                max_goals: 2,
                 goal_timeout: Duration::from_millis(200),
             },
         )
         .await;
+        let client = std::sync::Arc::new(client);
         let abandoned = client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
         next_goal(&server).await;
+        let waiter = {
+            let client = client.clone();
+            tokio::spawn(async move { client.get_result(abandoned).await })
+        };
 
-        // The server never finishes the goal. Without any further request it
-        // is aborted after the timeout, and the client waiting for its result
-        // gets `Aborted` with a default result, as from rclcpp.
-        let (status, result) = tokio::time::timeout(TIMEOUT, client.get_result(abandoned))
+        // Well past the timeout, but no new goal: still running.
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+        assert_eq!(
+            server.status(abandoned).await,
+            Some(GoalStatusEnum::Executing)
+        );
+        assert!(!waiter.is_finished(), "result sent before the next goal");
+
+        // The next goal aborts it, and the client waiting for its result gets
+        // `Aborted` with a default result, as from rclcpp.
+        let next = client.send_goal(&Goal { order: 2 }, TIMEOUT).await.unwrap();
+        assert_eq!(next_goal(&server).await.0, next);
+        let (status, result) = tokio::time::timeout(TIMEOUT, waiter)
             .await
             .expect("waiter never answered")
+            .unwrap()
             .unwrap();
         assert!(matches!(status, GoalStatusEnum::Aborted));
         assert_eq!(result, Sequence::default());
@@ -812,10 +830,6 @@ mod typed {
                 .await,
             Err(ActionCallError::Goal(ActionError::TerminalGoal))
         ));
-
-        // The aborted goal no longer blocks the only slot.
-        let next = client.send_goal(&Goal { order: 2 }, TIMEOUT).await.unwrap();
-        assert_eq!(next_goal(&server).await.0, next);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -890,7 +904,7 @@ mod typed {
             _session,
             ..
         } = fixture(
-            58,
+            61,
             ActionServerOptions {
                 max_goals: 1,
                 goal_timeout: Duration::from_millis(50),
@@ -899,9 +913,9 @@ mod typed {
         .await;
         client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
         for order in 2..5 {
-            // Long enough for the unread goal to be aborted, which makes it
-            // evictable.
-            tokio::time::sleep(Duration::from_millis(1200)).await;
+            // Long enough for the next goal to abort the unread one, which
+            // makes it evictable.
+            tokio::time::sleep(Duration::from_millis(100)).await;
             assert!(
                 matches!(
                     client.send_goal(&Goal { order }, TIMEOUT).await,
@@ -912,6 +926,113 @@ mod typed {
             );
         }
         assert_eq!(server.goals().len(), 1);
+    }
+
+    /// A `GetResult` request whose id is still waiting for one goal is
+    /// refused, as rmw_zenoh refuses a duplicate sequence number. Otherwise
+    /// the newer query would get the first goal's result, and repeats would
+    /// pile up as waiters.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_request_id_that_is_still_waiting_is_refused() {
+        use dora_ros2_bridge::{
+            ros2_client::action::{GetResultRequest, GoalId},
+            transport::zenoh::{attachment::Attachment, serialize_cdr},
+        };
+
+        let Fixture {
+            client,
+            server,
+            node,
+            _session,
+            ..
+        } = fixture(62, options(4)).await;
+        let first = client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
+        next_goal(&server).await;
+        let second = client.send_goal(&Goal { order: 2 }, TIMEOUT).await.unwrap();
+        next_goal(&server).await;
+
+        let endpoint =
+            ActionEndpoints::new("/fibonacci", "example_interfaces", "Fibonacci").get_result;
+        let key = format!("62{}/{}/hash", endpoint.name, endpoint.type_name);
+        // A raw `GetResult` query with a request id we choose, sent like the
+        // service client sends one (each reply as soon as it arrives).
+        let get_result = |goal_id: GoalId| {
+            let session = node.session().clone();
+            let key = key.clone();
+            async move {
+                let attachment = Attachment {
+                    sequence_number: 1,
+                    source_timestamp_ns: 0,
+                    gid: [9; 16],
+                };
+                session
+                    .get(key)
+                    .target(zenoh::query::QueryTarget::AllComplete)
+                    .consolidation(zenoh::query::ConsolidationMode::None)
+                    .payload(serialize_cdr(&GetResultRequest { goal_id }).unwrap())
+                    .attachment(attachment.encode().unwrap())
+                    .await
+                    .unwrap()
+            }
+        };
+        let waiting = get_result(first).await;
+        // A round trip through the same service, so the server has taken
+        // `waiting` before the repeats come in.
+        let unknown = dora_ros2_bridge::ros2_client::action::GoalId::new_random();
+        client.get_result(unknown).await.unwrap();
+
+        let mut repeats = Vec::new();
+        for goal_id in [second, first, second] {
+            repeats.push(get_result(goal_id).await);
+        }
+
+        server
+            .finish(
+                first,
+                GoalStatusEnum::Succeeded,
+                &Sequence { sequence: vec![1] },
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(TIMEOUT, waiting.recv_async())
+            .await
+            .expect("first goal's request not answered")
+            .unwrap();
+        let (status, result): (GoalStatusEnum, Sequence) = {
+            let response: dora_ros2_bridge::ros2_client::action::GetResultResponse<Sequence> =
+                dora_ros2_bridge::transport::zenoh::deserialize_cdr(
+                    &reply.result().unwrap().payload().to_bytes(),
+                )
+                .unwrap();
+            (response.status, response.result)
+        };
+        assert!(matches!(status, GoalStatusEnum::Succeeded));
+        assert_eq!(result.sequence, vec![1]);
+        // The repeats were dropped: their streams end without a reply. Zenoh
+        // closes a stream only once every peer it reached is done, which can
+        // take seconds while the other tests' sessions connect.
+        for repeat in repeats {
+            let ended = tokio::time::timeout(Duration::from_secs(30), repeat.recv_async())
+                .await
+                .expect("a repeated request id was kept waiting");
+            assert!(ended.is_err(), "a repeated request id was answered");
+        }
+
+        // Once answered, the id is free again.
+        server
+            .finish(
+                second,
+                GoalStatusEnum::Succeeded,
+                &Sequence { sequence: vec![2] },
+            )
+            .await
+            .unwrap();
+        let again = get_result(second).await;
+        let reply = tokio::time::timeout(TIMEOUT, again.recv_async())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(reply.result().is_ok());
     }
 
     /// Closing the client ends a `get_result` still waiting for its goal, so
