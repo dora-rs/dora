@@ -21,17 +21,23 @@ use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
 use dora_message::{
     BuildId, SessionId,
     cli_to_coordinator::ControlRequest,
+    common::DaemonId,
+    config::{Input, InputMapping},
     coordinator_to_cli::{
         CleanFailure, ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry,
         DataflowResult, DataflowStatus,
     },
     coordinator_to_daemon::{DaemonCoordinatorEvent, StateCatchUpOperation, Timestamped},
-    descriptor::{Descriptor, Node},
+    descriptor::{CoreNodeKind, Descriptor, Node, ResolvedNode},
     id::{DataId, NodeId},
 };
 use eyre::{Result, bail, eyre};
 use petname::petname;
-use std::{collections::BTreeSet, path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+    time::Duration,
+};
 use uuid::Uuid;
 
 type ReplySender = tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>;
@@ -183,6 +189,13 @@ impl Coordinator {
                             self.clock.new_timestamp(),
                         )
                         .await;
+                        if result.is_ok()
+                            && let Some(dataflow) = self.running_dataflows.get_mut(&dataflow_id)
+                        {
+                            // Running again, so it constrains `dora node
+                            // add` placement again.
+                            dataflow.exited_nodes.remove(&node_id);
+                        }
                         let reply = result.map(|()| ControlRequestReply::NodeRestarted {
                             dataflow_id,
                             node_id,
@@ -1233,6 +1246,16 @@ impl Coordinator {
         node: Node,
         reply_sender: ReplySender,
     ) -> eyre::Result<()> {
+        // Where each node ran according to the store, to tell a producer
+        // whose daemon has not reconnected yet (after a coordinator restart
+        // or reclaim) from one that exited (see `producer_daemons`).
+        let persisted_placement = self
+            .store
+            .get_dataflow(&dataflow_id)
+            .ok()
+            .flatten()
+            .map(|record| record.node_to_daemon)
+            .unwrap_or_default();
         let result = match self.running_dataflows.get_mut(&dataflow_id) {
             Some(dataflow) => {
                 // Check the stored topology, not `node_to_daemon`: a dataflow
@@ -1261,11 +1284,26 @@ impl Coordinator {
                     // #2877).
                     match resolve_single_node(node, &dataflow.descriptor) {
                         Ok((node_id, resolved_node)) => {
-                            // Pick the first daemon (single-daemon case)
-                            // TODO: use machine label or load balancing for multi-daemon
-                            let daemon_id = dataflow.daemons.iter().next().cloned();
+                            // Honour the node's `deploy` placement
+                            // among the dataflow's daemons (#3672).
+                            let daemon_id = producer_daemons(
+                                &resolved_node,
+                                &dataflow.nodes,
+                                &dataflow.node_to_daemon,
+                                &dataflow.daemons,
+                                &dataflow.exited_nodes,
+                                &persisted_placement,
+                                &self.daemon_connections,
+                            )
+                            .and_then(|producer_daemons| {
+                                self.daemon_connections.resolve_add_node_daemon(
+                                    &dataflow.daemons,
+                                    &producer_daemons,
+                                    resolved_node.deploy.as_ref(),
+                                )
+                            });
                             match daemon_id {
-                                Some(did) => {
+                                Ok(did) => {
                                     let msg = serde_json::to_vec(&Timestamped {
                                         inner: DaemonCoordinatorEvent::AddNode {
                                             dataflow_id,
@@ -1330,6 +1368,7 @@ impl Coordinator {
                                                             dataflow
                                                                 .node_finalized
                                                                 .remove(&node_id);
+                                                            dataflow.exited_nodes.remove(&node_id);
                                                             dataflow.node_metrics.remove(&node_id);
                                                             dataflow.persist_topology_change(
                                                                 &*self.store,
@@ -1348,9 +1387,9 @@ impl Coordinator {
                                         None => Err(eyre!("no connection for daemon {did}")),
                                     }
                                 }
-                                None => {
-                                    Err(eyre!("no daemons registered for dataflow {dataflow_id}"))
-                                }
+                                Err(e) => Err(e.wrap_err(format!(
+                                    "cannot place node in dataflow {dataflow_id}"
+                                ))),
                             }
                         }
                         // `resolve_single_node` already
@@ -1508,6 +1547,7 @@ impl Coordinator {
                 // (same set AddNode clears).
                 dataflow.node_stopped_at.remove(&node_id);
                 dataflow.node_finalized.remove(&node_id);
+                dataflow.exited_nodes.remove(&node_id);
                 dataflow.node_metrics.remove(&node_id);
                 dataflow.persist_topology_change(&*self.store);
             }
@@ -1643,4 +1683,75 @@ async fn lock_param_target(
     };
     let lock = daemon_connections.get(daemon_id)?.param_write_lock.clone();
     Some(lock.lock_owned().await)
+}
+
+/// The ids of the nodes whose outputs `node` subscribes to (its `User` input
+/// mappings, across all operators of a runtime node).
+pub(crate) fn upstream_node_ids(node: &ResolvedNode) -> impl Iterator<Item = &NodeId> {
+    let inputs: Vec<&Input> = match &node.kind {
+        CoreNodeKind::Custom(n) => n.run_config.inputs.values().collect(),
+        CoreNodeKind::Runtime(n) => n
+            .operators
+            .iter()
+            .flat_map(|op| op.config.inputs.values())
+            .collect(),
+    };
+    inputs.into_iter().filter_map(|input| match &input.mapping {
+        InputMapping::User(mapping) => Some(&mapping.source),
+        _ => None,
+    })
+}
+
+/// The daemons hosting the still-running nodes whose outputs `node`
+/// subscribes to. A producer that has exited sends nothing more, so it
+/// doesn't constrain where the new node may run.
+///
+/// A producer counts as exited when it is in `exited`, or when the
+/// daemon it is (or, per the store, was) mapped to is no longer part of the
+/// dataflow while a daemon of that machine has connected and reported its
+/// running nodes: that daemon would have reported the producer if it still
+/// ran it. This covers a daemon whose share of the dataflow finished, and a
+/// producer missing from `node_to_daemon` after a coordinator restart or
+/// reclaim (only reported nodes are mapped then).
+///
+/// If no daemon of that machine has reported yet, it may still come back
+/// with the producer running, so the add fails with a retry hint rather
+/// than risk starving the new node. A producer with no known placement at
+/// all is skipped, so a stale record can never block `dora node add` for
+/// good.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn producer_daemons(
+    node: &ResolvedNode,
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+    node_to_daemon: &BTreeMap<NodeId, DaemonId>,
+    dataflow_daemons: &BTreeSet<DaemonId>,
+    exited: &BTreeSet<NodeId>,
+    persisted_placement: &BTreeMap<String, String>,
+    connections: &crate::state::DaemonConnections,
+) -> eyre::Result<BTreeSet<DaemonId>> {
+    let mut daemons = BTreeSet::new();
+    for source in upstream_node_ids(node) {
+        if !nodes.contains_key(source) || exited.contains(source) {
+            continue;
+        }
+        let last_daemon = match node_to_daemon.get(source) {
+            Some(daemon) if dataflow_daemons.contains(daemon) => {
+                daemons.insert(daemon.clone());
+                continue;
+            }
+            Some(daemon) => Some(daemon.clone()),
+            None => persisted_placement
+                .get(&source.to_string())
+                .and_then(|id| DaemonId::from_display_str(id)),
+        };
+        if let Some(last_daemon) = last_daemon
+            && !connections.has_reported_daemon_on_machine_of(&last_daemon)
+        {
+            bail!(
+                "the daemon running upstream node `{source}` ({last_daemon}) has not \
+                 reconnected yet; retry `dora node add` later"
+            );
+        }
+    }
+    Ok(daemons)
 }

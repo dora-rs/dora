@@ -459,6 +459,9 @@ impl Coordinator {
         // Dataflows whose persisted params are already being replayed to this
         // daemon, along with the ready barrier it missed.
         let mut params_replay_started = BTreeSet::new();
+        if let Some(connection) = self.daemon_connections.get_mut(&daemon_id) {
+            connection.status_reported = true;
+        }
         // Reconcile: if daemon reports a dataflow as running and it exists in
         // the store as Pending/Failed/Recovering, update it to Running.
         //
@@ -869,6 +872,7 @@ impl Coordinator {
             // in-flight metrics pushes overwriting the row, for
             // BOTH Stopped and Failed.
             dataflow.node_finalized.insert(node_id.clone());
+            dataflow.exited_nodes.insert(node_id.clone());
             // Only arm the auto-expire side-band for clean Stopped
             // rows. Failed rows must stay visible until the dataflow
             // is stopped/destroyed — otherwise a crashed node would

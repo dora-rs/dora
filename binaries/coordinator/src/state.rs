@@ -7,7 +7,7 @@ use dora_message::{
     coordinator_to_cli::{ControlRequestReply, LogMessage},
     coordinator_to_daemon::{StateCatchUpEntry, StateCatchUpOperation},
     daemon_to_coordinator::{FaultToleranceSnapshot, NodeMetrics},
-    descriptor::{Descriptor, ResolvedNode},
+    descriptor::{Deploy, Descriptor, ResolvedNode},
 };
 use eyre::eyre;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -178,6 +178,97 @@ impl DaemonConnections {
             if all_match { Some(id) } else { None }
         })
     }
+
+    /// Whether a daemon on the same machine as `daemon` is connected and its
+    /// status report has been reconciled. A re-registering daemon gets a new
+    /// `DaemonId`, so named daemons are matched by machine id and an unnamed
+    /// one by any unnamed daemon. Registration alone is not enough: the
+    /// daemon's running nodes only enter `node_to_daemon` with its separate
+    /// `StatusReport`, so before that a still-running producer would look
+    /// exited.
+    pub(crate) fn has_reported_daemon_on_machine_of(&self, daemon: &DaemonId) -> bool {
+        self.daemons.iter().any(|(id, conn)| {
+            conn.status_reported
+                && match daemon.machine_id() {
+                    Some(machine) => id.matches_machine_id(machine),
+                    None => id.machine_id().is_none(),
+                }
+        })
+    }
+
+    /// Pick the daemon that should run a node added to a running dataflow
+    /// (`dora node add`), honouring the node's `deploy` placement the same way
+    /// the static spawn path does (machine > labels > unnamed), but only among
+    /// `dataflow_daemons`, the daemons that already run the dataflow.
+    ///
+    /// A declared machine or label set that no daemon of the dataflow matches
+    /// is an error rather than a silent fallback, so the node never runs on a
+    /// host it did not ask for (#3672). Without a placement, the daemon that
+    /// hosts the node's upstream producers is preferred, then an unnamed
+    /// daemon like in the static path, then any daemon of the dataflow.
+    ///
+    /// `producer_daemons` are the daemons hosting the nodes whose outputs the
+    /// new node subscribes to. `AddNode` only wires inputs on the daemon it is
+    /// sent to, so a node placed anywhere else would never receive them; that
+    /// is rejected until cross-daemon dynamic topology is supported.
+    pub(crate) fn resolve_add_node_daemon(
+        &self,
+        dataflow_daemons: &BTreeSet<DaemonId>,
+        producer_daemons: &BTreeSet<DaemonId>,
+        deploy: Option<&Deploy>,
+    ) -> eyre::Result<DaemonId> {
+        let chosen = match deploy {
+            Some(Deploy {
+                machine: Some(machine),
+                ..
+            }) => dataflow_daemons
+                .iter()
+                .find(|id| id.matches_machine_id(machine))
+                .cloned()
+                .ok_or_else(|| {
+                    eyre!("no daemon of this dataflow matches machine id `{machine}`")
+                })?,
+            Some(d) if !d.labels.is_empty() => {
+                let matches_labels = |id: &&DaemonId| {
+                    self.daemons.get(*id).is_some_and(|conn| {
+                        d.labels.iter().all(|(k, v)| conn.labels.get(k) == Some(v))
+                    })
+                };
+                // Of several matching daemons, take the producers' one so
+                // the co-location check below doesn't reject a request
+                // that a matching daemon can satisfy.
+                dataflow_daemons
+                    .iter()
+                    .filter(|id| producer_daemons.contains(*id))
+                    .chain(dataflow_daemons.iter())
+                    .find(matches_labels)
+                    .cloned()
+                    .ok_or_else(|| {
+                        eyre!("no daemon of this dataflow matches labels {:?}", d.labels)
+                    })?
+            }
+            _ => producer_daemons
+                .iter()
+                .filter(|id| producer_daemons.len() == 1 && dataflow_daemons.contains(*id))
+                .chain(
+                    dataflow_daemons
+                        .iter()
+                        .filter(|id| id.machine_id().is_none()),
+                )
+                .chain(dataflow_daemons.iter())
+                .next()
+                .cloned()
+                .ok_or_else(|| eyre!("no daemons registered for this dataflow"))?,
+        };
+        if producer_daemons.iter().any(|producer| *producer != chosen) {
+            eyre::bail!(
+                "the node would run on daemon `{chosen}`, but its inputs come from \
+                 daemon(s) {producer_daemons:?}; adding a node on a different daemon \
+                 than its upstream producers is not supported yet"
+            );
+        }
+        Ok(chosen)
+    }
 }
 
 #[derive(Clone)]
@@ -195,6 +286,9 @@ pub(crate) struct DaemonConnection {
     pub(crate) coordinator_local_addr: Option<std::net::SocketAddr>,
     pub(crate) last_heartbeat: Instant,
     pub(crate) labels: BTreeMap<String, String>,
+    /// Whether this connection's `StatusReport` has been reconciled, i.e.
+    /// the nodes it runs are in the dataflows' `node_to_daemon`.
+    pub(crate) status_reported: bool,
     /// Latest fault tolerance stats from this daemon (updated on each heartbeat).
     pub(crate) ft_stats: Option<FaultToleranceSnapshot>,
     /// Whether this daemon can build/spawn hub-sourced git nodes (`subdir` /
@@ -294,6 +388,7 @@ impl DaemonConnection {
             coordinator_local_addr: None,
             last_heartbeat: Instant::now(),
             labels,
+            status_reported: false,
             ft_stats: None,
             // set from the register request at the real registration site;
             // conservative default keeps non-registration constructors safe
@@ -422,6 +517,15 @@ pub(crate) struct RunningDataflow {
     pub(crate) nodes: BTreeMap<NodeId, ResolvedNode>,
     /// Maps each node to the daemon it's running on
     pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
+    /// The daemon the store last recorded for each node that a dataflow
+    /// rebuilt after a coordinator restart or reclaim
+    /// ([`RunningDataflow::recovered`]) has not seen reported yet. Only
+    /// nodes running on a reconnected daemon enter `node_to_daemon`, so
+    /// without this a re-persist would drop the placement of producers on
+    /// daemons still away, and `dora node add` could no longer tell those
+    /// from exited ones (#3672). Empty for a dataflow spawned by this
+    /// coordinator.
+    pub(crate) persisted_placement: BTreeMap<NodeId, String>,
     /// Latest metrics for each node (from daemons)
     pub(crate) node_metrics: BTreeMap<NodeId, NodeMetrics>,
     /// Nodes the daemon has reported as finalized via `DaemonEvent::NodeStopped`.
@@ -433,6 +537,12 @@ pub(crate) struct RunningDataflow {
     /// Cleared by the grace-period sweep (for Stopped) or by `AddNode`
     /// (when the same node id is added back to the dataflow).
     pub(crate) node_finalized: BTreeSet<NodeId>,
+    /// Nodes that have exited (cleanly or not), for as long as the dataflow
+    /// runs. Unlike `node_finalized`, the grace-period sweep does not clear
+    /// this: `dora node add` must keep ignoring an exited producer when
+    /// placing a node, since it sends nothing more (#3672). Cleared when the
+    /// node id is added, replaced or restarted again.
+    pub(crate) exited_nodes: BTreeSet<NodeId>,
     /// When a node entered `NodeStatus::Stopped` (clean teardown only).
     /// Drives the auto-expire sweep: after the grace window the row is
     /// dropped from `node_metrics`/`node_finalized` so `dora node list`
@@ -722,10 +832,17 @@ impl RunningDataflow {
                 .map(|n| NodeId::from(n.clone()))
                 .collect(),
             ready_barrier_released: record.ready_barrier_released,
+            persisted_placement: record
+                .node_to_daemon
+                .iter()
+                .map(|(node, daemon)| (NodeId::from(node.clone()), daemon.clone()))
+                .filter(|(node, _)| !reported_nodes.contains(node))
+                .collect(),
             nodes,
             node_to_daemon,
             node_metrics: BTreeMap::new(),
             node_finalized: BTreeSet::new(),
+            exited_nodes: BTreeSet::new(),
             node_stopped_at: BTreeMap::new(),
             network_metrics: None,
             spawn_result: CachedResult::Cached {
@@ -794,9 +911,17 @@ impl RunningDataflow {
             status,
             daemon_ids: self.daemons.iter().cloned().collect(),
             node_to_daemon: self
-                .node_to_daemon
+                .persisted_placement
                 .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .filter(|(node, _)| {
+                    self.nodes.contains_key(*node) && !self.node_to_daemon.contains_key(*node)
+                })
+                .map(|(node, daemon)| (node.to_string(), daemon.clone()))
+                .chain(
+                    self.node_to_daemon
+                        .iter()
+                        .map(|(k, v)| (k.to_string(), v.to_string())),
+                )
                 .collect(),
             uv: self.uv,
             ready_barrier_released: self.ready_barrier_released,
