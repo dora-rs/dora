@@ -812,7 +812,7 @@ pub(crate) async fn deliver_when_room(
     delivery: DeferredDelivery,
     last_activity: &AtomicU64,
     ft_stats: &FaultToleranceStats,
-) {
+) -> bool {
     let DeferredDelivery {
         receiver,
         channel,
@@ -836,7 +836,7 @@ pub(crate) async fn deliver_when_room(
                     if let Some(pending) = &pending {
                         pending.fetch_add(1, Ordering::Relaxed);
                     }
-                    return;
+                    return true;
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => break,
                 Err(mpsc::error::TrySendError::Full(returned)) => event = returned,
@@ -862,7 +862,7 @@ pub(crate) async fn deliver_when_room(
                          (queue_policy: backpressure) was promised"
                     );
                     ft_stats.record_drop(1, true);
-                    return;
+                    return false;
                 }
                 if stalled >= BACKPRESSURE_STALL_LIMIT {
                     tracing::error!(
@@ -874,7 +874,7 @@ pub(crate) async fn deliver_when_room(
                     );
                     ft_stats.record_drop(1, true);
                     drained.gave_up.store(true, Ordering::Release);
-                    return;
+                    return false;
                 }
             }
         }
@@ -894,6 +894,35 @@ pub(crate) async fn deliver_when_room(
         );
         ft_stats.record_drop(1, true);
     }
+    false
+}
+
+/// Preserve receiver-side control ordering across remote OutputClosed events.
+/// Count controls skipped after an earlier deferred close failed, too.
+pub(crate) async fn deliver_deferred_controls(
+    deliveries: Vec<DeferredDelivery>,
+    previous: Option<tokio::task::JoinHandle<bool>>,
+    last_activity: &AtomicU64,
+    ft_stats: &FaultToleranceStats,
+) -> (bool, bool) {
+    if let Some(previous) = previous {
+        let _ = previous.await;
+    }
+    // A previous batch may have exhausted its stall limit. Its loss was
+    // counted, but a receiver that drains again must get a fresh attempt.
+    let mut delivered = true;
+    let has_all_closed = deliveries
+        .iter()
+        .any(|delivery| matches!(delivery.event.inner, NodeEvent::AllInputsClosed));
+    for delivery in deliveries {
+        if !delivered {
+            tracing::error!(receiver = %delivery.receiver, "dropping deferred control after an earlier close failed");
+            ft_stats.record_drop(1, true);
+            continue;
+        }
+        delivered = deliver_when_room(delivery, last_activity, ft_stats).await;
+    }
+    (delivered, has_all_closed)
 }
 
 trait Connection {
@@ -1001,10 +1030,73 @@ mod tests {
         (delivery, pending)
     }
 
-    /// Listener teardown closes the receiver's event channel and wakes the
-    /// deliveries held for it, so they end at once instead of waiting a
-    /// stall tick (or the stall limit) on a channel nobody reads any more.
-    /// Their waiting closes are released with them (dora-rs/dora#3619).
+    #[tokio::test]
+    async fn failed_deferred_close_counts_following_all_inputs_closed() {
+        let clock = uhlc::HLC::default();
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let drained = Arc::new(DrainSignal::default());
+        let (input_closed, _) = deferred(
+            &tx,
+            &drained,
+            Timestamped {
+                inner: NodeEvent::InputClosed {
+                    id: DataId::from("in".to_string()),
+                },
+                timestamp: clock.new_timestamp(),
+            },
+        );
+        let (all_closed, _) = deferred(
+            &tx,
+            &drained,
+            Timestamped {
+                inner: NodeEvent::AllInputsClosed,
+                timestamp: clock.new_timestamp(),
+            },
+        );
+        let stats = FaultToleranceStats::default();
+        let (delivered, has_all_closed) = deliver_deferred_controls(
+            vec![input_closed, all_closed],
+            None,
+            &AtomicU64::new(0),
+            &stats,
+        )
+        .await;
+        assert!(!delivered);
+        assert!(has_all_closed);
+        assert_eq!(stats.dropped_messages.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn recovered_receiver_can_deliver_after_a_failed_previous_batch() {
+        let clock = uhlc::HLC::default();
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let drained = Arc::new(DrainSignal::default());
+        let (delivery, _) = deferred(
+            &tx,
+            &drained,
+            Timestamped {
+                inner: NodeEvent::InputClosed {
+                    id: DataId::from("in".to_string()),
+                },
+                timestamp: clock.new_timestamp(),
+            },
+        );
+        let stats = FaultToleranceStats::default();
+        let previous = tokio::spawn(async { false });
+        let (delivered, has_all_closed) =
+            deliver_deferred_controls(vec![delivery], Some(previous), &AtomicU64::new(0), &stats)
+                .await;
+        assert!(delivered);
+        assert!(!has_all_closed);
+        assert!(matches!(
+            rx.recv().await.unwrap().inner,
+            NodeEvent::InputClosed { .. }
+        ));
+        assert_eq!(stats.dropped_messages.load(Ordering::Relaxed), 0);
+    }
+
+    /// Listener teardown wakes held deliveries and releases their waiting closes.
     #[tokio::test(start_paused = true)]
     async fn listener_teardown_ends_held_deliveries() {
         let (mut listener, tx) = listener();

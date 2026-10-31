@@ -56,6 +56,29 @@ pub(crate) fn deliver_param_update_strict(
     }
 }
 
+pub(crate) fn remove_mapping_and_close(
+    dataflow: &mut RunningDataflow,
+    output_id: &OutputId,
+    receiver_id: &NodeId,
+    input_id: &DataId,
+    clock: &HLC,
+) -> eyre::Result<()> {
+    eyre::ensure!(
+        dataflow
+            .mappings
+            .get(output_id)
+            .is_some_and(|receivers| receivers.contains(&(receiver_id.clone(), input_id.clone()))),
+        "mapping `{}/{}` -> `{receiver_id}/{input_id}` not found",
+        output_id.0,
+        output_id.1,
+    );
+    close_input(dataflow, receiver_id, input_id, clock)?;
+    if let Some(receivers) = dataflow.mappings.get_mut(output_id) {
+        receivers.remove(&(receiver_id.clone(), input_id.clone()));
+    }
+    Ok(())
+}
+
 pub(crate) fn deliver_param_delete_strict(
     dataflow: &RunningDataflow,
     node_id: &NodeId,
@@ -887,10 +910,17 @@ impl Daemon {
                         .cloned()
                         .collect();
                     for output_id in outputs_to_remove {
-                        if let Some(receivers) = dataflow.mappings.remove(&output_id) {
+                        if let Some(receivers) = dataflow.mappings.get(&output_id).cloned() {
                             for (receiver_id, input_id) in receivers {
-                                close_input(dataflow, &receiver_id, &input_id, &self.clock);
+                                remove_mapping_and_close(
+                                    dataflow,
+                                    &output_id,
+                                    &receiver_id,
+                                    &input_id,
+                                    &self.clock,
+                                )?;
                             }
+                            dataflow.mappings.remove(&output_id);
                         }
                     }
 
@@ -921,6 +951,7 @@ impl Daemon {
                     dataflow.pending_messages.remove(&node_id);
                     dataflow.drain_signals.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
+                    dataflow.pending_remote_all_inputs_closed.remove(&node_id);
                     // clear the connected marker too, else a re-added node ID
                     // would look already-connected before its new incarnation
                     // subscribes and could be selected mid-startup (dora#2270).
@@ -1305,6 +1336,7 @@ impl Daemon {
                     dataflow.pending_messages.remove(&node_id);
                     dataflow.drain_signals.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
+                    dataflow.pending_remote_all_inputs_closed.remove(&node_id);
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
                     // Also drops the cascading-error cause and the id's
@@ -1433,20 +1465,14 @@ impl Daemon {
                 // instead of a misleading "Mapping removed" message.
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     let output_id = OutputId(source_node.clone(), source_output.clone());
-                    let removed = dataflow
-                        .mappings
-                        .get_mut(&output_id)
-                        .map(|r| r.remove(&(target_node.clone(), target_input.clone())))
-                        .unwrap_or(false);
-                    if removed {
-                        close_input(dataflow, &target_node, &target_input, &self.clock);
-                        Ok(())
-                    } else {
-                        Err(format!(
-                            "mapping `{source_node}/{source_output}` -> \
-                             `{target_node}/{target_input}` not found"
-                        ))
-                    }
+                    remove_mapping_and_close(
+                        dataflow,
+                        &output_id,
+                        &target_node,
+                        &target_input,
+                        &self.clock,
+                    )
+                    .map_err(|err| format!("{err:?}"))
                 } else {
                     Err(format!("no running dataflow with ID `{dataflow_id}`"))
                 };

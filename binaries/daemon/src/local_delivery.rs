@@ -747,47 +747,258 @@ pub(crate) fn close_input(
     receiver_id: &NodeId,
     input_id: &DataId,
     clock: &HLC,
-) {
+) -> eyre::Result<()> {
     // Clean up broken state if this input was circuit-broken
-    let was_broken = dataflow
-        .broken_inputs
-        .remove(&(receiver_id.clone(), input_id.clone()))
-        .is_some();
+    let key = (receiver_id.clone(), input_id.clone());
+    let broken_timeout = dataflow.broken_inputs.get(&key).copied();
+    let was_broken = broken_timeout.is_some();
 
-    // Drop any armed deadline for this input. A closed input can never
-    // meaningfully time out, and leaving the entry behind lets
+    // Drop any armed deadline even if notification needs a retry. A closed
+    // input can never meaningfully time out, and leaving it behind lets
     // `check_input_timeouts` fire on it later, insert a `broken_inputs`
     // record, and then no-op in `break_input` (the input is already gone from
     // `open_inputs`) — orphaning that record so `has_broken_input` stays true
     // forever and the drained node is never sent `AllInputsClosed` (#2968).
-    dataflow
-        .input_deadlines
-        .remove(&(receiver_id.clone(), input_id.clone()));
-
     let was_open = dataflow
         .open_inputs
-        .get_mut(receiver_id)
-        .map(|inputs| inputs.remove(input_id))
+        .get(receiver_id)
+        .map(|inputs| inputs.contains(input_id))
         .unwrap_or(false);
 
     if !was_open && !was_broken {
-        return;
+        return signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock, true);
+    }
+    dataflow.input_deadlines.remove(&key);
+
+    let mut result = Ok(());
+    if was_open && let Err(err) = send_input_closed_strict(dataflow, receiver_id, input_id, clock) {
+        result = Err(err);
+    }
+    if result.is_ok() {
+        dataflow.broken_inputs.remove(&key);
+        if was_open && let Some(inputs) = dataflow.open_inputs.get_mut(receiver_id) {
+            inputs.remove(input_id);
+        }
+    } else {
+        // Keep the input retryable, but run drain bookkeeping against the
+        // logically closed state before restoring it below.
+        dataflow.broken_inputs.remove(&key);
+        if was_open && let Some(inputs) = dataflow.open_inputs.get_mut(receiver_id) {
+            inputs.remove(input_id);
+        }
+    }
+    // A closed channel is removed by send_input_closed_strict; a later
+    // subscription replays the closure from open_inputs. A full live channel
+    // needs the old state retained so the caller can retry.
+    let input_delivery_failed =
+        result.is_err() && dataflow.subscribe_channels.contains_key(receiver_id);
+    if let Err(err) =
+        signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock, !input_delivery_failed)
+    {
+        if result.is_ok() {
+            result = Err(err);
+        } else {
+            tracing::warn!("failed to signal drained input `{receiver_id}/{input_id}`: {err:?}");
+        }
+    }
+    if input_delivery_failed && was_open {
+        dataflow
+            .open_inputs
+            .entry(receiver_id.clone())
+            .or_default()
+            .insert(input_id.clone());
+    }
+    if input_delivery_failed && let Some(timeout) = broken_timeout {
+        dataflow.broken_inputs.insert(key, timeout);
     }
 
-    if was_open {
-        // Waits for a message still held for this input, if any.
-        send_close(
-            dataflow,
+    result
+}
+
+pub(crate) fn close_inputs_best_effort<I>(
+    dataflow: &mut RunningDataflow,
+    inputs: I,
+    clock: &HLC,
+    context: &'static str,
+) -> eyre::Result<()>
+where
+    I: IntoIterator<Item = (NodeId, DataId)>,
+{
+    let mut first_error = None;
+    for (receiver_id, input_id) in inputs {
+        if let Err(err) = close_input(dataflow, &receiver_id, &input_id, clock) {
+            tracing::warn!(%receiver_id, %input_id, "{context}: {err:?}");
+            if first_error.is_none() {
+                first_error = Some(err);
+            }
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// A remote producer has no local listener to hold for backpressure. Hand a
+/// full receiver's close control events to its drain waiter instead. The
+/// caller runs the returned deliveries in order on a separate task.
+pub(crate) fn close_input_from_remote(
+    dataflow: &mut RunningDataflow,
+    receiver_id: &NodeId,
+    input_id: &DataId,
+    clock: &HLC,
+    ft_stats: &FaultToleranceStats,
+) -> (eyre::Result<()>, Vec<DeferredDelivery>) {
+    let previous_close_pending = dataflow
+        .remote_close_delivery_tasks
+        .get(receiver_id)
+        .is_some_and(|task| !task.is_finished());
+    if previous_close_pending
+        && !dataflow.open_inputs(receiver_id).contains(input_id)
+        && !dataflow
+            .broken_inputs
+            .contains_key(&(receiver_id.clone(), input_id.clone()))
+    {
+        return (Ok(()), Vec::new());
+    }
+    let drained = dataflow
+        .drain_signals
+        .get(receiver_id)
+        .filter(|signal| !signal.gave_up.load(atomic::Ordering::Acquire))
+        .cloned();
+    let can_defer = (previous_close_pending
+        || dataflow.input_requires_backpressure(receiver_id, input_id))
+        && drained.is_some();
+    let broken_only = previous_close_pending
+        && !dataflow.open_inputs(receiver_id).contains(input_id)
+        && dataflow
+            .broken_inputs
+            .contains_key(&(receiver_id.clone(), input_id.clone()));
+    if broken_only && can_defer {
+        let key = (receiver_id.clone(), input_id.clone());
+        dataflow.broken_inputs.remove(&key);
+        dataflow.input_deadlines.remove(&key);
+        let _ = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock, false);
+        if !dataflow.is_finished(receiver_id) {
+            return (Ok(()), Vec::new());
+        }
+    }
+    let result = if previous_close_pending && can_defer {
+        Err(eyre::eyre!("earlier remote close is still pending"))
+    } else {
+        close_input(dataflow, receiver_id, input_id, clock)
+    };
+    if result.is_ok() {
+        return (result, Vec::new());
+    }
+    let channel = dataflow
+        .subscribe_channels
+        .get(receiver_id)
+        .filter(|channel| !channel.is_closed())
+        .cloned();
+    if !can_defer || channel.is_none() {
+        ft_stats.record_drop(
+            1,
+            dataflow.input_requires_backpressure(receiver_id, input_id),
+        );
+        return (result, Vec::new());
+    }
+    let (Some(channel), Some(drained)) = (channel, drained) else {
+        return (result, Vec::new());
+    };
+    let pending = dataflow.pending_messages.get(receiver_id).cloned();
+
+    let mut deferred = Vec::new();
+    if dataflow.open_inputs(receiver_id).contains(input_id) {
+        let key = (receiver_id.clone(), input_id.clone());
+        if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id) {
+            open_inputs.remove(input_id);
+        }
+        dataflow.broken_inputs.remove(&key);
+        dataflow.input_deadlines.remove(&key);
+        deferred.push(deferred_control_event(
             receiver_id,
-            Some(input_id),
+            input_id,
             NodeEvent::InputClosed {
                 id: input_id.clone(),
             },
             clock,
-        );
+            &channel,
+            &drained,
+            pending.clone(),
+        ));
+        let _ = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock, false);
     }
+    if dataflow.is_finished(receiver_id)
+        && !dataflow.all_inputs_closed_at.contains_key(receiver_id)
+        && !dataflow
+            .pending_remote_all_inputs_closed
+            .contains_key(receiver_id)
+    {
+        deferred.push(deferred_control_event(
+            receiver_id,
+            input_id,
+            NodeEvent::AllInputsClosed,
+            clock,
+            &channel,
+            &drained,
+            pending,
+        ));
+        dataflow.mark_deferred_all_inputs_closed(receiver_id);
+    }
+    if deferred.is_empty() {
+        ft_stats.record_drop(1, true);
+        (result, deferred)
+    } else {
+        (Ok(()), deferred)
+    }
+}
 
-    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
+fn deferred_control_event(
+    receiver_id: &NodeId,
+    input_id: &DataId,
+    event: NodeEvent,
+    clock: &HLC,
+    channel: &mpsc::Sender<Timestamped<NodeEvent>>,
+    drained: &Arc<DrainSignal>,
+    pending: Option<Arc<AtomicU64>>,
+) -> DeferredDelivery {
+    DeferredDelivery {
+        receiver: receiver_id.clone(),
+        channel: channel.clone(),
+        pending,
+        drained: drained.clone(),
+        held: drained.hold(input_id),
+        event: Timestamped {
+            inner: event,
+            timestamp: clock.new_timestamp(),
+        },
+    }
+}
+
+fn send_input_closed_strict(
+    dataflow: &mut RunningDataflow,
+    receiver_id: &NodeId,
+    input_id: &DataId,
+    clock: &HLC,
+) -> eyre::Result<()> {
+    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+        return Ok(());
+    };
+    let closed = channel.is_closed();
+    if send_close(
+        dataflow,
+        receiver_id,
+        Some(input_id),
+        NodeEvent::InputClosed {
+            id: input_id.clone(),
+        },
+        clock,
+    ) {
+        Ok(())
+    } else if closed || dataflow.subscribe_channels[receiver_id].is_closed() {
+        dataflow.subscribe_channels.remove(receiver_id);
+        Err(eyre::eyre!("node `{receiver_id}` channel closed"))
+    } else {
+        Err(eyre::eyre!("node `{receiver_id}` channel full"))
+    }
 }
 
 /// If `receiver_id` has finished, disable its restart policy and notify it
@@ -798,42 +1009,56 @@ pub(crate) fn close_input(
 /// while a timer keeps ticking.
 ///
 /// Shared drain-completion tail of [`close_input`] and [`break_input`]; a
-/// no-op if the node still has open/broken inputs or has no subscribe channel.
-pub(crate) fn signal_all_inputs_closed_if_drained(
+/// no-op if the node still has open/broken inputs. Restart bookkeeping is
+/// independent from the node event channel; only the `AllInputsClosed` send
+/// requires a live channel.
+fn signal_all_inputs_closed_if_drained(
     dataflow: &mut RunningDataflow,
     receiver_id: &NodeId,
     clock: &HLC,
-) {
-    if !dataflow.subscribe_channels.contains_key(receiver_id) {
-        return;
-    }
+    send_event: bool,
+) -> eyre::Result<()> {
     // As at the subscribe site: either "nothing left open" (pre-existing
     // behavior, and true for a source) or "drained" (the node we are about
     // to tell to finish) disables restart.
-    if (dataflow.open_inputs(receiver_id).is_empty() || dataflow.is_drained(receiver_id))
-        && !dataflow.has_broken_input(receiver_id)
-        && let Some(node) = dataflow.running_nodes.get_mut(receiver_id)
-    {
+    let should_disable_restart = (dataflow.open_inputs(receiver_id).is_empty()
+        || dataflow.is_drained(receiver_id))
+        && !dataflow.has_broken_input(receiver_id);
+    if should_disable_restart && let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
         node.disable_restart();
     }
-    // Sent after every message still held for the node, which are all for
-    // inputs that have closed by now.
-    if dataflow.is_finished(receiver_id)
-        && send_close(
+
+    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+        return Ok(());
+    };
+    let closed = channel.is_closed();
+    if send_event
+        && dataflow.is_finished(receiver_id)
+        && !dataflow.all_inputs_closed_at.contains_key(receiver_id)
+        && !dataflow
+            .pending_remote_all_inputs_closed
+            .contains_key(receiver_id)
+    {
+        if send_close(
             dataflow,
             receiver_id,
             None,
             NodeEvent::AllInputsClosed,
             clock,
-        )
-    {
-        // The decision time. If the event waits behind a held message, the
-        // drain clock only starts once it is sent
-        // (`RunningDataflow::drained_for`).
-        dataflow
-            .all_inputs_closed_at
-            .insert(receiver_id.clone(), Instant::now());
+        ) {
+            // The decision time. If the event waits behind a held message, the
+            // drain clock only starts once it is sent (`RunningDataflow::drained_for`).
+            dataflow
+                .all_inputs_closed_at
+                .insert(receiver_id.clone(), Instant::now());
+        } else if closed || dataflow.subscribe_channels[receiver_id].is_closed() {
+            dataflow.subscribe_channels.remove(receiver_id);
+            return Err(eyre::eyre!("node `{receiver_id}` channel closed"));
+        } else {
+            return Err(eyre::eyre!("node `{receiver_id}` channel full"));
+        }
     }
+    Ok(())
 }
 
 /// Circuit-breaker version of close_input: closes the input but keeps it recoverable.
@@ -857,19 +1082,11 @@ pub(crate) fn break_input(
             .remove(&(receiver_id.clone(), input_id.clone()));
         return;
     }
-    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
-        && send_with_timestamp(
-            channel,
-            NodeEvent::InputClosed {
-                id: input_id.clone(),
-            },
-            clock,
-        )
-        .ok()
-            == Some(true)
-    {
-        dataflow.inc_pending(receiver_id);
+    if let Err(err) = send_input_closed_strict(dataflow, receiver_id, input_id, clock) {
+        tracing::warn!("failed to break input `{receiver_id}/{input_id}`: {err:?}");
     }
 
-    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
+    if let Err(err) = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock, true) {
+        tracing::warn!("failed to signal drained input `{receiver_id}/{input_id}`: {err:?}");
+    }
 }
