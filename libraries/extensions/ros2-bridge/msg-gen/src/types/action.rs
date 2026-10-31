@@ -447,14 +447,15 @@ impl Action {
                     GeneratedNode::Zenoh { node: zenoh_node, compatibility } => {
                         use dora_ros2_bridge::transport::{action::zenoh::ActionCallError, zenoh::pubsub::PubSubError};
 
-                        // The feedback subscription is the one endpoint whose QoS
-                        // changes what this client receives; the status topic
-                        // always uses the fixed action status QoS.
+                        // The feedback subscription's QoS (reliability, durability,
+                        // history) is the one the C++ caller chooses; the status topic
+                        // always uses the fixed action status QoS. Both queues hold 8
+                        // messages whatever the QoS depth.
                         let feedback_qos = neutral_qos(&qos.feedback_subscription)?;
                         let (keys, tokens) = dora_ros2_bridge::transport::action::zenoh::resolve_action_endpoints(
                             zenoh_node.domain(),
                             *compatibility,
-                            &name.to_string(),
+                            &zenoh_full_name(zenoh_node, name.to_string()),
                             #package_name,
                             #self_name_str,
                             &feedback_qos,
@@ -468,8 +469,9 @@ impl Action {
                             ZENOH_ACTION_MAX_PAYLOAD,
                         ))?);
 
-                        // Both streams end when the subscription closes, instead of
-                        // yielding the same error forever.
+                        // The client holds its subscriptions, so `Closed` doesn't happen
+                        // while these streams run; if it ever does, the stream ends
+                        // instead of yielding the same error forever.
                         let feedback_id = {
                             let stream = futures_lite::stream::unfold(Arc::clone(&client), |client| async move {
                                 let item = match client.recv_feedback().await {
@@ -505,7 +507,7 @@ impl Action {
                             events.events.merge(Box::pin(stream))
                         };
 
-                        (#client_backend::Zenoh { client, result_tx, executor: node.executor.clone() }, feedback_id, status_id)
+                        (#client_backend::Zenoh { client, result_tx, executor: node.executor.clone(), results_waiting: Default::default() }, feedback_id, status_id)
                     }
                 };
                 let result_stream = result_rx.into_stream()
@@ -540,7 +542,23 @@ impl Action {
                     // `request_result` answers come back through the result stream.
                     result_tx: flume::Sender<eyre::Result<#result_event_name>>,
                     executor: std::sync::Arc<futures::executor::ThreadPool>,
+                    /// `request_result` calls still waiting for their goal or for
+                    /// their answer to be read, at most MAX_PENDING_REQUESTS, so a
+                    /// caller that never reads the result events can't pile up
+                    /// tasks holding results.
+                    results_waiting: std::sync::Arc<std::sync::atomic::AtomicUsize>,
                 },
+            }
+
+            impl Drop for #client_name {
+                fn drop(&mut self) {
+                    // The `request_result` tasks hold their own reference to the
+                    // Zenoh client; end the ones still waiting for a goal.
+                    #[cfg(feature = "rmw-zenoh")]
+                    if let #client_backend::Zenoh { client, .. } = &self.backend {
+                        client.close();
+                    }
+                }
             }
 
             #[allow(non_camel_case_types)]
@@ -622,6 +640,9 @@ impl Action {
                         #client_backend::Zenoh { client, .. } => {
                             // A timeout of 0 means "wait as long as it takes", as on
                             // DDS; GET_RESULT_TIMEOUT is that "forever" for a Zenoh call.
+                            // Unlike DDS, a goal sent while no server is matched fails at
+                            // once ("service request timed out"): call `wait_for_action`
+                            // first.
                             let timeout = timeout.unwrap_or(dora_ros2_bridge::transport::action::zenoh::GET_RESULT_TIMEOUT);
                             return match futures::executor::block_on(client.send_goal(&request, timeout)) {
                                 Ok(goal_id) => Ok(Box::new(ffi::ActionGoalId { id: goal_id })),
@@ -748,19 +769,42 @@ impl Action {
                         // Each request waits for its own goal's result, so there
                         // is nothing to demultiplex on Zenoh.
                         #[cfg(feature = "rmw-zenoh")]
-                        #client_backend::Zenoh { client, result_tx, executor } => {
+                        #client_backend::Zenoh { client, result_tx, executor, results_waiting } => {
                             use futures::task::SpawnExt as _;
+                            use std::sync::atomic::Ordering;
+                            if results_waiting.fetch_add(1, Ordering::SeqCst) >= MAX_PENDING_REQUESTS {
+                                results_waiting.fetch_sub(1, Ordering::SeqCst);
+                                return Err(eyre::eyre!(
+                                    "{MAX_PENDING_REQUESTS} action result requests are still waiting for their goal or for their answer to be read"
+                                ));
+                            }
+                            // Gives the slot back when the task ends or is dropped
+                            // unrun (spawn failed, executor shut down).
+                            struct Waiting(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+                            impl Drop for Waiting {
+                                fn drop(&mut self) {
+                                    self.0.fetch_sub(1, Ordering::SeqCst);
+                                }
+                            }
+                            let waiting = Waiting(results_waiting.clone());
                             let client = client.clone();
                             let result_tx = result_tx.clone();
                             return executor.spawn(async move {
-                                let result = client.get_result(goal_id.id).await
-                                    .map(|(status, result)| #result_event_name {
-                                        goal_id,
-                                        status: status.into(),
-                                        result,
-                                    })
-                                    .map_err(|e| eyre::eyre!("failed to receive action result: {e}"));
-                                let _ = result_tx.send_async(result).await;
+                                let _waiting = waiting;
+                                match client.get_result(goal_id.id).await {
+                                    // The client is gone: nobody reads the answer.
+                                    Err(dora_ros2_bridge::transport::action::zenoh::ActionCallError::Closed) => {}
+                                    result => {
+                                        let result = result
+                                            .map(|(status, result)| #result_event_name {
+                                                goal_id,
+                                                status: status.into(),
+                                                result,
+                                            })
+                                            .map_err(|e| eyre::eyre!("failed to receive action result: {e}"));
+                                        let _ = result_tx.send_async(result).await;
+                                    }
+                                }
                             }).map_err(|e| eyre::eyre!("Failed to request result: {e}"));
                         }
                     };
@@ -864,6 +908,12 @@ impl Action {
     /// and a goal not finished within `ACTION_GOAL_TIMEOUT` is aborted + evicted.
     /// `send_result` is itself time-bounded so a never-arriving client
     /// get_result request can't freeze the caller's event loop.
+    ///
+    /// That is the DDS backend. On native Zenoh, `TypedActionServer` does the
+    /// same job: its pump runs on the node's executor, it applies the same two
+    /// limits (a timer aborts a goal at `ACTION_GOAL_TIMEOUT`, feedback or not),
+    /// and `send_result` stores the result and returns without waiting for the
+    /// client.
     pub fn cxx_action_server_creation_functions(
         &self,
         package_name: &str,
@@ -1068,7 +1118,7 @@ impl Action {
                         let (keys, tokens) = dora_ros2_bridge::transport::action::zenoh::resolve_action_endpoints(
                             zenoh_node.domain(),
                             *compatibility,
-                            &name.to_string(),
+                            &zenoh_full_name(zenoh_node, name.to_string()),
                             #package_name,
                             #self_name_str,
                             &qos,
@@ -1440,6 +1490,10 @@ mod codegen_tests {
         assert!(client.contains("GeneratedNode::Zenoh"), "client create fn");
         assert!(client.contains("TypedActionClient"), "client create fn");
         assert!(!client.contains("dds_node_mut"), "client create fn");
+        assert!(
+            client.contains("impl Drop for") && client.contains("client.close()"),
+            "a dropped client must close its Zenoh client"
+        );
         let (_decl, imp) = action.cxx_action_server_creation_functions("test_pkg");
         let server = format_valid_rust(imp);
         assert!(server.contains("GeneratedNode::Zenoh"), "server create fn");
