@@ -98,7 +98,10 @@ Your user nodes never link against ROS2 -- all ROS2 communication is isolated in
 - **ROS2 environment sourced**: `AMENT_PREFIX_PATH` must be set and point to a workspace containing the required message packages
 - **Message packages installed**: e.g., `turtlesim`, `geometry_msgs`, `example_interfaces`
 - **For service client**: A ROS2 service server must be running (or use a companion server dataflow)
-- **For action client**: A ROS2 action server must be running *before* starting the dataflow (no `wait_for_action_server` mechanism)
+- **For action client**: A ROS2 action server should be running before starting
+  the dataflow. Startup waits for the action `send_goal`, `get_result`, and
+  `cancel_goal` service endpoints (10 retries, 2 seconds each) and fails with
+  endpoint-level diagnostics if they are unavailable.
 - **For action server**: A ROS2 action client sends goals to the bridge (e.g., `ros2 action send_goal`)
 
 ---
@@ -1063,8 +1066,16 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 (notably: the Python action client/server *do* support cancel).
 
 - **Action server auto-accept**: All incoming goals are automatically accepted. The handler cannot reject goals before execution starts.
+- **DDS domain range**: `ROS_DOMAIN_ID` values from 0 through 232 are supported. An invalid or out-of-range value logs a warning and uses domain 0.
 - **No action cancel support (YAML bridge)**: The YAML action bridge does not handle ROS2 cancel requests (the Python native action API does).
-- **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
+- **Action client startup wait**: the YAML bridge waits for the action
+  `send_goal`, `get_result`, and `cancel_goal` service endpoints at startup
+  (10 retries, 2 seconds each). It joins the Dora dataflow before waiting, so
+  the server can be another node in the same dataflow. A Dora Stop interrupts
+  the wait. The bridge retains at most 64 Dora events during this wait and
+  exits with an error if that limit is exceeded. If an endpoint remains
+  unavailable, it reports the endpoint name, `ROS_DOMAIN_ID`, and remote
+  server request/reply topics.
 - **Native action server discovery (ros2-client#4)**: a Dora-hosted *action* server is not discoverable by a real `rcl`-based client; pair it with a Dora client. Service servers are unaffected.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
 - **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable.
@@ -1109,7 +1120,10 @@ The standalone bridge module used by the Zenoh interop harness builds the same w
 
 **Source your ROS2 environment before running.** Ensure `AMENT_PREFIX_PATH` is set and includes all required message packages. The bridge logs an error if no definitions are found.
 
-**Start action servers before the dataflow.** There is no wait mechanism for action servers. If the server is not ready, the first goal send will time out after 30 seconds.
+**Allow action servers time to start.** The YAML action client waits for the
+`send_goal`, `get_result`, and `cancel_goal` service endpoints after joining
+the dataflow. The server may be in the same dataflow. If an endpoint is not
+ready within the retry window, the bridge exits before accepting Dora goals.
 
 **Use multi-topic mode for related topics.** Bridging `/turtle1/pose` (subscribe) and `/turtle1/cmd_vel` (publish) on the same bridge node reduces resource usage compared to two separate bridge nodes.
 
