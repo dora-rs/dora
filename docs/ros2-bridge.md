@@ -1032,7 +1032,7 @@ if (server->matches(event)) {
 See `examples/ros2-bridge/c++/{turtle,service-server,action-client,action-server}/`.
 
 On native Zenoh (`init_ros2_context_with_transport` with `ZenohHumble` or
-`ZenohRep2016`), C++ topics and services work; actions still require DDS.
+`ZenohRep2016`), C++ topics, services and actions work.
 A Zenoh service client returns responses from `downcast` in the order the
 requests were sent, even when the server answers them out of order (on DDS,
 responses come in the order they arrive). So a request that gets no response
@@ -1040,6 +1040,31 @@ holds back the ones after it: after 30 s it arrives as an error from
 `downcast`, and the others follow. At most 64 requests are in flight; up to
 64 more wait to be sent (their 30 s start when they are sent), and
 `send_request` fails once that queue is full.
+
+Action differences from DDS:
+
+- `send_goal` fails at once with "service request timed out" while no action
+  server is matched (on DDS it waits until its timeout), so call
+  `wait_for_action` first.
+- `send_result` returns once the result is stored, instead of waiting for the
+  client's `request_result`; later requests get the stored result. A server
+  keeps 16 goals: a new goal replaces the oldest finished one, whose result is
+  then `Unknown`.
+- A client's `cancel_goal` is accepted: the goal moves to `Canceling` in the
+  status stream. The reply codes follow rcl, as for a server that accepts
+  every cancel (a goal already canceling or finished gives
+  `ERROR_GOAL_TERMINATED`). The C++ server gets no event for it, so the goal
+  runs until the server calls `send_result`. On DDS the server doesn't answer
+  cancel requests at all.
+- `request_result` for a goal the server doesn't know returns `Unknown` with
+  default values, as rclcpp does.
+- A client's `request_result` returns an error while 64 earlier calls are
+  still waiting for their goal or for their result event to be read.
+
+On both transports, a goal still running 300 s after it was accepted is
+aborted when the next goal comes in, even while it publishes feedback. On
+Zenoh, `request_result` for it then returns `Aborted` with default values; on
+DDS only the status stream shows `Aborted`.
 
 ### Discovery & RMW notes (native servers)
 
