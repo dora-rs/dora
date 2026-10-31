@@ -173,6 +173,122 @@ int call_across_namespaces(Ros2Context &context, const char *node_namespace,
     return 0;
 }
 
+// The same for an action: one goal between a server and a client on a node in
+// `node_namespace`, one named relative to it and the other absolute.
+static void goal_across_namespaces(Ros2Context &context, const char *node_namespace,
+                                   const char *server_namespace, const char *client_namespace)
+{
+    auto events = empty_combined_events();
+    auto qos = qos_default();
+    qos.reliable = true;
+    auto node = context.new_node(node_namespace, "cxx_zenoh_namespaced_action");
+    auto server = example_interfaces::create_Fibonacci_action_server(*node, server_namespace, "fibonacci", qos, events);
+    auto client = example_interfaces::create_Fibonacci_action_client(*node, client_namespace, "fibonacci", actionqos_default(), events);
+    client->wait_for_action(node);
+    example_interfaces::Fibonacci_Goal goal{};
+    goal.order = 2;
+    auto id = client->send_goal(goal);
+    client->request_result(id);
+    while (true)
+    {
+        auto event = events.next();
+        if (server->matches(event))
+        {
+            auto goal_event = server->downcast(std::move(event));
+            example_interfaces::Fibonacci_Result result{};
+            result.sequence = fibonacci(goal_event->get_goal().order);
+            server->send_result(goal_event->get_goal_id(), ActionStatusEnum::Succeeded, std::move(result));
+        }
+        else if (client->matches_result(event))
+        {
+            auto result = client->downcast_result(std::move(event));
+            check(result->matches_goal(id) && result->get_status() == ActionStatusEnum::Succeeded,
+                  std::string(node_namespace) + ": wrong action result");
+            break;
+        }
+        else if (client->matches_status(event))
+        {
+            client->downcast_status(std::move(event));
+        }
+        else if (!client->matches_feedback(event))
+        {
+            throw std::runtime_error(std::string(node_namespace) + ": unexpected event");
+        }
+    }
+    std::cout << "relative and absolute action names meet under " << node_namespace << std::endl;
+}
+
+// A caller that requests results without reading the events must hit a limit
+// instead of piling up waiting results: after 64 (65 once one sits in the
+// event channel) `request_result` throws. Then all the answers can be read.
+static void result_requests_are_bounded(Ros2Context &context)
+{
+    auto events = empty_combined_events();
+    auto qos = qos_default();
+    qos.reliable = true;
+    auto node = context.new_node("/", "cxx_zenoh_bounded_results");
+    auto server = example_interfaces::create_Fibonacci_action_server(*node, "/", "fibonacci_bounded", qos, events);
+    auto client = example_interfaces::create_Fibonacci_action_client(*node, "/", "fibonacci_bounded", actionqos_default(), events);
+    client->wait_for_action(node);
+    example_interfaces::Fibonacci_Goal goal{};
+    goal.order = 3;
+    auto id = client->send_goal(goal);
+    while (true)
+    {
+        auto event = events.next();
+        if (server->matches(event))
+        {
+            auto goal_event = server->downcast(std::move(event));
+            example_interfaces::Fibonacci_Result result{};
+            result.sequence = fibonacci(goal_event->get_goal().order);
+            server->send_result(goal_event->get_goal_id(), ActionStatusEnum::Succeeded, std::move(result));
+            break;
+        }
+    }
+    int requested = 0;
+    bool refused = false;
+    for (; requested < 70; requested++)
+    {
+        try
+        {
+            client->request_result(id);
+        }
+        catch (const std::exception &)
+        {
+            refused = true;
+            break;
+        }
+    }
+    check(refused && requested >= 64 && requested <= 65,
+          "request_result was not limited: " + std::to_string(requested) + " requests accepted");
+    for (int answered = 0; answered < requested;)
+    {
+        auto event = events.next();
+        if (client->matches_result(event))
+        {
+            auto result = client->downcast_result(std::move(event));
+            check(result->matches_goal(id) && result->get_status() == ActionStatusEnum::Succeeded, "wrong result");
+            answered++;
+        }
+    }
+    // Every answer is read, so the slots are free again. (32, not 64: the
+    // last task may give its slot back just after its answer is read.)
+    for (int again = 0; again < 32; again++)
+    {
+        client->request_result(id);
+    }
+    for (int answered = 0; answered < 32;)
+    {
+        auto event = events.next();
+        if (client->matches_result(event))
+        {
+            client->downcast_result(std::move(event));
+            answered++;
+        }
+    }
+    std::cout << "result requests limited at " << requested << " unread answers" << std::endl;
+}
+
 int run(int argc, char **argv);
 
 int main(int argc, char **argv)
@@ -342,5 +458,8 @@ int run(int argc, char **argv)
     {
         return 1;
     }
+    goal_across_namespaces(*context, "/robot3", "/robot3", "");
+    goal_across_namespaces(*context, "/robot4", "", "/robot4");
+    result_requests_are_bounded(*context);
     return 0;
 }

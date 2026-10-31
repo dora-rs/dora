@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::{FutureExt, future::BoxFuture, lock::Mutex, select};
+use futures::{FutureExt, future::BoxFuture, lock::Mutex, select, select_biased};
 use ros2_client::{
     action::{
         CancelGoalResponse, FeedbackMessage, GetResultRequest, GetResultResponse, GoalId, GoalInfo,
@@ -54,6 +54,8 @@ pub enum ActionCallError {
     Transport(#[from] ActionTransportError),
     #[error("the action server rejected the goal")]
     Rejected,
+    #[error("the action client was closed")]
+    Closed,
 }
 
 // Borrowing versions of the `ros2_client` wire types, so sending doesn't need
@@ -90,6 +92,9 @@ type TypeMarker<T> = PhantomData<fn() -> T>;
 pub struct TypedActionClient<G, R, F> {
     endpoints: ActionClient,
     tokens: ActionTokens,
+    /// Dropped by [`close`](Self::close), which ends every `closed` wait.
+    close: std::sync::Mutex<Option<flume::Sender<()>>>,
+    closed: flume::Receiver<()>,
     _types: TypeMarker<(G, R, F)>,
 }
 
@@ -108,11 +113,24 @@ where
     ) -> Result<Self, ActionTransportError> {
         let endpoints =
             ActionClient::declare(node, keys, tokens.clone(), qos, max_payload_size).await?;
+        let (close, closed) = flume::bounded(1);
         Ok(Self {
             endpoints,
             tokens,
+            close: std::sync::Mutex::new(Some(close)),
+            closed,
             _types: PhantomData,
         })
+    }
+
+    /// Ends the `get_result` calls still waiting, now and later, with
+    /// [`ActionCallError::Closed`]. The owner calls it when it goes away,
+    /// since tasks waiting for results keep their own reference to the
+    /// client.
+    pub fn close(&self) {
+        if let Ok(mut close) = self.close.lock() {
+            close.take();
+        }
     }
 
     /// Waits until all five endpoints of a matching server are in `node`'s
@@ -140,17 +158,25 @@ where
     }
 
     /// Waits for the goal's final status and result, however long the goal
-    /// runs.
+    /// runs, or until the client is [closed](Self::close).
     pub async fn get_result(
         &self,
         goal_id: GoalId,
     ) -> Result<(GoalStatusEnum, R), ActionCallError> {
         let request = serialize_cdr(&GetResultRequest { goal_id })?;
-        let response = self
+        let call = self
             .endpoints
             .get_result
             .call(request, GET_RESULT_TIMEOUT)
-            .await?;
+            .fuse();
+        let closed = self.closed.recv_async().fuse();
+        futures::pin_mut!(call, closed);
+        // `closed` first, so a closed client never sends the request.
+        let response = select_biased! {
+            // Nothing is ever sent: this ends when `close` drops the sender.
+            _ = closed => return Err(ActionCallError::Closed),
+            response = call => response?,
+        };
         let response: GetResultResponse<R> = deserialize_cdr(&response)?;
         Ok((response.status, response.result))
     }
@@ -202,13 +228,14 @@ pub type ActionServerPump = BoxFuture<'static, ()>;
 
 /// Action server for goals of type `G` with result `R` and feedback `F`.
 ///
-/// Every goal is accepted and set to executing unless the server is full or
-/// the goal id is already in use. Accepted goals arrive on
-/// [`goals`](Self::goals); the owner reports progress with
-/// [`publish_feedback`](Self::publish_feedback) and ends the goal with
-/// [`finish`](Self::finish). Results stay available to `get_result` until the
-/// goal is evicted to make room for a new one. Like rclcpp, `get_result` for a
-/// goal the server doesn't know returns `STATUS_UNKNOWN` and a default result.
+/// Every goal is accepted and set to executing unless the server is full, the
+/// goal id is already in use, or `max_goals` accepted goals are still waiting
+/// to be read. Accepted goals arrive on [`goals`](Self::goals); the owner
+/// reports progress with [`publish_feedback`](Self::publish_feedback) and ends
+/// the goal with [`finish`](Self::finish). Results stay available to
+/// `get_result` until the goal is evicted to make room for a new one. Like
+/// rclcpp, `get_result` for a goal the server doesn't know returns
+/// `STATUS_UNKNOWN` and a default result.
 pub struct TypedActionServer<G, R, F> {
     shared: Arc<Shared>,
     goals: flume::Receiver<(GoalId, G)>,
@@ -266,9 +293,10 @@ where
             options,
             goals: Mutex::new(Vec::new()),
         });
-        // Unbounded but still limited: a goal is only queued when it is
-        // accepted, and at most `max_goals` goals run at once.
-        let (goal_tx, goals) = flume::unbounded();
+        // Accepted goals wait here until the owner reads them. Aborted or
+        // evicted goals stay queued too, so the queue is bounded and a goal
+        // is rejected while it is full (`handle_send_goal`).
+        let (goal_tx, goals) = flume::bounded(options.max_goals);
         let (shutdown, shutdown_rx) = flume::bounded(1);
         let pump = run_server(shared.clone(), goal_tx, shutdown_rx).boxed();
         Ok((
@@ -415,7 +443,11 @@ impl Shared {
         };
         let mut goals = self.goals.lock().await;
         let mut changed = self.abort_abandoned(&mut goals).await;
-        let admission = admit(&goals, decoded.goal_id, self.options.max_goals);
+        let admission = if goal_tx.is_full() {
+            None
+        } else {
+            admit(&goals, decoded.goal_id, self.options.max_goals)
+        };
         let accepted = admission.is_some();
         let stamp = Time::from_nanos(unix_timestamp_ns());
         let response = serialize_cdr(&SendGoalResponse { accepted, stamp })?;
@@ -435,9 +467,10 @@ impl Shared {
                 waiters: Vec::new(),
             });
             changed = true;
-            // Fails only when the server object is gone, and then the pump
-            // stops as well.
-            let _ = goal_tx.send((decoded.goal_id, decoded.goal));
+            // There is room (checked above, and only this pump sends). Fails
+            // otherwise only when the server object is gone, and then the
+            // pump stops as well.
+            let _ = goal_tx.try_send((decoded.goal_id, decoded.goal));
         }
         if changed {
             self.publish_status(&goals).await?;

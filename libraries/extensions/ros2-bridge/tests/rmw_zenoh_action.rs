@@ -880,6 +880,78 @@ mod typed {
         }
     }
 
+    /// Goals nobody reads stay queued, also after they are aborted or evicted,
+    /// so the queue is what bounds them: with it full, a new goal is rejected.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unread_goals_are_bounded_by_rejecting_new_ones() {
+        let Fixture {
+            client,
+            server,
+            _session,
+            ..
+        } = fixture(
+            58,
+            ActionServerOptions {
+                max_goals: 1,
+                goal_timeout: Duration::from_millis(50),
+            },
+        )
+        .await;
+        client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
+        for order in 2..5 {
+            // Long enough for the unread goal to be aborted, which makes it
+            // evictable.
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            assert!(
+                matches!(
+                    client.send_goal(&Goal { order }, TIMEOUT).await,
+                    Err(ActionCallError::Rejected)
+                ),
+                "goal {order} accepted while {} unread goals are queued",
+                server.goals().len()
+            );
+        }
+        assert_eq!(server.goals().len(), 1);
+    }
+
+    /// Closing the client ends a `get_result` still waiting for its goal, so
+    /// the calls of an owner that is gone don't keep the client alive.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn closing_the_client_ends_a_waiting_get_result() {
+        let Fixture {
+            client,
+            server,
+            _session,
+            ..
+        } = fixture(60, options(4)).await;
+        let client = std::sync::Arc::new(client);
+        let goal = client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
+        next_goal(&server).await;
+        let waiting = tokio::spawn({
+            let client = client.clone();
+            async move { client.get_result(goal).await }
+        });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!waiting.is_finished(), "the goal is still running");
+        client.close();
+        let result = tokio::time::timeout(TIMEOUT, waiting)
+            .await
+            .expect("get_result kept waiting after close")
+            .unwrap();
+        assert!(matches!(result, Err(ActionCallError::Closed)), "{result:?}");
+
+        // Later calls end at once without sending a request: if they did,
+        // the server would keep each as a waiter, and once its 64 slots are
+        // full the calls would fail with a timeout instead.
+        for call in 0..200 {
+            let result = client.get_result(goal).await;
+            assert!(
+                matches!(result, Err(ActionCallError::Closed)),
+                "call {call} after close: {result:?}"
+            );
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropping_the_server_stops_it_and_leaves_the_graph() {
         let Fixture {
@@ -887,7 +959,7 @@ mod typed {
             server,
             pump,
             node,
-            ..
+            _session,
         } = fixture(57, options(4)).await;
         drop(server);
         tokio::time::timeout(TIMEOUT, pump)

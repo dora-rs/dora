@@ -1117,13 +1117,18 @@ holds back the ones after it: after 30 s it arrives as an error from
 Action differences from DDS:
 
 - `send_result` returns once the result is stored, instead of waiting for the
-  client's `request_result`; later requests get the stored result.
+  client's `request_result`; later requests get the stored result. A server
+  keeps 16 goals: a new goal replaces the oldest finished one, whose result is
+  then `Unknown`.
 - A client's `cancel_goal` moves the goal to `Canceling` in the status
   stream. The C++ server gets no event for it (neither does it on DDS), so
   the goal runs until the server calls `send_result`.
-- A goal the server doesn't finish within 300 s is aborted; its result is
-  `Aborted` with default values. `request_result` for a goal the server
-  doesn't know returns `Unknown` with default values, as rclcpp does.
+- A goal the server doesn't finish within 300 s is aborted, even while it
+  publishes feedback; its result is `Aborted` with default values.
+  `request_result` for a goal the server doesn't know returns `Unknown` with
+  default values, as rclcpp does.
+- A client's `request_result` returns an error while 64 earlier calls are
+  still waiting for their goal or for their result event to be read.
 
 ### Discovery & RMW notes (native servers)
 
