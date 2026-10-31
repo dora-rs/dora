@@ -70,6 +70,88 @@ fn subscriber_parses_attachment_before_payload_and_bounds_queue() {
 }
 
 #[test]
+fn subscriber_keep_last_drops_oldest_sample_on_full_queue() {
+    let qos = Ros2Qos {
+        history: History::KeepLast { depth: 2 },
+        ..Ros2Qos::default()
+    };
+    let ingress = SubscriptionIngress::new_with_qos(
+        2,
+        8,
+        Arc::new(|bytes: &[u8]| Ok(bytes.to_vec())),
+        Some(&qos),
+    )
+    .unwrap();
+
+    let make_attachment = |seq: i64| {
+        Attachment {
+            sequence_number: seq,
+            source_timestamp_ns: 100 + seq,
+            gid: [3; 16],
+        }
+        .encode()
+        .unwrap()
+    };
+
+    assert!(ingress.ingest(&make_attachment(1), b"1").unwrap());
+    assert!(ingress.ingest(&make_attachment(2), b"2").unwrap());
+    assert!(ingress.ingest(&make_attachment(3), b"3").unwrap());
+    assert!(ingress.ingest(&make_attachment(4), b"4").unwrap());
+    assert!(ingress.ingest(&make_attachment(5), b"5").unwrap());
+
+    let (payload1, meta1) = ingress.try_recv().unwrap();
+    let (payload2, meta2) = ingress.try_recv().unwrap();
+    assert!(ingress.try_recv().is_err());
+
+    assert_eq!(payload1, b"4");
+    assert_eq!(meta1.sequence_number, 4);
+    assert_eq!(payload2, b"5");
+    assert_eq!(meta2.sequence_number, 5);
+    assert_eq!(ingress.stats().dropped_samples, 3);
+}
+
+#[test]
+fn subscriber_keep_all_drops_newest_sample_on_full_queue() {
+    let qos = Ros2Qos {
+        history: History::KeepAll,
+        ..Ros2Qos::default()
+    };
+    let ingress = SubscriptionIngress::new_with_qos(
+        2,
+        8,
+        Arc::new(|bytes: &[u8]| Ok(bytes.to_vec())),
+        Some(&qos),
+    )
+    .unwrap();
+
+    let make_attachment = |seq: i64| {
+        Attachment {
+            sequence_number: seq,
+            source_timestamp_ns: 100 + seq,
+            gid: [3; 16],
+        }
+        .encode()
+        .unwrap()
+    };
+
+    assert!(ingress.ingest(&make_attachment(1), b"1").unwrap());
+    assert!(ingress.ingest(&make_attachment(2), b"2").unwrap());
+    assert!(!ingress.ingest(&make_attachment(3), b"3").unwrap());
+    assert!(!ingress.ingest(&make_attachment(4), b"4").unwrap());
+    assert!(!ingress.ingest(&make_attachment(5), b"5").unwrap());
+
+    let (payload1, meta1) = ingress.try_recv().unwrap();
+    let (payload2, meta2) = ingress.try_recv().unwrap();
+    assert!(ingress.try_recv().is_err());
+
+    assert_eq!(payload1, b"1");
+    assert_eq!(meta1.sequence_number, 1);
+    assert_eq!(payload2, b"2");
+    assert_eq!(meta2.sequence_number, 2);
+    assert_eq!(ingress.stats().dropped_samples, 3);
+}
+
+#[test]
 fn subscriber_rejects_malformed_attachment_and_payload_before_decode() {
     let ingress =
         SubscriptionIngress::new(2, 4, Arc::new(|bytes: &[u8]| Ok(bytes.to_vec()))).unwrap();
@@ -336,4 +418,53 @@ async fn node_bound_entities_track_graph_and_drop_tokens() {
             .all(|entity| entity.token.kind == EntityKind::Node)
     })
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn raw_subscription_keep_last_drops_oldest_sample_on_full_queue() {
+    let publisher_session = zenoh::open(zenoh::Config::default()).await.unwrap();
+    let subscriber_session = zenoh::open(zenoh::Config::default()).await.unwrap();
+    let qos = Ros2Qos {
+        history: History::KeepLast { depth: 2 },
+        ..Ros2Qos::default()
+    };
+    let subscription = RawSubscription::declare_with_qos(
+        &subscriber_session,
+        "42/dora/keep_last_drop",
+        2,
+        1024,
+        Arc::new(|bytes: &[u8]| Ok(bytes.to_vec())),
+        &qos,
+    )
+    .await
+    .unwrap();
+    let publisher =
+        RawPublisher::declare(&publisher_session, "42/dora/keep_last_drop", [1; 16], &qos)
+            .await
+            .unwrap();
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    for i in 1..=5 {
+        publisher
+            .publish_at(format!("{i}").as_bytes(), 100 + i)
+            .await
+            .unwrap();
+    }
+
+    // Give zenoh a moment to ingest samples
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let first = tokio::time::timeout(Duration::from_secs(3), subscription.recv_async())
+        .await
+        .unwrap()
+        .unwrap();
+    let second = tokio::time::timeout(Duration::from_secs(3), subscription.recv_async())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!((first.0, first.1.sequence_number), (b"4".to_vec(), 4));
+    assert_eq!((second.0, second.1.sequence_number), (b"5".to_vec(), 5));
+    assert_eq!(subscription.stats().dropped_samples, 3);
 }

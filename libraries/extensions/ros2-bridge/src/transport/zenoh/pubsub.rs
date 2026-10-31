@@ -228,6 +228,7 @@ pub struct SubscriptionIngress<T> {
     decoder: Arc<Decoder<T>>,
     malformed: AtomicU64,
     dropped: AtomicU64,
+    drop_oldest: bool,
 }
 
 impl<T> SubscriptionIngress<T> {
@@ -236,10 +237,34 @@ impl<T> SubscriptionIngress<T> {
         max_payload_size: usize,
         decoder: Arc<Decoder<T>>,
     ) -> Result<Self, PubSubError> {
+        Self::new_with_qos(capacity, max_payload_size, decoder, None)
+    }
+
+    pub fn new_with_qos(
+        capacity: usize,
+        max_payload_size: usize,
+        decoder: Arc<Decoder<T>>,
+        qos: Option<&Ros2Qos>,
+    ) -> Result<Self, PubSubError> {
+        Self::new_with_history(
+            capacity,
+            max_payload_size,
+            decoder,
+            qos.map(|value| value.history),
+        )
+    }
+
+    pub fn new_with_history(
+        capacity: usize,
+        max_payload_size: usize,
+        decoder: Arc<Decoder<T>>,
+        history: Option<History>,
+    ) -> Result<Self, PubSubError> {
         if capacity == 0 {
             return Err(PubSubError::ZeroCapacity);
         }
         let (sender, receiver) = flume::bounded(capacity);
+        let drop_oldest = matches!(history, Some(History::KeepLast { .. }));
         Ok(Self {
             sender,
             receiver,
@@ -247,8 +272,10 @@ impl<T> SubscriptionIngress<T> {
             decoder,
             malformed: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
+            drop_oldest,
         })
     }
+
     pub fn ingest(&self, attachment: &[u8], payload: &[u8]) -> Result<bool, PubSubError> {
         // `max_payload_size` is a *pre-decode* guard: it stops the decoder from
         // allocating on an oversize sample. It does NOT bound the raw sample the
@@ -273,13 +300,37 @@ impl<T> SubscriptionIngress<T> {
             source_timestamp_ns: attachment.source_timestamp_ns,
             publisher_gid: attachment.gid,
         };
-        match self.sender.try_send((value, metadata)) {
-            Ok(()) => Ok(true),
-            Err(flume::TrySendError::Full(_)) => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-                Ok(false)
+        if self.drop_oldest {
+            let mut item = (value, metadata);
+            loop {
+                match self.sender.try_send(item) {
+                    Ok(()) => return Ok(true),
+                    Err(flume::TrySendError::Full(returned)) => {
+                        item = returned;
+                        match self.receiver.try_recv() {
+                            Ok(_) => {
+                                self.dropped.fetch_add(1, Ordering::Relaxed);
+                            }
+                            Err(flume::TryRecvError::Empty) => {
+                                // Channel drained by receiver, retry send.
+                            }
+                            Err(flume::TryRecvError::Disconnected) => {
+                                return Err(PubSubError::Closed);
+                            }
+                        }
+                    }
+                    Err(flume::TrySendError::Disconnected(_)) => return Err(PubSubError::Closed),
+                }
             }
-            Err(flume::TrySendError::Disconnected(_)) => Err(PubSubError::Closed),
+        } else {
+            match self.sender.try_send((value, metadata)) {
+                Ok(()) => Ok(true),
+                Err(flume::TrySendError::Full(_)) => {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    Ok(false)
+                }
+                Err(flume::TrySendError::Disconnected(_)) => Err(PubSubError::Closed),
+            }
         }
     }
     pub fn try_recv(&self) -> Result<(T, MessageMetadata), PubSubError> {
@@ -340,10 +391,11 @@ impl<T: Send + 'static> RawSubscription<T> {
         decoder: Arc<Decoder<T>>,
         qos: Option<&Ros2Qos>,
     ) -> Result<Self, PubSubError> {
-        let ingress = Arc::new(SubscriptionIngress::new(
+        let ingress = Arc::new(SubscriptionIngress::new_with_qos(
             capacity,
             max_payload_size,
             decoder,
+            qos,
         )?);
         let callback_ingress = ingress.clone();
         let key = zenoh::key_expr::OwnedKeyExpr::try_from(key.to_owned())
