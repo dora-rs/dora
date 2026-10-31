@@ -8,8 +8,19 @@ air-gapped mirror, or an enterprise fork.
 
 ## `hub.toml`
 
-Config lives at `~/.config/dora/hub.toml` (override the path with the
-`DORA_HUB_CONFIG` environment variable). It is a list of `[[index]]` entries:
+Config lives in `hub.toml` in the platform's config directory (override the
+path with the `DORA_HUB_CONFIG` environment variable):
+
+| Platform | Path |
+|---|---|
+| Linux | `~/.config/dora/hub.toml` |
+| macOS | `~/Library/Application Support/dora/hub.toml` |
+| Windows | `%APPDATA%\dora\hub.toml` |
+
+A `hub.toml` left at `~/.config/dora/` on macOS or Windows is an error rather
+than being ignored, since ignoring it would drop its namespace bindings.
+
+It is a list of `[[index]]` entries:
 
 ```toml
 # An internal git-backed catalog for the `acme` namespace.

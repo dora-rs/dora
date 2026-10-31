@@ -1,6 +1,8 @@
 //! Multi-index configuration and namespace binding (spec §7.3).
 //!
-//! `~/.config/dora/hub.toml` declares `[[index]]` entries. **A namespace
+//! `hub.toml` in the platform config directory (`~/.config/dora` on Linux,
+//! `~/Library/Application Support/dora` on macOS, `%APPDATA%\dora` on
+//! Windows) declares `[[index]]` entries. **A namespace
 //! resolves against exactly one index**: explicit `namespaces` bindings win,
 //! the official index carries every unbound namespace, and a namespace bound
 //! by two entries is a configuration error — there is no search order to
@@ -155,7 +157,12 @@ impl ResolvedConfig {
         let Some(config_dir) = dirs::config_dir() else {
             return Self::new(Vec::new(), PathBuf::from("."));
         };
-        Self::load_from(&config_dir.join("dora").join("hub.toml"))
+        let path = config_dir.join("dora").join("hub.toml");
+        if !path.is_file() {
+            let linux_path = dirs::home_dir().map(|home| home.join(".config/dora/hub.toml"));
+            ensure_not_misplaced(&path, linux_path.as_deref())?;
+        }
+        Self::load_from(&path)
     }
 
     /// Load from an explicit config file path (missing file = official only).
@@ -179,6 +186,28 @@ impl ResolvedConfig {
             None => &self.indexes[self.default_index],
         }
     }
+}
+
+/// Refuse to fall back to official-only when a `hub.toml` sits at the Linux
+/// location (`~/.config/dora/hub.toml`) on a platform that reads it from
+/// elsewhere. Ignoring it would silently drop its namespace bindings, so a
+/// bound namespace would resolve against the official index instead: the
+/// dependency confusion the bindings exist to prevent.
+fn ensure_not_misplaced(expected: &Path, linux_path: Option<&Path>) -> eyre::Result<()> {
+    if let Some(linux_path) = linux_path
+        && linux_path != expected
+        && linux_path.is_file()
+    {
+        eyre::bail!(
+            "found `{}`, but on this platform dora reads its hub config from `{}`, \
+             so the indexes and namespace bindings in it are not in effect\n\n  \
+             hint: move the file to `{}`, or point DORA_HUB_CONFIG at it",
+            linux_path.display(),
+            expected.display(),
+            expected.display(),
+        );
+    }
+    Ok(())
 }
 
 /// Validate one `[[index]]` entry. The alias becomes a cache directory name
@@ -251,6 +280,41 @@ pub(crate) fn validate_index_entry(index: &IndexConfig) -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hub_toml_at_the_linux_path_is_not_silently_ignored() {
+        let home = tempfile::tempdir().unwrap();
+        let expected = home
+            .path()
+            .join("Library/Application Support/dora/hub.toml");
+        let linux_path = home.path().join(".config/dora/hub.toml");
+        std::fs::create_dir_all(linux_path.parent().unwrap()).unwrap();
+        std::fs::write(&linux_path, "[[index]]\n").unwrap();
+
+        let err = ensure_not_misplaced(&expected, Some(&linux_path))
+            .expect_err("a misplaced hub.toml must be reported");
+        let msg = format!("{err:#}");
+        assert!(msg.contains(&linux_path.display().to_string()), "{msg}");
+        assert!(msg.contains(&expected.display().to_string()), "{msg}");
+        assert!(msg.contains("DORA_HUB_CONFIG"), "{msg}");
+    }
+
+    #[test]
+    fn no_misplaced_config_is_fine() {
+        let home = tempfile::tempdir().unwrap();
+        let expected = home
+            .path()
+            .join("Library/Application Support/dora/hub.toml");
+        let linux_path = home.path().join(".config/dora/hub.toml");
+        // Nothing at the Linux path.
+        assert!(ensure_not_misplaced(&expected, Some(&linux_path)).is_ok());
+        // On Linux the two are the same file.
+        std::fs::create_dir_all(linux_path.parent().unwrap()).unwrap();
+        std::fs::write(&linux_path, "").unwrap();
+        assert!(ensure_not_misplaced(&linux_path, Some(&linux_path)).is_ok());
+        // No home directory.
+        assert!(ensure_not_misplaced(&expected, None).is_ok());
+    }
+
     use super::*;
 
     fn config(toml_str: &str) -> eyre::Result<ResolvedConfig> {

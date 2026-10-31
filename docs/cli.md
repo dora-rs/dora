@@ -1286,7 +1286,9 @@ and where to add it; automated PR-opening against the official `node-index`
 lands with the index bootstrap.
 
 `search`/`info`/`outdated`/`update` accept `--offline` to use only the cached index.
-Indexes are configured in `~/.config/dora/hub.toml`; a namespace resolves
+Indexes are configured in `hub.toml` in the platform config directory
+(`~/.config/dora` on Linux, `~/Library/Application Support/dora` on macOS,
+`%APPDATA%\dora` on Windows, or `DORA_HUB_CONFIG`); a namespace resolves
 against exactly one index (see the plan §7.3). `hub:` nodes in a dataflow are
 resolved by `dora build` — there is deliberately no `dora hub install` (hub
 packages are resolved per-dataflow, cargo-style).
