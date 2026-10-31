@@ -148,6 +148,18 @@ mod ffi {
         error: String,
     }
 
+    /// Result of `extension_load`.
+    ///
+    /// `found` is false when the key is not in the table (never stored,
+    /// or already dropped), and `value` is then empty. A failed request
+    /// sets `error` and also leaves `found` false, so check `error`
+    /// first: a failure is not the same as an absent key.
+    struct DoraExtensionValue {
+        found: bool,
+        value: Vec<u8>,
+        error: String,
+    }
+
     /// Payload of a `DoraEventType::NodeFailed` event.
     struct DoraNodeFailed {
         /// Inputs on this node that will stop receiving data because
@@ -363,6 +375,42 @@ mod ffi {
             server_node_id: &str,
             timeout_ms: u64,
         ) -> DoraPatternResult;
+
+        // -------------------------------------------------------------
+        // Extension seam (docs/extensions.md)
+        //
+        // The namespace parameter is `ns` because `namespace` is a C++
+        // keyword and would break the generated header.
+        // -------------------------------------------------------------
+
+        /// Store an opaque value in the daemon's dataflow-scoped
+        /// extension table. dora never interprets `ns`, `key` or `value`;
+        /// it reclaims the entry when this node exits or the dataflow
+        /// finishes. Only the storing node may overwrite a key.
+        /// Mirrors `dora_node_api::DoraNode::extension_store`.
+        fn extension_store(
+            output_sender: &Box<OutputSender>,
+            ns: &str,
+            key: &str,
+            value: &[u8],
+        ) -> DoraResult;
+        /// Read an opaque value back. With `remove` set, the entry is
+        /// dropped in the same round trip.
+        fn extension_load(
+            output_sender: &Box<OutputSender>,
+            ns: &str,
+            key: &str,
+            remove: bool,
+        ) -> DoraExtensionValue;
+        /// Drop an opaque value, notifying every node that stored or
+        /// loaded it. Dropping an absent key succeeds, so a retry after a
+        /// lost reply is safe.
+        fn extension_drop(output_sender: &Box<OutputSender>, ns: &str, key: &str) -> DoraResult;
+        /// Take the keys in namespace `ns` dropped since the last call, so
+        /// the caller can release whatever it derived from them. Drop
+        /// notifications are not delivered as events: poll this wherever
+        /// the extension next runs.
+        fn drain_dropped_extension_keys(ns: &str) -> Vec<String>;
 
         fn next(self: &mut CombinedEvents) -> CombinedEvent;
 
@@ -1522,6 +1570,80 @@ fn pattern_failure(
     }
 }
 
+// ---------------------------------------------------------------------
+// Extension seam (docs/extensions.md)
+// ---------------------------------------------------------------------
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn extension_store(
+    sender: &Box<OutputSender>,
+    ns: &str,
+    key: &str,
+    value: &[u8],
+) -> ffi::DoraResult {
+    let mut node = match lock_node(&sender.0, "extension_store") {
+        Ok(node) => node,
+        Err(error) => return ffi::DoraResult { error },
+    };
+    match node.extension_store(ns, key, value.to_vec()) {
+        Ok(()) => ffi::DoraResult {
+            error: String::new(),
+        },
+        Err(err) => ffi::DoraResult {
+            error: format!("{err:?}"),
+        },
+    }
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn extension_load(
+    sender: &Box<OutputSender>,
+    ns: &str,
+    key: &str,
+    remove: bool,
+) -> ffi::DoraExtensionValue {
+    let mut node = match lock_node(&sender.0, "extension_load") {
+        Ok(node) => node,
+        Err(error) => return extension_load_failed(error),
+    };
+    match node.extension_load(ns, key, remove) {
+        Ok(value) => ffi::DoraExtensionValue {
+            found: value.is_some(),
+            value: value.unwrap_or_default(),
+            error: String::new(),
+        },
+        Err(err) => extension_load_failed(format!("{err:?}")),
+    }
+}
+
+fn extension_load_failed(error: String) -> ffi::DoraExtensionValue {
+    ffi::DoraExtensionValue {
+        found: false,
+        value: Vec::new(),
+        error,
+    }
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn extension_drop(sender: &Box<OutputSender>, ns: &str, key: &str) -> ffi::DoraResult {
+    let mut node = match lock_node(&sender.0, "extension_drop") {
+        Ok(node) => node,
+        Err(error) => return ffi::DoraResult { error },
+    };
+    match node.extension_drop(ns, key) {
+        Ok(()) => ffi::DoraResult {
+            error: String::new(),
+        },
+        Err(err) => ffi::DoraResult {
+            error: format!("{err:?}"),
+        },
+    }
+}
+
+fn drain_dropped_extension_keys(ns: &str) -> Vec<String> {
+    dora_node_api::event_stream::extensions::drain_dropped_keys(ns)
+}
+
 pub struct MergedEvents {
     events: Option<Box<dyn Stream<Item = MergedEvent<ExternalEvent>> + Unpin>>,
     #[cfg(any(feature = "ros2-bridge", test))]
@@ -2218,6 +2340,58 @@ mod tests {
             log.error.contains("poisoned"),
             "non-send node operations must fail-stop as well: {}",
             log.error
+        );
+
+        let loaded = extension_load(&sender, "ns", "key", false);
+        assert!(
+            !loaded.found && loaded.error.contains("poisoned"),
+            "extension operations must fail-stop too: {}",
+            loaded.error
+        );
+    }
+
+    /// A load that fails must say so rather than look like an absent key: a
+    /// transport reads "absent" as "the value is gone" and releases what it
+    /// derived from it. The testing daemon rejects extension requests, which
+    /// gives a real failed round trip.
+    #[test]
+    fn a_failed_extension_load_is_an_error_not_an_absent_key() {
+        let (sender, _rx, _events) = testing_output_sender();
+
+        let loaded = extension_load(&sender, "ns", "key", true);
+        assert!(!loaded.found);
+        assert!(loaded.value.is_empty());
+        assert_eq!(
+            loaded.error.lines().next(),
+            Some(
+                "unsupported request in integration-testing mode: \
+                 ExtensionLoad { namespace: \"ns\", key: \"key\", remove: true }"
+            ),
+            "the daemon's error must reach C++: {}",
+            loaded.error
+        );
+    }
+
+    #[test]
+    fn extension_store_and_drop_report_daemon_errors() {
+        let (sender, _rx, _events) = testing_output_sender();
+
+        let stored = extension_store(&sender, "ns", "key", &[1, 2, 3]);
+        assert_eq!(
+            stored.error.lines().next(),
+            Some(
+                "unsupported request in integration-testing mode: \
+                 ExtensionStore { namespace: \"ns\", key: \"key\", value: [1, 2, 3] }"
+            ),
+        );
+
+        let dropped = extension_drop(&sender, "ns", "key");
+        assert_eq!(
+            dropped.error.lines().next(),
+            Some(
+                "unsupported request in integration-testing mode: \
+                 ExtensionDrop { namespace: \"ns\", key: \"key\" }"
+            ),
         );
     }
 

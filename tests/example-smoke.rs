@@ -2321,6 +2321,9 @@ fn smoke_memory_pool_cuda2cuda() {
 // | c++-service-action        | covered: `examples` job via                          | covered  |
 // |                           | `[[example]] cxx-service-action` (cargo run          |          |
 // |                           | --example), same shape as `cxx-arrow-dataflow`       |          |
+// | c++-extension-seam        | covered: `examples` job via                          | covered  |
+// |                           | `[[example]] cxx-extension-seam` (cargo run          |          |
+// |                           | --example), same shape as `cxx-service-action`       |          |
 // | cmake-dataflow            | covered: `cli` job (3 OS), ci.yml CLI tests          | covered  |
 // | cpu-affinity-probe        | covered: nightly `cpu-affinity-smoke`                | covered  |
 // |                           | (.github/workflows/nightly.yml:535)                  |          |

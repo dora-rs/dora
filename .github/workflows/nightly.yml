@@ -1439,6 +1439,12 @@ jobs:
       - name: C++ Thread-Safe Output example
         timeout-minutes: 15
         run: cargo run --example cxx-thread-safe-output
+      # The extension seam from C++ (#2686): store, load and drop against a
+      # real daemon, plus the drop notification. Byte payloads only, so it
+      # needs no Arrow C++ either.
+      - name: C++ Extension Seam example
+        timeout-minutes: 15
+        run: cargo run --example cxx-extension-seam
       - name: Install Arrow C++ Library
         timeout-minutes: 10
         shell: bash
