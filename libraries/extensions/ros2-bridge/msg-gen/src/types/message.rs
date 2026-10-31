@@ -391,14 +391,14 @@ impl Message {
                 let topic = match &node.node {
                     GeneratedNode::Dds(node) => #topic_name::Dds(node.create_topic(&name, type_name, &qos.into())?),
                     #[cfg(feature = "rmw-zenoh")]
-                    GeneratedNode::Zenoh { compatibility, .. } => {
+                    GeneratedNode::Zenoh { node, compatibility } => {
                         let identity = dora_ros2_bridge::transport::zenoh::compatibility::resolve_message(
                             *compatibility,
                             #package_name,
                             #self_name,
                             &dora_ros2_bridge::transport::zenoh::compatibility::TypeDescriptionResolver::from_ament_prefix_path(),
                         )?;
-                        #topic_name::Zenoh { name: name.to_string(), identity }
+                        #topic_name::Zenoh { name: zenoh_full_name(node, name.to_string()), identity }
                     }
                 };
                 Ok(Box::new(topic))
