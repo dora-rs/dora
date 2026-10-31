@@ -785,6 +785,51 @@ async fn logs_are_read_from_the_nodes_own_working_dir() {
     }
 }
 
+/// The spawn path is what records a node's own working dir for `Logs`
+/// above: a `deploy.working_dir` node must end up with its directory
+/// registered, a node without one must not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn spawn_records_the_log_dir_of_a_node_with_its_own_working_dir() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let base = tempfile::tempdir().unwrap();
+    let descriptor: Descriptor = serde_json::from_value(serde_json::json!({
+        "nodes": [
+            { "id": "in-sub", "path": "/nonexistent/node", "deploy": { "working_dir": "sub" } },
+            { "id": "in-base", "path": "/nonexistent/node" },
+        ]
+    }))
+    .unwrap();
+    let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+    let spawn_nodes = nodes.keys().cloned().collect();
+    let dataflow_id = Uuid::new_v4();
+    // The node binaries do not exist, so the spawn itself may fail; the
+    // directories are recorded before that.
+    let _ = daemon
+        .spawn_dataflow(
+            None,
+            dataflow_id,
+            base.path().to_path_buf(),
+            nodes,
+            descriptor,
+            spawn_nodes,
+            false,
+            None,
+        )
+        .await;
+
+    let dirs = daemon
+        .node_log_dirs
+        .get(&dataflow_id)
+        .expect("the `deploy.working_dir` node must be recorded");
+    assert_eq!(
+        dirs.get(&NodeId::from("in-sub".to_string())),
+        Some(&base.path().join("sub"))
+    );
+    assert!(!dirs.contains_key(&NodeId::from("in-base".to_string())));
+}
+
 /// The coordinator stops a dataflow's daemons one after another, so the
 /// dataflow can finish on a later daemon before that daemon's stop arrives.
 /// The stop must then succeed rather than fail `dora stop` / `dora cluster
