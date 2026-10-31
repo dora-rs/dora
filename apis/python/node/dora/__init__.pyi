@@ -211,7 +211,11 @@ class Node:
 
         ```python
         node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
-        ```"""
+        ```
+
+        Sending 4 KiB or more of data releases the GIL, so other Python
+        threads keep running while it copies ``data``. Don't change ``data``
+        from another thread until ``send_output`` returns."""
 
     def send_output_raw(
         self, output_id: str, data_length: int, metadata: dict = None
