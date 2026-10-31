@@ -531,11 +531,12 @@ async fn start_inner(
             }
             Event::NodeMetrics {
                 dataflow_id,
+                daemon_id,
                 metrics,
                 network,
             } => {
                 coordinator
-                    .handle_node_metrics(dataflow_id, metrics, network)
+                    .handle_node_metrics(dataflow_id, daemon_id, metrics, network)
                     .await?
             }
             Event::DataflowBuildResult {

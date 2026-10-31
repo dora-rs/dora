@@ -304,7 +304,7 @@ fn test_running_dataflow(
         node_metrics: BTreeMap::new(),
         node_finalized: BTreeSet::new(),
         node_stopped_at: BTreeMap::new(),
-        network_metrics: None,
+        network_metrics: BTreeMap::new(),
         spawn_result: CachedResult::default(),
         stop_reply_senders: vec![],
         buffered_log_messages: vec![],
@@ -6726,4 +6726,61 @@ async fn clean_keeps_a_dataflow_awaiting_reclaim() {
         "the Recovering record must survive `dora clean`"
     );
     assert!(coordinator.dataflow_results.contains_key(&dataflow_id));
+}
+
+/// Each daemon pushes its own cross-daemon Zenoh counters for a dataflow, so
+/// a node's `network` row must come from the daemon running it — not from
+/// whichever daemon of a multi-daemon dataflow happened to push last.
+#[tokio::test]
+async fn node_info_reports_the_network_counters_of_the_nodes_own_daemon() {
+    use dora_message::daemon_to_coordinator::NetworkMetrics;
+
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_a = DaemonId::new(Some("a".to_string()));
+    let daemon_b = DaemonId::new(Some("b".to_string()));
+    let sender: NodeId = "sender".to_string().into();
+    let receiver: NodeId = "receiver".to_string().into();
+
+    let mut df = test_running_dataflow(dataflow_id, daemon_a.clone(), sender.clone());
+    let receiver_node = df.nodes[&sender].clone();
+    df.nodes.insert(receiver.clone(), receiver_node);
+    df.node_to_daemon.insert(receiver.clone(), daemon_b.clone());
+    df.daemons.insert(daemon_b.clone());
+
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        DaemonConnections::default(),
+        store,
+    );
+    let net = |bytes_sent| NetworkMetrics {
+        bytes_sent,
+        ..Default::default()
+    };
+    coordinator
+        .handle_node_metrics(dataflow_id, daemon_a, BTreeMap::new(), Some(net(1)))
+        .await
+        .unwrap();
+    coordinator
+        .handle_node_metrics(dataflow_id, daemon_b, BTreeMap::new(), Some(net(2)))
+        .await
+        .unwrap();
+
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_get_node_info(reply_sender)
+        .await
+        .unwrap();
+    let Ok(ControlRequestReply::NodeInfoList(infos)) = reply.await.unwrap() else {
+        panic!("expected a NodeInfoList reply");
+    };
+    let bytes_sent = |node: &NodeId| {
+        infos
+            .iter()
+            .find(|info| &info.node_id == node)
+            .and_then(|info| info.network.as_ref())
+            .map(|net| net.bytes_sent)
+    };
+    assert_eq!(bytes_sent(&sender), Some(1), "{infos:?}");
+    assert_eq!(bytes_sent(&receiver), Some(2), "{infos:?}");
 }

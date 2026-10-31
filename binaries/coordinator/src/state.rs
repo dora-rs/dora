@@ -440,7 +440,11 @@ pub(crate) struct RunningDataflow {
     /// stay visible until the dataflow itself is stopped so `dora doctor`
     /// keeps reporting the crash.
     pub(crate) node_stopped_at: BTreeMap<NodeId, Instant>,
-    pub(crate) network_metrics: Option<dora_message::daemon_to_coordinator::NetworkMetrics>,
+    /// Each daemon's cross-daemon Zenoh counters for this dataflow, as last
+    /// pushed with its `NodeMetrics`. Keyed by daemon so one daemon's push
+    /// does not overwrite another's.
+    pub(crate) network_metrics:
+        BTreeMap<DaemonId, dora_message::daemon_to_coordinator::NetworkMetrics>,
 
     pub(crate) spawn_result: CachedResult,
     pub(crate) stop_reply_senders: Vec<oneshot::Sender<eyre::Result<ControlRequestReply>>>,
@@ -727,7 +731,7 @@ impl RunningDataflow {
             node_metrics: BTreeMap::new(),
             node_finalized: BTreeSet::new(),
             node_stopped_at: BTreeMap::new(),
-            network_metrics: None,
+            network_metrics: BTreeMap::new(),
             spawn_result: CachedResult::Cached {
                 result: Box::new(Ok(ControlRequestReply::DataflowSpawned {
                     uuid: record.uuid,

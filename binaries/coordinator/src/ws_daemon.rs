@@ -461,6 +461,7 @@ fn translate_daemon_event(
             network,
         } => Some(Event::NodeMetrics {
             dataflow_id,
+            daemon_id,
             metrics,
             network,
         }),
