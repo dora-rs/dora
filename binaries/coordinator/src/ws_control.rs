@@ -229,7 +229,7 @@ pub(crate) async fn handle_control_ws(
                     }
                 };
 
-                let control_request: ControlRequest = match serde_json::from_value(req.params.clone()) {
+                let control_request: ControlRequest = match ControlRequest::from_wire_value(req.params.clone()) {
                     Ok(r) => r,
                     Err(e) => {
                         let resp = WsResponse::err(req.id, format!("invalid params: {e}"));

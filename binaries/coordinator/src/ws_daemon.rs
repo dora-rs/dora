@@ -12,7 +12,10 @@ use dora_message::{
     ws_protocol::WsResponse,
 };
 use futures::{SinkExt, StreamExt};
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use uuid::Uuid;
 
@@ -41,12 +44,21 @@ pub(crate) async fn handle_daemon_ws(
     // Track daemon_id and connection_id from incoming events for cleanup on disconnect
     let mut tracked_daemon_id: Option<DaemonId> = None;
     let mut tracked_connection_id: Option<Uuid> = None;
-    let mut dropped_debug_frames = DroppedDebugFrames::default();
+    let mut dropped_debug_frames = DroppedEvents::default();
+    // Events read from this daemon that the main loop has not taken yet. They
+    // are queued here rather than awaited at the read: awaiting would stop
+    // this connection from reading the socket — and so from routing the
+    // daemon's replies — whenever the main loop is itself waiting on one of
+    // those replies, which deadlocks the two until the reply times out
+    // (dora-rs/dora#3983).
+    let mut backlog = EventBacklog::default();
 
     loop {
         tokio::select! {
-            // Incoming messages from daemon
-            msg = ws_rx.next() => {
+            // Incoming messages from daemon. Paused while the backlog is at
+            // its hard cap, which leaves the daemon to TCP backpressure as
+            // before #3983 rather than buffering without bound.
+            msg = ws_rx.next(), if !backlog.is_full() => {
                 let Some(msg) = msg else { break };
                 let text = match msg {
                     Ok(Message::Text(text)) => text,
@@ -80,6 +92,7 @@ pub(crate) async fn handle_daemon_ws(
                     if !handle_daemon_request(
                         &text,
                         &event_tx,
+                        &mut backlog,
                         &topic_debug_tx,
                         &mut dropped_debug_frames,
                         &clock,
@@ -106,6 +119,31 @@ pub(crate) async fn handle_daemon_ws(
                     break;
                 }
             }
+            // Hand queued daemon events to the main loop, in order, as it
+            // makes room for them.
+            permit = event_tx.reserve(), if !backlog.is_empty() => {
+                let Ok(permit) = permit else { break };
+                if let Some(event) = backlog.pop_front() {
+                    permit.send(event);
+                }
+                // Hand over whatever else fits now, rather than one event per
+                // turn of the loop.
+                while !backlog.is_empty() {
+                    let Ok(permit) = event_tx.try_reserve() else { break };
+                    if let Some(event) = backlog.pop_front() {
+                        permit.send(event);
+                    }
+                }
+            }
+        }
+    }
+
+    // Deliver what the daemon reported before it went away — a finish
+    // report, say — ahead of the `DaemonExit` below. Nothing waits on this
+    // connection's replies any more, so waiting on the main loop is safe.
+    while let Some(event) = backlog.pop_front() {
+        if event_tx.send(event).await.is_err() {
+            return;
         }
     }
 
@@ -123,51 +161,118 @@ pub(crate) async fn handle_daemon_ws(
     }
 }
 
-/// Hand a daemon event to the main loop. Returns false if the connection
-/// should close, on its channel closing.
+/// Hand a daemon event to the main loop, never waiting for it. Returns false
+/// if the connection should close, on the channel it belongs on closing.
 ///
-/// A topic debug frame goes on its own channel and is dropped if that is full,
-/// never waited for: waiting would stop this connection from reading the
-/// socket, the daemon's next stop reply included, whenever the main loop falls
-/// behind (dora-rs/dora#3535).
-async fn forward_daemon_event(
+/// A topic debug frame goes on its own channel and is dropped if that is full
+/// (dora-rs/dora#3535). Every other event goes straight to the main loop's
+/// channel when it has room and nothing is queued ahead of it, and otherwise
+/// joins the connection's backlog, which `handle_daemon_ws` drains in order.
+fn queue_daemon_event(
     event: Event,
+    size: usize,
     event_tx: &mpsc::Sender<Event>,
+    backlog: &mut EventBacklog,
     topic_debug_tx: &mpsc::Sender<Event>,
-    dropped_debug_frames: &mut DroppedDebugFrames,
+    dropped_debug_frames: &mut DroppedEvents,
 ) -> bool {
     match event {
         Event::TopicDebugData { .. } => match topic_debug_tx.try_send(event) {
             Err(mpsc::error::TrySendError::Full(_)) => {
-                dropped_debug_frames.record();
+                dropped_debug_frames
+                    .record("topic debug frame(s): the coordinator's topic debug queue is full");
                 true
             }
             result => result.is_ok(),
         },
-        event => event_tx.send(event).await.is_ok(),
+        event if backlog.is_empty() => match event_tx.try_send(event) {
+            Err(mpsc::error::TrySendError::Full(event)) => {
+                backlog.push(event, size);
+                true
+            }
+            result => result.is_ok(),
+        },
+        event => {
+            backlog.push(event, size);
+            true
+        }
     }
 }
 
-/// Topic debug frames a daemon connection had to drop, warned about at most
-/// once per interval with the count since the last warning.
+/// Past this many queued bytes, a connection drops the daemon's log lines
+/// rather than queue more: they are the one high-volume event nothing waits
+/// on. Control events are still queued, up to [`MAX_BACKLOG_BYTES`].
+const MAX_BACKLOG_BYTES_BEFORE_DROPPING_LOGS: usize = 8 * 1024 * 1024;
+
+/// Hard cap on a connection's backlog. At it, the connection stops reading
+/// the daemon's socket until the main loop takes some events, so a daemon
+/// that outpaces the main loop is throttled by TCP backpressure instead of
+/// growing coordinator memory. Far above anything a healthy daemon queues
+/// while the main loop waits on one of its replies.
+const MAX_BACKLOG_BYTES: usize = 32 * 1024 * 1024;
+
+/// Daemon events read off one connection and not yet taken by the main loop,
+/// each with the size of the message it arrived in.
 #[derive(Default)]
-struct DroppedDebugFrames {
+struct EventBacklog {
+    events: VecDeque<(Event, usize)>,
+    bytes: usize,
+    dropped_logs: DroppedEvents,
+}
+
+impl EventBacklog {
+    fn push(&mut self, event: Event, size: usize) {
+        if matches!(event, Event::Log(_))
+            && self.bytes + size > MAX_BACKLOG_BYTES_BEFORE_DROPPING_LOGS
+        {
+            self.dropped_logs
+                .record("daemon log message(s): the coordinator is not keeping up");
+            return;
+        }
+        let was_full = self.is_full();
+        self.events.push_back((event, size));
+        self.bytes += size;
+        if !was_full && self.is_full() {
+            tracing::warn!(
+                "daemon event backlog reached {} bytes: pausing reads from the daemon \
+                 until the coordinator catches up",
+                self.bytes
+            );
+        }
+    }
+
+    fn pop_front(&mut self) -> Option<Event> {
+        let (event, size) = self.events.pop_front()?;
+        self.bytes -= size;
+        Some(event)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    fn is_full(&self) -> bool {
+        self.bytes >= MAX_BACKLOG_BYTES
+    }
+}
+
+/// Events a daemon connection had to drop, warned about at most once per
+/// interval with the count since the last warning.
+#[derive(Default)]
+struct DroppedEvents {
     count: u64,
     last_log: Option<std::time::Instant>,
 }
 
-impl DroppedDebugFrames {
-    fn record(&mut self) {
+impl DroppedEvents {
+    fn record(&mut self, what: &str) {
         self.count += 1;
         let now = std::time::Instant::now();
         if self
             .last_log
             .is_none_or(|last| now - last >= std::time::Duration::from_secs(5))
         {
-            tracing::warn!(
-                "dropped {} topic debug frame(s): the coordinator's topic debug queue is full",
-                self.count,
-            );
+            tracing::warn!("dropped {} {what}", self.count);
             self.count = 0;
             self.last_log = Some(now);
         }
@@ -187,14 +292,17 @@ struct DaemonWsRequestRaw {
     >,
 }
 
-/// Handle a daemon request (event or register). Returns false if the channel
-/// it belongs on closed: the shared event one, or the topic debug one.
+/// Handle a daemon request (event or register). Returns false if the
+/// connection should close: on a malformed register, or on the channel a
+/// request goes straight to closing — the shared event one for a register,
+/// the topic debug one for a debug frame.
 #[allow(clippy::too_many_arguments)]
 async fn handle_daemon_request(
     raw_text: &str,
     event_tx: &mpsc::Sender<Event>,
+    backlog: &mut EventBacklog,
     topic_debug_tx: &mpsc::Sender<Event>,
-    dropped_debug_frames: &mut DroppedDebugFrames,
+    dropped_debug_frames: &mut DroppedEvents,
     clock: &HLC,
     cmd_tx: &mpsc::Sender<String>,
     pending_replies: &Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
@@ -259,6 +367,9 @@ async fn handle_daemon_request(
             // Capture the connection_id before moving `connection` into the event.
             let connection_id = connection.connection_id;
             let (daemon_id_tx, daemon_id_rx) = oneshot::channel();
+            // Waiting on the main loop is safe here, unlike for the events
+            // below: no command can be awaiting a reply on a connection that
+            // has not registered yet, and nothing is queued ahead of it.
             let event = DaemonRequest::Register {
                 connection,
                 version_check_result,
@@ -295,13 +406,14 @@ async fn handle_daemon_request(
             let connection_id = tracked_connection_id.unwrap_or_else(Uuid::new_v4);
             if let Some(coordinator_event) = translate_daemon_event(daemon_id, event, connection_id)
             {
-                forward_daemon_event(
+                queue_daemon_event(
                     coordinator_event,
+                    raw_text.len(),
                     event_tx,
+                    backlog,
                     topic_debug_tx,
                     dropped_debug_frames,
                 )
-                .await
             } else {
                 true
             }
@@ -461,6 +573,7 @@ fn translate_daemon_event(
             network,
         } => Some(Event::NodeMetrics {
             dataflow_id,
+            daemon_id,
             metrics,
             network,
         }),
@@ -548,20 +661,25 @@ async fn handle_daemon_response(
 #[cfg(test)]
 mod topic_debug_tests {
     use super::*;
-    use futures::FutureExt;
 
     /// Regression test for dora-rs/dora#3535: with the main loop's topic debug
     /// channel full, a daemon connection drops the next frame instead of
-    /// waiting for room, and the daemon's control events still get through.
+    /// waiting for room, and the daemon's control events are still queued.
+    fn heartbeat() -> Event {
+        Event::DaemonHeartbeat {
+            daemon_id: DaemonId::new(None),
+            ft_stats: None,
+        }
+    }
+
     #[test]
     fn a_full_topic_debug_channel_does_not_hold_up_control_events() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         let (topic_debug_tx, mut topic_debug_rx) = mpsc::channel(1);
-        let mut dropped = DroppedDebugFrames::default();
-        let mut forward = |event| {
-            forward_daemon_event(event, &event_tx, &topic_debug_tx, &mut dropped)
-                .now_or_never()
-                .expect("a daemon connection must not wait on the main loop")
+        let mut backlog = EventBacklog::default();
+        let mut dropped = DroppedEvents::default();
+        let mut queue = |event, backlog: &mut EventBacklog| {
+            queue_daemon_event(event, 1, &event_tx, backlog, &topic_debug_tx, &mut dropped)
         };
         let debug_frame = || Event::TopicDebugData {
             dataflow_id: Uuid::new_v4(),
@@ -569,25 +687,214 @@ mod topic_debug_tests {
             payload: Vec::new(),
         };
 
-        assert!(forward(debug_frame()));
+        assert!(queue(debug_frame(), &mut backlog));
         assert!(
-            forward(debug_frame()),
+            queue(debug_frame(), &mut backlog),
             "dropping a frame keeps the connection"
         );
-        assert!(forward(Event::DaemonHeartbeat {
-            daemon_id: DaemonId::new(None),
-            ft_stats: None,
-        }));
+        // The first control event fits the main loop's channel and goes
+        // straight there; the next waits in the backlog instead of blocking.
+        assert!(queue(heartbeat(), &mut backlog));
+        assert!(queue(heartbeat(), &mut backlog));
 
         assert!(matches!(
             event_rx.try_recv(),
             Ok(Event::DaemonHeartbeat { .. })
+        ));
+        assert!(matches!(
+            backlog.pop_front(),
+            Some(Event::DaemonHeartbeat { .. })
         ));
         assert!(topic_debug_rx.try_recv().is_ok());
         assert!(
             topic_debug_rx.try_recv().is_err(),
             "the second frame is dropped"
         );
+    }
+
+    /// A stalled main loop must not grow a connection's backlog without
+    /// bound: past the log threshold, log lines are dropped while control
+    /// events are still kept, and at the hard cap the backlog reports full
+    /// so the connection stops reading the socket.
+    #[test]
+    fn a_growing_backlog_drops_logs_then_reports_full() {
+        let mut backlog = EventBacklog::default();
+        let log = || {
+            Event::Log(dora_message::common::LogMessage {
+                build_id: None,
+                dataflow_id: None,
+                node_id: None,
+                daemon_id: None,
+                level: dora_message::common::LogLevelOrStdout::Stdout,
+                target: None,
+                module_path: None,
+                file: None,
+                line: None,
+                message: "dropped".into(),
+                timestamp: Default::default(),
+                fields: None,
+            })
+        };
+
+        backlog.push(heartbeat(), MAX_BACKLOG_BYTES_BEFORE_DROPPING_LOGS);
+        backlog.push(log(), 1);
+        backlog.push(heartbeat(), 1);
+        assert_eq!(backlog.events.len(), 2, "the log line is dropped");
+        assert!(!backlog.is_full());
+
+        backlog.push(heartbeat(), MAX_BACKLOG_BYTES);
+        assert!(backlog.is_full());
+        assert_eq!(backlog.events.len(), 3, "control events are never dropped");
+
+        while backlog.pop_front().is_some() {}
+        assert_eq!(backlog.bytes, 0);
+        assert!(!backlog.is_full());
+    }
+}
+
+/// Regression tests for dora-rs/dora#3983: a daemon connection must keep
+/// routing the daemon's replies while the main loop is not taking events —
+/// because the main loop is usually stalled *waiting for one of those
+/// replies*.
+#[cfg(test)]
+mod reply_routing_tests {
+    use super::*;
+    use axum::extract::{WebSocketUpgrade, ws::WebSocket};
+    use dora_coordinator_store::InMemoryStore;
+    use dora_message::ws_protocol::WsRequest;
+    use tokio_tungstenite::tungstenite;
+
+    type Client = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    /// Serve `handle_daemon_ws` on a local port, handing daemon events to
+    /// `event_tx`.
+    async fn serve(event_tx: mpsc::Sender<Event>) -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new().route(
+            "/api/daemon",
+            axum::routing::get(move |ws: WebSocketUpgrade| {
+                let event_tx = event_tx.clone();
+                async move {
+                    ws.on_upgrade(move |socket: WebSocket| async move {
+                        let (topic_debug_tx, _topic_debug_rx) = mpsc::channel(1);
+                        handle_daemon_ws(
+                            socket,
+                            event_tx,
+                            topic_debug_tx,
+                            Arc::new(HLC::default()),
+                            Arc::new(InMemoryStore::new()),
+                            crate::ws_server::PeerInfo {
+                                remote: "127.0.0.1:1".parse().unwrap(),
+                                local: None,
+                            },
+                            Default::default(),
+                        )
+                        .await
+                    })
+                }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await });
+        port
+    }
+
+    fn daemon_request(inner: CoordinatorRequest) -> tungstenite::Message {
+        let params = serde_json::to_string(&Timestamped {
+            inner,
+            timestamp: HLC::default().new_timestamp(),
+        })
+        .unwrap();
+        let id = Uuid::new_v4();
+        tungstenite::Message::Text(
+            format!(r#"{{"id":"{id}","method":"daemon_request","params":{params}}}"#).into(),
+        )
+    }
+
+    #[tokio::test]
+    async fn replies_are_routed_while_the_main_loop_is_not_taking_events() {
+        // Capacity 1, and never drained after registration: the state of the
+        // shared channel while the main loop waits on a spawn reply.
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let port = serve(event_tx).await;
+        let (mut client, _): (Client, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/api/daemon"))
+                .await
+                .unwrap();
+
+        client
+            .send(daemon_request(CoordinatorRequest::Register(
+                dora_message::daemon_to_coordinator::DaemonRegisterRequest::with_zenoh_endpoint(
+                    Some("A".into()),
+                    Default::default(),
+                    None,
+                ),
+            )))
+            .await
+            .unwrap();
+        let Some(Event::Daemon(DaemonRequest::Register {
+            connection,
+            daemon_id_tx,
+            ..
+        })) = event_rx.recv().await
+        else {
+            panic!("expected the register request");
+        };
+        let daemon_id = DaemonId::new(Some("A".into()));
+        daemon_id_tx.send(daemon_id.clone()).unwrap();
+
+        // The daemon keeps reporting while the main loop is busy: more
+        // events than the channel holds.
+        for _ in 0..8 {
+            client
+                .send(daemon_request(CoordinatorRequest::Event {
+                    daemon_id: daemon_id.clone(),
+                    event: DaemonEvent::Heartbeat { ft_stats: None },
+                }))
+                .await
+                .unwrap();
+        }
+
+        // The main loop now sends a command and waits for the reply.
+        let pending = connection.send_request(b"null").await.unwrap();
+        let request_id = loop {
+            let msg = client.next().await.unwrap().unwrap();
+            let tungstenite::Message::Text(text) = msg else {
+                continue;
+            };
+            let request: WsRequest = serde_json::from_str(&text).unwrap();
+            if request.method == "daemon_command" {
+                break request.id;
+            }
+        };
+        client
+            .send(tungstenite::Message::Text(
+                serde_json::to_string(&WsResponse {
+                    id: request_id,
+                    result: Some(serde_json::json!("ok")),
+                    error: None,
+                })
+                .unwrap()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), pending.wait())
+            .await
+            .expect("the reply must not wait for the main loop to take events")
+            .unwrap();
+        assert_eq!(reply, br#""ok""#);
+
+        // Once the main loop resumes, every event arrives, in order.
+        for _ in 0..8 {
+            assert!(matches!(
+                event_rx.recv().await,
+                Some(Event::DaemonHeartbeat { .. })
+            ));
+        }
     }
 }
 

@@ -185,6 +185,26 @@ fn dynamic_node_prefixes_input_referencing_a_single_operator_producer() {
     }
 }
 
+/// A node for `dora node add` / `dora node replace` comes from the user's
+/// YAML, and `path_fallback` is internal (only module expansion sets it).
+#[test]
+fn dynamic_node_cannot_set_path_fallback() {
+    let running = running_descriptor_with_operator_producer(serde_json::json!(null));
+    let added: Node = serde_json::from_value(serde_json::json!({
+        "id": "consumer",
+        "path": "modules/tool",
+        "path_fallback": "tool",
+    }))
+    .expect("valid node");
+
+    let err = resolve_single_node(added, &running).expect_err("path_fallback must be rejected");
+    assert_eq!(
+        format!("{err:#}"),
+        "node `consumer` sets `path_fallback`, which is internal \
+         (module expansion sets it); remove it"
+    );
+}
+
 #[test]
 fn dynamic_node_with_invalid_timing_is_rejected() {
     // `dora node add` / `dora node replace` never run whole-dataflow
@@ -307,7 +327,7 @@ fn test_running_dataflow(
         exited_nodes: BTreeSet::new(),
         departed_daemons: BTreeMap::new(),
         node_stopped_at: BTreeMap::new(),
-        network_metrics: None,
+        network_metrics: BTreeMap::new(),
         spawn_result: CachedResult::default(),
         stop_reply_senders: vec![],
         buffered_log_messages: vec![],
@@ -7353,4 +7373,107 @@ fn producer_daemons_stops_waiting_for_a_daemon_that_never_returns() {
             - std::time::Duration::from_secs(1),
     )]);
     assert!(producer_daemons(&long_ago).unwrap().is_empty());
+}
+
+/// Each daemon pushes its own cross-daemon Zenoh counters for a dataflow, so
+/// a node's `network` row must come from the daemon running it — not from
+/// whichever daemon of a multi-daemon dataflow happened to push last.
+#[tokio::test]
+async fn node_info_reports_the_network_counters_of_the_nodes_own_daemon() {
+    use dora_message::daemon_to_coordinator::NetworkMetrics;
+
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_a = DaemonId::new(Some("a".to_string()));
+    let daemon_b = DaemonId::new(Some("b".to_string()));
+    let sender: NodeId = "sender".to_string().into();
+    let receiver: NodeId = "receiver".to_string().into();
+
+    let mut df = test_running_dataflow(dataflow_id, daemon_a.clone(), sender.clone());
+    let receiver_node = df.nodes[&sender].clone();
+    df.nodes.insert(receiver.clone(), receiver_node);
+    df.node_to_daemon.insert(receiver.clone(), daemon_b.clone());
+    df.daemons.insert(daemon_b.clone());
+
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        DaemonConnections::default(),
+        store,
+    );
+    let net = |bytes_sent| NetworkMetrics {
+        bytes_sent,
+        ..Default::default()
+    };
+    coordinator
+        .handle_node_metrics(dataflow_id, daemon_a, BTreeMap::new(), Some(net(1)))
+        .await
+        .unwrap();
+    coordinator
+        .handle_node_metrics(dataflow_id, daemon_b, BTreeMap::new(), Some(net(2)))
+        .await
+        .unwrap();
+
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_get_node_info(reply_sender)
+        .await
+        .unwrap();
+    let Ok(ControlRequestReply::NodeInfoList(infos)) = reply.await.unwrap() else {
+        panic!("expected a NodeInfoList reply");
+    };
+    let bytes_sent = |node: &NodeId| {
+        infos
+            .iter()
+            .find(|info| &info.node_id == node)
+            .and_then(|info| info.network.as_ref())
+            .map(|net| net.bytes_sent)
+    };
+    assert_eq!(bytes_sent(&sender), Some(1), "{infos:?}");
+    assert_eq!(bytes_sent(&receiver), Some(2), "{infos:?}");
+}
+
+/// Module expansion sets `path_fallback`, but only spawning and local
+/// validation read it, and a CLI built with an older dora parses the
+/// `DataflowInfo` descriptor with `deny_unknown_fields` (`dora node info`,
+/// `dora topic echo`), so the reply carries the descriptor without the field.
+#[tokio::test]
+async fn dataflow_info_leaves_out_path_fallback() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let mut df = test_running_dataflow(dataflow_id, daemon_id, "m.sender".to_string().into());
+    let node = r#"{"id": "m.sender", "path": "modules/sender", "outputs": ["message"]}"#;
+    let without: Descriptor =
+        serde_json::from_str(&format!(r#"{{"nodes": [{node}]}}"#)).expect("valid descriptor");
+    df.descriptor = serde_json::from_str(&format!(
+        r#"{{"nodes": [{}]}}"#,
+        node.replace('}', r#", "path_fallback": "sender"}"#)
+    ))
+    .expect("valid descriptor");
+    assert_eq!(
+        df.descriptor.nodes[0].path_fallback.as_deref(),
+        Some("sender")
+    );
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        DaemonConnections::default(),
+        Arc::new(InMemoryStore::new()),
+    );
+
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_control_event(ControlEvent::IncomingRequest {
+            request: Box::new(dora_message::cli_to_coordinator::ControlRequest::Info {
+                dataflow_uuid: dataflow_id,
+            }),
+            reply_sender,
+        })
+        .await
+        .unwrap();
+    let ControlRequestReply::DataflowInfo { descriptor, .. } = reply.await.unwrap().unwrap() else {
+        panic!("expected a DataflowInfo reply");
+    };
+    assert_eq!(
+        serde_json::to_value(&descriptor).unwrap(),
+        serde_json::to_value(&without).unwrap()
+    );
 }

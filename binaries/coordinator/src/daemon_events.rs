@@ -372,6 +372,7 @@ impl Coordinator {
     pub(crate) async fn handle_node_metrics(
         &mut self,
         dataflow_id: Uuid,
+        daemon_id: DaemonId,
         metrics: BTreeMap<NodeId, NodeMetrics>,
         network: Option<NetworkMetrics>,
     ) -> eyre::Result<()> {
@@ -398,7 +399,7 @@ impl Coordinator {
                     .insert(node_id.clone(), node_metrics.clone());
             }
             if let Some(net) = network {
-                dataflow.network_metrics = Some(net);
+                dataflow.network_metrics.insert(daemon_id, net);
             }
 
             #[cfg(feature = "metrics")]

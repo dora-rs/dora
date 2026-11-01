@@ -180,6 +180,14 @@ pub(crate) fn apply_state_catch_up_entries(
 }
 
 impl Daemon {
+    /// Forget a node's own log directory: a node spawned by `AddNode` or
+    /// `ReplaceNode` logs under the dataflow's base working dir.
+    fn reset_node_log_dir(&mut self, dataflow_id: &dora_message::DataflowId, node_id: &NodeId) {
+        if let Some(dirs) = self.node_log_dirs.get_mut(dataflow_id) {
+            dirs.remove(node_id);
+        }
+    }
+
     pub(crate) async fn handle_coordinator_event(
         &mut self,
         event: DaemonCoordinatorEvent,
@@ -291,6 +299,7 @@ impl Daemon {
                             self.pool.abort_subscriber(&dataflow_id);
                             self.running.remove(&dataflow_id);
                             self.working_dir.remove(&dataflow_id);
+                            self.node_log_dirs.remove(&dataflow_id);
                         }
                         (Err(format!("{err:?}")), None)
                     }
@@ -388,17 +397,22 @@ impl Daemon {
                 node_id,
                 tail,
             } => {
-                match self.working_dir.get(&dataflow_id) {
-                    Some(working_dir) => {
-                        let working_dir = working_dir.clone();
+                let log_dir = self
+                    .node_log_dirs
+                    .get(&dataflow_id)
+                    .and_then(|dirs| dirs.get(&node_id))
+                    .or_else(|| self.working_dir.get(&dataflow_id))
+                    .cloned();
+                match log_dir {
+                    Some(log_dir) => {
                         tokio::spawn(async move {
                             let logs = async {
                                 let mut file =
-                                    File::open(log::log_path(&working_dir, &dataflow_id, &node_id))
+                                    File::open(log::log_path(&log_dir, &dataflow_id, &node_id))
                                         .await
                                         .wrap_err(format!(
                                             "Could not open log file: {:#?}",
-                                            log::log_path(&working_dir, &dataflow_id, &node_id)
+                                            log::log_path(&log_dir, &dataflow_id, &node_id)
                                         ))?;
 
                                 let mut contents = match tail {
@@ -633,6 +647,9 @@ impl Daemon {
                     // older coordinator cannot crash this daemon.
                     dora_core::descriptor::validate::check_node_timing(&node)?;
                     dora_core::descriptor::validate::check_operator_ids(&node)?;
+                    if node.kind.dynamic() {
+                        self.check_dynamic_node_listener(&node_id)?;
+                    }
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -731,6 +748,7 @@ impl Daemon {
                         .wrap_err("failed to spawn node")?;
 
                     // --- Spawn succeeded — now apply state mutations ---
+                    self.reset_node_log_dir(&dataflow_id, &node_id);
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -1037,6 +1055,9 @@ impl Daemon {
                     // See the matching check in `AddNode`.
                     dora_core::descriptor::validate::check_node_timing(&node)?;
                     dora_core::descriptor::validate::check_operator_ids(&node)?;
+                    if node.kind.dynamic() {
+                        self.check_dynamic_node_listener(&node_id)?;
+                    }
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -1255,6 +1276,7 @@ impl Daemon {
                         .wrap_err("failed to spawn replacement node")?;
 
                     // --- commit: swap entries and stop the outgoing one ------
+                    self.reset_node_log_dir(&dataflow_id, &node_id);
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)

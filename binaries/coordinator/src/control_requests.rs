@@ -18,6 +18,7 @@ use crate::{
     stop_topic_debug_stream, topic_publish_output_id,
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
+use dora_core::descriptor::without_path_fallback;
 use dora_message::{
     BuildId, SessionId,
     cli_to_coordinator::ControlRequest,
@@ -296,7 +297,7 @@ impl Coordinator {
                             let _ = reply_sender.send(Ok(ControlRequestReply::DataflowInfo {
                                 uuid: dataflow.uuid,
                                 name: dataflow.name.clone(),
-                                descriptor: dataflow.descriptor.clone(),
+                                descriptor: without_path_fallback(&dataflow.descriptor),
                             }));
                         } else {
                             let _ = reply_sender.send(Err(eyre!(
@@ -1074,7 +1075,7 @@ impl Coordinator {
                         node_id: node_id.clone(),
                         daemon_id: daemon_id.clone(),
                         metrics,
-                        network: dataflow.network_metrics.clone(),
+                        network: dataflow.network_metrics.get(daemon_id).cloned(),
                     });
                 }
             }

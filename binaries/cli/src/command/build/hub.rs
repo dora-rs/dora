@@ -553,6 +553,7 @@ pub fn resolve_hub_nodes(
         };
         // the index entry supplies source and build (spec §10.1)
         if node.path.is_some()
+            || node.path_fallback.is_some()
             || node.git.is_some()
             || node.build.is_some()
             || node.branch.is_some()
@@ -563,8 +564,8 @@ pub fn resolve_hub_nodes(
             || node.ros2.is_some()
         {
             eyre::bail!(
-                "node `{}`: `hub:` is mutually exclusive with `path`, `git`, \
-                 `build`, and operator fields — the hub package supplies them",
+                "node `{}`: `hub:` is mutually exclusive with `path`, `path_fallback`, \
+                 `git`, `build`, and operator fields — the hub package supplies them",
                 node.id
             );
         }

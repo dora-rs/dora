@@ -230,6 +230,7 @@ fn check_module_file_inner(
     // run_config.inputs rather than the node-level `inputs` map, so those
     // need the same check (see #2441).
     for node in &module_file.nodes {
+        reject_path_fallback(node, Some(&module_file.module.name))?;
         for inputs in node_input_maps(node) {
             check_mod_refs(&module_file.module.name, &node.id, inputs, &all_input_names)?;
         }
@@ -811,6 +812,7 @@ fn expand_module_node(
     // Phase 1: prefix IDs, rewrite inputs, resolve paths, substitute params
     let mut prefixed_nodes = Vec::new();
     for mut inner_node in module_file.nodes {
+        reject_path_fallback(&inner_node, Some(&module_file.module.name))?;
         let prefixed_id: NodeId = format!("{module_id}.{}", inner_node.id).into();
         inner_node.id = prefixed_id;
 
@@ -959,6 +961,23 @@ fn expand_module_node(
     Ok((final_nodes, output_map))
 }
 
+/// `path_fallback` is internal: expansion sets it on a module's inner nodes,
+/// so a file the user writes (a dataflow file, a module file, or a node file
+/// for `dora node add`/`replace`) must not set it.
+pub fn reject_path_fallback(node: &Node, module: Option<&str>) -> eyre::Result<()> {
+    if node.path_fallback.is_some() {
+        let module = module
+            .map(|name| format!("module `{name}`: "))
+            .unwrap_or_default();
+        bail!(
+            "{module}node `{}` sets `path_fallback`, which is internal \
+             (module expansion sets it); remove it",
+            node.id
+        );
+    }
+    Ok(())
+}
+
 fn resolve_inner_node_paths(
     node: &mut Node,
     module_dir: &Path,
@@ -970,7 +989,16 @@ fn resolve_inner_node_paths(
     if node.git.is_none()
         && let Some(ref mut path) = node.path
     {
+        let as_written = path.clone();
         resolve_module_relative_path(path, module_dir, project_root, &owner)?;
+        // A single extensionless name like `dora-echo` may also be a command
+        // on `$PATH` rather than a file next to the module (#3826). `path`
+        // keeps meaning the file; the name as written is what spawn falls
+        // back to when there is none. A `hub:` node never runs from `path`
+        // (hub resolution rejects one that has it), so it gets no fallback.
+        if node.hub.is_none() && *path != as_written && is_bare_name(&as_written) {
+            node.path_fallback = Some(as_written);
+        }
     }
     if let Some(ref mut operators) = node.operators {
         for op in &mut operators.operators {
@@ -1033,6 +1061,25 @@ fn resolve_module_relative_path(
     })?;
     *path = relative.to_string_lossy().into_owned();
     Ok(())
+}
+
+/// One plain file name without an extension, the form a command on `$PATH`
+/// is written in (a console script, a binary). Reads only the string, so
+/// `dora build` and `dora start` expand alike. A `:` (`C:tool` is a drive
+/// path on Windows) or a `$` (the daemon expands variables in `path`) never
+/// makes one. `worker.py` doesn't either: a script next to the module needs
+/// no fallback, preserving their existing module-relative meaning.
+/// Nor does a name made only of whitespace.
+pub(super) fn is_bare_name(path: &str) -> bool {
+    let name = Path::new(path);
+    let mut components = name.components();
+    !path.trim().is_empty()
+        && !path.contains(['/', '\\', ':', '$'])
+        && name.extension().is_none()
+        && matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        )
 }
 
 fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
@@ -4221,6 +4268,125 @@ nodes:
             Path::new(&path_of("m.sibling")),
             Path::new("modules").join("worker.py")
         );
+    }
+
+    /// #3826: a module node's `path:` that is a single extensionless name
+    /// keeps meaning the file next to the module (`path`), and the name as
+    /// written becomes its `path_fallback`, for a command found like a
+    /// top-level `path:`. Any other `path:` (`worker.py` and a blank one
+    /// too), a `git:` or `hub:` node and a module in the project root (where
+    /// nothing is rewritten) get none.
+    #[test]
+    fn expand_keeps_a_bare_inner_node_path_as_its_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        write_file(
+            &base.join("modules"),
+            "m.yml",
+            r#"
+module:
+  name: m
+nodes:
+  - id: echo
+    path: dora-echo
+  - id: script
+    path: worker.py
+  - id: nested
+    path: bin/tool
+  - id: current
+    path: ./tool
+  - id: var
+    path: $TOOL
+  - id: fromgit
+    git: https://github.com/example/x.git
+    path: x
+  - id: fromhub
+    hub: test/x@^0.1
+    path: tool
+  - id: blank
+    path: "  "
+"#,
+        );
+        write_file(
+            base,
+            "root.yml",
+            "module:\n  name: root\nnodes:\n  - id: echo\n    path: dora-echo\n",
+        );
+        let desc = parse_descriptor(
+            "nodes:\n  - id: m\n    module: modules/m.yml\n  - id: r\n    module: root.yml\n",
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let node = |id: &str| {
+            let node = expanded
+                .nodes
+                .iter()
+                .find(|n| n.id.to_string() == id)
+                .unwrap();
+            (
+                node.path.as_deref().map(PathBuf::from),
+                node.path_fallback.as_deref(),
+            )
+        };
+        let in_modules = |name: &str| Some(Path::new("modules").join(name));
+        assert_eq!(node("m.echo"), (in_modules("dora-echo"), Some("dora-echo")));
+        assert_eq!(node("m.script"), (in_modules("worker.py"), None));
+        assert_eq!(node("m.nested"), (in_modules("bin/tool"), None));
+        assert_eq!(node("m.current"), (in_modules("tool"), None));
+        assert_eq!(node("m.var"), (in_modules("$TOOL"), None));
+        assert_eq!(node("m.fromgit"), (Some(PathBuf::from("x")), None));
+        assert_eq!(node("m.fromhub"), (in_modules("tool"), None));
+        assert_eq!(node("m.blank"), (in_modules("  "), None));
+        assert_eq!(node("r.echo"), (Some(PathBuf::from("dora-echo")), None));
+    }
+
+    /// `path_fallback` is internal: only expansion sets it, so a module file
+    /// must not set it by hand (a dataflow file is checked when it is read,
+    /// see `a_dataflow_file_cannot_set_path_fallback`).
+    #[test]
+    fn a_hand_written_path_fallback_in_a_module_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        let inner = "  - id: worker\n    path: worker\n    path_fallback: echo\n";
+        write_file(
+            base,
+            "plain.yml",
+            "module:\n  name: plain\nnodes:\n  - id: ok\n    path: ok\n",
+        );
+        write_file(
+            base,
+            "inner.yml",
+            &format!("module:\n  name: inner\nnodes:\n{inner}"),
+        );
+        write_file(
+            base,
+            "outer.yml",
+            "module:\n  name: outer\nnodes:\n  - id: sub\n    module: inner.yml\n",
+        );
+        let in_module = "module `inner`: node `worker` sets `path_fallback`, which is internal \
+                         (module expansion sets it); remove it";
+        for module in ["inner.yml", "outer.yml"] {
+            let yaml = format!("nodes:\n  - id: m\n    module: {module}\n");
+            let err = expand_modules(&parse_descriptor(&yaml), base).unwrap_err();
+            assert_eq!(err.to_string(), in_module, "{yaml}");
+        }
+
+        // `dora expand --module` checks a module file the same way.
+        let err = check_module_file(&base.join("inner.yml")).unwrap_err();
+        assert_eq!(err.to_string(), in_module);
+        let err = check_module_file(&base.join("outer.yml")).unwrap_err();
+        assert_eq!(err.root_cause().to_string(), in_module);
+
+        // Expansion doesn't judge the dataflow's own nodes: a descriptor that
+        // was expanded already (`dora build`'s session, which the daemon
+        // expands again) keeps the `path_fallback` expansion set, next to a
+        // module or not.
+        let flat = parse_descriptor(&format!(
+            "nodes:\n  - id: m\n    module: plain.yml\n{inner}"
+        ));
+        let expanded = expand_modules(&flat, base).unwrap();
+        let worker = expanded.nodes.iter().find(|n| n.id.to_string() == "worker");
+        assert_eq!(worker.unwrap().path_fallback.as_deref(), Some("echo"));
     }
 
     #[test]
