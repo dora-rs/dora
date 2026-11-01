@@ -12,7 +12,9 @@ use dora_core::{
     build::{self, BuildInfo, PrevGitSource},
     config::{InputMapping, NodeId},
     descriptor::{Descriptor, DescriptorExt, ResolvedNode},
-    topics::{zenoh_daemon_control_topic, zenoh_output_publish_topic},
+    topics::{
+        DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, zenoh_daemon_control_topic, zenoh_output_publish_topic,
+    },
     uhlc::HLC,
 };
 use dora_message::{
@@ -153,6 +155,25 @@ impl Daemon {
         Ok(task)
     }
 
+    /// Refuse a dynamic node when this daemon could not listen on the
+    /// dynamic-node port: the node would connect to whatever process holds
+    /// the port instead, and wait forever or join that process's dataflow
+    /// (#3814 is the `dora run` side of this).
+    pub(crate) fn check_dynamic_node_listener(&self, node_id: &NodeId) -> eyre::Result<()> {
+        if let Some(port) = self.dynamic_node_port_unavailable {
+            bail!(
+                "node `{node_id}` is a dynamic node, but this daemon could not listen on \
+                 the dynamic-node port {port}: another process holds it, most likely \
+                 another dora daemon or a `dora run`. The node would connect to that \
+                 process instead of this dataflow.\n\n  \
+                 hint: stop the other process and restart this daemon, or restart this \
+                 daemon with `--local-listen-port <PORT>` and set \
+                 {DORA_DAEMON_LOCAL_LISTEN_PORT_ENV}=<PORT> for the dynamic node"
+            );
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn spawn_dataflow(
         &mut self,
@@ -179,6 +200,9 @@ impl Daemon {
         for node in nodes.values() {
             dora_core::descriptor::validate::check_node_timing_values(node)?;
             dora_core::descriptor::validate::check_operator_ids(node)?;
+            if node.kind.dynamic() && spawn_nodes.contains(&node.id) {
+                self.check_dynamic_node_listener(&node.id)?;
+            }
         }
         // Reclaim `/dev/shm` segments a previous crash of this dataflow's
         // nodes left behind. Scoped to the nodes this daemon spawns, since
