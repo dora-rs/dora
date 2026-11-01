@@ -571,8 +571,8 @@ pub struct Node {
     pub output_types: BTreeMap<DataId, String>,
 
     /// Per-output framing overrides. Accepted for 1.x schema compatibility
-    /// but ignored: every output is sent as an Arrow IPC stream whatever its
-    /// entry here says (see [`OutputFraming`]).
+    /// but ignored: every output is encoded as Arrow IPC whatever its entry
+    /// here says (see [`OutputFraming`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     // An empty key is YAML `null`, which deserializes to the default.
     #[schemars(with = "Option<BTreeMap<DataId, OutputFraming>>")]
@@ -1267,8 +1267,8 @@ pub struct OperatorConfig {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_types: BTreeMap<DataId, String>,
 
-    /// Per-output framing overrides. Ignored: every output is sent as an
-    /// Arrow IPC stream (see [`OutputFraming`]).
+    /// Per-output framing overrides. Ignored: every output is encoded as
+    /// Arrow IPC (see [`OutputFraming`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_framing: BTreeMap<DataId, OutputFraming>,
 

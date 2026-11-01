@@ -113,8 +113,8 @@ pub struct NodeRunConfig {
     /// Optional type annotations for outputs
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_types: BTreeMap<DataId, String>,
-    /// Per-output framing overrides. Ignored: every output is sent as an
-    /// Arrow IPC stream (see [`descriptor::OutputFraming`]).
+    /// Per-output framing overrides. Ignored: every output is encoded as
+    /// Arrow IPC (see [`descriptor::OutputFraming`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_framing: BTreeMap<DataId, descriptor::OutputFraming>,
     /// Optional type annotations for inputs
