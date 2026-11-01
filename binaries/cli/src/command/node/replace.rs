@@ -76,13 +76,13 @@ impl Executable for Replace {
                 node,
                 grace_duration: self.grace,
             },
-        )?;
+        )
+        .wrap_err("failed to replace node")?;
 
         match reply {
             ControlRequestReply::NodeReplaced { node_id, .. } => {
                 println!("Node `{node_id}` replaced in dataflow {dataflow_id}");
             }
-            ControlRequestReply::Error(err) => bail!("failed to replace node: {err}"),
             other => bail!("unexpected reply: {other:?}"),
         }
         Ok(())
