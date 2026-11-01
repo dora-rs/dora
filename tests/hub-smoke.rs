@@ -374,6 +374,43 @@ fn hub_rejects_invalid_shipped_type() {
     );
 }
 
+/// `path_fallback` is internal, so a dataflow file that sets it, here on a
+/// `hub:` node, is rejected when it is read, with or without an override.
+#[test]
+fn hub_rejects_path_fallback() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub path_fallback test");
+        return;
+    }
+    let fixture = build_fixture();
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n    path_fallback: hello\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let checkout = fixture.root.join("source/node-hub/hello");
+    let override_arg = format!("test/hub-smoke-hello={}", checkout.display());
+    for extra in [&[][..], &["--hub-override", override_arg.as_str()][..]] {
+        let out = dora(&fixture)
+            .args(["build", flow.to_str().unwrap()])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "build must reject `path_fallback` on a hub node ({extra:?})"
+        );
+        assert!(
+            stderr(&out).contains(
+                "node `hello` sets `path_fallback`, which is internal \
+                 (module expansion sets it); remove it"
+            ),
+            "expected the internal-field error ({extra:?}), got: {}",
+            stderr(&out)
+        );
+    }
+}
+
 /// `dora build --hub-override <pkg>=<path>` substitutes a local checkout for a
 /// hub package (UC11): the manifest is read from the checkout, contracts are
 /// validated, and the node builds from local source — no index resolution, no

@@ -54,6 +54,9 @@ pub(crate) fn resolve_single_node(
     node: Node,
     running_descriptor: &Descriptor,
 ) -> eyre::Result<(NodeId, ResolvedNode)> {
+    // The node comes from the user's YAML (`dora node add`/`replace`), which
+    // must not set the internal `path_fallback`.
+    dora_core::descriptor::reject_path_fallback(&node, None)?;
     // Only `env` is carried over from the running dataflow — the rest stay at
     // `Descriptor::new`'s defaults, as before.
     let mut tmp_desc = Descriptor::new(vec![node]);

@@ -275,8 +275,8 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
 /// Rewrites each recorded node in the descriptor into a replay node: swaps its
 /// `path` for the `dora-replay-node` binary, strips the build/source/operator
 /// keys (including `hub:`/`ros2:`, which are exclusive with `path`, and a
-/// `path_sha256` that would now point at the local replay binary), its
-/// `inputs`/`input_types` and its `send_stdout_as`/`send_logs_as`,
+/// `path_sha256` or `path_fallback` that would now apply to the local replay
+/// binary), its `inputs`/`input_types` and its `send_stdout_as`/`send_logs_as`,
 /// republishes its recorded `outputs`, and injects the `DORA_REPLAY_*` env the
 /// replay node reads (file, node id, speed, loop).
 fn replace_recorded_nodes_with_replay(
@@ -315,6 +315,7 @@ fn replace_recorded_nodes_with_replay(
                 "hub",
                 "ros2",
                 "path_sha256",
+                "path_fallback",
                 "inputs",
                 "input_types",
                 // The daemon turns every line the process prints into an
@@ -808,8 +809,13 @@ mod tests {
                 "  path_sha256: 0000000000000000000000000000000000000000000000000000000000000000\n",
                 "  outputs:\n",
                 "    - data\n",
+                "- id: from-module\n",
+                "  path: modules/tool\n",
+                "  path_fallback: tool\n",
+                "  outputs:\n",
+                "    - data\n",
             ),
-            &["detector", "bridge", "downloaded"],
+            &["detector", "bridge", "downloaded", "from-module"],
         );
         let descriptor: dora_message::descriptor::Descriptor =
             serde_yaml::from_str(&out).expect("rewritten descriptor must deserialize");
@@ -819,6 +825,11 @@ mod tests {
             assert!(
                 node.path_sha256.is_none(),
                 "`{}` kept `path_sha256`",
+                node.id
+            );
+            assert!(
+                node.path_fallback.is_none(),
+                "`{}` kept `path_fallback`",
                 node.id
             );
             assert!(

@@ -14,6 +14,7 @@ use crate::{
 pub enum ControlRequest {
     Build {
         session_id: SessionId,
+        #[serde(serialize_with = "crate::descriptor::serialize_without_path_fallback")]
         dataflow: Descriptor,
         git_sources: BTreeMap<NodeId, GitSource>,
         prev_git_sources: BTreeMap<NodeId, GitSource>,
@@ -33,6 +34,7 @@ pub enum ControlRequest {
     Start {
         build_id: Option<BuildId>,
         session_id: SessionId,
+        #[serde(serialize_with = "crate::descriptor::serialize_without_path_fallback")]
         dataflow: Descriptor,
         name: Option<String>,
         /// Allows overwriting the base working dir when CLI and daemon are
@@ -392,6 +394,200 @@ mod tests {
                 assert_eq!(dora_version, crate::current_crate_version());
             }
             other => panic!("expected Hello, got {other:?}"),
+        }
+    }
+}
+
+impl ControlRequest {
+    /// Encode a JSON control request, keeping fallback commands beside the
+    /// strict descriptor. Use this at the WebSocket boundary to preserve the
+    /// stable Rust enum and its ordinary serde representation.
+    pub fn to_wire_value(&self) -> Result<serde_json::Value, serde_json::Error> {
+        let mut value = serde_json::to_value(self)?;
+        let (kind, dataflow) = match self {
+            Self::Build { dataflow, .. } => ("Build", dataflow),
+            Self::Start { dataflow, .. } => ("Start", dataflow),
+            _ => return Ok(value),
+        };
+        let fallbacks = dataflow.path_fallbacks();
+        if !fallbacks.is_empty() {
+            let payload = value
+                .get_mut(kind)
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| {
+                    <serde_json::Error as serde::ser::Error>::custom(
+                        "invalid control request shape",
+                    )
+                })?;
+            payload.insert("path_fallbacks".into(), serde_json::to_value(fallbacks)?);
+        }
+        Ok(value)
+    }
+
+    /// Decode a JSON control request and restore its optional fallback map.
+    /// Unknown node ids, malformed maps and conflicting values are request
+    /// errors; the coordinator's normal descriptor validation checks the names
+    /// and node kinds before building or starting anything.
+    pub fn from_wire_value(mut value: serde_json::Value) -> Result<Self, serde_json::Error> {
+        let metadata = value
+            .as_object_mut()
+            .and_then(|map| match map.iter_mut().next() {
+                Some((kind, payload)) if kind == "Build" || kind == "Start" => payload
+                    .as_object_mut()
+                    .and_then(|payload| payload.remove("path_fallbacks")),
+                _ => None,
+            });
+        let fallbacks: BTreeMap<NodeId, String> = match metadata {
+            Some(metadata) => serde_json::from_value(metadata)?,
+            None => BTreeMap::new(),
+        };
+        let mut request: Self = serde_json::from_value(value)?;
+        if let Self::Build { dataflow, .. } | Self::Start { dataflow, .. } = &mut request {
+            for (id, fallback) in fallbacks {
+                let node = dataflow
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == id)
+                    .ok_or_else(|| {
+                        <serde_json::Error as serde::de::Error>::custom(format!(
+                            "path fallback refers to unknown node `{id}`"
+                        ))
+                    })?;
+                if node
+                    .path_fallback
+                    .as_ref()
+                    .is_some_and(|existing| existing != &fallback)
+                {
+                    return Err(<serde_json::Error as serde::de::Error>::custom(format!(
+                        "conflicting path fallbacks for node `{id}`"
+                    )));
+                }
+                node.path_fallback = Some(fallback);
+            }
+        }
+        Ok(request)
+    }
+}
+
+#[cfg(test)]
+mod path_fallback_tests {
+    use super::*;
+    use crate::descriptor::Node;
+
+    fn requests() -> [ControlRequest; 2] {
+        let mut node = Node::new("module.worker".parse().unwrap());
+        node.path = Some("modules/worker".into());
+        node.path_fallback = Some("worker".into());
+        let dataflow = Descriptor::new(vec![node]);
+        [
+            ControlRequest::Build {
+                session_id: SessionId::generate(),
+                dataflow: dataflow.clone(),
+                git_sources: BTreeMap::new(),
+                prev_git_sources: BTreeMap::new(),
+                local_working_dir: None,
+                uv: false,
+            },
+            ControlRequest::Start {
+                build_id: None,
+                session_id: SessionId::generate(),
+                dataflow,
+                name: None,
+                local_working_dir: None,
+                uv: false,
+                write_events_to: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn module_fallback_is_outside_the_control_request_descriptor() {
+        for request in requests() {
+            let value = request.to_wire_value().unwrap();
+            let payload = value.as_object().unwrap().values().next().unwrap();
+            let dataflow = match &request {
+                ControlRequest::Build { dataflow, .. } | ControlRequest::Start { dataflow, .. } => {
+                    dataflow
+                }
+                _ => unreachable!(),
+            };
+            let mut legacy = dataflow.clone();
+            legacy.nodes[0].path_fallback = None;
+            assert_eq!(payload["dataflow"], serde_json::to_value(&legacy).unwrap());
+            assert_eq!(payload["path_fallbacks"]["module.worker"], "worker");
+            let decoded: ControlRequest = ControlRequest::from_wire_value(value.clone()).unwrap();
+            let restored = match decoded {
+                ControlRequest::Build { dataflow, .. } | ControlRequest::Start { dataflow, .. } => {
+                    dataflow
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                serde_json::to_value(&restored).unwrap(),
+                serde_json::to_value(dataflow).unwrap()
+            );
+            let mut old_request = value;
+            old_request
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .next()
+                .unwrap()
+                .as_object_mut()
+                .unwrap()
+                .remove("path_fallbacks");
+            let old_request: ControlRequest = ControlRequest::from_wire_value(old_request).unwrap();
+            let old_request = serde_json::to_value(old_request).unwrap();
+            assert!(
+                old_request
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .next()
+                    .unwrap()
+                    .get("path_fallbacks")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn requests_without_fallback_keep_the_existing_json_shape() {
+        for mut request in requests().into_iter().chain([ControlRequest::List]) {
+            if let ControlRequest::Build { dataflow, .. } | ControlRequest::Start { dataflow, .. } =
+                &mut request
+            {
+                dataflow.nodes[0].path_fallback = None;
+            }
+            let old = serde_json::to_value(&request).unwrap();
+            assert_eq!(request.to_wire_value().unwrap(), old);
+            let restored = ControlRequest::from_wire_value(old.clone()).unwrap();
+            assert_eq!(serde_json::to_value(restored).unwrap(), old);
+        }
+    }
+
+    #[test]
+    fn malformed_path_fallback_metadata_is_a_decode_error() {
+        for request in requests() {
+            let original = request.to_wire_value().unwrap();
+            for metadata in [
+                serde_json::json!({"missing":"worker"}),
+                serde_json::json!({"module.worker":42}),
+                serde_json::Value::Null,
+            ] {
+                let mut value = original.clone();
+                value.as_object_mut().unwrap().values_mut().next().unwrap()["path_fallbacks"] =
+                    metadata;
+                assert!(ControlRequest::from_wire_value(value).is_err());
+            }
+            let mut conflicting = original;
+            conflicting
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .next()
+                .unwrap()["dataflow"]["nodes"][0]["path_fallback"] = "other".into();
+            assert!(ControlRequest::from_wire_value(conflicting).is_err());
         }
     }
 }

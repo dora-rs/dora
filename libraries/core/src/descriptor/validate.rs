@@ -17,7 +17,7 @@ use std::{
 };
 use tracing::info;
 
-use super::{Descriptor, DescriptorExt, resolve_path};
+use super::{Descriptor, DescriptorExt, resolve_node_path};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Validate input/output wiring without checking path existence.
@@ -146,9 +146,10 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                         } else if custom.build.is_some() {
                             info!("skipping path check for node with build command");
                         } else {
-                            resolve_path(source, working_dir).wrap_err_with(|| {
-                                format!("Could not find source path `{source}`")
-                            })?;
+                            resolve_node_path(source, custom.path_fallback.as_deref(), working_dir)
+                                .wrap_err_with(|| {
+                                    format!("Could not find source path `{source}`")
+                                })?;
                         };
                     }
                 },
