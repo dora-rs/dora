@@ -1705,10 +1705,19 @@ pub(crate) fn upstream_node_ids(node: &ResolvedNode) -> impl Iterator<Item = &No
 }
 
 /// How long `dora node add` waits for the daemon of an upstream node to
-/// come back before treating that node as gone; matches the coordinator's
-/// recovery timeout.
+/// come back before treating that node as gone.
+///
+/// A daemon that loses the coordinator keeps its nodes running while it
+/// reconnects, and gives up (exiting, which stops them) only after its
+/// reconnect bounds: up to 20 s to notice the loss
+/// (`COORDINATOR_HEARTBEAT_TIMEOUT`), 1 s backoff, one connect attempt of up
+/// to 90 s (`COORDINATOR_RECONNECT_TIMEOUT`) and up to 30 s of retried
+/// refusals (`COORDINATOR_RECONNECT_RETRY_WINDOW`), all in
+/// `binaries/daemon/src/lib.rs`. The coordinator records the departure no
+/// earlier than the daemon's last contact, so after this grace the daemon
+/// is either back or gone with its nodes. Keep it above that sum.
 pub(crate) const PRODUCER_DAEMON_RECONNECT_GRACE: std::time::Duration =
-    std::time::Duration::from_secs(60);
+    std::time::Duration::from_secs(150);
 
 /// The daemons hosting the still-running nodes whose outputs `node`
 /// subscribes to. A producer that has exited sends nothing more, so it

@@ -7477,3 +7477,126 @@ async fn dataflow_info_leaves_out_path_fallback() {
         serde_json::to_value(&without).unwrap()
     );
 }
+
+/// A coordinator whose dataflow runs on machine-a (accepting every
+/// `AddNode`) and machine-b, with `sender` on machine-b.
+fn two_daemon_add_node_coordinator(dataflow_id: DataflowId) -> (Coordinator, DaemonId, DaemonId) {
+    let daemon_a = DaemonId::new(Some("machine-a".to_string()));
+    let daemon_b = DaemonId::new(Some("machine-b".to_string()));
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let mut conn_a =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    conn_a.status_reported = true;
+    tokio::spawn(async move {
+        #[derive(serde::Deserialize)]
+        struct OutboundRaw {
+            id: String,
+            params: Timestamped<DaemonCoordinatorEvent>,
+        }
+        while let Some(outbound) = rx.recv().await {
+            let raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            let reply = match raw.params.inner {
+                DaemonCoordinatorEvent::AddNode { .. } => {
+                    DaemonCoordinatorReply::AddNodeResult(Ok(()))
+                }
+                other => panic!("unexpected daemon event {other:?}"),
+            };
+            let request_id = Uuid::parse_str(&raw.id).expect("valid request id");
+            if let Some(reply_tx) = pending_replies.lock().await.remove(&request_id) {
+                let _ = reply_tx.send(serde_json::to_string(&reply).unwrap());
+            }
+        }
+    });
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_a.clone(), conn_a);
+    daemon_connections.add(daemon_b.clone(), reported_connection(BTreeMap::new()));
+
+    let mut df = test_running_dataflow(dataflow_id, daemon_b.clone(), "sender".to_string().into());
+    df.daemons.insert(daemon_a.clone());
+    let coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        daemon_connections,
+        Arc::new(InMemoryStore::new()),
+    );
+    (coordinator, daemon_a, daemon_b)
+}
+
+async fn add_consumer(
+    coordinator: &mut Coordinator,
+    dataflow_id: DataflowId,
+    node: serde_json::Value,
+) -> eyre::Result<ControlRequestReply> {
+    let node: Node = serde_json::from_value(node).expect("valid node");
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_add_node(dataflow_id, node, reply_tx)
+        .await
+        .unwrap();
+    reply_rx.await.unwrap()
+}
+
+#[tokio::test]
+async fn add_node_ignores_a_producer_that_exited_past_the_stopped_grace() {
+    // Through `handle_add_node`: `sender` exited on machine-b and its
+    // stopped grace expired, so a node placed on machine-a is accepted.
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let (mut coordinator, daemon_a, daemon_b) = two_daemon_add_node_coordinator(dataflow_id);
+    let producer: NodeId = "sender".to_string().into();
+    coordinator
+        .handle_daemon_node_stopped(daemon_b, dataflow_id, producer.clone(), true)
+        .await
+        .expect("node stop should be handled");
+    let dataflow = coordinator.running_dataflows.get_mut(&dataflow_id).unwrap();
+    *dataflow.node_stopped_at.get_mut(&producer).unwrap() -=
+        NODE_STOPPED_GRACE + std::time::Duration::from_secs(1);
+    crate::topology::expire_stopped_nodes(dataflow);
+
+    add_consumer(
+        &mut coordinator,
+        dataflow_id,
+        serde_json::json!({
+            "id": "consumer",
+            "path": "consumer",
+            "inputs": { "reading": "sender/message" },
+            "deploy": { "machine": "machine-a" },
+        }),
+    )
+    .await
+    .expect("an exited producer must not constrain the placement");
+    assert_eq!(
+        coordinator.running_dataflows[&dataflow_id].node_to_daemon
+            [&NodeId::from("consumer".to_string())],
+        daemon_a
+    );
+}
+
+#[tokio::test]
+async fn add_node_waits_for_a_producer_daemon_that_just_disconnected() {
+    // Through `handle_add_node`: machine-b just disconnected with `sender`
+    // on it, so the add must wait rather than land on machine-a.
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let (mut coordinator, _daemon_a, daemon_b) = two_daemon_add_node_coordinator(dataflow_id);
+    crate::daemon_liveness::cleanup_disconnected_daemons_from_running_dataflows(
+        &mut coordinator.running_dataflows,
+        &BTreeSet::from([daemon_b.clone()]),
+        &mut HashMap::new(),
+    );
+    coordinator.daemon_connections.remove(&daemon_b);
+
+    let err = add_consumer(
+        &mut coordinator,
+        dataflow_id,
+        serde_json::json!({
+            "id": "consumer",
+            "path": "consumer",
+            "inputs": { "reading": "sender/message" },
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("has not reconnected"),
+        "{err:#}"
+    );
+}
