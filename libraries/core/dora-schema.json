@@ -847,7 +847,7 @@
       "type": "string"
     },
     "OutputFraming": {
-      "description": "Wire framing requested for an output via `output_framing`.\n\nAccepted for dora 1.x schema compatibility only: neither value changes\nanything. Every output is sent as an Arrow IPC stream (schema + record\nbatch) regardless of this setting.",
+      "description": "Wire framing requested for an output via `output_framing`.\n\nAccepted for dora 1.x schema compatibility only: neither value changes\nanything. Every output is encoded as Arrow IPC regardless of this\nsetting.",
       "oneOf": [
         {
           "description": "The default.",

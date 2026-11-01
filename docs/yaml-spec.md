@@ -377,7 +377,7 @@ Example with exponential backoff:
 
 ### Arrow IPC Framing
 
-Every output is sent as an Arrow IPC stream (schema + record batch), so receivers can always introspect the schema and external Arrow tools can read the payload directly. There is nothing to enable.
+Every output is encoded as Arrow IPC, and dora nodes always decode it with its schema. There is nothing to enable. (Small messages on the node-to-node zenoh path may carry only the record batch, with the schema published once on a separate `@schema` subtopic, so a raw zenoh subscriber cannot assume each payload is a self-contained IPC stream.)
 
 The `output_framing` key is still accepted, so 1.x dataflows that set it keep loading, but it has no effect:
 

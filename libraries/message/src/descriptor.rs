@@ -16,8 +16,8 @@ use std::{
 /// Wire framing requested for an output via `output_framing`.
 ///
 /// Accepted for dora 1.x schema compatibility only: neither value changes
-/// anything. Every output is sent as an Arrow IPC stream (schema + record
-/// batch) regardless of this setting.
+/// anything. Every output is encoded as Arrow IPC regardless of this
+/// setting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum OutputFraming {
