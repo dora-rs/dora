@@ -305,6 +305,7 @@ fn test_running_dataflow(
         node_metrics: BTreeMap::new(),
         node_finalized: BTreeSet::new(),
         exited_nodes: BTreeSet::new(),
+        departed_daemons: BTreeMap::new(),
         node_stopped_at: BTreeMap::new(),
         network_metrics: None,
         spawn_result: CachedResult::default(),
@@ -6922,6 +6923,7 @@ fn producer_daemons_waits_only_while_the_producers_daemon_is_away() {
             node_to_daemon,
             &node_to_daemon.values().cloned().collect(),
             &BTreeSet::new(),
+            &BTreeMap::from([(old_daemon.clone(), std::time::Instant::now())]),
             persisted,
             connections,
         )
@@ -7019,6 +7021,12 @@ async fn producer_daemons_waits_for_a_reclaimed_dataflows_daemon() {
         &BTreeMap::new(),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &record
+            .node_to_daemon
+            .values()
+            .filter_map(|id| DaemonId::from_display_str(id))
+            .map(|id| (id, std::time::Instant::now()))
+            .collect(),
         &record.node_to_daemon,
         &DaemonConnections::default(),
     )
@@ -7072,6 +7080,7 @@ fn recovered_dataflow_keeps_unreported_placement_when_re_persisted() {
             &recovered.node_to_daemon,
             &recovered.daemons,
             &recovered.exited_nodes,
+            &recovered.departed_daemons,
             &re_persisted.node_to_daemon,
             &DaemonConnections::default(),
         )
@@ -7143,6 +7152,7 @@ fn producer_daemons_ignores_exited_producers() {
             &node_to_daemon,
             dataflow_daemons,
             finalized,
+            &BTreeMap::from([(daemon_b.clone(), std::time::Instant::now())]),
             &BTreeMap::new(),
             connections,
         )
@@ -7276,6 +7286,7 @@ async fn exited_producer_stays_ignored_after_the_stopped_grace_period() {
             &dataflow.node_to_daemon,
             &dataflow.daemons,
             &dataflow.exited_nodes,
+            &dataflow.departed_daemons,
             &BTreeMap::new(),
             &coordinator.daemon_connections,
         )
@@ -7283,4 +7294,63 @@ async fn exited_producer_stays_ignored_after_the_stopped_grace_period() {
         .is_empty(),
         "an exited producer must not constrain the placement"
     );
+}
+
+#[test]
+fn producer_daemons_stops_waiting_for_a_daemon_that_never_returns() {
+    // A daemon that disconnects for good (crash, retired machine) leaves its
+    // nodes in `node_to_daemon` without a `NodeStopped`. `dora node add`
+    // may wait for it to come back, but not forever.
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_a = DaemonId::new(Some("machine-a".to_string()));
+    let daemon_b = DaemonId::new(Some("machine-b".to_string()));
+    let producer: NodeId = "sender".to_string().into();
+    let mut df = test_running_dataflow(dataflow_id, daemon_b.clone(), producer.clone());
+    df.daemons.insert(daemon_a.clone());
+    let mut running_dataflows = HashMap::from([(dataflow_id, df)]);
+
+    // the real disconnect cleanup records when machine-b was last seen
+    crate::daemon_liveness::cleanup_disconnected_daemons_from_running_dataflows(
+        &mut running_dataflows,
+        &BTreeSet::from([daemon_b.clone()]),
+        &mut HashMap::new(),
+    );
+    let dataflow = running_dataflows.get_mut(&dataflow_id).unwrap();
+    assert!(!dataflow.daemons.contains(&daemon_b));
+    assert!(dataflow.departed_daemons.contains_key(&daemon_b));
+
+    let added: Node = serde_json::from_value(serde_json::json!({
+        "id": "consumer",
+        "path": "consumer",
+        "inputs": { "reading": "sender/message" },
+    }))
+    .expect("valid node");
+    let (_, resolved) = resolve_single_node(added, &dataflow.descriptor).expect("node resolves");
+    let mut connections = DaemonConnections::default();
+    connections.add(daemon_a, reported_connection(BTreeMap::new()));
+    let producer_daemons = |departed: &BTreeMap<DaemonId, std::time::Instant>| {
+        crate::control_requests::producer_daemons(
+            &resolved,
+            &dataflow.nodes,
+            &dataflow.node_to_daemon,
+            &dataflow.daemons,
+            &dataflow.exited_nodes,
+            departed,
+            &BTreeMap::new(),
+            &connections,
+        )
+    };
+
+    // just disconnected: wait, and say how to get out
+    let err = producer_daemons(&dataflow.departed_daemons).unwrap_err();
+    assert!(format!("{err}").contains("dora node remove"), "{err}");
+
+    // gone for longer than the grace: the producer counts as gone
+    let long_ago = BTreeMap::from([(
+        daemon_b,
+        std::time::Instant::now()
+            - crate::control_requests::PRODUCER_DAEMON_RECONNECT_GRACE
+            - std::time::Duration::from_secs(1),
+    )]);
+    assert!(producer_daemons(&long_ago).unwrap().is_empty());
 }

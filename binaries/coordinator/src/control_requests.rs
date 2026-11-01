@@ -1292,6 +1292,7 @@ impl Coordinator {
                                 &dataflow.node_to_daemon,
                                 &dataflow.daemons,
                                 &dataflow.exited_nodes,
+                                &dataflow.departed_daemons,
                                 &persisted_placement,
                                 &self.daemon_connections,
                             )
@@ -1702,6 +1703,12 @@ pub(crate) fn upstream_node_ids(node: &ResolvedNode) -> impl Iterator<Item = &No
     })
 }
 
+/// How long `dora node add` waits for the daemon of an upstream node to
+/// come back before treating that node as gone; matches the coordinator's
+/// recovery timeout.
+pub(crate) const PRODUCER_DAEMON_RECONNECT_GRACE: std::time::Duration =
+    std::time::Duration::from_secs(60);
+
 /// The daemons hosting the still-running nodes whose outputs `node`
 /// subscribes to. A producer that has exited sends nothing more, so it
 /// doesn't constrain where the new node may run.
@@ -1716,9 +1723,11 @@ pub(crate) fn upstream_node_ids(node: &ResolvedNode) -> impl Iterator<Item = &No
 ///
 /// If no daemon of that machine has reported yet, it may still come back
 /// with the producer running, so the add fails with a retry hint rather
-/// than risk starving the new node. A producer with no known placement at
-/// all is skipped, so a stale record can never block `dora node add` for
-/// good.
+/// than risk starving the new node, but only for
+/// [`PRODUCER_DAEMON_RECONNECT_GRACE`] after that daemon was last seen
+/// (`departed`); after that the producer counts as gone. A producer with no
+/// known placement at all is skipped, so neither a stale record nor a
+/// daemon that never returns can block `dora node add` for good.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn producer_daemons(
     node: &ResolvedNode,
@@ -1726,6 +1735,7 @@ pub(crate) fn producer_daemons(
     node_to_daemon: &BTreeMap<NodeId, DaemonId>,
     dataflow_daemons: &BTreeSet<DaemonId>,
     exited: &BTreeSet<NodeId>,
+    departed: &BTreeMap<DaemonId, std::time::Instant>,
     persisted_placement: &BTreeMap<String, String>,
     connections: &crate::state::DaemonConnections,
 ) -> eyre::Result<BTreeSet<DaemonId>> {
@@ -1744,14 +1754,29 @@ pub(crate) fn producer_daemons(
                 .get(&source.to_string())
                 .and_then(|id| DaemonId::from_display_str(id)),
         };
-        if let Some(last_daemon) = last_daemon
-            && !connections.has_reported_daemon_on_machine_of(&last_daemon)
-        {
-            bail!(
-                "the daemon running upstream node `{source}` ({last_daemon}) has not \
-                 reconnected yet; retry `dora node add` later"
-            );
+        let Some(last_daemon) = last_daemon else {
+            continue;
+        };
+        if connections.has_reported_daemon_on_machine_of(&last_daemon) {
+            continue;
         }
+        // Wait for the daemon only for a bounded time: one that never
+        // comes back (crashed, machine retired) must not block every later
+        // add reading from its former nodes.
+        let away_for = departed.get(&last_daemon).map(|since| since.elapsed());
+        if away_for.is_none_or(|away| away >= PRODUCER_DAEMON_RECONNECT_GRACE) {
+            tracing::warn!(
+                "upstream node `{source}` of `dora node add` ran on daemon \
+                 {last_daemon}, which has not come back; treating it as gone"
+            );
+            continue;
+        }
+        bail!(
+            "the daemon running upstream node `{source}` ({last_daemon}) has not \
+             reconnected yet; retry `dora node add` within {}s, or remove that \
+             input (or the node, with `dora node remove`) if it is not coming back",
+            PRODUCER_DAEMON_RECONNECT_GRACE.as_secs()
+        );
     }
     Ok(daemons)
 }

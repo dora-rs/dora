@@ -543,6 +543,11 @@ pub(crate) struct RunningDataflow {
     /// placing a node, since it sends nothing more (#3672). Cleared when the
     /// node id is added, replaced or restarted again.
     pub(crate) exited_nodes: BTreeSet<NodeId>,
+    /// When each daemon that has left `daemons` (it disconnected, or the
+    /// coordinator restarted without it) was last seen. `dora node add`
+    /// waits for such a daemon only for a bounded time before treating the
+    /// producers it ran as gone (#3672).
+    pub(crate) departed_daemons: BTreeMap<DaemonId, Instant>,
     /// When a node entered `NodeStatus::Stopped` (clean teardown only).
     /// Drives the auto-expire sweep: after the grace window the row is
     /// dropped from `node_metrics`/`node_finalized` so `dora node list`
@@ -843,6 +848,16 @@ impl RunningDataflow {
             node_metrics: BTreeMap::new(),
             node_finalized: BTreeSet::new(),
             exited_nodes: BTreeSet::new(),
+            // The daemons the store places unreported nodes on were last
+            // seen before this restart or reclaim; start their bounded wait
+            // now.
+            departed_daemons: record
+                .node_to_daemon
+                .iter()
+                .filter(|(node, _)| !reported_nodes.contains(&NodeId::from((*node).clone())))
+                .filter_map(|(_, daemon)| DaemonId::from_display_str(daemon))
+                .map(|daemon| (daemon, Instant::now()))
+                .collect(),
             node_stopped_at: BTreeMap::new(),
             network_metrics: None,
             spawn_result: CachedResult::Cached {
