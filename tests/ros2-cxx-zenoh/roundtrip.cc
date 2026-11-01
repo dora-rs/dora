@@ -219,8 +219,8 @@ static void goal_across_namespaces(Ros2Context &context, const char *node_namesp
 }
 
 // A caller that requests results without reading the events must hit a limit
-// instead of piling up waiting results: after 64 (65 once one sits in the
-// event channel) `request_result` throws. Then all the answers can be read.
+// instead of piling up waiting results: after 64 `request_result` throws.
+// Then all the answers can be read.
 static void result_requests_are_bounded(Ros2Context &context)
 {
     auto events = empty_combined_events();
@@ -259,8 +259,8 @@ static void result_requests_are_bounded(Ros2Context &context)
             break;
         }
     }
-    check(refused && requested >= 64 && requested <= 65,
-          "request_result was not limited: " + std::to_string(requested) + " requests accepted");
+    check(refused && requested == 64,
+          "request_result was not limited at 64: " + std::to_string(requested) + " requests accepted");
     for (int answered = 0; answered < requested;)
     {
         auto event = events.next();
@@ -271,13 +271,12 @@ static void result_requests_are_bounded(Ros2Context &context)
             answered++;
         }
     }
-    // Every answer is read, so the slots are free again. (32, not 64: the
-    // last task may give its slot back just after its answer is read.)
-    for (int again = 0; again < 32; again++)
+    // Every answer is read, so all 64 slots are free again at once.
+    for (int again = 0; again < 64; again++)
     {
         client->request_result(id);
     }
-    for (int answered = 0; answered < 32;)
+    for (int answered = 0; answered < 64;)
     {
         auto event = events.next();
         if (client->matches_result(event))

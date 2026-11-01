@@ -315,7 +315,11 @@ impl Action {
 
                 let name = crate::ros2_client::Name::new(name_space, base_name)
                     .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?;
-                let (result_tx, result_rx) = flume::bounded::<eyre::Result<#result_event_name>>(1);
+                // DDS answers carry no permit (see `results_waiting`).
+                let (result_tx, result_rx) = flume::bounded::<(
+                    eyre::Result<#result_event_name>,
+                    Option<dora_ros2_bridge::transport::action::GoalPermit>,
+                )>(1);
 
                 let (backend, feedback_id, status_id) = match &mut node.node {
                     GeneratedNode::Dds(dds_node) => {
@@ -375,7 +379,7 @@ impl Action {
                                                     status,
                                                     result: response.result,
                                                 };
-                                                if result_tx.send(Ok(event)).is_err() {
+                                                if result_tx.send((Ok(event), None)).is_err() {
                                                     break;
                                                 }
                                             }
@@ -384,9 +388,9 @@ impl Action {
                                             std::thread::sleep(std::time::Duration::from_millis(2));
                                         }
                                         Err(e) => {
-                                            let _ = result_tx.send(Err(eyre::eyre!(
+                                            let _ = result_tx.send((Err(eyre::eyre!(
                                                 "failed to receive action result: {e:?}"
-                                            )));
+                                            )), None));
                                             std::thread::sleep(std::time::Duration::from_millis(2));
                                         }
                                     }
@@ -507,11 +511,12 @@ impl Action {
                             events.events.merge(Box::pin(stream))
                         };
 
-                        (#client_backend::Zenoh { client, result_tx, executor: node.executor.clone(), results_waiting: Default::default() }, feedback_id, status_id)
+                        (#client_backend::Zenoh { client, result_tx, executor: node.executor.clone(), results_waiting: dora_ros2_bridge::transport::action::ConcurrentGoalLimit::new(MAX_PENDING_REQUESTS) }, feedback_id, status_id)
                     }
                 };
+                // The permit is dropped here, as the answer is handed to C++.
                 let result_stream = result_rx.into_stream()
-                    .map(|v| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                    .map(|(v, _permit)| Box::new(v) as Box<dyn std::any::Any + 'static>);
                 let result_id = events.events.merge(Box::pin(result_stream));
 
                 Ok(Box::new(#client_name {
@@ -540,13 +545,19 @@ impl Action {
                 Zenoh {
                     client: std::sync::Arc<#zenoh_client>,
                     // `request_result` answers come back through the result stream.
-                    result_tx: flume::Sender<eyre::Result<#result_event_name>>,
+                    result_tx: flume::Sender<(
+                        eyre::Result<#result_event_name>,
+                        Option<dora_ros2_bridge::transport::action::GoalPermit>,
+                    )>,
                     executor: std::sync::Arc<futures::executor::ThreadPool>,
                     /// `request_result` calls still waiting for their goal or for
                     /// their answer to be read, at most MAX_PENDING_REQUESTS, so a
                     /// caller that never reads the result events can't pile up
-                    /// tasks holding results.
-                    results_waiting: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+                    /// tasks holding results. A call's permit goes through the
+                    /// result stream with its answer and is given back when the
+                    /// answer is taken off the stream, or with the call if it
+                    /// ends without one.
+                    results_waiting: dora_ros2_bridge::transport::action::ConcurrentGoalLimit,
                 },
             }
 
@@ -771,26 +782,14 @@ impl Action {
                         #[cfg(feature = "rmw-zenoh")]
                         #client_backend::Zenoh { client, result_tx, executor, results_waiting } => {
                             use futures::task::SpawnExt as _;
-                            use std::sync::atomic::Ordering;
-                            if results_waiting.fetch_add(1, Ordering::SeqCst) >= MAX_PENDING_REQUESTS {
-                                results_waiting.fetch_sub(1, Ordering::SeqCst);
+                            let Ok(permit) = results_waiting.try_acquire() else {
                                 return Err(eyre::eyre!(
                                     "{MAX_PENDING_REQUESTS} action result requests are still waiting for their goal or for their answer to be read"
                                 ));
-                            }
-                            // Gives the slot back when the task ends or is dropped
-                            // unrun (spawn failed, executor shut down).
-                            struct Waiting(std::sync::Arc<std::sync::atomic::AtomicUsize>);
-                            impl Drop for Waiting {
-                                fn drop(&mut self) {
-                                    self.0.fetch_sub(1, Ordering::SeqCst);
-                                }
-                            }
-                            let waiting = Waiting(results_waiting.clone());
+                            };
                             let client = client.clone();
                             let result_tx = result_tx.clone();
                             return executor.spawn(async move {
-                                let _waiting = waiting;
                                 match client.get_result(goal_id.id).await {
                                     // The client is gone: nobody reads the answer.
                                     Err(dora_ros2_bridge::transport::action::zenoh::ActionCallError::Closed) => {}
@@ -802,7 +801,7 @@ impl Action {
                                                 result,
                                             })
                                             .map_err(|e| eyre::eyre!("failed to receive action result: {e}"));
-                                        let _ = result_tx.send_async(result).await;
+                                        let _ = result_tx.send_async((result, Some(permit))).await;
                                     }
                                 }
                             }).map_err(|e| eyre::eyre!("Failed to request result: {e}"));
