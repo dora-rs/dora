@@ -19,7 +19,11 @@ impl Executable for Info {
     fn execute(self) -> eyre::Result<()> {
         let reference = PackageRef::parse(&self.package)?;
         let mut ctx = HubContext::load(self.offline)?;
-        let catalog = ctx.catalog_for_namespace(&reference.namespace)?;
+        let catalog = if ctx.registry_mode_for(&reference.namespace) {
+            ctx.registry_catalog(&reference.namespace, &reference.name)?
+        } else {
+            ctx.catalog_for_namespace(&reference.namespace)?
+        };
 
         let (version, entry) = resolve_or_yanked(&catalog, &reference, &self.package)?;
         ctx.drain_warnings();

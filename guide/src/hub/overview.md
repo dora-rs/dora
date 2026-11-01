@@ -29,10 +29,12 @@ The Hub is a **package manager for dora nodes**, deliberately cargo-style:
   that mutates a machine. A node is a dependency of *a dataflow*; you add `hub:`
   to the YAML and `dora build` resolves it. (`dora hub install` exists only to
   point you at this.)
-- **A git-backed index, not an artifact upload.** Publishing adds a small
-  *index entry* that points at a git commit of the node's source; it does not
-  upload a tarball. The default index is the public catalog at
-  [`dora-rs/dora-hub`](https://github.com/dora-rs/dora-hub).
+- **An HTTP registry by default.** `dora` resolves `hub:` from the registry at
+  <https://dora.pub> (the public site is not live yet); `DORA_HUB_REGISTRY_URL`
+  points it at a local test server or a mirror. `hub.toml` can still bind a
+  namespace to a git/path catalog for enterprise and hermetic setups. Publishing
+  uploads the committed source archive and metadata; the registry exposes a
+  sparse index and pins the version to an immutable source commit.
 - **Source-distributed by default.** A resolved node is cloned at its pinned
   commit and built on the machine that runs it. A node may *optionally* ship a
   prebuilt binary for a platform (see [Custom & Enterprise
@@ -43,6 +45,24 @@ The Hub is a **package manager for dora nodes**, deliberately cargo-style:
 - **Typed end-to-end.** A published node carries its dora input/output contracts
   in its manifest, so wiring it wrong fails at `dora build`/`dora validate` time,
   before anything runs.
+
+## Registry URL
+
+The CLI uses the official registry by default:
+
+```bash
+# official (default; not launched yet)
+dora build dataflow.yml
+
+# local registry or enterprise mirror
+DORA_HUB_REGISTRY_URL=http://127.0.0.1:8080 dora build dataflow.yml
+```
+
+`DORA_HUB_REGISTRY_URL` is honored by `dora build/run/validate`, `dora hub
+search/info`, `dora hub publish`, `dora hub login/token/logout` and `dora hub
+yank`. Explicit `[[index]]` bindings in `hub.toml` still win for their
+namespaces. Plain HTTP is accepted for loopback hosts (local tests); for a
+trusted LAN mirror, set `DORA_HUB_ALLOW_INSECURE_REGISTRY=1`.
 
 ## A package reference
 

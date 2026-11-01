@@ -3,6 +3,7 @@
 use dora_hub_client::{
     config::{IndexConfig, ResolvedConfig},
     index::IndexCatalog,
+    registry::{REGISTRY_URL_ENV, RegistryClient, RegistryPackage},
     transport::IndexFetcher,
 };
 use eyre::Context;
@@ -36,6 +37,8 @@ pub fn sanitize(s: &str) -> String {
 pub struct HubContext {
     pub config: ResolvedConfig,
     pub fetcher: IndexFetcher,
+    offline: bool,
+    registry: Option<RegistryClient>,
 }
 
 impl HubContext {
@@ -43,6 +46,8 @@ impl HubContext {
         Ok(Self {
             config: ResolvedConfig::load_default().context("failed to load hub configuration")?,
             fetcher: IndexFetcher::new(offline)?,
+            offline,
+            registry: None,
         })
     }
 
@@ -76,6 +81,40 @@ impl HubContext {
             .catalog_dir(index, &self.config.config_dir)
             .with_context(|| format!("failed to fetch index `{}`", index.alias))?;
         IndexCatalog::open(&dir)
+    }
+
+    /// Whether `namespace` resolves through the HTTP registry rather than a
+    /// configured git/path index.
+    pub fn registry_mode_for(&self, namespace: &str) -> bool {
+        !self.config.is_bound(namespace)
+            && (std::env::var_os(REGISTRY_URL_ENV).is_some() || !self.config.official_explicit())
+    }
+
+    /// Search should use the registry unless the user explicitly configured
+    /// local/git catalogs (those are still the source for hermetic setups).
+    pub fn registry_search_enabled(&self) -> bool {
+        std::env::var_os(REGISTRY_URL_ENV).is_some() || !self.config.has_explicit_indexes()
+    }
+
+    /// Materialize `namespace/name` from the registry and open its catalog.
+    pub fn registry_catalog(&mut self, namespace: &str, name: &str) -> eyre::Result<IndexCatalog> {
+        if self.registry.is_none() {
+            self.registry = Some(RegistryClient::new(self.offline)?);
+        }
+        let registry = self.registry.as_mut().expect("initialized above");
+        let dir = registry.catalog_dir(namespace, name)?;
+        IndexCatalog::open(&dir)
+    }
+
+    /// Query the registry's package search endpoint.
+    pub fn registry_search(&mut self, query: &str) -> eyre::Result<Vec<RegistryPackage>> {
+        if self.registry.is_none() {
+            self.registry = Some(RegistryClient::new(self.offline)?);
+        }
+        self.registry
+            .as_ref()
+            .expect("initialized above")
+            .search(query)
     }
 
     /// Print any accumulated transport warnings (e.g. index rollback).

@@ -11,6 +11,14 @@
 > marked *(seeking owner)* are open for anyone to claim — contributions from
 > the original proposal's author are explicitly invited on the items closest
 > to that design (P2.3 index bootstrap, category curation, P4.1 web).
+>
+> **Update (2026-11):** The client now resolves `hub:` through the HTTP
+> registry at <https://dora.pub> by default, overridable with
+> `DORA_HUB_REGISTRY_URL`; `dora hub login/token/publish` speak that registry.
+> Git/path catalogs configured through `hub.toml` remain supported for explicit
+> namespace bindings. The guide (`guide/src/hub/`) is the up-to-date user
+> documentation; the git-catalog sections below describe that compatibility
+> path.
 
 Dora Hub is dora's node packaging, discovery, and distribution system: node
 authors publish typed, versioned nodes once; dataflow authors find and use

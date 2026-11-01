@@ -27,6 +27,31 @@ impl Executable for Search {
         let query = self.query.as_deref().unwrap_or("").to_ascii_lowercase();
 
         let mut ctx = HubContext::load(self.offline)?;
+        if ctx.registry_search_enabled() {
+            if category.is_some() || self.platform.is_some() {
+                eprintln!(
+                    "  warning: --category/--platform filters apply to configured indexes; \
+                     registry search returns all matches"
+                );
+            }
+            let mut hits = ctx.registry_search(&query)?;
+            hits.sort_by(|a, b| a.namespace.cmp(&b.namespace).then(a.name.cmp(&b.name)));
+            if hits.is_empty() {
+                println!("No matching nodes found.");
+                return Ok(());
+            }
+            for hit in hits {
+                print!("{}/{}", hit.namespace, hit.name);
+                if let Some(version) = &hit.latest_version {
+                    print!(" {version}");
+                }
+                if let Some(desc) = &hit.description {
+                    print!(" — {}", sanitize(desc));
+                }
+                println!();
+            }
+            return Ok(());
+        }
         let mut hits = Vec::new();
         for (_alias, catalog) in ctx.all_catalogs() {
             for (namespace, name) in catalog.all_packages() {

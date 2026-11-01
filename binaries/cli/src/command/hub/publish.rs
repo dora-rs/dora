@@ -12,7 +12,12 @@
 //! the entry and the path to add, since automated PR-opening against the
 //! official `node-index` lands with the index bootstrap (P2.3).
 
-use std::path::{Path, PathBuf};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
+
+use flate2::{Compression, write::GzEncoder};
 
 use dora_core::{
     manifest::{MANIFEST_FILENAME, NodeManifest},
@@ -21,6 +26,7 @@ use dora_core::{
 use dora_hub_client::{
     config::ResolvedConfig,
     index::{IndexEntry, SourceSpec},
+    registry::{self as hub_registry, PublishMetadata, RegistryClient},
     semver,
 };
 use eyre::{Context, ContextCompat, bail};
@@ -53,6 +59,23 @@ pub struct Publish {
     /// bound to the manifest's namespace.
     #[clap(long, value_name = "ALIAS")]
     index: Option<String>,
+    /// HTTP registry URL. Defaults to `DORA_HUB_REGISTRY_URL` or
+    /// <https://dora.pub>; setting this forces a registry upload.
+    #[clap(long, env = "DORA_HUB_REGISTRY_URL", value_name = "URL")]
+    registry: Option<String>,
+    /// Registry API token. Defaults to `$DORA_HUB_TOKEN` or the saved token
+    /// from `dora hub login` (~/.config/dora/hub-token).
+    #[clap(long, env = "DORA_HUB_TOKEN", value_name = "TOKEN")]
+    token: Option<String>,
+    /// One-line description stored in the registry (defaults to the manifest).
+    #[clap(long, value_name = "TEXT")]
+    description: Option<String>,
+    /// SPDX license identifier stored in the registry.
+    #[clap(long, value_name = "SPDX")]
+    license: Option<String>,
+    /// Source repository URL stored in the registry.
+    #[clap(long, value_name = "URL")]
+    repository: Option<String>,
 }
 
 impl Executable for Publish {
@@ -130,6 +153,32 @@ impl Executable for Publish {
         let version = semver::Version::parse(version_str.trim())
             .with_context(|| format!("version `{version_str}` is not valid semver"))?;
 
+        // The default destination is the HTTP registry; an explicit
+        // `[[index]]` binding (or a configured official mirror) keeps the
+        // legacy git/path publish path. `--index`, `--registry` and
+        // DORA_HUB_REGISTRY_URL are explicit overrides.
+        let config = ResolvedConfig::load_default().context("failed to load hub configuration")?;
+        let use_registry = self.index.is_none()
+            && (self.registry.is_some()
+                || (!config.is_bound(&namespace) && !config.official_explicit()));
+        if use_registry {
+            return publish_to_registry(
+                dir,
+                &commit,
+                &prefix,
+                &namespace,
+                &name,
+                &version,
+                &manifest,
+                self.registry.as_deref(),
+                self.token.as_deref(),
+                self.description,
+                self.license,
+                self.repository,
+                self.dry_run,
+            );
+        }
+
         // 4. Construct the index entry.
         let entry = IndexEntry {
             manifest: manifest.clone(),
@@ -152,7 +201,6 @@ impl Executable for Publish {
         // `--index`/namespace binding a real publish would, and previews where
         // the entry lands. `load_default` falls back to the official index when
         // no hub.toml is present, so dry-run still works without a config.
-        let config = ResolvedConfig::load_default().context("failed to load hub configuration")?;
         let index = match &self.index {
             Some(alias) => {
                 let target = config
@@ -238,6 +286,113 @@ impl Executable for Publish {
         }
         Ok(())
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_to_registry(
+    dir: &Path,
+    commit: &str,
+    prefix: &str,
+    namespace: &str,
+    name: &str,
+    version: &semver::Version,
+    manifest: &NodeManifest,
+    registry_override: Option<&str>,
+    token_override: Option<&str>,
+    description: Option<String>,
+    license: Option<String>,
+    repository: Option<String>,
+    dry_run: bool,
+) -> eyre::Result<()> {
+    let registry_url = registry_override
+        .map(str::to_string)
+        .unwrap_or_else(hub_registry::registry_url);
+    let client = RegistryClient::with_url(&registry_url, false)
+        .context("invalid hub registry configuration")?;
+    let metadata = PublishMetadata {
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        version: version.to_string(),
+        description: description.or_else(|| manifest.description.clone()),
+        license,
+        repository,
+    };
+
+    let treeish = if prefix.is_empty() {
+        commit.to_string()
+    } else {
+        format!("{commit}:{prefix}")
+    };
+    let tar = git_archive(dir, &treeish)
+        .with_context(|| format!("failed to package committed source at {treeish}"))?;
+    let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+    gz.write_all(&tar)
+        .context("failed to compress package archive")?;
+    let archive = gz.finish().context("failed to compress package archive")?;
+    if archive.len() > 50 * 1024 * 1024 {
+        bail!(
+            "package archive is {} MiB (limit 50 MiB) — trim data files before publishing",
+            archive.len() / (1024 * 1024)
+        );
+    }
+
+    if dry_run {
+        println!(
+            "would publish `{namespace}/{name}` v{version} to {registry_url}\n\
+             archive: {} bytes from commit {}\n{}",
+            archive.len(),
+            &commit[..12],
+            serde_json::to_string_pretty(&metadata)?
+        );
+        return Ok(());
+    }
+
+    let token = match token_override {
+        Some(token) if !token.trim().is_empty() => token.trim().to_string(),
+        _ => hub_registry::read_saved_token()?.context(
+            "no registry token: run `dora hub login`, pass `--token`, or set DORA_HUB_TOKEN",
+        )?,
+    };
+    let response = client
+        .publish(&token, &metadata, &archive)
+        .with_context(|| format!("publish to {registry_url} failed"))?;
+    println!(
+        "published `{namespace}/{name}` v{version} to {registry_url}\n{}",
+        serde_json::to_string_pretty(&response)?
+    );
+    Ok(())
+}
+
+fn git_archive(dir: &Path, treeish: &str) -> eyre::Result<Vec<u8>> {
+    // `git archive <commit>:<subdir>` only works from the repository root;
+    // from a tracked subdirectory git reports "current working directory is
+    // not tracked". Find the root first, then archive there.
+    let root = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .context("failed to locate the git repository root")?;
+    if !root.status.success() {
+        bail!(
+            "failed to locate the git repository root: {}",
+            String::from_utf8_lossy(&root.stderr).trim()
+        );
+    }
+    let root = String::from_utf8_lossy(&root.stdout).trim().to_string();
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["archive", "--format=tar", treeish])
+        .output()
+        .context("failed to run git archive")?;
+    if !output.status.success() {
+        bail!(
+            "git archive {treeish} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(output.stdout)
 }
 
 /// Run `git <args>` in `dir`, returning trimmed stdout or an error on failure.

@@ -1,7 +1,14 @@
 # Hub dataflow example
 
 Demonstrates using a node published to the [Dora Hub](../../docs/plan-node-hub.md)
-index with the `hub:` field — no `path:`, no `git:`, no manual `build:`.
+with the `hub:` field — no `path:`, no `git:`, no manual `build:`.
+
+By default `dora` resolves from <https://dora.pub>; until that site launches,
+point it at a local registry:
+
+```bash
+export DORA_HUB_REGISTRY_URL=http://127.0.0.1:8080
+```
 
 ```yaml
 # dataflow.yml
@@ -24,6 +31,7 @@ clones that commit, runs the node's `build:`, and writes the pin to
 dora hub search detection            # find nodes by name/keyword/category
 dora hub info dora-yolo              # typed inputs/outputs + example snippet
 dora hub list dataflow.yml           # hub packages pinned in the lockfile
+dora hub login                       # create/save a registry publish token
 dora hub fetch dataflow.yml --target-dir ./hub-cache   # warm cache + mirror sources
 ```
 
@@ -44,6 +52,6 @@ dora build dataflow.yml --locked --offline # robot: build from the cache, fail o
 
 - `hub:` is an unstable feature; its behavior may change.
 - The example references `dora-yolo`, which becomes available once the official
-  `dora-rs/dora-hub` index is bootstrapped (umbrella issue #2097). Until then,
-  point `~/.config/dora/hub.toml` at a local fixture index to try the flow — see
-  `tests/hub-smoke.rs` for a fully self-contained setup.
+  registry is populated. Until then, set `DORA_HUB_REGISTRY_URL` to a local
+  registry (see the hub-registry project) or point `~/.config/dora/hub.toml` at
+  a local fixture index — see `tests/hub-smoke.rs` for a self-contained setup.

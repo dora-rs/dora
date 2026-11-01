@@ -24,6 +24,7 @@ use dora_hub_client::{
     config::ResolvedConfig,
     index::{IndexCatalog, current_platform},
     reference::PackageRef,
+    registry::{REGISTRY_URL_ENV, RegistryClient},
     transport::IndexFetcher,
 };
 use dora_message::{
@@ -546,6 +547,14 @@ pub fn resolve_hub_nodes(
 
     let config = ResolvedConfig::load_default().context("failed to load hub configuration")?;
     let mut fetcher = IndexFetcher::new(offline)?;
+    // The default source for unbound namespaces is the HTTP registry
+    // (`https://dora.pub`, overridable with DORA_HUB_REGISTRY_URL). Explicit
+    // `[[index]]` bindings (including a configured official mirror) keep
+    // using the legacy git/path transport, so existing hermetic tests and
+    // enterprise setups are unaffected.
+    let registry_override = std::env::var_os(REGISTRY_URL_ENV).is_some();
+    let mut registry_client: Option<RegistryClient> = None;
+    let mut registry_noted = false;
 
     for node in &mut dataflow.nodes {
         let Some(raw_reference) = node.hub.clone() else {
@@ -666,10 +675,31 @@ pub fn resolve_hub_nodes(
             );
         }
 
-        let index_config = config.index_for_namespace(&reference.namespace);
-        let catalog_dir = fetcher
-            .catalog_dir(index_config, &config.config_dir)
-            .with_context(|| format!("node `{}`: failed to fetch the hub index", node.id))?;
+        let via_registry = !config.is_bound(&reference.namespace)
+            && (registry_override || !config.official_explicit());
+        let catalog_dir = if via_registry {
+            if registry_client.is_none() {
+                registry_client = Some(RegistryClient::new(offline)?);
+            }
+            let registry = registry_client.as_mut().expect("initialized above");
+            if !registry_noted {
+                resolution.notes.push(format!(
+                    "using registry {} (override with {REGISTRY_URL_ENV})",
+                    registry.base_url()
+                ));
+                registry_noted = true;
+            }
+            registry
+                .catalog_dir(&reference.namespace, &reference.name)
+                .with_context(|| {
+                    format!("node `{}`: failed to fetch from the hub registry", node.id)
+                })?
+        } else {
+            let index_config = config.index_for_namespace(&reference.namespace);
+            fetcher
+                .catalog_dir(index_config, &config.config_dir)
+                .with_context(|| format!("node `{}`: failed to fetch the hub index", node.id))?
+        };
         let catalog = IndexCatalog::open(&catalog_dir)?;
 
         // a pinned-resolution helper may push warnings (yank, index-rewrite)

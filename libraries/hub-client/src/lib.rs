@@ -1,12 +1,15 @@
 //! Client for the Dora Hub package index (docs/plan-node-hub.md §7).
 //!
-//! The index is a git-hosted catalog mapping `namespace/name@version` to a
-//! node manifest plus a source pointer. This crate provides:
+//! A catalog maps `namespace/name@version` to a node manifest plus a source
+//! pointer. Catalogs can be git-hosted indexes or the HTTP registry
+//! (<https://dora.pub>, overridable with `DORA_HUB_REGISTRY_URL`). This crate
+//! provides:
 //!
 //! - [`reference`]: parsing `[<namespace>/]<name>@<semver-req>` references,
 //! - [`index`]: the on-disk catalog format and semver/yank resolution,
 //! - [`config`]: `hub.toml` multi-index configuration with namespace binding,
-//! - [`transport`]: sparse-clone fetch and refresh of remote indexes.
+//! - [`transport`]: sparse-clone fetch and refresh of remote indexes,
+//! - [`registry`]: HTTP sparse-index/registry client (default `https://dora.pub`).
 //!
 //! Everything network-facing lives in [`transport`]; the rest are pure
 //! functions over parsed data, usable against fixture directories in tests.
@@ -14,6 +17,7 @@
 pub mod config;
 pub mod index;
 pub mod reference;
+pub mod registry;
 pub mod transport;
 
 // re-exported so consumers can name version types without a separate dep

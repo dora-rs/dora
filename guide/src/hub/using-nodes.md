@@ -28,6 +28,10 @@ nodes:
 You still write the node's `inputs`/`outputs` wiring as usual; the *types* of
 those ports come from the published manifest.
 
+Resolution uses the official registry at <https://dora.pub> unless
+`DORA_HUB_REGISTRY_URL` is set (local tests, mirrors). Namespaces explicitly
+bound in `hub.toml` keep using their configured index.
+
 ### The reference syntax
 
 ```
@@ -77,8 +81,12 @@ dora hub search lidar --platform linux-x86_64
 dora hub search                         # list everything
 ```
 
-Search spans every configured index and prints `namespace/name version —
-description (categories)`, using each package's latest version.
+With no `hub.toml` (or when `DORA_HUB_REGISTRY_URL` is set), search queries the
+HTTP registry. When custom indexes are configured, search spans those indexes
+instead. Results print `namespace/name version — description`.
+
+`--category`/`--platform` filters currently apply to configured indexes; the
+registry search endpoint reports a warning if they are used.
 
 ### Inspect a package
 
