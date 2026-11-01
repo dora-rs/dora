@@ -55,8 +55,10 @@ pub(crate) async fn handle_daemon_ws(
 
     loop {
         tokio::select! {
-            // Incoming messages from daemon
-            msg = ws_rx.next() => {
+            // Incoming messages from daemon. Paused while the backlog is at
+            // its hard cap, which leaves the daemon to TCP backpressure as
+            // before #3983 rather than buffering without bound.
+            msg = ws_rx.next(), if !backlog.is_full() => {
                 let Some(msg) = msg else { break };
                 let text = match msg {
                     Ok(Message::Text(text)) => text,
@@ -168,6 +170,7 @@ pub(crate) async fn handle_daemon_ws(
 /// joins the connection's backlog, which `handle_daemon_ws` drains in order.
 fn queue_daemon_event(
     event: Event,
+    size: usize,
     event_tx: &mpsc::Sender<Event>,
     backlog: &mut EventBacklog,
     topic_debug_tx: &mpsc::Sender<Event>,
@@ -184,47 +187,72 @@ fn queue_daemon_event(
         },
         event if backlog.is_empty() => match event_tx.try_send(event) {
             Err(mpsc::error::TrySendError::Full(event)) => {
-                backlog.push(event);
+                backlog.push(event, size);
                 true
             }
             result => result.is_ok(),
         },
         event => {
-            backlog.push(event);
+            backlog.push(event, size);
             true
         }
     }
 }
 
-/// Above this many queued events, a connection drops the daemon's log lines
+/// Past this many queued bytes, a connection drops the daemon's log lines
 /// rather than queue more: they are the one high-volume event nothing waits
-/// on, so a main loop that stalls while nodes are chatty cannot grow the
-/// backlog without bound. Control events are always kept.
-const MAX_BACKLOG_BEFORE_DROPPING_LOGS: usize = 4096;
+/// on. Control events are still queued, up to [`MAX_BACKLOG_BYTES`].
+const MAX_BACKLOG_BYTES_BEFORE_DROPPING_LOGS: usize = 8 * 1024 * 1024;
 
-/// Daemon events read off one connection and not yet taken by the main loop.
+/// Hard cap on a connection's backlog. At it, the connection stops reading
+/// the daemon's socket until the main loop takes some events, so a daemon
+/// that outpaces the main loop is throttled by TCP backpressure instead of
+/// growing coordinator memory. Far above anything a healthy daemon queues
+/// while the main loop waits on one of its replies.
+const MAX_BACKLOG_BYTES: usize = 32 * 1024 * 1024;
+
+/// Daemon events read off one connection and not yet taken by the main loop,
+/// each with the size of the message it arrived in.
 #[derive(Default)]
 struct EventBacklog {
-    events: VecDeque<Event>,
+    events: VecDeque<(Event, usize)>,
+    bytes: usize,
     dropped_logs: DroppedEvents,
 }
 
 impl EventBacklog {
-    fn push(&mut self, event: Event) {
-        if matches!(event, Event::Log(_)) && self.events.len() >= MAX_BACKLOG_BEFORE_DROPPING_LOGS {
+    fn push(&mut self, event: Event, size: usize) {
+        if matches!(event, Event::Log(_))
+            && self.bytes + size > MAX_BACKLOG_BYTES_BEFORE_DROPPING_LOGS
+        {
             self.dropped_logs
                 .record("daemon log message(s): the coordinator is not keeping up");
             return;
         }
-        self.events.push_back(event);
+        let was_full = self.is_full();
+        self.events.push_back((event, size));
+        self.bytes += size;
+        if !was_full && self.is_full() {
+            tracing::warn!(
+                "daemon event backlog reached {} bytes: pausing reads from the daemon \
+                 until the coordinator catches up",
+                self.bytes
+            );
+        }
     }
 
     fn pop_front(&mut self) -> Option<Event> {
-        self.events.pop_front()
+        let (event, size) = self.events.pop_front()?;
+        self.bytes -= size;
+        Some(event)
     }
 
     fn is_empty(&self) -> bool {
         self.events.is_empty()
+    }
+
+    fn is_full(&self) -> bool {
+        self.bytes >= MAX_BACKLOG_BYTES
     }
 }
 
@@ -380,6 +408,7 @@ async fn handle_daemon_request(
             {
                 queue_daemon_event(
                     coordinator_event,
+                    raw_text.len(),
                     event_tx,
                     backlog,
                     topic_debug_tx,
@@ -650,7 +679,7 @@ mod topic_debug_tests {
         let mut backlog = EventBacklog::default();
         let mut dropped = DroppedEvents::default();
         let mut queue = |event, backlog: &mut EventBacklog| {
-            queue_daemon_event(event, &event_tx, backlog, &topic_debug_tx, &mut dropped)
+            queue_daemon_event(event, 1, &event_tx, backlog, &topic_debug_tx, &mut dropped)
         };
         let debug_frame = || Event::TopicDebugData {
             dataflow_id: Uuid::new_v4(),
@@ -684,35 +713,42 @@ mod topic_debug_tests {
     }
 
     /// A stalled main loop must not grow a connection's backlog without
-    /// bound: past the cap, log lines are dropped, control events are not.
+    /// bound: past the log threshold, log lines are dropped while control
+    /// events are still kept, and at the hard cap the backlog reports full
+    /// so the connection stops reading the socket.
     #[test]
-    fn a_full_backlog_drops_logs_but_keeps_control_events() {
+    fn a_growing_backlog_drops_logs_then_reports_full() {
         let mut backlog = EventBacklog::default();
-        for _ in 0..MAX_BACKLOG_BEFORE_DROPPING_LOGS {
-            backlog.push(heartbeat());
-        }
-        backlog.push(Event::Log(dora_message::common::LogMessage {
-            build_id: None,
-            dataflow_id: None,
-            node_id: None,
-            daemon_id: None,
-            level: dora_message::common::LogLevelOrStdout::Stdout,
-            target: None,
-            module_path: None,
-            file: None,
-            line: None,
-            message: "dropped".into(),
-            timestamp: Default::default(),
-            fields: None,
-        }));
-        backlog.push(heartbeat());
-        assert_eq!(backlog.events.len(), MAX_BACKLOG_BEFORE_DROPPING_LOGS + 1);
-        assert!(
-            backlog
-                .events
-                .iter()
-                .all(|event| matches!(event, Event::DaemonHeartbeat { .. }))
-        );
+        let log = || {
+            Event::Log(dora_message::common::LogMessage {
+                build_id: None,
+                dataflow_id: None,
+                node_id: None,
+                daemon_id: None,
+                level: dora_message::common::LogLevelOrStdout::Stdout,
+                target: None,
+                module_path: None,
+                file: None,
+                line: None,
+                message: "dropped".into(),
+                timestamp: Default::default(),
+                fields: None,
+            })
+        };
+
+        backlog.push(heartbeat(), MAX_BACKLOG_BYTES_BEFORE_DROPPING_LOGS);
+        backlog.push(log(), 1);
+        backlog.push(heartbeat(), 1);
+        assert_eq!(backlog.events.len(), 2, "the log line is dropped");
+        assert!(!backlog.is_full());
+
+        backlog.push(heartbeat(), MAX_BACKLOG_BYTES);
+        assert!(backlog.is_full());
+        assert_eq!(backlog.events.len(), 3, "control events are never dropped");
+
+        while backlog.pop_front().is_some() {}
+        assert_eq!(backlog.bytes, 0);
+        assert!(!backlog.is_full());
     }
 }
 
