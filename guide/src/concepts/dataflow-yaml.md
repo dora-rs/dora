@@ -193,11 +193,11 @@ Types also appear on `dora graph` edge labels when annotated.
 
 ### Arrow IPC Framing
 
-Per-output wire framing override. Default is `raw` (Arrow buffer layout). Set to `arrow-ipc` for self-describing Arrow IPC stream format.
+Accepted for 1.x compatibility but has no effect: every output is encoded as Arrow IPC whatever this key says, so `raw` and `arrow-ipc` behave identically.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `output_framing` | map | `{}` | Per-output framing: `raw` (default) or `arrow-ipc` |
+| `output_framing` | map | `{}` | Ignored. Values: `raw` or `arrow-ipc` |
 
 ```yaml
 - id: sensor
