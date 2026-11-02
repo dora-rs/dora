@@ -308,7 +308,7 @@ Two consequences worth knowing:
 
 ## Example
 
-See [`examples/module-dataflow/`](../examples/module-dataflow/) for a complete working example with a sender, transform module (doubler + filter), and receiver.
+See [`examples/module-dataflow/`](../../../examples/module-dataflow/) for a complete working example with a sender, transform module (doubler + filter), and receiver.
 
 ```bash
 dora run examples/module-dataflow/dataflow.yml

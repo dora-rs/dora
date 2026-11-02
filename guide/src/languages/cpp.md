@@ -259,7 +259,7 @@ enum class MetadataValueType : uint8_t {
 
 ### Service, Action, and Streaming Patterns
 
-C++ nodes can implement [communication patterns](patterns.md) using the metadata API. The well-known metadata keys are:
+C++ nodes can implement [communication patterns](../concepts/patterns.md) using the metadata API. The well-known metadata keys are:
 
 | Key | Description |
 |-----|-------------|
@@ -319,7 +319,7 @@ struct CombinedEvent {
 rust::Box<DoraEvent> downcast_dora(CombinedEvent event);
 ```
 
-ROS2 subscriptions add their own events to the merged stream. Use `subscription->matches(event)` and `subscription->downcast(event)` to handle ROS2-specific events (see the [ROS2 Bridge docs](ros2-bridge.md)).
+ROS2 subscriptions add their own events to the merged stream. Use `subscription->matches(event)` and `subscription->downcast(event)` to handle ROS2-specific events (see the [ROS2 Bridge docs](../advanced/ros2-bridge.md)).
 
 ---
 
