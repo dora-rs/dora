@@ -3288,9 +3288,7 @@ mod tests {
         let input_config = BTreeMap::from([(
             reserved.clone(),
             Input {
-                mapping: InputMapping::Timer {
-                    interval: Duration::from_secs(1),
-                },
+                mapping: InputMapping::timer(Duration::from_secs(1), Duration::ZERO),
                 queue_size: Some(1),
                 input_timeout: None,
                 queue_policy: None,

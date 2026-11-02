@@ -216,6 +216,24 @@ inputs:
   fast: dora/timer/hz/30        # 30 Hz (~33ms)
 ```
 
+A timer can take a phase, which shifts its ticks later by a fixed amount
+relative to the unphased timer of the same interval. That is useful when one
+node should run a few milliseconds after the nodes it reads from, for example
+a controller that runs after the sensors it consumes:
+
+```yaml
+inputs:
+  sensors: dora/timer/millis/20                  # at 0, 20, 40, ... ms
+  policy:  dora/timer/millis/20/phase/millis/5   # at 5, 25, 45, ... ms
+```
+
+The phase takes `secs`, `millis`, `micros` or `nanos` (not `hz`, since it is an
+offset rather than a rate) and must be shorter than the interval. All timers of
+a dataflow on one daemon are aligned to a shared start time, so the offset
+holds even for a timer that starts later, such as one added with
+`dora node add`. Each daemon has its own start time, though: the offset is only
+guaranteed between timers whose nodes run on the same machine.
+
 #### Built-in Log Aggregation
 
 Subscribe to structured log messages from all (or filtered) nodes:

@@ -296,6 +296,46 @@ pub struct LogSubscriber {
     pub filter: dora_message::config::LogSubscriptionFilter,
 }
 
+/// A timer the daemon runs one task for. Timers with the same interval but
+/// different phases fire at different instants, so they are separate timers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TimerKey {
+    pub(crate) interval: Duration,
+    /// How long after each slot of the dataflow's timer epoch this timer
+    /// fires; zero for an unphased timer.
+    pub(crate) phase: Duration,
+}
+
+impl TimerKey {
+    /// The `dora/timer/...` input mapping that subscribes to this timer.
+    pub(crate) fn mapping(self) -> InputMapping {
+        InputMapping::timer(self.interval, self.phase)
+    }
+
+    /// The first tick at or after `now` of this timer, which fires at
+    /// `epoch + phase + n * interval`.
+    ///
+    /// Starting the stream there, rather than at `now`, keeps every timer of a
+    /// dataflow on one schedule whenever it is spawned, so a phase is an
+    /// offset from the unphased timer of the same interval. At the dataflow's
+    /// first start (`now == epoch`) an unphased timer fires at once, as
+    /// before.
+    pub(crate) fn next_tick(
+        self,
+        epoch: tokio::time::Instant,
+        now: tokio::time::Instant,
+    ) -> tokio::time::Instant {
+        let first = epoch + self.phase;
+        if now <= first {
+            return first;
+        }
+        let behind = (now - first).as_nanos();
+        let period = self.interval.as_nanos();
+        let periods = behind.div_ceil(period);
+        first + Duration::from_nanos((periods * period) as u64)
+    }
+}
+
 pub struct RunningDataflow {
     pub(crate) id: uuid::Uuid,
     pub(crate) descriptor: Descriptor,
@@ -352,7 +392,13 @@ pub struct RunningDataflow {
     /// dropped its stream). Cleared on (re)subscribe and on node removal, so a
     /// re-added node ID starts a fresh incarnation (dora-rs/dora#3556).
     pub(crate) dropped_event_streams: BTreeSet<NodeId>,
-    pub(crate) timers: BTreeMap<Duration, BTreeSet<(NodeId, DataId)>>,
+    /// Timer subscribers, keyed by timer.
+    pub(crate) timers: BTreeMap<TimerKey, BTreeSet<(NodeId, DataId)>>,
+    /// The instant every timer of this dataflow is aligned to: a timer with
+    /// phase `p` fires at `timer_epoch + p + n * interval`. Set by the first
+    /// [`start`](RunningDataflow::start), so timers spawned later for nodes
+    /// added at runtime keep the same alignment.
+    pub(crate) timer_epoch: Option<tokio::time::Instant>,
     /// Nodes subscribing to `dora/logs` virtual input.
     pub(crate) log_subscribers: Vec<LogSubscriber>,
     pub(crate) open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
@@ -361,7 +407,7 @@ pub struct RunningDataflow {
     pub(crate) running_nodes: BTreeMap<NodeId, RunningNode>,
     pub(crate) dynamic_nodes: BTreeSet<NodeId>,
     pub(crate) open_external_mappings: BTreeSet<OutputId>,
-    pub(crate) _timer_handles: BTreeMap<Duration, futures::future::RemoteHandle<()>>,
+    pub(crate) _timer_handles: BTreeMap<TimerKey, futures::future::RemoteHandle<()>>,
     /// When the daemon sent `AllInputsClosed` to each node — the start of
     /// that node's drain phase. Drives the finish-straggler watchdog
     /// (dora-rs/dora#2152).
@@ -511,6 +557,7 @@ impl RunningDataflow {
             missing_channel_warned: BTreeSet::new(),
             dropped_event_streams: BTreeSet::new(),
             timers: BTreeMap::new(),
+            timer_epoch: None,
             log_subscribers: Vec::new(),
             open_inputs: BTreeMap::new(),
             input_deadlines: HashMap::new(),
@@ -684,15 +731,22 @@ impl RunningDataflow {
         events_tx: &mpsc::Sender<Timestamped<Event>>,
         clock: &Arc<HLC>,
     ) -> eyre::Result<()> {
-        for interval in self.timers.keys().copied() {
-            if self._timer_handles.contains_key(&interval) {
+        // One clock reading serves as both the epoch (on the first start) and
+        // "now" for every timer below. Reading the clock twice would put
+        // "now" a little past `epoch + 0` on a running clock, and an unphased
+        // timer would then skip its first slot and wait a whole interval.
+        let now = tokio::time::Instant::now();
+        let epoch = *self.timer_epoch.get_or_insert(now);
+        for key in self.timers.keys().copied() {
+            if self._timer_handles.contains_key(&key) {
                 continue;
             }
             let events_tx = events_tx.clone();
             let dataflow_id = self.id;
             let clock = clock.clone();
+            let first_tick = key.next_tick(epoch, now);
             let task = async move {
-                let mut interval_stream = tokio::time::interval(interval);
+                let mut interval_stream = tokio::time::interval_at(first_tick, key.interval);
                 interval_stream.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     interval_stream.tick().await;
@@ -734,7 +788,7 @@ impl RunningDataflow {
                         Timestamped {
                             inner: DoraEvent::Timer {
                                 dataflow_id,
-                                interval,
+                                key,
                                 metadata,
                             }
                             .into(),
@@ -748,7 +802,7 @@ impl RunningDataflow {
             };
             let (task, handle) = task.remote_handle();
             tokio::spawn(task);
-            self._timer_handles.insert(interval, handle);
+            self._timer_handles.insert(key, handle);
         }
 
         // Record that the dataflow has been started. This must hold on *every*
@@ -799,17 +853,17 @@ impl RunningDataflow {
     /// [`start`]: RunningDataflow::start
     /// [`RemoteHandle`]: futures::future::RemoteHandle
     pub(crate) fn unsubscribe_node_from_timers(&mut self, node_id: &NodeId) {
-        let mut drained_intervals = Vec::new();
-        for (interval, receivers) in self.timers.iter_mut() {
+        let mut drained_timers = Vec::new();
+        for (key, receivers) in self.timers.iter_mut() {
             receivers.retain(|(nid, _)| nid != node_id);
             if receivers.is_empty() {
-                drained_intervals.push(*interval);
+                drained_timers.push(*key);
             }
         }
-        for interval in drained_intervals {
-            self.timers.remove(&interval);
+        for key in drained_timers {
+            self.timers.remove(&key);
             // Dropping the RemoteHandle cancels the spawned timer task.
-            self._timer_handles.remove(&interval);
+            self._timer_handles.remove(&key);
         }
     }
 
@@ -1831,7 +1885,10 @@ mod tests {
                 .insert(input.clone());
             if *is_timer {
                 df.timers
-                    .entry(Duration::from_millis(100))
+                    .entry(TimerKey {
+                        interval: Duration::from_millis(100),
+                        phase: Duration::ZERO,
+                    })
                     .or_default()
                     .insert((node.clone(), input));
             } else {

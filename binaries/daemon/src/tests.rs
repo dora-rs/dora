@@ -4,7 +4,7 @@ use crate::coordinator_events::{
 };
 use crate::node_exit::{DEFAULT_FINISH_DRAIN_GRACE, parse_finish_drain_grace};
 use crate::pending::{DataflowStatus, PendingNodes};
-use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
+use crate::running_dataflow::{HandleReplacement, StopProcessPolicy, TimerKey};
 use crate::test_tracing::LevelCapture;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
@@ -26,6 +26,22 @@ pub(super) fn test_dataflow() -> RunningDataflow {
     RunningDataflow::new(Uuid::nil(), descriptor)
 }
 
+/// A timer with the given interval and phase, both in milliseconds.
+fn timer(interval_ms: u64, phase_ms: u64) -> TimerKey {
+    TimerKey {
+        interval: Duration::from_millis(interval_ms),
+        phase: Duration::from_millis(phase_ms),
+    }
+}
+
+/// Subscribe `node`'s `tick` input to `key`, as a `dora/timer/...` input would.
+fn subscribe_timer(df: &mut RunningDataflow, key: TimerKey, node: &str) {
+    df.timers.entry(key).or_default().insert((
+        NodeId::from(node.to_string()),
+        DataId::from("tick".to_string()),
+    ));
+}
+
 // dora-rs/dora: a node added to an already-running dataflow (via
 // `AddNode`) may register a timer input on an interval no existing node
 // uses. `start()` is the only place timer tasks are spawned, so the
@@ -38,25 +54,119 @@ async fn start_spawns_task_for_interval_added_after_first_start() {
     let clock = Arc::new(HLC::default());
     let (events_tx, _events_rx) = mpsc::channel(8);
 
-    let first = Duration::from_millis(100);
-    df.timers
-        .entry(first)
-        .or_default()
-        .insert((NodeId::from("a".to_string()), DataId::from("t".to_string())));
+    let first = timer(100, 0);
+    subscribe_timer(&mut df, first, "a");
     df.start(&events_tx, &clock).await.unwrap();
     assert!(df._timer_handles.contains_key(&first));
 
     // Simulate a node added later that registers a brand-new interval.
-    let second = Duration::from_millis(250);
-    df.timers
-        .entry(second)
-        .or_default()
-        .insert((NodeId::from("b".to_string()), DataId::from("t".to_string())));
+    let second = timer(250, 0);
+    subscribe_timer(&mut df, second, "b");
     df.start(&events_tx, &clock).await.unwrap();
 
     assert!(df._timer_handles.contains_key(&first));
     assert!(df._timer_handles.contains_key(&second));
     assert_eq!(df._timer_handles.len(), 2);
+}
+
+#[test]
+fn next_tick_keeps_every_timer_on_the_epoch_schedule() {
+    let epoch = tokio::time::Instant::now();
+    let ms = Duration::from_millis;
+    let tick = |phase_ms, now| timer(20, phase_ms).next_tick(epoch, now);
+    // At the first start an unphased timer fires at once, a phased one `phase` later.
+    assert_eq!(tick(0, epoch), epoch);
+    assert_eq!(tick(5, epoch), epoch + ms(5));
+    // Spawned later, a timer waits for its next slot on the same schedule.
+    assert_eq!(tick(5, epoch + ms(23)), epoch + ms(25));
+    assert_eq!(tick(5, epoch + ms(25)), epoch + ms(25));
+    assert_eq!(tick(5, epoch + ms(26)), epoch + ms(45));
+    assert_eq!(tick(0, epoch + ms(23)), epoch + ms(40));
+}
+
+/// The timer and arrival time of the next `count` timer events.
+async fn timer_ticks(
+    events_rx: &mut mpsc::Receiver<Timestamped<Event>>,
+    count: usize,
+) -> Vec<(TimerKey, tokio::time::Instant)> {
+    let mut ticks = Vec::new();
+    while ticks.len() < count {
+        let event = events_rx.recv().await.expect("timer channel closed");
+        if let Event::Dora(DoraEvent::Timer { key, .. }) = event.inner {
+            ticks.push((key, tokio::time::Instant::now()));
+        }
+    }
+    ticks
+}
+
+// A phased timer fires exactly `phase` after each tick of the unphased timer
+// of the same interval, and is a separate task with its own subscribers.
+#[tokio::test(start_paused = true)]
+async fn phased_timer_fires_phase_after_the_unphased_one() {
+    let mut df = test_dataflow();
+    let clock = Arc::new(HLC::default());
+    let (events_tx, mut events_rx) = mpsc::channel(64);
+    let (unphased, phased) = (timer(20, 0), timer(20, 5));
+    subscribe_timer(&mut df, unphased, "policy");
+    subscribe_timer(&mut df, phased, "late");
+    df.start(&events_tx, &clock).await.unwrap();
+    assert_eq!(df._timer_handles.len(), 2);
+
+    let epoch = df.timer_epoch.expect("start sets the epoch");
+    let ticks = timer_ticks(&mut events_rx, 20).await;
+    for (n, pair) in ticks.chunks(2).enumerate() {
+        let slot = epoch + unphased.interval * n as u32;
+        assert_eq!(
+            pair,
+            [(unphased, slot), (phased, slot + phased.phase)],
+            "tick {n}"
+        );
+    }
+}
+
+// A timer spawned after the dataflow started (a node added at runtime) joins
+// the epoch's schedule instead of starting its own at the moment it spawns.
+#[tokio::test(start_paused = true)]
+async fn timer_spawned_later_keeps_the_epoch_alignment() {
+    let mut df = test_dataflow();
+    let clock = Arc::new(HLC::default());
+    let (events_tx, mut events_rx) = mpsc::channel(64);
+    subscribe_timer(&mut df, timer(20, 0), "a");
+    df.start(&events_tx, &clock).await.unwrap();
+    let epoch = df.timer_epoch.unwrap();
+
+    tokio::time::sleep(Duration::from_millis(33)).await;
+    let phased = timer(20, 7);
+    subscribe_timer(&mut df, phased, "b");
+    df.start(&events_tx, &clock).await.unwrap();
+    assert_eq!(df.timer_epoch, Some(epoch), "a later start keeps the epoch");
+
+    let later: Vec<_> = timer_ticks(&mut events_rx, 12)
+        .await
+        .into_iter()
+        .filter(|(key, _)| *key == phased)
+        .map(|(_, at)| at - epoch)
+        .collect();
+    assert_eq!(
+        later[..3],
+        [47, 67, 87].map(Duration::from_millis),
+        "the phased timer's first ticks"
+    );
+}
+
+// Regression test for the single clock read in `start()`: the paused-clock
+// tests above can't catch a first tick pushed a whole interval out.
+#[tokio::test]
+async fn unphased_timer_fires_at_once_on_a_running_clock() {
+    let mut df = test_dataflow();
+    let clock = Arc::new(HLC::default());
+    let (events_tx, mut events_rx) = mpsc::channel(8);
+    subscribe_timer(&mut df, timer(10_000, 0), "a");
+    df.start(&events_tx, &clock).await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(1), timer_ticks(&mut events_rx, 1))
+        .await
+        .expect("a 10 s timer's first tick should arrive at start, not 10 s later");
 }
 
 // dora-rs/dora: removing the last subscriber of a timer interval (via
@@ -72,8 +182,8 @@ async fn unsubscribe_last_subscriber_cancels_timer_task() {
 
     let node_a = NodeId::from("a".to_string());
     let node_b = NodeId::from("b".to_string());
-    let solo = Duration::from_millis(100); // only `a` subscribes
-    let shared = Duration::from_millis(250); // `a` and `b` subscribe
+    let solo = timer(100, 0); // only `a` subscribes
+    let shared = timer(250, 0); // `a` and `b` subscribe
 
     df.timers
         .entry(solo)
@@ -1901,7 +2011,7 @@ fn timer_fed_node_is_not_a_finish_straggler() {
     let timer_node: NodeId = "timer_node".to_string().into();
     insert_silent_node(&mut df, &timer_node);
     df.timers
-        .entry(Duration::from_millis(100))
+        .entry(timer(100, 0))
         .or_default()
         .insert((timer_node.clone(), "tick".to_string().into()));
 
@@ -2000,7 +2110,7 @@ fn cleared_timer_state_makes_reused_id_escalatable() {
     insert_silent_node(&mut df, &node);
     register_data_input(&mut df, &node);
     df.timers
-        .entry(Duration::from_millis(100))
+        .entry(timer(100, 0))
         .or_default()
         .insert((node.clone(), "tick".to_string().into()));
 
@@ -2245,7 +2355,7 @@ fn opt_in_drains_node_with_open_timer_and_disables_its_restart() {
         .or_default()
         .insert(data_in.clone());
     df.timers
-        .entry(Duration::from_millis(100))
+        .entry(timer(100, 0))
         .or_default()
         .insert((node_a.clone(), timer_in.clone()));
 

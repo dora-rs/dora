@@ -317,6 +317,13 @@ impl From<InputDef> for Input {
 /// let timer: InputMapping = "dora/timer/millis/100".parse().unwrap();
 /// assert_eq!(timer.to_string(), "dora/timer/millis/100");
 ///
+/// // A timer that fires 5 ms after every tick of an unphased timer of the
+/// // same interval.
+/// let ms = std::time::Duration::from_millis;
+/// let phased = InputMapping::timer(ms(100), ms(5));
+/// assert_eq!(phased.to_string(), "dora/timer/millis/100/phase/millis/5");
+/// assert_eq!(phased.to_string().parse(), Ok(phased));
+///
 /// // A mapping without a `/` separator is rejected.
 /// assert!("no-slash".parse::<InputMapping>().is_err());
 /// ```
@@ -324,10 +331,22 @@ impl From<InputDef> for Input {
 pub enum InputMapping {
     /// A built-in timer that fires at a fixed `interval`.
     ///
-    /// Syntax: `dora/timer/{unit}/{value}`, e.g. `dora/timer/millis/100`.
+    /// Syntax: `dora/timer/{unit}/{value}`, e.g. `dora/timer/millis/100`,
+    /// optionally followed by `/phase/{unit}/{value}`, e.g.
+    /// `dora/timer/millis/100/phase/millis/5`.
+    ///
+    /// Marked `#[non_exhaustive]` so a timer can gain fields without a 2.0;
+    /// outside this crate, build one with [`InputMapping::timer`] and match it
+    /// with `..`.
+    #[non_exhaustive]
     Timer {
         /// How often the timer fires.
         interval: Duration,
+        /// How long after the dataflow's timer epoch the timer's ticks fall,
+        /// shorter than `interval`. A dataflow's timers on one daemon share
+        /// that epoch, so a timer with phase `p` fires `p` after each tick of
+        /// an unphased timer of the same interval. Zero for an unphased timer.
+        phase: Duration,
     },
     /// Subscribe to log messages from all (or filtered) nodes in the dataflow.
     ///
@@ -335,6 +354,25 @@ pub enum InputMapping {
     Logs(LogSubscriptionFilter),
     /// Subscribe to another node's output — the common case.
     User(UserInputMapping),
+}
+
+impl InputMapping {
+    /// A built-in timer firing every `interval`, `phase` after each tick of
+    /// the dataflow's timer epoch. Pass [`Duration::ZERO`] for an unphased
+    /// timer.
+    ///
+    /// # Panics
+    ///
+    /// If `phase` is not shorter than `interval` (so also if `interval` is
+    /// zero). Parsing a `dora/timer/...` string rejects the same mappings, so
+    /// this keeps the constructor from building one that would serialize but
+    /// then fail to parse on the receiving side.
+    pub fn timer(interval: Duration, phase: Duration) -> Self {
+        if let Err(e) = check_timer_phase(interval, phase) {
+            panic!("{e}");
+        }
+        Self::Timer { interval, phase }
+    }
 }
 
 /// `InputMapping` is (de)serialized through [`fmt::Display`]/[`FromStr`], so a
@@ -354,7 +392,8 @@ impl JsonSchema for InputMapping {
         schemars::json_schema!({
             "description": "The source an [`Input`] subscribes to: \
                 `<source>/<output>` for another node's output, \
-                `dora/timer/{unit}/{value}` for a built-in timer, or \
+                `dora/timer/{unit}/{value}[/phase/{unit}/{value}]` for a \
+                built-in timer, or \
                 `dora/logs[/{level}[/{node_id}]]` for node logs.",
             "type": "string",
             "pattern": "/",
@@ -365,9 +404,13 @@ impl JsonSchema for InputMapping {
 impl fmt::Display for InputMapping {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            InputMapping::Timer { interval } => {
+            InputMapping::Timer { interval, phase } => {
                 let duration = format_duration(*interval);
-                write!(f, "dora/timer/{duration}")
+                write!(f, "dora/timer/{duration}")?;
+                if !phase.is_zero() {
+                    write!(f, "/phase/{}", format_duration(*phase))?;
+                }
+                Ok(())
             }
             InputMapping::Logs(filter) => {
                 write!(f, "dora/logs")?;
@@ -413,34 +456,14 @@ impl FromStr for InputMapping {
         let mapping = match source {
             "dora" => match output.split_once('/') {
                 Some(("timer", output)) => {
+                    let (output, phase) = match output.split_once("/phase/") {
+                        Some((output, phase)) => (output, parse_timer_phase(phase)?),
+                        None => (output, Duration::ZERO),
+                    };
                     let (unit, value) = output.split_once('/').ok_or(
                         "timer input must specify unit and value (e.g. `secs/5`, `millis/100`, or `hz/30`)",
                     )?;
                     let interval = match unit {
-                        "secs" => {
-                            let value = value
-                                .parse()
-                                .map_err(|_| format!("secs must be an integer (got `{value}`)"))?;
-                            Duration::from_secs(value)
-                        }
-                        "millis" => {
-                            let value = value.parse().map_err(|_| {
-                                format!("millis must be an integer (got `{value}`)")
-                            })?;
-                            Duration::from_millis(value)
-                        }
-                        "micros" => {
-                            let value = value.parse().map_err(|_| {
-                                format!("micros must be an integer (got `{value}`)")
-                            })?;
-                            Duration::from_micros(value)
-                        }
-                        "nanos" => {
-                            let value = value
-                                .parse()
-                                .map_err(|_| format!("nanos must be an integer (got `{value}`)"))?;
-                            Duration::from_nanos(value)
-                        }
                         "hz" => {
                             let hz: f64 = value.parse().map_err(|_| {
                                 format!("hz must be a positive number (got `{value}`)")
@@ -458,14 +481,14 @@ impl FromStr for InputMapping {
                                 format!("hz `{value}` produces an out-of-range interval: {e}")
                             })?
                         }
-                        other => {
-                            return Err(format!(
+                        other => parse_integer_duration(other, value).unwrap_or_else(|| {
+                            Err(format!(
                                 "timer unit must be `secs`, `millis`, `micros`, `nanos`, or `hz` (got `{other}`)"
-                            ));
-                        }
+                            ))
+                        })?,
                     };
                     // A zero-length interval is invalid for every unit: the timer
-                    // task builds `tokio::time::interval(interval)`, which panics
+                    // task builds `tokio::time::interval_at(_, interval)`, which panics
                     // (`period` must be non-zero). Reject it at parse time for all
                     // units -- `secs/0`, `millis/0`, `micros/0`, `nanos/0`, and a
                     // huge `hz` that rounds `1/hz` below 1ns -- so a bad descriptor
@@ -477,7 +500,8 @@ impl FromStr for InputMapping {
                              produces a zero-length interval)"
                         ));
                     }
-                    Self::Timer { interval }
+                    check_timer_phase(interval, phase)?;
+                    Self::Timer { interval, phase }
                 }
                 Some(("logs", rest)) => {
                     // dora/logs/{level} or dora/logs/{level}/{node_id}
@@ -605,6 +629,58 @@ impl fmt::Display for FormattedDuration {
         } else {
             write!(f, "nanos/{nanos}")
         }
+    }
+}
+
+/// Parse an integer `{unit}/{value}` pair, where `unit` is `secs`, `millis`,
+/// `micros` or `nanos`. Returns `None` for any other unit, so a caller can
+/// accept more units (the interval takes `hz` too) or reject the rest with its
+/// own message.
+fn parse_integer_duration(unit: &str, value: &str) -> Option<Result<Duration, String>> {
+    let from_count: fn(u64) -> Duration = match unit {
+        "secs" => Duration::from_secs,
+        "millis" => Duration::from_millis,
+        "micros" => Duration::from_micros,
+        "nanos" => Duration::from_nanos,
+        _ => return None,
+    };
+    Some(
+        value
+            .parse()
+            .map(from_count)
+            .map_err(|_| format!("{unit} must be an integer (got `{value}`)")),
+    )
+}
+
+/// Parse a timer's `/phase/{unit}/{value}` suffix (the part after `/phase/`).
+///
+/// Only the integer units: a phase is an offset in time, not a rate, so `hz`
+/// has no meaning here.
+fn parse_timer_phase(phase: &str) -> Result<Duration, String> {
+    let (unit, value) = phase
+        .split_once('/')
+        .ok_or("timer phase must specify unit and value (e.g. `phase/millis/5`)")?;
+    parse_integer_duration(unit, value)
+        .unwrap_or_else(|| {
+            Err(format!(
+                "timer phase unit must be `secs`, `millis`, `micros`, or `nanos` (got `{unit}`)"
+            ))
+        })
+        .map_err(|e| format!("timer phase: {e}"))
+}
+
+/// A timer's phase must be shorter than its interval, so each interval has
+/// exactly one tick at that offset. Shared by the parser and
+/// [`InputMapping::timer`] so the two accept the same timers.
+fn check_timer_phase(interval: Duration, phase: Duration) -> Result<(), String> {
+    if phase < interval {
+        Ok(())
+    } else {
+        Err(format!(
+            "timer phase `{}` must be shorter than its interval `{}`",
+            format_duration(phase),
+            format_duration(interval)
+        ))
     }
 }
 
@@ -941,7 +1017,7 @@ mod tests {
     fn parse_timer_hz_integer() {
         let mapping: InputMapping = "dora/timer/hz/30".parse().unwrap();
         match mapping {
-            InputMapping::Timer { interval } => {
+            InputMapping::Timer { interval, .. } => {
                 // 1 / 30 Hz ≈ 33.333 ms
                 assert_eq!(interval, Duration::from_secs_f64(1.0 / 30.0));
             }
@@ -954,7 +1030,7 @@ mod tests {
         // Used in examples/streaming-example/dataflow.yml
         let mapping: InputMapping = "dora/timer/hz/0.5".parse().unwrap();
         match mapping {
-            InputMapping::Timer { interval } => {
+            InputMapping::Timer { interval, .. } => {
                 assert_eq!(interval, Duration::from_secs(2));
             }
             other => panic!("expected Timer, got {other:?}"),
@@ -1033,7 +1109,7 @@ mod tests {
         ];
         for case in cases {
             let mapping: InputMapping = case.parse().unwrap();
-            let InputMapping::Timer { interval } = mapping else {
+            let InputMapping::Timer { interval, .. } = mapping else {
                 panic!("expected Timer for `{case}`, got {mapping:?}");
             };
             assert!(!interval.is_zero(), "`{case}` parsed to a zero interval");
@@ -1063,16 +1139,87 @@ mod tests {
         assert_eq!(
             micros,
             InputMapping::Timer {
-                interval: Duration::from_micros(250)
+                interval: Duration::from_micros(250),
+                phase: Duration::ZERO,
             }
         );
         let nanos: InputMapping = "dora/timer/nanos/500".parse().unwrap();
         assert_eq!(
             nanos,
             InputMapping::Timer {
-                interval: Duration::from_nanos(500)
+                interval: Duration::from_nanos(500),
+                phase: Duration::ZERO,
             }
         );
+    }
+
+    #[test]
+    fn parse_timer_with_phase() {
+        let cases = [
+            ("dora/timer/millis/20/phase/millis/5", 20_000_000, 5_000_000),
+            ("dora/timer/hz/50/phase/micros/2500", 20_000_000, 2_500_000),
+            ("dora/timer/secs/1/phase/nanos/1", 1_000_000_000, 1),
+            ("dora/timer/millis/20", 20_000_000, 0),
+        ];
+        for (case, interval_ns, phase_ns) in cases {
+            let mapping: InputMapping = case.parse().unwrap();
+            assert_eq!(
+                mapping,
+                InputMapping::Timer {
+                    interval: Duration::from_nanos(interval_ns),
+                    phase: Duration::from_nanos(phase_ns),
+                },
+                "{case}"
+            );
+            let reparsed: InputMapping = mapping.to_string().parse().unwrap();
+            assert_eq!(mapping, reparsed, "`{case}` did not round-trip");
+        }
+        // A zero phase is an unphased timer, and renders as one.
+        let zero: InputMapping = "dora/timer/millis/20/phase/millis/0".parse().unwrap();
+        assert_eq!(zero.to_string(), "dora/timer/millis/20");
+    }
+
+    #[test]
+    fn parse_timer_phase_rejects_bad_phases() {
+        for (case, needle) in [
+            (
+                "dora/timer/millis/20/phase/millis/20",
+                "shorter than its interval",
+            ),
+            (
+                "dora/timer/millis/20/phase/millis/25",
+                "shorter than its interval",
+            ),
+            ("dora/timer/millis/20/phase/hz/100", "phase unit"),
+            (
+                "dora/timer/millis/20/phase/millis/2.5",
+                "must be an integer",
+            ),
+            ("dora/timer/millis/20/phase/millis/-1", "must be an integer"),
+            ("dora/timer/millis/20/phase/millis", "unit and value"),
+            ("dora/timer/millis/20/phase/", "unit and value"),
+        ] {
+            let err = case.parse::<InputMapping>().unwrap_err();
+            assert!(err.contains(needle), "`{case}`: {err}");
+        }
+    }
+
+    #[test]
+    fn timer_constructor_matches_the_parser() {
+        let ms = Duration::from_millis;
+        assert_eq!(
+            InputMapping::timer(ms(20), ms(5)),
+            "dora/timer/millis/20/phase/millis/5".parse().unwrap()
+        );
+        // The constructor rejects what the parser rejects, so it can't build a
+        // mapping that serializes but then fails to parse.
+        for (interval, phase) in [(ms(20), ms(20)), (ms(20), ms(25)), (ms(0), ms(0))] {
+            let built = std::panic::catch_unwind(|| InputMapping::timer(interval, phase));
+            assert!(
+                built.is_err(),
+                "timer({interval:?}, {phase:?}) should panic"
+            );
+        }
     }
 
     #[test]

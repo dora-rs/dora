@@ -231,7 +231,7 @@
       ]
     },
     "InputMapping": {
-      "description": "The source an [`Input`] subscribes to: `<source>/<output>` for another node's output, `dora/timer/{unit}/{value}` for a built-in timer, or `dora/logs[/{level}[/{node_id}]]` for node logs.",
+      "description": "The source an [`Input`] subscribes to: `<source>/<output>` for another node's output, `dora/timer/{unit}/{value}[/phase/{unit}/{value}]` for a built-in timer, or `dora/logs[/{level}[/{node_id}]]` for node logs.",
       "type": "string",
       "pattern": "/"
     },

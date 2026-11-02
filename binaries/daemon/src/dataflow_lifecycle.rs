@@ -350,10 +350,12 @@ impl Daemon {
                                 .or_default()
                                 .insert((node.id.clone(), input_id));
                         }
-                        InputMapping::Timer { interval } => {
+                        InputMapping::Timer {
+                            interval, phase, ..
+                        } => {
                             dataflow
                                 .timers
-                                .entry(interval)
+                                .entry(crate::running_dataflow::TimerKey { interval, phase })
                                 .or_default()
                                 .insert((node.id.clone(), input_id));
                         }
