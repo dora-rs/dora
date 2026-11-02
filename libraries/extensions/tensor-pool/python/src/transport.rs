@@ -1039,6 +1039,11 @@ mod transport_tests {
 /// Allocate and initialize a local CUDA pool on the receiving device.
 /// Kept separate from descriptor publication so its device choice and failure
 /// handling can be tested without a daemon or CUDA hardware.
+///
+/// `receiver_device` is an index in *this* process's `CUDA_VISIBLE_DEVICES`
+/// namespace (see the README placement contract), so selection is verified:
+/// an index the writer cannot select would otherwise leave the allocation on
+/// whichever device happened to be current.
 fn allocate_receiver_gpu_pool(
     helpers: &Bound<'_, PyModule>,
     slot: u64,
@@ -1050,6 +1055,13 @@ fn allocate_receiver_gpu_pool(
     let saved: i32 = helpers.call_method0("_get_cuda_device")?.extract()?;
     let result = (|| {
         helpers.call_method1("_set_cuda_device", (receiver_device,))?;
+        let selected: i32 = helpers.call_method0("_get_cuda_device")?.extract()?;
+        if selected != receiver_device {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "cannot select receiver device {receiver_device}: it is not selectable \
+                 under the writer's CUDA_VISIBLE_DEVICES (current device {selected})"
+            )));
+        }
         let pointer: u64 = helpers
             .call_method1("_get_gpu_buf", (slot, size))?
             .extract()?;
@@ -2191,6 +2203,9 @@ impl Pool<'_> {
         // pool is unusable — we fail registration rather than hand back a
         // permanently-broken pool.
         let mut ipc_written = false;
+        // Why receiver-pool setup failed, if it did, so the bail below reports
+        // the cause instead of only the symptom.
+        let mut gpu_setup_error: Option<String> = None;
 
         if receiver_is_cuda
             && !cross_machine
@@ -2287,15 +2302,20 @@ impl Pool<'_> {
                     // delegates to allocate_receiver_gpu_pool, which saves and
                     // restores the caller's device itself.
                 } else {
-                    allocate_receiver_gpu_pool(
+                    match allocate_receiver_gpu_pool(
                         bound,
                         pool_counter,
                         ptr_val,
                         size,
                         sender_device_idx,
                         receiver_device_idx,
-                    )
-                    .ok()
+                    ) {
+                        Ok(pointer) => Some(pointer),
+                        Err(error) => {
+                            gpu_setup_error = Some(error.to_string());
+                            None
+                        }
+                    }
                 }
             } else {
                 // CPU source → GPU pool: switch to the receiver's device
@@ -2350,9 +2370,12 @@ impl Pool<'_> {
             }
             shmem.set_owner(true);
             eyre::bail!(
-                "[{}] register_tensor_pool: failed to set up GPU pool buffer / IPC handle for CUDA receiver `{}`",
+                "[{}] register_tensor_pool: failed to set up GPU pool buffer / IPC handle for CUDA receiver `{}`{}",
                 self.node_id,
-                tensor_device
+                tensor_device,
+                gpu_setup_error
+                    .map(|error| format!(": {error}"))
+                    .unwrap_or_default()
             );
         }
 
@@ -3941,12 +3964,15 @@ allocation_device = None
 freed = False
 fail_allocation = False
 fail_copy = False
+masked_max = None
 
 def _get_cuda_device():
     return device
 
 def _set_cuda_device(value):
     global device
+    if masked_max is not None and value > masked_max:
+        return
     device = value
 
 def _get_gpu_buf(slot, size):
@@ -4011,6 +4037,44 @@ def _free_gpu_buf(slot):
             module.setattr("fail_copy", true).unwrap();
             assert!(allocate_receiver_gpu_pool(&module, 7, 8192, 1024, 0, 1).is_err());
             assert!(module.getattr("freed").unwrap().extract::<bool>().unwrap());
+            assert_eq!(
+                module.getattr("device").unwrap().extract::<i32>().unwrap(),
+                2
+            );
+        });
+    }
+
+    #[test]
+    fn registration_rejects_receiver_device_the_writer_cannot_select() {
+        // A receiver ordinal outside the writer's CUDA_VISIBLE_DEVICES must
+        // fail loudly: `_set_cuda_device` ignores cudaSetDevice's error, so
+        // without the selection check the pool would silently land on
+        // whichever device was current.
+        Python::initialize();
+        Python::attach(|py| {
+            let module = PyModule::from_code(
+                py,
+                &CString::new(HELPERS).unwrap(),
+                c"test_cuda.py",
+                c"test_cuda",
+            )
+            .unwrap();
+            module.setattr("masked_max", 0).unwrap();
+            let error = allocate_receiver_gpu_pool(&module, 7, 8192, 1024, 0, 1).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("cannot select receiver device 1"),
+                "unexpected error: {error}"
+            );
+            assert!(
+                module
+                    .getattr("allocation_device")
+                    .unwrap()
+                    .extract::<Option<i32>>()
+                    .unwrap()
+                    .is_none()
+            );
             assert_eq!(
                 module.getattr("device").unwrap().extract::<i32>().unwrap(),
                 2

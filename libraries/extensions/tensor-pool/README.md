@@ -68,10 +68,18 @@ pool with `cudaMemcpyPeer` when P2P is available. Same-device writes use DtoD;
 without P2P the existing pinned-host staging fallback is used. The copy and
 receiver-device synchronization finish before the write generation is published.
 An allocation, copy, or completion failure is surfaced rather than publishing a
-successful frame. Device indices are process-local (`CUDA_VISIBLE_DEVICES`).
-Each cross-device write includes a blocking full-payload copy and completion
-synchronization, so its cost grows with payload size; subsequent reads access
-receiver-local memory.
+successful frame. Each cross-device write includes a blocking full-payload copy
+and completion synchronization, so its cost grows with payload size; subsequent
+reads access receiver-local memory.
+
+Device indices are process-local, so the receiver's `device="cuda:N"` is
+resolved in the **writer's** `CUDA_VISIBLE_DEVICES` namespace: every node that
+registers or writes a GPU pool must expose the same GPUs in the same order. If
+the masks differ, the same `cuda:N` names a different physical card and the pool
+is placed on a GPU the receiver did not ask for, while imports still succeed
+through lazy peer access. A writer rejects an index it cannot select, but it
+cannot detect masks that are merely reordered; allocating by physical identity
+(UUID or PCI bus id) instead of an ordinal is a follow-up.
 
 The receiver imports the handle once and can retain its view across same-host,
 fixed-size writes, provided it acknowledges each frame before the next overwrite.
