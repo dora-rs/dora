@@ -256,10 +256,16 @@ fn resolve_filename(content_disposition: Option<&str>, url: &reqwest::Url) -> Op
 }
 
 fn get_filename(response: &reqwest::Response) -> Option<String> {
+    // `HeaderValue::to_str` accepts visible ASCII only, so a server that sends
+    // the name as raw UTF-8 (`filename="modèle.bin"`, common in practice even
+    // though RFC 6266 wants `filename*=` for it) would have its header dropped
+    // and the download named after the URL instead — `download?id=42` becomes
+    // `download`, losing the extension the runtime relies on. Decode the bytes
+    // as UTF-8; the result still goes through `sanitize_filename`.
     let content_disposition = response
         .headers()
         .get("content-disposition")
-        .and_then(|value| value.to_str().ok());
+        .and_then(|value| std::str::from_utf8(value.as_bytes()).ok());
     resolve_filename(content_disposition, response.url())
 }
 
@@ -762,6 +768,53 @@ mod tests {
         // A redirect is followed before the URL is read, so a dotfile URL
         // segment is server-controlled too.
         assert_eq!(resolve(None, "https://example.com/.bashrc"), None);
+    }
+
+    // --- Content-Disposition over HTTP ---
+
+    /// Serve one response with `headers` and a short body on a loopback port,
+    /// and return the URL to fetch.
+    async fn serve_once(headers: &'static [u8], path: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n")
+                .await
+                .unwrap();
+            socket.write_all(headers).await.unwrap();
+            socket.write_all(b"\r\nok").await.unwrap();
+            socket.flush().await.unwrap();
+        });
+        format!("http://{addr}{path}")
+    }
+
+    #[tokio::test]
+    async fn utf8_content_disposition_filename_is_used() {
+        let url = serve_once(
+            "Content-Disposition: attachment; filename=\"mod\u{e8}le.bin\"\r\n".as_bytes(),
+            "/download?id=42",
+        )
+        .await;
+        let target_dir =
+            std::env::temp_dir().join(format!("dora-download-utf8-{}", std::process::id()));
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let path = super::download_with(&client, url.as_str(), &target_dir, None)
+            .await
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&target_dir);
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("mod\u{e8}le.bin"),
+            "a raw UTF-8 Content-Disposition filename must not fall back to the URL name"
+        );
     }
 
     // --- read timeout (stalled body) ---
