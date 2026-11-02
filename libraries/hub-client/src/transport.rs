@@ -368,44 +368,55 @@ const REPO_LOCAL_GIT_ENV: &[&str] = &[
     "GIT_COMMON_DIR",
 ];
 
-/// A `git` command for a dora-managed clone (an index cache, a pinned
-/// package checkout), run in `dir` when given.
+/// A `git` command run in `dir` when given, with git's repository-locating
+/// environment removed.
 ///
-/// The repository-locating variables are removed: git exports `GIT_DIR`,
-/// `GIT_INDEX_FILE` and friends to hooks, and CI steps set them too, and they
-/// take precedence over the working directory. Inherited, they would point
-/// every command — `reset --hard` and `checkout` included — at the caller's
-/// own repository instead of the clone. Credential prompts are disabled, so a
-/// private URL fails instead of hanging.
+/// git exports `GIT_DIR`, `GIT_INDEX_FILE` and friends to hooks, and CI steps
+/// set them too, and they take precedence over the working directory.
+/// Inherited, they would point every command — `reset --hard` and `checkout`
+/// included — at the caller's own repository instead of the intended one.
+/// Credential prompts are disabled, so a private URL fails instead of hanging.
 ///
-/// Repository discovery is also stopped at `dir`: with `dir`'s parent as
-/// `GIT_CEILING_DIRECTORIES`, git still looks at `dir` itself but never above
-/// it. A clone whose `.git` is broken then fails as "not a git repository"
-/// (which the callers' self-heal re-clones) instead of resolving to whatever
-/// repository encloses the cache, where `reset --hard` would discard work.
+/// Repository discovery is left alone, so `dir` may be a subdirectory of the
+/// repository it operates on. For a clone dora manages itself, use
+/// [`managed_clone_git_command`].
 pub fn git_command(dir: Option<&Path>) -> Command {
     let mut command = Command::new("git");
-    for var in REPO_LOCAL_GIT_ENV {
-        command.env_remove(var);
-    }
     if let Some(dir) = dir {
         command.current_dir(dir);
-        // git ignores a relative ceiling entry, so resolve `dir` against the
-        // working directory it is relative to
-        if let Some(parent) = std::path::absolute(dir)
-            .ok()
-            .and_then(|dir| dir.parent().map(Path::to_path_buf))
-        {
-            command.env("GIT_CEILING_DIRECTORIES", parent);
-        }
+    }
+    for var in REPO_LOCAL_GIT_ENV {
+        command.env_remove(var);
     }
     command.env("GIT_TERMINAL_PROMPT", "0");
     command
 }
 
+/// A [`git_command`] for a dora-managed clone (an index cache, a pinned
+/// package checkout) rooted at `dir`.
+///
+/// Repository discovery is also stopped at `dir`: with `dir`'s parent as
+/// `GIT_CEILING_DIRECTORIES`, git still looks at `dir` itself but never above
+/// it. A clone whose `.git` is broken then fails as "not a git repository"
+/// (which the callers' self-heal re-clones) instead of resolving to whatever
+/// repository encloses the cache, where `reset --hard` would discard work
+/// (#4006).
+pub fn managed_clone_git_command(dir: Option<&Path>) -> Command {
+    let mut command = git_command(dir);
+    // git ignores a relative ceiling entry, so resolve `dir` against the
+    // working directory it is relative to
+    if let Some(parent) = dir
+        .and_then(|dir| std::path::absolute(dir).ok())
+        .and_then(|dir| dir.parent().map(Path::to_path_buf))
+    {
+        command.env("GIT_CEILING_DIRECTORIES", parent);
+    }
+    command
+}
+
 /// Run a git command, returning trimmed stdout.
 fn git(dir: Option<&Path>, args: &[&str]) -> eyre::Result<String> {
-    let output = git_command(dir)
+    let output = managed_clone_git_command(dir)
         .args(args)
         .output()
         .context("failed to run `git` — is git installed?")?;
@@ -502,6 +513,28 @@ source:
             }
             assert!(removed.contains(var), "`{var}` is inherited");
         }
+    }
+
+    /// Only the managed-clone command stops discovery: a plain
+    /// `git_command` must still find the repository enclosing a subdirectory
+    /// (`dora hub publish`/`init` run in a node directory of the user's repo).
+    #[test]
+    fn only_managed_clone_commands_stop_repository_discovery() {
+        let repo = tempfile::tempdir().unwrap();
+        make_remote(repo.path());
+        let subdir = repo.path().join("node-index/dora-rs");
+
+        let status = |mut command: Command| {
+            command
+                .args(["rev-parse", "--show-prefix"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        assert!(status(git_command(Some(&subdir))));
+        assert!(!status(managed_clone_git_command(Some(&subdir))));
+        assert!(status(managed_clone_git_command(Some(repo.path()))));
     }
 
     /// A cached clone whose `.git` is broken must not let git's repository

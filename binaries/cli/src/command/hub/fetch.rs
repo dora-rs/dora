@@ -236,7 +236,7 @@ fn run_git_in(dir: &std::path::Path, args: &[&str]) -> eyre::Result<()> {
     run_git_impl(Some(dir), args)
 }
 fn run_git_impl(dir: Option<&std::path::Path>, args: &[&str]) -> eyre::Result<()> {
-    let status = dora_hub_client::transport::git_command(dir)
+    let status = dora_hub_client::transport::managed_clone_git_command(dir)
         .args(args)
         .status()
         .context("failed to run `git`")?;
