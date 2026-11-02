@@ -143,7 +143,11 @@ pub(crate) async fn send_topic_frames(
         );
         return Vec::new();
     }
-    let shared_payload: std::sync::Arc<[u8]> = payload.into();
+    // `Arc::new` moves the buffer; `Arc<[u8]>::from(Vec)` would copy all of
+    // it (up to the 64 MiB cap) to place the refcount next to the bytes.
+    // `send_topic_frame` still copies once per subscriber, to prepend that
+    // subscriber's 16-byte id — inherent to the `id ++ payload` WS framing.
+    let shared_payload = std::sync::Arc::new(payload);
     const MAX_CONSECUTIVE_TOPIC_SEND_TIMEOUTS: usize = 100;
     for subscription_id in subscription_ids {
         if let Some(subscriber) = topic_subscribers.get_mut(&subscription_id) {
@@ -991,6 +995,31 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn send_topic_frames_shares_the_payload_without_copying() {
+        let ids = [Uuid::new_v4(), Uuid::new_v4()];
+        let mut subscribers = BTreeMap::new();
+        let mut receivers = Vec::new();
+        for id in ids {
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            subscribers.insert(id, TopicSubscriber::new(BTreeMap::new(), tx));
+            receivers.push(rx);
+        }
+        let payload = vec![7u8; 4096];
+        let original = payload.as_ptr();
+
+        send_topic_frames(&mut subscribers, ids.to_vec(), payload).await;
+
+        for mut rx in receivers {
+            let frame = rx.try_recv().expect("subscriber should receive frame");
+            assert_eq!(
+                frame.payload.as_ptr(),
+                original,
+                "every subscriber must share the daemon's buffer, not a copy"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn send_topic_frames_resets_timeout_streak_on_successful_send() {
         let subscription_id = Uuid::new_v4();
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
@@ -1027,7 +1056,7 @@ mod tests {
         let (tx, _rx_never_drained) = tokio::sync::mpsc::channel(1);
         tx.send(crate::topic_subscriber::TopicFrame {
             subscription_id,
-            payload: std::sync::Arc::from(vec![].into_boxed_slice()),
+            payload: std::sync::Arc::new(Vec::new()),
         })
         .await
         .unwrap();
