@@ -6,7 +6,16 @@
 use dora_message::ws_protocol::WsRequest;
 use eyre::{Context, eyre};
 use futures::{SinkExt, StreamExt};
-use std::{collections::HashMap, net::SocketAddr, sync::mpsc as std_mpsc};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc as std_mpsc,
+    },
+    time::{Duration, Instant},
+};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
@@ -72,7 +81,7 @@ enum SessionCommand {
     /// Subscribe to topic data via binary WS frames.
     SubscribeTopics {
         request: Vec<u8>,
-        data_tx: std_mpsc::Sender<eyre::Result<Vec<u8>>>,
+        data_tx: TopicFrameSender,
         ack_tx: oneshot::Sender<eyre::Result<Uuid>>,
     },
 }
@@ -221,13 +230,13 @@ impl WsSession {
         &self,
         dataflow_id: Uuid,
         topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
-    ) -> eyre::Result<(Uuid, std_mpsc::Receiver<eyre::Result<Vec<u8>>>)> {
+    ) -> eyre::Result<(Uuid, TopicFrameReceiver)> {
         let request = serde_json::to_vec(
             &dora_message::cli_to_coordinator::ControlRequest::topic_subscribe(dataflow_id, topics),
         )
         .map_err(|e| eyre!("failed to serialize TopicSubscribe: {e}"))?;
 
-        let (data_tx, data_rx) = std_mpsc::channel();
+        let (data_tx, data_rx) = topic_frame_channel(TOPIC_FRAME_QUEUE_BYTES);
         let (ack_tx, ack_rx) = oneshot::channel();
         self.cmd_tx
             .send(SessionCommand::SubscribeTopics {
@@ -273,6 +282,109 @@ impl WsSession {
     }
 }
 
+/// Payload bytes the frames queued for one topic subscription may hold in this
+/// CLI before newer ones are dropped: two of the largest payloads, as the
+/// coordinator lets be in flight to one connection.
+///
+/// The session task reads frames off the socket as fast as they arrive, so
+/// the coordinator's byte budget only ever throttles a slow network. Without a
+/// bound here, a command slower than its topic — `dora topic echo` rendering a
+/// camera frame as text, say — would grow this queue, and the CLI's memory,
+/// without limit (dora-rs/dora#3636 review).
+pub(crate) const TOPIC_FRAME_QUEUE_BYTES: usize =
+    2 * dora_message::daemon_to_coordinator::MAX_TOPIC_DEBUG_PAYLOAD_BYTES;
+
+/// Shortest gap between warnings about topic frames this CLI dropped.
+const TOPIC_FRAME_DROP_LOG_INTERVAL: Duration = Duration::from_secs(5);
+
+/// A topic subscription's frames, in arrival order. Taking a frame gives its
+/// bytes back to the subscription's [`TOPIC_FRAME_QUEUE_BYTES`].
+pub struct TopicFrameReceiver {
+    rx: std_mpsc::Receiver<eyre::Result<Vec<u8>>>,
+    queued: Arc<AtomicUsize>,
+}
+
+impl TopicFrameReceiver {
+    /// Like [`std_mpsc::Receiver::recv`].
+    pub fn recv(&self) -> Result<eyre::Result<Vec<u8>>, std_mpsc::RecvError> {
+        self.rx.recv().map(|frame| self.taken(frame))
+    }
+
+    /// Like [`std_mpsc::Receiver::recv_timeout`].
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<eyre::Result<Vec<u8>>, std_mpsc::RecvTimeoutError> {
+        self.rx.recv_timeout(timeout).map(|frame| self.taken(frame))
+    }
+
+    fn taken(&self, frame: eyre::Result<Vec<u8>>) -> eyre::Result<Vec<u8>> {
+        if let Ok(payload) = &frame {
+            self.queued.fetch_sub(payload.len(), Ordering::Relaxed);
+        }
+        frame
+    }
+}
+
+/// The session task's end of a topic subscription. It queues frames up to the
+/// subscription's byte budget and drops the rest, never waiting: waiting would
+/// stop the task reading the socket, and with it the replies to this CLI's
+/// requests. Topic frames are droppable; the coordinator drops them too when
+/// this connection falls behind.
+pub(crate) struct TopicFrameSender {
+    tx: std_mpsc::Sender<eyre::Result<Vec<u8>>>,
+    queued: Arc<AtomicUsize>,
+    capacity: usize,
+    dropped: u64,
+    last_warning: Option<Instant>,
+}
+
+impl TopicFrameSender {
+    /// Queue `payload`, or drop it if it does not fit the byte budget. An
+    /// empty queue takes any frame, so a frame of the largest size still gets
+    /// through. Returns false once the receiver is gone.
+    fn send(&mut self, payload: Vec<u8>) -> bool {
+        // Only this task adds and the receiver only subtracts, so the count
+        // can only have shrunk since it was read.
+        let queued = self.queued.load(Ordering::Relaxed);
+        if queued > 0 && queued + payload.len() > self.capacity {
+            self.dropped += 1;
+            let now = Instant::now();
+            if self
+                .last_warning
+                .is_none_or(|last| now - last >= TOPIC_FRAME_DROP_LOG_INTERVAL)
+            {
+                tracing::warn!(
+                    "dropped {} topic frame(s): they arrive faster than this command \
+                     processes them",
+                    self.dropped
+                );
+                self.dropped = 0;
+                self.last_warning = Some(now);
+            }
+            return true;
+        }
+        self.queued.fetch_add(payload.len(), Ordering::Relaxed);
+        self.tx.send(Ok(payload)).is_ok()
+    }
+}
+
+/// A topic subscription's queue, holding up to `capacity` payload bytes.
+pub(crate) fn topic_frame_channel(capacity: usize) -> (TopicFrameSender, TopicFrameReceiver) {
+    let (tx, rx) = std_mpsc::channel();
+    let queued = Arc::new(AtomicUsize::new(0));
+    (
+        TopicFrameSender {
+            tx,
+            queued: queued.clone(),
+            capacity,
+            dropped: 0,
+            last_warning: None,
+        },
+        TopicFrameReceiver { rx, queued },
+    )
+}
+
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 type PendingRequests = HashMap<Uuid, oneshot::Sender<eyre::Result<Vec<u8>>>>;
@@ -283,14 +395,9 @@ type PendingSubscribes = HashMap<
         std_mpsc::Sender<eyre::Result<Vec<u8>>>,
     ),
 >;
-type PendingTopicSubscribes = HashMap<
-    Uuid,
-    (
-        oneshot::Sender<eyre::Result<Uuid>>,
-        std_mpsc::Sender<eyre::Result<Vec<u8>>>,
-    ),
->;
-type TopicSubscribers = HashMap<Uuid, std_mpsc::Sender<eyre::Result<Vec<u8>>>>;
+type PendingTopicSubscribes =
+    HashMap<Uuid, (oneshot::Sender<eyre::Result<Uuid>>, TopicFrameSender)>;
+type TopicSubscribers = HashMap<Uuid, TopicFrameSender>;
 
 async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<SessionCommand>) {
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
@@ -426,8 +533,8 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                         };
                         let sub_id = Uuid::from_bytes(sub_id_bytes);
                         let payload = data[16..].to_vec();
-                        if let Some(tx) = topic_subscribers.get(&sub_id)
-                            && tx.send(Ok(payload)).is_err() {
+                        if let Some(tx) = topic_subscribers.get_mut(&sub_id)
+                            && !tx.send(payload) {
                                 topic_subscribers.remove(&sub_id);
                             }
                     }
@@ -583,6 +690,135 @@ fn handle_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The receiver takes back each frame's bytes, and the budget admits a
+    /// frame into an empty queue whatever its size.
+    #[test]
+    fn topic_frame_queue_is_bounded_by_bytes() {
+        let (mut tx, rx) = topic_frame_channel(10);
+        assert!(tx.send(vec![0; 6]));
+        assert!(tx.send(vec![0; 4]), "exactly at the budget still fits");
+        assert!(
+            tx.send(vec![0; 1]),
+            "a dropped frame keeps the subscription"
+        );
+        assert_eq!(rx.recv().unwrap().unwrap().len(), 6);
+        assert_eq!(rx.recv().unwrap().unwrap().len(), 4);
+        assert!(
+            rx.recv_timeout(Duration::from_millis(10)).is_err(),
+            "the third was dropped"
+        );
+        assert_eq!(rx.queued.load(Ordering::Relaxed), 0);
+
+        assert!(
+            tx.send(vec![0; 25]),
+            "an empty queue takes a frame past the budget"
+        );
+        assert_eq!(rx.recv().unwrap().unwrap().len(), 25);
+        drop(rx);
+        assert!(
+            !tx.send(vec![0; 1]),
+            "a closed receiver ends the subscription"
+        );
+    }
+
+    /// Serve one control connection that acks `TopicSubscribe` and then sends
+    /// `count` binary frames of `len` payload bytes. Signals on the returned
+    /// channel once the client has read them all: it answers a ping sent
+    /// after the frames only once it has read them.
+    fn serve_topic_frames(
+        subscription_id: Uuid,
+        len: usize,
+        count: usize,
+    ) -> (u16, std_mpsc::Receiver<()>) {
+        use dora_message::{
+            cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (done_tx, done_rx) = std_mpsc::channel();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            rt.block_on(async move {
+                listener.set_nonblocking(true).unwrap();
+                let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+                while let Some(Ok(msg)) = ws.next().await {
+                    let text = match msg {
+                        Message::Text(text) => text,
+                        Message::Pong(_) => {
+                            let _ = done_tx.send(());
+                            continue;
+                        }
+                        _ => continue,
+                    };
+                    let request: WsRequest = serde_json::from_str(&text).unwrap();
+                    let reply = match serde_json::from_value(request.params).unwrap() {
+                        ControlRequest::Hello { .. } => ControlRequestReply::HelloOk {
+                            dora_version: dora_message::current_crate_version(),
+                        },
+                        ControlRequest::TopicSubscribe { .. } => {
+                            ControlRequestReply::TopicSubscribed {
+                                subscription_id,
+                                protocol_version: Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION),
+                            }
+                        }
+                        other => panic!("unexpected request {other:?}"),
+                    };
+                    let subscribed = matches!(reply, ControlRequestReply::TopicSubscribed { .. });
+                    let response = serde_json::json!({ "id": request.id, "result": reply });
+                    ws.send(Message::Text(response.to_string().into()))
+                        .await
+                        .unwrap();
+                    if subscribed {
+                        for _ in 0..count {
+                            let mut frame = subscription_id.as_bytes().to_vec();
+                            frame.resize(16 + len, 0);
+                            ws.send(Message::Binary(frame.into())).await.unwrap();
+                        }
+                        ws.send(Message::Ping(Vec::new().into())).await.unwrap();
+                    }
+                }
+            });
+        });
+        (port, done_rx)
+    }
+
+    /// A command that is not taking frames must not make the session task
+    /// queue them without bound: past the subscription's byte budget, frames
+    /// are dropped, and taking the queued ones frees the budget again
+    /// (dora-rs/dora#3636 review).
+    #[test]
+    fn frames_past_the_queue_budget_are_dropped_while_the_command_is_behind() {
+        let subscription_id = Uuid::new_v4();
+        let (port, done) = serve_topic_frames(subscription_id, TOPIC_FRAME_QUEUE_BYTES / 2, 4);
+        let session = WsSession::connect(SocketAddr::from(([127, 0, 0, 1], port))).unwrap();
+        let (_, frames) = session
+            .subscribe_topics(
+                Uuid::new_v4(),
+                vec![("node".to_string().into(), "out".to_string().into())],
+            )
+            .unwrap();
+
+        // Take nothing until the session task has read all four frames.
+        done.recv_timeout(Duration::from_secs(20))
+            .expect("the client must read every frame off the socket");
+
+        let mut delivered = 0;
+        while let Ok(frame) = frames.recv_timeout(Duration::from_millis(200)) {
+            assert_eq!(frame.unwrap().len(), TOPIC_FRAME_QUEUE_BYTES / 2);
+            delivered += 1;
+        }
+        assert_eq!(
+            delivered, 2,
+            "two frames fill the budget; the other two are dropped"
+        );
+        assert_eq!(frames.queued.load(Ordering::Relaxed), 0);
+    }
     use serde_json::json;
     use serde_json::value::RawValue;
 
@@ -710,7 +946,7 @@ mod tests {
         let id = Uuid::new_v4();
         let sub_id = Uuid::new_v4();
         let (ack_tx, mut ack_rx) = oneshot::channel();
-        let (data_tx, _data_rx) = std_mpsc::channel();
+        let (data_tx, _data_rx) = topic_frame_channel(TOPIC_FRAME_QUEUE_BYTES);
         let mut pending = HashMap::new();
         let mut subscribes = HashMap::new();
         let mut subs = Vec::new();
@@ -746,7 +982,7 @@ mod tests {
         let id = Uuid::new_v4();
         let sub_id = Uuid::new_v4();
         let (ack_tx, mut ack_rx) = oneshot::channel();
-        let (data_tx, _data_rx) = std_mpsc::channel();
+        let (data_tx, _data_rx) = topic_frame_channel(TOPIC_FRAME_QUEUE_BYTES);
         let mut pending = HashMap::new();
         let mut subscribes = HashMap::new();
         let mut subs = Vec::new();
