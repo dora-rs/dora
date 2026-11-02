@@ -1900,7 +1900,6 @@ def _npu_same_device_d2d(dst, src, size, device_index):
     src_t = _wrap_npu_ptr(int(src), [nbytes], torch.uint8, device, nbytes)
     dst_t = _wrap_npu_ptr(int(dst), [nbytes], torch.uint8, device, nbytes)
     try:
-        # Wrapping puts the caller's card back. The copy has to run on this card.
         torch.npu.set_device(int(device_index))
         dst_t.copy_(src_t)
         torch.npu.synchronize()
