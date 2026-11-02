@@ -241,10 +241,9 @@ impl Executable for Publish {
 }
 
 /// Run `git <args>` in `dir`, returning trimmed stdout or an error on failure.
+/// See [`super::common::node_repo_git`] for why it is not a plain `git -C`.
 fn git_in(dir: &Path, args: &[&str]) -> eyre::Result<String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let output = super::common::node_repo_git(dir)
         .args(args)
         .output()
         .context("failed to run git")?;
