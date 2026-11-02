@@ -121,6 +121,23 @@ fn query_cuda_device_or_default(helpers: &Bound<'_, PyModule>) -> i32 {
         .max(0)
 }
 
+/// Set `device` and report whether the runtime actually landed on it,
+/// restoring `restore` afterwards.
+///
+/// `_set_cuda_device` drops `cudaSetDevice`'s return code, so a caller cannot
+/// tell an unselectable ordinal from a successful switch. Device indices are
+/// process-local, so callers validate the receiver's ordinal in *their* own
+/// namespace before using it.
+fn selects_device(helpers: &Bound<'_, PyModule>, device: i32, restore: i32) -> PyResult<bool> {
+    helpers.call_method1("_set_cuda_device", (device,))?;
+    let selected = helpers
+        .call_method0("_get_cuda_device")
+        .and_then(|value| value.extract::<i32>())
+        .unwrap_or(-1);
+    let _ = helpers.call_method1("_set_cuda_device", (restore,));
+    Ok(selected == device)
+}
+
 /// Counter to make pinned memory buffer IDs unique across registrations.
 ///
 /// Seeded with a random value per process rather than `0` (dora-rs/dora#3015).
@@ -1041,9 +1058,8 @@ mod transport_tests {
 /// handling can be tested without a daemon or CUDA hardware.
 ///
 /// `receiver_device` is an index in *this* process's `CUDA_VISIBLE_DEVICES`
-/// namespace (see the README placement contract), so selection is verified:
-/// an index the writer cannot select would otherwise leave the allocation on
-/// whichever device happened to be current.
+/// namespace; registration validates it with [`selects_device`] before any
+/// path can reach this function.
 fn allocate_receiver_gpu_pool(
     helpers: &Bound<'_, PyModule>,
     slot: u64,
@@ -1055,13 +1071,6 @@ fn allocate_receiver_gpu_pool(
     let saved: i32 = helpers.call_method0("_get_cuda_device")?.extract()?;
     let result = (|| {
         helpers.call_method1("_set_cuda_device", (receiver_device,))?;
-        let selected: i32 = helpers.call_method0("_get_cuda_device")?.extract()?;
-        if selected != receiver_device {
-            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "cannot select receiver device {receiver_device}: it is not selectable \
-                 under the writer's CUDA_VISIBLE_DEVICES (current device {selected})"
-            )));
-        }
         let pointer: u64 = helpers
             .call_method1("_get_gpu_buf", (slot, size))?
             .extract()?;
@@ -2214,6 +2223,23 @@ impl Pool<'_> {
         {
             let bound = helpers.bind(py);
             let saved_device = query_cuda_device_or_default(bound);
+
+            // The receiver ordinal is process-local (this process's
+            // CUDA_VISIBLE_DEVICES), so validate it once — before the path is
+            // classified. An unselectable index is classified as
+            // HostStagingTransit, because the peer probe fails on an invalid
+            // ordinal, and then every branch below would run on the sender's
+            // device and publish a pool the receiver did not ask for.
+            if !selects_device(bound, receiver_device_idx, saved_device)? {
+                shmem.set_owner(true);
+                eyre::bail!(
+                    "[{}] register_tensor_pool: cannot select receiver device {} under this \
+                     process's CUDA_VISIBLE_DEVICES; every node using a GPU pool must expose \
+                     the same GPUs in the same order",
+                    self.node_id,
+                    receiver_device_idx
+                );
+            }
 
             // Enable P2P for the sender/receiver pair before any IPC operations.
             // Gate on a CUDA source: for a CPU source sender_device_idx defaults
@@ -3953,7 +3979,7 @@ mod cuda_helper_tests {
 
 #[cfg(test)]
 mod receiver_allocation_tests {
-    use super::allocate_receiver_gpu_pool;
+    use super::{allocate_receiver_gpu_pool, selects_device};
     use pyo3::prelude::*;
     use pyo3::types::PyModule;
     use std::ffi::CString;
@@ -4045,11 +4071,13 @@ def _free_gpu_buf(slot):
     }
 
     #[test]
-    fn registration_rejects_receiver_device_the_writer_cannot_select() {
-        // A receiver ordinal outside the writer's CUDA_VISIBLE_DEVICES must
-        // fail loudly: `_set_cuda_device` ignores cudaSetDevice's error, so
-        // without the selection check the pool would silently land on
-        // whichever device was current.
+    fn receiver_device_selection_is_verified_and_restored() {
+        // `_set_cuda_device` swallows cudaSetDevice's error, so an ordinal the
+        // writer cannot select is only visible by reading the device back.
+        // Registration calls this before `classify_transport`, which is what
+        // makes the check cover the transit and CPU-source paths: an invalid
+        // ordinal classifies as HostStagingTransit, never as SameDeviceDtoD or
+        // P2PPeerCopy.
         Python::initialize();
         Python::attach(|py| {
             let module = PyModule::from_code(
@@ -4059,25 +4087,17 @@ def _free_gpu_buf(slot):
                 c"test_cuda",
             )
             .unwrap();
+            module.setattr("device", 0).unwrap();
             module.setattr("masked_max", 0).unwrap();
-            let error = allocate_receiver_gpu_pool(&module, 7, 8192, 1024, 0, 1).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("cannot select receiver device 1"),
-                "unexpected error: {error}"
-            );
-            assert!(
-                module
-                    .getattr("allocation_device")
-                    .unwrap()
-                    .extract::<Option<i32>>()
-                    .unwrap()
-                    .is_none()
-            );
+            assert!(!selects_device(&module, 1, 0).unwrap());
             assert_eq!(
                 module.getattr("device").unwrap().extract::<i32>().unwrap(),
-                2
+                0
+            );
+            assert!(selects_device(&module, 0, 0).unwrap());
+            assert_eq!(
+                module.getattr("device").unwrap().extract::<i32>().unwrap(),
+                0
             );
         });
     }

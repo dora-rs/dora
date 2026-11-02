@@ -77,9 +77,10 @@ resolved in the **writer's** `CUDA_VISIBLE_DEVICES` namespace: every node that
 registers or writes a GPU pool must expose the same GPUs in the same order. If
 the masks differ, the same `cuda:N` names a different physical card and the pool
 is placed on a GPU the receiver did not ask for, while imports still succeed
-through lazy peer access. A writer rejects an index it cannot select, but it
-cannot detect masks that are merely reordered; allocating by physical identity
-(UUID or PCI bus id) instead of an ordinal is a follow-up.
+through lazy peer access. A writer rejects an unselectable index at
+registration, before any transport path is chosen, but it cannot detect masks
+that are merely reordered; allocating by physical identity (UUID or PCI bus id)
+instead of an ordinal is a follow-up.
 
 The receiver imports the handle once and can retain its view across same-host,
 fixed-size writes, provided it acknowledges each frame before the next overwrite.
