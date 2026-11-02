@@ -13,7 +13,7 @@ path with the `DORA_HUB_CONFIG` environment variable):
 
 | Platform | Path |
 |---|---|
-| Linux | `~/.config/dora/hub.toml` |
+| Linux | `$XDG_CONFIG_HOME/dora/hub.toml`, by default `~/.config/dora/hub.toml` |
 | macOS | `~/Library/Application Support/dora/hub.toml` |
 | Windows | `%APPDATA%\dora\hub.toml` |
 

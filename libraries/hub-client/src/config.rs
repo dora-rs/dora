@@ -1,8 +1,8 @@
 //! Multi-index configuration and namespace binding (spec §7.3).
 //!
-//! `hub.toml` in the platform config directory (`~/.config/dora` on Linux,
-//! `~/Library/Application Support/dora` on macOS, `%APPDATA%\dora` on
-//! Windows) declares `[[index]]` entries. **A namespace
+//! `hub.toml` in the platform config directory (`$XDG_CONFIG_HOME/dora`, by
+//! default `~/.config/dora`, on Linux; `~/Library/Application Support/dora` on
+//! macOS; `%APPDATA%\dora` on Windows) declares `[[index]]` entries. **A namespace
 //! resolves against exactly one index**: explicit `namespaces` bindings win,
 //! the official index carries every unbound namespace, and a namespace bound
 //! by two entries is a configuration error — there is no search order to
@@ -154,18 +154,21 @@ impl ResolvedConfig {
         if let Ok(path) = std::env::var("DORA_HUB_CONFIG") {
             return Self::load_from(Path::new(&path));
         }
-        Self::load_default_in(dirs::config_dir(), dirs::home_dir())
+        Self::load_default_in(dirs::config_dir(), linux_path_to_check(dirs::home_dir()))
     }
 
     /// [`Self::load_default`] past the `DORA_HUB_CONFIG` override, with the
-    /// platform config and home directories passed in (tests use a temp dir).
-    fn load_default_in(config_dir: Option<PathBuf>, home: Option<PathBuf>) -> eyre::Result<Self> {
+    /// platform config directory and the Linux path to check passed in (tests
+    /// use a temp dir).
+    fn load_default_in(
+        config_dir: Option<PathBuf>,
+        linux_path: Option<PathBuf>,
+    ) -> eyre::Result<Self> {
         let Some(config_dir) = config_dir else {
             return Self::new(Vec::new(), PathBuf::from("."));
         };
         let path = config_dir.join("dora").join("hub.toml");
         if !path.is_file() {
-            let linux_path = home.map(|home| home.join(".config/dora/hub.toml"));
             ensure_not_misplaced(&path, linux_path.as_deref())?;
         }
         Self::load_from(&path)
@@ -194,9 +197,21 @@ impl ResolvedConfig {
     }
 }
 
+/// The Linux location, `~/.config/dora/hub.toml`, on the platforms that never
+/// read it: macOS and Windows. `None` elsewhere: on Linux `dirs::config_dir()`
+/// follows `XDG_CONFIG_HOME`, so with it set, a file at `~/.config` is ignored
+/// by design and must not become an error.
+fn linux_path_to_check(home: Option<PathBuf>) -> Option<PathBuf> {
+    if cfg!(any(target_os = "macos", target_os = "windows")) {
+        home.map(|home| home.join(".config/dora/hub.toml"))
+    } else {
+        None
+    }
+}
+
 /// Refuse to fall back to official-only when a `hub.toml` sits at the Linux
 /// location (`~/.config/dora/hub.toml`) on a platform that reads it from
-/// elsewhere. Ignoring it would silently drop its namespace bindings, so a
+/// elsewhere (see [`linux_path_to_check`]). Ignoring it would silently drop its namespace bindings, so a
 /// bound namespace would resolve against the official index instead: the
 /// dependency confusion the bindings exist to prevent.
 fn ensure_not_misplaced(expected: &Path, linux_path: Option<&Path>) -> eyre::Result<()> {
@@ -317,17 +332,44 @@ mod tests {
         std::fs::write(&linux_path, acme).unwrap();
 
         let err =
-            ResolvedConfig::load_default_in(Some(config_dir.clone()), Some(home.path().to_owned()))
+            ResolvedConfig::load_default_in(Some(config_dir.clone()), Some(linux_path.clone()))
                 .expect_err("a misplaced hub.toml must fail the default load");
         assert!(format!("{err:#}").contains("DORA_HUB_CONFIG"), "{err:#}");
 
         let platform_path = config_dir.join("dora/hub.toml");
         std::fs::create_dir_all(platform_path.parent().unwrap()).unwrap();
         std::fs::write(&platform_path, acme).unwrap();
-        let config =
-            ResolvedConfig::load_default_in(Some(config_dir), Some(home.path().to_owned()))
-                .unwrap();
+        let config = ResolvedConfig::load_default_in(Some(config_dir), Some(linux_path)).unwrap();
         assert_eq!(config.index_for_namespace("acme").alias, "acme");
+    }
+
+    /// Linux with `XDG_CONFIG_HOME` set: the config dir is not `~/.config`,
+    /// but a file left at `~/.config/dora/hub.toml` is ignored by design
+    /// there, so the load falls back to official-only instead of failing.
+    #[test]
+    fn xdg_config_home_leaves_a_file_at_the_default_path_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let xdg = home.path().join("dotfiles/config");
+        let default_path = home.path().join(".config/dora/hub.toml");
+        std::fs::create_dir_all(default_path.parent().unwrap()).unwrap();
+        std::fs::write(&default_path, "[[index]]\n").unwrap();
+
+        // What `load_default` passes on Linux.
+        let config = ResolvedConfig::load_default_in(Some(xdg), None).unwrap();
+        assert_eq!(config.indexes.len(), 1, "official index only");
+    }
+
+    /// Only macOS and Windows check the Linux path; on Linux (CI) it is
+    /// never checked, whatever `XDG_CONFIG_HOME` is.
+    #[test]
+    fn only_macos_and_windows_check_the_linux_path() {
+        let home = PathBuf::from("/home/user");
+        let checked = linux_path_to_check(Some(home.clone()));
+        if cfg!(any(target_os = "macos", target_os = "windows")) {
+            assert_eq!(checked, Some(home.join(".config/dora/hub.toml")));
+        } else {
+            assert_eq!(checked, None);
+        }
     }
 
     #[test]
