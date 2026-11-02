@@ -1247,16 +1247,6 @@ impl Coordinator {
         node: Node,
         reply_sender: ReplySender,
     ) -> eyre::Result<()> {
-        // Where each node ran according to the store, to tell a producer
-        // whose daemon has not reconnected yet (after a coordinator restart
-        // or reclaim) from one that exited (see `producer_daemons`).
-        let persisted_placement = self
-            .store
-            .get_dataflow(&dataflow_id)
-            .ok()
-            .flatten()
-            .map(|record| record.node_to_daemon)
-            .unwrap_or_default();
         let result = match self.running_dataflows.get_mut(&dataflow_id) {
             Some(dataflow) => {
                 // Check the stored topology, not `node_to_daemon`: a dataflow
@@ -1294,7 +1284,7 @@ impl Coordinator {
                                 &dataflow.daemons,
                                 &dataflow.exited_nodes,
                                 &dataflow.departed_daemons,
-                                &persisted_placement,
+                                &dataflow.persisted_placement,
                                 &self.daemon_connections,
                             )
                             .and_then(|producer_daemons| {
@@ -1746,7 +1736,7 @@ pub(crate) fn producer_daemons(
     dataflow_daemons: &BTreeSet<DaemonId>,
     exited: &BTreeSet<NodeId>,
     departed: &BTreeMap<DaemonId, std::time::Instant>,
-    persisted_placement: &BTreeMap<String, String>,
+    persisted_placement: &BTreeMap<NodeId, String>,
     connections: &crate::state::DaemonConnections,
 ) -> eyre::Result<BTreeSet<DaemonId>> {
     let mut daemons = BTreeSet::new();
@@ -1761,7 +1751,7 @@ pub(crate) fn producer_daemons(
             }
             Some(daemon) => Some(daemon.clone()),
             None => persisted_placement
-                .get(&source.to_string())
+                .get(source)
                 .and_then(|id| DaemonId::from_display_str(id)),
         };
         let Some(last_daemon) = last_daemon else {

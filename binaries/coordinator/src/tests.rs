@@ -6933,9 +6933,9 @@ fn producer_daemons_waits_only_while_the_producers_daemon_is_away() {
     );
     let nodes = BTreeMap::from([(producer.clone(), producer_node)]);
     let old_daemon = DaemonId::new(Some("machine-a".to_string()));
-    let persisted = BTreeMap::from([(producer.to_string(), old_daemon.to_string())]);
+    let persisted = BTreeMap::from([(producer.clone(), old_daemon.to_string())]);
     let producer_daemons = |node_to_daemon: &BTreeMap<NodeId, DaemonId>,
-                            persisted: &BTreeMap<String, String>,
+                            persisted: &BTreeMap<NodeId, String>,
                             connections: &DaemonConnections| {
         crate::control_requests::producer_daemons(
             &resolved,
@@ -7047,7 +7047,11 @@ async fn producer_daemons_waits_for_a_reclaimed_dataflows_daemon() {
             .filter_map(|id| DaemonId::from_display_str(id))
             .map(|id| (id, std::time::Instant::now()))
             .collect(),
-        &record.node_to_daemon,
+        &record
+            .node_to_daemon
+            .iter()
+            .map(|(node, daemon)| (NodeId::from(node.clone()), daemon.clone()))
+            .collect(),
         &DaemonConnections::default(),
     )
     .unwrap_err();
@@ -7101,7 +7105,14 @@ fn recovered_dataflow_keeps_unreported_placement_when_re_persisted() {
             &recovered.daemons,
             &recovered.exited_nodes,
             &recovered.departed_daemons,
-            &re_persisted.node_to_daemon,
+            &RunningDataflow::recovered(
+                &re_persisted,
+                recovered.descriptor.clone(),
+                recovered.nodes.clone(),
+                DaemonId::new(Some("machine-b".to_string())),
+                &[],
+            )
+            .persisted_placement,
             &DaemonConnections::default(),
         )
         .is_err(),
