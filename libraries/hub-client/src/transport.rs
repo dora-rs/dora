@@ -377,13 +377,27 @@ const REPO_LOCAL_GIT_ENV: &[&str] = &[
 /// every command — `reset --hard` and `checkout` included — at the caller's
 /// own repository instead of the clone. Credential prompts are disabled, so a
 /// private URL fails instead of hanging.
+///
+/// Repository discovery is also stopped at `dir`: with `dir`'s parent as
+/// `GIT_CEILING_DIRECTORIES`, git still looks at `dir` itself but never above
+/// it. A clone whose `.git` is broken then fails as "not a git repository"
+/// (which the callers' self-heal re-clones) instead of resolving to whatever
+/// repository encloses the cache, where `reset --hard` would discard work.
 pub fn git_command(dir: Option<&Path>) -> Command {
     let mut command = Command::new("git");
-    if let Some(dir) = dir {
-        command.current_dir(dir);
-    }
     for var in REPO_LOCAL_GIT_ENV {
         command.env_remove(var);
+    }
+    if let Some(dir) = dir {
+        command.current_dir(dir);
+        // git ignores a relative ceiling entry, so resolve `dir` against the
+        // working directory it is relative to
+        if let Some(parent) = std::path::absolute(dir)
+            .ok()
+            .and_then(|dir| dir.parent().map(Path::to_path_buf))
+        {
+            command.env("GIT_CEILING_DIRECTORIES", parent);
+        }
     }
     command.env("GIT_TERMINAL_PROMPT", "0");
     command
@@ -488,6 +502,65 @@ source:
             }
             assert!(removed.contains(var), "`{var}` is inherited");
         }
+    }
+
+    /// A cached clone whose `.git` is broken must not let git's repository
+    /// discovery climb into an enclosing work tree: refreshing would
+    /// otherwise `reset --hard` that outer repository (#4006).
+    #[test]
+    fn a_broken_cache_does_not_reach_an_enclosing_repo() {
+        let remote_dir = tempfile::tempdir().unwrap();
+        make_remote(remote_dir.path());
+        let index = remote_index(remote_dir.path());
+
+        // the cache root lives inside another clone of the same remote, so
+        // the outer repo has an `origin/HEAD` a stray reset could move to
+        let outer_dir = tempfile::tempdir().unwrap();
+        let outer = outer_dir.path().join("outer");
+        let status = git_command(None)
+            .args(["clone", "--quiet"])
+            .arg(remote_dir.path())
+            .arg(&outer)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let cache_root = outer.join("cache");
+
+        let mut fetcher = IndexFetcher::with_cache_root(cache_root.clone(), false);
+        fetcher.catalog_dir(&index, Path::new(".")).unwrap();
+
+        // corrupt the cached clone and leave uncommitted work in the outer repo
+        std::fs::remove_file(cache_root.join("test/.git/HEAD")).unwrap();
+        let precious = outer.join("node-index/dora-rs/dora-yolo/0.5.1.yml");
+        std::fs::write(&precious, "uncommitted edit").unwrap();
+
+        // move the remote on, so a refresh of the wrong repo would reset it
+        std::fs::write(
+            remote_dir
+                .path()
+                .join("node-index/dora-rs/dora-yolo/0.5.2.yml"),
+            ENTRY,
+        )
+        .unwrap();
+        commit_all(remote_dir.path(), "publish 0.5.2");
+
+        let mut fetcher = IndexFetcher::with_cache_root(cache_root.clone(), false);
+        let catalog_dir = fetcher.catalog_dir(&index, Path::new(".")).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&precious).unwrap(),
+            "uncommitted edit",
+            "the enclosing repository's work tree was reset"
+        );
+        assert!(
+            cache_root.join("test/.git/HEAD").exists(),
+            "the corrupt cache was not re-cloned"
+        );
+        let resolved = IndexCatalog::open(&catalog_dir)
+            .unwrap()
+            .resolve(&PackageRef::parse("dora-yolo@^0.5").unwrap())
+            .unwrap();
+        assert_eq!(resolved.version.to_string(), "0.5.2");
     }
 
     #[test]
