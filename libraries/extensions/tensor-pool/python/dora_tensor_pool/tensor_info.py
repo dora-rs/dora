@@ -66,7 +66,7 @@ _TORCH_TO_NUMPY_DTYPE_MAP = {
 # ---------------------------------------------------------------------------
 
 
-# DLPack dtype codes: kDLInt=0, kDLUInt=1, kDLFloat=2, kDLBfloat=4.
+# DLPack dtype codes: kDLInt=0, kDLUInt=1, kDLFloat=2, kDLBfloat=4, kDLBool=6.
 _DLPACK_TYPE = {
     torch.int8: (0, 8),
     torch.int16: (0, 16),
@@ -76,7 +76,7 @@ _DLPACK_TYPE = {
     torch.float16: (2, 16),
     torch.float32: (2, 32),
     torch.float64: (2, 64),
-    torch.bool: (1, 8),
+    torch.bool: (6, 8),
     torch.bfloat16: (4, 16),
 }
 
@@ -120,6 +120,50 @@ _DLManagedTensor._fields_ = [
 
 _NPU_DLPACK_DEVICE_TYPE = None
 _DLPACK_HOLDERS = {}
+_PYCAPSULE_DESTRUCTOR = ctypes.CFUNCTYPE(None, ctypes.py_object)
+
+
+def _saved_torch_npu_device():
+    """Return this thread's current NPU, or None if torch_npu has not picked one."""
+    try:
+        if hasattr(torch, "npu") and torch.npu.is_initialized():
+            return int(torch.npu.current_device())
+    except Exception:
+        return None
+    return None
+
+
+def _restore_torch_npu_device(saved):
+    if saved is None:
+        return
+    try:
+        torch.npu.set_device(int(saved))
+    except Exception:
+        pass
+
+
+@_PYCAPSULE_DESTRUCTOR
+def _drop_unconsumed_npu_capsule(capsule):
+    """Drop the holder when torch.from_dlpack never takes ownership.
+
+    A consumed capsule is renamed away from ``dltensor``. Its holder stays
+    until the managed-tensor deleter runs with the resulting tensor.
+    """
+    get_name = ctypes.pythonapi.PyCapsule_GetName
+    get_name.restype = ctypes.c_char_p
+    get_name.argtypes = [ctypes.py_object]
+    name = get_name(capsule)
+    if name != b"dltensor":
+        ctypes.pythonapi.PyErr_Clear()
+        return
+    get_pointer = ctypes.pythonapi.PyCapsule_GetPointer
+    get_pointer.restype = ctypes.c_void_p
+    get_pointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
+    ptr = get_pointer(capsule, b"dltensor")
+    if ptr:
+        _DLPACK_HOLDERS.pop(ptr, None)
+    else:
+        ctypes.pythonapi.PyErr_Clear()
 
 
 def _npu_device_index(device: str) -> int:
@@ -137,17 +181,21 @@ def _npu_dlpack_device_type(device_index: int) -> int:
         return _NPU_DLPACK_DEVICE_TYPE
     import torch_npu  # noqa: F401
 
-    probe = torch.empty((1,), dtype=torch.uint8, device=f"npu:{device_index}")
-    capsule = probe.__dlpack__()
-    get_pointer = ctypes.pythonapi.PyCapsule_GetPointer
-    get_pointer.restype = ctypes.c_void_p
-    get_pointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
-    managed = ctypes.cast(
-        get_pointer(capsule, b"dltensor"),
-        ctypes.POINTER(_DLManagedTensor),
-    )
-    _NPU_DLPACK_DEVICE_TYPE = int(managed.contents.dl_tensor.device.device_type)
-    return _NPU_DLPACK_DEVICE_TYPE
+    saved = _saved_torch_npu_device()
+    try:
+        probe = torch.empty((1,), dtype=torch.uint8, device=f"npu:{device_index}")
+        capsule = probe.__dlpack__()
+        get_pointer = ctypes.pythonapi.PyCapsule_GetPointer
+        get_pointer.restype = ctypes.c_void_p
+        get_pointer.argtypes = [ctypes.py_object, ctypes.c_char_p]
+        managed = ctypes.cast(
+            get_pointer(capsule, b"dltensor"),
+            ctypes.POINTER(_DLManagedTensor),
+        )
+        _NPU_DLPACK_DEVICE_TYPE = int(managed.contents.dl_tensor.device.device_type)
+        return _NPU_DLPACK_DEVICE_TYPE
+    finally:
+        _restore_torch_npu_device(saved)
 
 
 @_DLPACK_DELETER
@@ -178,45 +226,65 @@ def _wrap_npu_ptr(ptr, shape, dtype, device, size) -> torch.Tensor:
         )
 
     device_index = _npu_device_index(device)
+    saved_device = _saved_torch_npu_device()
     torch.npu.set_device(device_index)
-    device_type = _npu_dlpack_device_type(device_index)
+    holder_key = None
+    tensor_owns_holder = False
+    try:
+        device_type = _npu_dlpack_device_type(device_index)
 
-    ndim = len(shape)
-    shape_arr = (ctypes.c_int64 * max(ndim, 1))(*([int(d) for d in shape] or [0]))
-    strides = []
-    running = 1
-    for dim in reversed(shape):
-        strides.append(running)
-        running *= int(dim)
-    strides.reverse()
-    stride_arr = (ctypes.c_int64 * max(ndim, 1))(*(strides or [1]))
-    code, bits = type_info
+        ndim = len(shape)
+        shape_arr = (ctypes.c_int64 * max(ndim, 1))(*([int(d) for d in shape] or [0]))
+        strides = []
+        running = 1
+        for dim in reversed(shape):
+            strides.append(running)
+            running *= int(dim)
+        strides.reverse()
+        stride_arr = (ctypes.c_int64 * max(ndim, 1))(*(strides or [1]))
+        code, bits = type_info
 
-    managed = _DLManagedTensor()
-    managed.dl_tensor.data = ptr
-    managed.dl_tensor.device.device_type = device_type
-    managed.dl_tensor.device.device_id = device_index
-    managed.dl_tensor.ndim = ndim
-    managed.dl_tensor.dtype.code = code
-    managed.dl_tensor.dtype.bits = bits
-    managed.dl_tensor.dtype.lanes = 1
-    managed.dl_tensor.shape = ctypes.cast(shape_arr, ctypes.POINTER(ctypes.c_int64))
-    managed.dl_tensor.strides = ctypes.cast(stride_arr, ctypes.POINTER(ctypes.c_int64))
-    managed.dl_tensor.byte_offset = 0
-    managed.manager_ctx = None
-    managed.deleter = _dlpack_deleter
-    _DLPACK_HOLDERS[ctypes.addressof(managed)] = (managed, shape_arr, stride_arr)
+        managed = _DLManagedTensor()
+        managed.dl_tensor.data = ptr
+        managed.dl_tensor.device.device_type = device_type
+        managed.dl_tensor.device.device_id = device_index
+        managed.dl_tensor.ndim = ndim
+        managed.dl_tensor.dtype.code = code
+        managed.dl_tensor.dtype.bits = bits
+        managed.dl_tensor.dtype.lanes = 1
+        managed.dl_tensor.shape = ctypes.cast(shape_arr, ctypes.POINTER(ctypes.c_int64))
+        managed.dl_tensor.strides = ctypes.cast(stride_arr, ctypes.POINTER(ctypes.c_int64))
+        managed.dl_tensor.byte_offset = 0
+        managed.manager_ctx = None
+        managed.deleter = _dlpack_deleter
+        holder_key = ctypes.addressof(managed)
+        _DLPACK_HOLDERS[holder_key] = (managed, shape_arr, stride_arr)
 
-    new_capsule = ctypes.pythonapi.PyCapsule_New
-    new_capsule.restype = ctypes.py_object
-    new_capsule.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
-    capsule = new_capsule(ctypes.byref(managed), b"dltensor", None)
-    tensor = torch.from_dlpack(capsule)
-    if tensor.data_ptr() != ptr:
-        raise RuntimeError(
-            f"torch.from_dlpack produced a copy (0x{tensor.data_ptr():x} != 0x{ptr:x})"
+        new_capsule = ctypes.pythonapi.PyCapsule_New
+        new_capsule.restype = ctypes.py_object
+        new_capsule.argtypes = [ctypes.c_void_p, ctypes.c_char_p, _PYCAPSULE_DESTRUCTOR]
+        capsule = new_capsule(
+            ctypes.byref(managed), b"dltensor", _drop_unconsumed_npu_capsule
         )
-    return tensor
+        try:
+            tensor = torch.from_dlpack(capsule)
+        finally:
+            del capsule
+        tensor_owns_holder = True
+        got = tensor.data_ptr()
+        if got != ptr:
+            del tensor
+            _DLPACK_HOLDERS.pop(holder_key, None)
+            raise RuntimeError(
+                f"torch.from_dlpack produced a copy (0x{got:x} != 0x{ptr:x})"
+            )
+        return tensor
+    except Exception:
+        if holder_key is not None and not tensor_owns_holder:
+            _DLPACK_HOLDERS.pop(holder_key, None)
+        raise
+    finally:
+        _restore_torch_npu_device(saved_device)
 
 
 class _ArrayInterface:

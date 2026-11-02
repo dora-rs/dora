@@ -43,6 +43,34 @@ const DEVICE_CPU: u64 = 0;
 const DEVICE_CUDA: u64 = 1;
 const DEVICE_ASCEND: u64 = 2;
 
+fn is_known_device_type(ipc_present: u64) -> bool {
+    matches!(ipc_present, DEVICE_CPU | DEVICE_CUDA | DEVICE_ASCEND)
+}
+
+/// Shared-memory payload bounds apply to every type except a device-IPC
+/// pool, whose bytes live on the device rather than in the segment.
+fn shmem_bounds_apply(ipc_present: u64) -> bool {
+    ipc_present != DEVICE_CUDA && ipc_present != DEVICE_ASCEND
+}
+
+/// `cuda` / `npu`, or `cuda:N` / `npu:N`. The daemon mirror stores the
+/// receiver's full device string (`"cuda:0"`), not the bare family name.
+fn device_spec_is(spec: Option<&str>, family: &str) -> bool {
+    let Some(spec) = spec else {
+        return false;
+    };
+    if spec == family {
+        return true;
+    }
+    let Some(rest) = spec.strip_prefix(family) else {
+        return false;
+    };
+    let Some(index) = rest.strip_prefix(':') else {
+        return false;
+    };
+    !index.is_empty() && index.chars().all(|c| c.is_ascii_digit())
+}
+
 #[inline]
 fn is_npu_device(device: &str) -> bool {
     device == "npu" || device.starts_with("npu:")
@@ -63,7 +91,8 @@ fn npu_device_index(device: &str) -> Result<i32, String> {
 #[cfg(test)]
 mod device_tests {
     use super::{
-        DEVICE_ASCEND, DEVICE_CPU, DEVICE_CUDA, is_npu_device, npu_device_index, should_push_mirror,
+        DEVICE_ASCEND, DEVICE_CPU, DEVICE_CUDA, device_spec_is, is_known_device_type,
+        is_npu_device, npu_device_index, shmem_bounds_apply, should_push_mirror,
     };
 
     #[test]
@@ -88,6 +117,29 @@ mod device_tests {
         assert_eq!(npu_device_index("npu:3"), Ok(3));
         assert!(npu_device_index("npu:-1").is_err());
         assert!(npu_device_index("cuda:0").is_err());
+    }
+
+    #[test]
+    fn device_spec_accepts_indexed_cuda_and_npu() {
+        assert!(device_spec_is(Some("cuda"), "cuda"));
+        assert!(device_spec_is(Some("cuda:0"), "cuda"));
+        assert!(device_spec_is(Some("npu:1"), "npu"));
+        assert!(!device_spec_is(Some("cuda:0"), "npu"));
+        assert!(!device_spec_is(Some("cpu"), "cuda"));
+        assert!(!device_spec_is(Some("cuda:"), "cuda"));
+        assert!(!device_spec_is(None, "cuda"));
+    }
+
+    #[test]
+    fn unknown_device_type_is_rejected_and_bounds_skip_device_ipc() {
+        assert!(is_known_device_type(DEVICE_CPU));
+        assert!(is_known_device_type(DEVICE_CUDA));
+        assert!(is_known_device_type(DEVICE_ASCEND));
+        assert!(!is_known_device_type(3));
+        assert!(shmem_bounds_apply(DEVICE_CPU));
+        assert!(shmem_bounds_apply(3));
+        assert!(!shmem_bounds_apply(DEVICE_CUDA));
+        assert!(!shmem_bounds_apply(DEVICE_ASCEND));
     }
 
     #[test]
@@ -795,7 +847,7 @@ enum TransportPath {
     /// Buffer on sender device, plain DtoD memcpy (same-device or CPU source).
     SameDeviceDtoD,
     /// Cross-device with P2P peer access enabled.
-    P2PPeerAccess,
+    P2PPeerCopy,
     /// Cross-device without P2P — CPU page-locked transit (DtoH → HtoD).
     HostStagingTransit,
 }
@@ -809,7 +861,7 @@ enum TransportPath {
 /// |----------|----------|-----|---------------------|
 /// | false    | *        | *   | `SameDeviceDtoD`    |
 /// | true     | true     | *   | `SameDeviceDtoD`    |
-/// | true     | false    | yes | `P2PPeerAccess`     |
+/// | true     | false    | yes | `P2PPeerCopy`     |
 /// | true     | false    | no  | `HostStagingTransit`|
 #[inline]
 fn classify_transport(
@@ -825,7 +877,7 @@ fn classify_transport(
         return TransportPath::SameDeviceDtoD;
     }
     if p2p_available {
-        return TransportPath::P2PPeerAccess;
+        return TransportPath::P2PPeerCopy;
     }
     TransportPath::HostStagingTransit
 }
@@ -853,7 +905,7 @@ fn classify_npu_copy(
         return TransportPath::SameDeviceDtoD;
     }
     if p2p_available && !p2p_disabled {
-        return TransportPath::P2PPeerAccess;
+        return TransportPath::P2PPeerCopy;
     }
     TransportPath::HostStagingTransit
 }
@@ -861,7 +913,7 @@ fn classify_npu_copy(
 fn npu_copy_path_label(path: TransportPath) -> &'static str {
     match path {
         TransportPath::SameDeviceDtoD => "same-device D2D",
-        TransportPath::P2PPeerAccess => "P2P D2D",
+        TransportPath::P2PPeerCopy => "P2P D2D",
         TransportPath::HostStagingTransit => "host transit",
     }
 }
@@ -879,7 +931,7 @@ enum WritePath {
     GpuToGpuPoolTransit,
     /// GPU source → GPU pool via plain DtoD `_cuda_memcpy_gpu_buf`
     /// (ipc_present=1, is_cuda, transit_ptr=0).
-    GpuToGpuPoolDtoD,
+    GpuToGpuPoolCopy,
     /// GPU source → shmem data region via `cudaMemcpy` (ipc_present≠1, is_cuda).
     GpuToShmem,
     /// CPU source → shmem data region via `ptr::copy_nonoverlapping`
@@ -895,7 +947,7 @@ fn classify_write_path(ipc_present: u64, is_cuda: bool, transit_ptr: u64) -> Wri
             if transit_ptr != 0 {
                 WritePath::GpuToGpuPoolTransit
             } else {
-                WritePath::GpuToGpuPoolDtoD
+                WritePath::GpuToGpuPoolCopy
             }
         } else {
             WritePath::CpuToGpuPoolDma
@@ -985,7 +1037,7 @@ mod transport_tests {
     fn cross_device_with_p2p() {
         assert_eq!(
             classify_transport(0, 1, true, true),
-            TransportPath::P2PPeerAccess
+            TransportPath::P2PPeerCopy
         );
     }
 
@@ -1005,7 +1057,7 @@ mod transport_tests {
     fn npu_cross_card_uses_p2p_when_available() {
         assert_eq!(
             classify_npu_copy(0, 1, true, false),
-            TransportPath::P2PPeerAccess
+            TransportPath::P2PPeerCopy
         );
     }
 
@@ -1027,7 +1079,7 @@ mod transport_tests {
         );
         assert_ne!(
             classify_npu_copy(0, 1, true, true),
-            TransportPath::P2PPeerAccess
+            TransportPath::P2PPeerCopy
         );
     }
 
@@ -1056,7 +1108,7 @@ mod transport_tests {
             ((0, 1, false, false), TransportPath::SameDeviceDtoD),
             ((0, 1, false, true), TransportPath::HostStagingTransit),
             ((0, 1, true, false), TransportPath::SameDeviceDtoD),
-            ((0, 1, true, true), TransportPath::P2PPeerAccess),
+            ((0, 1, true, true), TransportPath::P2PPeerCopy),
         ];
         for ((s, r, p2p, cuda), expected) in cases {
             let got = classify_transport(*s, *r, *p2p, *cuda);
@@ -1093,7 +1145,7 @@ mod transport_tests {
 
     #[test]
     fn write_path_gpu_to_gpu_pool_dtod() {
-        assert_eq!(classify_write_path(1, true, 0), WritePath::GpuToGpuPoolDtoD);
+        assert_eq!(classify_write_path(1, true, 0), WritePath::GpuToGpuPoolCopy);
     }
 
     #[test]
@@ -1116,7 +1168,7 @@ mod transport_tests {
         // current behaviour; if cache-miss transit recovery is added
         // later, this test must be updated.
         let path = classify_write_path(1, true, 0);
-        assert_eq!(path, WritePath::GpuToGpuPoolDtoD);
+        assert_eq!(path, WritePath::GpuToGpuPoolCopy);
     }
 
     #[test]
@@ -1127,7 +1179,7 @@ mod transport_tests {
         let cases: &[(u64, bool, u64, WritePath)] = &[
             (1, false, 0, WritePath::CpuToGpuPoolDma),
             (1, false, 1, WritePath::CpuToGpuPoolDma),
-            (1, true, 0, WritePath::GpuToGpuPoolDtoD),
+            (1, true, 0, WritePath::GpuToGpuPoolCopy),
             (1, true, 1, WritePath::GpuToGpuPoolTransit),
             (0, false, 0, WritePath::CpuToShmem),
             (0, false, 1, WritePath::CpuToShmem),
@@ -1531,9 +1583,11 @@ def dma_copy(ptr, size, slot, no_dma):
 ///
 /// The first copy calls `aclInit`. If `torch_npu` already initialized the
 /// process, AscendCL returns `ACL_ERROR_REPEAT_INITIALIZE` (100002), which
-/// the official `aclInit` contract says to ignore. `aclrtSetDevice` is called
-/// only when the requested device changes. `aclFinalize` is intentionally not
-/// called, because it would tear down a runtime still owned by `torch_npu`.
+/// the official `aclInit` contract says to ignore. `aclrtSetDevice` runs when
+/// this thread's device changes. Helpers that switch cards remember the
+/// caller's device and put ACL and `torch.npu` back afterwards. `aclFinalize`
+/// is intentionally not called, because it would tear down a runtime still
+/// owned by `torch_npu`.
 fn get_ascend_helpers(py: Python<'_>) -> Result<Py<PyModule>, String> {
     let mut guard = ASCEND_HELPERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref module) = *guard {
@@ -1542,6 +1596,7 @@ fn get_ascend_helpers(py: Python<'_>) -> Result<Py<PyModule>, String> {
 
     let code = r#"
 import ctypes
+import threading
 
 _acl = ctypes.CDLL("libascendcl.so")
 
@@ -1627,24 +1682,24 @@ ACL_RT_IPC_MEM_IMPORT_FLAG_DEFAULT = 0x0
 ACL_PAGE_SIZE = 4096
 
 _acl_ready = False
-_current_device = None
+_npu_tls = threading.local()
 _npu_sender_buffers = {}
 _npu_receiver_buffers = {}
 _p2p_enabled_pairs = set()
 
 def _ensure_npu_runtime(device_index):
-    """Initialize AscendCL once and select the tensor's NPU when it changes."""
-    global _acl_ready, _current_device
+    """Initialize AscendCL once and select this thread's NPU when it changes."""
+    global _acl_ready
     if not _acl_ready:
         err = _acl.aclInit(None)
         if err not in (ACL_SUCCESS, ACL_ERROR_REPEAT_INITIALIZE):
             raise RuntimeError(f"aclInit failed: {err}")
         _acl_ready = True
-    if _current_device != device_index:
+    if getattr(_npu_tls, "device", None) != device_index:
         err = _acl.aclrtSetDevice(device_index)
         if err != ACL_SUCCESS:
             raise RuntimeError(f"aclrtSetDevice({device_index}) failed: {err}")
-        _current_device = device_index
+        _npu_tls.device = device_index
 
 def _aligned_ipc_size(size):
     if size <= 0:
@@ -1653,65 +1708,67 @@ def _aligned_ipc_size(size):
 
 def _npu_memcpy_dtoh(dst, src, size, device_index):
     """Initialize the NPU runtime, wait for pending work, then copy D2H."""
-    _ensure_npu_runtime(device_index)
-    sync_err = _acl.aclrtSynchronizeDevice()
-    if sync_err != ACL_SUCCESS:
-        raise RuntimeError(f"aclrtSynchronizeDevice failed: {sync_err}")
+    with _CallerDevice():
+        _ensure_npu_runtime(device_index)
+        sync_err = _acl.aclrtSynchronizeDevice()
+        if sync_err != ACL_SUCCESS:
+            raise RuntimeError(f"aclrtSynchronizeDevice failed: {sync_err}")
 
-    err = _acl.aclrtMemcpy(
-        ctypes.c_void_p(dst),
-        size,
-        ctypes.c_void_p(src),
-        size,
-        ACL_MEMCPY_DEVICE_TO_HOST,
-    )
-    if err != ACL_SUCCESS:
-        raise RuntimeError(
-            f"aclrtMemcpy D2H (0x{dst:x} <- 0x{src:x}, {size}B) failed: {err}"
+        err = _acl.aclrtMemcpy(
+            ctypes.c_void_p(dst),
+            size,
+            ctypes.c_void_p(src),
+            size,
+            ACL_MEMCPY_DEVICE_TO_HOST,
         )
+        if err != ACL_SUCCESS:
+            raise RuntimeError(
+                f"aclrtMemcpy D2H (0x{dst:x} <- 0x{src:x}, {size}B) failed: {err}"
+            )
 
 def _create_npu_ipc_buffer(pool_id, src, size, device_index):
     """Allocate NPU memory, copy the first CPU frame, and export a 65-byte IPC key."""
-    _ensure_npu_runtime(device_index)
-    alloc_size = _aligned_ipc_size(size)
-    d_ptr = ctypes.c_void_p()
-    err = _acl.aclrtMalloc(ctypes.byref(d_ptr), alloc_size, ACL_MEM_MALLOC_HUGE_FIRST)
-    if err != ACL_SUCCESS or not d_ptr.value:
-        raise RuntimeError(f"aclrtMalloc({alloc_size}) failed: {err}")
-    err = _acl.aclrtMemcpy(
-        d_ptr,
-        size,
-        ctypes.c_void_p(src),
-        size,
-        ACL_MEMCPY_HOST_TO_DEVICE,
-    )
-    if err != ACL_SUCCESS:
-        _acl.aclrtFree(d_ptr)
-        raise RuntimeError(
-            f"aclrtMemcpy H2D (0x{d_ptr.value:x} <- 0x{src:x}, {size}B) failed: {err}"
+    with _CallerDevice():
+        _ensure_npu_runtime(device_index)
+        alloc_size = _aligned_ipc_size(size)
+        d_ptr = ctypes.c_void_p()
+        err = _acl.aclrtMalloc(ctypes.byref(d_ptr), alloc_size, ACL_MEM_MALLOC_HUGE_FIRST)
+        if err != ACL_SUCCESS or not d_ptr.value:
+            raise RuntimeError(f"aclrtMalloc({alloc_size}) failed: {err}")
+        err = _acl.aclrtMemcpy(
+            d_ptr,
+            size,
+            ctypes.c_void_p(src),
+            size,
+            ACL_MEMCPY_HOST_TO_DEVICE,
         )
-    key = ctypes.create_string_buffer(ACL_IPC_MEM_KEY_LEN)
-    err = _acl.aclrtIpcMemGetExportKey(
-        d_ptr,
-        alloc_size,
-        key,
-        ACL_IPC_MEM_KEY_LEN,
-        ACL_RT_IPC_MEM_EXPORT_FLAG_DISABLE_PID_VALIDATION,
-    )
-    if err != ACL_SUCCESS:
-        _acl.aclrtFree(d_ptr)
-        raise RuntimeError(
-            f"aclrtIpcMemGetExportKey(0x{d_ptr.value:x}, {alloc_size}) failed: {err}"
+        if err != ACL_SUCCESS:
+            _acl.aclrtFree(d_ptr)
+            raise RuntimeError(
+                f"aclrtMemcpy H2D (0x{d_ptr.value:x} <- 0x{src:x}, {size}B) failed: {err}"
+            )
+        key = ctypes.create_string_buffer(ACL_IPC_MEM_KEY_LEN)
+        err = _acl.aclrtIpcMemGetExportKey(
+            d_ptr,
+            alloc_size,
+            key,
+            ACL_IPC_MEM_KEY_LEN,
+            ACL_RT_IPC_MEM_EXPORT_FLAG_DISABLE_PID_VALIDATION,
         )
-    handle = bytes(key.raw)
-    _npu_sender_buffers[pool_id] = {
-        "ptr": d_ptr.value,
-        "size": size,
-        "alloc_size": alloc_size,
-        "key": handle,
-        "device_index": device_index,
-    }
-    return handle
+        if err != ACL_SUCCESS:
+            _acl.aclrtFree(d_ptr)
+            raise RuntimeError(
+                f"aclrtIpcMemGetExportKey(0x{d_ptr.value:x}, {alloc_size}) failed: {err}"
+            )
+        handle = bytes(key.raw)
+        _npu_sender_buffers[pool_id] = {
+            "ptr": d_ptr.value,
+            "size": size,
+            "alloc_size": alloc_size,
+            "key": handle,
+            "device_index": device_index,
+        }
+        return handle
 
 def _npu_memcpy_htod(pool_id, src, size):
     """Overwrite an existing sender-side Ascend IPC buffer from CPU memory."""
@@ -1722,18 +1779,19 @@ def _npu_memcpy_htod(pool_id, src, size):
         raise ValueError(
             f"Ascend IPC write {size}B exceeds buffer capacity {slot['size']}B"
         )
-    _ensure_npu_runtime(slot["device_index"])
-    err = _acl.aclrtMemcpy(
-        ctypes.c_void_p(slot["ptr"]),
-        size,
-        ctypes.c_void_p(src),
-        size,
-        ACL_MEMCPY_HOST_TO_DEVICE,
-    )
-    if err != ACL_SUCCESS:
-        raise RuntimeError(
-            f"aclrtMemcpy H2D (0x{slot['ptr']:x} <- 0x{src:x}, {size}B) failed: {err}"
+    with _CallerDevice():
+        _ensure_npu_runtime(slot["device_index"])
+        err = _acl.aclrtMemcpy(
+            ctypes.c_void_p(slot["ptr"]),
+            size,
+            ctypes.c_void_p(src),
+            size,
+            ACL_MEMCPY_HOST_TO_DEVICE,
         )
+        if err != ACL_SUCCESS:
+            raise RuntimeError(
+                f"aclrtMemcpy H2D (0x{slot['ptr']:x} <- 0x{src:x}, {size}B) failed: {err}"
+            )
 
 def _npu_get_device():
     dev = ctypes.c_int32(-1)
@@ -1749,17 +1807,34 @@ def _npu_sync_device(device_index):
     if err != ACL_SUCCESS:
         raise RuntimeError(f"aclrtSynchronizeDevice({device_index}) failed: {err}")
 
-def _restore_owner_device(device_index):
-    """Put ACL and torch_npu back on the card that owns sender streams."""
-    if device_index is None or device_index < 0:
+def _restore_caller_device(saved):
+    """Put ACL and torch_npu back on the card the caller was using.
+
+    A failed restore must not hide the exception from the copy itself.
+    """
+    if saved is None or saved < 0:
         return
-    _ensure_npu_runtime(device_index)
+    try:
+        _ensure_npu_runtime(saved)
+    except Exception:
+        return
     try:
         import torch
         if hasattr(torch, "npu"):
-            torch.npu.set_device(int(device_index))
+            torch.npu.set_device(int(saved))
     except Exception:
         pass
+
+class _CallerDevice:
+    """Remember this thread's current NPU and put it back on exit."""
+
+    def __enter__(self):
+        self.saved = _npu_get_device()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        _restore_caller_device(self.saved)
+        return False
 
 def _npu_can_access_peer(src, dst):
     can = ctypes.c_int32(0)
@@ -1773,17 +1848,18 @@ def _npu_ensure_p2p_pair(a, b):
     if (a, b) in _p2p_enabled_pairs:
         return
     saved = _npu_get_device()
-    for src, dst in ((a, b), (b, a)):
-        if _npu_can_access_peer(src, dst):
-            _ensure_npu_runtime(src)
-            err = _acl.aclrtDeviceEnablePeerAccess(dst, 0)
-            if err != ACL_SUCCESS:
-                raise RuntimeError(
-                    f"aclrtDeviceEnablePeerAccess({src} -> {dst}) failed: {err}"
-                )
-        _p2p_enabled_pairs.add((src, dst))
-    if saved >= 0:
-        _ensure_npu_runtime(saved)
+    try:
+        for src, dst in ((a, b), (b, a)):
+            if _npu_can_access_peer(src, dst):
+                _ensure_npu_runtime(src)
+                err = _acl.aclrtDeviceEnablePeerAccess(dst, 0)
+                if err != ACL_SUCCESS:
+                    raise RuntimeError(
+                        f"aclrtDeviceEnablePeerAccess({src} -> {dst}) failed: {err}"
+                    )
+            _p2p_enabled_pairs.add((src, dst))
+    finally:
+        _restore_caller_device(saved)
 
 def _npu_export_key(d_ptr, alloc_size):
     key = ctypes.create_string_buffer(ACL_IPC_MEM_KEY_LEN)
@@ -1824,6 +1900,8 @@ def _npu_same_device_d2d(dst, src, size, device_index):
     src_t = _wrap_npu_ptr(int(src), [nbytes], torch.uint8, device, nbytes)
     dst_t = _wrap_npu_ptr(int(dst), [nbytes], torch.uint8, device, nbytes)
     try:
+        # Wrapping puts the caller's card back. The copy has to run on this card.
+        torch.npu.set_device(int(device_index))
         dst_t.copy_(src_t)
         torch.npu.synchronize()
     finally:
@@ -1832,57 +1910,61 @@ def _npu_same_device_d2d(dst, src, size, device_index):
 def _setup_npu_ipc_from_npu(pool_id, src, size, src_dev, dst_dev, path):
     """Allocate the pool on the receiver NPU, copy the first NPU frame, export IPC."""
     print(f"Ascend NPU IPC path: {path}", flush=True)
-    _ensure_npu_runtime(dst_dev)
-    alloc_size = _aligned_ipc_size(size)
-    policy = (
-        ACL_MEM_MALLOC_HUGE_FIRST_P2P if src_dev != dst_dev else ACL_MEM_MALLOC_HUGE_FIRST
-    )
-    d_ptr = ctypes.c_void_p()
-    err = _acl.aclrtMalloc(ctypes.byref(d_ptr), alloc_size, policy)
-    if err != ACL_SUCCESS or not d_ptr.value:
-        raise RuntimeError(f"aclrtMalloc({alloc_size}, policy={policy}) failed: {err}")
-    transit_ptr = 0
-    try:
-        if path == "same-device D2D":
-            _ensure_npu_runtime(src_dev)
-            _npu_same_device_d2d(d_ptr.value, src, size, src_dev)
-        elif path == "P2P D2D":
-            _npu_ensure_p2p_pair(src_dev, dst_dev)
-            _ensure_npu_runtime(src_dev)
-            _npu_memcpy(d_ptr.value, src, size, ACL_MEMCPY_DEVICE_TO_DEVICE, "P2P D2D")
-        elif path == "host transit":
-            host = ctypes.c_void_p()
-            err = _acl.aclrtMallocHost(ctypes.byref(host), size)
-            if err != ACL_SUCCESS or not host.value:
-                raise RuntimeError(f"aclrtMallocHost({size}) failed: {err}")
-            transit_ptr = host.value
-            _ensure_npu_runtime(src_dev)
-            _npu_memcpy(transit_ptr, src, size, ACL_MEMCPY_DEVICE_TO_HOST, "D2H transit")
-            _ensure_npu_runtime(dst_dev)
-            _npu_memcpy(d_ptr.value, transit_ptr, size, ACL_MEMCPY_HOST_TO_DEVICE, "H2D transit")
-        else:
-            raise ValueError(f"unknown Ascend NPU IPC path: {path}")
-        handle = _npu_export_key(d_ptr.value, alloc_size)
-    except Exception:
-        if transit_ptr:
-            _acl.aclrtFreeHost(ctypes.c_void_p(transit_ptr))
-        _acl.aclrtFree(d_ptr)
-        _restore_owner_device(src_dev)
-        raise
-    _npu_sender_buffers[pool_id] = {
-        "ptr": d_ptr.value,
-        "size": size,
-        "alloc_size": alloc_size,
-        "key": handle,
-        "device_index": dst_dev,
-        "src_device": src_dev,
-        "transit_ptr": transit_ptr,
-    }
-    _restore_owner_device(src_dev)
-    return handle
+    with _CallerDevice():
+        _ensure_npu_runtime(dst_dev)
+        alloc_size = _aligned_ipc_size(size)
+        policy = (
+            ACL_MEM_MALLOC_HUGE_FIRST_P2P if src_dev != dst_dev else ACL_MEM_MALLOC_HUGE_FIRST
+        )
+        d_ptr = ctypes.c_void_p()
+        err = _acl.aclrtMalloc(ctypes.byref(d_ptr), alloc_size, policy)
+        if err != ACL_SUCCESS or not d_ptr.value:
+            raise RuntimeError(f"aclrtMalloc({alloc_size}, policy={policy}) failed: {err}")
+        transit_ptr = 0
+        try:
+            if path == "same-device D2D":
+                _ensure_npu_runtime(src_dev)
+                _npu_same_device_d2d(d_ptr.value, src, size, src_dev)
+            elif path == "P2P D2D":
+                _npu_ensure_p2p_pair(src_dev, dst_dev)
+                _npu_sync_device(src_dev)
+                _npu_memcpy(d_ptr.value, src, size, ACL_MEMCPY_DEVICE_TO_DEVICE, "P2P D2D")
+            elif path == "host transit":
+                host = ctypes.c_void_p()
+                err = _acl.aclrtMallocHost(ctypes.byref(host), size)
+                if err != ACL_SUCCESS or not host.value:
+                    raise RuntimeError(f"aclrtMallocHost({size}) failed: {err}")
+                transit_ptr = host.value
+                _npu_sync_device(src_dev)
+                _npu_memcpy(transit_ptr, src, size, ACL_MEMCPY_DEVICE_TO_HOST, "D2H transit")
+                _ensure_npu_runtime(dst_dev)
+                _npu_memcpy(d_ptr.value, transit_ptr, size, ACL_MEMCPY_HOST_TO_DEVICE, "H2D transit")
+            else:
+                raise ValueError(f"unknown Ascend NPU IPC path: {path}")
+            handle = _npu_export_key(d_ptr.value, alloc_size)
+        except Exception:
+            if transit_ptr:
+                _acl.aclrtFreeHost(ctypes.c_void_p(transit_ptr))
+            _acl.aclrtFree(d_ptr)
+            raise
+        _npu_sender_buffers[pool_id] = {
+            "ptr": d_ptr.value,
+            "size": size,
+            "alloc_size": alloc_size,
+            "key": handle,
+            "device_index": dst_dev,
+            "src_device": src_dev,
+            "transit_ptr": transit_ptr,
+        }
+        return handle
 
-def _npu_memcpy_npu_to_pool(pool_id, src, size):
-    """Overwrite the sender-side Ascend IPC buffer from an NPU source tensor."""
+def _npu_memcpy_npu_to_pool(pool_id, src, size, src_dev):
+    """Overwrite the sender-side Ascend IPC buffer from an NPU source tensor.
+
+    ``src_dev`` is the card of this write's tensor. The pool stays on the card
+    chosen at registration. Host transit can pull from any source card. Same-card
+    and peer copies stay on the card pair they were registered for.
+    """
     slot = _npu_sender_buffers.get(pool_id)
     if slot is None:
         raise RuntimeError(f"Ascend IPC sender buffer not found: {pool_id}")
@@ -1890,52 +1972,70 @@ def _npu_memcpy_npu_to_pool(pool_id, src, size):
         raise ValueError(
             f"Ascend IPC write {size}B exceeds buffer capacity {slot['size']}B"
         )
-    src_dev = slot.get("src_device", slot["device_index"])
+    src_dev = int(src_dev)
     dst_dev = slot["device_index"]
     transit_ptr = slot.get("transit_ptr", 0)
-    try:
+    with _CallerDevice():
         if transit_ptr:
-            _ensure_npu_runtime(src_dev)
+            _npu_sync_device(src_dev)
             _npu_memcpy(transit_ptr, src, size, ACL_MEMCPY_DEVICE_TO_HOST, "D2H transit")
             _ensure_npu_runtime(dst_dev)
             _npu_memcpy(slot["ptr"], transit_ptr, size, ACL_MEMCPY_HOST_TO_DEVICE, "H2D transit")
             return
+        expected = slot.get("src_device", dst_dev)
+        if src_dev != expected:
+            raise RuntimeError(
+                f"Ascend IPC write source npu:{src_dev} does not match the card "
+                f"this pool was registered for (npu:{expected})"
+            )
         if src_dev != dst_dev:
             _npu_ensure_p2p_pair(src_dev, dst_dev)
-            _ensure_npu_runtime(src_dev)
+            _npu_sync_device(src_dev)
             _npu_memcpy(slot["ptr"], src, size, ACL_MEMCPY_DEVICE_TO_DEVICE, "P2P D2D")
             return
         _ensure_npu_runtime(src_dev)
         _npu_same_device_d2d(slot["ptr"], src, size, src_dev)
-    finally:
-        _restore_owner_device(src_dev)
 
 def _import_npu_ipc(pool_id, handle_bytes, size, device_index):
-    """Import a 65-byte Ascend IPC key and return the local device pointer."""
+    """Import a 65-byte Ascend IPC key and return the local device pointer.
+
+    A cached import is reused only when the key, device, and capacity still
+    match. A new key replaces the old import. A larger read of the same
+    buffer is refused instead of returning the shorter pointer.
+    """
+    handle = bytes(handle_bytes)
     cached = _npu_receiver_buffers.get(pool_id)
     if cached is not None:
-        return cached["ptr"]
-    if len(handle_bytes) != ACL_IPC_MEM_KEY_LEN:
+        same_buffer = cached["key"] == handle and cached["device_index"] == device_index
+        if same_buffer and size <= cached["size"]:
+            return cached["ptr"]
+        if same_buffer:
+            raise ValueError(
+                f"Ascend IPC read {size}B exceeds imported buffer {cached['size']}B"
+            )
+        _release_npu_receiver(pool_id)
+    if len(handle) != ACL_IPC_MEM_KEY_LEN:
         raise ValueError(
-            f"Ascend IPC key must be {ACL_IPC_MEM_KEY_LEN} bytes, got {len(handle_bytes)}"
+            f"Ascend IPC key must be {ACL_IPC_MEM_KEY_LEN} bytes, got {len(handle)}"
         )
-    _ensure_npu_runtime(device_index)
-    key = ctypes.create_string_buffer(handle_bytes, ACL_IPC_MEM_KEY_LEN)
-    d_ptr = ctypes.c_void_p()
-    err = _acl.aclrtIpcMemImportByKey(
-        ctypes.byref(d_ptr),
-        key,
-        ACL_RT_IPC_MEM_IMPORT_FLAG_DEFAULT,
-    )
-    if err != ACL_SUCCESS or not d_ptr.value:
-        raise RuntimeError(f"aclrtIpcMemImportByKey failed: {err}")
-    _npu_receiver_buffers[pool_id] = {
-        "ptr": d_ptr.value,
-        "size": size,
-        "key": bytes(handle_bytes),
-        "device_index": device_index,
-    }
-    return d_ptr.value
+    with _CallerDevice():
+        _ensure_npu_runtime(device_index)
+        key = ctypes.create_string_buffer(handle, ACL_IPC_MEM_KEY_LEN)
+        d_ptr = ctypes.c_void_p()
+        err = _acl.aclrtIpcMemImportByKey(
+            ctypes.byref(d_ptr),
+            key,
+            ACL_RT_IPC_MEM_IMPORT_FLAG_DEFAULT,
+        )
+        if err != ACL_SUCCESS or not d_ptr.value:
+            raise RuntimeError(f"aclrtIpcMemImportByKey failed: {err}")
+        _npu_receiver_buffers[pool_id] = {
+            "ptr": d_ptr.value,
+            "size": size,
+            "key": handle,
+            "device_index": device_index,
+        }
+        return d_ptr.value
 
 def _release_npu_sender(pool_id):
     slot = _npu_sender_buffers.pop(pool_id, None)
@@ -1944,24 +2044,24 @@ def _release_npu_sender(pool_id):
     dst_dev = slot["device_index"]
     src_dev = slot.get("src_device", dst_dev)
     transit_ptr = slot.get("transit_ptr", 0)
-    if src_dev != dst_dev:
-        _npu_sync_device(src_dev)
-    _npu_sync_device(dst_dev)
-    key = ctypes.create_string_buffer(slot["key"], ACL_IPC_MEM_KEY_LEN)
-    _acl.aclrtIpcMemClose(key)
-    if transit_ptr:
-        _acl.aclrtFreeHost(ctypes.c_void_p(transit_ptr))
-    _acl.aclrtFree(ctypes.c_void_p(slot["ptr"]))
-    _restore_owner_device(src_dev)
+    with _CallerDevice():
+        if src_dev != dst_dev:
+            _npu_sync_device(src_dev)
+        _npu_sync_device(dst_dev)
+        key = ctypes.create_string_buffer(slot["key"], ACL_IPC_MEM_KEY_LEN)
+        _acl.aclrtIpcMemClose(key)
+        if transit_ptr:
+            _acl.aclrtFreeHost(ctypes.c_void_p(transit_ptr))
+        _acl.aclrtFree(ctypes.c_void_p(slot["ptr"]))
 
 def _release_npu_receiver(pool_id):
     slot = _npu_receiver_buffers.pop(pool_id, None)
     if slot is None:
         return
-    _npu_sync_device(slot["device_index"])
-    key = ctypes.create_string_buffer(slot["key"], ACL_IPC_MEM_KEY_LEN)
-    _acl.aclrtIpcMemClose(key)
-    _restore_owner_device(slot["device_index"])
+    with _CallerDevice():
+        _npu_sync_device(slot["device_index"])
+        key = ctypes.create_string_buffer(slot["key"], ACL_IPC_MEM_KEY_LEN)
+        _acl.aclrtIpcMemClose(key)
 "#;
 
     let code_cstr = std::ffi::CString::new(code).map_err(|e| format!("CString: {e}"))?;
@@ -2027,11 +2127,12 @@ fn copy_npu_to_npu_pool(
     pool_id: &str,
     src: u64,
     size: usize,
+    src_dev: i32,
 ) -> Result<(), String> {
     let helpers = get_ascend_helpers(py)?;
     helpers
         .bind(py)
-        .call_method1("_npu_memcpy_npu_to_pool", (pool_id, src, size))
+        .call_method1("_npu_memcpy_npu_to_pool", (pool_id, src, size, src_dev))
         .map(|_| ())
         .map_err(|e| format!("AscendCL NPU-to-NPU IPC copy failed: {e}"))
 }
@@ -2474,6 +2575,9 @@ impl Pool<'_> {
             );
         }
 
+        // Generate unique pool counter for this registration. `wrapping_add`
+        // guards the (astronomically unlikely) overflow now that the counter
+        // starts from a random seed rather than 0 (dora-rs/dora#3015).
         let pool_counter = {
             let mut c = PINNED_COUNTER.lock().unwrap_or_else(|e| e.into_inner());
             *c = c.wrapping_add(1);
@@ -3023,6 +3127,9 @@ impl Pool<'_> {
         unsafe {
             let gen_ptr = shmem_ptr.add(WRITE_GEN_OFFSET) as *mut u64;
             let old_gen = std::ptr::read_volatile(gen_ptr);
+            // Release fence BEFORE the completion store (dora-rs/dora#3288):
+            // it orders the preceding payload writes before the "complete"
+            // generation is published; a fence after the store is inert.
             std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
             std::ptr::write_volatile(gen_ptr, old_gen.wrapping_add(1));
         }
@@ -3049,6 +3156,10 @@ impl Pool<'_> {
                 .insert(pool_counter, (transit_ptr, pool_device));
         }
 
+        // Persist the exact segment name so the write fast path reopens this
+        // pool's segment on a PINNED_POOL cache-miss instead of reconstructing
+        // the auto-name format, which would be wrong for an explicit-`name=`
+        // pool and silently drop the write (#3207).
         POOL_NAMES
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -3292,13 +3403,27 @@ impl Pool<'_> {
                             ));
                         }
 
+                        if !is_known_device_type(ipc_present) {
+                            if let Some(slot_data) = store_back {
+                                PINNED_POOL
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert(counter, slot_data);
+                            }
+                            return Err(eyre::eyre!(
+                                "[{}] write_tensor_pool: unknown device type {ipc_present}",
+                                self.node_id
+                            ));
+                        }
+
                         // Validate write size against pool capacity.  The
-                        // `size == 0` guard always applies.  For GPU-buffer pools
-                        // (ipc_present == 1) the shmem data region is unused, so
-                        // its capacity is irrelevant — the GPU-buffer helpers
-                        // validate `size` against the actual GPU allocation.
+                        // `size == 0` guard always applies.  Device-IPC pools
+                        // do not use the shmem data region, so its capacity is
+                        // irrelevant — the device helpers validate `size`
+                        // against the device allocation. Any other type,
+                        // including CPU, is checked here.
                         if size == 0
-                            || (ipc_present == DEVICE_CPU
+                            || (shmem_bounds_apply(ipc_present)
                                 && size > shmem_capacity.saturating_sub(data_offset))
                         {
                             tracing::warn!(
@@ -3335,7 +3460,9 @@ impl Pool<'_> {
                             let gen_ptr = unsafe { shmem_ptr.add(WRITE_GEN_OFFSET) as *mut u64 };
                             let pre_write_gen = unsafe { seqlock_begin_if_even(gen_ptr) };
                             let copy_result = if is_npu {
-                                copy_npu_to_npu_pool(py, &buffer_id, ptr_val, size)
+                                npu_device_index(&tensor_device).and_then(|src_dev| {
+                                    copy_npu_to_npu_pool(py, &buffer_id, ptr_val, size, src_dev)
+                                })
                             } else {
                                 copy_host_to_npu_pool(py, &buffer_id, ptr_val, size)
                             };
@@ -3506,7 +3633,7 @@ impl Pool<'_> {
                                             )
                                             .map(|_| ())
                                     }
-                                    WritePath::GpuToGpuPoolDtoD => bound
+                                    WritePath::GpuToGpuPoolCopy => bound
                                         .call_method1(
                                             "_cuda_memcpy_gpu_buf",
                                             (counter, ptr_val, size),
@@ -3648,13 +3775,20 @@ impl Pool<'_> {
                             ));
                         }
 
+                        if !is_known_device_type(ipc_present) {
+                            return Err(eyre::eyre!(
+                                "[{}] write_tensor_pool (slow path): unknown device type {ipc_present}",
+                                self.node_id
+                            ));
+                        }
+
                         // Validate write size against pool capacity.  The
-                        // `size == 0` guard always applies; the shmem-region
-                        // capacity check is skipped for GPU-buffer pools
-                        // (ipc_present == 1), which the GPU helpers validate.
+                        // `size == 0` guard always applies. Device-IPC pools
+                        // skip the shmem-region check; every other known type
+                        // is checked. Unknown types are rejected above.
                         let shmem_len = shmem.len();
                         if size == 0
-                            || (ipc_present == DEVICE_CPU
+                            || (shmem_bounds_apply(ipc_present)
                                 && size > shmem_len.saturating_sub(data_offset))
                         {
                             tracing::warn!(
@@ -3679,16 +3813,21 @@ impl Pool<'_> {
                             let gen_ptr = unsafe { shmem_ptr.add(WRITE_GEN_OFFSET) as *mut u64 };
                             let pre_write_gen = unsafe { seqlock_begin_if_even(gen_ptr) };
                             if is_npu {
-                                copy_npu_to_npu_pool(py, &buffer_id, ptr_val, size).map_err(
-                                    |e| {
+                                let src_dev = npu_device_index(&tensor_device).map_err(|e| {
+                                    eyre::eyre!(
+                                        "[{}] write_tensor_pool (slow path): {e}",
+                                        self.node_id
+                                    )
+                                })?;
+                                copy_npu_to_npu_pool(py, &buffer_id, ptr_val, size, src_dev)
+                                    .map_err(|e| {
                                         eyre::eyre!(
                                             "[{}] write_tensor_pool (slow path): \
                                              NPU-to-NPU IPC copy failed: {}",
                                             self.node_id,
                                             e
                                         )
-                                    },
-                                )?;
+                                    })?;
                             } else {
                                 copy_host_to_npu_pool(py, &buffer_id, ptr_val, size).map_err(
                                     |e| {
@@ -3814,7 +3953,7 @@ impl Pool<'_> {
                                             )
                                             .map(|_| ())
                                     }
-                                    WritePath::GpuToGpuPoolDtoD => bound
+                                    WritePath::GpuToGpuPoolCopy => bound
                                         .call_method1(
                                             "_cuda_memcpy_gpu_buf",
                                             (
@@ -4486,10 +4625,20 @@ impl Pool<'_> {
         let data_offset = active_data_offset;
         let ipc_present = active_ipc;
 
+        // Unknown device types must not fall through to the CPU pointer.
+        if !is_known_device_type(ipc_present) {
+            tracing::warn!(
+                "[{}] try_doradma_read: unknown device type {ipc_present}",
+                self.node_id,
+            );
+            return Ok(None);
+        }
+
         // Verify data_offset + size fits within shared memory segment.
-        // Device-IPC reads don't access the shmem data
-        // region, so the size check is only required for CPU-receiver paths.
-        if ipc_present == DEVICE_CPU {
+        // Device-IPC reads don't access the shmem data region, so the
+        // size check is skipped for CUDA and Ascend. Every other known
+        // type, including CPU, is checked.
+        if shmem_bounds_apply(ipc_present) {
             // Use saturating operations to guard against corrupted/hostile
             // headers with a near-usize::MAX data_offset (overflow-safe,
             // matching the write-path checks).
@@ -4513,9 +4662,9 @@ impl Pool<'_> {
             .and_then(|v| v.extract::<String>().ok());
 
         let effective_as_npu =
-            ipc_present == DEVICE_ASCEND || pinned_type.as_deref() == Some("npu");
+            ipc_present == DEVICE_ASCEND || device_spec_is(pinned_type.as_deref(), "npu");
         let effective_as_cuda =
-            ipc_present == DEVICE_CUDA || pinned_type.as_deref() == Some("cuda");
+            ipc_present == DEVICE_CUDA || device_spec_is(pinned_type.as_deref(), "cuda");
 
         // Seqlock: read generation, validate stable after data access
         let read_gen =

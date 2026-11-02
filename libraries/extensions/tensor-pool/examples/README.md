@@ -44,7 +44,6 @@ python -c "import torch_npu, torch; assert torch.npu.is_available()"
 - `npu_inner.yml` — same-card NPU sender → NPU receiver (`npu:0` → `npu:0`).
 - `npu2npu.yml` — cross-card NPU sender → NPU receiver (`npu:0` → `npu:1`); uses peer access when the devices allow it.
 - `npu2npu_nop2p.yml` — cross-card NPU → NPU through host transit (peer access disabled).
-- `bench_h2d_d2d.py` — times host-to-device and same-device copies. Does not start a dataflow.
 - `duplicate_free.yml` — receiver frees the same memory pool twice (CPU receiver).
 - `read_after_free.yml` — receiver frees, then reads the same memory pool again (CPU receiver).
 - `write_after_free.yml` — sender frees, then writes the same memory pool again (CPU receiver).
@@ -79,12 +78,6 @@ dora run libraries/extensions/tensor-pool/examples/npu2npu_nop2p.yml
 ```
 
 Expected behavior matches the positive throughput scenarios above. `npu2npu.yml` needs two visible NPUs. On `npu2npu_nop2p.yml` the sender prints `Ascend NPU IPC path: host transit`.
-
-`bench_h2d_d2d.py` is not a dataflow. Run it in the environment that already has `torch_npu` or CUDA:
-
-```bash
-python libraries/extensions/tensor-pool/examples/bench_h2d_d2d.py --device npu:0
-```
 
 ### Same-host multi-daemon (`cpu2cpu_cross_local.yml`)
 

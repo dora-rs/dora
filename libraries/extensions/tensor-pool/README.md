@@ -12,7 +12,10 @@ Ascend support covers single-machine NPU-to-CPU, CPU-to-NPU, and NPU-to-NPU
 the way to CPU. CPU-to-NPU and NPU-to-NPU keep the pool on device and share it
 with Ascend IPC. Same-card NPU-to-NPU fills with a device copy; cross-card
 fills use peer access when the devices allow it, and a host transit otherwise.
-Ascend IPC stays on one machine.
+Ascend IPC stays on one machine. The export turns off the driver's process
+allow-list and stores the key in the shared-memory header, matching CUDA IPC:
+any local process that can open the segment can import the pool and read or
+overwrite it.
 
 ## ⚠️ Not covered by dora's 1.0 compatibility guarantees
 
