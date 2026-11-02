@@ -222,7 +222,8 @@ fn sanitize_filename(name: &str) -> Option<String> {
 }
 
 /// Whether `name` is a Windows reserved device name (`CON`, `PRN`, `AUX`,
-/// `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), compared case-insensitively and
+/// `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`, and the superscript-digit forms
+/// `COM¹`–`COM³` / `LPT¹`–`LPT³`), compared case-insensitively and
 /// ignoring any extension — `NUL`, `NUL.bin`, and `NUL.tar.gz` are all
 /// reserved. Windows also ignores trailing spaces in the device stem, so
 /// `NUL .txt` is matched too.
@@ -233,10 +234,19 @@ fn is_windows_reserved_name(name: &str) -> bool {
     if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
         return true;
     }
-    // `COM0`–`COM9` and `LPT0`–`LPT9`.
+    // `COM0`–`COM9` and `LPT0`–`LPT9`. Windows also reserves the ISO 8859-1
+    // superscript digits `¹²³` in that position, and a name can carry them now
+    // that a raw UTF-8 `Content-Disposition` header is honored.
+    let Some(rest) = upper
+        .strip_prefix("COM")
+        .or_else(|| upper.strip_prefix("LPT"))
+    else {
+        return false;
+    };
+    let mut chars = rest.chars();
     matches!(
-        upper.strip_prefix("COM").or_else(|| upper.strip_prefix("LPT")),
-        Some(rest) if rest.len() == 1 && rest.as_bytes()[0].is_ascii_digit()
+        (chars.next(), chars.next()),
+        (Some('0'..='9' | '¹' | '²' | '³'), None)
     )
 }
 
@@ -708,6 +718,9 @@ mod tests {
             "NUL.",
             "nul ",
             "NUL .txt",
+            "COM\u{b9}",
+            "com\u{b2}.bin",
+            "LPT\u{b3}",
         ] {
             assert_eq!(
                 sanitize_filename(name),
@@ -716,7 +729,16 @@ mod tests {
             );
         }
         // Names that merely start like a device but are not one stay valid.
-        for name in ["NULls", "console.log", "COM10", "LPT", "com.bin"] {
+        for name in [
+            "NULls",
+            "console.log",
+            "COM10",
+            "LPT",
+            "com.bin",
+            // Only `¹²³` are reserved; other superscripts and a digit pair are not.
+            "COM\u{2074}",
+            "COM1\u{b9}",
+        ] {
             assert_eq!(
                 sanitize_filename(name),
                 Some(name.to_string()),
@@ -806,10 +828,9 @@ mod tests {
             std::env::temp_dir().join(format!("dora-download-utf8-{}", std::process::id()));
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
 
-        let path = super::download_with(&client, url.as_str(), &target_dir, None)
-            .await
-            .unwrap();
+        let result = super::download_with(&client, url.as_str(), &target_dir, None).await;
         let _ = std::fs::remove_dir_all(&target_dir);
+        let path = result.unwrap();
         assert_eq!(
             path.file_name().and_then(|n| n.to_str()),
             Some("mod\u{e8}le.bin"),
