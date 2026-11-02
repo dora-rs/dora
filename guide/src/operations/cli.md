@@ -225,7 +225,7 @@ nodes:
   - id: runtime-node
     operators:
       - id: preprocessor
-        shared-library: ../../target/debug/libpreprocess
+        shared-library: ../../target/debug/preprocess
         inputs:
           raw: sensor/data
         outputs:

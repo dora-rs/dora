@@ -374,7 +374,7 @@ A runtime node holds exactly one operator: the operator runtime refuses to start
 - id: preprocess
   operators:
     - id: preprocessor
-      shared-library: ../../target/debug/libpreprocess
+      shared-library: ../../target/debug/preprocess
       inputs:
         raw: sensor/data
       outputs:
@@ -382,7 +382,7 @@ A runtime node holds exactly one operator: the operator runtime refuses to start
 - id: analyze
   operators:
     - id: analyzer
-      shared-library: ../../target/debug/libanalyze
+      shared-library: ../../target/debug/analyze
       inputs:
         data: preprocess/preprocessor/processed
       outputs:
@@ -394,7 +394,7 @@ A runtime node holds exactly one operator: the operator runtime refuses to start
 | Field | Description |
 |-------|-------------|
 | `python` | Python script path, or `{source: "script.py", conda_env: "myenv"}` |
-| `shared-library` | Path to a shared library (`.so`/`.dylib`/`.dll`) |
+| `shared-library` | Path to a shared library, without the `lib` prefix or the `.so`/`.dylib`/`.dll` extension (the runtime adds them for the current platform) |
 
 Operators also support `inputs`, `outputs`, `build`, `send_stdout_as`, `send_logs_as`, `min_log_level`, `max_log_size`, and `max_rotated_files` with the same semantics as node-level fields.
 

@@ -70,6 +70,35 @@ pub fn check_dataflow_static(dataflow: &Descriptor) -> eyre::Result<()> {
     check_dataflow_static_resolved(dataflow, &nodes)
 }
 
+/// Check every local `shared-library:` operator path against the runtime's
+/// file-name rules (no `lib` prefix, no extension; see
+/// [`adjust_shared_library_path`]).
+///
+/// The rules need no filesystem access, so this runs in the static pass —
+/// before any build, and also for operators whose `build:` command will
+/// produce the file later. Without it a misnamed path validated, the build
+/// ran, and the node only failed at spawn.
+fn check_shared_library_names(nodes: &BTreeMap<NodeId, ResolvedNode>) -> eyre::Result<()> {
+    for node in nodes.values() {
+        let CoreNodeKind::Runtime(runtime) = &node.kind else {
+            continue;
+        };
+        for operator in &runtime.operators {
+            if let OperatorSource::SharedLibrary(path) = &operator.config.source
+                && !source_is_url(path)
+            {
+                adjust_shared_library_path(Path::new(path)).wrap_err_with(|| {
+                    format!(
+                        "invalid shared-library path for operator `{}/{}`",
+                        node.id, operator.id
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validate all ROS2 bridge configs on the *unresolved* descriptor.
 ///
 /// Run before [`Descriptor::resolve_aliases_and_set_defaults`] so a ROS2
@@ -105,6 +134,8 @@ fn check_dataflow_static_resolved(
 
     // check that all inputs mappings point to an existing output
     check_wiring_resolved(nodes)?;
+
+    check_shared_library_names(nodes)?;
 
     // Check that nodes can resolve `send_stdout_as`, `send_logs_as`, `min_log_level`
     for node in nodes.values() {
@@ -163,23 +194,13 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                         OperatorSource::SharedLibrary(path) => {
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
+                            } else if operator_definition.config.build.is_some() {
+                                info!("skipping path check for operator with build command");
                             } else {
-                                // The naming rules (no `lib` prefix, no extension)
-                                // need no filesystem access and the runtime applies
-                                // them to every local path, so check them even when a
-                                // `build:` command will produce the file later.
-                                // Otherwise a misnamed path passes here, the build
-                                // runs, and the node only fails at spawn.
-                                let path = adjust_shared_library_path(Path::new(&path))
-                                    .wrap_err_with(|| {
-                                        format!(
-                                            "invalid shared-library path for operator `{}/{}`",
-                                            node.id, operator_definition.id
-                                        )
-                                    })?;
-                                if operator_definition.config.build.is_some() {
-                                    info!("skipping path check for operator with build command");
-                                } else if !working_dir.join(&path).exists() {
+                                // The file-name rules were already checked by the
+                                // static pass above.
+                                let path = adjust_shared_library_path(Path::new(&path))?;
+                                if !working_dir.join(&path).exists() {
                                     bail!("no shared library at `{}`", path.display());
                                 }
                             }
@@ -2104,13 +2125,19 @@ nodes:
           - out
 "
             ));
-            let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
-                .unwrap_err();
-            let msg = format!("{err:#}");
-            assert!(
-                msg.contains("runtime-node/op1") && msg.contains("Shared library file name"),
-                "`{bad}` should be rejected with the naming rule, got: {msg}"
-            );
+            // `dora validate` runs only the static pass; `dora build`/`start`
+            // run the full check. Both must refuse the name.
+            for err in [
+                check_dataflow_static(&dataflow).unwrap_err(),
+                check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+                    .unwrap_err(),
+            ] {
+                let msg = format!("{err:#}");
+                assert!(
+                    msg.contains("runtime-node/op1") && msg.contains("Shared library file name"),
+                    "`{bad}` should be rejected with the naming rule, got: {msg}"
+                );
+            }
         }
     }
 
