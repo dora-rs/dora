@@ -67,7 +67,11 @@ impl Executable for Outdated {
                 }
             };
 
-            let catalog = match ctx.catalog_for_namespace(namespace) {
+            let catalog = match if ctx.registry_mode_for(namespace) {
+                ctx.registry_catalog(namespace, name)
+            } else {
+                ctx.catalog_for_namespace(namespace)
+            } {
                 Ok(catalog) => catalog,
                 Err(err) => {
                     println!(

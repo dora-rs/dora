@@ -152,7 +152,11 @@ fn resolve_dataflow_pins(dataflow: &str) -> eyre::Result<Vec<GitSource>> {
 
 fn resolve_single(reference: &str, ctx: &mut HubContext) -> eyre::Result<GitSource> {
     let reference = PackageRef::parse(reference)?;
-    let catalog = ctx.catalog_for_namespace(&reference.namespace)?;
+    let catalog = if ctx.registry_mode_for(&reference.namespace) {
+        ctx.registry_catalog(&reference.namespace, &reference.name)?
+    } else {
+        ctx.catalog_for_namespace(&reference.namespace)?
+    };
     let resolved = catalog.resolve(&reference)?;
     let (git, rev) = resolved.entry.source.git_pin()?;
     Ok(GitSource {
