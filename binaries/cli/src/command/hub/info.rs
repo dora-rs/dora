@@ -58,6 +58,14 @@ impl Executable for Info {
             println!("  platforms: {platforms}");
         }
         println!("  runtime: {:?}", m.runtime);
+        if let (Some(git), Some(rev)) = (&entry.source.git, &entry.source.rev) {
+            let short: String = rev.chars().take(12).collect();
+            print!("  source: {}@{}", sanitize(git), sanitize(&short));
+            if let Some(subdir) = &entry.source.subdir {
+                print!(" ({})", sanitize(subdir));
+            }
+            println!();
+        }
 
         print_ports("inputs", &m.inputs);
         print_ports("outputs", &m.outputs);

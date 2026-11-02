@@ -172,6 +172,8 @@ impl Executable for Publish {
                 &manifest,
                 self.registry.as_deref(),
                 self.token.as_deref(),
+                &repo,
+                subdir.clone(),
                 self.description,
                 self.license,
                 self.repository,
@@ -299,6 +301,8 @@ fn publish_to_registry(
     manifest: &NodeManifest,
     registry_override: Option<&str>,
     token_override: Option<&str>,
+    repo: &str,
+    subdir: Option<String>,
     description: Option<String>,
     license: Option<String>,
     repository: Option<String>,
@@ -316,6 +320,11 @@ fn publish_to_registry(
         description: description.or_else(|| manifest.description.clone()),
         license,
         repository,
+        source: Some(hub_registry::PublishSource {
+            git: repo.to_string(),
+            rev: commit.to_string(),
+            subdir: subdir.clone(),
+        }),
     };
 
     let treeish = if prefix.is_empty() {

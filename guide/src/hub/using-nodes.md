@@ -126,10 +126,12 @@ precedence over the manifest's.
 ## What gets built
 
 A `hub:` node desugars to a pinned `git:` node: the resolver clones the node's
-source at the exact published commit and runs its `build` command (e.g.
-`pip install .`, `cargo build --release`) on the machine that builds it. For a
-node that ships a prebuilt binary for your platform, the resolver downloads and
-sha256-verifies that artifact instead of cloning — see [Binary
+source **from the publisher's hosting repository** at the published commit and
+runs its `build` command (e.g. `pip install .`, `cargo build --release`) on the
+machine that builds it. The registry is expected to serve metadata/index only;
+its archive endpoint is a fallback, not the primary source. For a node that
+ships a prebuilt binary, the resolver downloads and sha256-verifies that
+artifact instead of cloning — see [Binary
 distribution](indexes.md#binary-distribution).
 
 Heavy builds run wherever the node runs, so on constrained devices prefer

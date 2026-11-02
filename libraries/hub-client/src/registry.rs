@@ -377,6 +377,19 @@ pub struct PublishMetadata {
     pub license: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
+    /// Hosting repository + commit for this version. The registry stores this
+    /// so clients can fetch the source from the project's own platform; the
+    /// uploaded archive remains the registry fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<PublishSource>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PublishSource {
+    pub git: String,
+    pub rev: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subdir: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

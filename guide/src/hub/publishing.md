@@ -8,8 +8,9 @@ namespace **explicitly bound to a local/git index** keeps the legacy
 index-entry workflow.
 
 The registry never accepts a mutable branch/tag as a pin: the version records a
-full source commit and the archive checksum, so consumers resolve immutable
-bytes.
+full **hosting repository** (`origin`, or `--repo`) and commit. Consumers clone
+that source from the hosting platform; the uploaded archive is only the
+registry's fallback when the host is unreachable.
 
 ## Prerequisites
 
