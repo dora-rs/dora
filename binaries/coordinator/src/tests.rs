@@ -7600,3 +7600,47 @@ async fn add_node_waits_for_a_producer_daemon_that_just_disconnected() {
         "{err:#}"
     );
 }
+
+#[tokio::test]
+async fn auto_recovery_respawn_makes_an_exited_producer_count_again() {
+    // `sender` crashed on machine-b, then machine-b's daemon re-registered
+    // (still in `daemons`) without the dataflow, so auto-recovery re-spawns
+    // `sender`. It runs again, so a node placed on machine-a must be
+    // rejected instead of silently missing its input.
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let (mut coordinator, _daemon_a, daemon_b) = two_daemon_add_node_coordinator(dataflow_id);
+    let producer: NodeId = "sender".to_string().into();
+    coordinator
+        .handle_daemon_node_stopped(daemon_b.clone(), dataflow_id, producer.clone(), false)
+        .await
+        .expect("node stop should be handled");
+    assert!(
+        coordinator.running_dataflows[&dataflow_id]
+            .exited_nodes
+            .contains(&producer)
+    );
+
+    coordinator
+        .handle_daemon_status_report(daemon_b, vec![])
+        .await
+        .expect("status report should be handled");
+    assert!(
+        !coordinator.running_dataflows[&dataflow_id]
+            .exited_nodes
+            .contains(&producer)
+    );
+
+    let err = add_consumer(
+        &mut coordinator,
+        dataflow_id,
+        serde_json::json!({
+            "id": "consumer",
+            "path": "consumer",
+            "inputs": { "reading": "sender/message" },
+            "deploy": { "machine": "machine-a" },
+        }),
+    )
+    .await
+    .unwrap_err();
+    assert!(format!("{err:#}").contains("not supported yet"), "{err:#}");
+}

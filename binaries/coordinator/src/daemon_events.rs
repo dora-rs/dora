@@ -693,6 +693,11 @@ impl Coordinator {
                 continue;
             }
             df.last_recovery_attempt.insert(daemon_id.clone(), now);
+            // These nodes run again, so they constrain `dora node add`
+            // placement again (#3672).
+            for node in &spawn_nodes {
+                df.exited_nodes.remove(node);
+            }
             tracing::info!(
                 "auto-recovery: re-spawning {} node(s) for dataflow {uuid} on daemon {daemon_id}",
                 spawn_nodes.len()
