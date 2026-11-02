@@ -17,9 +17,10 @@ serde_yaml = { workspace = true }
 tracing = { workspace = true }
 toml = "1.1"
 dirs = "6"
+flate2 = "1.1"
+tar = "0.4"
+tempfile = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde_json = { workspace = true }
 url = { workspace = true }
 
-[dev-dependencies]
-tempfile = { workspace = true }

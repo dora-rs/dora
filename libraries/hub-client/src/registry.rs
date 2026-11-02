@@ -17,7 +17,12 @@
 //! indexes. The cache is refreshed once per package per CLI invocation; with
 //! `--offline` it is used as-is and a cache miss is a hard error.
 
-use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use dora_core::manifest::NodeManifest;
 use eyre::{Context, bail};
@@ -522,7 +527,7 @@ fn validate_component(kind: &str, value: &str) -> eyre::Result<()> {
         && value != ".."
         && value
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'));
     if !valid {
         bail!("invalid {kind} `{value}` in registry reference");
     }
@@ -633,6 +638,220 @@ pub fn clear_saved_token() -> eyre::Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| format!("failed to remove `{}`", path.display())),
     }
+}
+
+/// A source materialized from the registry's fallback archive.
+#[derive(Debug, Clone)]
+pub struct FallbackSource {
+    /// `file://` repository cloned by the build.
+    pub repo: String,
+    /// Commit created from the archive contents.
+    pub commit_hash: String,
+}
+
+/// Fetch the registry's fallback archive for `hub_name@version` and turn it
+/// into a local git repository that the existing GitManager can build from.
+///
+/// This is the *last resort* after the package's hosting repository failed:
+/// the registry archive is the source-of-last-resort, not the primary source.
+pub fn registry_fallback_source(
+    hub_name: &str,
+    version: &str,
+) -> eyre::Result<Option<FallbackSource>> {
+    let (namespace, name) = hub_name
+        .split_once('/')
+        .ok_or_else(|| eyre::eyre!("invalid hub package name `{hub_name}`"))?;
+    let client = RegistryClient::new(false)?;
+    client.fallback_source(namespace, name, version)
+}
+
+impl RegistryClient {
+    /// Materialize the registry archive as a local git repo (cached per
+    /// registry/package/version). Returns `None` when the registry has no
+    /// archive for that version.
+    pub fn fallback_source(
+        &self,
+        namespace: &str,
+        name: &str,
+        version: &str,
+    ) -> eyre::Result<Option<FallbackSource>> {
+        validate_component("namespace", namespace)?;
+        validate_component("package name", name)?;
+        validate_component("version", version)?;
+        let repo_dir = self
+            .cache_root
+            .join("fallback")
+            .join(namespace)
+            .join(name)
+            .join(version);
+        if repo_dir.join(".git").is_dir() {
+            let rev = git(&repo_dir, &["rev-parse", "HEAD"])?;
+            return Ok(Some(FallbackSource {
+                repo: file_url(&repo_dir)?,
+                commit_hash: rev,
+            }));
+        }
+
+        let url = format!(
+            "{}/api/v1/packages/{namespace}/{name}/{version}/download",
+            self.base
+        );
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .with_context(|| format!("failed to reach registry archive `{url}`"))?;
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            bail!("registry archive returned {status} for `{namespace}/{name}@{version}`");
+        }
+        let bytes = response
+            .bytes()
+            .context("failed to read registry archive")?;
+        let temp = tempfile::TempDir::new().context("failed to create fallback tempdir")?;
+        extract_archive(&bytes, temp.path())?;
+
+        if repo_dir.exists() {
+            fs::remove_dir_all(&repo_dir)
+                .with_context(|| format!("failed to refresh `{}`", repo_dir.display()))?;
+        }
+        fs::create_dir_all(&repo_dir)
+            .with_context(|| format!("failed to create `{}`", repo_dir.display()))?;
+        copy_tree(temp.path(), &repo_dir)?;
+        git(&repo_dir, &["init", "-q"])?;
+        git(&repo_dir, &["config", "user.email", "fallback@dora.local"])?;
+        git(
+            &repo_dir,
+            &["config", "user.name", "Dora registry fallback"],
+        )?;
+        git(&repo_dir, &["add", "-A"])?;
+        git(
+            &repo_dir,
+            &[
+                "commit",
+                "-q",
+                "-m",
+                &format!("registry fallback {namespace}/{name}@{version}"),
+            ],
+        )?;
+        let commit_hash = git(&repo_dir, &["rev-parse", "HEAD"])?;
+        Ok(Some(FallbackSource {
+            repo: file_url(&repo_dir)?,
+            commit_hash,
+        }))
+    }
+}
+
+fn file_url(path: &Path) -> eyre::Result<String> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize `{}`", path.display()))?;
+    Ok(format!("file://{}", canonical.display()))
+}
+
+fn git(dir: &Path, args: &[&str]) -> eyre::Result<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .context("failed to run git for registry fallback")?;
+    if !output.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn extract_archive(archive: &[u8], dest: &Path) -> eyre::Result<()> {
+    let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(archive));
+    let mut archive = tar::Archive::new(decoder);
+    let mut total = 0u64;
+    for entry in archive.entries().context("invalid registry archive")? {
+        let mut entry = entry.context("invalid registry archive entry")?;
+        if entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link() {
+            bail!("registry archive must not contain links");
+        }
+        let path = entry
+            .path()
+            .context("invalid registry archive path")?
+            .into_owned();
+        let relative = path.as_path();
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            bail!("registry archive path escapes its root");
+        }
+        total = total.saturating_add(entry.header().size().unwrap_or(0));
+        if total > 200 * 1024 * 1024 {
+            bail!("registry archive expands to more than 200 MiB");
+        }
+        let target = dest.join(relative);
+        if entry.header().entry_type().is_dir() {
+            fs::create_dir_all(&target)?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut out = fs::File::create(&target)?;
+        std::io::copy(&mut entry, &mut out)?;
+    }
+    Ok(())
+}
+
+fn copy_tree(src: &Path, dst: &Path) -> eyre::Result<()> {
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if matches!(
+            name.to_str(),
+            Some(".git" | "target" | "node_modules" | ".venv")
+        ) {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        if from.is_dir() {
+            fs::create_dir_all(&to)?;
+            copy_tree(&from, &to)?;
+        } else if from.is_file() {
+            fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Cheap preflight used before building a hub node: is the hosting source
+/// reachable? A broken source triggers the registry archive fallback before
+/// the build pipeline tries (and fails) to clone it.
+pub fn source_available(repo: &str, commit: &str) -> bool {
+    if repo.starts_with("file://") || repo.starts_with('/') {
+        let path = repo.strip_prefix("file://").unwrap_or(repo);
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output();
+        return output.map(|o| o.status.success()).unwrap_or(false);
+    }
+    if repo.contains(char::is_control) {
+        return false;
+    }
+    let output = std::process::Command::new("git")
+        .args(["ls-remote", "--quiet", "--", repo, "HEAD"])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output();
+    output.map(|o| o.status.success()).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -748,6 +967,41 @@ mod tests {
         assert_eq!(resolved.version.to_string(), "0.1.0");
         assert_eq!(resolved.entry.manifest.entrypoint, "hello.py".to_string());
         server.join().unwrap();
+    }
+
+    #[test]
+    fn checks_local_source_availability() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            assert!(
+                std::process::Command::new("git")
+                    .current_dir(dir.path())
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(dir.path().join("hello.py"), "print('hi')\n").unwrap();
+        run(&["add", "-A"]);
+        run(&["commit", "-q", "-m", "init"]);
+        let rev = String::from_utf8(
+            std::process::Command::new("git")
+                .current_dir(dir.path())
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let url = format!("file://{}", dir.path().display());
+        assert!(source_available(&url, &rev));
+        assert!(!source_available(&format!("{url}-missing"), &rev));
     }
 
     #[test]

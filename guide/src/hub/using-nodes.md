@@ -129,7 +129,10 @@ A `hub:` node desugars to a pinned `git:` node: the resolver clones the node's
 source **from the publisher's hosting repository** at the published commit and
 runs its `build` command (e.g. `pip install .`, `cargo build --release`) on the
 machine that builds it. The registry is expected to serve metadata/index only;
-its archive endpoint is a fallback, not the primary source. For a node that
+its archive endpoint is a fallback, not the primary source. If the hosting
+repository is unreachable, local `dora build/run` automatically materializes
+the registry archive and continues; distributed builds currently still require
+the hosting source. For a node that
 ships a prebuilt binary, the resolver downloads and sha256-verifies that
 artifact instead of cloning — see [Binary
 distribution](indexes.md#binary-distribution).
