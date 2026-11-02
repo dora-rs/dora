@@ -250,6 +250,9 @@ dora record | --topics <value>
 dora record | -o/--output <value>
 dora record | <file> (required)
 dora recording
+dora recording diff
+dora recording diff | <new> (required)
+dora recording diff | <old> (required)
 dora recording export
 dora recording export | --format <value>
 dora recording export | --topics <value>
