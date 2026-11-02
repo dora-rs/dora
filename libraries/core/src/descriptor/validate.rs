@@ -157,17 +157,29 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                     info!("skipping check for node with git source");
                 }
             },
-            descriptor::CoreNodeKind::Runtime(node) => {
-                for operator_definition in &node.operators {
+            descriptor::CoreNodeKind::Runtime(runtime) => {
+                for operator_definition in &runtime.operators {
                     match &operator_definition.config.source {
                         OperatorSource::SharedLibrary(path) => {
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
-                            } else if operator_definition.config.build.is_some() {
-                                info!("skipping path check for operator with build command");
                             } else {
-                                let path = adjust_shared_library_path(Path::new(&path))?;
-                                if !working_dir.join(&path).exists() {
+                                // The naming rules (no `lib` prefix, no extension)
+                                // need no filesystem access and the runtime applies
+                                // them to every local path, so check them even when a
+                                // `build:` command will produce the file later.
+                                // Otherwise a misnamed path passes here, the build
+                                // runs, and the node only fails at spawn.
+                                let path = adjust_shared_library_path(Path::new(&path))
+                                    .wrap_err_with(|| {
+                                        format!(
+                                            "invalid shared-library path for operator `{}/{}`",
+                                            node.id, operator_definition.id
+                                        )
+                                    })?;
+                                if operator_definition.config.build.is_some() {
+                                    info!("skipping path check for operator with build command");
+                                } else if !working_dir.join(&path).exists() {
                                     bail!("no shared library at `{}`", path.display());
                                 }
                             }
@@ -2067,6 +2079,51 @@ nodes:
       - id: op1
         wasm: does/not/exist.wasm
         build: cargo build
+        outputs:
+          - out
+",
+        );
+        check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test")).unwrap();
+    }
+
+    // The shared-library naming rules are checked without touching the
+    // filesystem, so a `build:` command must not exempt a path the runtime will
+    // refuse at spawn (`lib` prefix or a file extension).
+    #[test]
+    fn shared_library_with_build_command_still_checks_file_name() {
+        for bad in ["target/debug/libop", "target/debug/op.so"] {
+            let dataflow = parse_dataflow(&format!(
+                "\
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: {bad}
+        build: cargo build -p op
+        outputs:
+          - out
+"
+            ));
+            let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+                .unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("runtime-node/op1") && msg.contains("Shared library file name"),
+                "`{bad}` should be rejected with the naming rule, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_library_with_build_command_skips_missing_file_check() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: target/debug/op
+        build: cargo build -p op
         outputs:
           - out
 ",
