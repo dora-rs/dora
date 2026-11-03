@@ -1,7 +1,10 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use tokio::{
-    sync::mpsc::error::TrySendError,
+    sync::mpsc::{self, error::TrySendError},
     time::{Duration, Instant},
 };
 
@@ -10,14 +13,56 @@ pub struct TopicFrame {
     pub payload: std::sync::Arc<Vec<u8>>,
 }
 
-/// How long a subscriber's channel may refuse every frame offered to it before
-/// [`crate::handlers::send_topic_frames`] closes the subscriber: a CLI that has
-/// stopped reading. About the bound the former 100 consecutive 100 ms send
-/// timeouts gave, without the event loop spending that time waiting.
+/// How long a CLI connection's channel may refuse every frame offered to it
+/// before [`crate::handlers::send_topic_frames`] closes its subscribers: a CLI
+/// that has stopped reading. About the bound the former 100 consecutive 100 ms
+/// send timeouts gave, without the event loop spending that time waiting.
 pub(crate) const MAX_TOPIC_SUBSCRIBER_STALL: Duration = Duration::from_secs(10);
 
 /// Shortest gap between warnings about one subscriber's dropped frames.
 const DROP_WARNING_INTERVAL: Duration = Duration::from_secs(5);
+
+/// The sending end of one CLI connection's topic-frame channel, shared by all
+/// of that connection's subscriptions.
+///
+/// It also carries since when the channel has refused every frame offered to
+/// it, from any of those subscriptions. The stall is tracked per connection,
+/// not per subscription, because the subscriptions share the channel: on a
+/// connection with a busy and a quiet subscription, the busy one can take
+/// every slot the reader frees, so the quiet one would find the channel full
+/// every time and look stalled while the client is reading (dora-rs/dora#4024
+/// review).
+#[derive(Clone, Debug)]
+pub struct TopicFrameSender {
+    tx: mpsc::Sender<TopicFrame>,
+    stalled_since: Arc<Mutex<Option<Instant>>>,
+}
+
+impl From<mpsc::Sender<TopicFrame>> for TopicFrameSender {
+    fn from(tx: mpsc::Sender<TopicFrame>) -> Self {
+        Self {
+            tx,
+            stalled_since: Arc::default(),
+        }
+    }
+}
+
+impl TopicFrameSender {
+    fn stalled_since(&self) -> std::sync::MutexGuard<'_, Option<Instant>> {
+        self.stalled_since
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A CLI connection's topic-frame channel: one sender, cloned for each of the
+/// connection's subscriptions.
+pub(crate) fn topic_frame_channel(
+    capacity: usize,
+) -> (TopicFrameSender, mpsc::Receiver<TopicFrame>) {
+    let (tx, rx) = mpsc::channel(capacity);
+    (tx.into(), rx)
+}
 
 /// What became of a frame offered to a subscriber.
 #[derive(Debug, PartialEq, Eq)]
@@ -33,10 +78,7 @@ pub(crate) struct TopicSubscriber {
         dora_message::common::DaemonId,
         Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
     >,
-    sender: Option<tokio::sync::mpsc::Sender<TopicFrame>>,
-    /// Since when the channel has refused every frame offered to it, if it
-    /// does now.
-    stalled_since: Option<Instant>,
+    sender: Option<TopicFrameSender>,
     /// Frames dropped since the last warning about them.
     dropped: u64,
     last_drop_warning: Option<Instant>,
@@ -48,12 +90,11 @@ impl TopicSubscriber {
             dora_message::common::DaemonId,
             Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
         >,
-        sender: tokio::sync::mpsc::Sender<TopicFrame>,
+        sender: impl Into<TopicFrameSender>,
     ) -> Self {
         Self {
             outputs_by_daemon,
-            sender: Some(sender),
-            stalled_since: None,
+            sender: Some(sender.into()),
             dropped: 0,
             last_drop_warning: None,
         }
@@ -84,13 +125,13 @@ impl TopicSubscriber {
             .as_ref()
             .ok_or_else(|| eyre::eyre!("subscriber is closed"))?;
         let subscription_id = frame.subscription_id;
-        match sender.try_send(frame) {
+        match sender.tx.try_send(frame) {
             Ok(()) => {
-                self.stalled_since = None;
+                *sender.stalled_since() = None;
                 Ok(FrameSent::Queued)
             }
             Err(TrySendError::Full(_)) => {
-                self.stalled_since.get_or_insert(now);
+                sender.stalled_since().get_or_insert(now);
                 self.dropped += 1;
                 if self
                     .last_drop_warning
@@ -110,16 +151,17 @@ impl TopicSubscriber {
         }
     }
 
-    /// How long, as of `now`, the channel has refused every frame offered to
-    /// it, if it does.
+    /// How long, as of `now`, this subscriber's connection has refused every
+    /// frame offered to it (from any of its subscriptions), if it does.
     pub(crate) fn stalled_for(&self, now: Instant) -> Option<Duration> {
-        self.stalled_since.map(|since| now.duration_since(since))
+        let since = (*self.sender.as_ref()?.stalled_since())?;
+        Some(now.duration_since(since))
     }
 
     pub(crate) fn is_closed(&self) -> bool {
         match &self.sender {
             None => true,
-            Some(sender) => sender.is_closed(),
+            Some(sender) => sender.tx.is_closed(),
         }
     }
 

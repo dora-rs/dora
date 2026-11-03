@@ -1112,6 +1112,54 @@ mod tests {
         assert!(subscribers.contains_key(&subscription_id));
     }
 
+    /// The stall is per connection, not per subscription: the subscriptions of
+    /// one CLI connection share its channel, so a busy one can take every slot
+    /// the reader frees. A quiet subscription on the same connection then finds
+    /// the channel full every time, but the client is reading, so it must not
+    /// be evicted (dora-rs/dora#4024 review).
+    #[tokio::test(start_paused = true)]
+    async fn a_quiet_subscription_sharing_a_busy_connection_is_not_evicted() {
+        let (sender, mut rx) = crate::topic_subscriber::topic_frame_channel(1);
+        let (busy, quiet) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut subscribers = BTreeMap::from([
+            (busy, TopicSubscriber::new(BTreeMap::new(), sender.clone())),
+            (quiet, TopicSubscriber::new(BTreeMap::new(), sender)),
+        ]);
+
+        // 30 s, three stall windows, of the reader taking a frame every
+        // 100 ms and the busy subscription refilling the freed slot before the
+        // quiet one offers its frame.
+        for _ in 0..300 {
+            let _ = rx.try_recv();
+            send_topic_frames(&mut subscribers, vec![busy], vec![0]);
+            send_topic_frames(&mut subscribers, vec![quiet], vec![0]);
+            tokio::time::advance(Duration::from_millis(100)).await;
+        }
+        assert!(
+            subscribers.contains_key(&quiet),
+            "a subscription on a connection that is reading must not be evicted"
+        );
+        assert!(subscribers.contains_key(&busy));
+    }
+
+    /// A connection that stops reading loses all its subscriptions once its
+    /// channel has refused every frame for `MAX_TOPIC_SUBSCRIBER_STALL`.
+    #[tokio::test(start_paused = true)]
+    async fn a_connection_that_stops_reading_loses_all_its_subscriptions() {
+        let (sender, _rx) = crate::topic_subscriber::topic_frame_channel(1);
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut subscribers = BTreeMap::from([
+            (a, TopicSubscriber::new(BTreeMap::new(), sender.clone())),
+            (b, TopicSubscriber::new(BTreeMap::new(), sender)),
+        ]);
+        send_topic_frames(&mut subscribers, vec![a], vec![0]); // fills the channel
+        send_topic_frames(&mut subscribers, vec![a, b], vec![0]); // refused: the stall starts
+        tokio::time::advance(MAX_TOPIC_SUBSCRIBER_STALL).await;
+        let evicted = send_topic_frames(&mut subscribers, vec![a, b], vec![0]);
+        assert_eq!(evicted.len(), 2);
+        assert!(subscribers.is_empty());
+    }
+
     /// Build a minimal `RunningDataflow` running on exactly `daemons`.
     fn dataflow_on(uuid: Uuid, daemons: impl IntoIterator<Item = DaemonId>) -> RunningDataflow {
         let descriptor: Descriptor = serde_json::from_value(serde_json::json!({
