@@ -126,6 +126,45 @@ mod tests {
         assert_eq!(command.get_current_dir(), Some(dir));
     }
 
+    /// `dora hub publish` runs from the node's directory, usually a
+    /// subdirectory of its repository (`node-hub/hello`), and relies on
+    /// `rev-parse --show-prefix` finding the enclosing repository from there.
+    /// A discovery ceiling on this helper, as managed clones get, would break
+    /// that (dora-rs/dora#4017 review).
+    #[test]
+    fn node_repo_git_finds_the_repository_from_a_node_subdirectory() {
+        let repo = tempfile::tempdir().unwrap();
+        let node = repo.path().join("node-hub/hello");
+        std::fs::create_dir_all(&node).unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .current_dir(repo.path())
+                .args(["-c", "user.email=t@dora.rs", "-c", "user.name=t"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "--quiet"]);
+        std::fs::write(node.join("dora-node.yml"), "name: hello\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "--quiet", "-m", "init"]);
+
+        let output = node_repo_git(&node)
+            .args(["rev-parse", "--show-prefix"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "node-hub/hello/"
+        );
+    }
+
     #[test]
     fn strips_c0_control_and_escape() {
         assert_eq!(sanitize("a\x1b[31mred\x07b"), "a[31mredb");
