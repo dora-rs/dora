@@ -58,6 +58,15 @@ pub struct Publish {
 impl Executable for Publish {
     fn execute(self) -> eyre::Result<()> {
         let dir = self.path.as_path();
+        // git runs *in* this directory (`super::common::node_repo_git`), so a
+        // missing one would fail at spawn with a bare "No such file or
+        // directory" that reads as if git were not installed.
+        if !dir.is_dir() {
+            bail!(
+                "node directory `{}` does not exist or is not a directory",
+                dir.display()
+            );
+        }
 
         // 1. Resolve the source pin (spec §9.1 step 2): repo + commit + subdir.
         // The manifest and version are then read from that *commit*, not the
@@ -281,4 +290,29 @@ fn read_committed_version(dir: &Path, commit: &str, prefix: &str) -> Option<Stri
         return Some(v.to_string());
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A mistyped node path must say so, not look like a missing `git`.
+    #[test]
+    fn a_missing_node_directory_is_reported_as_such() {
+        let tmp = tempfile::tempdir().unwrap();
+        let publish = Publish {
+            path: tmp.path().join("does-not-exist"),
+            dry_run: true,
+            rev: None,
+            repo: Some("https://example.com/node.git".to_string()),
+            version: None,
+            index: None,
+        };
+        let msg = format!("{:#}", publish.execute().unwrap_err());
+        assert!(
+            msg.contains("does not exist or is not a directory"),
+            "{msg}"
+        );
+        assert!(!msg.contains("failed to run git"), "{msg}");
+    }
 }

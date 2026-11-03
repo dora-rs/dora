@@ -136,9 +136,11 @@ mod tests {
         let repo = tempfile::tempdir().unwrap();
         let node = repo.path().join("node-hub/hello");
         std::fs::create_dir_all(&node).unwrap();
+        // Through `node_repo_git` too: a plain `git` would inherit `GIT_DIR` /
+        // `GIT_INDEX_FILE` when the tests run from a git hook, and commit
+        // into the developer's own repository (dora-rs/dora#4017 review).
         let git = |args: &[&str]| {
-            let status = std::process::Command::new("git")
-                .current_dir(repo.path())
+            let status = node_repo_git(repo.path())
                 .args(["-c", "user.email=t@dora.rs", "-c", "user.name=t"])
                 .args(args)
                 .status()
