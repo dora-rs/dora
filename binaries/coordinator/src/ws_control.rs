@@ -125,8 +125,8 @@ async fn send_topic_frame(
 /// undrained for as long as the request takes, which for `WaitForBuild` or
 /// `Stop` is the whole build or shutdown: live log lines past
 /// `MAX_QUEUED_LOG_BYTES` would be dropped, and once the 64 `binary_rx`
-/// frames are full every further topic frame costs the event loop a 100 ms
-/// send timeout.
+/// frames are full every further topic frame would be dropped, and the
+/// subscription closed after `MAX_TOPIC_SUBSCRIBER_STALL`.
 ///
 /// `Err` means the WebSocket send failed (the connection is gone).
 async fn await_reply_forwarding_pushes(

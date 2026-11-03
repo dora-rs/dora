@@ -389,8 +389,7 @@ pub(crate) async fn forward_topic_frames(
         &mut dataflow.topic_subscribers,
         subscription_ids,
         payload,
-    )
-    .await;
+    );
     for (subscription_id, subscriber) in evicted {
         if let Err(err) = spawn_topic_debug_teardown(
             daemon_connections,

@@ -125,7 +125,6 @@ mod spawn_build;
 mod state;
 #[cfg(test)]
 mod tests;
-mod timeout_streak;
 mod topic_debug;
 mod topic_subscriber;
 mod topology;
