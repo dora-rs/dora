@@ -33,7 +33,6 @@ use crate::{
     event_stream::data_conversion::RawData,
     node::{ZENOH_TEARDOWN_TIMEOUT, teardown_with_timeout},
 };
-use dora_arrow_convert::IntoArrow;
 use dora_core::{
     config::{Input, NodeId},
     uhlc,
@@ -2082,9 +2081,7 @@ fn decode_zenoh_sample(
     use dora_message::metadata::{SCHEMA_HASH, get_integer_param};
 
     if payload.is_empty() {
-        return Ok(Some(
-            dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
-        ));
+        return Ok(Some(data_conversion::unit_array()));
     }
     let buffer = zenoh_payload_to_buffer(payload);
     match get_integer_param(&metadata.parameters, SCHEMA_HASH) {
