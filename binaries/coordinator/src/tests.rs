@@ -725,6 +725,7 @@ fn reconcile_reestablishes_running_dataflow_after_reconnect() {
     // These cover the relinking, not the barrier replay.
     let _ = reestablish_running_dataflow(
         &mut running_dataflows,
+        &mut HashMap::new(),
         &record,
         &daemon_id,
         std::slice::from_ref(&node_id),
@@ -745,6 +746,7 @@ fn reconcile_reestablishes_running_dataflow_after_reconnect() {
     // These cover the relinking, not the barrier replay.
     let _ = reestablish_running_dataflow(
         &mut running_dataflows,
+        &mut HashMap::new(),
         &record,
         &daemon2,
         std::slice::from_ref(&node2),
@@ -793,6 +795,7 @@ fn reconnecting_daemon_is_owed_a_barrier_replay_only_after_release() {
     // ordinary broadcast when it does, so no replay is owed.
     let owed = reestablish_running_dataflow(
         &mut running_dataflows,
+        &mut HashMap::new(),
         &record,
         &daemon_id,
         std::slice::from_ref(&node_id),
@@ -811,6 +814,7 @@ fn reconnecting_daemon_is_owed_a_barrier_replay_only_after_release() {
 
     let owed = reestablish_running_dataflow(
         &mut running_dataflows,
+        &mut HashMap::new(),
         &record,
         &daemon_id,
         std::slice::from_ref(&node_id),
@@ -861,6 +865,7 @@ fn the_release_survives_a_persist_and_rebuild_round_trip() {
     let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
     let owed = reestablish_running_dataflow(
         &mut running_dataflows,
+        &mut HashMap::new(),
         &record,
         &daemon_id,
         std::slice::from_ref(&node_id),
@@ -914,6 +919,7 @@ fn a_reconstructed_dataflow_still_owes_the_replay() {
     let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
     let owed = reestablish_running_dataflow(
         &mut running_dataflows,
+        &mut HashMap::new(),
         &record,
         &daemon_id,
         std::slice::from_ref(&node_id),
@@ -929,6 +935,7 @@ fn a_reconstructed_dataflow_still_owes_the_replay() {
     let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
     let owed = reestablish_running_dataflow(
         &mut running_dataflows,
+        &mut HashMap::new(),
         &record,
         &daemon_id,
         std::slice::from_ref(&node_id),
@@ -969,6 +976,7 @@ fn a_reconstructed_dataflow_keeps_the_failed_barrier_verdict() {
     let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
     let _ = reestablish_running_dataflow(
         &mut running_dataflows,
+        &mut HashMap::new(),
         &record,
         &daemon_id,
         std::slice::from_ref(&node_id),
@@ -1675,6 +1683,7 @@ async fn disconnect_reclaims_orphaned_running_dataflow() {
     apply_disconnect_actions(
         actions,
         &mut running_dataflows,
+        &mut HashMap::new(),
         &mut daemon_connections,
         &store,
         &clock,
@@ -1703,6 +1712,67 @@ async fn disconnect_reclaims_orphaned_running_dataflow() {
         matches!(reply, Ok(ControlRequestReply::DataflowStopped { uuid, .. }) if uuid == dataflow_id),
         "parked dora stop must receive DataflowStopped"
     );
+}
+
+/// An orphan reclaim removes the live entry, and the persisted record does
+/// not carry the launch context. It must survive the reclaim anyway, or the
+/// entry rebuilt when the daemon reconnects would make a later `dora restart`
+/// relaunch with no build, a fresh session and no working directory.
+#[tokio::test]
+async fn launch_context_survives_orphan_reclaim_and_reconnect() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let clock = Arc::new(HLC::default());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("blip".to_string()));
+    let node_id: dora_core::config::NodeId = "sender".to_string().into();
+    let launch = crate::state::LaunchContext {
+        build_id: Some(BuildId::generate()),
+        session_id: dora_message::SessionId::generate(),
+        local_working_dir: Some("/home/user/project".into()),
+        write_events_to: Some("/home/user/events".into()),
+    };
+    let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+    df.launch = launch.clone();
+    df.spawn_result
+        .set_result(Ok(ControlRequestReply::DataflowSpawned {
+            uuid: dataflow_id,
+        }));
+    store
+        .put_dataflow(&df.make_record(StoreDataflowStatus::Running).unwrap())
+        .unwrap();
+    let mut running_dataflows = HashMap::from([(dataflow_id, df)]);
+    let mut reclaimed_launches = HashMap::new();
+
+    // The dataflow's only daemon drops: reclaim.
+    let actions = cleanup_disconnected_daemons_from_running_dataflows(
+        &mut running_dataflows,
+        &BTreeSet::from([daemon_id.clone()]),
+        &mut HashMap::new(),
+    );
+    apply_disconnect_actions(
+        actions,
+        &mut running_dataflows,
+        &mut reclaimed_launches,
+        &mut DaemonConnections::default(),
+        &store,
+        &clock,
+    )
+    .await
+    .unwrap();
+    assert!(!running_dataflows.contains_key(&dataflow_id));
+
+    // It reconnects and re-reports the dataflow: the rebuilt entry keeps the
+    // launch context.
+    let record = store.get_dataflow(&dataflow_id).unwrap().unwrap();
+    let _ = reestablish_running_dataflow(
+        &mut running_dataflows,
+        &mut reclaimed_launches,
+        &record,
+        &daemon_id,
+        std::slice::from_ref(&node_id),
+    );
+    assert_eq!(running_dataflows[&dataflow_id].launch, launch);
+    assert!(reclaimed_launches.is_empty());
 }
 
 #[test]
@@ -1861,6 +1931,7 @@ async fn applied_param_changes_are_acked_and_pruned_from_the_state_log() {
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::from([(dataflow_id, df)]),
         pending_restarts: HashMap::new(),
+        reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections,
@@ -1933,6 +2004,7 @@ async fn wait_for_spawn_after_a_failed_spawn_reports_the_failure() {
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::from([(dataflow_id, df)]),
         pending_restarts: HashMap::new(),
+        reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections: DaemonConnections::default(),
@@ -1994,6 +2066,7 @@ async fn wait_for_spawn_after_an_early_node_exit(
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::from([(dataflow_id, df)]),
         pending_restarts: HashMap::new(),
+        reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections: DaemonConnections::default(),
@@ -2457,6 +2530,7 @@ fn test_coordinator(
         finished_builds: IndexMap::new(),
         running_dataflows,
         pending_restarts: HashMap::new(),
+        reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections,
@@ -6353,6 +6427,7 @@ async fn auto_recovery_respawns_with_the_original_launch_context() {
         finished_builds: IndexMap::new(),
         running_dataflows,
         pending_restarts: HashMap::new(),
+        reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections,
@@ -6515,6 +6590,7 @@ async fn node_topology_changes_are_persisted() {
         finished_builds: IndexMap::new(),
         running_dataflows,
         pending_restarts: HashMap::new(),
+        reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections,
@@ -6722,6 +6798,7 @@ async fn clean_keeps_a_dataflow_awaiting_reclaim() {
     crate::daemon_liveness::begin_orphaned_dataflow_reclaim(
         dataflow_id,
         &mut coordinator.running_dataflows,
+        &mut coordinator.reclaimed_launches,
         &coordinator.clock,
         store.as_ref(),
     )
