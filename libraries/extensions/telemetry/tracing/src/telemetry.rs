@@ -122,6 +122,17 @@ pub fn serialize_context(context: &Context) -> String {
 }
 
 pub fn deserialize_context(string_context: &str) -> Context {
+    // The counterpart of `serialize_context`'s fast path: an input with no
+    // upstream trace carries "", and every operator runtime calls this once
+    // per input event. Every standard text-map propagator (W3C TraceContext,
+    // B3, Jaeger, X-Ray, baggage, and OpenTelemetry's no-op default) returns
+    // the current context unchanged when the carrier is empty, so skip the
+    // map build and the `global::get_text_map_propagator` lock. The only
+    // behavior this would change is an application-installed propagator
+    // (which `init_tracing` keeps) that invents a context from nothing.
+    if string_context.is_empty() {
+        return Context::current();
+    }
     let map = MetadataMap(deserialize_to_hashmap(string_context));
     global::get_text_map_propagator(|prop| prop.extract(&map))
 }
@@ -231,6 +242,64 @@ mod tests {
         assert_eq!(recovered.trace_id(), span_context.trace_id());
         assert_eq!(recovered.span_id(), span_context.span_id());
         assert_eq!(recovered.trace_state().header(), trace_state.header());
+    }
+
+    #[test]
+    fn deserialize_empty_context_skips_the_propagator() {
+        use opentelemetry::Context;
+        use opentelemetry::propagation::text_map_propagator::FieldIter;
+        use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator};
+        use opentelemetry::trace::{
+            SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static EXTRACT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Debug)]
+        struct CountingPropagator {
+            fields: Vec<String>,
+        }
+
+        impl TextMapPropagator for CountingPropagator {
+            fn inject_context(&self, _cx: &Context, _injector: &mut dyn Injector) {}
+
+            fn extract_with_context(&self, cx: &Context, _extractor: &dyn Extractor) -> Context {
+                EXTRACT_CALLS.fetch_add(1, Ordering::SeqCst);
+                cx.clone()
+            }
+
+            fn fields(&self) -> FieldIter<'_> {
+                FieldIter::new(&self.fields)
+            }
+        }
+
+        let _guard = PROPAGATOR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        opentelemetry::global::set_text_map_propagator(CountingPropagator { fields: Vec::new() });
+
+        // An attached span, so "the current context" is distinguishable from
+        // an empty one.
+        let span_context = SpanContext::new(
+            TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap(),
+            SpanId::from_hex("b7ad6b7169203331").unwrap(),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::default(),
+        );
+        let _attached = Context::new()
+            .with_remote_span_context(span_context.clone())
+            .attach();
+
+        // Empty input: the current context, without consulting the propagator.
+        // This fails on the pre-change code, which always reached it.
+        EXTRACT_CALLS.store(0, Ordering::SeqCst);
+        let cx = deserialize_context("");
+        assert_eq!(cx.span().span_context(), &span_context);
+        assert_eq!(EXTRACT_CALLS.load(Ordering::SeqCst), 0);
+
+        // A non-empty input still goes through the propagator.
+        deserialize_context("traceparent:00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
+        assert_eq!(EXTRACT_CALLS.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -317,6 +317,7 @@ impl SampleHandler {
         data_id: DataId,
         parameters: MetadataParameters,
         node: DelayedCleanup<DoraNode>,
+        py: Python<'_>,
     ) -> eyre::Result<Self> {
         // Build the UInt8 Arrow IPC stream in place: allocate an IPC-framed
         // sample (shared-memory-backed when large), pre-write everything except
@@ -326,7 +327,7 @@ impl SampleHandler {
         // Prepare the UInt8 IPC header once, then size and fill the sample from
         // it — avoids rebuilding the layout + IPC headers for the length query.
         let prepared = ipc_encode::PreparedUint8Ipc::new(data_length)?;
-        let mut sample = node.get_mut().allocate_data_sample(prepared.byte_len())?;
+        let mut sample = node.run(py, |node| node.allocate_data_sample(prepared.byte_len()))?;
         let data_offset = prepared.encode_header_into(&mut sample)?;
         Ok(Self {
             node,
@@ -366,7 +367,7 @@ impl SampleHandler {
     ///
     /// Returns an error if any buffer views are still open on the associated
     /// `SampleBuffer` — release all `memoryview` / numpy references first.
-    pub fn send(&mut self) -> eyre::Result<()> {
+    pub fn send(&mut self, py: Python<'_>) -> eyre::Result<()> {
         // 1. Guard: can only send once.
         let meta = self
             .meta
@@ -410,15 +411,16 @@ impl SampleHandler {
         //    (header pre-written at construction; Python filled the data region
         //    in place), so publish it directly — no copy, no re-encode. For a
         //    shared-memory sample this moves the buffer into zenoh's `put`.
+        //    Like `Node.send_output`, without the GIL if it is large.
         let mut parameters = meta.parameters;
         parameters.insert(
             dora_message::metadata::FRAMING.to_string(),
             dora_node_api::Parameter::String(dora_message::metadata::FRAMING_ARROW_IPC.to_string()),
         );
-        self.node
-            .get_mut()
-            .send_output_sample(meta.data_id, parameters, Some(sample))
-            .map_err(|e| eyre::eyre!("failed to send sample: {e}"))?;
+        crate::send_on(&self.node, py, self.data_length, |node| {
+            node.send_output_sample(meta.data_id, parameters, Some(sample))
+        })
+        .map_err(|e| eyre::eyre!("failed to send sample: {e}"))?;
         Ok(())
     }
 }
@@ -562,7 +564,7 @@ impl SampleHandler {
             return Ok(false); // propagate the original exception
         }
 
-        self.send().map_err(|e| {
+        self.send(exc_type.py()).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to send: {e}"))
         })?;
         Ok(false) // do not suppress exceptions

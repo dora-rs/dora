@@ -64,7 +64,6 @@ pub(crate) fn is_sigkill_like_exit(exit_status: &NodeExitStatus) -> bool {
     }
 }
 
-/// Decide whether the health-check watchdog should kill a node.
 /// Pure predicate for startup watchdog decision (#3022).
 ///
 /// Returns `true` if a spawned process is unconnected and the elapsed time since

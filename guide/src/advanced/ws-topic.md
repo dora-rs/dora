@@ -91,6 +91,15 @@ The subscription uses the existing UUID-correlated request-reply protocol:
 }
 ```
 
+A connection can only unsubscribe the subscriptions it created itself. An id
+it does not own gets an error reply and leaves the subscription untouched.
+
+Every `TopicSubscribe` creates a new subscription with its own id and its own
+daemon streams, even when it repeats an earlier request's dataflow and topics.
+A connection can hold at most 16 live subscriptions. Subscriptions the
+coordinator has already ended (a reader that stayed too slow, a finished
+dataflow) do not count towards that limit.
+
 ### Binary data frames
 
 After the handshake, the coordinator pushes binary WS frames. Each frame has a fixed-size header:
@@ -323,4 +332,4 @@ For high-throughput topics (camera images, point clouds), the binary frame chann
 | Unit (client) | `binaries/cli/src/ws_client.rs` | `handle_response_topic_subscribe_ack` -- verifies ack routing and subscriber registration |
 | Unit (all existing) | `binaries/cli/src/ws_client.rs` | Updated to pass topic subscribe state through `handle_response` |
 
-The `TopicSubscribe` / binary frame path is primarily validated via integration testing with a running coordinator and Zenoh session. See [Testing Guide](testing-guide.md) for smoke test instructions.
+The `TopicSubscribe` / binary frame path is primarily validated via integration testing with a running coordinator and Zenoh session. See [Testing Guide](../development/testing.md) for smoke test instructions.

@@ -1323,7 +1323,7 @@ fn hex_key_segment(id: &dora_message::id::DataId) -> String {
 /// the schema side-channel for `cmd`), and so wildcard subscribers on the
 /// data-topic namespace never see schema traffic.
 ///
-/// The output id is [hex-encoded](hex_key_segment) into a single chunk because
+/// The output id is hex-encoded into a single chunk because
 /// DataIds may contain `/`. The key has no `@…` verbatim chunks: zenoh-ext
 /// liveliness tokens are `${remaining:**}/@adv/${entity}/${zid}/${eid}/${meta}`
 /// and Zenoh verbatim chunks are hermetic — `**` cannot cross them — so a key

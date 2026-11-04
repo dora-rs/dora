@@ -85,8 +85,10 @@ mod cross_pool_write_tests {
     /// Panic-safe cleanup: unlink the test mirror from /dev/shm even when
     /// an assertion fails mid-test (a leaked segment would pollute the
     /// bench host's zero-residue checks).
+    #[cfg(target_os = "linux")]
     struct ShmemCleanup(String);
 
+    #[cfg(target_os = "linux")]
     impl Drop for ShmemCleanup {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(format!("/dev/shm/{}", self.0));
@@ -434,6 +436,7 @@ mod cross_pool_write_tests {
 
     /// Build a direct-TCP frame header (magic + dataflow + pool + seq +
     /// size) with no payload bytes.
+    #[cfg(target_os = "linux")]
     fn build_frame_header(dataflow_id: Uuid, pool_id: &str, seq: u64, size: u64) -> Vec<u8> {
         let mut frame = Vec::new();
         frame.extend_from_slice(&CROSS_DATA_MAGIC.to_be_bytes());
@@ -1037,10 +1040,18 @@ mod cross_pool_write_tests {
         let frame_len = seq_at + 8 + 8 + payload.len();
 
         // First frame: the peer reads it whole, then closes the connection
-        // the way the mirror does on its read timeout.
-        send_cross_data_frame(&conns, addr, dataflow_id, pool_id, 1, &payload)
-            .await
-            .unwrap();
+        // the way the mirror does once it has been idle too long.
+        send_cross_data_frame(
+            &conns,
+            addr,
+            dataflow_id,
+            pool_id,
+            1,
+            &payload,
+            tokio::time::Instant::now() + CROSS_DATA_READ_TIMEOUT,
+        )
+        .await
+        .unwrap();
         let (mut first, _) = listener.accept().await.unwrap();
         let mut frame = vec![0u8; frame_len];
         first.read_exact(&mut frame).await.unwrap();
@@ -1049,9 +1060,17 @@ mod cross_pool_write_tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // Second frame: must go out on a fresh connection and arrive.
-        send_cross_data_frame(&conns, addr, dataflow_id, pool_id, 2, &payload)
-            .await
-            .unwrap();
+        send_cross_data_frame(
+            &conns,
+            addr,
+            dataflow_id,
+            pool_id,
+            2,
+            &payload,
+            tokio::time::Instant::now() + CROSS_DATA_READ_TIMEOUT,
+        )
+        .await
+        .unwrap();
         let (mut second, _) =
             tokio::time::timeout(std::time::Duration::from_secs(5), listener.accept())
                 .await
@@ -1133,9 +1152,17 @@ mod cross_pool_write_tests {
             });
             let payload: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8).collect();
             let conns = Arc::new(std::sync::Mutex::new(HashMap::new()));
-            send_cross_data_frame(&conns, addr, dataflow_id, pool_id, 42, &payload)
-                .await
-                .unwrap();
+            send_cross_data_frame(
+                &conns,
+                addr,
+                dataflow_id,
+                pool_id,
+                42,
+                &payload,
+                tokio::time::Instant::now() + CROSS_DATA_READ_TIMEOUT,
+            )
+            .await
+            .unwrap();
             let ack_info = server.await.unwrap().unwrap().unwrap();
             assert_eq!(ack_info.0, dataflow_id);
             assert_eq!(ack_info.1, pool_id);
@@ -1154,6 +1181,198 @@ mod cross_pool_write_tests {
                 unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
             assert_eq!(generation % 2, 0, "odd generation after write");
         });
+    }
+
+    /// Run `send_cross_data_frame` against a peer that accepts the
+    /// connection and then never reads or answers, with a short deadline.
+    /// Returns the error and how long the send took.
+    fn send_to_silent_peer(payload_len: usize) -> (String, std::time::Duration) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            // Accept and hold the connection without ever reading, so the
+            // socket buffers fill (or the handshake reply never comes).
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                drop(stream);
+            });
+            let payload = vec![0u8; payload_len];
+            let conns = Arc::new(std::sync::Mutex::new(HashMap::new()));
+            let started = std::time::Instant::now();
+            let err = send_cross_data_frame(
+                &conns,
+                addr,
+                Uuid::new_v4(),
+                "pool_node_0",
+                1,
+                &payload,
+                tokio::time::Instant::now() + std::time::Duration::from_millis(300),
+            )
+            .await
+            .unwrap_err();
+            let elapsed = started.elapsed();
+            assert!(
+                conns.lock().unwrap().is_empty(),
+                "an abandoned connection must not be reused"
+            );
+            server.abort();
+            (err, elapsed)
+        })
+    }
+
+    /// The origin's direct-TCP send is bounded (#3688): a mirror that
+    /// accepts the connection but stops reading must fail the send
+    /// instead of leaving the task streaming forever, and the stalled
+    /// mid-frame connection must not be pooled for reuse.
+    #[test]
+    fn direct_tcp_send_times_out_on_stalled_peer() {
+        // Token-less contract, see `direct_tcp_frame_round_trip_writes_mirror`.
+        // SAFETY (env mutation in tests): serialized by `CROSS_DATA_AUTH_ENV_LOCK`.
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+        // Far larger than any loopback socket buffer pair.
+        let (err, elapsed) = send_to_silent_peer(32 * 1024 * 1024);
+        assert!(err.contains("deadline"), "unexpected error: {err}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "send was not bounded by its deadline"
+        );
+    }
+
+    /// A direct send abandoned at its deadline is aborted with a reset, not
+    /// a FIN: on a FIN the mirror would keep writing the frame's in-flight
+    /// tail into the segment while the same write is relayed.
+    #[test]
+    fn direct_tcp_send_resets_an_abandoned_frame() {
+        // SAFETY (env mutation in tests): serialized by `CROSS_DATA_AUTH_ENV_LOCK`.
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            use tokio::io::AsyncReadExt;
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let conns = Arc::new(std::sync::Mutex::new(HashMap::new()));
+            let payload = vec![0u8; 32 * 1024 * 1024];
+            let send = send_cross_data_frame(
+                &conns,
+                addr,
+                Uuid::new_v4(),
+                "pool_node_0",
+                1,
+                &payload,
+                tokio::time::Instant::now() + std::time::Duration::from_millis(300),
+            );
+            // The peer stops reading, so the send stalls until its deadline.
+            let (mut peer, ()) =
+                tokio::join!(async { listener.accept().await.unwrap().0 }, async {
+                    assert!(send.await.is_err())
+                },);
+            let mut buf = vec![0u8; 1 << 20];
+            let err = loop {
+                match peer.read(&mut buf).await {
+                    Ok(0) => panic!("abandoned frame ended in a FIN, not a reset"),
+                    Ok(_) => continue,
+                    Err(e) => break e,
+                }
+            };
+            assert_eq!(err.kind(), std::io::ErrorKind::ConnectionReset);
+        });
+    }
+
+    /// The mirror waits for a frame under the idle bound and only then
+    /// starts the frame's read bound; the wait never consumes frame bytes.
+    #[tokio::test]
+    async fn await_next_frame_splits_idle_from_frame_timing() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut origin = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let (mirror, _) = listener.accept().await.unwrap();
+        let short = std::time::Duration::from_millis(100);
+
+        // Nothing arrives within the idle bound: the connection is closed.
+        assert!(!await_next_frame(&mirror, short).await.unwrap());
+
+        // A frame that starts late, but within the idle bound, is waited
+        // for and left unread for the frame reader.
+        let late = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            origin
+                .write_all(&CROSS_DATA_MAGIC.to_be_bytes())
+                .await
+                .unwrap();
+            origin
+        });
+        assert!(
+            await_next_frame(&mirror, std::time::Duration::from_secs(5))
+                .await
+                .unwrap()
+        );
+        let mut magic = [0u8; 4];
+        assert_eq!(mirror.peek(&mut magic).await.unwrap(), 4);
+        assert_eq!(u32::from_be_bytes(magic), CROSS_DATA_MAGIC);
+
+        // The origin closing the connection ends the wait.
+        drop(late.await.unwrap());
+        let mut drained = [0u8; 4];
+        mirror.try_read(&mut drained).unwrap();
+        assert!(
+            !await_next_frame(&mirror, std::time::Duration::from_secs(5))
+                .await
+                .unwrap()
+        );
+    }
+
+    /// The deadline covers the auth handshake too, not just the frame
+    /// send: separately bounded steps added up past the ack timeout, so a
+    /// stalled handshake still left a late relay (#3688).
+    #[test]
+    fn direct_tcp_send_deadline_covers_stalled_handshake() {
+        // SAFETY (env mutation in tests): serialized by `CROSS_DATA_AUTH_ENV_LOCK`.
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("DORA_MEMORY_POOL_AUTH_TOKEN", "test-token") };
+        struct TokenEnvGuard;
+        impl Drop for TokenEnvGuard {
+            fn drop(&mut self) {
+                unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+            }
+        }
+        let _token_guard = TokenEnvGuard;
+        // A tiny frame: only the unanswered handshake can stall the send.
+        let (err, elapsed) = send_to_silent_peer(64);
+        assert!(err.contains("deadline"), "unexpected error: {err}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "handshake was not bounded by the send deadline"
+        );
+    }
+
+    /// The timeout bounds scale with the frame size and keep the ordering
+    /// the #3688 fix relies on: the ack window outlasts the direct attempt,
+    /// the direct attempt never outlasts the mirror's frame read window, and
+    /// a small frame whose ack is lost fails within a minute.
+    #[test]
+    fn cross_write_timeouts_scale_with_frame_size() {
+        for size in [0, 64 * 1024, 4 << 20, 64 << 20, 1 << 30, usize::MAX] {
+            let budget = cross_transfer_budget(size);
+            assert!(budget <= CROSS_DATA_READ_TIMEOUT, "{size}: {budget:?}");
+            assert_eq!(cross_write_ack_timeout(size), budget + CROSS_ACK_MARGIN);
+        }
+        assert!(cross_write_ack_timeout(4 << 20) < std::time::Duration::from_secs(60));
+        // A 1 GiB frame on a ~5 MB/s link (~205 s) still fits the direct attempt.
+        assert!(cross_transfer_budget(1 << 30) > std::time::Duration::from_secs(205));
+        assert!(cross_transfer_budget(1 << 30) > cross_transfer_budget(64 << 20));
     }
 
     // The guard is held across the awaits on purpose: the point is to keep

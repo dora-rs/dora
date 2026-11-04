@@ -209,7 +209,9 @@ pub fn dora_free_input_id(_input_id: char_p_boxed) {}
 /// # Ownership
 ///
 /// The returned vector is an owned copy of the payload; free it with
-/// [`dora_free_data`] when it is no longer needed.
+/// [`dora_free_data`] when it is no longer needed. A `None` result reaches C
+/// as a vector whose `ptr` is `NULL`; passing it to [`dora_free_data`] is a
+/// no-op, so a caller may free every result unconditionally.
 #[ffi_export]
 pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
     // `eprintln!`, not `tracing::error!`: this function is compiled into the
@@ -243,8 +245,17 @@ pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
     Some(bytes.to_owned().into())
 }
 
+/// Free a vector returned by [`dora_read_data`].
+///
+/// Like `free(NULL)`, a vector whose `ptr` is `NULL` (the `None` result of
+/// [`dora_read_data`]) is accepted and ignored.
+//
+// The parameter is an `Option` so that the null case is a valid value: as a
+// plain `Vec`, `ffi_export` treats a null `ptr` as an invalid bit pattern,
+// which panics (an abort across the C boundary) in debug builds and is
+// undefined behavior in release builds. The C layout is the same either way.
 #[ffi_export]
-pub fn dora_free_data(_data: safer_ffi::Vec<u8>) {}
+pub fn dora_free_data(_data: Option<safer_ffi::Vec<u8>>) {}
 
 /// Send an output from a C/C++ operator.
 ///
@@ -285,11 +296,17 @@ pub unsafe fn dora_send_operator_output(
             // SAFETY: caller-provided per the function's #[safety] contract above.
             unsafe { slice::from_raw_parts(data_ptr, data_len) }
         };
+        // `char_p_ref::to_str` skips UTF-8 validation (`from_utf8_unchecked`),
+        // and the `ffi_export` shim only checks for null, so a non-UTF-8 id
+        // from C would build an invalid `str`. Validate it like the C node
+        // API's `dora_send_output` does.
+        let id = std::str::from_utf8(id.to_bytes())
+            .map_err(|err| format!("dora_send_operator_output: id is not valid UTF-8: {err}"))?;
         let arrow_data = data.to_owned().into_arrow();
         let (data_array, schema) =
             arrow::ffi::to_ffi(&array_ref(&arrow_data).to_data()).map_err(|err| err.to_string())?;
         let output = Output {
-            id: id.to_str().to_owned().into(),
+            id: id.to_owned().into(),
             data_array,
             schema,
             metadata: Metadata {
@@ -350,5 +367,68 @@ mod tests {
 
         assert!(dora_read_data(&mut input).is_some());
         assert!(dora_read_data(&mut input).is_none());
+    }
+    /// C code frees every `dora_read_data` result, including the `None` one
+    /// (a `NULL` `ptr`) returned for a timer tick or a non-`UInt8` payload.
+    /// That must be a no-op through the exported C symbol, not an invalid
+    /// argument (an abort in debug builds, UB in release builds).
+    #[test]
+    fn dora_free_data_accepts_the_none_result() {
+        type CVec = safer_ffi::layout::CLayoutOf<Option<safer_ffi::Vec<u8>>>;
+        unsafe extern "C" {
+            #[link_name = "dora_free_data"]
+            fn c_dora_free_data(data: CVec);
+        }
+
+        let array: arrow::array::ArrayRef = std::sync::Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let none = dora_read_data(&mut test_input(array));
+        assert!(none.is_none());
+        let some = dora_read_data(&mut test_input(std::sync::Arc::new(
+            arrow::array::UInt8Array::from(vec![1u8, 2, 3]),
+        )));
+        assert!(some.is_some());
+
+        unsafe {
+            c_dora_free_data(safer_ffi::layout::into_raw(none));
+            c_dora_free_data(safer_ffi::layout::into_raw(some));
+        }
+    }
+
+    /// A non-UTF-8 output id from C must be rejected with an error before
+    /// the output reaches the runtime, instead of being turned into an
+    /// invalid `str` (UB).
+    #[test]
+    fn dora_send_operator_output_rejects_non_utf8_id() {
+        use safer_ffi::{char_p::char_p_ref, closure::ArcDynFn1};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let sent = Arc::new(AtomicUsize::new(0));
+        let send_output = SendOutput {
+            send_output: ArcDynFn1::new(Arc::new({
+                let sent = sent.clone();
+                move |_output| {
+                    sent.fetch_add(1, Ordering::SeqCst);
+                    DoraResult::SUCCESS
+                }
+            })),
+        };
+        let id_of = |bytes: &'static [u8]| unsafe {
+            char_p_ref::from_ptr_unchecked(std::ptr::NonNull::from(&bytes[0]))
+        };
+
+        let result = unsafe {
+            dora_send_operator_output(&send_output, id_of(b"\xffout\0"), [1u8].as_ptr(), 1)
+        };
+        let error = result.error.expect("non-UTF-8 id must be rejected");
+        assert!(error.contains("not valid UTF-8"), "{}", &**error);
+        assert_eq!(sent.load(Ordering::SeqCst), 0, "nothing may be sent");
+
+        let result =
+            unsafe { dora_send_operator_output(&send_output, id_of(b"out\0"), [1u8].as_ptr(), 1) };
+        assert!(result.error.is_none());
+        assert_eq!(sent.load(Ordering::SeqCst), 1);
     }
 }

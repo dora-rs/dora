@@ -10,7 +10,7 @@ use dora_message::{
     node_to_daemon::Timestamped,
 };
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{
         Arc,
         atomic::{self, AtomicU32, AtomicU64},
@@ -60,10 +60,8 @@ pub(crate) struct DataflowMetricsSnapshot {
 /// started, which divided by a two-second window is a large one-sample spike.
 ///
 /// Holding all three in one mutex is what keeps that pairing honest: a
-/// collection takes the whole state at once, so a concurrent collection starts
-/// from `Default` — an empty `System` *and* an empty baseline — and reports no
-/// rate, rather than dividing one collection's total-since-start bytes by the
-/// other's plausible-looking window.
+/// collection holds the lock from the moment it takes the state out until it
+/// puts the refreshed one back, so no other collection can run in between.
 #[derive(Default)]
 pub(crate) struct MetricsState {
     /// The sysinfo handle whose per-process counters the deltas come from.
@@ -175,11 +173,37 @@ fn metrics_refresh_kind() -> sysinfo::ProcessRefreshKind {
 
 /// Parent -> children edges for every process in `sys`.
 fn child_process_map(sys: &sysinfo::System) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
+    parent_edges(
+        sys.processes()
+            .iter()
+            .map(|(pid, process)| (*pid, process.parent(), process.start_time())),
+    )
+}
+
+/// Parent -> children edges from `(pid, parent, start_time)` triples.
+///
+/// A recorded parent pid can be stale: Windows does not re-parent an orphan,
+/// so a process whose parent exited still names that pid, and a node spawned
+/// later may reuse it. Such an edge can close a cycle (the daemon, whose
+/// launching `dora up` has exited, becomes a child of its own node), and the
+/// descendant walk then counted the daemon and every sibling under the node.
+/// A real child cannot start before its parent, so an edge to an older
+/// process is dropped. Start times have one-second resolution, so a stale
+/// edge within the same second survives; [`descendants`] still terminates.
+/// A start time of `0` means unknown (sysinfo reports it for a process it
+/// cannot open on Windows), so such a child keeps its edge.
+fn parent_edges(
+    processes: impl IntoIterator<Item = (sysinfo::Pid, Option<sysinfo::Pid>, u64)>,
+) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
+    let processes: Vec<_> = processes.into_iter().collect();
+    let start_times: HashMap<_, _> = processes.iter().map(|&(pid, _, t)| (pid, t)).collect();
     let mut children_map: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
-    for (pid, process) in sys.processes() {
-        if let Some(parent) = process.parent() {
-            children_map.entry(parent).or_default().push(*pid);
+    for (pid, parent, start) in processes {
+        let Some(parent) = parent else { continue };
+        if start != 0 && start_times.get(&parent).is_some_and(|&p| start < p) {
+            continue;
         }
+        children_map.entry(parent).or_default().push(pid);
     }
     children_map
 }
@@ -202,29 +226,44 @@ fn aggregate_process_tree(
     let mut disk = DiskDelta::default();
     disk.add(previous_processes, pid, process);
 
-    // Recursively aggregate all descendants.
-    let mut stack = vec![pid];
-    while let Some(parent) = stack.pop() {
-        if let Some(kids) = children_map.get(&parent) {
-            for &child_pid in kids {
-                if let Some(child) = sys.processes().get(&child_pid) {
-                    cpu_usage += child.cpu_usage();
-                    memory_bytes += child.memory();
-                    disk.add(previous_processes, child_pid, child);
-                }
-                stack.push(child_pid);
-            }
+    for child_pid in descendants(children_map, pid) {
+        if let Some(child) = sys.process(child_pid) {
+            cpu_usage += child.cpu_usage();
+            memory_bytes += child.memory();
+            disk.add(previous_processes, child_pid, child);
         }
     }
 
     Some((cpu_usage, memory_bytes, disk))
 }
 
+/// Every descendant of `root` in `children_map`, each listed once.
+///
+/// The edges can contain a cycle (see [`parent_edges`]), so the walk keeps a
+/// visited set; without it a cycle looped forever while growing the stack.
+fn descendants(
+    children_map: &HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
+    root: sysinfo::Pid,
+) -> Vec<sysinfo::Pid> {
+    let mut visited = HashSet::from([root]);
+    let mut found = Vec::new();
+    let mut stack = vec![root];
+    while let Some(parent) = stack.pop() {
+        for &child in children_map.get(&parent).into_iter().flatten() {
+            if visited.insert(child) {
+                found.push(child);
+                stack.push(child);
+            }
+        }
+    }
+    found
+}
+
 /// Collect and send metrics in the background. Errors are returned to the
 /// caller (the spawned task logs them).
 pub(crate) async fn collect_and_send_metrics_bg(
     dataflows: Vec<DataflowMetricsSnapshot>,
-    metrics_state: Arc<std::sync::Mutex<MetricsState>>,
+    metrics_state: Arc<tokio::sync::Mutex<MetricsState>>,
     sender: coordinator::CoordinatorSender,
     daemon_id: DaemonId,
     clock: Arc<uhlc::HLC>,
@@ -236,8 +275,10 @@ pub(crate) async fn collect_and_send_metrics_bg(
         .iter()
         .any(|df| df.nodes.iter().any(|n| n.pid.is_some()));
 
-    // Refresh sysinfo on a blocking thread if any nodes are running. `try_lock`
-    // skips the cycle when a previous collection is still in progress.
+    // Refresh sysinfo on a blocking thread if any nodes are running. The owned
+    // guard is held for the whole collection, so a tick that lands while the
+    // previous one is still running fails `try_lock_owned` and skips its cycle
+    // instead of starting a second full scan from an empty `System`.
     //
     // Taking the whole `MetricsState` (see its docs) keeps each delta together
     // with the window and the observed-process set that make it meaningful.
@@ -248,18 +289,18 @@ pub(crate) async fn collect_and_send_metrics_bg(
     // rather than clearing it: nothing refreshed, so the stored baseline still
     // describes the stored `System`, and the next refresh's delta and window
     // both simply span the longer gap.
+    let mut collection = None;
     let (refreshed_state, refresh_window, previous_processes) = if has_any_running {
+        let Ok(mut guard) = metrics_state.try_lock_owned() else {
+            tracing::debug!("metrics: skipping, previous collection still running");
+            return Ok(());
+        };
         let MetricsState {
             system,
             last_refresh,
             processes: previous_processes,
-        } = match metrics_state.try_lock() {
-            Ok(mut guard) => std::mem::take(&mut *guard),
-            Err(_) => {
-                tracing::debug!("metrics: skipping, previous collection still running");
-                return Ok(());
-            }
-        };
+        } = std::mem::take(&mut *guard);
+        collection = Some(guard);
         let refresh_kind = metrics_refresh_kind();
         match tokio::task::spawn_blocking(move || {
             let mut system = system;
@@ -423,11 +464,9 @@ pub(crate) async fn collect_and_send_metrics_bg(
     }
 
     // Return the refreshed System and its matching baseline to the shared mutex
-    // for the next cycle.
-    if let Some(state) = refreshed_state
-        && let Ok(mut guard) = metrics_state.lock()
-    {
-        *guard = state;
+    // for the next cycle; dropping the guard then lets the next one start.
+    if let (Some(state), Some(guard)) = (refreshed_state, collection.as_mut()) {
+        **guard = state;
     }
 
     Ok(())
@@ -498,8 +537,164 @@ impl Daemon {
 }
 
 #[cfg(test)]
+mod descendant_tests {
+    use super::*;
+    use sysinfo::Pid;
+
+    /// Edges from `(pid, parent, start_time)`.
+    fn edges(processes: &[(u32, Option<u32>, u64)]) -> HashMap<Pid, Vec<Pid>> {
+        parent_edges(
+            processes
+                .iter()
+                .map(|&(p, parent, t)| (Pid::from_u32(p), parent.map(Pid::from_u32), t)),
+        )
+    }
+
+    fn sorted(mut pids: Vec<Pid>) -> Vec<u32> {
+        pids.sort();
+        pids.into_iter().map(Pid::as_u32).collect()
+    }
+
+    #[test]
+    fn walks_a_plain_tree() {
+        let children = edges(&[
+            (1, None, 1),
+            (2, Some(1), 2),
+            (3, Some(1), 2),
+            (4, Some(2), 3),
+        ]);
+        assert_eq!(sorted(descendants(&children, Pid::from_u32(1))), [2, 3, 4]);
+    }
+
+    /// Node 10 reused the pid of the daemon's (20) exited parent, so the
+    /// recorded parents read node -> daemon -> node. The daemon started
+    /// first, so it is not the node's child.
+    #[test]
+    fn drops_a_stale_parent_edge_to_an_older_process() {
+        let children = edges(&[
+            (10, Some(20), 200),
+            (20, Some(10), 100),
+            (30, Some(20), 150),
+        ]);
+        assert!(descendants(&children, Pid::from_u32(10)).is_empty());
+        assert_eq!(sorted(descendants(&children, Pid::from_u32(20))), [10, 30]);
+    }
+
+    /// Start times cannot tell same-second processes apart, so the cycle
+    /// stays; the walk still ends and lists each process once, never the
+    /// root itself.
+    #[test]
+    fn a_cycle_ends_and_lists_each_process_once() {
+        let children = edges(&[(1, Some(2), 5), (2, Some(1), 5), (3, Some(2), 5)]);
+        assert_eq!(sorted(descendants(&children, Pid::from_u32(1))), [2, 3]);
+    }
+
+    /// sysinfo reports a start time of `0` for a process it cannot open
+    /// (Windows), which is unknown, not older than its parent: the child and
+    /// its own children stay counted.
+    #[test]
+    fn a_child_with_an_unknown_start_time_keeps_its_edge() {
+        let children = edges(&[(1, None, 5), (2, Some(1), 0), (3, Some(2), 6)]);
+        assert_eq!(sorted(descendants(&children, Pid::from_u32(1))), [2, 3]);
+    }
+}
+
+#[cfg(test)]
 mod disk_rate_tests {
     use super::*;
+
+    /// A collection must hold the metrics state for as long as it runs, so a
+    /// tick that lands meanwhile skips its cycle rather than starting a
+    /// second full scan from an empty `System`.
+    ///
+    /// The running collection is a real one, held up in `send_event` by a
+    /// full coordinator channel; on the old code the state was already free
+    /// again at that point.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_running_collection_holds_the_state_until_it_is_done() {
+        let state = Arc::new(tokio::sync::Mutex::new(MetricsState::default()));
+        let clock = Arc::new(uhlc::HLC::default());
+        let (sender, mut sent) = coordinator::CoordinatorSender::for_test();
+        let this_process = || {
+            vec![DataflowMetricsSnapshot {
+                dataflow_id: DataflowId::new_v4(),
+                nodes: vec![NodeSnapshot {
+                    node_id: NodeId::from("node".to_string()),
+                    pid: Some(Arc::new(AtomicU32::new(std::process::id()))),
+                    restart_count: Arc::default(),
+                    restarts_disabled: false,
+                    broken_inputs: Vec::new(),
+                    pending_messages: 0,
+                }],
+                net_bytes_sent: Arc::default(),
+                net_bytes_received: Arc::default(),
+                net_messages_sent: Arc::default(),
+                net_messages_received: Arc::default(),
+                net_publish_failures: Arc::default(),
+            }]
+        };
+
+        // Fill the coordinator channel so the next send blocks.
+        let mut queued = 0;
+        while tokio::time::timeout(Duration::from_millis(50), sender.send_event(b"null"))
+            .await
+            .is_ok()
+        {
+            queued += 1;
+        }
+
+        let running = tokio::spawn(collect_and_send_metrics_bg(
+            this_process(),
+            state.clone(),
+            sender.clone(),
+            DaemonId::new(None),
+            clock.clone(),
+        ));
+        // Wait until it has refreshed and is blocked sending its metrics.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while state.try_lock().is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "the collection never took the metrics state"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            state.try_lock().is_err(),
+            "the metrics state was released while the collection was still sending"
+        );
+
+        // A tick now skips: it finishes at once without queueing anything.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            collect_and_send_metrics_bg(
+                this_process(),
+                state.clone(),
+                sender.clone(),
+                DaemonId::new(None),
+                clock.clone(),
+            ),
+        )
+        .await
+        .expect("an overlapping tick must skip, not wait")
+        .unwrap();
+
+        // Draining lets the running collection finish and release the state.
+        for _ in 0..queued {
+            sent.recv().await.unwrap();
+        }
+        running.await.unwrap().unwrap();
+        assert!(
+            sent.recv().await.is_some(),
+            "the running collection's metrics"
+        );
+        assert!(
+            sent.try_recv().is_err(),
+            "the overlapping tick must not have sent anything"
+        );
+        assert!(state.try_lock().is_ok());
+    }
 
     #[test]
     fn no_baseline_reports_no_rate() {

@@ -146,7 +146,7 @@ nodes:
       - result
 ```
 
-Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MODE`) into every node inside the module.
+Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MODE`) into every node inside the module, overriding a node's own `env:` entry of the same name. As with `env:` values, `$VAR` references in an injected param are expanded when the dataflow is expanded, against the `dora` CLI's environment, and `$$` is a literal `$`.
 
 ## Expansion Rules
 
@@ -195,6 +195,14 @@ Only outputs declared by a nested module are visible to its parent. A parent
 module can wire or re-export `inner/processed` from the example above because
 `processed` is listed in `inner_module.yml`'s `module.outputs`; it cannot reach
 private outputs produced by nodes inside `inner_module.yml`.
+
+Params passed to the outer module reach the nodes of every nested module, in
+`args:` and as env vars, and override an inner node's own `env: PARAM_<KEY>`
+default just as they do for a direct child. A nested module node can set its
+own `params:`, which take precedence over the outer ones, and can reference
+outer params there: `max_speed: $PARAM_SPEED` passes the outer `speed` down
+as `max_speed` as well. The original `speed` is still handed down too, so
+inner nodes see both.
 
 ## Optional Inputs
 
@@ -289,3 +297,22 @@ See [`examples/module-dataflow/`](../examples/module-dataflow/) for a complete w
 ```bash
 dora run examples/module-dataflow/dataflow.yml
 ```
+
+## Commands inside modules
+
+For an inner `path: dora-echo`, Dora first tries `dora-echo` beside the module
+file. If no such file exists (a folder of that name doesn't count), Dora
+looks up the original name in the dataflow
+directory, the uv environment, then `$PATH`. Expansion records the name as
+`path_fallback` without checking the filesystem, so building an executable
+cannot change expansion or its fingerprint. `path_fallback` is internal, and
+`dora expand` leaves it out of its output (so running that output skips the
+fallback): a dataflow file, a module file, or a node file for
+`dora node add`/`replace` that sets it is rejected.
+
+Automatic fallback applies only to a single extensionless name. Paths with
+folders and dotted names such as `worker.py`, `node.v2` and `tool.exe` retain
+module-relative lookup. Use updated CLI, coordinator and daemon binaries for
+fallback; older components ignore the optional control metadata and keep their
+original lookup behavior. Descriptors sent to nodes, and the one in the
+coordinator's `Info` reply (which `dora node info` shows), omit it.

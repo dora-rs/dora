@@ -90,15 +90,16 @@ pub enum Event<'a> {
     /// The runtime requested a graceful shutdown. The operator should finish
     /// any pending work and return [`DoraStatus::Stop`].
     Stop,
-    /// The runtime reported an error on the event stream itself — for example a
-    /// payload that could not be deserialized, an unrecognized daemon event, or
-    /// a fatal stream failure.
+    /// An error on the event stream itself, as opposed to
+    /// [`InputParseError`](Event::InputParseError), which is tied to a specific
+    /// input id.
     ///
-    /// This is distinct from [`InputParseError`](Event::InputParseError), which
-    /// is tied to a specific input id; an `Error` concerns the stream as a
-    /// whole. The operator can log or surface it and decide how to proceed;
-    /// returning `Err` from `on_event` reports it as fatal and stops the
-    /// operator.
+    /// The dora runtime does not deliver this event today: when its own event
+    /// stream reports an error (a payload that could not be deserialized, a
+    /// fatal stream failure, …) it treats the error as fatal and exits, which
+    /// stops every operator of the node, before any operator sees it. The
+    /// variant is kept so an operator that matches on it keeps compiling and
+    /// is ready if the runtime starts forwarding non-fatal stream errors.
     Error {
         /// A human-readable description of the error.
         error: &'a str,

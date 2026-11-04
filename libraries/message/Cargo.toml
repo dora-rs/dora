@@ -54,7 +54,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-criterion = { version = "0.8", features = ["html_reports"] }
+criterion = { version = "6", package = "codspeed-criterion-compat" }
 proptest = { workspace = true }
 # `Uuid::new_v4` is used only by the `#[cfg(test)]` modules, so `v4` is
 # dev-only. It used to arrive by accident through feature unification: uhlc 0.5

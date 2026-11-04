@@ -21,12 +21,13 @@ use crate::{
 /// specifies the events that should be sent to the node during the test.
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct IntegrationTestInput {
-    /// Unique node identifier. Must not contain `/` characters.
+    /// Unique node identifier.
     ///
-    /// Node IDs can be arbitrary strings with the following limitations:
+    /// Node IDs may only contain ASCII letters, digits, `_`, `.` and `-`
+    /// (no `/`, no whitespace), with the following further limitations:
     ///
-    /// - They must not contain any `/` characters (slashes).
-    /// - We do not recommend using whitespace characters (e.g. spaces) in IDs
+    /// - They must not be empty or start with `.`.
+    /// - They must not be the reserved id `dora`.
     ///
     /// Each node must have an ID field.
     ///

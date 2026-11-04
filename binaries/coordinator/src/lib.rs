@@ -125,7 +125,6 @@ mod spawn_build;
 mod state;
 #[cfg(test)]
 mod tests;
-mod timeout_streak;
 mod topic_debug;
 mod topic_subscriber;
 mod topology;
@@ -153,9 +152,9 @@ pub(crate) use spawn_build::{
     check_spawn_timeouts, finalize_build, handle_dataflow_spawn_result,
 };
 pub(crate) use topic_debug::{
-    close_topic_subscribers_on_finish, restore_topic_debug_streams_for_daemon,
-    start_topic_debug_stream, stop_topic_debug_stream, topic_debug_enabled,
-    topic_outputs_by_daemon,
+    close_topic_subscribers_on_finish, live_topic_subscriptions,
+    restore_topic_debug_streams_for_daemon, start_topic_debug_stream, stop_topic_debug_stream,
+    topic_publish_output_id,
 };
 pub(crate) use topology::{
     ensure_add_mapping_applied, ensure_add_node_applied, ensure_remove_mapping_applied,
@@ -186,7 +185,8 @@ pub async fn start(
 /// Like [`start`] but allows enabling token authentication.
 ///
 /// When `auth` is `true`, the coordinator generates a random token on startup,
-/// writes it to `~/.config/dora/.dora-token`, and requires all clients to
+/// writes it to `.dora-token` in the working directory and in the user config
+/// directory (see [`dora_message::auth::write_token`]), and requires all clients to
 /// present it via the `Authorization: Bearer <token>` header.
 pub async fn start_with_auth(
     bind: SocketAddr,
@@ -280,7 +280,7 @@ async fn start_with_events(
         // exporter then resolves its target from the OTel-standard
         // `OTEL_EXPORTER_OTLP_ENDPOINT` env vars (defaulting to localhost).
         let endpoint = std::env::var("DORA_OTLP_ENDPOINT").ok();
-        let provider = dora_metrics::init_metrics(endpoint.as_deref())?;
+        let provider = dora_metrics::init_metrics("dora-coordinator", endpoint.as_deref())?;
         opentelemetry::global::set_meter_provider(provider.clone());
         provider
     };
@@ -531,11 +531,12 @@ async fn start_inner(
             }
             Event::NodeMetrics {
                 dataflow_id,
+                daemon_id,
                 metrics,
                 network,
             } => {
                 coordinator
-                    .handle_node_metrics(dataflow_id, metrics, network)
+                    .handle_node_metrics(dataflow_id, daemon_id, metrics, network)
                     .await?
             }
             Event::DataflowBuildResult {

@@ -5,7 +5,7 @@ use crate::{
 };
 
 use dora_message::{
-    config::{Input, InputMapping, UserInputMapping, parse_byte_count},
+    config::{Input, InputMapping, LogSubscriptionFilter, UserInputMapping, parse_byte_count},
     descriptor::{CoreNodeKind, DYNAMIC_SOURCE, OperatorSource, ResolvedNode, SHELL_SOURCE},
     id::{DataId, NodeId, OperatorId},
 };
@@ -17,7 +17,7 @@ use std::{
 };
 use tracing::info;
 
-use super::{Descriptor, DescriptorExt, resolve_path};
+use super::{Descriptor, DescriptorExt, resolve_node_path};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Validate input/output wiring without checking path existence.
@@ -70,6 +70,35 @@ pub fn check_dataflow_static(dataflow: &Descriptor) -> eyre::Result<()> {
     check_dataflow_static_resolved(dataflow, &nodes)
 }
 
+/// Check every local `shared-library:` operator path against the runtime's
+/// file-name rules (no `lib` prefix, no extension; see
+/// [`adjust_shared_library_path`]).
+///
+/// The rules need no filesystem access, so this runs in the static pass —
+/// before any build, and also for operators whose `build:` command will
+/// produce the file later. Without it a misnamed path validated, the build
+/// ran, and the node only failed at spawn.
+fn check_shared_library_names(nodes: &BTreeMap<NodeId, ResolvedNode>) -> eyre::Result<()> {
+    for node in nodes.values() {
+        let CoreNodeKind::Runtime(runtime) = &node.kind else {
+            continue;
+        };
+        for operator in &runtime.operators {
+            if let OperatorSource::SharedLibrary(path) = &operator.config.source
+                && !source_is_url(path)
+            {
+                adjust_shared_library_path(Path::new(path)).wrap_err_with(|| {
+                    format!(
+                        "invalid shared-library path for operator `{}/{}`",
+                        node.id, operator.id
+                    )
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Validate all ROS2 bridge configs on the *unresolved* descriptor.
 ///
 /// Run before [`Descriptor::resolve_aliases_and_set_defaults`] so a ROS2
@@ -105,6 +134,8 @@ fn check_dataflow_static_resolved(
 
     // check that all inputs mappings point to an existing output
     check_wiring_resolved(nodes)?;
+
+    check_shared_library_names(nodes)?;
 
     // Check that nodes can resolve `send_stdout_as`, `send_logs_as`, `min_log_level`
     for node in nodes.values() {
@@ -146,9 +177,10 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                         } else if custom.build.is_some() {
                             info!("skipping path check for node with build command");
                         } else {
-                            resolve_path(source, working_dir).wrap_err_with(|| {
-                                format!("Could not find source path `{source}`")
-                            })?;
+                            resolve_node_path(source, custom.path_fallback.as_deref(), working_dir)
+                                .wrap_err_with(|| {
+                                    format!("Could not find source path `{source}`")
+                                })?;
                         };
                     }
                 },
@@ -156,8 +188,8 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                     info!("skipping check for node with git source");
                 }
             },
-            descriptor::CoreNodeKind::Runtime(node) => {
-                for operator_definition in &node.operators {
+            descriptor::CoreNodeKind::Runtime(runtime) => {
+                for operator_definition in &runtime.operators {
                     match &operator_definition.config.source {
                         OperatorSource::SharedLibrary(path) => {
                             if source_is_url(path) {
@@ -165,6 +197,8 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                             } else if operator_definition.config.build.is_some() {
                                 info!("skipping path check for operator with build command");
                             } else {
+                                // The file-name rules were already checked by the
+                                // static pass above.
                                 let path = adjust_shared_library_path(Path::new(&path))?;
                                 if !working_dir.join(&path).exists() {
                                     bail!("no shared library at `{}`", path.display());
@@ -604,6 +638,30 @@ fn check_input(
     input_id_str: &str,
 ) -> Result<(), eyre::ErrReport> {
     match &input.mapping {
+        // The daemon matches a log filter's node id exactly. A filter naming
+        // a module node can never match: expansion replaced that node with
+        // its prefixed `<module>.<inner>` nodes. Any other unknown id may
+        // still be a node added later with `dora node add`, so only warn.
+        InputMapping::Logs(LogSubscriptionFilter {
+            node_filter: Some(node),
+            ..
+        }) if !nodes.contains_key(node) => {
+            let module_prefix = format!("{node}.");
+            if let Some(inner) = nodes
+                .keys()
+                .find(|id| id.as_ref().starts_with(&module_prefix))
+            {
+                bail!(
+                    "log filter on input `{input_id_str}` names `{node}`, which is not a node \
+                     but the prefix of node `{inner}`; a module's nodes are named \
+                     `<module>.<inner-node>`, so name one of them instead"
+                );
+            }
+            tracing::warn!(
+                "log filter on input `{input_id_str}` names node `{node}`, which is not in \
+                 the dataflow; it delivers nothing unless a node with that id is added later"
+            );
+        }
         InputMapping::Timer { interval: _ } | InputMapping::Logs(_) => {}
         InputMapping::User(UserInputMapping { source, output }) => {
             // `nodes` is keyed by each node's own id (see
@@ -2049,6 +2107,57 @@ nodes:
         check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test")).unwrap();
     }
 
+    // The shared-library naming rules are checked without touching the
+    // filesystem, so a `build:` command must not exempt a path the runtime will
+    // refuse at spawn (`lib` prefix or a file extension).
+    #[test]
+    fn shared_library_with_build_command_still_checks_file_name() {
+        for bad in ["target/debug/libop", "target/debug/op.so"] {
+            let dataflow = parse_dataflow(&format!(
+                "\
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: {bad}
+        build: cargo build -p op
+        outputs:
+          - out
+"
+            ));
+            // `dora validate` runs only the static pass; `dora build`/`start`
+            // run the full check. Both must refuse the name.
+            for err in [
+                check_dataflow_static(&dataflow).unwrap_err(),
+                check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+                    .unwrap_err(),
+            ] {
+                let msg = format!("{err:#}");
+                assert!(
+                    msg.contains("runtime-node/op1") && msg.contains("Shared library file name"),
+                    "`{bad}` should be rejected with the naming rule, got: {msg}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shared_library_with_build_command_skips_missing_file_check() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: target/debug/op
+        build: cargo build -p op
+        outputs:
+          - out
+",
+        );
+        check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test")).unwrap();
+    }
+
     #[test]
     fn operator_without_build_command_rejects_missing_source() {
         let dataflow = parse_dataflow(
@@ -3256,6 +3365,33 @@ nodes:
         assert!(
             err.to_string().contains("nonexistent"),
             "expected error about missing node, got: {err}"
+        );
+    }
+
+    #[test]
+    fn wiring_log_filter_rejects_a_module_but_allows_a_later_node() {
+        // `nav.worker` is what a module node `nav` expands to.
+        let yaml = r#"
+nodes:
+  - id: nav.worker
+    path: worker.py
+  - id: sink
+    path: sink.py
+    inputs:
+      ok: dora/logs/info/nav.worker
+      all: dora/logs/info
+      later: dora/logs/info/plugin
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        // A node that may still be added with `dora node add` is only warned about.
+        check_wiring(&descriptor).unwrap();
+
+        let descriptor: Descriptor =
+            serde_yaml::from_str(&format!("{yaml}      module: dora/logs/info/nav\n")).unwrap();
+        let err = check_wiring(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("`sink/module`") && err.contains("prefix of node `nav.worker`"),
+            "got: {err}"
         );
     }
 

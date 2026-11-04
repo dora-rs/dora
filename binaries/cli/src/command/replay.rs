@@ -142,6 +142,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         );
     }
 
+    let explicit_replace = !args.replace.is_empty();
     // Determine which nodes to replace
     let nodes_to_replace: BTreeSet<String> = if args.replace.is_empty() {
         recorded_counts.keys().cloned().collect()
@@ -179,6 +180,23 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         .get_mut("nodes")
         .and_then(|v| v.as_sequence_mut())
         .ok_or_else(|| eyre::eyre!("descriptor has no nodes array"))?;
+
+    let unmapped = unmapped_recorded_nodes(nodes, &nodes_to_replace);
+    if !unmapped.is_empty() {
+        let unmapped = unmapped.join(", ");
+        if explicit_replace {
+            bail!(
+                "cannot replay `{unmapped}`: not a top-level node of the recorded dataflow \
+                 (a node inside a `module:` is recorded under its expanded id, but replay \
+                 can only replace top-level nodes)"
+            );
+        }
+        eprintln!(
+            "warning: recorded nodes `{unmapped}` are not top-level nodes of the recorded \
+             dataflow (e.g. nodes inside a `module:`), so they run live instead of being \
+             replayed"
+        );
+    }
 
     replace_recorded_nodes_with_replay(
         nodes,
@@ -272,12 +290,29 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     run.execute_with(true)
 }
 
+/// The recorded nodes in `nodes_to_replace` that `nodes` has no entry for,
+/// so replay cannot swap them for a replay node. A node inside a `module:` is
+/// recorded under its expanded id (`<module>.<inner>`), while the recording
+/// keeps the unexpanded dataflow, which lists only the module node.
+fn unmapped_recorded_nodes(
+    nodes: &serde_yaml::Sequence,
+    nodes_to_replace: &BTreeSet<String>,
+) -> Vec<String> {
+    let ids: BTreeSet<&str> = nodes.iter().filter_map(|n| n.get("id")?.as_str()).collect();
+    nodes_to_replace
+        .iter()
+        .filter(|id| !ids.contains(id.as_str()))
+        .cloned()
+        .collect()
+}
+
 /// Rewrites each recorded node in the descriptor into a replay node: swaps its
 /// `path` for the `dora-replay-node` binary, strips the build/source/operator
 /// keys (including `hub:`/`ros2:`, which are exclusive with `path`, and a
-/// `path_sha256` that would now point at the local replay binary) and its
-/// `inputs`/`input_types`, republishes its recorded `outputs`, and injects the
-/// `DORA_REPLAY_*` env the replay node reads (file, node id, speed, loop).
+/// `path_sha256` or `path_fallback` that would now apply to the local replay
+/// binary), its `inputs`/`input_types` and its `send_stdout_as`/`send_logs_as`,
+/// republishes its recorded `outputs`, and injects the `DORA_REPLAY_*` env the
+/// replay node reads (file, node id, speed, loop).
 fn replace_recorded_nodes_with_replay(
     nodes: &mut serde_yaml::Sequence,
     nodes_to_replace: &BTreeSet<String>,
@@ -314,8 +349,17 @@ fn replace_recorded_nodes_with_replay(
                 "hub",
                 "ros2",
                 "path_sha256",
+                "path_fallback",
                 "inputs",
                 "input_types",
+                // The daemon turns every line the process prints into an
+                // output under these names. The process is now
+                // `dora-replay-node`, which re-sends the recorded messages of
+                // those outputs itself, so its own stderr status lines would
+                // otherwise reach downstream nodes as extra, never-recorded
+                // messages.
+                "send_stdout_as",
+                "send_logs_as",
             ] {
                 map.remove(serde_yaml::Value::String(key.to_string()));
             }
@@ -598,6 +642,20 @@ fn find_replay_node_binary() -> eyre::Result<PathBuf> {
 mod tests {
     use super::*;
 
+    /// A module's inner node is recorded as `<module>.<inner>`, but the
+    /// recording keeps the unexpanded dataflow, so replay must flag it
+    /// rather than silently run it live.
+    #[test]
+    fn a_recorded_module_inner_node_is_reported_as_unmapped() {
+        let descriptor: serde_yaml::Value = serde_yaml::from_str(
+            "nodes:\n  - id: src\n    path: src.py\n  - id: pipe\n    module: m.yml\n",
+        )
+        .unwrap();
+        let nodes = descriptor["nodes"].as_sequence().unwrap();
+        let recorded = BTreeSet::from(["src".to_string(), "pipe.inner".to_string()]);
+        assert_eq!(unmapped_recorded_nodes(nodes, &recorded), ["pipe.inner"]);
+    }
+
     fn run_rewrite(yaml: &str, replaced: &[&str], counts: &[(&str, &str, u64)]) -> String {
         run_rewrite_counted(yaml, replaced, counts).0
     }
@@ -735,6 +793,47 @@ mod tests {
     }
 
     #[test]
+    fn replay_replacement_strips_log_outputs_but_keeps_them_declared() {
+        let out = replaced_with_replay(
+            concat!(
+                "nodes:\n",
+                "- id: cam\n",
+                "  path: cam.py\n",
+                "  send_stdout_as: text\n",
+                "  send_logs_as: logs\n",
+                "  outputs:\n",
+                "    - image\n",
+                "    - text\n",
+                "    - logs\n",
+                "- id: logger\n",
+                "  path: logger.py\n",
+                "  send_stdout_as: text\n",
+                "  inputs:\n",
+                "    t: cam/text\n",
+                "  outputs:\n",
+                "    - text\n",
+            ),
+            &["cam"],
+        );
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+
+        let cam = &parsed["nodes"][0];
+        assert!(cam.get("send_stdout_as").is_none(), "{out}");
+        assert!(cam.get("send_logs_as").is_none(), "{out}");
+        // The recorded messages of those outputs are replayed, so the outputs
+        // themselves stay declared for downstream inputs.
+        let outputs: Vec<_> = cam["outputs"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(outputs, ["image", "text", "logs"]);
+        // A node that is not replayed keeps its own setting.
+        assert_eq!(parsed["nodes"][1]["send_stdout_as"].as_str(), Some("text"));
+    }
+
+    #[test]
     fn replay_replacement_strips_fields_exclusive_with_path() {
         let out = replaced_with_replay(
             concat!(
@@ -758,8 +857,13 @@ mod tests {
                 "  path_sha256: 0000000000000000000000000000000000000000000000000000000000000000\n",
                 "  outputs:\n",
                 "    - data\n",
+                "- id: from-module\n",
+                "  path: modules/tool\n",
+                "  path_fallback: tool\n",
+                "  outputs:\n",
+                "    - data\n",
             ),
-            &["detector", "bridge", "downloaded"],
+            &["detector", "bridge", "downloaded", "from-module"],
         );
         let descriptor: dora_message::descriptor::Descriptor =
             serde_yaml::from_str(&out).expect("rewritten descriptor must deserialize");
@@ -769,6 +873,11 @@ mod tests {
             assert!(
                 node.path_sha256.is_none(),
                 "`{}` kept `path_sha256`",
+                node.id
+            );
+            assert!(
+                node.path_fallback.is_none(),
+                "`{}` kept `path_fallback`",
                 node.id
             );
             assert!(

@@ -11,6 +11,11 @@ use crate::{BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId}
 
 pub use log::Level as LogLevel;
 
+/// [`LogMessage::fields`] key of the notice the coordinator sends a log
+/// reader that fell behind; the value is how many lines it missed. Clients
+/// show such a notice even when they filter the stream by node or pattern.
+pub const DROPPED_LOG_LINES_FIELD: &str = "dora_dropped_log_lines";
+
 /// A single log record delivered to `dora/logs` subscribers.
 ///
 /// One of these is produced for every captured log line — a `tracing` event

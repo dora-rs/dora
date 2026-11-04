@@ -27,7 +27,7 @@ This document covers the two C APIs provided by the Dora framework: the **Node A
 
 ## Node API (dora-node-api-c)
 
-Header: [`apis/c/node/node_api.h`](../apis/c/node/node_api.h)
+Header: [`apis/c/node/node_api.h`](../../../apis/c/node/node_api.h)
 Crate: `dora-node-api-c` (builds as `staticlib`)
 
 The Node API is used by standalone C executables that participate in an Dora dataflow as external processes. The daemon spawns the process and sets environment variables that the node reads during initialization.
@@ -114,7 +114,16 @@ The returned pointer borrows from the event. It becomes invalid after `free_dora
 unsigned long long read_dora_input_timestamp(void *dora_event);
 ```
 
-Returns the hybrid logical clock timestamp from an input event's metadata as a `uint64` value. Returns `0` if the event is not an input event.
+Returns the hybrid logical clock timestamp from an input event's metadata. Returns `0` if the event is not an input event.
+
+The value is an NTP64 timestamp, **not** nanoseconds: a 32.32 fixed-point number whose upper 32 bits are whole seconds since the UNIX epoch and whose lower 32 bits are the fraction of a second in units of 2^-32 s (the lowest bits carry the hybrid logical clock's counter). Convert it before comparing it with a wall-clock reading, for example to compute latency:
+
+```c
+unsigned long long ts = read_dora_input_timestamp(event);
+uint64_t secs = ts >> 32;
+uint64_t subsec_nanos = ((ts & 0xFFFFFFFFull) * 1000000000ull) >> 32;
+uint64_t nanos_since_epoch = secs * 1000000000ull + subsec_nanos;
+```
 
 ### Output
 
@@ -174,7 +183,7 @@ enum DoraEventType {
 
 ## Operator API (dora-operator-api-c)
 
-Headers: [`apis/c/operator/operator_api.h`](../apis/c/operator/operator_api.h), [`apis/c/operator/operator_types.h`](../apis/c/operator/operator_types.h)
+Headers: [`apis/c/operator/operator_api.h`](../../../apis/c/operator/operator_api.h), [`apis/c/operator/operator_types.h`](../../../apis/c/operator/operator_types.h)
 Crate: `dora-operator-api-c`
 
 The Operator API is used by shared libraries (`.so`/`.dylib`/`.dll`) loaded into the Dora runtime process. Unlike nodes, operators do not have their own `main` function. Instead, they export three functions that the runtime calls at the appropriate lifecycle points.
@@ -244,7 +253,7 @@ Vec_uint8_t dora_read_data(Input_t *input);
 
 Reads the input data as a byte array. Consumes the underlying Arrow array from the input (the data can only be read once per event). Returns a `Vec_uint8_t` with `.ptr = NULL` if the input has no data or the data has already been consumed.
 
-The caller must free the returned data with `dora_free_data`.
+The caller must free the returned data with `dora_free_data`. Freeing a result whose `.ptr` is `NULL` is a no-op, so the result can be freed unconditionally.
 
 ### Output Sending
 

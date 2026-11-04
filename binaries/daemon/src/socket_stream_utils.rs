@@ -103,9 +103,56 @@ pub async fn socket_stream_receive_with_header_timeout(
     Ok(reply)
 }
 
+/// Delay before the next `accept()` after one failed with `kind`, given the
+/// delay used after the previous failure (`None` if the last attempt was
+/// fine or transient).
+///
+/// A persistent error (e.g. `EMFILE` — too many open files) leaves the
+/// listener readable, so retrying at once would busy-spin the accept loop at
+/// 100% CPU and flood the logs (dora-rs/dora#2027). Per-connection errors (a
+/// peer that reset before `accept` completed) are transient and retried
+/// immediately, matching the standard accept-loop idiom — only resource
+/// exhaustion warrants the pause, which doubles from 10ms up to 1s.
+pub fn next_accept_backoff(
+    previous: Option<std::time::Duration>,
+    kind: std::io::ErrorKind,
+) -> Option<std::time::Duration> {
+    use std::{io::ErrorKind, time::Duration};
+    const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
+    match kind {
+        ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset | ErrorKind::Interrupted => None,
+        _ => Some(
+            previous
+                .map_or(Duration::from_millis(10), |d| d * 2)
+                .min(ACCEPT_BACKOFF_MAX),
+        ),
+    }
+}
+
+/// Logs a failed `accept()` and returns the delay to wait before the next
+/// one (see [`next_accept_backoff`]).
+pub fn accept_failed(
+    previous: Option<std::time::Duration>,
+    err: &std::io::Error,
+) -> Option<std::time::Duration> {
+    let delay = next_accept_backoff(previous, err.kind());
+    match delay {
+        // Transient: the offending connection is already gone, so the next
+        // `accept` makes progress. Retry without a penalty.
+        None => tracing::warn!("failed to accept new connection: {err}"),
+        Some(delay) => {
+            tracing::warn!("failed to accept new connection: {err} (retrying in {delay:?})")
+        }
+    }
+    delay
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{socket_stream_receive_with_header_timeout, socket_stream_send};
+    use super::{
+        next_accept_backoff, socket_stream_receive_with_header_timeout, socket_stream_send,
+    };
+    use std::{io::ErrorKind, time::Duration};
     use tokio::io::{AsyncWriteExt, duplex};
 
     /// Receive a frame using the default header timeout, mirroring the
@@ -231,5 +278,34 @@ mod tests {
             .await
             .expect_err("must time out on a stalled peer");
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn accept_backoff_retries_transient_errors_at_once() {
+        for kind in [
+            ErrorKind::ConnectionAborted,
+            ErrorKind::ConnectionReset,
+            ErrorKind::Interrupted,
+        ] {
+            assert_eq!(next_accept_backoff(None, kind), None);
+            // A transient error also clears an earlier backoff.
+            assert_eq!(
+                next_accept_backoff(Some(Duration::from_millis(80)), kind),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn accept_backoff_doubles_up_to_one_second() {
+        // Any non-transient kind; EMFILE has no stable `ErrorKind` of its own.
+        let kind = ErrorKind::Other;
+        let mut delay = None;
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            delay = next_accept_backoff(delay, kind);
+            seen.push(delay.unwrap().as_millis());
+        }
+        assert_eq!(seen, [10, 20, 40, 80, 160, 320, 640, 1000, 1000, 1000]);
     }
 }

@@ -177,8 +177,9 @@ fn filename_from_url(url: &reqwest::Url) -> Option<String> {
 /// reject Windows reserved device names. Returns `None` when nothing usable
 /// survives — e.g. `".."` or `"."` (which `Path::file_name` maps to `None`),
 /// a name over 255 bytes / containing a NUL, a name that is only dots and
-/// spaces, or a reserved device name such as `NUL`. (A trailing slash such as
-/// `"dir/"` keeps its last component: `Path::file_name` returns `"dir"`.)
+/// spaces, a dotfile name such as `.bashrc`, or a reserved device name such
+/// as `NUL`. (A trailing slash such as `"dir/"` keeps its last component:
+/// `Path::file_name` returns `"dir"`.)
 ///
 /// The `Content-Disposition` header is attacker-influenced, so the returned
 /// name is a name a hostile server could pick. The two hardening steps below
@@ -202,6 +203,14 @@ fn sanitize_filename(name: &str) -> Option<String> {
     if sanitized.is_empty() {
         return None;
     }
+    // The CLI downloads a dataflow URL into the current directory, often
+    // `$HOME`, and the file is renamed over any existing one and made
+    // executable. Neither source is trusted — the header is the server's, and
+    // so is the final URL after a redirect — so refuse a dotfile name: a
+    // hostile server must not be able to replace `~/.bashrc` or `~/.profile`.
+    if sanitized.starts_with('.') {
+        return None;
+    }
     // `tokio::fs::File::create(dir/NUL)` opens the *null device* on Windows
     // rather than a file: the write and `sync_all` both "succeed" and the
     // caller goes on to spawn/`dlopen` something with no content. Reject the
@@ -213,7 +222,8 @@ fn sanitize_filename(name: &str) -> Option<String> {
 }
 
 /// Whether `name` is a Windows reserved device name (`CON`, `PRN`, `AUX`,
-/// `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), compared case-insensitively and
+/// `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`, and the superscript-digit forms
+/// `COM¹`–`COM³` / `LPT¹`–`LPT³`), compared case-insensitively and
 /// ignoring any extension — `NUL`, `NUL.bin`, and `NUL.tar.gz` are all
 /// reserved. Windows also ignores trailing spaces in the device stem, so
 /// `NUL .txt` is matched too.
@@ -224,10 +234,19 @@ fn is_windows_reserved_name(name: &str) -> bool {
     if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
         return true;
     }
-    // `COM0`–`COM9` and `LPT0`–`LPT9`.
+    // `COM0`–`COM9` and `LPT0`–`LPT9`. Windows also reserves the ISO 8859-1
+    // superscript digits `¹²³` in that position, and a name can carry them now
+    // that a raw UTF-8 `Content-Disposition` header is honored.
+    let Some(rest) = upper
+        .strip_prefix("COM")
+        .or_else(|| upper.strip_prefix("LPT"))
+    else {
+        return false;
+    };
+    let mut chars = rest.chars();
     matches!(
-        upper.strip_prefix("COM").or_else(|| upper.strip_prefix("LPT")),
-        Some(rest) if rest.len() == 1 && rest.as_bytes()[0].is_ascii_digit()
+        (chars.next(), chars.next()),
+        (Some('0'..='9' | '¹' | '²' | '³'), None)
     )
 }
 
@@ -247,10 +266,16 @@ fn resolve_filename(content_disposition: Option<&str>, url: &reqwest::Url) -> Op
 }
 
 fn get_filename(response: &reqwest::Response) -> Option<String> {
+    // `HeaderValue::to_str` accepts visible ASCII only, so a server that sends
+    // the name as raw UTF-8 (`filename="modèle.bin"`, common in practice even
+    // though RFC 6266 wants `filename*=` for it) would have its header dropped
+    // and the download named after the URL instead — `download?id=42` becomes
+    // `download`, losing the extension the runtime relies on. Decode the bytes
+    // as UTF-8; the result still goes through `sanitize_filename`.
     let content_disposition = response
         .headers()
         .get("content-disposition")
-        .and_then(|value| value.to_str().ok());
+        .and_then(|value| std::str::from_utf8(value.as_bytes()).ok());
     resolve_filename(content_disposition, response.url())
 }
 
@@ -693,6 +718,9 @@ mod tests {
             "NUL.",
             "nul ",
             "NUL .txt",
+            "COM\u{b9}",
+            "com\u{b2}.bin",
+            "LPT\u{b3}",
         ] {
             assert_eq!(
                 sanitize_filename(name),
@@ -701,7 +729,16 @@ mod tests {
             );
         }
         // Names that merely start like a device but are not one stay valid.
-        for name in ["NULls", "console.log", "COM10", "LPT", "com.bin"] {
+        for name in [
+            "NULls",
+            "console.log",
+            "COM10",
+            "LPT",
+            "com.bin",
+            // Only `¹²³` are reserved; other superscripts and a digit pair are not.
+            "COM\u{2074}",
+            "COM1\u{b9}",
+        ] {
             assert_eq!(
                 sanitize_filename(name),
                 Some(name.to_string()),
@@ -723,6 +760,82 @@ mod tests {
         // A name that is nothing but dots/spaces trims to empty and is rejected.
         assert_eq!(sanitize_filename("..."), None);
         assert_eq!(sanitize_filename("   "), None);
+    }
+
+    #[test]
+    fn sanitize_rejects_dotfile_names() {
+        for name in [".bashrc", ".profile", "../.ssh/.config", ".hidden.bin"] {
+            assert_eq!(
+                sanitize_filename(name),
+                None,
+                "dotfile name {name:?} must be rejected"
+            );
+        }
+        // A dot elsewhere in the name is fine.
+        assert_eq!(
+            sanitize_filename("flow.v1.yml"),
+            Some("flow.v1.yml".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_url_when_header_names_a_dotfile() {
+        assert_eq!(
+            resolve(
+                Some("attachment; filename=\".bashrc\""),
+                "https://example.com/flow.yml"
+            ),
+            Some("flow.yml".to_string())
+        );
+        // A redirect is followed before the URL is read, so a dotfile URL
+        // segment is server-controlled too.
+        assert_eq!(resolve(None, "https://example.com/.bashrc"), None);
+    }
+
+    // --- Content-Disposition over HTTP ---
+
+    /// Serve one response with `headers` and a short body on a loopback port,
+    /// and return the URL to fetch.
+    async fn serve_once(headers: &'static [u8], path: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n")
+                .await
+                .unwrap();
+            socket.write_all(headers).await.unwrap();
+            socket.write_all(b"\r\nok").await.unwrap();
+            socket.flush().await.unwrap();
+        });
+        format!("http://{addr}{path}")
+    }
+
+    #[tokio::test]
+    async fn utf8_content_disposition_filename_is_used() {
+        let url = serve_once(
+            "Content-Disposition: attachment; filename=\"mod\u{e8}le.bin\"\r\n".as_bytes(),
+            "/download?id=42",
+        )
+        .await;
+        let target_dir =
+            std::env::temp_dir().join(format!("dora-download-utf8-{}", std::process::id()));
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let result = super::download_with(&client, url.as_str(), &target_dir, None).await;
+        let _ = std::fs::remove_dir_all(&target_dir);
+        let path = result.unwrap();
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("mod\u{e8}le.bin"),
+            "a raw UTF-8 Content-Disposition filename must not fall back to the URL name"
+        );
     }
 
     // --- read timeout (stalled body) ---

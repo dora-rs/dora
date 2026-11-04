@@ -104,7 +104,7 @@ Reads the raw data bytes from an `DoraEventType_Input` event. Writes the data st
 
 Sets `*out_ptr = NULL` and `*out_len = 0` if the event is not an input event or the input carries no data.
 
-Currently only `UInt8` Arrow arrays are supported. Other Arrow data types will cause a runtime panic. Future versions will use the Arrow C Data Interface for full type support.
+Currently only `UInt8` Arrow arrays are supported. Any other Arrow data type, and a `UInt8` array with null slots (whose bytes are unspecified), also yields `*out_ptr = NULL` and `*out_len = 0` and logs an error, so a `NULL` result does not by itself mean the message was empty. Future versions will use the Arrow C Data Interface for full type support.
 
 The returned pointer borrows from the event. It becomes invalid after `free_dora_event` is called.
 
@@ -114,7 +114,16 @@ The returned pointer borrows from the event. It becomes invalid after `free_dora
 unsigned long long read_dora_input_timestamp(void *dora_event);
 ```
 
-Returns the hybrid logical clock timestamp from an input event's metadata as a `uint64` value. Returns `0` if the event is not an input event.
+Returns the hybrid logical clock timestamp from an input event's metadata. Returns `0` if the event is not an input event.
+
+The value is an NTP64 timestamp, **not** nanoseconds: a 32.32 fixed-point number whose upper 32 bits are whole seconds since the UNIX epoch and whose lower 32 bits are the fraction of a second in units of 2^-32 s (the lowest bits carry the hybrid logical clock's counter). Convert it before comparing it with a wall-clock reading, for example to compute latency:
+
+```c
+unsigned long long ts = read_dora_input_timestamp(event);
+uint64_t secs = ts >> 32;
+uint64_t subsec_nanos = ((ts & 0xFFFFFFFFull) * 1000000000ull) >> 32;
+uint64_t nanos_since_epoch = secs * 1000000000ull + subsec_nanos;
+```
 
 ### Output
 
@@ -244,7 +253,7 @@ Vec_uint8_t dora_read_data(Input_t *input);
 
 Reads the input data as a byte array. Consumes the underlying Arrow array from the input (the data can only be read once per event). Returns a `Vec_uint8_t` with `.ptr = NULL` if the input has no data or the data has already been consumed.
 
-The caller must free the returned data with `dora_free_data`.
+The caller must free the returned data with `dora_free_data`. Freeing a result whose `.ptr` is `NULL` is a no-op, so the result can be freed unconditionally.
 
 ### Output Sending
 

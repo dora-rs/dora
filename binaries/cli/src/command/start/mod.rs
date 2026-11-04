@@ -135,6 +135,7 @@ impl Executable for Start {
                 dataflow,
                 dataflow_id,
                 &session,
+                coordinator_socket,
                 self.hot_reload,
                 log_level,
             )

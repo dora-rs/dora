@@ -9,7 +9,10 @@ use serde::ser::SerializeSeq;
 
 use crate::TypeInfo;
 
-use super::{TypedValue, error, reject_null_element, reject_null_string_element};
+use super::{
+    TypedValue, check_string_bound, encode_wstring, error, reject_null_element,
+    reject_null_string_element, string_bound,
+};
 
 /// Serialize a variable-sized sequence.
 pub struct SequenceSerializeWrapper<'a> {
@@ -180,24 +183,26 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
             }
             NestableType::GenericString(s) => match s {
                 GenericString::String | GenericString::BoundedString(_) => {
+                    let bound = string_bound(s);
                     match entry.as_string_opt::<i32>() {
-                        Some(array) => serialize_arrow_string(serializer, array),
+                        Some(array) => serialize_arrow_string(serializer, array, bound),
                         None => {
                             let array = entry
                                 .as_string_opt::<i64>()
                                 .ok_or_else(|| error("expected string array"))?;
-                            serialize_arrow_string(serializer, array)
+                            serialize_arrow_string(serializer, array, bound)
                         }
                     }
                 }
                 GenericString::WString | GenericString::BoundedWString(_) => {
+                    let bound = string_bound(s);
                     match entry.as_string_opt::<i32>() {
-                        Some(array) => serialize_arrow_wstring(serializer, array),
+                        Some(array) => serialize_arrow_wstring(serializer, array, bound),
                         None => {
                             let array = entry
                                 .as_string_opt::<i64>()
                                 .ok_or_else(|| error("expected string array for WString"))?;
-                            serialize_arrow_wstring(serializer, array)
+                            serialize_arrow_wstring(serializer, array, bound)
                         }
                     }
                 }
@@ -209,6 +214,7 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
 fn serialize_arrow_string<S, O>(
     serializer: S,
     array: &arrow::array::GenericByteArray<datatypes::GenericStringType<O>>,
+    bound: Option<usize>,
 ) -> Result<<S as serde::Serializer>::Ok, <S as serde::Serializer>::Error>
 where
     S: serde::Serializer,
@@ -216,7 +222,9 @@ where
 {
     let mut seq = serializer.serialize_seq(Some(array.len()))?;
     for (i, s) in array.iter().enumerate() {
-        seq.serialize_element(reject_null_string_element(s, i)?)?;
+        let s = reject_null_string_element(s, i)?;
+        check_string_bound(s, bound)?;
+        seq.serialize_element(s)?;
     }
     seq.end()
 }
@@ -224,6 +232,7 @@ where
 fn serialize_arrow_wstring<S, O>(
     serializer: S,
     array: &arrow::array::GenericByteArray<datatypes::GenericStringType<O>>,
+    bound: Option<usize>,
 ) -> Result<<S as serde::Serializer>::Ok, <S as serde::Serializer>::Error>
 where
     S: serde::Serializer,
@@ -231,8 +240,7 @@ where
 {
     let mut seq = serializer.serialize_seq(Some(array.len()))?;
     for (i, s) in array.iter().enumerate() {
-        let utf16: Vec<u16> = reject_null_string_element(s, i)?.encode_utf16().collect();
-        seq.serialize_element(&utf16)?;
+        seq.serialize_element(&encode_wstring(reject_null_string_element(s, i)?, bound)?)?;
     }
     seq.end()
 }
@@ -686,13 +694,20 @@ mod tests {
 
     /// A message with a single `sequence<string>` (`string[]`) field.
     fn string_seq_message() -> Arc<HashMap<String, HashMap<String, Message>>> {
+        string_seq_message_of(GenericString::String)
+    }
+
+    /// A message with a single sequence field of the given string type.
+    fn string_seq_message_of(
+        element: GenericString,
+    ) -> Arc<HashMap<String, HashMap<String, Message>>> {
         let message = Message {
             package: "test_msgs".to_string(),
             name: "StrSeqMsg".to_string(),
             members: vec![Member {
                 name: "names".to_string(),
                 r#type: MemberType::Sequence(Sequence {
-                    value_type: NestableType::GenericString(GenericString::String),
+                    value_type: NestableType::GenericString(element),
                 }),
                 default: None,
             }],
@@ -747,6 +762,34 @@ mod tests {
             string_seq_serializes_ok(&messages, vec![Some("a"), Some("b"), Some("c")]),
             "an all-present string[] field must still serialize"
         );
+    }
+
+    /// Each element of a `string<=N>[]` field is bounded like a scalar
+    /// `string<=N>` field: an over-long element must error rather than be
+    /// published as an over-bound CDR string.
+    #[test]
+    fn bounded_string_sequence_element_length_is_checked() {
+        let messages = string_seq_message_of(GenericString::BoundedString(3));
+        assert!(
+            !string_seq_serializes_ok(&messages, vec![Some("abc"), Some("abcd")]),
+            "a 4-byte element of a string<=3[] field must error"
+        );
+        assert!(string_seq_serializes_ok(
+            &messages,
+            vec![Some("abc"), Some("")]
+        ));
+    }
+
+    /// Same for `wstring<=N>[]`, whose bound counts UTF-16 code units.
+    #[test]
+    fn bounded_wstring_sequence_element_length_is_checked() {
+        let messages = string_seq_message_of(GenericString::BoundedWString(2));
+        assert!(
+            !string_seq_serializes_ok(&messages, vec![Some("abc")]),
+            "a 3-unit element of a wstring<=2[] field must error"
+        );
+        // One character outside the BMP is two UTF-16 units but four bytes.
+        assert!(string_seq_serializes_ok(&messages, vec![Some("\u{1F600}")]));
     }
 
     /// A message with a single `sequence<T>` field of the given `value_type`.

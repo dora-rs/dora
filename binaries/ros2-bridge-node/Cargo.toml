@@ -33,6 +33,3 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3"
-
-[dev-dependencies]
-serde_yaml = { workspace = true }

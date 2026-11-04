@@ -75,6 +75,143 @@ impl<T> DelayedCleanup<T> {
     pub fn get_mut(&self) -> std::sync::MutexGuard<'_, T> {
         self.0.try_lock().expect("failed to lock DelayedCleanup")
     }
+
+    /// Lock the value from a thread that holds the GIL, for code that runs
+    /// Python code while it holds the value. Other code uses `run`.
+    ///
+    /// While another thread holds the value, wait with the GIL released: the
+    /// holder may be a send that runs without the GIL, which other Python
+    /// threads need not wait for, or a call that runs Python code and needs
+    /// the GIL back to finish.
+    ///
+    /// The value stays locked while the GIL is taken back, so sends on other
+    /// threads, which lock it without the GIL, cannot take it first every
+    /// time. That is why this does not use `py.detach` (or PyO3's
+    /// `lock_py_attached`): taking the GIL back through PyO3 runs Python code
+    /// (`__del__` of objects dropped without the GIL), which may call the node
+    /// and would then wait for this thread's own lock.
+    pub fn lock(&self, _py: Python<'_>) -> Locked<'_, T> {
+        self.check_not_locked_here();
+        // Not a `match`, for the reason given in `run`.
+        if let Ok(guard) = self.0.try_lock() {
+            return Locked::new(guard, self.address());
+        }
+        let guard = {
+            // SAFETY: `_py` shows this thread holds the GIL, and nothing calls
+            // into Python or PyO3 before `_detached` takes it back.
+            let _detached = unsafe { Detached::new() };
+            self.0.lock()
+        };
+        Locked::new(
+            guard.expect("failed to lock DelayedCleanup"),
+            self.address(),
+        )
+    }
+
+    /// Run `f` on the value from a thread that holds the GIL.
+    ///
+    /// If the value is free, `f` runs right away. If another thread holds
+    /// it, this waits and runs `f` with the GIL released, like `detached`, so
+    /// the value is never held while waiting for the GIL and other threads
+    /// waiting for it (sends, say) need not wait for this one to get the GIL.
+    pub fn run<R: Send>(&self, py: Python<'_>, f: impl FnOnce(&mut T) -> R + Send) -> R
+    where
+        T: Send,
+    {
+        // Not a `match`: a poisoned `try_lock` error holds the lock until the
+        // end of the `match`, and `detached` would wait for it forever.
+        if let Ok(mut value) = self.0.try_lock() {
+            return f(&mut value);
+        }
+        self.detached(py, f)
+    }
+
+    /// Run `f` on the value with the GIL released, so other Python threads
+    /// keep running meanwhile. The value is locked only after the GIL is
+    /// released, and unlocked before it is taken back.
+    pub fn detached<R: Send>(&self, py: Python<'_>, f: impl FnOnce(&mut T) -> R + Send) -> R
+    where
+        T: Send,
+    {
+        self.check_not_locked_here();
+        py.detach(|| f(&mut self.0.lock().expect("failed to lock DelayedCleanup")))
+    }
+
+    /// Panics, like `get_mut`, if this thread holds the value through `lock`:
+    /// Python code run under that lock may call back in, and waiting for the
+    /// value would never end.
+    fn check_not_locked_here(&self) {
+        if LOCKED_HERE.with_borrow(|locked| locked.contains(&self.address())) {
+            drop(self.get_mut());
+        }
+    }
+
+    fn address(&self) -> usize {
+        Arc::as_ptr(&self.0).addr()
+    }
+}
+
+thread_local! {
+    /// The values this thread holds through `DelayedCleanup::lock`.
+    static LOCKED_HERE: std::cell::RefCell<Vec<usize>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A value held through `DelayedCleanup::lock`.
+pub struct Locked<'a, T> {
+    guard: std::sync::MutexGuard<'a, T>,
+    address: usize,
+}
+
+impl<'a, T> Locked<'a, T> {
+    fn new(guard: std::sync::MutexGuard<'a, T>, address: usize) -> Self {
+        LOCKED_HERE.with_borrow_mut(|locked| locked.push(address));
+        Self { guard, address }
+    }
+}
+
+impl<T> std::ops::Deref for Locked<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.guard
+    }
+}
+
+impl<T> std::ops::DerefMut for Locked<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.guard
+    }
+}
+
+impl<T> Drop for Locked<'_, T> {
+    fn drop(&mut self) {
+        LOCKED_HERE.with_borrow_mut(|locked| {
+            if let Some(index) = locked.iter().rposition(|&address| address == self.address) {
+                locked.swap_remove(index);
+            }
+        });
+    }
+}
+
+/// Releases the GIL until dropped, without running Python code when it takes
+/// the GIL back.
+struct Detached(*mut pyo3::ffi::PyThreadState);
+
+impl Detached {
+    /// # Safety
+    ///
+    /// The calling thread must hold the GIL, and must not call into Python or
+    /// PyO3 until this is dropped.
+    unsafe fn new() -> Self {
+        Self(unsafe { pyo3::ffi::PyEval_SaveThread() })
+    }
+}
+
+impl Drop for Detached {
+    fn drop(&mut self) {
+        // SAFETY: the thread state comes from `PyEval_SaveThread` in `new`.
+        unsafe { pyo3::ffi::PyEval_RestoreThread(self.0) };
+    }
 }
 
 impl Stream for DelayedCleanup<EventStream> {
@@ -533,6 +670,181 @@ mod tests {
         assert_roundtrip(&list_array).context("ListArray roundtrip failed")?;
 
         Ok(())
+    }
+
+    /// A Rust thread holds a value while another thread, holding the GIL,
+    /// calls `call` on it, which must wait. Then this thread takes the GIL,
+    /// lets the Rust thread release the value, and returns what `check` says
+    /// while it keeps the GIL, so `call` cannot take the GIL back meanwhile.
+    fn check_while_the_caller_needs_the_gil(
+        call: impl FnOnce(pyo3::Python<'_>, &super::DelayedCleanup<i32>) + Send,
+        check: impl FnOnce(&super::DelayedCleanup<i32>) -> bool,
+    ) -> bool {
+        use pyo3::Python;
+        use std::sync::mpsc::channel;
+
+        Python::initialize();
+        let value = &super::DelayedCleanup::new(0);
+        let (locked_tx, locked_rx) = channel();
+        let (release_tx, release_rx) = channel::<()>();
+        let (started_tx, started_rx) = channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _guard = value.get_mut();
+                locked_tx.send(()).unwrap();
+                let _ = release_rx.recv();
+            });
+            locked_rx.recv().unwrap();
+            scope.spawn(move || {
+                Python::attach(|py| {
+                    started_tx.send(()).unwrap();
+                    call(py, value);
+                })
+            });
+            started_rx.recv().unwrap();
+            // The other thread gives up the GIL only once it waits for the
+            // value.
+            Python::attach(|_py| {
+                release_tx.send(()).unwrap();
+                check(value)
+            })
+        })
+    }
+
+    /// A `lock` that waited keeps the value while it takes the GIL back. If it
+    /// let the value go until then, sends on other threads, which lock the
+    /// value without the GIL, could take it first every time, and the call
+    /// would wait for seconds.
+    #[test]
+    fn a_lock_that_waited_keeps_the_value_while_it_takes_the_gil_back() {
+        use std::time::{Duration, Instant};
+
+        let kept = check_while_the_caller_needs_the_gil(
+            |py, value| *value.lock(py) += 1,
+            |value| {
+                // The caller now has the value, or soon will. It must keep
+                // the value until it has the GIL back.
+                let kept_for = |time: Duration| {
+                    let start = Instant::now();
+                    while start.elapsed() < time {
+                        if value.0.try_lock().is_ok() {
+                            return false;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    true
+                };
+                let start = Instant::now();
+                while start.elapsed() < Duration::from_secs(5) {
+                    if kept_for(Duration::from_millis(100)) {
+                        return true;
+                    }
+                }
+                false
+            },
+        );
+        assert!(
+            kept,
+            "the lock let the value go while it waited for the GIL"
+        );
+    }
+
+    /// A `run` that has to wait does its work without the GIL, and lets the
+    /// value go before it takes the GIL back. If it kept the value until it
+    /// had the GIL, sends on other threads would wait behind it.
+    #[test]
+    fn a_run_that_waited_works_and_lets_the_value_go_without_the_gil() {
+        use std::time::{Duration, Instant};
+
+        let done = check_while_the_caller_needs_the_gil(
+            |py, value| value.run(py, |value| *value += 1),
+            |value| {
+                let start = Instant::now();
+                while start.elapsed() < Duration::from_secs(5) {
+                    if let Ok(value) = value.0.try_lock()
+                        && *value == 1
+                    {
+                        return true;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                false
+            },
+        );
+        assert!(done, "the run waited for the GIL with the value locked");
+    }
+
+    /// Once a thread panicked while holding the value, every way of taking
+    /// it panics too, like `get_mut`, instead of waiting forever.
+    #[test]
+    fn a_poisoned_value_panics_instead_of_waiting() {
+        use pyo3::Python;
+        use std::time::Duration;
+
+        type Call = fn(Python<'_>, &super::DelayedCleanup<i32>);
+        let calls: [(&str, Call); 3] = [
+            ("lock", |py, value| drop(value.lock(py))),
+            ("run", |py, value| value.run(py, |_| ())),
+            ("detached", |py, value| value.detached(py, |_| ())),
+        ];
+        Python::initialize();
+        for (name, call) in calls {
+            let value = super::DelayedCleanup::new(0);
+            let poisoner = value.clone();
+            let _ = std::thread::spawn(move || {
+                let _guard = poisoner.get_mut();
+                panic!("poison the value");
+            })
+            .join();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            // On its own thread, so that a call that hangs fails the test
+            // instead of blocking it.
+            std::thread::spawn(move || {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Python::attach(|py| call(py, &value))
+                }));
+                let _ = done_tx.send(result.is_err());
+            });
+            let panicked = done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|_| panic!("{name} waits forever on a poisoned value"));
+            assert!(panicked, "{name} took a poisoned value");
+        }
+    }
+
+    /// While `lock` holds the value, Python code on the same thread may call
+    /// back in (a callback or a `__del__`). That call panics, like `get_mut`,
+    /// instead of waiting for its own thread forever.
+    #[test]
+    fn taking_a_value_this_thread_holds_panics_instead_of_waiting() {
+        use pyo3::Python;
+        use std::time::Duration;
+
+        type Call = fn(Python<'_>, &super::DelayedCleanup<i32>);
+        let calls: [(&str, Call); 3] = [
+            ("lock", |py, value| drop(value.lock(py))),
+            ("run", |py, value| value.run(py, |_| ())),
+            ("detached", |py, value| value.detached(py, |_| ())),
+        ];
+        Python::initialize();
+        for (name, call) in calls {
+            let value = super::DelayedCleanup::new(0);
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            // On its own thread, so that a call that hangs fails the test
+            // instead of blocking it.
+            std::thread::spawn(move || {
+                Python::attach(|py| {
+                    let _held = value.lock(py);
+                    let result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call(py, &value)));
+                    let _ = done_tx.send(result.is_err());
+                })
+            });
+            let panicked = done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|_| panic!("{name} waits for its own thread forever"));
+            assert!(panicked, "{name} took a value this thread holds");
+        }
     }
 
     // Regression tests for dora-rs/adora#147: Python event conversion used

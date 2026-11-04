@@ -29,6 +29,23 @@ fn service_request_cdr_and_request_ids_are_preserved() {
     assert_eq!(pending.take(id(7, 1), Duration::ZERO).unwrap(), cdr);
 }
 
+/// Like rmw_zenoh (`ServiceData::take_request`: "duplicate sequence number
+/// in the map"), a request whose id is still pending is refused and the
+/// pending one is kept, so its answer can't go to the newer request.
+#[test]
+fn a_request_id_that_is_still_pending_is_refused() {
+    let mut pending = PendingRequests::new(64, Duration::from_secs(30));
+    pending.insert(id(1, 4), "first", Duration::ZERO).unwrap();
+    assert!(matches!(
+        pending.insert(id(1, 4), "second", Duration::ZERO),
+        Err(ServiceError::DuplicateRequest)
+    ));
+    assert_eq!(pending.take(id(1, 4), Duration::ZERO).unwrap(), "first");
+    // Once answered, the id can be used again.
+    pending.insert(id(1, 4), "third", Duration::ZERO).unwrap();
+    assert_eq!(pending.take(id(1, 4), Duration::ZERO).unwrap(), "third");
+}
+
 #[test]
 fn service_pending_is_bounded_and_expires_with_fake_clock() {
     let mut pending = PendingRequests::new(64, Duration::from_secs(30));
@@ -201,6 +218,84 @@ async fn multiple_complete_servers_remote_errors_and_disappearance_are_observabl
     ));
 }
 
+/// A query that repeats the id of a request still waiting for its answer is
+/// dropped without a reply and never reaches the server, so the answer goes
+/// to the query that sent the id first. Like rmw_zenoh
+/// (`ServiceData::take_request`: "duplicate sequence number in the map").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_repeated_request_id_does_not_take_the_pending_answer() {
+    use dora_ros2_bridge::transport::zenoh::{attachment::Attachment, service::RawServiceServer};
+
+    // A session no other process can find, so the server only sees the
+    // queries sent below.
+    let mut config = zenoh::Config::default();
+    config
+        .insert_json5("scouting/multicast/enabled", "false")
+        .unwrap();
+    config
+        .insert_json5("scouting/gossip/enabled", "false")
+        .unwrap();
+    config.insert_json5("listen/endpoints", "[]").unwrap();
+    let session = zenoh::open(config).await.unwrap();
+    let server =
+        RawServiceServer::declare(&session, "dora/test/repeated", 64, Duration::from_secs(30))
+            .await
+            .unwrap();
+    // A raw query with a request id we choose, sent like the service client
+    // sends one.
+    let query = |sequence_number: i64, payload: Vec<u8>| {
+        let session = session.clone();
+        async move {
+            let attachment = Attachment {
+                sequence_number,
+                source_timestamp_ns: 0,
+                gid: [10; 16],
+            };
+            session
+                .get("dora/test/repeated")
+                .target(zenoh::query::QueryTarget::AllComplete)
+                .consolidation(zenoh::query::ConsolidationMode::None)
+                .payload(payload)
+                .attachment(attachment.encode().unwrap())
+                .await
+                .unwrap()
+        }
+    };
+    let recv = || async {
+        tokio::time::timeout(Duration::from_secs(5), server.recv())
+            .await
+            .expect("the server gets a request")
+            .unwrap()
+    };
+
+    let first = query(1, vec![1]).await;
+    assert_eq!(recv().await.payload, vec![1]);
+
+    let repeated = query(1, vec![2]).await;
+    let ended = tokio::time::timeout(Duration::from_secs(5), repeated.recv_async())
+        .await
+        .expect("the repeated query ends");
+    assert!(ended.is_err(), "the repeated query got a reply");
+    // The repeated query was handled before it ended, so had it been passed
+    // on, the server would get it before this one.
+    let _next = query(2, vec![3]).await;
+    assert_eq!(
+        recv().await.payload,
+        vec![3],
+        "the repeated request reached the server"
+    );
+
+    server.reply(id(1, 10), &[11]).await.unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(5), first.recv_async())
+        .await
+        .expect("the first query gets its answer")
+        .unwrap();
+    assert_eq!(
+        reply.result().unwrap().payload().to_bytes().to_vec(),
+        vec![11]
+    );
+}
+
 /// A session whose Zenoh-level query timeout is shorter than the per-call
 /// timeouts below, standing in for the 10 s `queries_default_timeout` that
 /// capped every rmw_zenoh service and action call (#3742).
@@ -257,6 +352,87 @@ async fn unanswered_call_reports_timeout_at_the_callers_deadline() {
         "expected ServiceError::Timeout, got {result:?}"
     );
     assert!(start.elapsed() >= Duration::from_millis(300));
+}
+
+/// How often the late-poll tests repeat their case: with a random choice
+/// between the reply and the expired deadline, all rounds pass by chance only
+/// once in 2^16 runs.
+const LATE_POLL_ROUNDS: usize = 16;
+
+/// A caller that polls its call late (the generated C++ client's pump while
+/// it waits for room in the event stream) must still get a reply that arrived
+/// before the deadline, not a timeout, like `tokio::time::timeout`, which
+/// checks the inner future before the timer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_received_in_time_wins_over_the_expired_deadline() {
+    use dora_ros2_bridge::transport::zenoh::service::{RawServiceClient, RawServiceServer};
+
+    let session = zenoh::open(zenoh::Config::default()).await.unwrap();
+    let server = RawServiceServer::declare(&session, "dora/test/late", 64, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let client = RawServiceClient::declare(&session, "dora/test/late", [9; 16], 64)
+        .await
+        .unwrap();
+
+    for round in 0..LATE_POLL_ROUNDS {
+        let call = client.call(vec![0, 1, 0, 0, round as u8], Duration::from_millis(50));
+        futures::pin_mut!(call);
+        assert!(futures::poll!(&mut call).is_pending(), "the query is sent");
+        let request = tokio::time::timeout(Duration::from_secs(5), server.recv())
+            .await
+            .expect("the server gets the request")
+            .unwrap();
+        server.reply(request.id, &request.payload).await.unwrap();
+        // Let the reply arrive and the 50 ms pass before polling again.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            call.await.unwrap(),
+            vec![0, 1, 0, 0, round as u8],
+            "round {round}"
+        );
+    }
+}
+
+/// Same for `wait_for_service`: a server that appeared before the deadline is
+/// found even when the wait is polled after it.
+#[tokio::test]
+async fn a_service_seen_in_time_wins_over_the_expired_deadline() {
+    use dora_ros2_bridge::transport::zenoh::keyexpr::{EntityKind, LivelinessKey, TopicToken};
+
+    for round in 0..LATE_POLL_ROUNDS {
+        let graph = GraphCache::new(7);
+        let wait = wait_for_service(
+            &graph,
+            "/add",
+            "example_interfaces::srv::dds_::AddTwoInts_",
+            "RIHS01_hash",
+            "qos",
+            Instant::now() + Duration::from_millis(20),
+        );
+        futures::pin_mut!(wait);
+        assert!(futures::poll!(&mut wait).is_pending(), "no server yet");
+        let service = LivelinessKey::endpoint(
+            7,
+            "zid",
+            "nid",
+            "eid",
+            EntityKind::Service,
+            "/",
+            "/",
+            "node",
+            TopicToken {
+                name: "/add".into(),
+                type_name: "example_interfaces::srv::dds_::AddTwoInts_".into(),
+                type_hash: "RIHS01_hash".into(),
+                qos: "qos".into(),
+            },
+        )
+        .unwrap();
+        graph.apply_put(service.as_str()).unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(wait.await.is_ok(), "round {round}");
+    }
 }
 
 /// rmw_zenoh's `service_server_is_available` matches a server by name and type

@@ -491,3 +491,29 @@ fn encode_matches_declared_schema() {
     check::<SET_POSITION_TARGET_GLOBAL_INT_DATA>();
     check::<SET_POSITION_TARGET_LOCAL_NED_DATA>();
 }
+
+/// Bits `PositionTargetTypemask` doesn't name, such as the setpoint-type bits
+/// 12-15 that PX4 and ArduPilot read (takeoff `0x1000`, loiter `0x3000`), must
+/// survive the Arrow round trip. mavlink's own parser keeps them
+/// (`from_bits_retain`), so the bridge has to as well, or a forwarded command
+/// silently becomes a plain position setpoint.
+#[test]
+fn position_target_type_mask_keeps_undefined_bits() {
+    let type_mask = PositionTargetTypemask::from_bits_retain(0x1000 | 0x0DF8);
+
+    let local = SET_POSITION_TARGET_LOCAL_NED_DATA {
+        type_mask,
+        ..Default::default()
+    };
+    let batch = local.to_record_batch().expect("encode");
+    let decoded = SET_POSITION_TARGET_LOCAL_NED_DATA::from_record_batch(&batch).expect("decode");
+    assert_eq!(decoded.type_mask.bits(), type_mask.bits());
+
+    let global = SET_POSITION_TARGET_GLOBAL_INT_DATA {
+        type_mask,
+        ..Default::default()
+    };
+    let batch = global.to_record_batch().expect("encode");
+    let decoded = SET_POSITION_TARGET_GLOBAL_INT_DATA::from_record_batch(&batch).expect("decode");
+    assert_eq!(decoded.type_mask.bits(), type_mask.bits());
+}

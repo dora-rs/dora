@@ -264,6 +264,29 @@ declaring `python: op.py` refers to `modules/nested/op.py`.
 Exempt from the rewrite: URLs, absolute paths, and the `dynamic` and `shell`
 sentinels (which the daemon matches verbatim).
 
+An inner node's `path:` that is a single name without an extension, such as
+`path: dora-echo`, still means the file next to the module (`modules/dora-echo`).
+If no such file exists
+(a folder of that name doesn't count) when the node starts, the name is looked up like a top-level `path:` instead
+(the dataflow directory, the uv environment, then `$PATH`), so a command that a
+`build:` step installs or that is on `$PATH` runs from a module in any
+directory. Expansion keeps that name in the node's `path_fallback`, an
+internal field that `dora expand` leaves out of its output (so running that
+output skips the fallback): a dataflow file, a module file, or a node file for
+`dora node add`/`replace` that sets it is rejected.
+A name with a dot after its first character, such as `worker.py` or
+`node.v2`, counts as having an extension, so it gets no `path_fallback` and
+only means the file next to the module.
+
+Use updated CLI, coordinator and daemon binaries for fallback lookup. On the
+control plane, fallback names travel separately from the strict descriptor;
+older components ignore them and retain their original lookup behavior. An
+existing module-local executable still works with those components, but a
+command available only through fallback requires the updated components.
+Descriptors sent to node APIs, and the one in the coordinator's `Info` reply
+(which `dora node info` shows), omit this internal metadata, so existing node
+binaries and clients can continue reading them.
+
 Two consequences worth knowing:
 
 - A resolved path that escapes the dataflow directory is rejected. A module
@@ -286,7 +309,7 @@ Two consequences worth knowing:
 
 ## Example
 
-See [`examples/module-dataflow/`](../examples/module-dataflow/) for a complete working example with a sender, transform module (doubler + filter), and receiver.
+See [`examples/module-dataflow/`](../../../examples/module-dataflow/) for a complete working example with a sender, transform module (doubler + filter), and receiver.
 
 ```bash
 dora run examples/module-dataflow/dataflow.yml

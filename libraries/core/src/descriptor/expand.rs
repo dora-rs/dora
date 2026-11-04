@@ -230,6 +230,7 @@ fn check_module_file_inner(
     // run_config.inputs rather than the node-level `inputs` map, so those
     // need the same check (see #2441).
     for node in &module_file.nodes {
+        reject_path_fallback(node, Some(&module_file.module.name))?;
         for inputs in node_input_maps(node) {
             check_mod_refs(&module_file.module.name, &node.id, inputs, &all_input_names)?;
         }
@@ -799,10 +800,19 @@ fn expand_module_node(
     // Build set of inner node IDs for cross-reference rewriting
     let inner_node_ids: BTreeSet<String> =
         module_file.nodes.iter().map(|n| n.id.to_string()).collect();
+    // The subset that are themselves modules: only those expand into
+    // `<sibling>.<inner>` nodes a log filter can name.
+    let module_sibling_ids: BTreeSet<String> = module_file
+        .nodes
+        .iter()
+        .filter(|n| n.module.is_some())
+        .map(|n| n.id.to_string())
+        .collect();
 
     // Phase 1: prefix IDs, rewrite inputs, resolve paths, substitute params
     let mut prefixed_nodes = Vec::new();
     for mut inner_node in module_file.nodes {
+        reject_path_fallback(&inner_node, Some(&module_file.module.name))?;
         let prefixed_id: NodeId = format!("{module_id}.{}", inner_node.id).into();
         inner_node.id = prefixed_id;
 
@@ -819,6 +829,7 @@ fn expand_module_node(
                 &module_id,
                 &node.inputs,
                 &inner_node_ids,
+                &module_sibling_ids,
                 &optional_inputs,
             )?;
         }
@@ -834,7 +845,8 @@ fn expand_module_node(
 
         // Substitute params in env values
         if !params.is_empty() {
-            substitute_params_in_node(&mut inner_node, params);
+            substitute_params_in_node(&mut inner_node, params)
+                .wrap_err_with(|| format!("module node `{}`", node.id))?;
         }
 
         // Prepend module-level build command to inner node builds
@@ -950,6 +962,23 @@ fn expand_module_node(
     Ok((final_nodes, output_map))
 }
 
+/// `path_fallback` is internal: expansion sets it on a module's inner nodes,
+/// so a file the user writes (a dataflow file, a module file, or a node file
+/// for `dora node add`/`replace`) must not set it.
+pub fn reject_path_fallback(node: &Node, module: Option<&str>) -> eyre::Result<()> {
+    if node.path_fallback.is_some() {
+        let module = module
+            .map(|name| format!("module `{name}`: "))
+            .unwrap_or_default();
+        bail!(
+            "{module}node `{}` sets `path_fallback`, which is internal \
+             (module expansion sets it); remove it",
+            node.id
+        );
+    }
+    Ok(())
+}
+
 fn resolve_inner_node_paths(
     node: &mut Node,
     module_dir: &Path,
@@ -961,7 +990,16 @@ fn resolve_inner_node_paths(
     if node.git.is_none()
         && let Some(ref mut path) = node.path
     {
+        let as_written = path.clone();
         resolve_module_relative_path(path, module_dir, project_root, &owner)?;
+        // A single extensionless name like `dora-echo` may also be a command
+        // on `$PATH` rather than a file next to the module (#3826). `path`
+        // keeps meaning the file; the name as written is what spawn falls
+        // back to when there is none. A `hub:` node never runs from `path`
+        // (hub resolution rejects one that has it), so it gets no fallback.
+        if node.hub.is_none() && *path != as_written && is_bare_name(&as_written) {
+            node.path_fallback = Some(as_written);
+        }
     }
     if let Some(ref mut operators) = node.operators {
         for op in &mut operators.operators {
@@ -1026,6 +1064,25 @@ fn resolve_module_relative_path(
     Ok(())
 }
 
+/// One plain file name without an extension, the form a command on `$PATH`
+/// is written in (a console script, a binary). Reads only the string, so
+/// `dora build` and `dora start` expand alike. A `:` (`C:tool` is a drive
+/// path on Windows) or a `$` (the daemon expands variables in `path`) never
+/// makes one. `worker.py` doesn't either: a script next to the module needs
+/// no fallback, preserving their existing module-relative meaning.
+/// Nor does a name made only of whitespace.
+pub(super) fn is_bare_name(path: &str) -> bool {
+    let name = Path::new(path);
+    let mut components = name.components();
+    !path.trim().is_empty()
+        && !path.contains(['/', '\\', ':', '$'])
+        && name.extension().is_none()
+        && matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        )
+}
+
 fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
     // The node-level `build` is consumed by every standard node -- `path:`,
     // `git:`, and `hub:` sourced -- (`build/mod.rs` reads `n.build` for all
@@ -1084,10 +1141,34 @@ fn propagate_module_node_env(
 
 /// Substitute `${_param.name}` and `$PARAM_<NAME>` references in a node's args
 /// and inject params into the node's env map as `EnvValue::String` entries.
-fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>) {
+/// A nested module node gets them in its own `params` instead.
+///
+/// An injected value has its `$VAR` references expanded here, as a YAML
+/// `env:` value is when the dataflow is read: an `EnvValue` reaches the
+/// coordinator and daemon as given and is not expanded there again (#3947).
+fn substitute_params_in_node(
+    node: &mut Node,
+    params: &BTreeMap<String, String>,
+) -> eyre::Result<()> {
     // Substitute in args
     if let Some(ref mut args) = node.args {
         *args = substitute_params_in_str(args, params);
+    }
+
+    // A nested module node expands later with its own `params` only. Resolve
+    // a forwarded `speed: $PARAM_SPEED` against ours and hand down the params
+    // it does not set; its own expansion then substitutes them into its inner
+    // nodes' args and injects them as env, as for a direct child.
+    if node.module.is_some() {
+        for value in node.params.values_mut() {
+            *value = substitute_params_in_str(value, params);
+        }
+        for (key, value) in params {
+            if !node.params.keys().any(|k| k.eq_ignore_ascii_case(key)) {
+                node.params.insert(key.clone(), value.clone());
+            }
+        }
+        return Ok(());
     }
 
     // Inject params into env map (caller params override inner defaults)
@@ -1095,9 +1176,20 @@ fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>)
     for (key, value) in params {
         env.insert(
             format!("PARAM_{}", key.to_uppercase()),
-            EnvValue::String(value.clone()),
+            EnvValue::String(expand_env_references(value).wrap_err_with(|| {
+                format!("failed to expand environment variables in param `{key}`")
+            })?),
         );
     }
+    Ok(())
+}
+
+/// `value` with its `$VAR` / `${VAR}` references expanded, by the same rules
+/// as a string in an `env:` block (`$$` is a literal `$`).
+fn expand_env_references(value: &str) -> eyre::Result<String> {
+    use serde::de::{IntoDeserializer, value::StrDeserializer};
+    let deserializer: StrDeserializer<'_, serde::de::value::Error> = value.into_deserializer();
+    Ok(serde_with_expand_env::with_expand_envs(deserializer)?)
 }
 
 /// Replace every parameter reference with its value in a single left-to-right
@@ -1189,6 +1281,24 @@ fn substitute_params_in_str(s: &str, params: &BTreeMap<String, String>) -> Strin
     result
 }
 
+/// Whether a log filter's `node` is one of `inner_node_ids`, or a node nested
+/// under a module sibling (`<module-sibling>.<...>`, the id a nested module's
+/// inner node gets once expanded).
+///
+/// Only module siblings count for the dotted form: node ids may contain `.`,
+/// so with a plain sibling `cam`, `cam.raw` is an unrelated (top-level) node
+/// and must be left alone.
+fn names_sibling_or_its_inner_node(
+    node: &str,
+    inner_node_ids: &BTreeSet<String>,
+    module_sibling_ids: &BTreeSet<String>,
+) -> bool {
+    inner_node_ids.contains(node)
+        || node
+            .match_indices('.')
+            .any(|(i, _)| module_sibling_ids.contains(&node[..i]))
+}
+
 /// Rewrite a single input mapping inside a module's inner node.
 ///
 /// - `_mod/X` references are resolved to the actual source from the module
@@ -1201,22 +1311,31 @@ fn rewrite_module_input(
     module_id: &str,
     module_inputs: &BTreeMap<DataId, Input>,
     inner_node_ids: &BTreeSet<String>,
+    module_sibling_ids: &BTreeSet<String>,
     optional_inputs: &BTreeSet<String>,
 ) -> eyre::Result<Option<Input>> {
     match &input.mapping {
-        // `dora/logs/<level>/<node>` naming a sibling: prefix the node filter
+        // `dora/logs/<level>/<node>` naming a sibling, or an inner node of a
+        // nested-module sibling (`<module-sibling>.<inner>`): prefix the node filter
         // like a sibling data source, or it would match no node after
         // expansion and the sink would silently receive nothing.
         InputMapping::Logs(LogSubscriptionFilter {
             min_level,
             node_filter: Some(node),
-        }) if inner_node_ids.contains(node.as_ref()) => Ok(Some(Input {
-            mapping: InputMapping::Logs(LogSubscriptionFilter {
-                min_level: min_level.clone(),
-                node_filter: Some(format!("{module_id}.{node}").into()),
-            }),
-            ..input.clone()
-        })),
+        }) if names_sibling_or_its_inner_node(
+            node.as_ref(),
+            inner_node_ids,
+            module_sibling_ids,
+        ) =>
+        {
+            Ok(Some(Input {
+                mapping: InputMapping::Logs(LogSubscriptionFilter {
+                    min_level: min_level.clone(),
+                    node_filter: Some(format!("{module_id}.{node}").into()),
+                }),
+                ..input.clone()
+            }))
+        }
         InputMapping::Timer { .. } | InputMapping::Logs(_) => Ok(Some(input.clone())),
         InputMapping::User(user_mapping) => {
             let source_str = user_mapping.source.to_string();
@@ -1269,6 +1388,7 @@ fn rewrite_module_inputs_map(
     module_id: &str,
     module_inputs: &BTreeMap<DataId, Input>,
     inner_node_ids: &BTreeSet<String>,
+    module_sibling_ids: &BTreeSet<String>,
     optional_inputs: &BTreeSet<String>,
 ) -> eyre::Result<BTreeMap<DataId, Input>> {
     let mut new_inputs = BTreeMap::new();
@@ -1278,6 +1398,7 @@ fn rewrite_module_inputs_map(
             module_id,
             module_inputs,
             inner_node_ids,
+            module_sibling_ids,
             optional_inputs,
         )? {
             new_inputs.insert(input_id.clone(), new_input);
@@ -2302,6 +2423,49 @@ nodes:
         assert_eq!(env["PARAM_MODE"], EnvValue::String("turbo".to_string()));
     }
 
+    /// A param injected as env is expanded here, once, like a YAML `env:`
+    /// value: the coordinator and daemon no longer expand what they receive
+    /// (#3947), so `${MODEL_DIR}` in a param must not reach them unexpanded.
+    #[test]
+    fn expand_params_in_env_expands_variables_once() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        write_file(
+            base,
+            "param_module.yml",
+            "module:\n  name: m\n  inputs: [data]\n\
+             nodes:\n  - id: proc\n    path: proc.py\n    inputs:\n      data: _mod/data\n",
+        );
+        let desc = |params: &str| {
+            parse_descriptor(&format!(
+                "nodes:\n  - id: src\n    path: src.py\n    outputs: [val]\n  \
+                 - id: m\n    module: param_module.yml\n    inputs:\n      data: src/val\n    \
+                 params:\n{params}"
+            ))
+        };
+
+        let expanded = expand_modules(
+            &desc(
+                "      dir: \"${DORA_TEST_PARAM_SURELY_UNSET:-/models}\"\n      \
+                 literal: \"p$$ss\"\n",
+            ),
+            base,
+        )
+        .unwrap();
+        let env = expanded.nodes[1].env.as_ref().unwrap();
+        assert_eq!(env["PARAM_DIR"], EnvValue::String("/models".into()));
+        assert_eq!(env["PARAM_LITERAL"], EnvValue::String("p$ss".into()));
+
+        let err = expand_modules(
+            &desc("      dir: \"${DORA_TEST_PARAM_SURELY_UNSET}\"\n"),
+            base,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("param `dir`"), "got: {msg}");
+        assert!(msg.contains("DORA_TEST_PARAM_SURELY_UNSET"), "got: {msg}");
+    }
+
     #[test]
     fn expand_params_in_args() {
         let tmp = TempDir::new().unwrap();
@@ -2647,15 +2811,27 @@ nodes:
         assert_eq!(worker.env, None);
     }
 
-    #[test]
-    fn expand_outer_params_reach_nested_module_inner_nodes_as_env() {
+    /// Expand `outer` (given `speed: "2.0"`) nesting `inner`, whose `worker`
+    /// reads `$PARAM_SPEED` in its args; `nested_speed` is the nested module
+    /// node's own `speed` param, and `worker_env_speed` the worker's own
+    /// `env: PARAM_SPEED` default, if any.
+    fn expand_nested_param_worker(
+        nested_speed: Option<&str>,
+        worker_env_speed: Option<&str>,
+    ) -> Node {
+        let nested_params = nested_speed
+            .map(|speed| format!("    params:\n      speed: {speed}"))
+            .unwrap_or_default();
+        let worker_env = worker_env_speed
+            .map(|speed| format!("    env:\n      PARAM_SPEED: {speed}"))
+            .unwrap_or_default();
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
-
         write_file(
             base,
             "inner.yml",
-            r#"
+            &format!(
+                r#"
 module:
   name: inner
   inputs: [data]
@@ -2664,17 +2840,20 @@ module:
 nodes:
   - id: worker
     path: worker.py
+    args: --speed $PARAM_SPEED
+{worker_env}
     inputs:
       data: _mod/data
     outputs:
       - out
-"#,
+"#
+            ),
         );
-
         write_file(
             base,
             "outer.yml",
-            r#"
+            &format!(
+                r#"
 module:
   name: outer
   inputs: [data]
@@ -2685,9 +2864,10 @@ nodes:
     module: inner.yml
     inputs:
       data: _mod/data
-"#,
+{nested_params}
+"#
+            ),
         );
-
         let desc = parse_descriptor(
             r#"
 nodes:
@@ -2702,13 +2882,48 @@ nodes:
       speed: "2.0"
 "#,
         );
-
         let expanded = expand_modules(&desc, base).unwrap();
-        let worker = expanded
+        expanded
             .nodes
-            .iter()
+            .into_iter()
             .find(|n| n.id.to_string() == "outer.inner.worker")
-            .unwrap();
+            .unwrap()
+    }
+
+    /// An outer module's params reach a nested module's inner nodes as env vars
+    /// and in `args`: the daemon does not expand `$PARAM_*` in args, so a
+    /// left-over reference would reach the process verbatim.
+    #[test]
+    fn expand_outer_params_reach_nested_module_inner_nodes() {
+        let worker = expand_nested_param_worker(None, None);
+        assert_eq!(worker.args.as_deref(), Some("--speed 2.0"));
+        let env = worker.env.as_ref().unwrap();
+        assert_eq!(env["PARAM_SPEED"], EnvValue::String("2.0".to_string()));
+    }
+
+    /// A nested module node forwarding a param with `$PARAM_*` gets the outer
+    /// value, not the literal reference.
+    #[test]
+    fn expand_nested_module_forwarded_param_is_substituted() {
+        let worker = expand_nested_param_worker(Some("$PARAM_SPEED"), None);
+        assert_eq!(worker.args.as_deref(), Some("--speed 2.0"));
+        let env = worker.env.as_ref().unwrap();
+        assert_eq!(env["PARAM_SPEED"], EnvValue::String("2.0".to_string()));
+    }
+
+    /// A nested module node's own param value wins over the outer one.
+    #[test]
+    fn expand_nested_module_own_param_overrides_outer() {
+        let worker = expand_nested_param_worker(Some("\"3.0\""), None);
+        assert_eq!(worker.args.as_deref(), Some("--speed 3.0"));
+    }
+
+    /// An outer param overrides a nested module's inner node's own
+    /// `env: PARAM_*` default, as it does for a direct child. (Before outer
+    /// params were handed down, the inner default won here.)
+    #[test]
+    fn expand_outer_param_overrides_nested_inner_env_default() {
+        let worker = expand_nested_param_worker(None, Some("\"1.0\""));
         let env = worker.env.as_ref().unwrap();
         assert_eq!(env["PARAM_SPEED"], EnvValue::String("2.0".to_string()));
     }
@@ -4117,6 +4332,125 @@ nodes:
         );
     }
 
+    /// #3826: a module node's `path:` that is a single extensionless name
+    /// keeps meaning the file next to the module (`path`), and the name as
+    /// written becomes its `path_fallback`, for a command found like a
+    /// top-level `path:`. Any other `path:` (`worker.py` and a blank one
+    /// too), a `git:` or `hub:` node and a module in the project root (where
+    /// nothing is rewritten) get none.
+    #[test]
+    fn expand_keeps_a_bare_inner_node_path_as_its_fallback() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        write_file(
+            &base.join("modules"),
+            "m.yml",
+            r#"
+module:
+  name: m
+nodes:
+  - id: echo
+    path: dora-echo
+  - id: script
+    path: worker.py
+  - id: nested
+    path: bin/tool
+  - id: current
+    path: ./tool
+  - id: var
+    path: $TOOL
+  - id: fromgit
+    git: https://github.com/example/x.git
+    path: x
+  - id: fromhub
+    hub: test/x@^0.1
+    path: tool
+  - id: blank
+    path: "  "
+"#,
+        );
+        write_file(
+            base,
+            "root.yml",
+            "module:\n  name: root\nnodes:\n  - id: echo\n    path: dora-echo\n",
+        );
+        let desc = parse_descriptor(
+            "nodes:\n  - id: m\n    module: modules/m.yml\n  - id: r\n    module: root.yml\n",
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let node = |id: &str| {
+            let node = expanded
+                .nodes
+                .iter()
+                .find(|n| n.id.to_string() == id)
+                .unwrap();
+            (
+                node.path.as_deref().map(PathBuf::from),
+                node.path_fallback.as_deref(),
+            )
+        };
+        let in_modules = |name: &str| Some(Path::new("modules").join(name));
+        assert_eq!(node("m.echo"), (in_modules("dora-echo"), Some("dora-echo")));
+        assert_eq!(node("m.script"), (in_modules("worker.py"), None));
+        assert_eq!(node("m.nested"), (in_modules("bin/tool"), None));
+        assert_eq!(node("m.current"), (in_modules("tool"), None));
+        assert_eq!(node("m.var"), (in_modules("$TOOL"), None));
+        assert_eq!(node("m.fromgit"), (Some(PathBuf::from("x")), None));
+        assert_eq!(node("m.fromhub"), (in_modules("tool"), None));
+        assert_eq!(node("m.blank"), (in_modules("  "), None));
+        assert_eq!(node("r.echo"), (Some(PathBuf::from("dora-echo")), None));
+    }
+
+    /// `path_fallback` is internal: only expansion sets it, so a module file
+    /// must not set it by hand (a dataflow file is checked when it is read,
+    /// see `a_dataflow_file_cannot_set_path_fallback`).
+    #[test]
+    fn a_hand_written_path_fallback_in_a_module_is_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        let inner = "  - id: worker\n    path: worker\n    path_fallback: echo\n";
+        write_file(
+            base,
+            "plain.yml",
+            "module:\n  name: plain\nnodes:\n  - id: ok\n    path: ok\n",
+        );
+        write_file(
+            base,
+            "inner.yml",
+            &format!("module:\n  name: inner\nnodes:\n{inner}"),
+        );
+        write_file(
+            base,
+            "outer.yml",
+            "module:\n  name: outer\nnodes:\n  - id: sub\n    module: inner.yml\n",
+        );
+        let in_module = "module `inner`: node `worker` sets `path_fallback`, which is internal \
+                         (module expansion sets it); remove it";
+        for module in ["inner.yml", "outer.yml"] {
+            let yaml = format!("nodes:\n  - id: m\n    module: {module}\n");
+            let err = expand_modules(&parse_descriptor(&yaml), base).unwrap_err();
+            assert_eq!(err.to_string(), in_module, "{yaml}");
+        }
+
+        // `dora expand --module` checks a module file the same way.
+        let err = check_module_file(&base.join("inner.yml")).unwrap_err();
+        assert_eq!(err.to_string(), in_module);
+        let err = check_module_file(&base.join("outer.yml")).unwrap_err();
+        assert_eq!(err.root_cause().to_string(), in_module);
+
+        // Expansion doesn't judge the dataflow's own nodes: a descriptor that
+        // was expanded already (`dora build`'s session, which the daemon
+        // expands again) keeps the `path_fallback` expansion set, next to a
+        // module or not.
+        let flat = parse_descriptor(&format!(
+            "nodes:\n  - id: m\n    module: plain.yml\n{inner}"
+        ));
+        let expanded = expand_modules(&flat, base).unwrap();
+        let worker = expanded.nodes.iter().find(|n| n.id.to_string() == "worker");
+        assert_eq!(worker.unwrap().path_fallback.as_deref(), Some("echo"));
+    }
+
     #[test]
     fn reject_inner_node_path_traversal_via_dotdot() {
         let tmp = TempDir::new().unwrap();
@@ -4214,6 +4548,155 @@ nodes:
             "outside"
         );
         assert!(filter_of("all").node_filter.is_none());
+    }
+
+    /// A log filter naming a module node (or a nested module inside it) names
+    /// no node once expanded, so wiring validation must reject it rather than
+    /// let the sink silently receive nothing. Inside a module, a filter naming
+    /// an inner node of a nested-module sibling (`inner.worker`) is prefixed
+    /// with the module id like any sibling reference.
+    #[test]
+    fn log_filters_naming_modules_and_nested_module_nodes() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "leaf_module.yml",
+            r#"
+module:
+  name: leaf_module
+  outputs: []
+
+nodes:
+  - id: worker
+    path: worker.py
+"#,
+        );
+        write_file(
+            base,
+            "outer_module.yml",
+            r#"
+module:
+  name: outer_module
+  outputs: []
+
+nodes:
+  - id: inner
+    module: leaf_module.yml
+  - id: inner_sink
+    path: sink.py
+    inputs:
+      logs: dora/logs/info/inner.worker
+"#,
+        );
+
+        for (filter, accepted) in [
+            ("outer", false),
+            ("outer.inner", false),
+            ("outer.inner.worker", true),
+        ] {
+            let desc = parse_descriptor(&format!(
+                r#"
+nodes:
+  - id: outer
+    module: outer_module.yml
+  - id: sink
+    path: sink.py
+    inputs:
+      logs: dora/logs/info/{filter}
+"#
+            ));
+            let expanded = expand_modules(&desc, base).unwrap();
+            let result = crate::descriptor::validate::check_wiring(&expanded);
+            assert_eq!(result.is_ok(), accepted, "{filter}: {result:?}");
+
+            let inner_sink = expanded
+                .nodes
+                .iter()
+                .find(|n| n.id.to_string() == "outer.inner_sink")
+                .unwrap();
+            let InputMapping::Logs(inner_filter) =
+                &inner_sink.inputs[&DataId::from("logs".to_string())].mapping
+            else {
+                panic!("expected a logs mapping");
+            };
+            assert_eq!(
+                inner_filter.node_filter.as_ref().unwrap().to_string(),
+                "outer.inner.worker"
+            );
+        }
+    }
+
+    /// A module-internal log filter naming a dotted top-level node whose
+    /// first segment equals a plain (non-module) sibling must not be
+    /// prefixed: `cam.raw` is that top-level node, not a child of `cam`.
+    #[test]
+    fn log_filter_naming_dotted_top_level_node_is_not_prefixed() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "cam_module.yml",
+            r#"
+module:
+  name: cam_module
+  outputs: []
+
+nodes:
+  - id: cam
+    path: cam.py
+  - id: sink
+    path: sink.py
+    inputs:
+      logs: dora/logs/info/cam.raw
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: cam_module.yml
+  - id: cam.raw
+    path: raw.py
+"#,
+        );
+        let expanded = expand_modules(&desc, base).unwrap();
+        let sink = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.sink")
+            .unwrap();
+        let InputMapping::Logs(filter) = &sink.inputs[&DataId::from("logs".to_string())].mapping
+        else {
+            panic!("expected a logs mapping");
+        };
+        assert_eq!(filter.node_filter.as_ref().unwrap().to_string(), "cam.raw");
+        crate::descriptor::validate::check_wiring(&expanded).unwrap();
+    }
+
+    #[test]
+    fn names_sibling_or_its_inner_node_matches_whole_segments_only() {
+        let ids = BTreeSet::from([
+            "inner".to_string(),
+            "node.v2".to_string(),
+            "cam".to_string(),
+        ]);
+        let modules = BTreeSet::from(["inner".to_string(), "node.v2".to_string()]);
+        let names = |node| names_sibling_or_its_inner_node(node, &ids, &modules);
+        assert!(names("inner"));
+        assert!(names("inner.worker"));
+        assert!(names("node.v2"));
+        assert!(names("node.v2.worker"));
+        assert!(names("cam"));
+        // `cam` is a plain node, so `cam.raw` is some other node, not one of
+        // its children.
+        assert!(!names("cam.raw"));
+        assert!(!names("innerx"));
+        assert!(!names("node"));
+        assert!(!names("outside"));
     }
 
     #[test]

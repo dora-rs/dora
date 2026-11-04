@@ -545,8 +545,9 @@ async fn probe_link(
                          cannot finish. Probing again for up to {LINK_PROBE_DEADLINE:?}. \
                          For same-host daemons with a 1.0.x coordinator, automatic \
                          loopback discovery still needs multicast; if multicast is unavailable, \
-                         upgrade the coordinator to 1.1.0 or newer",
-                        list(&missing)
+                         upgrade the coordinator to 1.1.0 or newer ({})",
+                        list(&missing),
+                        link_state(&session).await,
                     ),
                 )
                 .await;
@@ -567,15 +568,43 @@ async fn probe_link(
                          `--zenoh-peer`/`--zenoh-listen`, or working multicast — see \
                          docs/multi-machine.md. (A daemon from a dora release before this \
                          check existed answers only when it has an endpoint to announce, \
-                         so with mixed versions this can also be a false alarm.)",
+                         so with mixed versions this can also be a false alarm.) ({})",
                         list(&missing),
-                        started.elapsed()
+                        started.elapsed(),
+                        link_state(&session).await,
                     ),
                 )
                 .await;
             return;
         }
         tokio::time::sleep(LINK_PROBE_INTERVAL).await;
+    }
+}
+
+/// This session's zenoh id and the peers and routers it is linked to, for the
+/// link-probe diagnostics: tells "linked to the silent daemon, which does not
+/// answer" apart from "linked only to others" and "linked to nothing". The
+/// silent daemon logs its own id at startup ("zenoh session open with id …").
+/// Peers include nodes and other zenoh clients, not just daemons. Routers are
+/// listed too: under a `ZENOH_CONFIG` in client mode, or in a routed
+/// deployment, a daemon's only links are to a router.
+async fn link_state(session: &zenoh::Session) -> String {
+    let info = session.info();
+    let peers = zid_list(info.peers_zid().await);
+    let routers = zid_list(info.routers_zid().await);
+    format!(
+        "this daemon's zenoh id is {}, linked to zenoh peers {peers} and zenoh routers {routers}",
+        session.zid()
+    )
+}
+
+/// `[a, b]`, or `none` for no ids.
+fn zid_list(zids: impl Iterator<Item = zenoh::session::ZenohId>) -> String {
+    let zids: Vec<_> = zids.map(|zid| zid.to_string()).collect();
+    if zids.is_empty() {
+        "none".to_owned()
+    } else {
+        format!("[{}]", zids.join(", "))
     }
 }
 
@@ -833,24 +862,27 @@ mod tests {
         assert!(unanswered(&BTreeSet::new(), &answered).is_empty());
     }
 
+    /// A zenoh config with multicast scouting off.
+    fn no_scouting_config() -> zenoh::Config {
+        let mut config = zenoh::Config::default();
+        config
+            .insert_json5("scouting/multicast/enabled", "false")
+            .unwrap();
+        config
+    }
+
     /// Two sessions on loopback with multicast off, linked only by an explicit
     /// dial — the shape the coordinator now sets up for two daemons on one
     /// host.
     async fn linked_sessions() -> (zenoh::Session, zenoh::Session) {
         let endpoint =
             dora_core::topics::reserve_loopback_zenoh_endpoint().expect("reserve a loopback port");
-        let mut listener = zenoh::Config::default();
-        listener
-            .insert_json5("scouting/multicast/enabled", "false")
-            .unwrap();
+        let mut listener = no_scouting_config();
         listener
             .insert_json5("listen/endpoints", &format!("[{endpoint:?}]"))
             .unwrap();
         let a = zenoh::open(listener).await.expect("open listening session");
-        let mut dialer = zenoh::Config::default();
-        dialer
-            .insert_json5("scouting/multicast/enabled", "false")
-            .unwrap();
+        let mut dialer = no_scouting_config();
         dialer
             .insert_json5("connect/endpoints", &format!("[{endpoint:?}]"))
             .unwrap();
@@ -1091,6 +1123,72 @@ mod tests {
                 "dropping the handle undeclares the queryable: {answered:?}"
             );
         }
+    }
+
+    /// The link-probe diagnostics name this session and its peers (#3711).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_link_state_names_this_session_and_its_peers() {
+        let (a, b) = linked_sessions().await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let state = loop {
+            let state = link_state(&b).await;
+            if state.contains(&a.zid().to_string()) {
+                break state;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the dialed peer must be listed: {state}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert!(state.contains(&b.zid().to_string()), "{state}");
+
+        let alone = zenoh::open(no_scouting_config())
+            .await
+            .expect("open a lone session");
+        let state = link_state(&alone).await;
+        assert!(state.contains(&alone.zid().to_string()), "{state}");
+        assert!(state.contains("zenoh peers none"), "{state}");
+        assert!(state.contains("zenoh routers none"), "{state}");
+    }
+
+    /// A client-mode session (a `ZENOH_CONFIG` in client mode, or a routed
+    /// deployment) is linked only to its router, which `peers_zid` does not
+    /// list: the diagnostic must still name that link.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_link_state_names_a_router_link() {
+        let endpoint =
+            dora_core::topics::reserve_loopback_zenoh_endpoint().expect("reserve a loopback port");
+        let mut router = no_scouting_config();
+        router.insert_json5("mode", r#""router""#).unwrap();
+        router
+            .insert_json5("listen/endpoints", &format!("[{endpoint:?}]"))
+            .unwrap();
+        let router = zenoh::open(router).await.expect("open router session");
+        let mut client = no_scouting_config();
+        client.insert_json5("mode", r#""client""#).unwrap();
+        client
+            .insert_json5("connect/endpoints", &format!("[{endpoint:?}]"))
+            .unwrap();
+        let client = zenoh::open(client).await.expect("open client session");
+
+        let router_zid = router.zid().to_string();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let state = loop {
+            let state = link_state(&client).await;
+            if state.contains(&router_zid) {
+                break state;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the router must be listed: {state}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert!(
+            state.contains(&format!("zenoh routers [{router_zid}]")),
+            "{state}"
+        );
     }
 
     /// The probe that runs after an unanswered exchange returns as soon as the

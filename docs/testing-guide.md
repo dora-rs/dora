@@ -452,6 +452,7 @@ scripts/ros2-zenoh-interop.sh kilted all
 
 Run one case by replacing `all` with `topic-pub`, `topic-sub`,
 `service-client`, `service-server`, `action-client`, `action-server`, `graph`,
-`domain`, `namespace`, or `qos-transient-local`. The driver has bounded waits
-and always removes its containers. An environment-dependent skip is not proof
-of compatibility and must keep that profile incomplete.
+`domain`, `namespace`, `qos-transient-local`, `parameters`, or `rosout`. The
+driver has bounded waits and always removes its containers. An
+environment-dependent skip is not proof of compatibility and must keep that
+profile incomplete.

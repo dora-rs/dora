@@ -77,7 +77,6 @@ impl Executable for Set {
                 println!("Set `{}` = {} on node `{}`", self.key, value, self.node);
                 Ok(())
             }
-            ControlRequestReply::Error(err) => bail!("{err}"),
             other => bail!("unexpected reply: {other:?}"),
         }
     }

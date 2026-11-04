@@ -4,7 +4,7 @@ use crate::{
     common::{CoordinatorOptions, resolve_dataflow_identifier_interactive, send_control_request},
 };
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
-use eyre::bail;
+use eyre::{Context, bail};
 
 /// Disconnect two nodes in a running dataflow (remove a mapping).
 ///
@@ -43,13 +43,13 @@ impl Executable for Disconnect {
                 target_node: target_node.clone(),
                 target_input: target_input.clone(),
             },
-        )?;
+        )
+        .wrap_err("failed to disconnect")?;
 
         match reply {
             ControlRequestReply::MappingRemoved { .. } => {
                 println!("{source_node}/{source_output} -x- {target_node}/{target_input}");
             }
-            ControlRequestReply::Error(err) => bail!("failed to disconnect: {err}"),
             other => bail!("unexpected reply: {other:?}"),
         }
         Ok(())

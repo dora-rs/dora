@@ -14,12 +14,9 @@ use dora_node_api::merged::MergeExternal;
 use dora_node_api::{
     self, Event, EventStream, Metadata as DoraMetadata,
     MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, PatternError,
-    TryRecvError,
-    arrow_v59::array::{AsArray, UInt8Array},
-    dora_core::config::NodeId,
-    merged::MergedEvent,
+    TryRecvError, dora_core::config::NodeId, merged::MergedEvent,
 };
-use eyre::{Result as EyreResult, bail, eyre};
+use eyre::{Result as EyreResult, WrapErr as _, bail, eyre};
 use futures_lite::future::{block_on, or};
 use futures_timer::Delay;
 use serde::Serialize;
@@ -263,7 +260,9 @@ mod ffi {
         /// (`API_KEY: "${HOST_VAR}"`, expanded at descriptor parse
         /// time per `libraries/message/src/descriptor.rs`'s
         /// `with_expand_envs`) both appear as plain strings in the
-        /// output. Don't pipe this into shared logs or telemetry
+        /// output, with each `$` written as `$$` so that decoding the
+        /// JSON as a descriptor again gives back the same value.
+        /// Don't pipe this into shared logs or telemetry
         /// without sanitizing if your dataflow can carry secrets in
         /// env vars.
         fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> Result<String>;
@@ -318,7 +317,8 @@ mod ffi {
 
         /// Arrow-payload variant of `send_service_request`. Consumes the
         /// Arrow C Data Interface structs behind `array_ptr` /
-        /// `schema_ptr` exactly like `send_arrow_output` does.
+        /// `schema_ptr` exactly like `send_arrow_output` does, including
+        /// rejecting an already-released struct with an error.
         unsafe fn send_arrow_service_request(
             output_sender: &mut Box<OutputSender>,
             output_id: String,
@@ -395,6 +395,14 @@ mod ffi {
             metadata: Box<Metadata>,
         ) -> DoraResult;
 
+        /// Send an Arrow array on a named output, taking ownership of the
+        /// Arrow C Data Interface structs behind `array_ptr` / `schema_ptr`.
+        ///
+        /// Unless a pointer is null, both structs are consumed on every
+        /// path (the caller's copies are zeroed), including when an error
+        /// is returned. An already-released struct (`release == NULL`),
+        /// for example one resent after a failed call, is rejected with an
+        /// error.
         unsafe fn send_arrow_output(
             output_sender: &mut Box<OutputSender>,
             id: String,
@@ -424,6 +432,9 @@ mod ffi {
         ) -> ArrowInputInfo;
 
         fn new_metadata() -> Box<Metadata>;
+        /// The message's hybrid logical clock timestamp in NTP64 format, not
+        /// nanoseconds: the upper 32 bits are seconds since the UNIX epoch,
+        /// the lower 32 bits the fraction of a second in units of 2^-32 s.
         fn timestamp(self: &Metadata) -> u64;
         fn get_bool(self: &Metadata, key: &str) -> Result<bool>;
         fn get_float(self: &Metadata, key: &str) -> Result<f64>;
@@ -679,8 +690,12 @@ fn event_as_input_with_metadata(event: Box<DoraEvent>) -> eyre::Result<ffi::Dora
 fn input_bytes(data: &dora_node_api::DoraArray) -> eyre::Result<Vec<u8>> {
     match data.as_array().data_type() {
         dora_node_api::arrow_v59::datatypes::DataType::UInt8 => {
-            let array: &UInt8Array = data.as_array().as_primitive();
-            Ok(array.values().to_vec())
+            // The shared conversion refuses an array with null slots: the
+            // bytes behind a null are unspecified, and a byte vector cannot
+            // say which slots were null.
+            Vec::<u8>::try_from(data).wrap_err(
+                "cannot read UInt8 input as bytes; use event_as_arrow_input for typed access",
+            )
         }
         dora_node_api::arrow_v59::datatypes::DataType::Null => Ok(vec![]),
         other => {
@@ -881,6 +896,7 @@ impl Metadata {
         }
     }
 
+    /// NTP64, not nanoseconds — see the bridge declaration.
     pub fn timestamp(&self) -> u64 {
         self.timestamp
     }
@@ -1569,6 +1585,18 @@ unsafe fn send_arrow_output_impl(
         std::ptr::write(schema_ptr, std::mem::zeroed());
     }
 
+    // A released struct (`release == NULL`), typically one resent after a
+    // failed call already consumed it, has no valid buffers or format
+    // string: importing it panics inside arrow, which aborts across the cxx
+    // bridge. Reject it instead. Returning here drops the owned copies, so a
+    // still-live partner struct is released and the contract stays
+    // "consumed unless a pointer is null".
+    if array.is_released() || schema.release.is_none() {
+        return ffi::DoraResult {
+            error: "Received an already released Arrow array or schema".to_string(),
+        };
+    }
+
     match unsafe { arrow::ffi::from_ffi(array, &schema) } {
         Ok(array_data) => {
             let arrow_array = arrow::array::make_array(array_data);
@@ -1660,7 +1688,7 @@ mod tests {
     use super::*;
     use dora_node_api::{
         DoraArray,
-        arrow_v59::array::{ArrayRef, Int32Array},
+        arrow_v59::array::{ArrayRef, Int32Array, UInt8Array},
         uhlc::HLC,
     };
     use std::sync::Arc;
@@ -1679,6 +1707,23 @@ mod tests {
 
         let result = event_as_input(event);
         assert!(result.is_err(), "expected Err for non-UInt8 input, got Ok");
+    }
+
+    /// A UInt8 input with null slots must be refused: the bytes behind a null
+    /// are unspecified, and a byte vector cannot say which slots were null.
+    #[test]
+    fn event_as_input_uint8_with_nulls_returns_err() {
+        let array: ArrayRef = Arc::new(UInt8Array::from(vec![Some(1), None, Some(3)]));
+        let event = Box::new(DoraEvent(EventOrReason::Event(Event::Input {
+            id: "my_input".into(),
+            metadata: DoraMetadata::new(HLC::default().new_timestamp()),
+            data: DoraArray::from(array),
+        })));
+
+        let Err(err) = event_as_input(event) else {
+            panic!("expected Err for UInt8 input with nulls, got Ok");
+        };
+        assert!(format!("{err:#}").contains("nulls"), "got: {err:#}");
     }
 
     /// Pins the shape `Metadata::to_json` hands to C++ (documented in the
@@ -2227,5 +2272,100 @@ mod tests {
             event_as_node_restarted(event).is_err(),
             "a caller that branched wrongly must be told, not handed a plausible id"
         );
+    }
+
+    fn exported_u8_array() -> (arrow::ffi::FFI_ArrowArray, arrow::ffi::FFI_ArrowSchema) {
+        use arrow::array::{Array, UInt8Array};
+        arrow::ffi::to_ffi(&UInt8Array::from(vec![1u8, 2, 3]).to_data()).expect("export array")
+    }
+
+    /// Calls `send_arrow_output` the way C++ does, with pointers to the
+    /// caller's Arrow C Data Interface structs.
+    fn send_arrow(
+        sender: &mut Box<OutputSender>,
+        id: &str,
+        array: &mut arrow::ffi::FFI_ArrowArray,
+        schema: &mut arrow::ffi::FFI_ArrowSchema,
+    ) -> ffi::DoraResult {
+        unsafe {
+            send_arrow_output(
+                sender,
+                id.to_string(),
+                array as *mut _ as *mut u8,
+                schema as *mut _ as *mut u8,
+            )
+        }
+    }
+
+    /// A normal Arrow send is delivered and consumes the caller's structs.
+    #[test]
+    fn send_arrow_output_delivers_and_consumes_the_structs() {
+        use dora_node_api::integration_testing::drain_outputs;
+
+        let (mut sender, mut rx, _events) = testing_output_sender();
+        let (mut array, mut schema) = exported_u8_array();
+
+        let result = send_arrow(&mut sender, "out", &mut array, &mut schema);
+        assert!(result.error.is_empty(), "{}", result.error);
+        assert!(array.is_released(), "a send consumes the array");
+        assert!(schema.release.is_none(), "a send consumes the schema");
+
+        let received = drain_outputs(&mut rx);
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].get("id").and_then(|v| v.as_str()), Some("out"));
+        assert_eq!(received[0].get("data"), Some(&serde_json::json!([1, 2, 3])));
+    }
+
+    /// Released structs must be rejected with an error instead of panicking
+    /// inside arrow's import, which aborts the process across the cxx bridge.
+    #[test]
+    fn send_arrow_output_rejects_released_structs() {
+        let (mut sender, _rx, _events) = testing_output_sender();
+        let mut array = arrow::ffi::FFI_ArrowArray::empty();
+        let mut schema = arrow::ffi::FFI_ArrowSchema::empty();
+
+        let result = send_arrow(&mut sender, "out", &mut array, &mut schema);
+        assert!(result.error.contains("released"), "{}", result.error);
+    }
+
+    /// The typical way to hit the abort: a call fails after consuming the
+    /// structs (here an invalid output id), and the caller resends them.
+    /// The contract is unchanged: the first call still consumes both
+    /// structs; the resend now gets an error instead of aborting.
+    #[test]
+    fn send_arrow_output_resend_after_failed_call_is_an_error() {
+        let (mut sender, _rx, _events) = testing_output_sender();
+        let (mut array, mut schema) = exported_u8_array();
+
+        let result = send_arrow(&mut sender, "bad id", &mut array, &mut schema);
+        assert!(
+            result.error.contains("invalid output id"),
+            "{}",
+            result.error
+        );
+        assert!(
+            array.is_released(),
+            "a failed call still consumes the array"
+        );
+        assert!(
+            schema.release.is_none(),
+            "a failed call still consumes the schema"
+        );
+
+        let result = send_arrow(&mut sender, "out", &mut array, &mut schema);
+        assert!(result.error.contains("released"), "{}", result.error);
+    }
+
+    /// When only one struct is released, the live one is still consumed, so
+    /// "consumed unless a pointer is null" holds on the rejection path too.
+    #[test]
+    fn send_arrow_output_consumes_the_live_struct_when_the_other_is_released() {
+        let (mut sender, _rx, _events) = testing_output_sender();
+        let (mut array, _schema) = exported_u8_array();
+        let mut schema = arrow::ffi::FFI_ArrowSchema::empty();
+
+        let result = send_arrow(&mut sender, "out", &mut array, &mut schema);
+        assert!(result.error.contains("released"), "{}", result.error);
+        assert!(array.is_released(), "the live array must still be consumed");
     }
 }

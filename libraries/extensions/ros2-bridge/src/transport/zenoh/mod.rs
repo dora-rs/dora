@@ -7,6 +7,8 @@ pub mod graph;
 #[cfg(feature = "rmw-zenoh")]
 pub mod keyexpr;
 #[cfg(feature = "rmw-zenoh")]
+pub mod parameters;
+#[cfg(feature = "rmw-zenoh")]
 pub mod pubsub;
 #[cfg(feature = "rmw-zenoh")]
 pub mod qos;
@@ -364,6 +366,10 @@ mod lifecycle {
     impl Node {
         pub fn domain(&self) -> usize {
             self.domain
+        }
+
+        pub fn namespace(&self) -> &str {
+            &self.namespace
         }
 
         pub fn session(&self) -> &zenoh::Session {

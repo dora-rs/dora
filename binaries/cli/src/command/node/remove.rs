@@ -5,7 +5,7 @@ use crate::{
 use dora_message::{
     cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
-use eyre::bail;
+use eyre::{Context, bail};
 
 /// Remove a node from a running dataflow.
 #[derive(Debug, clap::Args)]
@@ -39,13 +39,13 @@ impl Executable for Remove {
                 node_id: node_id.clone(),
                 grace_duration: self.grace,
             },
-        )?;
+        )
+        .wrap_err("failed to remove node")?;
 
         match reply {
             ControlRequestReply::NodeRemoved { node_id, .. } => {
                 println!("Node `{node_id}` removed from dataflow {dataflow_id}");
             }
-            ControlRequestReply::Error(err) => bail!("failed to remove node: {err}"),
             other => bail!("unexpected reply: {other:?}"),
         }
         Ok(())

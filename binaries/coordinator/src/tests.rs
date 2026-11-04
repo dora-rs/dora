@@ -1,5 +1,6 @@
 use super::*;
 use crate::state::ParamTarget;
+use crate::topic_debug::topic_outputs_by_daemon;
 use crate::{
     daemon_liveness::{
         DisconnectAction, HeartbeatSendOutcome, MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS,
@@ -184,6 +185,26 @@ fn dynamic_node_prefixes_input_referencing_a_single_operator_producer() {
     }
 }
 
+/// A node for `dora node add` / `dora node replace` comes from the user's
+/// YAML, and `path_fallback` is internal (only module expansion sets it).
+#[test]
+fn dynamic_node_cannot_set_path_fallback() {
+    let running = running_descriptor_with_operator_producer(serde_json::json!(null));
+    let added: Node = serde_json::from_value(serde_json::json!({
+        "id": "consumer",
+        "path": "modules/tool",
+        "path_fallback": "tool",
+    }))
+    .expect("valid node");
+
+    let err = resolve_single_node(added, &running).expect_err("path_fallback must be rejected");
+    assert_eq!(
+        format!("{err:#}"),
+        "node `consumer` sets `path_fallback`, which is internal \
+         (module expansion sets it); remove it"
+    );
+}
+
 #[test]
 fn dynamic_node_with_invalid_timing_is_rejected() {
     // `dora node add` / `dora node replace` never run whole-dataflow
@@ -303,7 +324,7 @@ fn test_running_dataflow(
         node_metrics: BTreeMap::new(),
         node_finalized: BTreeSet::new(),
         node_stopped_at: BTreeMap::new(),
-        network_metrics: None,
+        network_metrics: BTreeMap::new(),
         spawn_result: CachedResult::default(),
         stop_reply_senders: vec![],
         buffered_log_messages: vec![],
@@ -573,6 +594,56 @@ fn topic_outputs_by_daemon_normalizes_single_operator_outputs() {
         .expect("nested outputs should resolve to their daemon");
 
     assert_eq!(outputs[&daemon_id], expected_topics);
+}
+
+/// `dora topic pub` must publish under the id the daemons subscribe to: a
+/// single-operator runtime node's bare `image` went out unresolved, as
+/// `.../control/single/image`, so the check passed and the message was lost.
+#[test]
+fn topic_publish_resolves_a_single_operator_output_id() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let descriptor: Descriptor = serde_json::from_value(serde_json::json!({
+        "nodes": [{
+            "id": "single",
+            "operator": { "python": "single.py", "outputs": ["image"] },
+        }],
+    }))
+    .expect("valid test descriptor");
+    let single_node: dora_core::config::NodeId = "single".to_string().into();
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, single_node.clone());
+    dataflow.descriptor = descriptor;
+    dataflow.nodes = dataflow
+        .descriptor
+        .resolve_aliases_and_set_defaults()
+        .expect("test descriptor should resolve");
+    let mut running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+    let publish = |running_dataflows: &HashMap<_, _>, output: &str| {
+        topic_publish_output_id(
+            running_dataflows,
+            dataflow_id,
+            single_node.clone(),
+            output.to_string().into(),
+        )
+    };
+
+    // Debug publishing is off by default.
+    assert_eq!(publish(&running_dataflows, "image"), None);
+
+    running_dataflows
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .descriptor
+        .debug
+        .enable_debug_inspection = true;
+    let resolved = publish(&running_dataflows, "image").expect("bare output resolves");
+    assert_eq!(resolved.to_string(), "op/image");
+    assert!(
+        dora_core::topics::zenoh_daemon_control_topic(dataflow_id, &single_node, &resolved)
+            .ends_with("/control/single/op/image")
+    );
+    assert_eq!(publish(&running_dataflows, "op/image"), Some(resolved));
+    assert_eq!(publish(&running_dataflows, "missing"), None);
 }
 
 #[tokio::test]
@@ -1136,6 +1207,181 @@ async fn a_failed_barrier_is_persisted_as_durably_as_a_successful_one() {
         StoreDataflowStatus::Pending,
         "a failed barrier keeps the status it had; it must not be promoted"
     );
+}
+
+/// A connected daemon on `machine`, with the receiver for what is sent to it.
+fn connected_test_daemon(
+    daemon_connections: &mut DaemonConnections,
+    machine: &str,
+) -> (DaemonId, tokio::sync::mpsc::Receiver<String>) {
+    let daemon_id = DaemonId::new(Some(machine.to_string()));
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let connection = crate::state::DaemonConnection::new(
+        tx,
+        Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        BTreeMap::new(),
+    );
+    daemon_connections.add(daemon_id.clone(), connection);
+    (daemon_id, rx)
+}
+
+/// The `exited_before_subscribe` of every `AllNodesReady` queued on `rx`.
+fn received_all_nodes_ready(rx: &mut tokio::sync::mpsc::Receiver<String>) -> Vec<Vec<NodeId>> {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+    let mut frames = Vec::new();
+    while let Ok(outbound) = rx.try_recv() {
+        let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+        if let DaemonCoordinatorEvent::AllNodesReady {
+            exited_before_subscribe,
+            ..
+        } = outbound.params.inner
+        {
+            frames.push(exited_before_subscribe);
+        }
+    }
+    frames
+}
+
+/// A two-daemon dataflow whose ready barrier already released, with a
+/// `sender` node on `m1` and a `receiver` node on `m2`.
+fn released_two_daemon_dataflow(
+    dataflow_id: DataflowId,
+    m1: &DaemonId,
+    m2: &DaemonId,
+) -> RunningDataflow {
+    let mut dataflow = test_running_dataflow(dataflow_id, m1.clone(), "sender".to_string().into());
+    dataflow.daemons.insert(m2.clone());
+    dataflow
+        .node_to_daemon
+        .insert("receiver".to_string().into(), m2.clone());
+    dataflow.ready_barrier_released = true;
+    dataflow
+}
+
+#[tokio::test]
+async fn a_ready_report_after_the_barrier_released_does_not_release_it_again() {
+    // #3885: the barrier can release before a daemon reports (the last
+    // pending daemon disconnected, #2028), and that daemon still reports its
+    // nodes ready once it reconnects. That late report must not broadcast a
+    // second, possibly different verdict, rewrite the stored status, or
+    // replay params to every daemon again. The reporting daemon gets the
+    // released verdict back, and no one else gets anything.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let mut daemon_connections = DaemonConnections::default();
+    let (m1, mut m1_rx) = connected_test_daemon(&mut daemon_connections, "m1");
+    let (m2, mut m2_rx) = connected_test_daemon(&mut daemon_connections, "m2");
+
+    let mut dataflow = released_two_daemon_dataflow(dataflow_id, &m1, &m2);
+    // The dataflow moved on since the release; the late report must not
+    // put the durable record back to `Running`.
+    let seeded = dataflow
+        .make_record(StoreDataflowStatus::Stopping)
+        .expect("seed record");
+    store.put_dataflow(&seeded).expect("seed");
+
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, dataflow)]),
+        daemon_connections,
+        store.clone(),
+    );
+    // An empty verdict is the one a re-release would persist as `Running`.
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: m2.clone(),
+                exited_before_subscribe: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .get_dataflow(&dataflow_id)
+            .expect("read back")
+            .expect("record present")
+            .status,
+        StoreDataflowStatus::Stopping,
+        "the stored status must not be rewritten"
+    );
+
+    // A late report of a node that exited must not change the verdict.
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: m2,
+                exited_before_subscribe: vec!["receiver".to_string().into()],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(
+        coordinator.running_dataflows[&dataflow_id]
+            .exited_before_subscribe
+            .is_empty(),
+        "the released verdict stays frozen, so reconnect replays match the broadcast"
+    );
+
+    assert_eq!(
+        received_all_nodes_ready(&mut m2_rx),
+        vec![Vec::<NodeId>::new(); 2],
+        "the reporting daemon is answered with the released verdict each time"
+    );
+    assert!(
+        received_all_nodes_ready(&mut m1_rx).is_empty(),
+        "no other daemon may be sent a second AllNodesReady"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn auto_recovered_nodes_are_released_after_the_barrier_released() {
+    // Auto-recovery re-spawns a daemon's nodes into the same dataflow, whose
+    // barrier released long ago. That daemon's re-spawned nodes wait for a
+    // coordinator `AllNodesReady`, and its `ReadyOnDaemon` is the only thing
+    // that triggers one: it must not be dropped as a stale report.
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let mut daemon_connections = DaemonConnections::default();
+    let (m1, mut m1_rx) = connected_test_daemon(&mut daemon_connections, "m1");
+    let (m2, mut m2_rx) = connected_test_daemon(&mut daemon_connections, "m2");
+
+    let mut coordinator = test_coordinator(
+        HashMap::from([(
+            dataflow_id,
+            released_two_daemon_dataflow(dataflow_id, &m1, &m2),
+        )]),
+        daemon_connections,
+        store,
+    );
+    // `m1` restarted and reports nothing running, so its nodes are re-spawned.
+    coordinator
+        .handle_daemon_status_report(m1.clone(), vec![])
+        .await
+        .expect("status report should be handled");
+    assert!(received_all_nodes_ready(&mut m1_rx).is_empty());
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: m1,
+                exited_before_subscribe: vec![],
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        received_all_nodes_ready(&mut m1_rx),
+        vec![Vec::<NodeId>::new()],
+        "the re-spawned daemon must be released"
+    );
+    assert!(received_all_nodes_ready(&mut m2_rx).is_empty());
 }
 
 #[tokio::test]
@@ -2096,6 +2342,108 @@ async fn replay_takes_param_write_lock_before_reading_the_param() {
         .expect("daemon task did not finish")
         .unwrap();
     assert_eq!(seen, vec![("gain".to_string(), serde_json::json!(2))]);
+}
+
+/// Ask a coordinator whose default daemon connected over `daemon` whether a
+/// CLI connected over `cli` shares its machine, through the event loop and
+/// the control connection's completion of the reply, as `dora start` does.
+async fn cli_and_default_daemon_on_same_machine(
+    cli: crate::ws_server::PeerInfo,
+    daemon: Option<crate::ws_server::PeerInfo>,
+) -> bool {
+    let mut daemon_connections = DaemonConnections::default();
+    if let Some(daemon) = daemon {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<String>(8);
+        let mut connection = crate::state::DaemonConnection::new(
+            tx,
+            Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            BTreeMap::new(),
+        );
+        connection.peer_addr = Some(daemon.remote);
+        connection.coordinator_local_addr = daemon.local;
+        daemon_connections.add(DaemonId::new(None), connection);
+    }
+    let mut coordinator = test_coordinator(
+        HashMap::new(),
+        daemon_connections,
+        Arc::new(InMemoryStore::new()),
+    );
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_control_event(ControlEvent::IncomingRequest {
+            request: Box::new(
+                dora_message::cli_to_coordinator::ControlRequest::CliAndDefaultDaemonOnSameMachine,
+            ),
+            reply_sender,
+        })
+        .await
+        .unwrap();
+    let reply = crate::ws_control::fill_in_cli_ip(reply.await.unwrap().unwrap(), cli);
+    // The CLI's check in `binaries/cli/src/common.rs`.
+    let ControlRequestReply::CliAndDefaultDaemonIps {
+        default_daemon,
+        cli,
+    } = reply
+    else {
+        panic!("unexpected reply {reply:?}")
+    };
+    default_daemon.is_some() && default_daemon == cli
+}
+
+fn peer(remote: &str, local: &str) -> crate::ws_server::PeerInfo {
+    crate::ws_server::PeerInfo {
+        remote: remote.parse().unwrap(),
+        local: Some(local.parse().unwrap()),
+    }
+}
+
+/// A CLI on another host must not be told it shares the default daemon's
+/// machine: it would send its own working directory, which does not exist
+/// there. The coordinator used to answer `127.0.0.1` for both whenever an
+/// unnamed daemon was connected.
+#[tokio::test]
+async fn a_remote_cli_does_not_share_the_default_daemons_machine() {
+    // Daemon next to the coordinator, CLI on a laptop.
+    assert!(
+        !cli_and_default_daemon_on_same_machine(
+            peer("192.0.2.7:50000", "192.0.2.1:6013"),
+            Some(peer("127.0.0.1:40000", "127.0.0.1:6013")),
+        )
+        .await
+    );
+    // Daemon on another host, CLI next to the coordinator.
+    assert!(
+        !cli_and_default_daemon_on_same_machine(
+            peer("127.0.0.1:50000", "127.0.0.1:6013"),
+            Some(peer("192.0.2.8:40000", "192.0.2.1:6013")),
+        )
+        .await
+    );
+    // No default daemon at all.
+    assert!(
+        !cli_and_default_daemon_on_same_machine(peer("127.0.0.1:50000", "127.0.0.1:6013"), None)
+            .await
+    );
+}
+
+#[tokio::test]
+async fn a_local_cli_shares_the_default_daemons_machine() {
+    // Both over loopback.
+    assert!(
+        cli_and_default_daemon_on_same_machine(
+            peer("127.0.0.1:50000", "127.0.0.1:6013"),
+            Some(peer("127.0.0.1:40000", "127.0.0.1:6013")),
+        )
+        .await
+    );
+    // The daemon dialed the host's LAN IP, the CLI loopback.
+    assert!(
+        cli_and_default_daemon_on_same_machine(
+            peer("127.0.0.1:50000", "127.0.0.1:6013"),
+            Some(peer("192.168.1.5:40000", "192.168.1.5:6013")),
+        )
+        .await
+    );
 }
 
 /// A `Coordinator` around the given state, with everything else empty.
@@ -6232,6 +6580,273 @@ async fn node_topology_changes_are_persisted() {
         [("sender".to_string(), Some("sender".to_string()))]
     );
 
+    // A dataflow rebuilt after a coordinator restart only maps the nodes its
+    // reconnected daemons still run (`RunningDataflow::recovered`), so an
+    // exited `sender` is in the descriptor but not in `node_to_daemon`.
+    // Re-adding it must be rejected, as it is without a restart, and the
+    // stored descriptor left untouched: a duplicate id makes the next
+    // re-establish fail to resolve it (#3759).
+    coordinator
+        .running_dataflows
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .node_to_daemon
+        .clear();
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_add_node(dataflow_id, node("sender", "sender-v2"), reply_tx)
+        .await
+        .unwrap();
+    let err = reply_rx
+        .await
+        .unwrap()
+        .expect_err("re-adding an existing id must be rejected");
+    assert!(
+        err.to_string().contains("already exists"),
+        "unexpected error: {err:?}"
+    );
+    assert_eq!(
+        stored_nodes(),
+        [("sender".to_string(), Some("sender".to_string()))]
+    );
+
     drop(coordinator);
     daemon_task.await.unwrap();
+}
+
+/// #3872: the WS handler's per-connection subscription list is not told when
+/// the coordinator drops a subscriber on its own (a stalled reader evicted,
+/// the dataflow ended). `live_topic_subscriptions` reports which of the ids
+/// are still registered, so the handler can free the slots of the rest.
+#[test]
+fn live_topic_subscriptions_keeps_only_registered_ids() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "sender".to_string().into();
+    let live_id = Uuid::new_v4();
+    let evicted_id = Uuid::new_v4();
+
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id);
+    let (frame_tx, _frame_rx) =
+        tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    dataflow.topic_subscribers.insert(
+        live_id,
+        crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), frame_tx),
+    );
+    let running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+
+    let live =
+        crate::topic_debug::live_topic_subscriptions(&running_dataflows, vec![live_id, evicted_id]);
+
+    assert_eq!(live, vec![live_id]);
+}
+
+/// #3872: a subscriber the coordinator evicts on its own, here because its
+/// receiver went away, must stop being reported live. That is what lets the
+/// WS handler free the slot instead of counting it against the cap forever.
+#[tokio::test]
+async fn evicted_topic_subscriber_is_no_longer_live() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let node_id: dora_core::config::NodeId = "sender".to_string().into();
+    let live_id = Uuid::new_v4();
+    let evicted_id = Uuid::new_v4();
+
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id);
+    let (live_tx, _live_rx) = tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    let (evicted_tx, evicted_rx) =
+        tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    drop(evicted_rx);
+    dataflow.topic_subscribers.insert(
+        live_id,
+        crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), live_tx),
+    );
+    dataflow.topic_subscribers.insert(
+        evicted_id,
+        crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), evicted_tx),
+    );
+    let mut running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+    let ids = vec![live_id, evicted_id];
+    assert_eq!(
+        crate::topic_debug::live_topic_subscriptions(&running_dataflows, ids.clone()),
+        ids,
+        "both subscribers are live before the frame"
+    );
+
+    crate::topic_debug::forward_topic_frames(
+        &mut running_dataflows,
+        &mut DaemonConnections::default(),
+        dataflow_id,
+        ids.clone(),
+        vec![1, 2, 3],
+        &HLC::default(),
+    )
+    .await;
+
+    assert_eq!(
+        crate::topic_debug::live_topic_subscriptions(&running_dataflows, ids),
+        vec![live_id],
+        "the subscriber whose receiver closed must no longer be live"
+    );
+}
+
+/// `dora clean` must leave a dataflow alone while it waits for a daemon to
+/// reconnect. Once one daemon of a multi-daemon dataflow has finished, the
+/// dataflow has partial `dataflow_results`; if the remaining daemon then drops
+/// off, the orphan reclaim removes it from `running_dataflows` and persists
+/// `Recovering`. `clean` used to take the partial results for a finished
+/// dataflow and delete the stored record, so the reconnecting daemon found
+/// nothing to reconcile and its nodes kept running unmanaged.
+#[tokio::test]
+async fn clean_keeps_a_dataflow_awaiting_reclaim() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let finished_daemon = DaemonId::new(Some("a".to_string()));
+    let remaining_daemon = DaemonId::new(Some("b".to_string()));
+    let df = test_running_dataflow(dataflow_id, remaining_daemon, "sender".to_string().into());
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        Default::default(),
+        store.clone(),
+    );
+    coordinator.dataflow_results.insert(
+        dataflow_id,
+        BTreeMap::from([(
+            finished_daemon,
+            DataflowDaemonResult {
+                timestamp: coordinator.clock.new_timestamp(),
+                node_results: BTreeMap::new(),
+            },
+        )]),
+    );
+    crate::daemon_liveness::begin_orphaned_dataflow_reclaim(
+        dataflow_id,
+        &mut coordinator.running_dataflows,
+        &coordinator.clock,
+        store.as_ref(),
+    )
+    .await;
+    assert!(matches!(
+        store.get_dataflow(&dataflow_id).unwrap().map(|r| r.status),
+        Some(StoreDataflowStatus::Recovering)
+    ));
+
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator.handle_clean(reply_sender).await.unwrap();
+    let Ok(ControlRequestReply::CleanResult { cleaned, failed }) = reply.await.unwrap() else {
+        panic!("expected a clean result");
+    };
+    assert!(failed.is_empty());
+    assert!(
+        cleaned.0.iter().all(|entry| entry.id.uuid != dataflow_id),
+        "a dataflow awaiting reclaim must not be cleaned: {cleaned:?}"
+    );
+    assert!(
+        store.get_dataflow(&dataflow_id).unwrap().is_some(),
+        "the Recovering record must survive `dora clean`"
+    );
+    assert!(coordinator.dataflow_results.contains_key(&dataflow_id));
+}
+
+/// Each daemon pushes its own cross-daemon Zenoh counters for a dataflow, so
+/// a node's `network` row must come from the daemon running it — not from
+/// whichever daemon of a multi-daemon dataflow happened to push last.
+#[tokio::test]
+async fn node_info_reports_the_network_counters_of_the_nodes_own_daemon() {
+    use dora_message::daemon_to_coordinator::NetworkMetrics;
+
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_a = DaemonId::new(Some("a".to_string()));
+    let daemon_b = DaemonId::new(Some("b".to_string()));
+    let sender: NodeId = "sender".to_string().into();
+    let receiver: NodeId = "receiver".to_string().into();
+
+    let mut df = test_running_dataflow(dataflow_id, daemon_a.clone(), sender.clone());
+    let receiver_node = df.nodes[&sender].clone();
+    df.nodes.insert(receiver.clone(), receiver_node);
+    df.node_to_daemon.insert(receiver.clone(), daemon_b.clone());
+    df.daemons.insert(daemon_b.clone());
+
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        DaemonConnections::default(),
+        store,
+    );
+    let net = |bytes_sent| NetworkMetrics {
+        bytes_sent,
+        ..Default::default()
+    };
+    coordinator
+        .handle_node_metrics(dataflow_id, daemon_a, BTreeMap::new(), Some(net(1)))
+        .await
+        .unwrap();
+    coordinator
+        .handle_node_metrics(dataflow_id, daemon_b, BTreeMap::new(), Some(net(2)))
+        .await
+        .unwrap();
+
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_get_node_info(reply_sender)
+        .await
+        .unwrap();
+    let Ok(ControlRequestReply::NodeInfoList(infos)) = reply.await.unwrap() else {
+        panic!("expected a NodeInfoList reply");
+    };
+    let bytes_sent = |node: &NodeId| {
+        infos
+            .iter()
+            .find(|info| &info.node_id == node)
+            .and_then(|info| info.network.as_ref())
+            .map(|net| net.bytes_sent)
+    };
+    assert_eq!(bytes_sent(&sender), Some(1), "{infos:?}");
+    assert_eq!(bytes_sent(&receiver), Some(2), "{infos:?}");
+}
+
+/// Module expansion sets `path_fallback`, but only spawning and local
+/// validation read it, and a CLI built with an older dora parses the
+/// `DataflowInfo` descriptor with `deny_unknown_fields` (`dora node info`,
+/// `dora topic echo`), so the reply carries the descriptor without the field.
+#[tokio::test]
+async fn dataflow_info_leaves_out_path_fallback() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let mut df = test_running_dataflow(dataflow_id, daemon_id, "m.sender".to_string().into());
+    let node = r#"{"id": "m.sender", "path": "modules/sender", "outputs": ["message"]}"#;
+    let without: Descriptor =
+        serde_json::from_str(&format!(r#"{{"nodes": [{node}]}}"#)).expect("valid descriptor");
+    df.descriptor = serde_json::from_str(&format!(
+        r#"{{"nodes": [{}]}}"#,
+        node.replace('}', r#", "path_fallback": "sender"}"#)
+    ))
+    .expect("valid descriptor");
+    assert_eq!(
+        df.descriptor.nodes[0].path_fallback.as_deref(),
+        Some("sender")
+    );
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        DaemonConnections::default(),
+        Arc::new(InMemoryStore::new()),
+    );
+
+    let (reply_sender, reply) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_control_event(ControlEvent::IncomingRequest {
+            request: Box::new(dora_message::cli_to_coordinator::ControlRequest::Info {
+                dataflow_uuid: dataflow_id,
+            }),
+            reply_sender,
+        })
+        .await
+        .unwrap();
+    let ControlRequestReply::DataflowInfo { descriptor, .. } = reply.await.unwrap().unwrap() else {
+        panic!("expected a DataflowInfo reply");
+    };
+    assert_eq!(
+        serde_json::to_value(&descriptor).unwrap(),
+        serde_json::to_value(&without).unwrap()
+    );
 }

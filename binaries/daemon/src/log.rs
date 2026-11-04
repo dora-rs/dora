@@ -18,7 +18,7 @@ use eyre::Context;
 use flume::Sender;
 use uuid::Uuid;
 
-use crate::coordinator::CoordinatorSender;
+use crate::coordinator::{CoordinatorSender, MAX_COORDINATOR_MESSAGE_BYTES};
 
 pub fn log_path(working_dir: &Path, dataflow_id: &Uuid, node_id: &NodeId) -> PathBuf {
     let dataflow_dir = working_dir.join("out").join(dataflow_id.to_string());
@@ -512,16 +512,26 @@ impl Logger {
     }
 
     async fn log_to_coordinator(
-        message: Timestamped<CoordinatorRequest>,
+        mut message: Timestamped<CoordinatorRequest>,
         sender: &CoordinatorSender,
     ) {
-        let msg = match serde_json::to_vec(&message) {
+        let msg = match encode_log_event(&mut message) {
             Ok(msg) => msg,
             Err(err) => {
                 tracing::warn!("failed to serialize log message: {err}");
                 return;
             }
         };
+        if msg.len() > MAX_COORDINATOR_MESSAGE_BYTES - EVENT_ENVELOPE_RESERVE {
+            // Too large even after cutting its text: the coordinator would
+            // close the daemon connection on it.
+            tracing::warn!(
+                "not forwarding a {}-byte log message to dora-coordinator: \
+                 it exceeds the coordinator's message limit",
+                msg.len()
+            );
+            return;
+        }
         match sender
             .send_event(&msg)
             .await
@@ -530,6 +540,61 @@ impl Logger {
             Ok(()) => (),
             Err(err) => tracing::warn!("{err:?}"),
         }
+    }
+}
+
+/// Room left in a coordinator message for the `daemon_event` envelope that
+/// [`CoordinatorSender::send_event`] wraps around the serialized event.
+const EVENT_ENVELOPE_RESERVE: usize = 256;
+
+/// Serialize a log event for the coordinator, cutting the end off its text
+/// when the event would not fit in one coordinator message.
+///
+/// A node's output line may be up to 1 MiB, and JSON escaping can double it
+/// or more, while the coordinator closes the daemon connection on any
+/// message past [`MAX_COORDINATOR_MESSAGE_BYTES`]. When even an empty text
+/// would not fit (the excess is elsewhere in the event), the event is left
+/// as is and `log_to_coordinator` drops it.
+fn encode_log_event(message: &mut Timestamped<CoordinatorRequest>) -> serde_json::Result<Vec<u8>> {
+    const BUDGET: usize = MAX_COORDINATOR_MESSAGE_BYTES - EVENT_ENVELOPE_RESERVE;
+    const NOTE_RESERVE: usize = 64;
+
+    let msg = serde_json::to_vec(message)?;
+    if msg.len() <= BUDGET {
+        return Ok(msg);
+    }
+    let CoordinatorRequest::Event {
+        event: DaemonEvent::Log(log),
+        ..
+    } = &mut message.inner
+    else {
+        return Ok(msg);
+    };
+    let text = &mut log.message;
+    let text_json: usize = text.chars().map(json_escaped_len).sum();
+    let Some(keep_json) = text_json.checked_sub(msg.len() - BUDGET + NOTE_RESERVE) else {
+        return Ok(msg);
+    };
+    let mut used = 0;
+    let keep = text
+        .char_indices()
+        .find(|&(_, c)| {
+            used += json_escaped_len(c);
+            used > keep_json
+        })
+        .map_or(text.len(), |(i, _)| i);
+    let dropped = text.len() - keep;
+    text.truncate(keep);
+    text.push_str(&format!(" [... {dropped} bytes truncated]"));
+    serde_json::to_vec(message)
+}
+
+/// The bytes `serde_json` writes for `c` inside a JSON string.
+fn json_escaped_len(c: char) -> usize {
+    match c {
+        '"' | '\\' | '\u{8}' | '\u{c}' | '\n' | '\r' | '\t' => 2,
+        c if c < ' ' => 6,
+        c => c.len_utf8(),
     }
 }
 
@@ -647,6 +712,117 @@ mod tests {
             observed, id_b,
             "node log clone must follow the reconnect, not keep the spawn-time id"
         );
+    }
+
+    fn log_event(text: String) -> Timestamped<CoordinatorRequest> {
+        let clock = uhlc::HLC::default();
+        Timestamped {
+            inner: CoordinatorRequest::Event {
+                daemon_id: DaemonId::new(None),
+                event: DaemonEvent::Log(LogMessage {
+                    build_id: None,
+                    dataflow_id: Some(Uuid::nil()),
+                    node_id: Some(NodeId::from("node".to_string())),
+                    daemon_id: None,
+                    level: LogLevelOrStdout::Stdout,
+                    target: None,
+                    module_path: None,
+                    file: None,
+                    line: None,
+                    message: text,
+                    timestamp: chrono::Utc::now(),
+                    fields: None,
+                }),
+            },
+            timestamp: clock.new_timestamp(),
+        }
+    }
+
+    fn forwarded_text(message: &Timestamped<CoordinatorRequest>) -> &str {
+        match &message.inner {
+            CoordinatorRequest::Event {
+                event: DaemonEvent::Log(log),
+                ..
+            } => &log.message,
+            _ => unreachable!(),
+        }
+    }
+
+    /// A node output line up to the 1 MiB capture cap, or a shorter one that
+    /// JSON escaping blows up, must still fit in one coordinator message: the
+    /// coordinator closes the daemon connection on a larger one.
+    #[tokio::test]
+    async fn an_oversized_log_line_is_truncated_to_fit_the_coordinator_limit() {
+        for text in [
+            "x".repeat(1024 * 1024),
+            "\"".repeat(600 * 1024),
+            "\u{1}".repeat(300 * 1024),
+            "é".repeat(512 * 1024),
+        ] {
+            let (sender, mut rx) = CoordinatorSender::for_test();
+            Logger::log_to_coordinator(log_event(text.clone()), &sender).await;
+            let sent = rx.try_recv().expect("the log line must still be forwarded");
+            assert!(
+                sent.len() <= MAX_COORDINATOR_MESSAGE_BYTES,
+                "{} bytes exceeds the coordinator limit",
+                sent.len()
+            );
+
+            let mut event = log_event(text.clone());
+            encode_log_event(&mut event).unwrap();
+            let forwarded = forwarded_text(&event);
+            let (kept, note) = forwarded.rsplit_once(" [... ").unwrap();
+            assert!(text.starts_with(kept));
+            // Only what doesn't fit is cut, however heavily the text escapes.
+            assert!(
+                sent.len() > MAX_COORDINATOR_MESSAGE_BYTES - 1024,
+                "cut more than needed: {} bytes sent",
+                sent.len()
+            );
+            assert_eq!(
+                note,
+                format!("{} bytes truncated]", text.len() - kept.len())
+            );
+        }
+    }
+
+    #[test]
+    fn json_escaped_len_matches_serde_json() {
+        for c in [
+            'a', 'é', '😀', '"', '\\', '\n', '\t', '\u{1}', '\u{1f}', '\u{7f}', '/',
+        ] {
+            let encoded = serde_json::to_string(&c.to_string()).unwrap();
+            assert_eq!(json_escaped_len(c), encoded.len() - 2, "{c:?}");
+        }
+    }
+
+    /// When the excess is not in the text, cutting the text cannot help, so
+    /// the event is left whole rather than stripped of its message.
+    #[test]
+    fn a_log_event_too_large_outside_its_text_is_left_unchanged() {
+        let mut event = log_event("hello".to_string());
+        if let CoordinatorRequest::Event {
+            event: DaemonEvent::Log(log),
+            ..
+        } = &mut event.inner
+        {
+            log.fields = Some(std::collections::BTreeMap::from([(
+                "payload".to_string(),
+                "x".repeat(MAX_COORDINATOR_MESSAGE_BYTES),
+            )]));
+        }
+        let encoded = encode_log_event(&mut event).unwrap();
+        assert!(encoded.len() > MAX_COORDINATOR_MESSAGE_BYTES);
+        assert_eq!(forwarded_text(&event), "hello");
+    }
+
+    #[test]
+    fn a_log_line_that_fits_is_forwarded_unchanged() {
+        let text = "x".repeat(512 * 1024);
+        let mut event = log_event(text.clone());
+        let encoded = encode_log_event(&mut event).unwrap();
+        assert_eq!(forwarded_text(&event), text);
+        assert!(encoded.len() < MAX_COORDINATOR_MESSAGE_BYTES);
     }
 
     #[test]

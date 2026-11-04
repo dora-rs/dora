@@ -143,6 +143,56 @@ mod tests {
     }
 
     #[test]
+    fn test_vec_bool_round_trip() -> Result<(), Report> {
+        let value = vec![true, false, true];
+        let data: DoraArray = value.clone().into_arrow();
+        let result: Vec<bool> = TryFrom::try_from(&data)?;
+        assert_eq!(value, result);
+        Ok(())
+    }
+
+    #[test]
+    fn test_vec_string_round_trip() -> Result<(), Report> {
+        let value = vec!["a".to_string(), String::new(), "ünïcode".to_string()];
+        let data: DoraArray = value.clone().into_arrow();
+        let result: Vec<String> = TryFrom::try_from(&data)?;
+        assert_eq!(value, result);
+        Ok(())
+    }
+
+    /// Senders outside Rust (pyarrow, Polars) commonly produce `LargeUtf8`
+    /// and `Utf8View`; both must read back like `Utf8`.
+    #[test]
+    fn test_vec_string_accepts_all_string_encodings() -> Result<(), Report> {
+        use arrow::array::{LargeStringArray, StringViewArray};
+        let expected = vec!["x".to_string(), "y".to_string()];
+        for data in [
+            from_array_ref(Arc::new(LargeStringArray::from(vec!["x", "y"]))),
+            from_array_ref(Arc::new(StringViewArray::from(vec!["x", "y"]))),
+        ] {
+            let result: Vec<String> = TryFrom::try_from(&data)?;
+            assert_eq!(result, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_vec_bool_and_vec_string_reject_nulls() {
+        use arrow::array::{BooleanArray, StringArray};
+        let data = from_array_ref(Arc::new(BooleanArray::from(vec![Some(true), None])));
+        assert!(Vec::<bool>::try_from(&data).is_err());
+        let data = from_array_ref(Arc::new(StringArray::from(vec![Some("a"), None])));
+        assert!(Vec::<String>::try_from(&data).is_err());
+    }
+
+    #[test]
+    fn test_vec_bool_and_vec_string_reject_other_types() {
+        let data = vec![1_u8, 2].into_arrow();
+        assert!(Vec::<bool>::try_from(&data).is_err());
+        assert!(Vec::<String>::try_from(&data).is_err());
+    }
+
+    #[test]
     fn test_vec_u16_round_trip() -> Result<(), Report> {
         let value_vec_u16: Vec<u16> = vec![1, 2, 3, 4, 5];
         let data: DoraArray = value_vec_u16.clone().into_arrow();

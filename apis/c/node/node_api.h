@@ -30,19 +30,21 @@ void *init_dora_context_from_env();
 
 /* Thread-safe: NO. Takes ownership of the context and drops it. The caller
  * must guarantee no other thread is using `dora_context` when this is
- * called, and the pointer must not be reused afterward. */
+ * called, and the pointer must not be reused afterward. Passing NULL (e.g.
+ * the result of a failed init_dora_context_from_env) is a no-op. */
 void free_dora_context(void *dora_context);
 
 /* Thread-safe: NO. Mutates the context's internal event-stream cursor.
  * Concurrent calls with the same `dora_context` are undefined behavior.
  * If you need to fan out events to worker threads, drain events from a
- * single thread and dispatch by event type. */
+ * single thread and dispatch by event type. Returns NULL once all event
+ * streams are closed, and also when `dora_context` is NULL. */
 void *dora_next_event(void *dora_context);
 
 /* Thread-safe: NO. Takes ownership of `dora_event` and drops it. After
  * freeing, neither the event pointer nor any pointer returned by the
  * read_dora_event_* / read_dora_input_* family for that event may be
- * used. */
+ * used. Passing NULL is a no-op. */
 void free_dora_event(void *dora_event);
 
 enum DoraEventType
@@ -66,7 +68,11 @@ void read_dora_input_id(void *dora_event, char **out_ptr, size_t *out_len);
  * read_dora_input_id about caller-owned out destinations. */
 void read_dora_input_data(void *dora_event, char **out_ptr, size_t *out_len);
 
-/* Thread-safe: yes (read-only). Returns by value. */
+/* Thread-safe: yes (read-only). Returns by value. The timestamp is NTP64,
+ * not nanoseconds: the upper 32 bits are seconds since the UNIX epoch, the
+ * lower 32 bits the fraction of a second in units of 2^-32 s. In nanoseconds:
+ * (ts >> 32) * 1000000000ull + (((ts & 0xFFFFFFFFull) * 1000000000ull) >> 32)
+ * Returns 0 if the event is not an input event. */
 unsigned long long read_dora_input_timestamp(void *dora_event);
 
 /* Thread-safe: NO. Mutates the context's internal sender state. Concurrent
