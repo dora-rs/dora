@@ -56,6 +56,13 @@ impl IndexConfig {
         }
     }
 
+    /// Whether this entry is the official index. Aliases are case-insensitive
+    /// identities (see the duplicate check in [`ResolvedConfig::new`]), so an
+    /// `Official` entry overrides the official location just like `official`.
+    pub(crate) fn is_official(&self) -> bool {
+        self.alias.eq_ignore_ascii_case(OFFICIAL_INDEX_ALIAS)
+    }
+
     /// Whether this entry points at a local directory instead of a git repo.
     pub fn is_local(&self) -> bool {
         self.git.is_none()
@@ -93,7 +100,7 @@ impl ResolvedConfig {
     pub fn new(mut indexes: Vec<IndexConfig>, config_dir: PathBuf) -> eyre::Result<Self> {
         // the official index is always present; an explicit `official` alias
         // entry may override its location (e.g. an enterprise mirror)
-        if !indexes.iter().any(|i| i.alias == OFFICIAL_INDEX_ALIAS) {
+        if !indexes.iter().any(IndexConfig::is_official) {
             indexes.push(IndexConfig::official());
         }
         let mut bindings = BTreeMap::new();
@@ -113,7 +120,7 @@ impl ResolvedConfig {
                 // the official namespace always resolves against the official
                 // index — a non-official entry binding it would silently shadow
                 // the official source (dependency confusion), so reject it
-                if namespace == OFFICIAL_NAMESPACE && index.alias != OFFICIAL_INDEX_ALIAS {
+                if namespace == OFFICIAL_NAMESPACE && !index.is_official() {
                     eyre::bail!(
                         "index `{}` cannot bind the official namespace \
                          `{OFFICIAL_NAMESPACE}` — it always resolves against the \
@@ -134,7 +141,7 @@ impl ResolvedConfig {
         }
         let default_index = indexes
             .iter()
-            .position(|i| i.alias == OFFICIAL_INDEX_ALIAS)
+            .position(IndexConfig::is_official)
             .expect("official index inserted above");
         Ok(Self {
             indexes,
@@ -286,6 +293,28 @@ namespaces = ["test"]
         assert_eq!(resolved.index_for_namespace("test").alias, "fixtures");
         assert_eq!(resolved.index_for_namespace("dora-rs").alias, "official");
         assert_eq!(resolved.index_for_namespace("unbound").alias, "official");
+    }
+
+    #[test]
+    fn official_alias_override_is_case_insensitive() {
+        // `Official` overrides the built-in entry like `official` does
+        let resolved = config(
+            r#"
+[[index]]
+alias = "Official"
+git = "https://mirror.example.com/dora-index"
+namespaces = ["dora-rs"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(resolved.indexes.len(), 1);
+        for namespace in ["dora-rs", "unbound"] {
+            let index = resolved.index_for_namespace(namespace);
+            assert_eq!(
+                index.git.as_deref(),
+                Some("https://mirror.example.com/dora-index")
+            );
+        }
     }
 
     #[test]
