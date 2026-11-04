@@ -1857,6 +1857,7 @@ async fn applied_param_changes_are_acked_and_pruned_from_the_state_log() {
     df.daemon_ack_sequence = BTreeMap::from([(owner.clone(), 1)]);
 
     let mut coordinator = Coordinator {
+        state_updates: tokio::sync::watch::channel(Default::default()).0,
         running_builds: HashMap::new(),
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::from([(dataflow_id, df)]),
@@ -1929,6 +1930,7 @@ async fn wait_for_spawn_after_a_failed_spawn_reports_the_failure() {
     df.pending_spawn_results.insert(daemon_id.clone());
 
     let mut coordinator = Coordinator {
+        state_updates: tokio::sync::watch::channel(Default::default()).0,
         running_builds: HashMap::new(),
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::from([(dataflow_id, df)]),
@@ -1990,6 +1992,7 @@ async fn wait_for_spawn_after_an_early_node_exit(
     df.pending_spawn_results.insert(daemon_id.clone());
 
     let mut coordinator = Coordinator {
+        state_updates: tokio::sync::watch::channel(Default::default()).0,
         running_builds: HashMap::new(),
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::from([(dataflow_id, df)]),
@@ -2453,6 +2456,7 @@ fn test_coordinator(
     store: Arc<dyn CoordinatorStore>,
 ) -> Coordinator {
     Coordinator {
+        state_updates: tokio::sync::watch::channel(Default::default()).0,
         running_builds: HashMap::new(),
         finished_builds: IndexMap::new(),
         running_dataflows,
@@ -6349,6 +6353,7 @@ async fn auto_recovery_respawns_with_the_original_launch_context() {
     running_dataflows.insert(dataflow_id, df);
 
     let mut coordinator = Coordinator {
+        state_updates: tokio::sync::watch::channel(Default::default()).0,
         running_builds: HashMap::new(),
         finished_builds: IndexMap::new(),
         running_dataflows,
@@ -6511,6 +6516,7 @@ async fn node_topology_changes_are_persisted() {
     running_dataflows.insert(dataflow_id, df);
 
     let mut coordinator = Coordinator {
+        state_updates: tokio::sync::watch::channel(Default::default()).0,
         running_builds: HashMap::new(),
         finished_builds: IndexMap::new(),
         running_dataflows,

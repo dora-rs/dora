@@ -356,6 +356,8 @@ async fn start_with_events(
 /// `dataflow_events`. Fields are `pub(crate)` so those `impl` blocks can
 /// borrow them independently.
 pub(crate) struct Coordinator {
+    pub(crate) state_updates:
+        tokio::sync::watch::Sender<dora_message::coordinator_to_cli::CoordinatorState>,
     pub(crate) running_builds: HashMap<BuildId, RunningBuild>,
     pub(crate) finished_builds: IndexMap<BuildId, CachedResult>,
     pub(crate) running_dataflows: HashMap<DataflowId, RunningDataflow>,
@@ -462,6 +464,7 @@ async fn start_inner(
     }
 
     let mut coordinator = Coordinator {
+        state_updates: tokio::sync::watch::channel(Default::default()).0,
         running_builds: HashMap::new(),
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::new(),
@@ -482,6 +485,13 @@ async fn start_inner(
         // used below for measuring the event handling duration
         let start = Instant::now();
         let event_kind = event.kind();
+        let may_change_state = !matches!(
+            &event,
+            Event::Log(_)
+                | Event::NodeMetrics { .. }
+                | Event::TopicDebugData { .. }
+                | Event::DaemonHeartbeat { .. }
+        );
 
         if event.log() {
             tracing::trace!("Handling event {event:?}");
@@ -584,6 +594,10 @@ async fn start_inner(
                     .handle_daemon_node_stopped(daemon_id, dataflow_id, node_id, clean_stop)
                     .await?
             }
+        }
+
+        if may_change_state {
+            coordinator.publish_state();
         }
 
         // warn if event handling took too long -> the main loop should never be blocked for too long

@@ -181,6 +181,76 @@ async fn control_status() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn state_subscription_sends_current_state_and_daemon_transitions() {
+    use dora_message::daemon_to_coordinator::{
+        CoordinatorRequest, DaemonRegisterRequest, Timestamped,
+    };
+    const STATE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
+    // Arrange
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut control = connect_control(port).await;
+
+    // Act
+    let reply = request_reply(&mut control, "control", json!("StateSubscribe")).await;
+
+    // Assert: subscribing delivers current state without another request.
+    assert!(reply.error.is_none(), "{reply:?}");
+    let initial = tokio::time::timeout(STATE_DEADLINE, control.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let initial: serde_json::Value = serde_json::from_str(initial.to_text().unwrap()).unwrap();
+    assert_eq!(initial["event"], "state");
+    assert_eq!(initial["payload"], json!({"daemons": [], "dataflows": []}));
+
+    // Act: register through the real daemon WebSocket protocol.
+    let (mut daemon, _) =
+        tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/api/daemon"))
+            .await
+            .unwrap();
+    let request = Timestamped {
+        inner: CoordinatorRequest::Register(DaemonRegisterRequest::with_zenoh_endpoint(
+            Some("state-subscription-test".into()),
+            Default::default(),
+            None,
+        )),
+        timestamp: dora_message::uhlc::HLC::default().new_timestamp(),
+    };
+    let params = serde_json::to_string(&request).unwrap();
+    let id = Uuid::new_v4();
+    daemon
+        .send(Message::Text(
+            format!(r#"{{"id":"{id}","method":"daemon_request","params":{params}}}"#,).into(),
+        ))
+        .await
+        .unwrap();
+
+    // Assert: a connection transition wakes the subscriber.
+    let connected = tokio::time::timeout(STATE_DEADLINE, control.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let connected: serde_json::Value = serde_json::from_str(connected.to_text().unwrap()).unwrap();
+    assert_eq!(connected["payload"]["daemons"].as_array().unwrap().len(), 1);
+
+    // Act
+    daemon.close(None).await.unwrap();
+
+    // Assert: disconnect is delivered without periodic status queries.
+    let disconnected = tokio::time::timeout(STATE_DEADLINE, control.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let disconnected: serde_json::Value =
+        serde_json::from_str(disconnected.to_text().unwrap()).unwrap();
+    assert_eq!(disconnected["payload"]["daemons"], json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn control_ping_pong() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;

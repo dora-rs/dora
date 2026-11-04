@@ -225,8 +225,15 @@ impl DataflowResult {
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct DataflowList(pub Vec<DataflowListEntry>);
+
+/// Current coordinator lifecycle state. Subscribers may skip intermediate snapshots.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct CoordinatorState {
+    pub daemons: Vec<DaemonId>,
+    pub dataflows: DataflowList,
+}
 
 impl DataflowList {
     pub fn get_active(&self) -> Vec<DataflowIdAndName> {
@@ -238,7 +245,7 @@ impl DataflowList {
     }
 }
 
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct DataflowListEntry {
     pub id: DataflowIdAndName,
     pub status: DataflowStatus,
@@ -263,7 +270,7 @@ pub enum DataflowStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DataflowIdAndName {
     pub uuid: Uuid,
     pub name: Option<String>,

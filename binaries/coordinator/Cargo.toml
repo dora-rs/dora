@@ -34,7 +34,7 @@ log = { version = "0.4.33", features = ["serde"] }
 dora-message = { workspace = true }
 dora-coordinator-store = { workspace = true }
 axum = { version = "0.8", features = ["ws"] }
-tower = "0.5"
+tower = { version = "0.5", features = ["limit"] }
 socket2 = "0.6"
 indexmap = "2"
 zenoh = { workspace = true }

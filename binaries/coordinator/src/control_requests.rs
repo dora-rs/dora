@@ -40,6 +40,11 @@ type ReplySender = tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply
 impl Coordinator {
     pub(crate) async fn handle_control_event(&mut self, event: ControlEvent) -> eyre::Result<()> {
         match event {
+            ControlEvent::StateSubscribe { subscribed } => {
+                let receiver = self.state_updates.subscribe();
+                self.publish_state();
+                let _ = subscribed.send(receiver);
+            }
             ControlEvent::IncomingRequest {
                 request,
                 reply_sender,
@@ -326,6 +331,11 @@ impl Coordinator {
                             .collect();
                         let reply = Ok(ControlRequestReply::ConnectedDaemons(daemon_infos));
                         let _ = reply_sender.send(reply);
+                    }
+                    ControlRequest::StateSubscribe => {
+                        let _ = reply_sender.send(Err(eyre!(
+                            "StateSubscribe request should be handled separately"
+                        )));
                     }
                     ControlRequest::LogSubscribe { .. } => {
                         let _ = reply_sender.send(Err(eyre::eyre!(
@@ -826,6 +836,33 @@ impl Coordinator {
     }
 
     pub(crate) async fn handle_list(&mut self, reply_sender: ReplySender) -> eyre::Result<()> {
+        let _ = reply_sender.send(Ok(ControlRequestReply::DataflowList(self.list_dataflows())));
+        Ok(())
+    }
+
+    pub(crate) fn publish_state(&mut self) {
+        if self.state_updates.receiver_count() == 0 {
+            return;
+        }
+        let state = dora_message::coordinator_to_cli::CoordinatorState {
+            daemons: self
+                .daemon_connections
+                .iter_mut()
+                .map(|(id, _)| id.clone())
+                .collect(),
+            dataflows: self.list_dataflows(),
+        };
+        self.state_updates.send_if_modified(|current| {
+            if *current == state {
+                false
+            } else {
+                *current = state;
+                true
+            }
+        });
+    }
+
+    fn list_dataflows(&self) -> DataflowList {
         let mut dataflows: Vec<_> = self.running_dataflows.values().collect();
         dataflows.sort_by_key(|d| (&d.name, d.uuid));
 
@@ -860,11 +897,7 @@ impl Coordinator {
                 DataflowListEntry { id, status }
             });
 
-        let reply = Ok(ControlRequestReply::DataflowList(DataflowList(
-            running.chain(finished_failed).collect(),
-        )));
-        let _ = reply_sender.send(reply);
-        Ok(())
+        DataflowList(running.chain(finished_failed).collect())
     }
 
     pub(crate) async fn handle_clean(&mut self, reply_sender: ReplySender) -> eyre::Result<()> {

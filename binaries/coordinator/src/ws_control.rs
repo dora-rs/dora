@@ -4,7 +4,7 @@ use dora_message::{
     TOPIC_DATA_PROTOCOL_VERSION,
     cli_to_coordinator::{ControlRequest, check_cli_version},
     common::Timestamped,
-    coordinator_to_cli::ControlRequestReply,
+    coordinator_to_cli::{ControlRequestReply, CoordinatorState},
     current_crate_version,
     daemon_to_daemon::InterDaemonEvent,
     metadata::{FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter},
@@ -15,7 +15,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::Arc,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use uuid::Uuid;
 
 /// Maximum topics allowed in a single TopicSubscribe request.
@@ -103,6 +103,32 @@ async fn send_log_line(
         .map_err(|_| ())
 }
 
+async fn send_state(
+    ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
+    state: &CoordinatorState,
+) -> Result<(), ()> {
+    let data = serde_json::to_string(state).map_err(|error| {
+        tracing::error!("failed to serialize coordinator state: {error}");
+    })?;
+    ws_tx
+        .send(Message::Text(
+            format!(r#"{{"event":"state","payload":{data}}}"#).into(),
+        ))
+        .await
+        .map_err(|_| ())
+}
+
+async fn next_state(
+    receiver: &mut Option<watch::Receiver<CoordinatorState>>,
+) -> Result<CoordinatorState, ()> {
+    let Some(receiver) = receiver.as_mut() else {
+        return std::future::pending().await;
+    };
+    receiver.changed().await.map_err(|_| ())?;
+    let state = receiver.borrow_and_update().clone();
+    Ok(state)
+}
+
 /// Push one topic data frame to the CLI as `subscription_id ++ payload`.
 async fn send_topic_frame(
     ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
@@ -134,12 +160,14 @@ async fn await_reply_forwarding_pushes(
     ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
     log_rx: &mut crate::log_subscriber::LogQueue,
     binary_rx: &mut mpsc::Receiver<crate::topic_subscriber::TopicFrame>,
+    state_rx: &mut Option<watch::Receiver<CoordinatorState>>,
 ) -> Result<ControlRequestReply, ()> {
     let reply = loop {
         tokio::select! {
             reply = &mut reply_rx => break reply,
             Some(log_json) = log_rx.recv() => send_log_line(ws_tx, log_json).await?,
             Some(frame) = binary_rx.recv() => send_topic_frame(ws_tx, frame).await?,
+            state = next_state(state_rx) => send_state(ws_tx, &state?).await?,
         }
     };
     // Lines the event loop queued before answering belong ahead of the
@@ -200,6 +228,7 @@ pub(crate) async fn handle_control_ws(
     let (binary_tx, mut binary_rx) = mpsc::channel::<crate::topic_subscriber::TopicFrame>(64);
     let mut topic_subscriptions: Vec<Uuid> = Vec::new();
     let mut publish_session: Option<zenoh::Session> = None;
+    let mut state_rx = None;
 
     loop {
         tokio::select! {
@@ -240,6 +269,24 @@ pub(crate) async fn handle_control_ws(
 
                 // Handle Hello / LogSubscribe / BuildLogSubscribe / TopicSubscribe / TopicUnsubscribe specially
                 match &control_request {
+                    ControlRequest::StateSubscribe => {
+                        let (subscribed, receiver) = oneshot::channel();
+                        if event_tx.send(Event::Control(ControlEvent::StateSubscribe {
+                            subscribed,
+                        })).await.is_err() {
+                            break;
+                        }
+                        let Ok(mut receiver) = receiver.await else { break };
+                        let state = receiver.borrow_and_update().clone();
+                        state_rx = Some(receiver);
+                        let reply = WsResponse::ok(req.id, serde_json::json!({"subscribed": true}));
+                        if send_ws_response(&mut ws_tx, &reply).await.is_err()
+                            || send_state(&mut ws_tx, &state).await.is_err()
+                        {
+                            break;
+                        }
+                        continue;
+                    }
                     ControlRequest::Hello { dora_version } => {
                         // Protocol version handshake — reply directly from
                         // this loop rather than forwarding to the event
@@ -503,7 +550,7 @@ pub(crate) async fn handle_control_ws(
                 // the build or dataflow ends, and the logs they produce in the
                 // meantime are pushed through this same connection.
                 let Ok(reply) =
-                    await_reply_forwarding_pushes(reply_rx, &mut ws_tx, &mut log_rx, &mut binary_rx)
+                    await_reply_forwarding_pushes(reply_rx, &mut ws_tx, &mut log_rx, &mut binary_rx, &mut state_rx)
                         .await
                 else {
                     break;
@@ -526,6 +573,12 @@ pub(crate) async fn handle_control_ws(
             // Binary topic data to push to CLI
             Some(frame) = binary_rx.recv() => {
                 if send_topic_frame(&mut ws_tx, frame).await.is_err() {
+                    break;
+                }
+            }
+            state = next_state(&mut state_rx) => {
+                let Ok(state) = state else { break };
+                if send_state(&mut ws_tx, &state).await.is_err() {
                     break;
                 }
             }

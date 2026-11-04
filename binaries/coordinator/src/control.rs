@@ -9,6 +9,11 @@ use uuid::Uuid;
 
 #[derive(Debug)]
 pub enum ControlEvent {
+    StateSubscribe {
+        subscribed: oneshot::Sender<
+            tokio::sync::watch::Receiver<dora_message::coordinator_to_cli::CoordinatorState>,
+        >,
+    },
     IncomingRequest {
         request: Box<ControlRequest>,
         reply_sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,

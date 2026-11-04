@@ -262,6 +262,13 @@ mod tests {
     use std::net::TcpListener;
 
     #[test]
+    fn watch_status_option_is_accepted() {
+        use clap::Parser;
+        let parsed = crate::Args::try_parse_from(["dora", "status", "--watch", "--format", "json"]);
+        assert!(parsed.is_ok(), "{parsed:?}");
+    }
+
+    #[test]
     fn refused_coordinator_is_not_reported_as_not_running() {
         // `--auth` coordinator, wrong token: it is running, so "not running"
         // would send the user to `dora up`, which cannot start a second one.

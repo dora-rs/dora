@@ -265,6 +265,8 @@ pub enum ControlRequest {
     Hello {
         dora_version: semver::Version,
     },
+    /// Subscribe to current daemon connections and dataflow statuses, then changes.
+    StateSubscribe,
 }
 
 impl ControlRequest {
