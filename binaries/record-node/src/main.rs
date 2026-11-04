@@ -351,9 +351,11 @@ fn skip_oversized_ipc(
 ///
 /// Both paths check the size *before* the copies that follow the encode (the
 /// aligned buffer, then the postcard event in `main`), so a frame the writer
-/// would refuse anyway is dropped without them. The fallback matters here: it
-/// is taken for unsupported types, sliced arrays, and every array above the
-/// fast path's own 256 MiB layout bound — i.e. for the largest frames.
+/// would refuse anyway is dropped without them. On the fallback this covers a
+/// frame between `MAX_RECORD_BYTES` (64 MiB) and the 256 MiB IPC limit whose
+/// array cannot use the fast path: view types, dictionaries, and arrays with a
+/// non-zero offset. (A stream over the IPC limit never arrives as an input; the
+/// sender's encoder and the receiver's decoder both refuse it.)
 fn encode_recorded_ipc(
     array: &dora_node_api::DoraArray,
     summary: &mut RunSummary,
@@ -698,9 +700,9 @@ mod tests {
     #[test]
     fn fallback_encode_skips_an_oversized_frame_before_copying_it() {
         // A view type is not fast-path eligible, so it takes the official-writer
-        // fallback — the path every frame above the fast path's own layout bound
-        // takes too. The fallback must refuse an over-cap stream itself, not hand
-        // a full-size copy on to `main` for the writer to refuse later.
+        // fallback, as do dictionaries and arrays with a non-zero offset. The
+        // fallback must refuse an over-cap stream itself, not hand a full-size
+        // copy on to `main` for the writer to refuse later.
         use dora_node_api::arrow_v59::array::{Array, BinaryViewArray};
         let (node, output): (NodeId, DataId) =
             ("camera".parse().unwrap(), "image".parse().unwrap());
