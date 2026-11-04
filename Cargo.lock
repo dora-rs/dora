@@ -2228,6 +2228,7 @@ dependencies = [
  "schemars 1.2.3",
  "semver",
  "serde",
+ "serde-with-expand-env",
  "serde_json",
  "serde_yaml",
  "splitty",

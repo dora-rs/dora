@@ -845,7 +845,8 @@ fn expand_module_node(
 
         // Substitute params in env values
         if !params.is_empty() {
-            substitute_params_in_node(&mut inner_node, params);
+            substitute_params_in_node(&mut inner_node, params)
+                .wrap_err_with(|| format!("module node `{}`", node.id))?;
         }
 
         // Prepend module-level build command to inner node builds
@@ -1141,7 +1142,14 @@ fn propagate_module_node_env(
 /// Substitute `${_param.name}` and `$PARAM_<NAME>` references in a node's args
 /// and inject params into the node's env map as `EnvValue::String` entries.
 /// A nested module node gets them in its own `params` instead.
-fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>) {
+///
+/// An injected value has its `$VAR` references expanded here, as a YAML
+/// `env:` value is when the dataflow is read: an `EnvValue` reaches the
+/// coordinator and daemon as given and is not expanded there again (#3947).
+fn substitute_params_in_node(
+    node: &mut Node,
+    params: &BTreeMap<String, String>,
+) -> eyre::Result<()> {
     // Substitute in args
     if let Some(ref mut args) = node.args {
         *args = substitute_params_in_str(args, params);
@@ -1160,7 +1168,7 @@ fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>)
                 node.params.insert(key.clone(), value.clone());
             }
         }
-        return;
+        return Ok(());
     }
 
     // Inject params into env map (caller params override inner defaults)
@@ -1168,9 +1176,20 @@ fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>)
     for (key, value) in params {
         env.insert(
             format!("PARAM_{}", key.to_uppercase()),
-            EnvValue::String(value.clone()),
+            EnvValue::String(expand_env_references(value).wrap_err_with(|| {
+                format!("failed to expand environment variables in param `{key}`")
+            })?),
         );
     }
+    Ok(())
+}
+
+/// `value` with its `$VAR` / `${VAR}` references expanded, by the same rules
+/// as a string in an `env:` block (`$$` is a literal `$`).
+fn expand_env_references(value: &str) -> eyre::Result<String> {
+    use serde::de::{IntoDeserializer, value::StrDeserializer};
+    let deserializer: StrDeserializer<'_, serde::de::value::Error> = value.into_deserializer();
+    Ok(serde_with_expand_env::with_expand_envs(deserializer)?)
 }
 
 /// Replace every parameter reference with its value in a single left-to-right
@@ -2402,6 +2421,49 @@ nodes:
         // Params are injected as PARAM_<UPPERCASE_KEY>
         assert_eq!(env["PARAM_SPEED"], EnvValue::String("1.5".to_string()));
         assert_eq!(env["PARAM_MODE"], EnvValue::String("turbo".to_string()));
+    }
+
+    /// A param injected as env is expanded here, once, like a YAML `env:`
+    /// value: the coordinator and daemon no longer expand what they receive
+    /// (#3947), so `${MODEL_DIR}` in a param must not reach them unexpanded.
+    #[test]
+    fn expand_params_in_env_expands_variables_once() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        write_file(
+            base,
+            "param_module.yml",
+            "module:\n  name: m\n  inputs: [data]\n\
+             nodes:\n  - id: proc\n    path: proc.py\n    inputs:\n      data: _mod/data\n",
+        );
+        let desc = |params: &str| {
+            parse_descriptor(&format!(
+                "nodes:\n  - id: src\n    path: src.py\n    outputs: [val]\n  \
+                 - id: m\n    module: param_module.yml\n    inputs:\n      data: src/val\n    \
+                 params:\n{params}"
+            ))
+        };
+
+        let expanded = expand_modules(
+            &desc(
+                "      dir: \"${DORA_TEST_PARAM_SURELY_UNSET:-/models}\"\n      \
+                 literal: \"p$$ss\"\n",
+            ),
+            base,
+        )
+        .unwrap();
+        let env = expanded.nodes[1].env.as_ref().unwrap();
+        assert_eq!(env["PARAM_DIR"], EnvValue::String("/models".into()));
+        assert_eq!(env["PARAM_LITERAL"], EnvValue::String("p$ss".into()));
+
+        let err = expand_modules(
+            &desc("      dir: \"${DORA_TEST_PARAM_SURELY_UNSET}\"\n"),
+            base,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("param `dir`"), "got: {msg}");
+        assert!(msg.contains("DORA_TEST_PARAM_SURELY_UNSET"), "got: {msg}");
     }
 
     #[test]

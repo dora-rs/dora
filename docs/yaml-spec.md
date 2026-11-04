@@ -300,7 +300,7 @@ env:
     __dora_env: HOST_VAR   # read from host environment at runtime
 ```
 
-Environment variables apply to both `build` commands and node execution. Values support `$VAR` expansion syntax.
+Environment variables apply to both `build` commands and node execution. Values support `$VAR` / `${VAR}` / `${VAR:-default}` expansion syntax. Expansion happens once, against the environment of the `dora` CLI that reads the file. Write `$$` for a literal `$` (`PASSWORD: p$$ssw0rd`). A value whose expansion contains `$` (say `HOST_VAR='a$b'`) reaches the node unchanged. The coordinator and daemon do not expand it again. Coordinators from dora releases before this change still expand it one more time, against their own environment.
 
 Some names are reserved and are dropped (with a warning in the daemon log) when set on a node:
 
