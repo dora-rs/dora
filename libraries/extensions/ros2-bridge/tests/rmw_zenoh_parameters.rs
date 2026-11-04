@@ -15,7 +15,7 @@ use dora_ros2_bridge::{
         },
     },
     transport::{
-        Ros2Qos,
+        History, Reliability, Ros2Qos,
         zenoh::{
             Context, ContextOptions, Node,
             compatibility::{TypeDescriptionResolver, resolve_message, resolve_service},
@@ -35,6 +35,18 @@ const NODE: &str = "/robot/arm";
 
 fn resolver() -> TypeDescriptionResolver {
     TypeDescriptionResolver::from_ament_prefix_path()
+}
+
+/// rmw's `rmw_qos_profile_parameter_events` (reliable, depth 1000), the profile
+/// the topic tokens below advertise, so a burst of sets keeps every event.
+fn parameter_events_qos() -> Ros2Qos {
+    Ros2Qos {
+        reliability: Reliability::Reliable {
+            max_blocking_time: Duration::ZERO,
+        },
+        history: History::KeepLast { depth: 1000 },
+        ..Ros2Qos::default()
+    }
 }
 
 /// Calls `<NODE>/<service>` the way a ROS client does: CDR request in, CDR
@@ -134,7 +146,7 @@ async fn parameter_services_answer_like_ros2_client() {
             type_hash: event_type.key_hash_component(),
             qos: "::,1000:,:,:,,".into(),
         },
-        &Ros2Qos::default(),
+        &parameter_events_qos(),
         8,
         64 * 1024,
         Arc::new(|bytes: &[u8]| Ok(bytes.to_vec())),
@@ -418,7 +430,7 @@ async fn concurrent_sets_publish_in_store_order() {
             type_hash: event_type.key_hash_component(),
             qos: "::,1000:,:,:,,".into(),
         },
-        &Ros2Qos::default(),
+        &parameter_events_qos(),
         4096,
         64 * 1024,
         Arc::new(|bytes: &[u8]| Ok(bytes.to_vec())),
