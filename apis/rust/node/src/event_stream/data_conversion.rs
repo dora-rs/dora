@@ -15,9 +15,11 @@ impl RawData {
         match self {
             // A metadata-only message with no payload. Any real array is a
             // non-empty IPC stream, so an empty payload maps to the unit array.
-            RawData::Empty => {
-                Ok(dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data())
-            }
+            // An empty `Vec` (a zero-length sample sent over the daemon path)
+            // is the same message, and the zenoh path already decodes an
+            // empty payload this way, so it must not become `Event::Error`.
+            RawData::Empty => Ok(unit_array()),
+            RawData::Vec(data) if data.is_empty() => Ok(unit_array()),
             RawData::Vec(data) => {
                 // Wrap the 128-byte-aligned `AVec` as an Arrow `Buffer` without
                 // copying (the buffer aliases the allocation), then let the
@@ -32,6 +34,11 @@ impl RawData {
             }
         }
     }
+}
+
+/// The unit array an empty payload decodes to, on every receive path.
+pub(crate) fn unit_array() -> arrow::array::ArrayData {
+    dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data()
 }
 
 impl std::fmt::Debug for RawData {
@@ -79,14 +86,20 @@ mod tests {
         );
     }
 
+    /// A zero-length sample reaches a daemon-path receiver as an empty
+    /// `DataMessage::Vec`. It must decode to the unit array, as an empty
+    /// zenoh payload does, rather than fail as an IPC stream with no batches.
+    #[test]
+    fn empty_vec_payload_decodes_like_no_payload() {
+        let decoded = RawData::Vec(AVec::new(128)).into_arrow_array().unwrap();
+        assert_eq!(decoded, RawData::Empty.into_arrow_array().unwrap());
+    }
+
     /// An empty payload (metadata-only message) decodes to the unit array, never
     /// an error.
     #[test]
     fn empty_payload_decodes_to_unit_array() {
         let decoded = RawData::Empty.into_arrow_array().unwrap();
-        assert_eq!(
-            decoded,
-            dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data()
-        );
+        assert_eq!(decoded, unit_array());
     }
 }

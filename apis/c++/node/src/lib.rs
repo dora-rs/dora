@@ -260,7 +260,9 @@ mod ffi {
         /// (`API_KEY: "${HOST_VAR}"`, expanded at descriptor parse
         /// time per `libraries/message/src/descriptor.rs`'s
         /// `with_expand_envs`) both appear as plain strings in the
-        /// output. Don't pipe this into shared logs or telemetry
+        /// output, with each `$` written as `$$` so that decoding the
+        /// JSON as a descriptor again gives back the same value.
+        /// Don't pipe this into shared logs or telemetry
         /// without sanitizing if your dataflow can carry secrets in
         /// env vars.
         fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> Result<String>;
@@ -315,7 +317,8 @@ mod ffi {
 
         /// Arrow-payload variant of `send_service_request`. Consumes the
         /// Arrow C Data Interface structs behind `array_ptr` /
-        /// `schema_ptr` exactly like `send_arrow_output` does.
+        /// `schema_ptr` exactly like `send_arrow_output` does, including
+        /// rejecting an already-released struct with an error.
         unsafe fn send_arrow_service_request(
             output_sender: &mut Box<OutputSender>,
             output_id: String,
@@ -392,6 +395,14 @@ mod ffi {
             metadata: Box<Metadata>,
         ) -> DoraResult;
 
+        /// Send an Arrow array on a named output, taking ownership of the
+        /// Arrow C Data Interface structs behind `array_ptr` / `schema_ptr`.
+        ///
+        /// Unless a pointer is null, both structs are consumed on every
+        /// path (the caller's copies are zeroed), including when an error
+        /// is returned. An already-released struct (`release == NULL`),
+        /// for example one resent after a failed call, is rejected with an
+        /// error.
         unsafe fn send_arrow_output(
             output_sender: &mut Box<OutputSender>,
             id: String,
@@ -1574,6 +1585,18 @@ unsafe fn send_arrow_output_impl(
         std::ptr::write(schema_ptr, std::mem::zeroed());
     }
 
+    // A released struct (`release == NULL`), typically one resent after a
+    // failed call already consumed it, has no valid buffers or format
+    // string: importing it panics inside arrow, which aborts across the cxx
+    // bridge. Reject it instead. Returning here drops the owned copies, so a
+    // still-live partner struct is released and the contract stays
+    // "consumed unless a pointer is null".
+    if array.is_released() || schema.release.is_none() {
+        return ffi::DoraResult {
+            error: "Received an already released Arrow array or schema".to_string(),
+        };
+    }
+
     match unsafe { arrow::ffi::from_ffi(array, &schema) } {
         Ok(array_data) => {
             let arrow_array = arrow::array::make_array(array_data);
@@ -2249,5 +2272,100 @@ mod tests {
             event_as_node_restarted(event).is_err(),
             "a caller that branched wrongly must be told, not handed a plausible id"
         );
+    }
+
+    fn exported_u8_array() -> (arrow::ffi::FFI_ArrowArray, arrow::ffi::FFI_ArrowSchema) {
+        use arrow::array::{Array, UInt8Array};
+        arrow::ffi::to_ffi(&UInt8Array::from(vec![1u8, 2, 3]).to_data()).expect("export array")
+    }
+
+    /// Calls `send_arrow_output` the way C++ does, with pointers to the
+    /// caller's Arrow C Data Interface structs.
+    fn send_arrow(
+        sender: &mut Box<OutputSender>,
+        id: &str,
+        array: &mut arrow::ffi::FFI_ArrowArray,
+        schema: &mut arrow::ffi::FFI_ArrowSchema,
+    ) -> ffi::DoraResult {
+        unsafe {
+            send_arrow_output(
+                sender,
+                id.to_string(),
+                array as *mut _ as *mut u8,
+                schema as *mut _ as *mut u8,
+            )
+        }
+    }
+
+    /// A normal Arrow send is delivered and consumes the caller's structs.
+    #[test]
+    fn send_arrow_output_delivers_and_consumes_the_structs() {
+        use dora_node_api::integration_testing::drain_outputs;
+
+        let (mut sender, mut rx, _events) = testing_output_sender();
+        let (mut array, mut schema) = exported_u8_array();
+
+        let result = send_arrow(&mut sender, "out", &mut array, &mut schema);
+        assert!(result.error.is_empty(), "{}", result.error);
+        assert!(array.is_released(), "a send consumes the array");
+        assert!(schema.release.is_none(), "a send consumes the schema");
+
+        let received = drain_outputs(&mut rx);
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].get("id").and_then(|v| v.as_str()), Some("out"));
+        assert_eq!(received[0].get("data"), Some(&serde_json::json!([1, 2, 3])));
+    }
+
+    /// Released structs must be rejected with an error instead of panicking
+    /// inside arrow's import, which aborts the process across the cxx bridge.
+    #[test]
+    fn send_arrow_output_rejects_released_structs() {
+        let (mut sender, _rx, _events) = testing_output_sender();
+        let mut array = arrow::ffi::FFI_ArrowArray::empty();
+        let mut schema = arrow::ffi::FFI_ArrowSchema::empty();
+
+        let result = send_arrow(&mut sender, "out", &mut array, &mut schema);
+        assert!(result.error.contains("released"), "{}", result.error);
+    }
+
+    /// The typical way to hit the abort: a call fails after consuming the
+    /// structs (here an invalid output id), and the caller resends them.
+    /// The contract is unchanged: the first call still consumes both
+    /// structs; the resend now gets an error instead of aborting.
+    #[test]
+    fn send_arrow_output_resend_after_failed_call_is_an_error() {
+        let (mut sender, _rx, _events) = testing_output_sender();
+        let (mut array, mut schema) = exported_u8_array();
+
+        let result = send_arrow(&mut sender, "bad id", &mut array, &mut schema);
+        assert!(
+            result.error.contains("invalid output id"),
+            "{}",
+            result.error
+        );
+        assert!(
+            array.is_released(),
+            "a failed call still consumes the array"
+        );
+        assert!(
+            schema.release.is_none(),
+            "a failed call still consumes the schema"
+        );
+
+        let result = send_arrow(&mut sender, "out", &mut array, &mut schema);
+        assert!(result.error.contains("released"), "{}", result.error);
+    }
+
+    /// When only one struct is released, the live one is still consumed, so
+    /// "consumed unless a pointer is null" holds on the rejection path too.
+    #[test]
+    fn send_arrow_output_consumes_the_live_struct_when_the_other_is_released() {
+        let (mut sender, _rx, _events) = testing_output_sender();
+        let (mut array, _schema) = exported_u8_array();
+        let mut schema = arrow::ffi::FFI_ArrowSchema::empty();
+
+        let result = send_arrow(&mut sender, "out", &mut array, &mut schema);
+        assert!(result.error.contains("released"), "{}", result.error);
+        assert!(array.is_released(), "the live array must still be consumed");
     }
 }

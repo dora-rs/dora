@@ -1,6 +1,8 @@
 //! Multi-index configuration and namespace binding (spec §7.3).
 //!
-//! `~/.config/dora/hub.toml` declares `[[index]]` entries. **A namespace
+//! `hub.toml` in the platform config directory (`$XDG_CONFIG_HOME/dora`, by
+//! default `~/.config/dora`, on Linux; `~/Library/Application Support/dora` on
+//! macOS; `%APPDATA%\dora` on Windows) declares `[[index]]` entries. **A namespace
 //! resolves against exactly one index**: explicit `namespaces` bindings win,
 //! the official index carries every unbound namespace, and a namespace bound
 //! by two entries is a configuration error — there is no search order to
@@ -56,6 +58,13 @@ impl IndexConfig {
         }
     }
 
+    /// Whether this entry is the official index. Aliases are case-insensitive
+    /// identities (see the duplicate check in [`ResolvedConfig::new`]), so an
+    /// `Official` entry overrides the official location just like `official`.
+    pub(crate) fn is_official(&self) -> bool {
+        self.alias.eq_ignore_ascii_case(OFFICIAL_INDEX_ALIAS)
+    }
+
     /// Whether this entry points at a local directory instead of a git repo.
     pub fn is_local(&self) -> bool {
         self.git.is_none()
@@ -93,7 +102,7 @@ impl ResolvedConfig {
     pub fn new(mut indexes: Vec<IndexConfig>, config_dir: PathBuf) -> eyre::Result<Self> {
         // the official index is always present; an explicit `official` alias
         // entry may override its location (e.g. an enterprise mirror)
-        if !indexes.iter().any(|i| i.alias == OFFICIAL_INDEX_ALIAS) {
+        if !indexes.iter().any(IndexConfig::is_official) {
             indexes.push(IndexConfig::official());
         }
         let mut bindings = BTreeMap::new();
@@ -113,7 +122,7 @@ impl ResolvedConfig {
                 // the official namespace always resolves against the official
                 // index — a non-official entry binding it would silently shadow
                 // the official source (dependency confusion), so reject it
-                if namespace == OFFICIAL_NAMESPACE && index.alias != OFFICIAL_INDEX_ALIAS {
+                if namespace == OFFICIAL_NAMESPACE && !index.is_official() {
                     eyre::bail!(
                         "index `{}` cannot bind the official namespace \
                          `{OFFICIAL_NAMESPACE}` — it always resolves against the \
@@ -134,7 +143,7 @@ impl ResolvedConfig {
         }
         let default_index = indexes
             .iter()
-            .position(|i| i.alias == OFFICIAL_INDEX_ALIAS)
+            .position(IndexConfig::is_official)
             .expect("official index inserted above");
         Ok(Self {
             indexes,
@@ -152,10 +161,24 @@ impl ResolvedConfig {
         if let Ok(path) = std::env::var("DORA_HUB_CONFIG") {
             return Self::load_from(Path::new(&path));
         }
-        let Some(config_dir) = dirs::config_dir() else {
+        Self::load_default_in(dirs::config_dir(), linux_path_to_check(dirs::home_dir()))
+    }
+
+    /// [`Self::load_default`] past the `DORA_HUB_CONFIG` override, with the
+    /// platform config directory and the Linux path to check passed in (tests
+    /// use a temp dir).
+    fn load_default_in(
+        config_dir: Option<PathBuf>,
+        linux_path: Option<PathBuf>,
+    ) -> eyre::Result<Self> {
+        let Some(config_dir) = config_dir else {
             return Self::new(Vec::new(), PathBuf::from("."));
         };
-        Self::load_from(&config_dir.join("dora").join("hub.toml"))
+        let path = config_dir.join("dora").join("hub.toml");
+        if !path.is_file() {
+            ensure_not_misplaced(&path, linux_path.as_deref())?;
+        }
+        Self::load_from(&path)
     }
 
     /// Load from an explicit config file path (missing file = official only).
@@ -179,6 +202,40 @@ impl ResolvedConfig {
             None => &self.indexes[self.default_index],
         }
     }
+}
+
+/// The Linux location, `~/.config/dora/hub.toml`, on the platforms that never
+/// read it: macOS and Windows. `None` elsewhere: on Linux `dirs::config_dir()`
+/// follows `XDG_CONFIG_HOME`, so with it set, a file at `~/.config` is ignored
+/// by design and must not become an error.
+fn linux_path_to_check(home: Option<PathBuf>) -> Option<PathBuf> {
+    if cfg!(any(target_os = "macos", target_os = "windows")) {
+        home.map(|home| home.join(".config/dora/hub.toml"))
+    } else {
+        None
+    }
+}
+
+/// Refuse to fall back to official-only when a `hub.toml` sits at the Linux
+/// location (`~/.config/dora/hub.toml`) on a platform that reads it from
+/// elsewhere (see [`linux_path_to_check`]). Ignoring it would silently drop its namespace bindings, so a
+/// bound namespace would resolve against the official index instead: the
+/// dependency confusion the bindings exist to prevent.
+fn ensure_not_misplaced(expected: &Path, linux_path: Option<&Path>) -> eyre::Result<()> {
+    if let Some(linux_path) = linux_path
+        && linux_path != expected
+        && linux_path.is_file()
+    {
+        eyre::bail!(
+            "found `{}`, but on this platform dora reads its hub config from `{}`, \
+             so the indexes and namespace bindings in it are not in effect\n\n  \
+             hint: move the file to `{}`, or point DORA_HUB_CONFIG at it",
+            linux_path.display(),
+            expected.display(),
+            expected.display(),
+        );
+    }
+    Ok(())
 }
 
 /// Validate one `[[index]]` entry. The alias becomes a cache directory name
@@ -251,6 +308,94 @@ pub(crate) fn validate_index_entry(index: &IndexConfig) -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hub_toml_at_the_linux_path_is_not_silently_ignored() {
+        let home = tempfile::tempdir().unwrap();
+        let expected = home
+            .path()
+            .join("Library/Application Support/dora/hub.toml");
+        let linux_path = home.path().join(".config/dora/hub.toml");
+        std::fs::create_dir_all(linux_path.parent().unwrap()).unwrap();
+        std::fs::write(&linux_path, "[[index]]\n").unwrap();
+
+        let err = ensure_not_misplaced(&expected, Some(&linux_path))
+            .expect_err("a misplaced hub.toml must be reported");
+        let msg = format!("{err:#}");
+        assert!(msg.contains(&linux_path.display().to_string()), "{msg}");
+        assert!(msg.contains(&expected.display().to_string()), "{msg}");
+        assert!(msg.contains("DORA_HUB_CONFIG"), "{msg}");
+    }
+
+    /// The check is wired into the default load, not only the helper: with
+    /// a macOS-style config dir, a file at the Linux path fails the load,
+    /// and the platform file wins once it exists.
+    #[test]
+    fn default_load_reports_a_misplaced_hub_toml() {
+        let home = tempfile::tempdir().unwrap();
+        let config_dir = home.path().join("Library/Application Support");
+        let linux_path = home.path().join(".config/dora/hub.toml");
+        std::fs::create_dir_all(linux_path.parent().unwrap()).unwrap();
+        let acme = "[[index]]\nalias = \"acme\"\npath = \"/srv/acme\"\nnamespaces = [\"acme\"]\n";
+        std::fs::write(&linux_path, acme).unwrap();
+
+        let err =
+            ResolvedConfig::load_default_in(Some(config_dir.clone()), Some(linux_path.clone()))
+                .expect_err("a misplaced hub.toml must fail the default load");
+        assert!(format!("{err:#}").contains("DORA_HUB_CONFIG"), "{err:#}");
+
+        let platform_path = config_dir.join("dora/hub.toml");
+        std::fs::create_dir_all(platform_path.parent().unwrap()).unwrap();
+        std::fs::write(&platform_path, acme).unwrap();
+        let config = ResolvedConfig::load_default_in(Some(config_dir), Some(linux_path)).unwrap();
+        assert_eq!(config.index_for_namespace("acme").alias, "acme");
+    }
+
+    /// Linux with `XDG_CONFIG_HOME` set: the config dir is not `~/.config`,
+    /// but a file left at `~/.config/dora/hub.toml` is ignored by design
+    /// there, so the load falls back to official-only instead of failing.
+    #[test]
+    fn xdg_config_home_leaves_a_file_at_the_default_path_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let xdg = home.path().join("dotfiles/config");
+        let default_path = home.path().join(".config/dora/hub.toml");
+        std::fs::create_dir_all(default_path.parent().unwrap()).unwrap();
+        std::fs::write(&default_path, "[[index]]\n").unwrap();
+
+        // What `load_default` passes on Linux.
+        let config = ResolvedConfig::load_default_in(Some(xdg), None).unwrap();
+        assert_eq!(config.indexes.len(), 1, "official index only");
+    }
+
+    /// Only macOS and Windows check the Linux path; on Linux (CI) it is
+    /// never checked, whatever `XDG_CONFIG_HOME` is.
+    #[test]
+    fn only_macos_and_windows_check_the_linux_path() {
+        let home = PathBuf::from("/home/user");
+        let checked = linux_path_to_check(Some(home.clone()));
+        if cfg!(any(target_os = "macos", target_os = "windows")) {
+            assert_eq!(checked, Some(home.join(".config/dora/hub.toml")));
+        } else {
+            assert_eq!(checked, None);
+        }
+    }
+
+    #[test]
+    fn no_misplaced_config_is_fine() {
+        let home = tempfile::tempdir().unwrap();
+        let expected = home
+            .path()
+            .join("Library/Application Support/dora/hub.toml");
+        let linux_path = home.path().join(".config/dora/hub.toml");
+        // Nothing at the Linux path.
+        assert!(ensure_not_misplaced(&expected, Some(&linux_path)).is_ok());
+        // On Linux the two are the same file.
+        std::fs::create_dir_all(linux_path.parent().unwrap()).unwrap();
+        std::fs::write(&linux_path, "").unwrap();
+        assert!(ensure_not_misplaced(&linux_path, Some(&linux_path)).is_ok());
+        // No home directory.
+        assert!(ensure_not_misplaced(&expected, None).is_ok());
+    }
+
     use super::*;
 
     fn config(toml_str: &str) -> eyre::Result<ResolvedConfig> {
@@ -286,6 +431,28 @@ namespaces = ["test"]
         assert_eq!(resolved.index_for_namespace("test").alias, "fixtures");
         assert_eq!(resolved.index_for_namespace("dora-rs").alias, "official");
         assert_eq!(resolved.index_for_namespace("unbound").alias, "official");
+    }
+
+    #[test]
+    fn official_alias_override_is_case_insensitive() {
+        // `Official` overrides the built-in entry like `official` does
+        let resolved = config(
+            r#"
+[[index]]
+alias = "Official"
+git = "https://mirror.example.com/dora-index"
+namespaces = ["dora-rs"]
+"#,
+        )
+        .unwrap();
+        assert_eq!(resolved.indexes.len(), 1);
+        for namespace in ["dora-rs", "unbound"] {
+            let index = resolved.index_for_namespace(namespace);
+            assert_eq!(
+                index.git.as_deref(),
+                Some("https://mirror.example.com/dora-index")
+            );
+        }
     }
 
     #[test]

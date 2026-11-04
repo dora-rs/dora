@@ -142,6 +142,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         );
     }
 
+    let explicit_replace = !args.replace.is_empty();
     // Determine which nodes to replace
     let nodes_to_replace: BTreeSet<String> = if args.replace.is_empty() {
         recorded_counts.keys().cloned().collect()
@@ -179,6 +180,23 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         .get_mut("nodes")
         .and_then(|v| v.as_sequence_mut())
         .ok_or_else(|| eyre::eyre!("descriptor has no nodes array"))?;
+
+    let unmapped = unmapped_recorded_nodes(nodes, &nodes_to_replace);
+    if !unmapped.is_empty() {
+        let unmapped = unmapped.join(", ");
+        if explicit_replace {
+            bail!(
+                "cannot replay `{unmapped}`: not a top-level node of the recorded dataflow \
+                 (a node inside a `module:` is recorded under its expanded id, but replay \
+                 can only replace top-level nodes)"
+            );
+        }
+        eprintln!(
+            "warning: recorded nodes `{unmapped}` are not top-level nodes of the recorded \
+             dataflow (e.g. nodes inside a `module:`), so they run live instead of being \
+             replayed"
+        );
+    }
 
     replace_recorded_nodes_with_replay(
         nodes,
@@ -270,6 +288,22 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     // backpressure input, and a message lost on one makes the run exit
     // non-zero rather than warn (dora-rs/dora#3397).
     run.execute_with(true)
+}
+
+/// The recorded nodes in `nodes_to_replace` that `nodes` has no entry for,
+/// so replay cannot swap them for a replay node. A node inside a `module:` is
+/// recorded under its expanded id (`<module>.<inner>`), while the recording
+/// keeps the unexpanded dataflow, which lists only the module node.
+fn unmapped_recorded_nodes(
+    nodes: &serde_yaml::Sequence,
+    nodes_to_replace: &BTreeSet<String>,
+) -> Vec<String> {
+    let ids: BTreeSet<&str> = nodes.iter().filter_map(|n| n.get("id")?.as_str()).collect();
+    nodes_to_replace
+        .iter()
+        .filter(|id| !ids.contains(id.as_str()))
+        .cloned()
+        .collect()
 }
 
 /// Rewrites each recorded node in the descriptor into a replay node: swaps its
@@ -607,6 +641,20 @@ fn find_replay_node_binary() -> eyre::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A module's inner node is recorded as `<module>.<inner>`, but the
+    /// recording keeps the unexpanded dataflow, so replay must flag it
+    /// rather than silently run it live.
+    #[test]
+    fn a_recorded_module_inner_node_is_reported_as_unmapped() {
+        let descriptor: serde_yaml::Value = serde_yaml::from_str(
+            "nodes:\n  - id: src\n    path: src.py\n  - id: pipe\n    module: m.yml\n",
+        )
+        .unwrap();
+        let nodes = descriptor["nodes"].as_sequence().unwrap();
+        let recorded = BTreeSet::from(["src".to_string(), "pipe.inner".to_string()]);
+        assert_eq!(unmapped_recorded_nodes(nodes, &recorded), ["pipe.inner"]);
+    }
 
     fn run_rewrite(yaml: &str, replaced: &[&str], counts: &[(&str, &str, u64)]) -> String {
         run_rewrite_counted(yaml, replaced, counts).0

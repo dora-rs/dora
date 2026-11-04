@@ -13,14 +13,18 @@ use std::{
     path::PathBuf,
 };
 
-/// Wire framing mode for an output.
+/// Wire framing requested for an output via `output_framing`.
+///
+/// Accepted for dora 1.x schema compatibility only: neither value changes
+/// anything. Every output is encoded as Arrow IPC regardless of this
+/// setting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum OutputFraming {
-    /// Raw Arrow buffer layout (default, current behavior).
+    /// The default.
     #[default]
     Raw,
-    /// Arrow IPC stream format — self-describing, schema + record batches.
+    /// Arrow IPC stream format.
     ArrowIpc,
 }
 
@@ -595,10 +599,9 @@ pub struct Node {
     #[schemars(with = "Option<BTreeMap<DataId, String>>")]
     pub output_types: BTreeMap<DataId, String>,
 
-    /// Per-output framing overrides (default: Raw for all).
-    ///
-    /// Maps output identifiers to their wire framing mode.
-    /// Outputs not listed here use the default `Raw` framing.
+    /// Per-output framing overrides. Accepted for 1.x schema compatibility
+    /// but ignored: every output is encoded as Arrow IPC whatever its entry
+    /// here says (see [`OutputFraming`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     // An empty key is YAML `null`, which deserializes to the default.
     #[schemars(with = "Option<BTreeMap<DataId, OutputFraming>>")]
@@ -1307,7 +1310,8 @@ pub struct OperatorConfig {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_types: BTreeMap<DataId, String>,
 
-    /// Per-output framing overrides (default: Raw for all).
+    /// Per-output framing overrides. Ignored: every output is encoded as
+    /// Arrow IPC (see [`OutputFraming`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_framing: BTreeMap<DataId, OutputFraming>,
 
@@ -1667,6 +1671,13 @@ pub enum GitRepoRev {
 // become `Integer(8080)`, as in every 1.x release, but `"1.10"`, `"007"`
 // and `"1e3"` stay strings instead of reaching the node as `1.1`, `7` and
 // `1000`.
+//
+// The expansion happens on every decode, and the descriptor is decoded
+// once per hop (CLI -> coordinator -> daemon -> node). So a string is
+// serialized with each `$` written as `$$`, which the next decode turns
+// back into `$`: the value the CLI expanded reaches the node verbatim
+// instead of being expanded again against the receiving host's
+// environment (#3947). Released 1.x peers decode that the same way.
 #[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
@@ -1674,7 +1685,21 @@ pub enum EnvValue {
     Bool(bool),
     Integer(i64),
     Float(f64),
+    #[serde(serialize_with = "serialize_escaping_dollars")]
     String(String),
+}
+
+/// `s` with each `$` written as `$$`, which is what `$` expands from, so the
+/// next decode restores `s`.
+fn serialize_escaping_dollars<S: serde::Serializer>(
+    s: &str,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    if s.contains('$') {
+        serializer.serialize_str(&s.replace('$', "$$"))
+    } else {
+        serializer.serialize_str(s)
+    }
 }
 
 impl<'de> Deserialize<'de> for EnvValue {
@@ -2136,6 +2161,54 @@ mod tests {
             EnvValue::String("v2".into())
         );
         assert!(serde_yaml::from_str::<EnvValue>("\"$DORA_TEST_ENV_VALUE_UNSET_VAR\"").is_err());
+    }
+
+    /// A string whose expansion contains `$` must not be expanded again by
+    /// the next decode, which runs in the coordinator, the daemon and the
+    /// node against *their* environments (#3947). `$${...}` is how a value
+    /// containing `${...}` gets into memory without a CLI-side variable;
+    /// `DORA_TEST_ENV_VALUE_UNSET_VAR` is unset, so a second expansion would
+    /// fail the decode instead of passing by accident.
+    #[test]
+    fn env_value_is_not_expanded_again_after_a_round_trip() {
+        let yaml = "env:\n  X: $${DORA_TEST_ENV_VALUE_UNSET_VAR}\n  \
+                    PW: p$$ssw0rd\n  TAIL: cost$$\nnodes: []\n";
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let expected = BTreeMap::from([
+            (
+                "X".to_string(),
+                EnvValue::String("${DORA_TEST_ENV_VALUE_UNSET_VAR}".into()),
+            ),
+            ("PW".to_string(), EnvValue::String("p$ssw0rd".into())),
+            ("TAIL".to_string(), EnvValue::String("cost$".into())),
+        ]);
+        assert_eq!(descriptor.env.as_ref(), Some(&expected));
+
+        // Every hop: CLI -> coordinator -> daemon -> node over JSON.
+        let mut current = descriptor;
+        for hop in 0..3 {
+            let json = serde_json::to_string(&current).unwrap();
+            current = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("JSON hop {hop} failed: {e}\n{json}"));
+            assert_eq!(current.env.as_ref(), Some(&expected), "JSON hop {hop}");
+        }
+        // The YAML session file the CLI writes and rereads for `hub:` dataflows.
+        let yaml = serde_yaml::to_string(&current).unwrap();
+        let reread: Descriptor = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(reread.env.as_ref(), Some(&expected), "YAML\n{yaml}");
+    }
+
+    /// Strings without `$` and typed values keep the plain encoding, so the
+    /// common case stays byte-identical to what 1.x peers send.
+    #[test]
+    fn env_value_serializes_without_dollar_unchanged() {
+        let json = |v: EnvValue| serde_json::to_string(&v).unwrap();
+        assert_eq!(json(EnvValue::String("hello".into())), "\"hello\"");
+        assert_eq!(json(EnvValue::String("1.10".into())), "\"1.10\"");
+        assert_eq!(json(EnvValue::Integer(8080)), "8080");
+        assert_eq!(json(EnvValue::Float(1.5)), "1.5");
+        assert_eq!(json(EnvValue::Bool(true)), "true");
+        assert_eq!(json(EnvValue::String("a$b".into())), "\"a$$b\"");
     }
 
     /// Assert that `constructed` serializes to exactly what `yaml`

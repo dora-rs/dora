@@ -146,7 +146,7 @@ nodes:
       - result
 ```
 
-Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MODE`) into every node inside the module, overriding a node's own `env:` entry of the same name.
+Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MODE`) into every node inside the module, overriding a node's own `env:` entry of the same name. As with `env:` values, `$VAR` references in an injected param are expanded when the dataflow is expanded, against the `dora` CLI's environment, and `$$` is a literal `$`.
 
 ## Expansion Rules
 
@@ -314,4 +314,5 @@ Automatic fallback applies only to a single extensionless name. Paths with
 folders and dotted names such as `worker.py`, `node.v2` and `tool.exe` retain
 module-relative lookup. Use updated CLI, coordinator and daemon binaries for
 fallback; older components ignore the optional control metadata and keep their
-original lookup behavior. Descriptors sent to nodes and `dora info` omit it.
+original lookup behavior. Descriptors sent to nodes, and the one in the
+coordinator's `Info` reply (which `dora node info` shows), omit it.

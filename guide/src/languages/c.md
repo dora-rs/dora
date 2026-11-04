@@ -27,7 +27,7 @@ This document covers the two C APIs provided by the Dora framework: the **Node A
 
 ## Node API (dora-node-api-c)
 
-Header: [`apis/c/node/node_api.h`](../apis/c/node/node_api.h)
+Header: [`apis/c/node/node_api.h`](../../../apis/c/node/node_api.h)
 Crate: `dora-node-api-c` (builds as `staticlib`)
 
 The Node API is used by standalone C executables that participate in an Dora dataflow as external processes. The daemon spawns the process and sets environment variables that the node reads during initialization.
@@ -183,7 +183,7 @@ enum DoraEventType {
 
 ## Operator API (dora-operator-api-c)
 
-Headers: [`apis/c/operator/operator_api.h`](../apis/c/operator/operator_api.h), [`apis/c/operator/operator_types.h`](../apis/c/operator/operator_types.h)
+Headers: [`apis/c/operator/operator_api.h`](../../../apis/c/operator/operator_api.h), [`apis/c/operator/operator_types.h`](../../../apis/c/operator/operator_types.h)
 Crate: `dora-operator-api-c`
 
 The Operator API is used by shared libraries (`.so`/`.dylib`/`.dll`) loaded into the Dora runtime process. Unlike nodes, operators do not have their own `main` function. Instead, they export three functions that the runtime calls at the appropriate lifecycle points.

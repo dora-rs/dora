@@ -89,6 +89,11 @@ struct PreparedBuild {
     ///
     /// This allows subsequent nodes to reuse the dirs.
     planned_clone_dirs: BTreeSet<PathBuf>,
+    /// Previous clone dirs that a node of this build will rename away.
+    ///
+    /// A later node with the same previous clone can't rename or copy it, as
+    /// it will be gone by then (#4000).
+    renamed_prev_clone_dirs: BTreeSet<PathBuf>,
 }
 
 impl GitManager {
@@ -153,7 +158,19 @@ impl GitManager {
                     .get(&prev_clone_dir)
                     .map(|ids| !ids.is_empty())
                     .unwrap_or(false);
-                if still_needed || used_by_others {
+                let renamed_by_earlier_node = self
+                    .prepared_builds
+                    .get(&session_id)
+                    .is_some_and(|p| p.renamed_prev_clone_dirs.contains(&prev_clone_dir));
+                if renamed_by_earlier_node {
+                    // an earlier node of this build moves the previous clone
+                    // away -> it won't be there to rename or copy, clone anew
+                    ReuseOptions::NewClone {
+                        target_dir: clone_dir.clone(),
+                        repo_url,
+                        commit_hash,
+                    }
+                } else if still_needed || used_by_others {
                     // previous clone is still in use -> we cannot rename it, but we can copy it
                     ReuseOptions::CopyAndFetch {
                         from: prev_clone_dir,
@@ -162,6 +179,11 @@ impl GitManager {
                     }
                 } else {
                     // there is an unused previous clone that is no longer needed -> rename it
+                    self.prepared_builds
+                        .entry(session_id)
+                        .or_default()
+                        .renamed_prev_clone_dirs
+                        .insert(prev_clone_dir.clone());
                     ReuseOptions::RenameAndFetch {
                         from: prev_clone_dir,
                         target_dir: clone_dir.clone(),
@@ -1730,5 +1752,53 @@ mod tests {
             "a failed rename+fetch must leave no target"
         );
         assert!(!has_partial_leftover(&target), "temp must be cleaned up");
+    }
+
+    // Two nodes built from the same previous clone that now move to different
+    // commits must not both rename it: the second rename finds the source gone
+    // (#4000).
+    #[tokio::test]
+    async fn two_nodes_do_not_both_rename_the_same_prev_clone() {
+        use dora_message::common::GitSource;
+
+        let base = tempfile::tempdir().unwrap();
+        let origin = base.path().join("origin");
+        let prev_commit = init_repo_with_commit(&origin);
+        let commit_a = commit_on_branch(&origin, "a", b"a");
+        let commit_b = commit_on_branch(&origin, "b", b"b");
+        let repo = file_url(&origin).to_string();
+        let target = base.path().join("git");
+
+        let mut manager = GitManager::default();
+        let session = SessionId::generate();
+        manager
+            .choose_clone_dir(session, repo.clone(), prev_commit.clone(), None, &target)
+            .unwrap()
+            .prepare(&mut TestLogger)
+            .await
+            .unwrap();
+        manager.clear_planned_builds(session);
+
+        let prev = || {
+            Some(PrevGitSource {
+                git_source: GitSource {
+                    repo: repo.clone(),
+                    commit_hash: prev_commit.clone(),
+                    subdir: None,
+                    hub: None,
+                },
+                still_needed_for_this_build: false,
+            })
+        };
+        let folder_a = manager
+            .choose_clone_dir(session, repo.clone(), commit_a.clone(), prev(), &target)
+            .unwrap();
+        let folder_b = manager
+            .choose_clone_dir(session, repo.clone(), commit_b.clone(), prev(), &target)
+            .unwrap();
+        let dir_a = folder_a.prepare(&mut TestLogger).await.unwrap();
+        let dir_b = folder_b.prepare(&mut TestLogger).await.unwrap();
+        assert_eq!(head_commit(&dir_a), commit_a);
+        assert_eq!(head_commit(&dir_b), commit_b);
     }
 }
