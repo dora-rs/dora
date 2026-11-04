@@ -10,7 +10,7 @@ use dora_message::{
     node_to_daemon::Timestamped,
 };
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::{
         Arc,
         atomic::{self, AtomicU32, AtomicU64},
@@ -173,11 +173,37 @@ fn metrics_refresh_kind() -> sysinfo::ProcessRefreshKind {
 
 /// Parent -> children edges for every process in `sys`.
 fn child_process_map(sys: &sysinfo::System) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
+    parent_edges(
+        sys.processes()
+            .iter()
+            .map(|(pid, process)| (*pid, process.parent(), process.start_time())),
+    )
+}
+
+/// Parent -> children edges from `(pid, parent, start_time)` triples.
+///
+/// A recorded parent pid can be stale: Windows does not re-parent an orphan,
+/// so a process whose parent exited still names that pid, and a node spawned
+/// later may reuse it. Such an edge can close a cycle (the daemon, whose
+/// launching `dora up` has exited, becomes a child of its own node), and the
+/// descendant walk then counted the daemon and every sibling under the node.
+/// A real child cannot start before its parent, so an edge to an older
+/// process is dropped. Start times have one-second resolution, so a stale
+/// edge within the same second survives; [`descendants`] still terminates.
+/// A start time of `0` means unknown (sysinfo reports it for a process it
+/// cannot open on Windows), so such a child keeps its edge.
+fn parent_edges(
+    processes: impl IntoIterator<Item = (sysinfo::Pid, Option<sysinfo::Pid>, u64)>,
+) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
+    let processes: Vec<_> = processes.into_iter().collect();
+    let start_times: HashMap<_, _> = processes.iter().map(|&(pid, _, t)| (pid, t)).collect();
     let mut children_map: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
-    for (pid, process) in sys.processes() {
-        if let Some(parent) = process.parent() {
-            children_map.entry(parent).or_default().push(*pid);
+    for (pid, parent, start) in processes {
+        let Some(parent) = parent else { continue };
+        if start != 0 && start_times.get(&parent).is_some_and(|&p| start < p) {
+            continue;
         }
+        children_map.entry(parent).or_default().push(pid);
     }
     children_map
 }
@@ -200,22 +226,37 @@ fn aggregate_process_tree(
     let mut disk = DiskDelta::default();
     disk.add(previous_processes, pid, process);
 
-    // Recursively aggregate all descendants.
-    let mut stack = vec![pid];
-    while let Some(parent) = stack.pop() {
-        if let Some(kids) = children_map.get(&parent) {
-            for &child_pid in kids {
-                if let Some(child) = sys.processes().get(&child_pid) {
-                    cpu_usage += child.cpu_usage();
-                    memory_bytes += child.memory();
-                    disk.add(previous_processes, child_pid, child);
-                }
-                stack.push(child_pid);
-            }
+    for child_pid in descendants(children_map, pid) {
+        if let Some(child) = sys.process(child_pid) {
+            cpu_usage += child.cpu_usage();
+            memory_bytes += child.memory();
+            disk.add(previous_processes, child_pid, child);
         }
     }
 
     Some((cpu_usage, memory_bytes, disk))
+}
+
+/// Every descendant of `root` in `children_map`, each listed once.
+///
+/// The edges can contain a cycle (see [`parent_edges`]), so the walk keeps a
+/// visited set; without it a cycle looped forever while growing the stack.
+fn descendants(
+    children_map: &HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
+    root: sysinfo::Pid,
+) -> Vec<sysinfo::Pid> {
+    let mut visited = HashSet::from([root]);
+    let mut found = Vec::new();
+    let mut stack = vec![root];
+    while let Some(parent) = stack.pop() {
+        for &child in children_map.get(&parent).into_iter().flatten() {
+            if visited.insert(child) {
+                found.push(child);
+                stack.push(child);
+            }
+        }
+    }
+    found
 }
 
 /// Collect and send metrics in the background. Errors are returned to the
@@ -492,6 +533,69 @@ impl Daemon {
                 tracing::warn!("metrics collection failed: {e}");
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod descendant_tests {
+    use super::*;
+    use sysinfo::Pid;
+
+    /// Edges from `(pid, parent, start_time)`.
+    fn edges(processes: &[(u32, Option<u32>, u64)]) -> HashMap<Pid, Vec<Pid>> {
+        parent_edges(
+            processes
+                .iter()
+                .map(|&(p, parent, t)| (Pid::from_u32(p), parent.map(Pid::from_u32), t)),
+        )
+    }
+
+    fn sorted(mut pids: Vec<Pid>) -> Vec<u32> {
+        pids.sort();
+        pids.into_iter().map(Pid::as_u32).collect()
+    }
+
+    #[test]
+    fn walks_a_plain_tree() {
+        let children = edges(&[
+            (1, None, 1),
+            (2, Some(1), 2),
+            (3, Some(1), 2),
+            (4, Some(2), 3),
+        ]);
+        assert_eq!(sorted(descendants(&children, Pid::from_u32(1))), [2, 3, 4]);
+    }
+
+    /// Node 10 reused the pid of the daemon's (20) exited parent, so the
+    /// recorded parents read node -> daemon -> node. The daemon started
+    /// first, so it is not the node's child.
+    #[test]
+    fn drops_a_stale_parent_edge_to_an_older_process() {
+        let children = edges(&[
+            (10, Some(20), 200),
+            (20, Some(10), 100),
+            (30, Some(20), 150),
+        ]);
+        assert!(descendants(&children, Pid::from_u32(10)).is_empty());
+        assert_eq!(sorted(descendants(&children, Pid::from_u32(20))), [10, 30]);
+    }
+
+    /// Start times cannot tell same-second processes apart, so the cycle
+    /// stays; the walk still ends and lists each process once, never the
+    /// root itself.
+    #[test]
+    fn a_cycle_ends_and_lists_each_process_once() {
+        let children = edges(&[(1, Some(2), 5), (2, Some(1), 5), (3, Some(2), 5)]);
+        assert_eq!(sorted(descendants(&children, Pid::from_u32(1))), [2, 3]);
+    }
+
+    /// sysinfo reports a start time of `0` for a process it cannot open
+    /// (Windows), which is unknown, not older than its parent: the child and
+    /// its own children stay counted.
+    #[test]
+    fn a_child_with_an_unknown_start_time_keeps_its_edge() {
+        let children = edges(&[(1, None, 5), (2, Some(1), 0), (3, Some(2), 6)]);
+        assert_eq!(sorted(descendants(&children, Pid::from_u32(1))), [2, 3]);
     }
 }
 

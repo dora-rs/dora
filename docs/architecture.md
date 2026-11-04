@@ -526,7 +526,7 @@ nodes:
   - id: pipeline
     operators:
       - id: stage1
-        shared-library: target/release/libstage1.so
+        shared-library: target/release/stage1
         inputs:
           data: source/output
         outputs:

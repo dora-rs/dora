@@ -225,7 +225,7 @@ nodes:
   - id: runtime-node
     operators:
       - id: preprocessor
-        shared-library: ../../target/debug/libpreprocess
+        shared-library: ../../target/debug/preprocess
         inputs:
           raw: sensor/data
         outputs:
@@ -603,6 +603,64 @@ larger than the raw bytes.
 The output is written to a temporary file next to the destination and renamed
 into place only once the export completes, so a failed export never leaves a
 truncated file where a readable one used to be.
+
+#### `dora recording diff`
+
+Compare two `.drec` recordings output by output, for golden-file regression
+tests: record a known-good run once, then check that a later run still produces
+the same messages.
+
+```
+dora recording diff <OLD> <NEW>
+```
+
+| Argument | Description |
+|----------|-------------|
+| `<OLD>` | The recording to compare against, e.g. one of a known-good run |
+| `<NEW>` | The recording to check |
+
+For every `node/output`, both recordings must hold the same number of messages,
+and the n-th message of one must carry exactly the same data as the n-th
+message of the other. Things that change on every run are ignored: the start
+time, the dataflow id, message timestamps, and how the messages of different
+outputs interleave.
+
+```bash
+dora record dataflow.yml -o golden.drec   # once, on a known-good run
+dora record dataflow.yml -o new.drec      # after a change
+dora recording diff golden.drec new.drec
+```
+
+For each output that differs it prints a line saying how: only in one
+recording, a different message count, or how many of the messages both
+recordings have differ and the first one (an output can get both of the last
+two lines). When nothing differs it prints `Recordings match: ...`.
+
+A recording that was not finished cleanly (a crash, or a second Ctrl-C in
+`dora record --proxy`) has no footer and may be missing its last messages; it
+is still compared, with a warning on stderr.
+
+| Exit status | Meaning |
+|-------------|---------|
+| `0` | The recordings match |
+| `1` | The recordings differ |
+| `2` | Error, e.g. a file that is missing, is not a recording, or has a record that does not decode |
+
+Limits:
+
+- `metadata.parameters` is **not** compared. Services and actions put a fresh
+  `request_id`/`goal_id` there on every run. So a change that is only in the
+  parameters, such as an action result's `goal_status` or an image's
+  `width`/`height`, is not found.
+- The recorded Arrow payload bytes are compared exactly, with no tolerance for
+  floating-point values. The same values encoded differently, e.g. by a dora
+  version whose recorder writes the Arrow stream another way, count as
+  different.
+- A record that does not decode is an error, not skipped as in
+  `dora recording export`, because a skipped message could hide a difference.
+- Only what was recorded is compared. Messages the record node dropped or
+  skipped as too large are not in the recording; `dora record` reports them
+  when the run ends.
 
 ---
 
