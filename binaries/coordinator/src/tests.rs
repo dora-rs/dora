@@ -7097,6 +7097,7 @@ async fn producer_daemons_waits_for_a_reclaimed_dataflows_daemon() {
     crate::daemon_liveness::begin_orphaned_dataflow_reclaim(
         dataflow_id,
         &mut coordinator.running_dataflows,
+        &mut coordinator.reclaimed_launches,
         &coordinator.clock,
         store.as_ref(),
     )
