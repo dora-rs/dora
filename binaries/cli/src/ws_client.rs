@@ -30,6 +30,20 @@ impl std::fmt::Display for CoordinatorRejected {
 
 impl std::error::Error for CoordinatorRejected {}
 
+/// Where the CLI looks for the `--auth` token, in the order
+/// [`dora_message::auth::discover_token`] tries them. The config directory
+/// is the platform's (`~/.config` only on Linux; `~/Library/Application
+/// Support` on macOS, `%APPDATA%` on Windows), so it is printed resolved.
+fn token_locations() -> String {
+    let config = dora_message::auth::config_token_path()
+        .map(|path| format!(", then {}", path.display()))
+        .unwrap_or_default();
+    format!(
+        "The CLI reads it from DORA_AUTH_TOKEN, then .dora-token in the current \
+         directory{config}. `dora up --auth` writes both files."
+    )
+}
+
 /// Explains why connecting to the coordinator at `addr` failed.
 ///
 /// A refused connection is recognized by its `io::ErrorKind`, not by the OS
@@ -46,10 +60,11 @@ fn connect_failure(addr: SocketAddr, error: tungstenite::Error) -> eyre::Report 
              hint: is the coordinator running? Start it with `dora up`"
         )
     } else if msg.contains("401") || msg.contains("Unauthorized") {
+        let locations = token_locations();
         eyre::Report::new(CoordinatorRejected(format!(
             "authentication failed connecting to coordinator at {addr}: {msg}\n\n  \
              The coordinator was started with --auth and requires a valid token.\n  \
-             The token is stored in ~/.config/dora/.dora-token\n\n  \
+             {locations}\n\n  \
              Possible fixes:\n  \
              - Run `dora down && dora up` to regenerate the token\n  \
              - Ensure you're using the same user that started the coordinator\n  \
