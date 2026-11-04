@@ -163,7 +163,7 @@ pub(crate) async fn start_topic_debug_stream(
     daemon_connections: &mut DaemonConnections,
     dataflow_id: DataflowId,
     topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
-    sender: tokio::sync::mpsc::Sender<crate::topic_subscriber::TopicFrame>,
+    sender: impl Into<crate::topic_subscriber::TopicFrameSender>,
     clock: &HLC,
 ) -> eyre::Result<Uuid> {
     let outputs_by_daemon = topic_outputs_by_daemon(running_dataflows, dataflow_id, &topics)?;
@@ -389,8 +389,7 @@ pub(crate) async fn forward_topic_frames(
         &mut dataflow.topic_subscribers,
         subscription_ids,
         payload,
-    )
-    .await;
+    );
     for (subscription_id, subscriber) in evicted {
         if let Err(err) = spawn_topic_debug_teardown(
             daemon_connections,

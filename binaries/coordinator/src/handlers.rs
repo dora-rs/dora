@@ -5,7 +5,7 @@ use crate::{
         self, ArchivedDataflow, CachedResult, DaemonConnection, DaemonConnections, RunningBuild,
         RunningDataflow,
     },
-    topic_subscriber::TopicSubscriber,
+    topic_subscriber::{FrameSent, MAX_TOPIC_SUBSCRIBER_STALL, TopicSubscriber},
 };
 use dora_core::{
     config::{NodeId, OperatorId},
@@ -127,10 +127,15 @@ fn deliver_log_message(
 /// Forward a topic debug frame to its subscribers, then remove every closed
 /// subscriber and return them.
 ///
+/// Never waits: a subscriber whose channel is full drops the frame (see
+/// [`TopicSubscriber::send_frame`]), and one whose channel has refused every
+/// frame for [`MAX_TOPIC_SUBSCRIBER_STALL`] is closed. This runs on the event
+/// loop, where waiting on a slow CLI would hold up the whole coordinator.
+///
 /// The daemons keep streaming to a removed subscriber until they get a
 /// `StopTopicDebugStream`, so the caller must tear the returned subscriptions
 /// down — see [`crate::topic_debug::forward_topic_frames`].
-pub(crate) async fn send_topic_frames(
+pub(crate) fn send_topic_frames(
     topic_subscribers: &mut BTreeMap<Uuid, TopicSubscriber>,
     subscription_ids: Vec<Uuid>,
     payload: Vec<u8>,
@@ -148,39 +153,30 @@ pub(crate) async fn send_topic_frames(
     // `send_topic_frame` still copies once per subscriber, to prepend that
     // subscriber's 16-byte id — inherent to the `id ++ payload` WS framing.
     let shared_payload = std::sync::Arc::new(payload);
-    const MAX_CONSECUTIVE_TOPIC_SEND_TIMEOUTS: usize = 100;
+    let now = tokio::time::Instant::now();
     for subscription_id in subscription_ids {
         if let Some(subscriber) = topic_subscribers.get_mut(&subscription_id) {
             let frame = crate::topic_subscriber::TopicFrame {
                 subscription_id,
                 payload: shared_payload.clone(),
             };
-            let send_result =
-                tokio::time::timeout(Duration::from_millis(100), subscriber.send_frame(frame))
-                    .await;
-            match send_result {
-                Ok(Ok(())) => {
-                    subscriber.reset_timeout_streak();
-                }
-                Ok(Err(_)) => {
-                    subscriber.close();
-                }
-                Err(_) => {
-                    let timeouts = subscriber.record_timeout();
-                    if timeouts >= MAX_CONSECUTIVE_TOPIC_SEND_TIMEOUTS {
+            match subscriber.send_frame(frame, now) {
+                Ok(FrameSent::Queued) => {}
+                Ok(FrameSent::Dropped) => {
+                    if subscriber
+                        .stalled_for(now)
+                        .is_some_and(|stalled| stalled >= MAX_TOPIC_SUBSCRIBER_STALL)
+                    {
                         tracing::warn!(
                             %subscription_id,
-                            timeouts,
-                            "closing slow topic debug subscriber after repeated send timeouts"
+                            "closing topic debug subscriber: its CLI took no frame for {}s",
+                            MAX_TOPIC_SUBSCRIBER_STALL.as_secs()
                         );
                         subscriber.close();
-                    } else {
-                        tracing::warn!(
-                            %subscription_id,
-                            timeouts,
-                            "timed out sending topic debug frame to CLI subscriber; keeping subscription active"
-                        );
                     }
+                }
+                Err(_) => {
+                    subscriber.close();
                 }
             }
         }
@@ -1007,7 +1003,7 @@ mod tests {
         let payload = vec![7u8; 4096];
         let original = payload.as_ptr();
 
-        send_topic_frames(&mut subscribers, ids.to_vec(), payload).await;
+        send_topic_frames(&mut subscribers, ids.to_vec(), payload);
 
         for mut rx in receivers {
             let frame = rx.try_recv().expect("subscriber should receive frame");
@@ -1019,65 +1015,149 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn send_topic_frames_resets_timeout_streak_on_successful_send() {
+    /// A subscriber whose 1-slot channel is full, so every frame offered to
+    /// it is refused until its receiver takes one.
+    fn full_subscriber() -> (
+        Uuid,
+        BTreeMap<Uuid, TopicSubscriber>,
+        tokio::sync::mpsc::Receiver<crate::topic_subscriber::TopicFrame>,
+    ) {
         let subscription_id = Uuid::new_v4();
-        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        let mut subscriber = TopicSubscriber::new(BTreeMap::new(), tx);
-        // Prime the counter: simulate 3 prior timeouts.
-        assert_eq!(subscriber.record_timeout(), 1);
-        assert_eq!(subscriber.record_timeout(), 2);
-        assert_eq!(subscriber.record_timeout(), 3);
-
-        let mut subscribers = BTreeMap::new();
-        subscribers.insert(subscription_id, subscriber);
-
-        // A real send should succeed (channel has capacity) and reset the streak.
-        send_topic_frames(&mut subscribers, vec![subscription_id], vec![1, 2, 3]).await;
-
-        let frame = rx.try_recv().expect("subscriber should receive frame");
-        assert_eq!(&*frame.payload, &[1u8, 2, 3]);
-        // Streak must be back to 0 after a successful send.
-        assert_eq!(
-            subscribers
-                .get_mut(&subscription_id)
-                .unwrap()
-                .record_timeout(),
-            1
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread", start_paused = true)]
-    async fn send_topic_frames_closes_subscriber_after_100_consecutive_timeouts() {
-        // Capacity 1 + pre-filled + rx never drained = every send_frame times out.
-        // `start_paused = true` makes tokio auto-advance through the 100 × 100ms
-        // timeouts without real wall-clock delay.
-        let subscription_id = Uuid::new_v4();
-        let (tx, _rx_never_drained) = tokio::sync::mpsc::channel(1);
-        tx.send(crate::topic_subscriber::TopicFrame {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.try_send(crate::topic_subscriber::TopicFrame {
             subscription_id,
             payload: std::sync::Arc::new(Vec::new()),
         })
-        .await
         .unwrap();
+        let subscribers =
+            BTreeMap::from([(subscription_id, TopicSubscriber::new(BTreeMap::new(), tx))]);
+        (subscription_id, subscribers, rx)
+    }
 
-        let subscriber = TopicSubscriber::new(BTreeMap::new(), tx);
-        let mut subscribers = BTreeMap::new();
-        subscribers.insert(subscription_id, subscriber);
-
-        for i in 1..=99 {
-            send_topic_frames(&mut subscribers, vec![subscription_id], vec![0]).await;
-            assert!(
-                subscribers.contains_key(&subscription_id),
-                "subscriber evicted prematurely at iteration {i}"
-            );
+    /// A full subscriber channel costs the event loop no time: the frame is
+    /// dropped, never waited for. It used to wait up to 100 ms per frame per
+    /// subscriber, so a slow CLI could hold the coordinator up for ~10 s.
+    #[tokio::test(start_paused = true)]
+    async fn send_topic_frames_does_not_wait_on_a_full_channel() {
+        let (subscription_id, mut subscribers, mut rx) = full_subscriber();
+        let start = tokio::time::Instant::now();
+        for _ in 0..200 {
+            send_topic_frames(&mut subscribers, vec![subscription_id], vec![0]);
         }
-        // 100th consecutive timeout triggers the close + retain eviction.
-        send_topic_frames(&mut subscribers, vec![subscription_id], vec![0]).await;
+        // Paused time only moves when something waits on a timer.
+        assert_eq!(
+            tokio::time::Instant::now(),
+            start,
+            "a full channel must not be waited on"
+        );
+        assert!(
+            subscribers.contains_key(&subscription_id),
+            "a drop is not an eviction"
+        );
+        rx.try_recv().expect("the frame queued before");
+        assert!(
+            rx.try_recv().is_err(),
+            "the 200 frames were dropped, not queued"
+        );
+    }
+
+    /// A subscriber whose channel refuses every frame for
+    /// `MAX_TOPIC_SUBSCRIBER_STALL` (a CLI that stopped reading) is closed,
+    /// and not before.
+    #[tokio::test(start_paused = true)]
+    async fn send_topic_frames_closes_a_subscriber_stalled_for_the_whole_window() {
+        let (subscription_id, mut subscribers, _rx) = full_subscriber();
+        let send = |subscribers: &mut BTreeMap<Uuid, TopicSubscriber>| {
+            send_topic_frames(subscribers, vec![subscription_id], vec![0])
+        };
+
+        assert!(
+            send(&mut subscribers).is_empty(),
+            "the first refused frame starts the stall"
+        );
+        tokio::time::advance(MAX_TOPIC_SUBSCRIBER_STALL - Duration::from_millis(100)).await;
+        assert!(send(&mut subscribers).is_empty());
+        assert!(
+            subscribers.contains_key(&subscription_id),
+            "evicted before the window ended"
+        );
+
+        tokio::time::advance(Duration::from_millis(100)).await;
+        let evicted = send(&mut subscribers);
+        assert_eq!(evicted.len(), 1);
         assert!(
             !subscribers.contains_key(&subscription_id),
-            "subscriber should be evicted after 100 consecutive timeouts"
+            "a stalled subscriber must be evicted"
         );
+    }
+
+    /// A slow CLI that still takes a frame now and then is not evicted: a
+    /// queued frame ends the stall, and the window starts again.
+    #[tokio::test(start_paused = true)]
+    async fn a_subscriber_that_takes_a_frame_is_no_longer_stalled() {
+        let (subscription_id, mut subscribers, mut rx) = full_subscriber();
+        let send = |subscribers: &mut BTreeMap<Uuid, TopicSubscriber>| {
+            send_topic_frames(subscribers, vec![subscription_id], vec![0])
+        };
+
+        send(&mut subscribers);
+        tokio::time::advance(MAX_TOPIC_SUBSCRIBER_STALL - Duration::from_secs(1)).await;
+        rx.try_recv().expect("the CLI takes a frame");
+        send(&mut subscribers); // queued: the stall ends
+
+        tokio::time::advance(MAX_TOPIC_SUBSCRIBER_STALL - Duration::from_secs(1)).await;
+        send(&mut subscribers); // refused again: a new stall starts now
+        tokio::time::advance(Duration::from_secs(2)).await;
+        assert!(send(&mut subscribers).is_empty());
+        assert!(subscribers.contains_key(&subscription_id));
+    }
+
+    /// The stall is per connection, not per subscription: the subscriptions of
+    /// one CLI connection share its channel, so a busy one can take every slot
+    /// the reader frees. A quiet subscription on the same connection then finds
+    /// the channel full every time, but the client is reading, so it must not
+    /// be evicted (dora-rs/dora#4024 review).
+    #[tokio::test(start_paused = true)]
+    async fn a_quiet_subscription_sharing_a_busy_connection_is_not_evicted() {
+        let (sender, mut rx) = crate::topic_subscriber::topic_frame_channel(1);
+        let (busy, quiet) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut subscribers = BTreeMap::from([
+            (busy, TopicSubscriber::new(BTreeMap::new(), sender.clone())),
+            (quiet, TopicSubscriber::new(BTreeMap::new(), sender)),
+        ]);
+
+        // 30 s, three stall windows, of the reader taking a frame every
+        // 100 ms and the busy subscription refilling the freed slot before the
+        // quiet one offers its frame.
+        for _ in 0..300 {
+            let _ = rx.try_recv();
+            send_topic_frames(&mut subscribers, vec![busy], vec![0]);
+            send_topic_frames(&mut subscribers, vec![quiet], vec![0]);
+            tokio::time::advance(Duration::from_millis(100)).await;
+        }
+        assert!(
+            subscribers.contains_key(&quiet),
+            "a subscription on a connection that is reading must not be evicted"
+        );
+        assert!(subscribers.contains_key(&busy));
+    }
+
+    /// A connection that stops reading loses all its subscriptions once its
+    /// channel has refused every frame for `MAX_TOPIC_SUBSCRIBER_STALL`.
+    #[tokio::test(start_paused = true)]
+    async fn a_connection_that_stops_reading_loses_all_its_subscriptions() {
+        let (sender, _rx) = crate::topic_subscriber::topic_frame_channel(1);
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut subscribers = BTreeMap::from([
+            (a, TopicSubscriber::new(BTreeMap::new(), sender.clone())),
+            (b, TopicSubscriber::new(BTreeMap::new(), sender)),
+        ]);
+        send_topic_frames(&mut subscribers, vec![a], vec![0]); // fills the channel
+        send_topic_frames(&mut subscribers, vec![a, b], vec![0]); // refused: the stall starts
+        tokio::time::advance(MAX_TOPIC_SUBSCRIBER_STALL).await;
+        let evicted = send_topic_frames(&mut subscribers, vec![a, b], vec![0]);
+        assert_eq!(evicted.len(), 2);
+        assert!(subscribers.is_empty());
     }
 
     /// Build a minimal `RunningDataflow` running on exactly `daemons`.
