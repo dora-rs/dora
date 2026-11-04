@@ -983,23 +983,34 @@ mod tests {
         }
     }
 
-    /// `payload` with buffer `index` of its record batch moved to
-    /// (`offset`, `length`).
-    fn with_buffer(mut payload: Vec<u8>, index: usize, offset: i64, length: i64) -> Vec<u8> {
-        // The record batch message follows the schema message.
+    /// Where the record batch message of `payload` starts and how long its
+    /// metadata is. It follows the schema message.
+    fn record_batch_at(payload: &[u8]) -> (usize, usize) {
         let schema_len = u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
         let schema = arrow::ipc::root_as_message(&payload[8..8 + schema_len]).unwrap();
         let at = 8 + schema_len + schema.bodyLength() as usize;
         let len = u32::from_le_bytes(payload[at + 4..at + 8].try_into().unwrap()) as usize;
+        (at, len)
+    }
+
+    /// The body length of the record batch in `payload` and its buffers as
+    /// (`offset`, `length`), as arrow wrote them.
+    fn record_batch_layout(payload: &[u8]) -> (i64, Vec<(i64, i64)>) {
+        let (at, len) = record_batch_at(payload);
         let message = arrow::ipc::root_as_message(&payload[at + 8..at + 8 + len]).unwrap();
-        let buffer = message
-            .header_as_record_batch()
-            .unwrap()
-            .buffers()
-            .unwrap()
-            .get(index);
-        let mut old = buffer.offset().to_le_bytes().to_vec();
-        old.extend_from_slice(&buffer.length().to_le_bytes());
+        let buffers = message.header_as_record_batch().unwrap().buffers().unwrap();
+        let buffers = buffers.iter().map(|b| (b.offset(), b.length())).collect();
+        (message.bodyLength(), buffers)
+    }
+
+    /// `payload` with buffer `index` of its record batch moved to
+    /// (`offset`, `length`).
+    fn with_buffer(mut payload: Vec<u8>, index: usize, offset: i64, length: i64) -> Vec<u8> {
+        let (at, len) = record_batch_at(&payload);
+        let (_, buffers) = record_batch_layout(&payload);
+        let (old_offset, old_length) = buffers[index];
+        let mut old = old_offset.to_le_bytes().to_vec();
+        old.extend_from_slice(&old_length.to_le_bytes());
         let found: Vec<_> = (at..at + 8 + len - 16)
             .filter(|&i| payload[i..i + 16] == old[..])
             .collect();
@@ -1030,21 +1041,37 @@ mod tests {
             mapper.convert("cam", "image", &jpeg_metadata(), Some(&payload)),
             Recognition::Converted(Kind::CompressedImage, _)
         ));
-        // arrow writes the buffers 64-byte aligned: validity (0, 1), offsets
-        // (64, 8), values (128, 4), in a 192-byte body. A longer values buffer
-        // that keeps the total within the body still converts.
-        let longer = with_buffer(payload.clone(), 2, 128, 64);
+        // Validity, offsets and values, laid out the way this arrow version
+        // writes them (the layout changes between arrow releases).
+        let (body, buffers) = record_batch_layout(&payload);
+        let [_, _, (values_offset, values_length)] = buffers[..] else {
+            panic!("expected 3 buffers, got {buffers:?}");
+        };
+        let others = buffers[0].1 + buffers[1].1;
+        assert!(others > 0, "{buffers:?}");
+        // A values buffer stretched to the end of the body is longer, but the
+        // buffers still fit in the body together, so it still converts.
+        let stretched = body - values_offset;
+        assert!(stretched > values_length && others + stretched <= body);
+        let longer = with_buffer(payload.clone(), 2, values_offset, stretched);
         assert!(matches!(
             mapper.convert("cam", "image", &jpeg_metadata(), Some(&longer)),
             Recognition::Converted(Kind::CompressedImage, _)
         ));
-        // 1 + 8 + 184 = 193 bytes; the whole body again; a negative length.
-        for (offset, length) in [(8, 184), (0, 192), (128, -4)] {
+        // Values ending at the end of the body but overlapping the other
+        // buffers by one byte; the whole body again; a negative length.
+        let overlapping = body - others + 1;
+        for (offset, length) in [
+            (body - overlapping, overlapping),
+            (0, body),
+            (values_offset, -4),
+        ] {
             let damaged = with_buffer(payload.clone(), 2, offset, length);
             match mapper.convert("cam", "image", &jpeg_metadata(), Some(&damaged)) {
                 Recognition::Failed(Kind::CompressedImage, reason) => assert_eq!(
-                    reason, "the payload's buffers are longer than its 192-byte message body",
-                    "({offset}, {length})"
+                    reason,
+                    format!("the payload's buffers are longer than its {body}-byte message body"),
+                    "({offset}, {length}) in {buffers:?}"
                 ),
                 _ => panic!("({offset}, {length}): not dropped"),
             }
