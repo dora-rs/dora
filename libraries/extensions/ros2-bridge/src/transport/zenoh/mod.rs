@@ -7,6 +7,8 @@ pub mod graph;
 #[cfg(feature = "rmw-zenoh")]
 pub mod keyexpr;
 #[cfg(feature = "rmw-zenoh")]
+pub mod parameters;
+#[cfg(feature = "rmw-zenoh")]
 pub mod pubsub;
 #[cfg(feature = "rmw-zenoh")]
 pub mod qos;
@@ -366,6 +368,10 @@ mod lifecycle {
             self.domain
         }
 
+        pub fn namespace(&self) -> &str {
+            &self.namespace
+        }
+
         pub fn session(&self) -> &zenoh::Session {
             &self.session
         }
@@ -376,10 +382,6 @@ mod lifecycle {
 
         pub(super) fn allocate_entity(&self) -> EntityId {
             self.ids.allocate()
-        }
-
-        pub fn allocate_gid(&self) -> [u8; 16] {
-            self.ids.allocate().gid
         }
 
         pub async fn declare_endpoint<D: Send + Sync + 'static>(

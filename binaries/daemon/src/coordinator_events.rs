@@ -180,6 +180,14 @@ pub(crate) fn apply_state_catch_up_entries(
 }
 
 impl Daemon {
+    /// Forget a node's own log directory: a node spawned by `AddNode` or
+    /// `ReplaceNode` logs under the dataflow's base working dir.
+    fn reset_node_log_dir(&mut self, dataflow_id: &dora_message::DataflowId, node_id: &NodeId) {
+        if let Some(dirs) = self.node_log_dirs.get_mut(dataflow_id) {
+            dirs.remove(node_id);
+        }
+    }
+
     pub(crate) async fn handle_coordinator_event(
         &mut self,
         event: DaemonCoordinatorEvent,
@@ -291,6 +299,7 @@ impl Daemon {
                             self.pool.abort_subscriber(&dataflow_id);
                             self.running.remove(&dataflow_id);
                             self.working_dir.remove(&dataflow_id);
+                            self.node_log_dirs.remove(&dataflow_id);
                         }
                         (Err(format!("{err:?}")), None)
                     }
@@ -388,17 +397,22 @@ impl Daemon {
                 node_id,
                 tail,
             } => {
-                match self.working_dir.get(&dataflow_id) {
-                    Some(working_dir) => {
-                        let working_dir = working_dir.clone();
+                let log_dir = self
+                    .node_log_dirs
+                    .get(&dataflow_id)
+                    .and_then(|dirs| dirs.get(&node_id))
+                    .or_else(|| self.working_dir.get(&dataflow_id))
+                    .cloned();
+                match log_dir {
+                    Some(log_dir) => {
                         tokio::spawn(async move {
                             let logs = async {
                                 let mut file =
-                                    File::open(log::log_path(&working_dir, &dataflow_id, &node_id))
+                                    File::open(log::log_path(&log_dir, &dataflow_id, &node_id))
                                         .await
                                         .wrap_err(format!(
                                             "Could not open log file: {:#?}",
-                                            log::log_path(&working_dir, &dataflow_id, &node_id)
+                                            log::log_path(&log_dir, &dataflow_id, &node_id)
                                         ))?;
 
                                 let mut contents = match tail {
@@ -537,11 +551,22 @@ impl Daemon {
             } => {
                 let finish_when = {
                     let mut logger = self.logger.for_dataflow(dataflow_id);
+                    // The coordinator stops the daemons one after another, so
+                    // a dataflow can finish here before its stop arrives: a
+                    // node stopped on an earlier daemon closes the inputs of
+                    // the nodes here (#3888). Its finish report is still held
+                    // then, and the stop is already done.
+                    let already_finished =
+                        self.pending_finished_dataflows.contains_key(&dataflow_id)
+                            || self
+                                .unconfirmed_finished_dataflows
+                                .contains_key(&dataflow_id);
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
                         .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"));
                     let (reply, future) = match dataflow {
+                        Err(_) if already_finished => (Ok(()), None),
                         Ok(dataflow) => {
                             let future = dataflow.stop_all(
                                 &mut self.coordinator_sender,
@@ -622,6 +647,9 @@ impl Daemon {
                     // older coordinator cannot crash this daemon.
                     dora_core::descriptor::validate::check_node_timing(&node)?;
                     dora_core::descriptor::validate::check_operator_ids(&node)?;
+                    if node.kind.dynamic() {
+                        self.check_dynamic_node_listener(&node_id)?;
+                    }
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -720,10 +748,16 @@ impl Daemon {
                         .wrap_err("failed to spawn node")?;
 
                     // --- Spawn succeeded — now apply state mutations ---
+                    self.reset_node_log_dir(&dataflow_id, &node_id);
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
                         .ok_or_else(|| eyre!("dataflow disappeared during spawn"))?;
+
+                    // A re-added id may still hold the `dora/logs` entries of
+                    // an earlier incarnation that exited without `RemoveNode`
+                    // (they are kept across a crash for its restart).
+                    dataflow.unsubscribe_node_from_logs(&node_id);
 
                     // Register inputs (open_inputs, mappings, timers, deadlines)
                     for (input_id, input) in &inputs {
@@ -889,9 +923,7 @@ impl Daemon {
                     // Cancels the timer task of any interval left with no
                     // subscribers (#2585); see the method for details.
                     dataflow.unsubscribe_node_from_timers(&node_id);
-                    dataflow
-                        .log_subscribers
-                        .retain(|sub| sub.node_id != node_id);
+                    dataflow.unsubscribe_node_from_logs(&node_id);
 
                     // Clean up remaining state for this node.
                     if dataflow
@@ -1023,6 +1055,9 @@ impl Daemon {
                     // See the matching check in `AddNode`.
                     dora_core::descriptor::validate::check_node_timing(&node)?;
                     dora_core::descriptor::validate::check_operator_ids(&node)?;
+                    if node.kind.dynamic() {
+                        self.check_dynamic_node_listener(&node_id)?;
+                    }
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -1241,6 +1276,7 @@ impl Daemon {
                         .wrap_err("failed to spawn replacement node")?;
 
                     // --- commit: swap entries and stop the outgoing one ------
+                    self.reset_node_log_dir(&dataflow_id, &node_id);
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)

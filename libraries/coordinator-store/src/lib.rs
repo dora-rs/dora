@@ -1,8 +1,8 @@
 //! **Internal to dora — not a public API.**
 //!
 //! This crate is published to crates.io only because cargo requires every
-//! dependency of a published crate to be published; `dora-node-api` and
-//! `dora-cli` depend on it. It is not covered by dora's 1.0 stability
+//! dependency of a published crate to be published; `dora-coordinator`
+//! depends on it. It is not covered by dora's 1.0 stability
 //! guarantee and may change in any release, including a patch.
 //!
 //! Depend on it directly at your own risk. See the "Stability scope at 1.0"
@@ -100,8 +100,13 @@ pub struct DataflowRecord {
     pub descriptor_json: String,
     pub status: DataflowStatus,
     pub daemon_ids: Vec<DaemonId>,
-    /// Per-node daemon assignment: node_id -> daemon machine_id.
-    /// Used for state reconstruction after coordinator restart.
+    /// Per-node daemon assignment: node_id -> the assigned daemon's
+    /// `DaemonId` display string (`<machine_id>-<uuid>`, or a bare uuid for
+    /// an unnamed daemon), not its machine id.
+    ///
+    /// Informational only: recovery after a coordinator restart rebuilds the
+    /// assignment from the nodes each reconnecting daemon reports, not from
+    /// this field.
     #[serde(default)]
     pub node_to_daemon: BTreeMap<String, String>,
     /// Whether the dataflow was started with Python UV support.

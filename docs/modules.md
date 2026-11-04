@@ -146,7 +146,7 @@ nodes:
       - result
 ```
 
-Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MODE`) into every node inside the module.
+Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MODE`) into every node inside the module, overriding a node's own `env:` entry of the same name.
 
 ## Expansion Rules
 
@@ -154,7 +154,7 @@ Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MOD
 2. Prefix all internal node IDs with `{module_id}.` (e.g., `nav_stack.planner`)
 3. Replace `_mod/port_name` references with the actual sources from the parent's input map
 4. Rewrite internal cross-references (e.g., `planner/path` becomes `nav_stack.planner/path`)
-5. Map module-declared outputs to direct child outputs, so `nav_stack/cmd_vel` resolves to `nav_stack.controller/cmd_vel`. A direct child may be a standard node, a runtime `operator:`/`operators:` node, a legacy `custom:` node, or a nested module. For an output produced by one operator of a multi-operator `operators:` node, the resolved reference keeps the operator segment that runtime nodes require: `nav_stack/cmd_vel` resolves to `nav_stack.runtime/controller/cmd_vel`
+5. Map module-declared outputs to direct child outputs, so `nav_stack/cmd_vel` resolves to `nav_stack.controller/cmd_vel`. A direct child may be a standard node, a runtime `operator:`/`operators:` node, a legacy `custom:` node, or a nested module. For an output produced by the operator of an `operators:` node, the resolved reference keeps the operator segment that runtime nodes require: `nav_stack/cmd_vel` resolves to `nav_stack.runtime/controller/cmd_vel`
 6. Replace the module node with the expanded flat nodes
 7. Substitute `params:` values in `args:` fields and inject as env vars
 
@@ -195,6 +195,14 @@ Only outputs declared by a nested module are visible to its parent. A parent
 module can wire or re-export `inner/processed` from the example above because
 `processed` is listed in `inner_module.yml`'s `module.outputs`; it cannot reach
 private outputs produced by nodes inside `inner_module.yml`.
+
+Params passed to the outer module reach the nodes of every nested module, in
+`args:` and as env vars, and override an inner node's own `env: PARAM_<KEY>`
+default just as they do for a direct child. A nested module node can set its
+own `params:`, which take precedence over the outer ones, and can reference
+outer params there: `max_speed: $PARAM_SPEED` passes the outer `speed` down
+as `max_speed` as well. The original `speed` is still handed down too, so
+inner nodes see both.
 
 ## Optional Inputs
 
@@ -289,3 +297,22 @@ See [`examples/module-dataflow/`](../examples/module-dataflow/) for a complete w
 ```bash
 dora run examples/module-dataflow/dataflow.yml
 ```
+
+## Commands inside modules
+
+For an inner `path: dora-echo`, Dora first tries `dora-echo` beside the module
+file. If no such file exists (a folder of that name doesn't count), Dora
+looks up the original name in the dataflow
+directory, the uv environment, then `$PATH`. Expansion records the name as
+`path_fallback` without checking the filesystem, so building an executable
+cannot change expansion or its fingerprint. `path_fallback` is internal, and
+`dora expand` leaves it out of its output (so running that output skips the
+fallback): a dataflow file, a module file, or a node file for
+`dora node add`/`replace` that sets it is rejected.
+
+Automatic fallback applies only to a single extensionless name. Paths with
+folders and dotted names such as `worker.py`, `node.v2` and `tool.exe` retain
+module-relative lookup. Use updated CLI, coordinator and daemon binaries for
+fallback; older components ignore the optional control metadata and keep their
+original lookup behavior. Descriptors sent to nodes, and the one in the
+coordinator's `Info` reply (which `dora node info` shows), omit it.

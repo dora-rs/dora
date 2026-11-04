@@ -13,7 +13,7 @@ use dora_message::{
     },
 };
 
-use super::thread::EventItem;
+use super::{should_warn_drop, thread::EventItem};
 
 /// The metadata parameters carried by an input-bearing event, or `None` for
 /// events with no metadata (Stop, reload, input-closed, ...).
@@ -49,6 +49,32 @@ fn is_correlated(event: &EventItem) -> bool {
     event_parameters(event).is_some_and(carries_pattern_correlation)
 }
 
+/// The input id of an input-bearing event, or `None` for control events.
+fn input_id(event: &EventItem) -> Option<&DataId> {
+    match event {
+        EventItem::NodeEvent {
+            event: NodeEvent::Input { id, .. },
+            ..
+        }
+        | EventItem::ZenohInput { id, .. } => Some(id),
+        _ => None,
+    }
+}
+
+/// The input id whose stale queued chunks `event` asks to discard, i.e. the
+/// event's own id when it is an input carrying the streaming pattern's
+/// `flush: true` metadata, or `None` otherwise.
+///
+/// Shared by the scheduler's own flush and the `EventStream`'s flush of its
+/// `pending_passthrough` buffer, so both agree on what a flush is
+/// (dora-rs/dora#3834).
+pub(crate) fn flush_target(event: &EventItem) -> Option<&DataId> {
+    let id = input_id(event)?;
+    let params = event_parameters(event)?;
+    (dora_message::metadata::get_bool_param(params, dora_message::metadata::FLUSH) == Some(true))
+        .then_some(id)
+}
+
 /// Returns `true` if the event is the daemon's [`Stop`][NodeEvent::Stop]
 /// shutdown signal.
 ///
@@ -64,6 +90,27 @@ fn is_stop(event: &EventItem) -> bool {
             ..
         }
     )
+}
+
+/// Returns `true` if the event is the daemon's
+/// [`AllInputsClosed`][NodeEvent::AllInputsClosed] notice.
+fn is_all_inputs_closed(event: &EventItem) -> bool {
+    matches!(
+        event,
+        EventItem::NodeEvent {
+            event: NodeEvent::AllInputsClosed,
+            ..
+        }
+    )
+}
+
+/// Returns `true` for the events that end the stream: `Stop` and
+/// `AllInputsClosed`. Neither is ever evicted from a full queue (see
+/// `is_stop`). `AllInputsClosed` waits in the control queue until all queued
+/// inputs are delivered (`Scheduler::next`), so without this it would be the
+/// first pick for eviction. At most one of each is in flight.
+fn is_shutdown(event: &EventItem) -> bool {
+    is_stop(event) || is_all_inputs_closed(event)
 }
 
 /// Outcome of `select_eviction`.
@@ -82,28 +129,45 @@ enum Eviction {
 
 /// Choose which event to drop when the queue is at capacity.
 ///
-/// Prefers sacrificing ordinary (non-correlated, non-`Stop`) events so that
-/// service responses, action results, and the shutdown signal survive. See
+/// Prefers sacrificing ordinary (non-correlated, non-shutdown) events so that
+/// service responses, action results, and the shutdown signals survive. See
 /// `is_correlated` for the metadata keys that mark an event as part of a
-/// pattern, and `is_stop` for why `Stop` is eviction-immune.
+/// pattern, and `is_shutdown` for why `Stop` and `AllInputsClosed` are
+/// eviction-immune.
 fn select_eviction(queue: &VecDeque<EventItem>, incoming: &EventItem) -> Eviction {
-    // 1. Sacrifice the oldest ordinary event, never a correlation or `Stop`.
-    if let Some(idx) = queue.iter().position(|e| !is_correlated(e) && !is_stop(e)) {
+    // 1. Sacrifice the oldest ordinary event, never a correlation or a
+    //    shutdown signal.
+    if let Some(idx) = queue
+        .iter()
+        .position(|e| !is_correlated(e) && !is_shutdown(e))
+    {
         return Eviction::RemoveAt(idx);
     }
     // 2. Nothing ordinary left to sacrifice. If the incoming event is itself
-    //    ordinary, drop it rather than a correlation or the `Stop`.
-    if !is_correlated(incoming) && !is_stop(incoming) {
+    //    ordinary, drop it rather than a correlation or a shutdown signal.
+    if !is_correlated(incoming) && !is_shutdown(incoming) {
         return Eviction::DropIncoming;
     }
     // 3. Both the queue and the incoming event must be preserved. Drop the
-    //    oldest *correlated* event (loudly), keeping the `Stop` intact. If the
-    //    queue somehow contains no correlated event (only a `Stop`, which is
-    //    at most one), fall back to dropping the incoming event.
-    match queue.iter().position(|e| !is_stop(e)) {
+    //    oldest *correlated* event (loudly), keeping the shutdown signals
+    //    intact. If the queue somehow contains no correlated event (only
+    //    shutdown signals, at most one of each), fall back to dropping the
+    //    incoming event.
+    match queue.iter().position(|e| !is_shutdown(e)) {
         Some(idx) => Eviction::DropCorrelatedLoud(idx),
         None => Eviction::DropIncoming,
     }
+}
+
+/// Count one dropped event on `id`, returning its count since the last drain.
+/// Clones the key only for the first drop of an input in a drain window.
+fn bump_drop_count(dropped: &mut HashMap<DataId, u64>, id: &DataId) -> u64 {
+    let count = match dropped.get_mut(id) {
+        Some(count) => count,
+        None => dropped.entry(id.clone()).or_insert(0),
+    };
+    *count += 1;
+    *count
 }
 
 /// Emit a loud error when a correlated event has to be dropped because
@@ -177,6 +241,11 @@ static NON_INPUT_EVENT_ID: LazyLock<DataId> =
 ///     Usually, the `Stop` event is the last event that is sent to a node before the event stream
 ///     is closed. Because of the reordering, the stream might return more events after a `Stop`
 ///     event.
+///
+///   The exception is the `Stop` caused by all inputs being closed
+///   ([`StopCause::AllInputsClosed`][super::StopCause::AllInputsClosed]): it is only yielded
+///   once every queued input has been returned, so a node that stops reading at `Stop` does not
+///   lose the inputs it had not caught up on yet.
 /// - **Input events are grouped by ID** and yielded in a **least-recently used order (by ID)**.
 ///
 ///   The scheduler keeps a separate queue for each input ID, where the incoming input events are
@@ -290,39 +359,25 @@ impl Scheduler {
     /// scheduler (the passthrough bound) still shows up in
     /// [`drain_drop_counts`](Self::drain_drop_counts) exactly like an in-queue
     /// `drop_oldest` eviction (dora-rs/dora#3197).
-    pub(crate) fn record_drop(&mut self, id: &DataId) {
-        *self.dropped.entry(id.clone()).or_insert(0) += 1;
+    ///
+    /// Returns the drop count of `id` since the last drain.
+    pub(crate) fn record_drop(&mut self, id: &DataId) -> u64 {
+        bump_drop_count(&mut self.dropped, id)
     }
 
     /// Account for one dropped non-input (control) event, under the same
     /// `NON_INPUT_EVENT` key the scheduler itself uses when its non-input queue
     /// overflows — so a passthrough-bound drop of a control event is reported
     /// consistently with an in-queue one (dora-rs/dora#3197).
-    pub(crate) fn record_non_input_drop(&mut self) {
-        *self.dropped.entry(NON_INPUT_EVENT_ID.clone()).or_insert(0) += 1;
+    ///
+    /// Returns the non-input drop count since the last drain.
+    pub(crate) fn record_non_input_drop(&mut self) -> u64 {
+        bump_drop_count(&mut self.dropped, &NON_INPUT_EVENT_ID)
     }
 
     pub(crate) fn add_event(&mut self, event: EventItem) {
-        let (event_id, should_flush) = match &event {
-            EventItem::NodeEvent {
-                event: NodeEvent::Input { id, metadata, .. },
-                ..
-            } => {
-                let flush = dora_message::metadata::get_bool_param(
-                    &metadata.parameters,
-                    dora_message::metadata::FLUSH,
-                ) == Some(true);
-                (Some(id), flush)
-            }
-            EventItem::ZenohInput { id, metadata, .. } => {
-                let flush = dora_message::metadata::get_bool_param(
-                    &metadata.parameters,
-                    dora_message::metadata::FLUSH,
-                ) == Some(true);
-                (Some(id), flush)
-            }
-            _ => (None, false),
-        };
+        let event_id = input_id(&event);
+        let should_flush = flush_target(&event).is_some();
         // Control events have no input id; they go to their own queue so that no
         // user input can ever share it (dora-rs/dora#3632).
         let Some(event_id) = event_id else {
@@ -383,15 +438,24 @@ impl Scheduler {
 
         let cap = policy.effective_cap(*size);
         if queue.len() >= cap {
-            if policy == QueuePolicy::Backpressure {
-                tracing::error!(
-                    "Backpressure input `{event_id}` hit hard cap ({cap}), \
-                     dropping oldest to prevent OOM"
-                );
-            } else {
-                tracing::warn!("Discarding event for input `{event_id}` due to queue size limit");
+            // A `drop_oldest` queue overflowing is the steady state of a
+            // consumer slower than its producer, so log on a power-of-two
+            // cadence rather than per dropped event; the count is exact.
+            let drops = bump_drop_count(&mut self.dropped, event_id);
+            if should_warn_drop(drops) {
+                if policy == QueuePolicy::Backpressure {
+                    tracing::error!(
+                        drops,
+                        "Backpressure input `{event_id}` hit hard cap ({cap}), \
+                         dropping oldest to prevent OOM"
+                    );
+                } else {
+                    tracing::warn!(
+                        drops,
+                        "Discarding event for input `{event_id}` due to queue size limit"
+                    );
+                }
             }
-            *self.dropped.entry(event_id.clone()).or_insert(0) += 1;
             match select_eviction(queue, &event) {
                 Eviction::RemoveAt(idx) => {
                     queue.remove(idx);
@@ -419,8 +483,10 @@ impl Scheduler {
     /// signal (dora-rs/dora#2887).
     fn add_non_input_event(&mut self, event: EventItem) {
         if self.non_input.len() >= NON_INPUT_EVENT_QUEUE_SIZE {
-            tracing::warn!("Discarding non-input event due to queue size limit");
-            self.record_non_input_drop();
+            let drops = self.record_non_input_drop();
+            if should_warn_drop(drops) {
+                tracing::warn!(drops, "Discarding non-input event due to queue size limit");
+            }
             match select_eviction(&self.non_input, &event) {
                 Eviction::RemoveAt(idx) => {
                     self.non_input.remove(idx);
@@ -437,9 +503,17 @@ impl Scheduler {
     }
 
     pub(crate) fn next(&mut self) -> Option<EventItem> {
-        // Retrieve message from the non input event first that have priority over input message.
-        if let Some(event) = self.non_input.pop_front() {
-            return Some(event);
+        // Control events have priority over inputs, except `AllInputsClosed`:
+        // it waits until every queued input is delivered. Nodes see it as
+        // `Stop` and commonly break on it, which would otherwise discard the
+        // inputs the node had not caught up on yet. It is never the only thing
+        // left, so holding it back cannot stall the stream.
+        if let Some(index) = self
+            .non_input
+            .iter()
+            .position(|event| !is_all_inputs_closed(event) || !self.inputs_queued())
+        {
+            return self.non_input.remove(index);
         }
 
         // Yield from the first non-empty input queue in least-recently-used
@@ -462,11 +536,13 @@ impl Scheduler {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.non_input.is_empty()
-            && self
-                .event_queues
-                .iter()
-                .all(|(_id, (_size, queue))| queue.is_empty())
+        self.non_input.is_empty() && !self.inputs_queued()
+    }
+
+    fn inputs_queued(&self) -> bool {
+        self.event_queues
+            .values()
+            .any(|(_size, queue)| !queue.is_empty())
     }
 }
 
@@ -567,6 +643,54 @@ mod tests {
 
         // The flush message should survive (queue was cleared to 0, then inserted)
         assert_eq!(sched.event_queues[&id].1.len(), 1);
+    }
+
+    /// Counts the `WARN`-or-louder events emitted while it is the default
+    /// subscriber.
+    struct WarnCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl tracing::Subscriber for WarnCounter {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if *event.metadata().level() <= tracing::Level::WARN {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    /// A full `drop_oldest` queue is the steady state of a slow consumer, so
+    /// dropping must not log once per event: the count stays exact, but the
+    /// warning follows a power-of-two cadence.
+    #[test]
+    fn steady_drops_warn_logarithmically() {
+        // A scoped capture alone races with the other tests in this binary:
+        // a callsite first hit on a thread without a subscriber caches
+        // "never" for the whole process. A global subscriber that is
+        // interested in everything makes it resolve to "always" (see
+        // `binaries/daemon/src/test_tracing.rs`).
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(WarnCounter(Default::default()));
+        });
+        let (mut sched, id) = make_scheduler(1);
+        let warnings = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        tracing::subscriber::with_default(WarnCounter(warnings.clone()), || {
+            for _ in 0..1000 {
+                sched.add_event(make_input("audio", MetadataParameters::new()));
+            }
+        });
+        assert_eq!(sched.drain_drop_counts()[&id], 999);
+        // Drop counts 1, 2, 4, ..., 512.
+        assert_eq!(warnings.load(std::sync::atomic::Ordering::Relaxed), 10);
     }
 
     #[test]
@@ -1070,6 +1194,107 @@ mod tests {
                 .iter()
                 .any(|e| request_id_of_zenoh(e).as_deref() == Some("req-1")),
             "correlated ZenohInput was dropped even though non-correlated events were available"
+        );
+    }
+
+    fn make_all_inputs_closed() -> EventItem {
+        EventItem::NodeEvent {
+            event: NodeEvent::AllInputsClosed,
+        }
+    }
+
+    fn kind(event: &EventItem) -> &'static str {
+        match event {
+            EventItem::NodeEvent {
+                event: NodeEvent::Input { .. },
+                ..
+            }
+            | EventItem::ZenohInput { .. } => "input",
+            EventItem::NodeEvent {
+                event: NodeEvent::AllInputsClosed,
+                ..
+            } => "all-inputs-closed",
+            EventItem::NodeEvent {
+                event: NodeEvent::Stop,
+                ..
+            } => "stop",
+            _ => "other",
+        }
+    }
+
+    fn drain_kinds(sched: &mut Scheduler) -> Vec<&'static str> {
+        std::iter::from_fn(|| sched.next())
+            .map(|e| kind(&e))
+            .collect()
+    }
+
+    // A node that falls behind has inputs queued when its last upstream exits.
+    // `AllInputsClosed` (which the node sees as `Stop`) must not overtake them,
+    // or a node that breaks on `Stop` silently loses the tail of its inputs.
+    #[test]
+    fn all_inputs_closed_waits_for_queued_inputs() {
+        let (mut sched, _id) = make_scheduler(10);
+
+        for _ in 0..3 {
+            sched.add_event(make_input("audio", MetadataParameters::new()));
+        }
+        sched.add_event(make_all_inputs_closed());
+
+        assert_eq!(
+            drain_kinds(&mut sched),
+            ["input", "input", "input", "all-inputs-closed"]
+        );
+    }
+
+    // Zenoh data can still land after `AllInputsClosed` (it takes a different
+    // path than the daemon's control events). Data that reaches the scheduler
+    // before the notice is yielded is delivered first too. Data still in flight
+    // once it is yielded is not: the stream stops reading new events then.
+    #[test]
+    fn all_inputs_closed_waits_for_inputs_queued_after_it() {
+        let (mut sched, _id) = make_scheduler(10);
+
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_all_inputs_closed());
+        sched.add_event(make_zenoh_input("audio", MetadataParameters::new()));
+
+        assert_eq!(
+            drain_kinds(&mut sched),
+            ["input", "input", "all-inputs-closed"]
+        );
+    }
+
+    // A held `AllInputsClosed` sits at the front of the control queue for as
+    // long as inputs are queued, so overflow must not pick it as the oldest
+    // ordinary event to evict.
+    #[test]
+    fn all_inputs_closed_survives_non_input_queue_overflow() {
+        let (mut sched, _id) = make_scheduler(10);
+
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_all_inputs_closed());
+        for i in 0..NON_INPUT_EVENT_QUEUE_SIZE + 25 {
+            sched.add_event(make_input_closed(&format!("in-{i}")));
+        }
+
+        assert!(
+            sched.non_input.iter().any(is_all_inputs_closed),
+            "AllInputsClosed must survive non-input queue overflow"
+        );
+    }
+
+    // A daemon `Stop` keeps its priority, even past a held `AllInputsClosed`.
+    #[test]
+    fn stop_still_overtakes_queued_inputs() {
+        let (mut sched, _id) = make_scheduler(10);
+
+        sched.add_event(make_input("audio", MetadataParameters::new()));
+        sched.add_event(make_all_inputs_closed());
+        sched.add_event(make_stop());
+
+        assert_eq!(
+            drain_kinds(&mut sched),
+            ["stop", "input", "all-inputs-closed"]
         );
     }
 }

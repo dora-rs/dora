@@ -92,7 +92,7 @@ Every node requires an `id`. All other fields are optional (though most nodes ne
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | **Required.** Unique identifier. Must not contain `/`. Whitespace is discouraged |
+| `id` | string | **Required.** Unique identifier. Only ASCII letters, digits, `_`, `.` and `-` (no `/`, no whitespace); must not be empty, start with `.`, or be the reserved id `dora` |
 | `name` | string | Human-readable display name (metadata only, used in tooling and logs) |
 | `description` | string | Documentation string (metadata only, not used at runtime) |
 
@@ -173,7 +173,13 @@ can discard the message before the per-input policy ever applies; the daemon
 path feeds the same channel with a blocking send, and when the receiver's
 per-node channel (1000 events) is full as well, the daemon holds the producer's
 send until there is room, so the producer's `send_output` blocks instead of the
-message being dropped. Two cases still drop, each logged and counted: a
+message being dropped. A producer that exits or closes the output while one of
+its messages is held does not lose it: the receiver's `InputClosed` for that
+input, and `AllInputsClosed`, wait until the held message is in, or dropped
+under the 60-second rule below. A close that waited keeps the timestamp of the
+moment it was decided, so events sent in between, such as `Stop`, can reach the
+node before it. An `input_timeout` does not fire on an input while a message
+for it is held. Two cases still drop, each logged and counted: a
 producer on another machine cannot be held, so a message forwarded across
 daemons to a full receiver is dropped; and a receiver that frees no room at all
 for 60 seconds (wedged, or blocked on its own producer in a backpressure cycle)
@@ -451,13 +457,14 @@ The `id` field is optional for single operators (defaults to the node `id`):
       - bbox
 ```
 
-### Multiple Operators
+### The `operators` List
 
-Each operator in `operators` **requires** a unique `id`:
+`operators` is the list form of `operator`. Its entry **requires** an `id`, which becomes part of every reference to its outputs (`<node>/<operator>/<output>`).
 
+A runtime node holds exactly one operator: the operator runtime refuses to start with zero or several, so validation rejects such a node. To run several operators, give each one its own node:
 
 ```yaml
-- id: runtime-node
+- id: preprocess
   operators:
     - id: preprocessor
       shared-library: ../../target/debug/libpreprocess
@@ -465,10 +472,12 @@ Each operator in `operators` **requires** a unique `id`:
         raw: sensor/data
       outputs:
         - processed
+- id: analyze
+  operators:
     - id: analyzer
       shared-library: ../../target/debug/libanalyze
       inputs:
-        data: runtime-node/preprocessor/processed
+        data: preprocess/preprocessor/processed
       outputs:
         - result
 ```

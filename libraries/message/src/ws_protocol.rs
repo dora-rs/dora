@@ -22,11 +22,12 @@ pub struct WsRequest {
 ///
 /// # Serde invariant
 ///
-/// `result: Some(Value::Null)` and `result: None` are **equivalent on the
-/// wire**. Both serialize to a JSON object without a `result` field
-/// (the `Some(Null)` case via the standard serde rule that JSON `null`
-/// deserializes back as `None` for `Option<T>`). This is intentional and
-/// matches JSON-RPC convention. Pinned by a unit test below
+/// `result: Some(Value::Null)` and `result: None` are **equivalent for a
+/// reader**. `None` serializes without a `result` field and `Some(Null)` as
+/// `"result":null`, but both deserialize to `None` (the standard serde rule
+/// that JSON `null` becomes `None` for `Option<T>`), so the distinction does
+/// not survive a round trip. This is intentional and matches JSON-RPC
+/// convention. Pinned by a unit test below
 /// (`ws_response_some_null_equals_none_on_wire`).
 ///
 /// If you need to distinguish "no result" from "result is JSON null"

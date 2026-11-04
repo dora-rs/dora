@@ -234,19 +234,65 @@ pub(crate) fn note_direct_recovered(dataflow_id: Uuid, shared_memory_id: &str) -
         .remove(&(dataflow_id, shared_memory_id.to_string()))
 }
 
-/// How long a cross-machine write waits for the remote commit ack before
-/// failing loudly. Generous: the WAN transfer of a near-limit frame alone
-/// can take tens of seconds; a dead link fails earlier via the publish
-/// error path.
-pub(crate) const CROSS_WRITE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-/// Upper bound for reading one direct-TCP data frame (header + payload).
-/// A peer that sends a header with a large `size` and then stalls would
-/// otherwise hold the per-pool lock and leave the seqlock odd
-/// indefinitely, wedging every subsequent write to that pool. 300s covers
-/// a 1 GiB frame on a ~5 MB/s slow WAN link; on timeout the connection is
-/// dropped, the lock guard drops, and the odd generation marks the frame
-/// torn (next write self-heals).
+/// Upper bound for reading one direct-TCP data frame (header + payload),
+/// counted from the frame's first byte. A peer that sends a header with a
+/// large `size` and then stalls would otherwise hold the per-pool lock and
+/// leave the seqlock odd indefinitely, wedging every subsequent write to
+/// that pool. 300s covers a 1 GiB frame on a ~5 MB/s slow WAN link; on
+/// timeout the connection is dropped, the lock guard drops, and the odd
+/// generation marks the frame torn (next write self-heals). It is also the
+/// cap of [`cross_transfer_budget`], so the mirror never gives up on a
+/// frame before the origin does.
 pub(crate) const CROSS_DATA_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// How long the mirror keeps a pooled data connection open while waiting
+/// for its next frame. A separate timer from the frame read bound: the
+/// frame timer must start at the frame's first byte, not while waiting for
+/// it — otherwise the mirror's window opens before the origin's and the
+/// mirror gives up on a slow frame first (#3688). Same length as before
+/// the split, so an idle connection is held no longer than it used to be;
+/// the origin notices a connection the mirror closed before reusing it.
+pub(crate) const CROSS_DATA_IDLE_TIMEOUT: std::time::Duration = CROSS_DATA_READ_TIMEOUT;
+
+/// Fixed part of [`cross_transfer_budget`]: connect, auth handshake and
+/// round trips, independent of the frame size.
+const CROSS_TRANSFER_BASE: std::time::Duration = std::time::Duration::from_secs(20);
+/// Slowest link rate a cross-machine transfer is expected to sustain.
+const CROSS_TRANSFER_MIN_BYTES_PER_SEC: u64 = 5 * 1024 * 1024;
+/// Slack in [`cross_write_ack_timeout`] beyond the transfer itself: the
+/// origin's segment read before the send, and the mirror's memcpy and ack
+/// publish after it. Also how long a relayed write waits for its ack once
+/// the relayed frame has been handed to zenoh.
+pub(crate) const CROSS_ACK_MARGIN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long the direct-TCP attempt at moving a `size`-byte frame to the
+/// mirror (connect, handshake and send together) may take: a fixed base
+/// plus the frame at
+/// [`CROSS_TRANSFER_MIN_BYTES_PER_SEC`], capped at the mirror's
+/// [`CROSS_DATA_READ_TIMEOUT`]. Scaling with the size keeps small frames
+/// failing fast when an ack is lost, instead of every frame paying for the
+/// slowest possible 1 GiB transfer.
+pub(crate) fn cross_transfer_budget(size: usize) -> std::time::Duration {
+    let transfer = std::time::Duration::from_millis(
+        (size as u64).saturating_mul(1000) / CROSS_TRANSFER_MIN_BYTES_PER_SEC,
+    );
+    (CROSS_TRANSFER_BASE + transfer).min(CROSS_DATA_READ_TIMEOUT)
+}
+
+/// How long a cross-machine write of `size` bytes waits for the remote
+/// commit ack over the direct-TCP path before failing loudly: the direct
+/// attempt's [`cross_transfer_budget`] plus [`CROSS_ACK_MARGIN`]. It
+/// outlasts the direct attempt, so a slow-but-successful direct transfer is
+/// never reported to the sender as failed while the mirror commits it as a
+/// stable frame (#3688). The safety net enforcing it is the only thing that
+/// resolves a write whose ack is lost (peer restart, dropped ack), so it
+/// scales with the size: a small frame fails within a minute.
+///
+/// A write that falls back to the relay leaves this timeout behind (see
+/// [`CrossWriteNet`]): its ack gets [`CROSS_ACK_MARGIN`] once the relayed
+/// frame has been handed to zenoh.
+pub(crate) fn cross_write_ack_timeout(size: usize) -> std::time::Duration {
+    cross_transfer_budget(size) + CROSS_ACK_MARGIN
+}
 
 /// Resolve the pending cross-machine write reply for a commit ack.
 /// Only the seq-matched pending entry is resolved — an ack for a previous
@@ -276,79 +322,176 @@ pub(crate) fn resolve_cross_write_ack(
     }
 }
 
-/// Fire the safety-net timeout for a pending cross-machine write: remove the
-/// entry under the write's *effective* seq and fail the node's blocked
-/// `NodeRequest::Write`. Returns whether an entry existed.
+/// Safety-net state for one in-flight cross-machine write, shared by the
+/// task that moves the frame and the single timeout task that fails the
+/// write if its ack never arrives (peer restart, lost ack).
 ///
-/// `effective_seq` is the seq the entry is live under now, which advances from
-/// the original `seq` to a fresh `relay_seq` on a direct-TCP → zenoh failover.
-/// Keying the timeout to the pre-failover seq makes it a no-op after a re-key,
-/// leaving the write hung forever (#3193).
+/// One net per write, whose deadline follows the write through its phases:
+/// set from the direct attempt's budget at the request, pushed out to a
+/// ceiling while a relayed frame is still being handed to zenoh, and
+/// re-armed once it is out. A relay running at no less than half the
+/// expected minimum rate is therefore never failed while its frame may
+/// still commit on the mirror (#3688); the ceiling only stops a stalled
+/// zenoh put from blocking the node forever. A re-keyed write is never
+/// left without a net (#3193).
+pub(crate) struct CrossWriteNet {
+    /// The seq the pending entry is live under: the original `seq`, or the
+    /// fresh relay seq after a direct-TCP → zenoh re-key.
+    seq: std::sync::atomic::AtomicU64,
+    /// When the net fails the write.
+    deadline: std::sync::Mutex<tokio::time::Instant>,
+    changed: tokio::sync::Notify,
+}
+
+impl CrossWriteNet {
+    pub(crate) fn new(seq: u64, deadline: tokio::time::Instant) -> Arc<Self> {
+        Arc::new(Self {
+            seq: std::sync::atomic::AtomicU64::new(seq),
+            deadline: std::sync::Mutex::new(deadline),
+            changed: tokio::sync::Notify::new(),
+        })
+    }
+
+    /// The seq the pending entry is live under now.
+    pub(crate) fn seq(&self) -> u64 {
+        self.seq.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn set_deadline(&self, deadline: tokio::time::Instant) {
+        *self.deadline.lock().unwrap_or_else(|e| e.into_inner()) = deadline;
+        self.changed.notify_one();
+    }
+
+    /// Re-arm the net once a relayed frame is out: the ack now has until
+    /// `deadline`.
+    pub(crate) fn arm(&self, deadline: tokio::time::Instant) {
+        self.set_deadline(deadline);
+    }
+}
+
+/// What [`fire_cross_write_timeout`] found.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum NetCheck {
+    /// The deadline had passed: the write was failed.
+    Fired,
+    /// Nothing is pending under the net's seq any more: the ack, a send
+    /// error or `finish_dataflow` already resolved the write.
+    Resolved,
+    /// Still pending and not yet due (re-armed in the meantime).
+    NotDue,
+}
+
+/// Fail a pending cross-machine write whose net deadline has passed: remove
+/// the entry under the net's current seq and fail the node's blocked
+/// `NodeRequest::Write`.
 ///
-/// The load happens *under the pending-map guard*, the same one
-/// `rekey_cross_write_to_relay` holds while it re-keys and stores. Loading
-/// outside it would reopen #3193 as a race: a failover landing between the load
-/// and the `remove` would leave the removal targeting a key that has already
-/// moved, and nothing retries.
+/// Both the seq and the deadline are read *under the pending-map guard*, the
+/// same one [`begin_cross_write_relay`] holds while it re-keys the entry and
+/// pauses the net. So exactly one of "fail the write now" and "hand it to the
+/// relay" wins: a failover can never land between this check and the removal,
+/// and a write already handed to the relay is never failed mid-relay (#3193,
+/// #3688).
 pub(crate) fn fire_cross_write_timeout(
     dataflow_id: Uuid,
     shared_memory_id: &str,
-    effective_seq: &std::sync::atomic::AtomicU64,
-) -> bool {
+    net: &CrossWriteNet,
+) -> NetCheck {
     let mut pending = CROSS_WRITE_PENDING
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let seq = effective_seq.load(std::sync::atomic::Ordering::SeqCst);
-    let Some(tx) = pending.remove(&(dataflow_id, shared_memory_id.to_string(), seq)) else {
-        return false;
-    };
+    let key = (dataflow_id, shared_memory_id.to_string(), net.seq());
+    if !pending.contains_key(&key) {
+        return NetCheck::Resolved;
+    }
+    let deadline = *net.deadline.lock().unwrap_or_else(|e| e.into_inner());
+    if tokio::time::Instant::now() < deadline {
+        return NetCheck::NotDue;
+    }
+    let tx = pending.remove(&key).expect("checked under the same guard");
     drop(pending);
     let _ = tx.send(DaemonReply::Result(Err(
         "cross-machine write timed out waiting for the remote commit ack".to_string(),
     )));
-    true
+    NetCheck::Fired
 }
 
-/// Re-key a pending cross-machine write from `seq` to a fresh relay seq for the
-/// zenoh fallback hop, advancing `effective_seq` to match. Returns the new
-/// relay seq, or `None` if nothing was pending under `seq` (already resolved).
+/// The safety-net task of one cross-machine write: wait for the net's
+/// deadline, following every re-arm, until the write is failed or resolved.
+/// Holds no payload, so a write's frame is freed as soon as it is sent.
+pub(crate) async fn run_cross_write_net(
+    dataflow_id: Uuid,
+    shared_memory_id: String,
+    net: Arc<CrossWriteNet>,
+) {
+    loop {
+        // Register for a change *before* reading the deadline, so a re-arm
+        // between the read and the wait is not missed.
+        let changed = net.changed.notified();
+        let deadline = *net.deadline.lock().unwrap_or_else(|e| e.into_inner());
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => {}
+            _ = changed => continue,
+        }
+        match fire_cross_write_timeout(dataflow_id, &shared_memory_id, &net) {
+            NetCheck::Fired | NetCheck::Resolved => return,
+            NetCheck::NotDue => {}
+        }
+    }
+}
+
+/// Hand a pending cross-machine write over to the zenoh relay: push its net
+/// out to `relay_deadline` until the relayed frame is out (then the caller
+/// re-arms it, see [`CrossWriteNet::arm`]) and, with `rekey`, move the entry
+/// from the net's seq to a fresh relay seq. Returns
+/// the seq the relay must use, or `None` if nothing was pending (the write is
+/// already resolved and must not be relayed).
 ///
-/// The re-key drops the stale direct-plane `ok:false` (published the instant a
-/// mid-frame direct read fails) via the first-wins resolver, and keeps the
-/// per-pool counter monotonic so the next write cannot collide with the
-/// re-keyed seq. Advancing `effective_seq` is the crucial half: the safety-net
-/// timeout task reads it, so a relay ack lost after the re-key is still
-/// reclaimed rather than hanging the node forever (#3193).
-pub(crate) fn rekey_cross_write_to_relay(
+/// The re-key is for a failed direct attempt: the mirror publishes
+/// `ok:false` for the abandoned direct frame the instant its read fails, and
+/// under the old seq that would win the race against the relay's `ok:true`
+/// and fail a write the relay delivers. The re-key lets the first-wins
+/// resolver drop the stale ack, and keeps the per-pool counter monotonic so
+/// the next write cannot collide with the re-keyed seq.
+pub(crate) fn begin_cross_write_relay(
     dataflow_id: Uuid,
     shared_memory_id: &str,
-    seq: u64,
-    effective_seq: &std::sync::atomic::AtomicU64,
+    net: &CrossWriteNet,
+    rekey: bool,
+    relay_deadline: tokio::time::Instant,
 ) -> Option<u64> {
-    // Remove, re-key and store under a *single* pending-map guard. Releasing
-    // it between the remove and the insert would leave the entry in no map at
-    // all, so a concurrent `drain_cross_write_pending` walks past it and the
-    // re-insert then outlives `finish_dataflow` — the node stays blocked until
-    // the 120s safety net and the entry leaks past the dataflow it belongs to.
-    // The counter bump nests `CROSS_WRITE_SEQ` inside this guard; that is the
-    // only nesting of the two (every other site drops the seq lock before
-    // touching the pending map), so the order cannot deadlock.
+    // Check, re-key and push out under a *single* pending-map guard — the one
+    // `fire_cross_write_timeout` takes. Releasing it between the remove and
+    // the insert would also leave the entry in no map at all, so a concurrent
+    // `drain_cross_write_pending` walks past it and the re-insert outlives
+    // `finish_dataflow`. The counter bump nests `CROSS_WRITE_SEQ` inside this
+    // guard; that is the only nesting of the two (every other site drops the
+    // seq lock before touching the pending map), so the order cannot deadlock.
     let mut pending = CROSS_WRITE_PENDING
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let tx = pending.remove(&(dataflow_id, shared_memory_id.to_string(), seq))?;
-    let relay_seq = {
-        let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-        let counter = seqs
-            .entry((dataflow_id, shared_memory_id.to_string()))
-            .or_insert(0);
-        *counter += 1;
-        *counter
+    let seq = net.seq();
+    let key = (dataflow_id, shared_memory_id.to_string(), seq);
+    if !pending.contains_key(&key) {
+        return None;
+    }
+    let relay_seq = if rekey {
+        let tx = pending.remove(&key).expect("checked under the same guard");
+        let relay_seq = {
+            let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+            let counter = seqs
+                .entry((dataflow_id, shared_memory_id.to_string()))
+                .or_insert(0);
+            *counter += 1;
+            *counter
+        };
+        pending.insert((dataflow_id, shared_memory_id.to_string(), relay_seq), tx);
+        net.seq
+            .store(relay_seq, std::sync::atomic::Ordering::SeqCst);
+        relay_seq
+    } else {
+        seq
     };
-    pending.insert((dataflow_id, shared_memory_id.to_string(), relay_seq), tx);
-    // Still under the guard: `fire_cross_write_timeout` loads this while
-    // holding the same lock, so it can never observe a stale seq (#3193).
-    effective_seq.store(relay_seq, std::sync::atomic::Ordering::SeqCst);
+    net.set_deadline(relay_deadline);
     Some(relay_seq)
 }
 
@@ -393,11 +536,13 @@ pub(crate) const MEMORY_POOL_SHM_PROVIDER_SIZE: usize = 8 * 1024 * 1024;
 #[cfg(test)]
 mod cross_write_failover_tests {
     use super::{
-        CROSS_WRITE_PENDING, CROSS_WRITE_SEQ, drain_cross_write_pending, fire_cross_write_timeout,
-        rekey_cross_write_to_relay, resolve_cross_write_ack,
+        CROSS_WRITE_PENDING, CROSS_WRITE_SEQ, CrossWriteNet, NetCheck, begin_cross_write_relay,
+        drain_cross_write_pending, fire_cross_write_timeout, resolve_cross_write_ack,
+        run_cross_write_net,
     };
     use dora_message::DataflowId;
     use dora_message::daemon_to_node::DaemonReply;
+    use tokio::time::{Duration, Instant};
 
     #[test]
     fn failover_rekey_drops_stale_direct_ack_and_resolves_via_relay() {
@@ -426,9 +571,15 @@ mod cross_write_failover_tests {
 
         // Rekey via the production helper the direct-failure arm calls, so
         // this asserts against the real path rather than a copy of it.
-        let effective_seq = std::sync::atomic::AtomicU64::new(seq);
-        let relay_seq = rekey_cross_write_to_relay(df, &pool, seq, &effective_seq)
-            .expect("pending entry present");
+        let net = CrossWriteNet::new(seq, Instant::now() + Duration::from_secs(60));
+        let relay_seq = begin_cross_write_relay(
+            df,
+            &pool,
+            &net,
+            true,
+            Instant::now() + Duration::from_secs(60),
+        )
+        .expect("pending entry present");
         assert_ne!(relay_seq, seq, "rekey must produce a fresh seq");
 
         // The stale direct-plane ok:false arrives first: no pending entry
@@ -456,63 +607,112 @@ mod cross_write_failover_tests {
         );
     }
 
-    #[test]
-    fn rekey_advances_effective_seq_so_the_timeout_follows_it() {
-        // #3193: drives the production re-key path (`rekey_cross_write_to_relay`,
-        // the direct-TCP → zenoh failover arm) and pins the actual fix — that
-        // it advances the shared `effective_seq` the safety-net timeout reads.
-        // Deleting the `effective_seq.store(relay_seq)` inside the helper makes
-        // the `effective_seq` assertion below fail, and the timeout then reads
-        // the stale seq (a no-op) so the final resolve fails too — i.e. this
-        // test fails exactly when the write would hang forever.
-        let df = DataflowId::new_v4();
-        let pool = "pool_rekey_atomic".to_string();
-        let (tx, mut rx) = tokio::sync::oneshot::channel();
-
-        // Allocate the seq exactly as the handler does (counter 0 -> 1) and
-        // insert the pending reply under it.
+    /// Insert a pending write for `pool` the way the handler does (seq from
+    /// the per-pool counter) and return its seq and reply receiver.
+    fn pending_write(
+        df: DataflowId,
+        pool: &str,
+    ) -> (u64, tokio::sync::oneshot::Receiver<DaemonReply>) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
         let seq = {
             let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-            let counter = seqs.entry((df, pool.clone())).or_insert(0);
+            let counter = seqs.entry((df, pool.to_string())).or_insert(0);
             *counter += 1;
             *counter
         };
         CROSS_WRITE_PENDING
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert((df, pool.clone(), seq), tx);
-        let effective_seq = std::sync::atomic::AtomicU64::new(seq);
+            .insert((df, pool.to_string(), seq), tx);
+        (seq, rx)
+    }
 
-        // Run the real re-key the handler runs on a direct-send failure.
-        let relay_seq = rekey_cross_write_to_relay(df, &pool, seq, &effective_seq)
-            .expect("a pending entry under the original seq");
+    #[test]
+    fn relay_handover_moves_the_net_with_the_write() {
+        let df = DataflowId::new_v4();
+        let pool = "pool_rekey_net".to_string();
+        let (seq, mut rx) = pending_write(df, &pool);
+        // The direct phase's deadline has already passed.
+        let net = CrossWriteNet::new(seq, Instant::now());
+
+        // A failed direct attempt hands the write to the relay: the entry
+        // moves to a fresh seq and the net follows it (#3193).
+        let relay_seq = begin_cross_write_relay(
+            df,
+            &pool,
+            &net,
+            true,
+            Instant::now() + Duration::from_secs(60),
+        )
+        .expect("a pending entry under the original seq");
         assert_ne!(relay_seq, seq, "re-key must allocate a fresh monotonic seq");
-        // The crux of the fix: the atomic the timeout task reads was advanced
-        // to the re-keyed seq.
         assert_eq!(
-            effective_seq.load(std::sync::atomic::Ordering::SeqCst),
+            net.seq(),
             relay_seq,
-            "re-key must advance the effective seq the timeout follows"
+            "the net must follow the re-keyed entry"
         );
 
-        // A timeout still keyed to the pre-failover seq is a no-op: the entry
-        // moved. This is the #3193 regression, reproduced by handing the
-        // helper an atomic frozen at the stale seq.
-        let stale_seq = std::sync::atomic::AtomicU64::new(seq);
-        assert!(!fire_cross_write_timeout(df, &pool, &stale_seq));
+        // While the relayed frame is in flight the net is pushed out: it must
+        // not fail a write whose frame may still commit on the mirror (#3688).
+        assert_eq!(fire_cross_write_timeout(df, &pool, &net), NetCheck::NotDue);
         assert!(
             rx.try_recv().is_err(),
-            "write must still be pending after a timeout keyed to the stale seq"
+            "write must still be pending mid-relay"
         );
 
-        // The real safety net passes the shared atomic the re-key advanced —
-        // the helper loads it under the pending guard — so it resolves the
-        // re-keyed entry and fails the node's write cleanly instead of hanging.
-        assert!(fire_cross_write_timeout(df, &pool, &effective_seq));
+        // Once the frame is out the net is re-armed, and a lost relay ack
+        // still fails the node's write instead of hanging it.
+        net.arm(Instant::now());
+        assert_eq!(fire_cross_write_timeout(df, &pool, &net), NetCheck::Fired);
         assert!(
             matches!(rx.try_recv(), Ok(DaemonReply::Result(Err(_)))),
-            "the timeout keyed to the effective seq must fail the node's write"
+            "the net must fail the re-keyed write"
         );
+        assert_eq!(
+            fire_cross_write_timeout(df, &pool, &net),
+            NetCheck::Resolved
+        );
+        // A resolved write is never handed to the relay.
+        assert_eq!(
+            begin_cross_write_relay(df, &pool, &net, true, Instant::now()),
+            None
+        );
+    }
+
+    #[test]
+    fn net_task_follows_relay_and_fails_a_lost_ack() {
+        let df = DataflowId::new_v4();
+        let pool = "pool_net_task".to_string();
+        let (seq, mut rx) = pending_write(df, &pool);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let net = CrossWriteNet::new(seq, Instant::now() + Duration::from_millis(50));
+            let task = tokio::spawn(run_cross_write_net(df, pool.clone(), net.clone()));
+            // Straight to the relay (no direct endpoint): no re-key, but the
+            // net is pushed out past the direct-phase deadline.
+            assert_eq!(
+                begin_cross_write_relay(
+                    df,
+                    &pool,
+                    &net,
+                    false,
+                    Instant::now() + Duration::from_secs(60)
+                ),
+                Some(seq)
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(rx.try_recv().is_err(), "the net fired mid-relay");
+            // The relayed frame is out; its ack never comes.
+            net.arm(Instant::now() + Duration::from_millis(50));
+            tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .expect("net task must finish after the re-armed deadline")
+                .unwrap();
+            assert!(matches!(rx.try_recv(), Ok(DaemonReply::Result(Err(_)))));
+        });
     }
 
     #[test]

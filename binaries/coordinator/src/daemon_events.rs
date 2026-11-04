@@ -3,12 +3,12 @@
 
 use crate::{
     Coordinator, DaemonRequest, apply_disconnect_actions, build_result_timeout,
-    check_build_timeouts, check_spawn_timeouts, cleanup_disconnected_daemons_from_running_builds,
+    catch_up_daemon_behind_pruned_log, check_build_timeouts, check_spawn_timeouts,
+    cleanup_disconnected_daemons_from_running_builds,
     cleanup_disconnected_daemons_from_running_dataflows, expire_stopped_nodes,
-    handle_pruned_state_catchup_fallback, notify_daemons_about_disconnected_peers,
-    reestablish_running_dataflow, replay_all_nodes_ready, restore_topic_debug_streams_for_daemon,
-    send_heartbeat_with_timeout, state, status_report_should_stop_orphan,
-    stop_orphaned_dataflow_on_daemon,
+    notify_daemons_about_disconnected_peers, reestablish_running_dataflow, replay_all_nodes_ready,
+    restore_topic_debug_streams_for_daemon, send_heartbeat_with_timeout, state,
+    status_report_should_stop_orphan, stop_orphaned_dataflow_on_daemon,
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
 use dora_message::{
@@ -372,6 +372,7 @@ impl Coordinator {
     pub(crate) async fn handle_node_metrics(
         &mut self,
         dataflow_id: Uuid,
+        daemon_id: DaemonId,
         metrics: BTreeMap<NodeId, NodeMetrics>,
         network: Option<NetworkMetrics>,
     ) -> eyre::Result<()> {
@@ -398,7 +399,7 @@ impl Coordinator {
                     .insert(node_id.clone(), node_metrics.clone());
             }
             if let Some(net) = network {
-                dataflow.network_metrics = Some(net);
+                dataflow.network_metrics.insert(daemon_id, net);
             }
 
             #[cfg(feature = "metrics")]
@@ -456,6 +457,9 @@ impl Coordinator {
             "daemon {daemon_id} reports {} running dataflow(s)",
             reported_dataflows.len()
         );
+        // Dataflows whose persisted params are already being replayed to this
+        // daemon, along with the ready barrier it missed.
+        let mut params_replay_started = BTreeSet::new();
         // Reconcile: if daemon reports a dataflow as running and it exists in
         // the store as Pending/Failed/Recovering, update it to Running.
         //
@@ -534,21 +538,25 @@ impl Coordinator {
                             // means one daemon's nodes stay parked,
                             // which must not take down the coordinator
                             // and every other dataflow with it.
-                            if let Err(e) = replay_all_nodes_ready(
+                            match replay_all_nodes_ready(
                                 record.uuid,
                                 df,
                                 &daemon_id,
-                                &mut self.daemon_connections,
+                                &self.daemon_connections,
                                 &self.store,
                                 &self.clock,
                             )
                             .await
                             {
-                                tracing::warn!(
+                                Ok(true) => {
+                                    params_replay_started.insert(record.uuid);
+                                }
+                                Ok(false) => {}
+                                Err(e) => tracing::warn!(
                                     "failed to replay ready barrier to daemon \
                                              `{daemon_id}` for dataflow {}: {e:#}",
                                     record.uuid
-                                );
+                                ),
                             }
                         }
                     }
@@ -571,21 +579,25 @@ impl Coordinator {
                             // means one daemon's nodes stay parked,
                             // which must not take down the coordinator
                             // and every other dataflow with it.
-                            if let Err(e) = replay_all_nodes_ready(
+                            match replay_all_nodes_ready(
                                 record.uuid,
                                 df,
                                 &daemon_id,
-                                &mut self.daemon_connections,
+                                &self.daemon_connections,
                                 &self.store,
                                 &self.clock,
                             )
                             .await
                             {
-                                tracing::warn!(
+                                Ok(true) => {
+                                    params_replay_started.insert(record.uuid);
+                                }
+                                Ok(false) => {}
+                                Err(e) => tracing::warn!(
                                     "failed to replay ready barrier to daemon \
                                              `{daemon_id}` for dataflow {}: {e:#}",
                                     record.uuid
-                                );
+                                ),
                             }
                         }
                     }
@@ -728,9 +740,7 @@ impl Coordinator {
                     // Everything this daemon missed targets other daemons'
                     // nodes: it is current, so record that and let the log
                     // prune instead of re-checking these entries forever.
-                    df.daemon_ack_sequence
-                        .insert(daemon_id.clone(), df.state_log_sequence);
-                    df.prune_state_log();
+                    df.mark_daemon_caught_up(&daemon_id);
                 }
                 Some(entries) => {
                     tracing::info!(
@@ -752,24 +762,15 @@ impl Coordinator {
                         tracing::warn!("failed to send state catch-up to daemon {daemon_id}: {e}");
                     }
                 }
-                None => {
-                    // Log was pruned past this daemon's ack — fall back to full
-                    // param replay from the store.
-                    tracing::info!(
-                        "state catch-up: log pruned for dataflow {uuid}, \
-                                 falling back to full param replay for daemon {daemon_id}"
-                    );
-                    handle_pruned_state_catchup_fallback(
-                        *uuid,
-                        df,
-                        &daemon_id,
-                        self.store.clone(),
-                        &mut self.daemon_connections,
-                        self.clock.clone(),
-                        now,
-                    )
-                    .await;
-                }
+                None => catch_up_daemon_behind_pruned_log(
+                    *uuid,
+                    df,
+                    &daemon_id,
+                    params_replay_started.contains(uuid),
+                    &self.daemon_connections,
+                    &self.store,
+                    &self.clock,
+                ),
             }
         }
         Ok(())

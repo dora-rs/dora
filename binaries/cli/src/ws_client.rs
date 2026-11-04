@@ -11,6 +11,25 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
+/// A coordinator answered at the address but turned this CLI away: it
+/// rejected the `--auth` token, or it refused the protocol version handshake.
+///
+/// Carried as the root of the `eyre::Report` from [`WsSession::connect`] so
+/// callers can tell "a coordinator is running here" from "nothing is
+/// listening". Commands that spawn a coordinator, or build locally, when none
+/// is reachable must not do so for this error. See
+/// [`crate::common::coordinator_rejected`].
+#[derive(Debug)]
+pub(crate) struct CoordinatorRejected(String);
+
+impl std::fmt::Display for CoordinatorRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CoordinatorRejected {}
+
 /// Helper for deserializing incoming WS frames without going through
 /// `serde_json::Value` for the result/payload fields: they are handed to the
 /// caller as raw bytes to be parsed into their real type, so they are never
@@ -107,7 +126,7 @@ impl WsSession {
                          hint: is the coordinator running? Start it with `dora up`"
                     )
                 } else if msg.contains("401") || msg.contains("Unauthorized") {
-                    eyre!(
+                    eyre::Report::new(CoordinatorRejected(format!(
                         "authentication failed connecting to coordinator at {addr}: {msg}\n\n  \
                          The coordinator was started with --auth and requires a valid token.\n  \
                          The token is stored in ~/.config/dora/.dora-token\n\n  \
@@ -116,7 +135,7 @@ impl WsSession {
                          - Ensure you're using the same user that started the coordinator\n  \
                          - Set DORA_AUTH_TOKEN env var to match the coordinator's token\n  \
                          - Restart without --auth to disable authentication"
-                    )
+                    )))
                 } else {
                     eyre!("failed to connect to coordinator at {addr}: {msg}")
                 }
@@ -160,16 +179,18 @@ impl WsSession {
                 );
                 Ok(())
             }
-            ControlRequestReply::Error(msg) => Err(eyre!(
-                "coordinator rejected CLI: {msg}\n\n  \
-                 hint: the CLI and coordinator binaries must share a \
-                 semver-compatible dora version. Upgrade the component \
-                 that is behind."
-            )),
-            other => Err(eyre!(
+            ControlRequestReply::Error(msg) => {
+                Err(eyre::Report::new(CoordinatorRejected(format!(
+                    "coordinator rejected CLI: {msg}\n\n  \
+                     hint: the CLI and coordinator binaries must share a \
+                     semver-compatible dora version. Upgrade the component \
+                     that is behind."
+                ))))
+            }
+            other => Err(eyre::Report::new(CoordinatorRejected(format!(
                 "unexpected reply to Hello: {other:?} — \
                  coordinator may be too old to understand the handshake"
-            )),
+            )))),
         }
     }
 
@@ -417,7 +438,14 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                     Ok(other) => {
                         tracing::trace!("ignoring unexpected WS message type: {other:?}");
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        if is_connection_drop(&e) {
+                            tracing::debug!("coordinator WebSocket session ended: {e}");
+                        } else {
+                            tracing::warn!("coordinator WebSocket session ended: {e}");
+                        }
+                        break;
+                    }
                 }
             }
         }
@@ -432,6 +460,28 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
     }
     for (_, (ack, _)) in pending_topic_subscribes.drain() {
         let _ = ack.send(Err(eyre!("WS connection closed")));
+    }
+}
+
+/// Whether a WebSocket read error is the connection simply going away.
+///
+/// The coordinator exits after `dora down` without a closing handshake, so a
+/// reset is the normal end of that session and must not print a warning.
+/// Anything else (a capacity limit, a protocol violation) is worth a warning.
+fn is_connection_drop(e: &tokio_tungstenite::tungstenite::Error) -> bool {
+    use tokio_tungstenite::tungstenite::error::{Error, ProtocolError};
+    match e {
+        Error::ConnectionClosed
+        | Error::AlreadyClosed
+        | Error::Protocol(ProtocolError::ResetWithoutClosingHandshake) => true,
+        Error::Io(io) => matches!(
+            io.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::UnexpectedEof
+        ),
+        _ => false,
     }
 }
 
@@ -765,6 +815,26 @@ mod tests {
             ),
             Ok(_) => panic!("expected error from async context"),
         }
+    }
+
+    #[test]
+    fn connection_drop_is_not_a_warning() {
+        use tokio_tungstenite::tungstenite::error::{CapacityError, Error, ProtocolError};
+        // `dora down`: the coordinator exits without a closing handshake.
+        assert!(is_connection_drop(&Error::Protocol(
+            ProtocolError::ResetWithoutClosingHandshake
+        )));
+        assert!(is_connection_drop(&Error::ConnectionClosed));
+        assert!(is_connection_drop(&Error::Io(std::io::Error::from(
+            std::io::ErrorKind::ConnectionReset
+        ))));
+        // A real failure still warns.
+        assert!(!is_connection_drop(&Error::Capacity(
+            CapacityError::MessageTooLong {
+                size: 17 << 20,
+                max_size: 16 << 20,
+            }
+        )));
     }
 
     #[tokio::test]

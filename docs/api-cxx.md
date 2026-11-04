@@ -113,6 +113,10 @@ ArrowInputInfo event_as_arrow_input_with_info(
 
 // Downcast to a NodeFailed payload. Throws if the event is not NodeFailed.
 DoraNodeFailed event_as_node_failed(rust::Box<DoraEvent> event);
+
+// Id of the upstream node that restarted. Throws if the event is not
+// NodeRestarted.
+rust::String event_as_node_restarted(rust::Box<DoraEvent> event);
 ```
 
 ### DoraEventType
@@ -129,6 +133,7 @@ enum class DoraEventType : uint8_t {
     Timeout,          // next_event_timeout deadline elapsed without an event
     NodeFailed,       // an upstream node failed (use event_as_node_failed to inspect)
     Reload,           // hot-reload notification for an operator
+    NodeRestarted,    // an upstream node restarted (use event_as_node_restarted for its id)
 };
 ```
 
@@ -338,7 +343,7 @@ rust::Box<Metadata> new_metadata();
 #### Reading
 
 ```cpp
-uint64_t     Metadata::timestamp() const;
+uint64_t     Metadata::timestamp() const;                         // NTP64, not nanoseconds (see below)
 
 bool         Metadata::get_bool(const rust::Str key) const;        // throws on missing/wrong type
 int64_t      Metadata::get_int(const rust::Str key) const;
@@ -351,6 +356,14 @@ rust::Vec<rust::String> Metadata::get_list_string(const rust::Str key) const;
 
 int64_t      Metadata::get_timestamp(const rust::Str key) const;   // nanoseconds since epoch
 rust::String Metadata::get_json(const rust::Str key) const;        // single value as JSON string
+```
+
+`Metadata::timestamp()` is the message's hybrid logical clock timestamp in NTP64 format: a 32.32 fixed-point number whose upper 32 bits are whole seconds since the UNIX epoch and whose lower 32 bits are the fraction of a second in units of 2^-32 s. Unlike `get_timestamp`, it is not nanoseconds; convert it before comparing it with a wall-clock reading:
+
+```cpp
+uint64_t ts = metadata->timestamp();
+uint64_t nanos_since_epoch =
+    (ts >> 32) * 1000000000ull + (((ts & 0xFFFFFFFFull) * 1000000000ull) >> 32);
 ```
 
 #### Writing
@@ -495,7 +508,7 @@ DoraOnInputResult on_input_parse_error(Operator& op, rust::Str id, rust::Str err
 ```
 
 - `new_operator()` -- called once at startup; returns the operator instance.
-- `on_input()` -- called for every input event; process data and optionally send outputs.
+- `on_input()` -- called for every input event; process data and optionally send outputs. `data` is empty for metadata-only inputs such as `dora/timer/...` ticks or outputs sent as `()`, so check `data.empty()` / `data.size()` before indexing it.
 - `on_input_closed()` -- called when an upstream input stream closes (the daemon delivers `Event::InputClosed { id }`). Operator can log, flush per-input state, or `send_output(output_sender, ...)` to emit a final/status message in response. Set `result.stop = true` to request shutdown.
 - `on_stop()` -- called on graceful shutdown (the daemon delivers `Event::Stop`). Operator can drain output queues, persist final state, or `send_output(output_sender, ...)` to flush buffered data before returning.
 - `on_input_parse_error()` -- called when an input's Arrow data fails to deserialize (`Event::InputParseError { id, error }`). `id` identifies the affected input; `error` is the deserialization error string. Operator can log the error, surface it as health state, or request shutdown. Previously these events were silently dropped.

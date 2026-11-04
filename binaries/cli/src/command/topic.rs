@@ -31,3 +31,15 @@ impl Executable for Topic {
         }
     }
 }
+
+/// Run `f`, turning a panic inside arrow into the error `"{what}: {reason}"`.
+fn catch_arrow_panic<T>(what: &str, f: impl FnOnce() -> eyre::Result<T>) -> eyre::Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let reason = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("unknown reason");
+        Err(eyre::eyre!("{what}: {reason}"))
+    })
+}

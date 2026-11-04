@@ -469,7 +469,7 @@ dora doctor --dataflow dataflow.yml
 Checks performed:
 1. Shared memory permissions (Linux only — verifies `/dev/shm` has mode `1777` for zero-copy IPC)
 2. `uv` availability (required for `dora build --uv` and the managed Python env flow)
-3. Coordinator reachability
+3. Coordinator reachability (a failed connection prints the underlying error, e.g. an `--auth` token rejection or a CLI/coordinator version mismatch)
 4. Connected daemon status
 5. Active dataflow health
 6. Dataflow YAML validation (if `--dataflow` provided)

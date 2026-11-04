@@ -14,16 +14,20 @@ impl TryFrom<&DoraArray> for bool {
         let bool_array = array_ref(value)
             .as_boolean_opt()
             .context("not a bool array")?;
-        if bool_array.is_empty() {
-            eyre::bail!("empty array");
-        }
-        if bool_array.len() != 1 {
-            eyre::bail!("expected length 1");
-        }
-        if bool_array.null_count() != 0 {
-            eyre::bail!("bool array has nulls");
-        }
+        ensure_single(bool_array)?;
         Ok(bool_array.value(0))
+    }
+}
+
+/// Any length, no nulls: the reverse of `IntoArrow for Vec<bool>`.
+impl TryFrom<&DoraArray> for Vec<bool> {
+    type Error = eyre::Report;
+    fn try_from(value: &DoraArray) -> Result<Self, Self::Error> {
+        let bool_array = array_ref(value)
+            .as_boolean_opt()
+            .context("not a bool array")?;
+        ensure_no_nulls(bool_array)?;
+        Ok(bool_array.values().iter().collect())
     }
 }
 
@@ -48,9 +52,7 @@ macro_rules! impl_try_from_arrow_data {
                 fn try_from(value: &'a DoraArray) -> Result<Self, Self::Error> {
                     let array: &PrimitiveArray<arrow::datatypes::$arrow_type> = array_ref(value).as_primitive_opt()
                         .wrap_err(concat!("not a primitive ", stringify!($arrow_type), " array"))?;
-                    if array.null_count() != 0 {
-                        eyre::bail!("array has nulls");
-                    }
+                    ensure_no_nulls(array)?;
                     Ok(array.values())
                 }
             }
@@ -84,25 +86,34 @@ impl_try_from_arrow_data!(
     f64 => Float64Type
 );
 
-impl<'a> TryFrom<&'a DoraArray> for &'a str {
-    type Error = eyre::Report;
-    /// Accepts all three Arrow string encodings: `Utf8`, `LargeUtf8` and
-    /// `Utf8View`. Senders outside Rust (Polars, pyarrow) commonly produce
-    /// the latter two, and this crate's own `IntoArrow` builds them too.
-    fn try_from(value: &'a DoraArray) -> Result<Self, Self::Error> {
-        let array = array_ref(value);
+/// Apply the generic `$read` function to `$value` as whichever of the three
+/// Arrow string encodings it holds: `Utf8`, `LargeUtf8` or `Utf8View`.
+/// Senders outside Rust (Polars, pyarrow) commonly produce the latter two, and
+/// this crate's own `IntoArrow` builds them too.
+macro_rules! read_any_string_array {
+    ($value:expr, $read:ident) => {{
+        let array = array_ref($value);
         if let Some(array) = array.as_string_opt::<i32>() {
-            single_string(array)
+            $read(array)
         } else if let Some(array) = array.as_string_opt::<i64>() {
-            single_string(array)
+            $read(array)
         } else if let Some(array) = array.as_string_view_opt() {
-            single_string(array)
+            $read(array)
         } else {
             eyre::bail!(
                 "not a string array (expected Utf8, LargeUtf8 or Utf8View, got {})",
                 array.data_type()
             )
         }
+    }};
+}
+
+impl<'a> TryFrom<&'a DoraArray> for &'a str {
+    type Error = eyre::Report;
+    /// Accepts all three Arrow string encodings: `Utf8`, `LargeUtf8` and
+    /// `Utf8View`.
+    fn try_from(value: &'a DoraArray) -> Result<Self, Self::Error> {
+        read_any_string_array!(value, single_string)
     }
 }
 
@@ -111,16 +122,28 @@ where
     A: Array,
     &'a A: ArrayAccessor<Item = &'a str>,
 {
-    if array.is_empty() {
-        eyre::bail!("empty array");
-    }
-    if array.len() != 1 {
-        eyre::bail!("expected length 1");
-    }
-    if array.null_count() != 0 {
-        eyre::bail!("array has nulls");
-    }
+    ensure_single(array)?;
     Ok(array.value(0))
+}
+
+/// Any length, no nulls: the reverse of `IntoArrow for Vec<String>`. Like
+/// the `&str` impl, accepts `Utf8`, `LargeUtf8` and `Utf8View`.
+impl TryFrom<&DoraArray> for Vec<String> {
+    type Error = eyre::Report;
+    fn try_from(value: &DoraArray) -> Result<Self, Self::Error> {
+        read_any_string_array!(value, all_strings)
+    }
+}
+
+fn all_strings<'a, A>(array: &'a A) -> eyre::Result<Vec<String>>
+where
+    A: Array,
+    &'a A: ArrayAccessor<Item = &'a str>,
+{
+    ensure_no_nulls(array)?;
+    Ok((0..array.len())
+        .map(|i| array.value(i).to_owned())
+        .collect())
 }
 
 impl TryFrom<&DoraArray> for String {
@@ -224,40 +247,41 @@ fn single_temporal<T, R>(
 where
     T: ArrowTemporalType,
 {
-    if check_single_datetime(array) {
-        eyre::bail!("Not a valid array");
-    }
+    ensure_single(array)?;
     convert(array, 0).context(context)
 }
 
-fn check_single_datetime<T>(array: &PrimitiveArray<T>) -> bool
-where
-    T: ArrowTemporalType,
-{
-    // `len() != 1` already rejects the empty (`len() == 0`) case, so no separate
-    // `is_empty()` term is needed — unlike the primitive/`&str`/`bool` helpers,
-    // which branch on `is_empty()` to emit a distinct "empty array" message.
-    array.len() != 1 || array.null_count() != 0
-}
 fn extract_single_primitive<T>(array: &PrimitiveArray<T>) -> Result<T::Native, eyre::Error>
 where
     T: ArrowPrimitiveType,
 {
+    ensure_single(array)?;
+    Ok(array.value(0))
+}
+
+/// Check that a scalar conversion's source holds exactly one non-null
+/// element, with the error text every scalar `TryFrom<&DoraArray>` shares.
+fn ensure_single(array: &dyn Array) -> eyre::Result<()> {
     if array.is_empty() {
         eyre::bail!("empty array");
     }
     if array.len() != 1 {
         eyre::bail!("expected length 1");
     }
+    ensure_no_nulls(array)
+}
+
+/// Check that a conversion's source holds no null element.
+fn ensure_no_nulls(array: &dyn Array) -> eyre::Result<()> {
     if array.null_count() != 0 {
         eyre::bail!("array has nulls");
     }
-    Ok(array.value(0))
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use arrow::array::{PrimitiveArray, make_array};
+    use arrow::array::{Array, PrimitiveArray, make_array};
 
     use crate::{DoraArray, internal::from_array_ref};
 
@@ -327,5 +351,47 @@ mod tests {
         let err = String::try_from(&data).unwrap_err().to_string();
         assert!(err.contains("not a string array"), "{err}");
         assert!(err.contains("UInt8"), "{err}");
+    }
+
+    /// The temporal and `bool` scalars reject a bad shape with the same three
+    /// messages as the other scalars, not a catch-all "Not a valid array".
+    #[test]
+    fn test_scalar_shape_errors_are_specific() {
+        use arrow::array::{BooleanArray, Date32Array, Time64NanosecondArray};
+        use chrono::{NaiveDate, NaiveTime};
+
+        fn err<T: for<'a> TryFrom<&'a DoraArray, Error = eyre::Report>>(
+            array: impl Array + 'static,
+        ) -> String {
+            match T::try_from(&from_array_ref(make_array(array.into_data()))) {
+                Ok(_) => panic!("expected an error"),
+                Err(e) => e.to_string(),
+            }
+        }
+
+        assert_eq!(
+            err::<NaiveDate>(Date32Array::from(Vec::<i32>::new())),
+            "empty array"
+        );
+        assert_eq!(
+            err::<NaiveDate>(Date32Array::from(vec![1, 2])),
+            "expected length 1"
+        );
+        assert_eq!(
+            err::<NaiveDate>(Date32Array::from(vec![None])),
+            "array has nulls"
+        );
+        assert_eq!(
+            err::<NaiveTime>(Time64NanosecondArray::from(vec![None])),
+            "array has nulls"
+        );
+        assert_eq!(
+            err::<bool>(BooleanArray::from(vec![true, false])),
+            "expected length 1"
+        );
+        assert_eq!(
+            err::<bool>(BooleanArray::from(vec![None])),
+            "array has nulls"
+        );
     }
 }

@@ -22,7 +22,7 @@
 use std::collections::BTreeMap;
 
 use dora_message::descriptor::{Descriptor, EnvValue};
-use eyre::{Context, Result, bail};
+use eyre::{Result, bail};
 
 /// Parse repeated `--env KEY=VALUE` flags. The value may itself contain
 /// `=` (only the first one splits). A repeated key keeps the last
@@ -48,10 +48,9 @@ pub fn parse_env_overrides(flags: &[String]) -> Result<BTreeMap<String, EnvValue
 /// Reject a `--env` value that the descriptor's wire encoding would not
 /// deliver verbatim.
 ///
-/// `EnvValue` is an untagged enum whose variants deserialize through
-/// `with_expand_envs`, so a value is re-interpreted *every time the
-/// descriptor is deserialized* — in the coordinator, then again in the
-/// daemon. Two consequences, both verified against `dora-message`:
+/// A string `EnvValue` is passed through `with_expand_envs`, so a value is
+/// re-interpreted *every time the descriptor is deserialized* — in the
+/// coordinator, then again in the daemon. Two consequences:
 ///
 /// * **`$` is expanded in the receiving process.** A wire value of
 ///   `${DORA_AUTH_TOKEN}` becomes the *coordinator's or daemon's* token
@@ -61,9 +60,12 @@ pub fn parse_env_overrides(flags: &[String]) -> Result<BTreeMap<String, EnvValue
 ///   YAML `env:` values are expanded CLI-side when the descriptor is
 ///   read, so they reach the wire already substituted — `--env` is the
 ///   only path that can put an unexpanded `$` on it.
-/// * **Numeric-looking strings are coerced.** `1.10` arrives as `1.1`,
-///   `01234` as `1234`, because the untagged enum tries `Bool`,
-///   `Integer` and `Float` before `String`.
+/// * **Numeric-looking strings are coerced by released 1.x peers.**
+///   Coordinators and daemons before the lossless `EnvValue` fix decode
+///   `1.10` as `1.1` and `01234` as `1234`, and a newer CLI still talks to
+///   them (`versions_compatible` is caret-based). This build no longer
+///   coerces, so the check below emulates the old decoding instead of
+///   round-tripping through this build's `EnvValue`.
 ///
 /// Escaping cannot fix either: the value is deserialized twice, so a
 /// `$$` that survives one hop is expanded on the next. Rejecting is the
@@ -93,27 +95,46 @@ fn ensure_wire_safe(key: &str, value: &str) -> Result<()> {
         );
     }
 
-    // Beyond `$`, the untagged enum coerces numeric-looking strings —
-    // `1.10` decodes as Float(1.1). A round-trip IS a sound test for
-    // that, since no environment lookup is involved.
-    let encoded = serde_json::to_string(&EnvValue::String(value.to_string()))
-        .with_context(|| format!("failed to encode --env `{key}`"))?;
-    match serde_json::from_str::<EnvValue>(&encoded) {
-        Ok(decoded) if decoded.to_string() == value => Ok(()),
-        Ok(decoded) => bail!(
+    // A pre-fix peer decodes `inf`/`NaN` as a float, which JSON can only
+    // re-encode as `null`, so the next hop fails to read the descriptor.
+    if value.parse::<f64>().is_ok_and(|f| !f.is_finite()) {
+        bail!(
+            "--env `{key}={value}` cannot be carried in a dataflow descriptor: \
+             older coordinators and daemons read it as a non-finite number, \
+             which JSON cannot encode.\n\n  \
+             hint: set this one in the node's `env:` block in the dataflow \
+             YAML instead."
+        );
+    }
+
+    // Beyond `$`, refuse what a pre-fix peer would coerce.
+    if let Some(coerced) = legacy_coercion(value) {
+        bail!(
             "--env `{key}={value}` would not survive the dataflow descriptor's \
-             encoding: nodes would receive `{decoded}` instead.\n\n  \
+             encoding: nodes would receive `{coerced}` instead.\n\n  \
              hint: numeric-looking values are coerced (`1.10` -> `1.1`, \
              `01234` -> `1234`). Set this one in the node's `env:` block in \
              the dataflow YAML instead."
-        ),
-        Err(err) => bail!(
-            "--env `{key}={value}` cannot be represented in the dataflow \
-             descriptor: {err}.\n\n  \
-             hint: set this one in the node's `env:` block in the dataflow \
-             YAML instead."
-        ),
+        );
     }
+    Ok(())
+}
+
+/// What a coordinator or daemon released before the lossless `EnvValue`
+/// fix turns the string `value` into, if that differs from `value`. Their
+/// untagged enum tried `Bool`, `Integer` and `Float` (each parsing the
+/// string) before `String`.
+fn legacy_coercion(value: &str) -> Option<String> {
+    let coerced = if let Ok(b) = value.parse::<bool>() {
+        b.to_string()
+    } else if let Ok(i) = value.parse::<i64>() {
+        i.to_string()
+    } else if let Ok(f) = value.parse::<f64>() {
+        f.to_string()
+    } else {
+        return None;
+    };
+    (coerced != value).then_some(coerced)
 }
 
 /// Merge `--env` overrides into the descriptor's dataflow-level `env:`
@@ -261,13 +282,13 @@ mod tests {
         assert!(result.is_err(), "expected Err, got {result:?}");
     }
 
-    /// The untagged `EnvValue` enum tries Bool/Integer/Float before
-    /// String, so numeric-looking values are coerced in transit. Better
-    /// to refuse than to hand a node `1.1` when the operator typed
-    /// `1.10`.
+    /// Coordinators and daemons released before the lossless `EnvValue`
+    /// fix coerce numeric-looking values in transit, and still accept a
+    /// newer CLI. Better to refuse than to hand a node `1.1` when the
+    /// operator typed `1.10`; `inf`/`NaN` would not even decode.
     #[test]
     fn rejects_values_the_wire_encoding_would_coerce() {
-        for value in ["VERSION=1.10", "ZIP=01234", "SCI=1e5"] {
+        for value in ["VERSION=1.10", "ZIP=01234", "SCI=1e5", "LIMIT=inf", "X=NaN"] {
             let result = parse_env_overrides(&flags(&[value]));
             assert!(
                 result.is_err(),

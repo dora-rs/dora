@@ -158,7 +158,7 @@ node.send_output("image", pa.array(pixels), {"camera_id": "front"})
 
 ##### Service, action, and streaming patterns
 
-Python nodes use the same metadata key conventions as Rust for [communication patterns](patterns.md). Parameters are plain dicts with string keys.
+Python nodes use the same metadata key conventions as Rust for [communication patterns](../concepts/patterns.md). Parameters are plain dicts with string keys.
 
 **Well-known metadata keys:**
 
@@ -215,7 +215,7 @@ node.send_output(
 )
 ```
 
-See [patterns.md](patterns.md) for the full guide.
+See [patterns.md](../concepts/patterns.md) for the full guide.
 
 ---
 

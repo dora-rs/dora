@@ -63,7 +63,21 @@ impl serde::Serialize for TypedValue<'_> {
                 input.len()
             )))?;
         }
-        let mut s = serializer.serialize_tuple_struct(DUMMY_STRUCT_NAME, message.members.len())?;
+        // A null message, e.g. a null element of an `Inner[]` sequence, would
+        // otherwise go out as its masked child values.
+        if !input.is_empty() && input.is_null(0) {
+            Err(error(format!(
+                "a {} message is null, but ROS2 messages cannot represent null",
+                self.type_info.message_name
+            )))?;
+        }
+        let len = message.members.len().max(1);
+        let mut s = serializer.serialize_tuple_struct(DUMMY_STRUCT_NAME, len)?;
+        if message.members.is_empty() {
+            // ROS gives a message with no fields one `uint8` member
+            // (`structure_needs_at_least_one_member`), so it is one byte.
+            s.serialize_field(&0u8)?;
+        }
         for field in message.members.iter() {
             let column: Cow<_> = match input.column_by_name(&field.name) {
                 Some(input) => Cow::Borrowed(input),
@@ -84,6 +98,15 @@ impl serde::Serialize for TypedValue<'_> {
                 }
             };
 
+            // A ROS2 field always has a value. A null row would otherwise go
+            // out as whatever its masked buffers hold: for a sequence, array
+            // or nested message, values the producer never meant to send.
+            if !column.is_empty() && column.is_null(0) {
+                return Err(error(format!(
+                    "field {}.{} is null, but ROS2 messages cannot represent null",
+                    message.name, field.name
+                )));
+            }
             self.serialize_field::<S>(field, column, &mut s)
                 .map_err(|e| {
                     error(format!(
@@ -157,15 +180,7 @@ impl TypedValue<'_> {
                             check_not_null(string_array, "LargeStringArray")?;
                             string_array.value(0)
                         };
-                        if let GenericString::BoundedString(max) = t
-                            && string.len() > *max
-                        {
-                            return Err(error(format!(
-                                "string length {} exceeds BoundedString max {}",
-                                string.len(),
-                                max
-                            )));
-                        }
+                        check_string_bound(string, string_bound(t))?;
                         s.serialize_field(string)?;
                     }
                     GenericString::WString | GenericString::BoundedWString(_) => {
@@ -181,17 +196,7 @@ impl TypedValue<'_> {
                             check_not_null(string_array, "LargeStringArray (WString)")?;
                             string_array.value(0)
                         };
-                        if let GenericString::BoundedWString(max) = t {
-                            let utf16_len = string.encode_utf16().count();
-                            if utf16_len > *max {
-                                return Err(error(format!(
-                                    "wstring length {} exceeds BoundedWString max {}",
-                                    utf16_len, max
-                                )));
-                            }
-                        }
-                        let utf16: Vec<u16> = string.encode_utf16().collect();
-                        s.serialize_field(&utf16)?;
+                        s.serialize_field(&encode_wstring(string, string_bound(t))?)?;
                     }
                 },
             },
@@ -261,6 +266,42 @@ fn check_not_null<E: serde::ser::Error>(
     Ok(())
 }
 
+/// The maximum length of a `string<=N>` (bytes) or `wstring<=N>` (UTF-16
+/// code units), or `None` for an unbounded `string`/`wstring`.
+fn string_bound(ty: &GenericString) -> Option<usize> {
+    match ty {
+        GenericString::BoundedString(max) | GenericString::BoundedWString(max) => Some(*max),
+        GenericString::String | GenericString::WString => None,
+    }
+}
+
+/// Reject a `string<=N>` value longer than `N` bytes.
+///
+/// Applies to a scalar field and to every element of a `string<=N>[]` /
+/// `string<=N>[M]` column alike: ROS bounds each string, wherever it sits.
+fn check_string_bound<E: serde::ser::Error>(string: &str, bound: Option<usize>) -> Result<(), E> {
+    match bound {
+        Some(max) if string.len() > max => Err(error(format!(
+            "string length {} exceeds BoundedString max {max}",
+            string.len()
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Encode a `wstring` as UTF-16, rejecting a `wstring<=N>` value longer than
+/// `N` code units.
+fn encode_wstring<E: serde::ser::Error>(string: &str, bound: Option<usize>) -> Result<Vec<u16>, E> {
+    let utf16: Vec<u16> = string.encode_utf16().collect();
+    match bound {
+        Some(max) if utf16.len() > max => Err(error(format!(
+            "wstring length {} exceeds BoundedWString max {max}",
+            utf16.len()
+        ))),
+        _ => Ok(utf16),
+    }
+}
+
 /// Reject a null element in a ROS2 `string[]`/`string[N]` (or wstring) column.
 ///
 /// The scalar-string path already refuses nulls via [`check_not_null`]; the
@@ -324,6 +365,7 @@ mod tests {
 
     use arrow::{
         array::{ArrayRef, Int32Array, StringArray, StructArray},
+        buffer::NullBuffer,
         datatypes::{DataType, Field},
     };
     use byteorder::LittleEndian;
@@ -417,6 +459,221 @@ mod tests {
         assert!(
             err.to_string().contains("null"),
             "expected a null-rejection error, got: {err}"
+        );
+    }
+
+    /// A null nested-message row must error too, not go out as its masked
+    /// child values (here `x = 7`).
+    #[test]
+    fn null_nested_message_field_is_rejected() {
+        let mut messages = Arc::unwrap_or_clone(single_field_message(
+            "inner",
+            NestableType::NamedType(dora_ros2_bridge_msg_gen::types::primitives::NamedType(
+                "Inner".to_string(),
+            )),
+        ));
+        let inner_message = Message {
+            package: "test_msgs".to_string(),
+            name: "Inner".to_string(),
+            members: vec![Member {
+                name: "x".to_string(),
+                r#type: MemberType::NestableType(NestableType::BasicType(BasicType::I32)),
+                default: None,
+            }],
+            constants: vec![],
+        };
+        messages
+            .get_mut("test_msgs")
+            .unwrap()
+            .insert("Inner".to_string(), inner_message);
+        let messages = Arc::new(messages);
+
+        let inner_fields = vec![Arc::new(Field::new("x", DataType::Int32, true))];
+        let value = |nulls| {
+            let inner = StructArray::new(
+                inner_fields.clone().into(),
+                vec![Arc::new(Int32Array::from(vec![7])) as ArrayRef],
+                nulls,
+            );
+            struct_of(
+                "inner",
+                DataType::Struct(inner_fields.clone().into()),
+                Arc::new(inner),
+            )
+        };
+        assert!(serialize(&messages, &value(None)).is_ok());
+        let err = serialize(&messages, &value(Some(NullBuffer::new_null(1)))).unwrap_err();
+        assert!(
+            err.contains("inner is null"),
+            "expected a null-rejection error, got: {err}"
+        );
+    }
+
+    /// A null element of a sequence or array of messages must error too: its
+    /// child columns still hold values (here `x = 0`).
+    #[test]
+    fn null_nested_message_element_is_rejected() {
+        use arrow::array::ListArray;
+        use arrow::buffer::OffsetBuffer;
+        use dora_ros2_bridge_msg_gen::types::primitives::NamedType;
+        use dora_ros2_bridge_msg_gen::types::sequences::{Array, Sequence};
+
+        let inner_type = || NestableType::NamedType(NamedType("Inner".to_string()));
+        let inner_fields = vec![Arc::new(Field::new("x", DataType::Int32, true))];
+        let items = |nulls| {
+            let inner = StructArray::new(
+                inner_fields.clone().into(),
+                vec![Arc::new(Int32Array::from(vec![1, 0])) as ArrayRef],
+                nulls,
+            );
+            let item_field = Arc::new(Field::new(
+                "item",
+                DataType::Struct(inner_fields.clone().into()),
+                true,
+            ));
+            let list = ListArray::new(
+                item_field.clone(),
+                OffsetBuffer::from_lengths([2]),
+                Arc::new(inner),
+                None,
+            );
+            struct_of("items", DataType::List(item_field), Arc::new(list))
+        };
+
+        for member_type in [
+            MemberType::Sequence(Sequence {
+                value_type: inner_type(),
+            }),
+            MemberType::Array(Array {
+                value_type: inner_type(),
+                size: 2,
+            }),
+        ] {
+            let messages = Arc::new(HashMap::from([(
+                "test_msgs".to_string(),
+                HashMap::from([
+                    (
+                        "OneField".to_string(),
+                        Message {
+                            package: "test_msgs".to_string(),
+                            name: "OneField".to_string(),
+                            members: vec![Member {
+                                name: "items".to_string(),
+                                r#type: member_type.clone(),
+                                default: None,
+                            }],
+                            constants: vec![],
+                        },
+                    ),
+                    (
+                        "Inner".to_string(),
+                        Message {
+                            package: "test_msgs".to_string(),
+                            name: "Inner".to_string(),
+                            members: vec![Member {
+                                name: "x".to_string(),
+                                r#type: MemberType::NestableType(NestableType::BasicType(
+                                    BasicType::I32,
+                                )),
+                                default: None,
+                            }],
+                            constants: vec![],
+                        },
+                    ),
+                ]),
+            )]));
+            assert!(
+                serialize(&messages, &items(None)).is_ok(),
+                "{member_type:?} without nulls must serialize"
+            );
+            let err = serialize(&messages, &items(Some(NullBuffer::from(vec![true, false]))))
+                .unwrap_err();
+            assert!(
+                err.contains("Inner message is null"),
+                "{member_type:?}: expected a null-rejection error, got: {err}"
+            );
+        }
+    }
+
+    /// `test_msgs/Empty` (no fields) and `test_msgs/Outer { Empty e; int32 x }`.
+    fn empty_and_outer() -> Arc<HashMap<String, HashMap<String, Message>>> {
+        use dora_ros2_bridge_msg_gen::types::primitives::NamedType;
+        let mut package = HashMap::new();
+        for (name, members) in [
+            ("Empty", vec![]),
+            (
+                "Outer",
+                vec![
+                    Member {
+                        name: "e".to_string(),
+                        r#type: MemberType::NestableType(NestableType::NamedType(NamedType(
+                            "Empty".to_string(),
+                        ))),
+                        default: None,
+                    },
+                    Member {
+                        name: "x".to_string(),
+                        r#type: MemberType::NestableType(NestableType::BasicType(BasicType::I32)),
+                        default: None,
+                    },
+                ],
+            ),
+        ] {
+            let message = Message {
+                package: "test_msgs".to_string(),
+                name: name.to_string(),
+                members,
+                constants: vec![],
+            };
+            package.insert(name.to_string(), message);
+        }
+        Arc::new(HashMap::from([("test_msgs".to_string(), package)]))
+    }
+
+    fn serialize_as(
+        messages: &Arc<HashMap<String, HashMap<String, Message>>>,
+        message_name: &str,
+        value: &ArrayRef,
+    ) -> Vec<u8> {
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed(message_name),
+            messages: messages.clone(),
+        };
+        let typed = TypedValue {
+            value,
+            type_info: &type_info,
+        };
+        cdr_encoding::to_vec::<_, LittleEndian>(&typed).unwrap()
+    }
+
+    /// ROS gives a message with no fields one `uint8` member
+    /// (`structure_needs_at_least_one_member`, from rosidl_adapter's
+    /// `struct.idl.em`), so it is one byte on the wire, nested or not.
+    #[test]
+    fn an_empty_message_is_one_byte_like_ros() {
+        let messages = empty_and_outer();
+        let empty: ArrayRef = Arc::new(StructArray::new_empty_fields(1, None));
+        assert_eq!(serialize_as(&messages, "Empty", &empty), [0]);
+
+        let outer: ArrayRef = Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new(
+                    "e",
+                    DataType::Struct(arrow::datatypes::Fields::empty()),
+                    true,
+                )),
+                empty,
+            ),
+            (
+                Arc::new(Field::new("x", DataType::Int32, true)),
+                Arc::new(Int32Array::from(vec![7])) as ArrayRef,
+            ),
+        ]));
+        // The byte, three bytes of padding to align the int32, then `x`.
+        assert_eq!(
+            serialize_as(&messages, "Outer", &outer),
+            [0, 0, 0, 0, 7, 0, 0, 0]
         );
     }
 }

@@ -2,7 +2,9 @@ use super::system::status::daemon_running;
 use super::{Executable, default_tracing};
 use crate::{
     LOCALHOST,
-    common::{connect_to_coordinator, connect_with_retry, send_control_request},
+    common::{
+        connect_to_coordinator, connect_with_retry, coordinator_rejected, send_control_request,
+    },
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_WS_DEFAULT;
 use dora_message::{
@@ -131,6 +133,9 @@ pub(crate) fn up(
                 }
             }
         }
+        // A coordinator already holds the port; starting another one would
+        // only die on the redb lock and hide the real cause.
+        Err(err) if coordinator_rejected(&err) => return Err(err),
         Err(_) => {
             ensure_no_coordinator_elsewhere_on_port(coordinator_addr, interface)?;
             start_and_wait_for_coordinator(coordinator_addr, port, spawn)?
@@ -614,7 +619,10 @@ pub(crate) fn down(
 ) -> Result<(), eyre::ErrReport> {
     let UpConfig {} = parse_dora_config(config_path)?;
     // Retry connection briefly — the coordinator may still be initializing after `dora up`.
-    let session = connect_with_retry(coordinator_addr, Duration::from_secs(5)).map_err(|_| {
+    let session = connect_with_retry(coordinator_addr, Duration::from_secs(5)).map_err(|err| {
+        if coordinator_rejected(&err) {
+            return err;
+        }
         eyre::eyre!(
             "could not connect to coordinator at {coordinator_addr}\n\n  \
              hint: is it running? Start it with `dora up`"

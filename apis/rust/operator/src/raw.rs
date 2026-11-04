@@ -111,11 +111,11 @@ pub unsafe fn dora_on_event<O: DoraOperator>(
     } else if event.stop {
         Event::Stop
     } else if let Some(error) = &event.error {
-        // The runtime populates `RawEvent::error` for a stream-level
-        // `Event::Error` (a decode failure, a fatal stream error, …). Dispatch
-        // it to the operator like `InputParseError` rather than dropping it —
-        // it used to fall through to the "unknown event" arm below and vanish
-        // silently, with the operator never notified.
+        // A runner that sets `RawEvent::error` for a stream-level error gets it
+        // dispatched to the operator like `InputParseError` rather than
+        // dropped — it used to fall through to the "unknown event" arm below
+        // and vanish silently. (The dora runtime currently exits on such an
+        // error instead of forwarding it; see `Event::Error`.)
         Event::Error { error }
     } else {
         // ignore unknown events

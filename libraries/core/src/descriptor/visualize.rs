@@ -469,10 +469,10 @@ nodes:
         );
     }
 
-    /// A multi-`operators:` node renders as a subgraph; its node-level
+    /// An `operators:` node renders as a subgraph; its node-level
     /// `description` must appear in the subgraph title (it was dropped before).
     #[test]
-    fn multi_operator_subgraph_title_carries_the_description() {
+    fn operators_subgraph_title_carries_the_description() {
         let yaml = r#"
 nodes:
   - id: pipeline
@@ -482,12 +482,6 @@ nodes:
         python: s1.py
         outputs:
           - mid
-      - id: stage2
-        python: s2.py
-        inputs:
-          mid: pipeline/stage1/mid
-        outputs:
-          - out
 "#;
         let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
         let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");

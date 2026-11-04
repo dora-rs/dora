@@ -1,8 +1,12 @@
 //! Shared-token authentication for coordinator connections.
 //!
-//! On startup the coordinator generates a random hex token and writes it to
-//! a well-known file. The CLI and daemons read this file before connecting
-//! and append `?token=<hex>` to the WebSocket URL.
+//! Authentication is opt-in. With `--auth` (`dora up --auth` or
+//! `dora coordinator --auth`) the coordinator generates a random hex token on
+//! startup and writes it to a well-known file. The CLI and daemons read this
+//! file before connecting and send the token in an `Authorization: Bearer
+//! <hex>` header on the WebSocket upgrade request. The coordinator ignores a
+//! `?token=<hex>` query parameter, so a client that passes the token only in
+//! the URL cannot authenticate against a coordinator that has auth enabled.
 
 use std::{
     fmt, fs,

@@ -32,7 +32,7 @@ Each `[[index]]` has:
 | `alias` | required; unique (case-insensitive); also the cache directory name |
 | `git` | the catalog's git remote URL … |
 | `path` | … **or** a local catalog directory (a subpath within a git clone defaults to `node-index`) |
-| `namespaces` | the namespaces this index exclusively serves |
+| `namespaces` | the namespaces this index exclusively serves; each must be a valid namespace (lowercase letters, digits and `-`), or the config is rejected |
 
 ## Namespace binding (no dependency confusion)
 

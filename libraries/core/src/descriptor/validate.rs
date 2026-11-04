@@ -5,7 +5,7 @@ use crate::{
 };
 
 use dora_message::{
-    config::{Input, InputMapping, UserInputMapping, parse_byte_count},
+    config::{Input, InputMapping, LogSubscriptionFilter, UserInputMapping, parse_byte_count},
     descriptor::{CoreNodeKind, DYNAMIC_SOURCE, OperatorSource, ResolvedNode, SHELL_SOURCE},
     id::{DataId, NodeId, OperatorId},
 };
@@ -17,7 +17,7 @@ use std::{
 };
 use tracing::info;
 
-use super::{Descriptor, DescriptorExt, resolve_path};
+use super::{Descriptor, DescriptorExt, resolve_node_path};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Validate input/output wiring without checking path existence.
@@ -146,9 +146,10 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                         } else if custom.build.is_some() {
                             info!("skipping path check for node with build command");
                         } else {
-                            resolve_path(source, working_dir).wrap_err_with(|| {
-                                format!("Could not find source path `{source}`")
-                            })?;
+                            resolve_node_path(source, custom.path_fallback.as_deref(), working_dir)
+                                .wrap_err_with(|| {
+                                    format!("Could not find source path `{source}`")
+                                })?;
                         };
                     }
                 },
@@ -227,6 +228,28 @@ pub fn check_node_timing(node: &ResolvedNode) -> eyre::Result<()> {
         bail!(
             "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
             node.id
+        );
+    }
+    Ok(())
+}
+
+/// A runtime node must hold exactly one operator: the operator runtime
+/// (`dora_runtime_api::main`, shared by the shared-library and Python
+/// backends) refuses to start with zero or several. Without this check such a
+/// descriptor passes validation and only fails when the runtime process
+/// starts.
+///
+/// Like [`check_operator_ids`], descriptor resolution runs this for every
+/// node, so `dora start`, `dora node add/replace` and recovery are covered.
+pub fn check_runtime_operator_count(node: &ResolvedNode) -> eyre::Result<()> {
+    if let descriptor::CoreNodeKind::Runtime(runtime) = &node.kind
+        && runtime.operators.len() != 1
+    {
+        bail!(
+            "runtime node `{}` has {} operators, but a runtime node runs exactly one \
+             operator; split them into one node per operator",
+            node.id,
+            runtime.operators.len()
         );
     }
     Ok(())
@@ -582,6 +605,30 @@ fn check_input(
     input_id_str: &str,
 ) -> Result<(), eyre::ErrReport> {
     match &input.mapping {
+        // The daemon matches a log filter's node id exactly. A filter naming
+        // a module node can never match: expansion replaced that node with
+        // its prefixed `<module>.<inner>` nodes. Any other unknown id may
+        // still be a node added later with `dora node add`, so only warn.
+        InputMapping::Logs(LogSubscriptionFilter {
+            node_filter: Some(node),
+            ..
+        }) if !nodes.contains_key(node) => {
+            let module_prefix = format!("{node}.");
+            if let Some(inner) = nodes
+                .keys()
+                .find(|id| id.as_ref().starts_with(&module_prefix))
+            {
+                bail!(
+                    "log filter on input `{input_id_str}` names `{node}`, which is not a node \
+                     but the prefix of node `{inner}`; a module's nodes are named \
+                     `<module>.<inner-node>`, so name one of them instead"
+                );
+            }
+            tracing::warn!(
+                "log filter on input `{input_id_str}` names node `{node}`, which is not in \
+                 the dataflow; it delivers nothing unless a node with that id is added later"
+            );
+        }
         InputMapping::Timer { interval: _ } | InputMapping::Logs(_) => {}
         InputMapping::User(UserInputMapping { source, output }) => {
             // `nodes` is keyed by each node's own id (see
@@ -1504,6 +1551,73 @@ operators:
 "#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn runtime_node_with_several_operators_is_rejected() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: op1
+      - id: op2
+        shared-library: op2
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("runtime-node") && err.contains("2 operators"),
+            "error should name the node and the operator count, got: {err}"
+        );
+    }
+
+    #[test]
+    fn runtime_node_with_no_operators_is_rejected() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators: []
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("runtime-node") && err.contains("0 operators"),
+            "error should name the node and the operator count, got: {err}"
+        );
+    }
+
+    /// `dora start`, `dora node add/replace` and recovery resolve the
+    /// descriptor without running `check_dataflow_static`, so the count must
+    /// be enforced by resolution itself.
+    #[test]
+    fn resolution_rejects_a_runtime_node_with_several_operators() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        shared-library: op1
+      - id: op2
+        shared-library: op2
+"#,
+        )
+        .unwrap();
+        let err = descriptor
+            .resolve_aliases_and_set_defaults()
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("2 operators"), "got: {err}");
+    }
+
+    #[test]
+    fn runtime_node_with_one_operator_passes_the_operator_count_check() {
+        check_runtime_operator_count(&runtime_node()).unwrap();
     }
 
     fn custom_node() -> dora_message::descriptor::CustomNode {
@@ -3167,6 +3281,33 @@ nodes:
         assert!(
             err.to_string().contains("nonexistent"),
             "expected error about missing node, got: {err}"
+        );
+    }
+
+    #[test]
+    fn wiring_log_filter_rejects_a_module_but_allows_a_later_node() {
+        // `nav.worker` is what a module node `nav` expands to.
+        let yaml = r#"
+nodes:
+  - id: nav.worker
+    path: worker.py
+  - id: sink
+    path: sink.py
+    inputs:
+      ok: dora/logs/info/nav.worker
+      all: dora/logs/info
+      later: dora/logs/info/plugin
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        // A node that may still be added with `dora node add` is only warned about.
+        check_wiring(&descriptor).unwrap();
+
+        let descriptor: Descriptor =
+            serde_yaml::from_str(&format!("{yaml}      module: dora/logs/info/nav\n")).unwrap();
+        let err = check_wiring(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("`sink/module`") && err.contains("prefix of node `nav.worker`"),
+            "got: {err}"
         );
     }
 

@@ -6,11 +6,11 @@ use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
-use std::{path::PathBuf, sync::mpsc, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, sync::mpsc, time::Duration};
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::common::handle_dataflow_result;
+use crate::common::{connect_to_coordinator, handle_dataflow_result};
 use crate::output::{LogOutputConfig, print_log_message};
 use crate::ws_client::WsSession;
 
@@ -19,6 +19,7 @@ pub fn attach_dataflow(
     dataflow_path: PathBuf,
     dataflow_id: Uuid,
     session: &WsSession,
+    coordinator_addr: SocketAddr,
     hot_reload: bool,
     log_level: log::LevelFilter,
 ) -> Result<(), eyre::ErrReport> {
@@ -114,17 +115,26 @@ pub fn attach_dataflow(
     };
 
     // Setup Ctrlc Watcher to stop dataflow after ctrlc
+    //
+    // The first Ctrl-C is queued for the control loop below. The second one
+    // must not be: the coordinator answers a graceful `Stop` only once the
+    // dataflow has finished, so the control loop is blocked in
+    // `session.request` for that whole grace period. The coordinator also
+    // handles one request at a time per connection, so the force-stop goes
+    // out on a connection of its own, like `dora stop --force` from another
+    // terminal (#3969).
     let ctrlc_tx = tx.clone();
     let mut ctrlc_sent = false;
     ctrlc::set_handler(move || {
         if ctrlc_sent {
-            ctrlc_tx
-                .send(AttachEvent::Control(ControlRequest::Stop {
-                    dataflow_uuid: dataflow_id,
-                    grace_duration: None,
-                    force: true,
-                }))
-                .ok();
+            eprintln!("received second Ctrl-C -> force-stopping dataflow {dataflow_id}");
+            if let Err(err) = force_stop(coordinator_addr, dataflow_id) {
+                eprintln!(
+                    "could not confirm the force-stop: {err:#}\n  \
+                     hint: check with `dora list`, and run `dora stop --force {dataflow_id}` \
+                     if it is still running"
+                );
+            }
             std::process::exit(1);
         } else {
             let _ = ctrlc_tx.send(AttachEvent::Control(ControlRequest::Stop {
@@ -194,6 +204,38 @@ pub fn attach_dataflow(
             other => error!("Received unexpected Coordinator Reply: {:#?}", other),
         };
     }
+}
+
+/// How long the second Ctrl-C waits for the coordinator to answer the
+/// force-stop. The reply comes once the killed nodes are gone, which is quick,
+/// but a wedged coordinator must not keep the CLI from exiting.
+const FORCE_STOP_REPLY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Send `Stop { force: true }` for `dataflow_id` on a new connection and wait
+/// up to [`FORCE_STOP_REPLY_TIMEOUT`] for the coordinator's answer.
+fn force_stop(coordinator_addr: SocketAddr, dataflow_id: Uuid) -> eyre::Result<()> {
+    let (reply_tx, reply_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = (|| {
+            let session = connect_to_coordinator(coordinator_addr)?;
+            let request = serde_json::to_vec(&ControlRequest::Stop {
+                dataflow_uuid: dataflow_id,
+                grace_duration: None,
+                force: true,
+            })?;
+            let reply = session.request(&request)?;
+            match serde_json::from_slice(&reply).wrap_err("failed to parse reply")? {
+                ControlRequestReply::Error(err) => eyre::bail!("{err}"),
+                _ => Ok(()),
+            }
+        })();
+        let _ = reply_tx.send(result);
+    });
+    reply_rx
+        .recv_timeout(FORCE_STOP_REPLY_TIMEOUT)
+        .map_err(|_| {
+            eyre::eyre!("no reply from the coordinator within {FORCE_STOP_REPLY_TIMEOUT:?}")
+        })?
 }
 
 #[allow(clippy::large_enum_variant)]

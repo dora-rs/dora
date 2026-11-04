@@ -242,7 +242,7 @@ impl MavlinkArrow for common::HEARTBEAT_DATA {
             custom_mode: read_u32(batch, "custom_mode")?,
             mavtype: decode_enum(read_u32(batch, "mavtype")?, "mavtype")?,
             autopilot: decode_enum(read_u32(batch, "autopilot")?, "autopilot")?,
-            base_mode: common::MavModeFlag::from_bits_truncate(read_u8(batch, "base_mode")?),
+            base_mode: common::MavModeFlag::from_bits_retain(read_u8(batch, "base_mode")?),
             system_status: decode_enum(read_u32(batch, "system_status")?, "system_status")?,
             mavlink_version: read_u8(batch, "mavlink_version")?,
         })
@@ -300,15 +300,16 @@ impl MavlinkArrow for common::SYS_STATUS_DATA {
 
     fn from_record_batch(batch: &RecordBatch) -> BridgeResult<Self> {
         Ok(Self {
-            onboard_control_sensors_present: common::MavSysStatusSensor::from_bits_truncate(
+            onboard_control_sensors_present: common::MavSysStatusSensor::from_bits_retain(
                 read_u32(batch, "onboard_control_sensors_present")?,
             ),
-            onboard_control_sensors_enabled: common::MavSysStatusSensor::from_bits_truncate(
+            onboard_control_sensors_enabled: common::MavSysStatusSensor::from_bits_retain(
                 read_u32(batch, "onboard_control_sensors_enabled")?,
             ),
-            onboard_control_sensors_health: common::MavSysStatusSensor::from_bits_truncate(
-                read_u32(batch, "onboard_control_sensors_health")?,
-            ),
+            onboard_control_sensors_health: common::MavSysStatusSensor::from_bits_retain(read_u32(
+                batch,
+                "onboard_control_sensors_health",
+            )?),
             load: read_u16(batch, "load")?,
             voltage_battery: read_u16(batch, "voltage_battery")?,
             current_battery: read_i16(batch, "current_battery")?,
@@ -1045,7 +1046,7 @@ impl MavlinkArrow for common::SET_POSITION_TARGET_GLOBAL_INT_DATA {
             afz: read_f32(batch, "afz")?,
             yaw: read_f32(batch, "yaw")?,
             yaw_rate: read_f32(batch, "yaw_rate")?,
-            type_mask: common::PositionTargetTypemask::from_bits_truncate(read_u16(
+            type_mask: common::PositionTargetTypemask::from_bits_retain(read_u16(
                 batch,
                 "type_mask",
             )?),
@@ -1130,7 +1131,7 @@ impl MavlinkArrow for common::SET_POSITION_TARGET_LOCAL_NED_DATA {
             afz: read_f32(batch, "afz")?,
             yaw: read_f32(batch, "yaw")?,
             yaw_rate: read_f32(batch, "yaw_rate")?,
-            type_mask: common::PositionTargetTypemask::from_bits_truncate(read_u16(
+            type_mask: common::PositionTargetTypemask::from_bits_retain(read_u16(
                 batch,
                 "type_mask",
             )?),

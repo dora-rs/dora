@@ -12,7 +12,10 @@ use serde::ser::SerializeTuple;
 
 use crate::TypeInfo;
 
-use super::{TypedValue, check_array_len, error, reject_null_element, reject_null_string_element};
+use super::{
+    TypedValue, check_array_len, check_string_bound, encode_wstring, error, reject_null_element,
+    reject_null_string_element, string_bound,
+};
 
 /// Serialize an array with known size as tuple.
 pub struct ArraySerializeWrapper<'a> {
@@ -186,28 +189,30 @@ impl serde::Serialize for ArraySerializeWrapper<'_> {
             }
             NestableType::GenericString(s) => match s {
                 GenericString::String | GenericString::BoundedString(_) => {
+                    let bound = string_bound(s);
                     match entry.as_string_opt::<i32>() {
                         Some(array) => {
-                            serialize_arrow_string(serializer, array, self.array_info.size)
+                            serialize_arrow_string(serializer, array, self.array_info.size, bound)
                         }
                         None => {
                             let array = entry
                                 .as_string_opt::<i64>()
                                 .ok_or_else(|| error("expected string array"))?;
-                            serialize_arrow_string(serializer, array, self.array_info.size)
+                            serialize_arrow_string(serializer, array, self.array_info.size, bound)
                         }
                     }
                 }
                 GenericString::WString | GenericString::BoundedWString(_) => {
+                    let bound = string_bound(s);
                     match entry.as_string_opt::<i32>() {
                         Some(array) => {
-                            serialize_arrow_wstring(serializer, array, self.array_info.size)
+                            serialize_arrow_wstring(serializer, array, self.array_info.size, bound)
                         }
                         None => {
                             let array = entry
                                 .as_string_opt::<i64>()
                                 .ok_or_else(|| error("expected string array for WString"))?;
-                            serialize_arrow_wstring(serializer, array, self.array_info.size)
+                            serialize_arrow_wstring(serializer, array, self.array_info.size, bound)
                         }
                     }
                 }
@@ -318,6 +323,7 @@ fn serialize_arrow_string<S, O>(
     serializer: S,
     array: &arrow::array::GenericByteArray<datatypes::GenericStringType<O>>,
     array_len: usize,
+    bound: Option<usize>,
 ) -> Result<<S as serde::Serializer>::Ok, <S as serde::Serializer>::Error>
 where
     S: serde::Serializer,
@@ -326,7 +332,9 @@ where
     check_array_len(array.len(), array_len)?;
     let mut seq = serializer.serialize_tuple(array_len)?;
     for (i, s) in array.iter().enumerate() {
-        seq.serialize_element(reject_null_string_element(s, i)?)?;
+        let s = reject_null_string_element(s, i)?;
+        check_string_bound(s, bound)?;
+        seq.serialize_element(s)?;
     }
     seq.end()
 }
@@ -335,6 +343,7 @@ fn serialize_arrow_wstring<S, O>(
     serializer: S,
     array: &arrow::array::GenericByteArray<datatypes::GenericStringType<O>>,
     array_len: usize,
+    bound: Option<usize>,
 ) -> Result<<S as serde::Serializer>::Ok, <S as serde::Serializer>::Error>
 where
     S: serde::Serializer,
@@ -343,8 +352,7 @@ where
     check_array_len(array.len(), array_len)?;
     let mut seq = serializer.serialize_tuple(array_len)?;
     for (i, s) in array.iter().enumerate() {
-        let utf16: Vec<u16> = reject_null_string_element(s, i)?.encode_utf16().collect();
-        seq.serialize_element(&utf16)?;
+        seq.serialize_element(&encode_wstring(reject_null_string_element(s, i)?, bound)?)?;
     }
     seq.end()
 }
@@ -358,7 +366,7 @@ mod tests {
             ArrayRef, BinaryArray, BooleanArray, Int32Array, ListArray, StringArray, StructArray,
             UInt8Array,
         },
-        buffer::OffsetBuffer,
+        buffer::{NullBuffer, OffsetBuffer},
         datatypes::{DataType, Field},
     };
     use byteorder::LittleEndian;
@@ -432,6 +440,32 @@ mod tests {
             serializes_ok(&messages, &["a", "b", "c"]),
             "size-3 field with 3 elements must serialize"
         );
+    }
+
+    /// Each element of a `string<=N>[M]` field is bounded like a scalar
+    /// `string<=N>` field.
+    #[test]
+    fn fixed_bounded_string_array_element_length_is_checked() {
+        let messages =
+            fixed_array_message(NestableType::GenericString(GenericString::BoundedString(2)));
+        assert!(
+            !serializes_ok(&messages, &["ab", "abc", "a"]),
+            "a 3-byte element of a string<=2[3] field must error"
+        );
+        assert!(serializes_ok(&messages, &["ab", "", "a"]));
+    }
+
+    /// Same for `wstring<=N>[M]`.
+    #[test]
+    fn fixed_bounded_wstring_array_element_length_is_checked() {
+        let messages = fixed_array_message(NestableType::GenericString(
+            GenericString::BoundedWString(2),
+        ));
+        assert!(
+            !serializes_ok(&messages, &["ab", "abc", "a"]),
+            "a 3-unit element of a wstring<=2[3] field must error"
+        );
+        assert!(serializes_ok(&messages, &["ab", "", "a"]));
     }
 
     /// Like `serializes_ok`, but the inner `StringArray` may contain nulls so we
@@ -724,6 +758,55 @@ mod tests {
         assert!(
             serializes_primitive_array(&all_present, NestableType::BasicType(BasicType::Bool)),
             "an all-present bool[3] field must still serialize"
+        );
+    }
+
+    /// A null row of a fixed `uint8[3]` field — as a `List` or as a
+    /// `Binary` column — must error. Both used to publish the row's masked
+    /// values as real data.
+    #[test]
+    fn null_fixed_array_row_is_rejected() {
+        let messages = fixed_array_message(NestableType::BasicType(BasicType::U8));
+        let serializes_ok = |column: ArrayRef| {
+            let value = Arc::new(StructArray::from(vec![(
+                Arc::new(Field::new("names", column.data_type().clone(), true)),
+                column,
+            )])) as ArrayRef;
+            let type_info = TypeInfo {
+                package_name: Cow::Borrowed("test_msgs"),
+                message_name: Cow::Borrowed("ArrMsg"),
+                messages: messages.clone(),
+            };
+            cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+                value: &value,
+                type_info: &type_info,
+            })
+            .is_ok()
+        };
+        let list = |nulls| {
+            Arc::new(ListArray::new(
+                Arc::new(Field::new("item", DataType::UInt8, true)),
+                OffsetBuffer::from_lengths([3usize]),
+                Arc::new(UInt8Array::from(vec![1, 2, 3])),
+                nulls,
+            )) as ArrayRef
+        };
+        let binary = |nulls| {
+            Arc::new(BinaryArray::new(
+                OffsetBuffer::from_lengths([3usize]),
+                vec![1u8, 2, 3].into(),
+                nulls,
+            )) as ArrayRef
+        };
+        assert!(!serializes_ok(list(Some(NullBuffer::new_null(1)))));
+        assert!(!serializes_ok(binary(Some(NullBuffer::new_null(1)))));
+        assert!(
+            serializes_ok(list(None)),
+            "a valid row must still serialize"
+        );
+        assert!(
+            serializes_ok(binary(None)),
+            "a valid row must still serialize"
         );
     }
 }
