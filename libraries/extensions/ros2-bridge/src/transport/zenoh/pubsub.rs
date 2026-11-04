@@ -263,8 +263,14 @@ impl<T> SubscriptionIngress<T> {
         if capacity == 0 {
             return Err(PubSubError::ZeroCapacity);
         }
-        let (sender, receiver) = flume::bounded(capacity);
-        let drop_oldest = matches!(history, Some(History::KeepLast { .. }));
+        // KEEP_LAST holds at most `depth` unread samples (rmw_zenoh's
+        // `SubscriptionData::add_new_message`), so a shallow depth must not be
+        // padded out to the caller's fixed `capacity` with stale samples.
+        let (bound, drop_oldest) = match history {
+            Some(History::KeepLast { depth }) => (capacity.min(keep_last_samples(depth)?), true),
+            Some(History::KeepAll) | None => (capacity, false),
+        };
+        let (sender, receiver) = flume::bounded(bound);
         Ok(Self {
             sender,
             receiver,
