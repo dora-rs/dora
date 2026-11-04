@@ -316,8 +316,10 @@ fn decode_and_render(
     let len = data.len();
     let buffer = unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data)) };
     let array = decode_arrow_ipc_zero_copy(buffer)?;
-    // A decoded array can still make arrow panic while printing it (a
-    // corrupted run-end-encoded array passes arrow's validation).
+    // A decoded array can still make arrow panic while printing it. Before
+    // arrow 59.3.2 a corrupted run-end-encoded array passed validation and
+    // did; arrow >= 59.3.2 rejects that one at decode, and the guard stays as
+    // defence against other arrow panics.
     catch_arrow_panic("failed to print the payload: arrow panicked", || {
         render_array_json(array, buf)
     })
