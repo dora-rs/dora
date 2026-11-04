@@ -99,14 +99,7 @@ impl BuildLockfile {
 
         // Deterministic compact digest (FNV-1a 64-bit). This is for reproducibility
         // drift detection, not cryptographic integrity.
-        const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-        const FNV_PRIME: u64 = 0x100000001b3;
-        let mut hash = FNV_OFFSET_BASIS;
-        for byte in canonical.as_bytes() {
-            hash ^= *byte as u64;
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-        format!("{hash:016x}")
+        crate::session::fnv1a_64_hex(canonical.as_bytes())
     }
 
     pub(crate) fn ensure_descriptor_fingerprint_matches(&self, expected: &str) -> eyre::Result<()> {
@@ -310,6 +303,17 @@ mod tests {
         let before_fp = BuildLockfile::fingerprint_descriptor_git_sources(&before);
         let after_fp = BuildLockfile::fingerprint_descriptor_git_sources(&after);
         assert_ne!(before_fp, after_fp);
+    }
+
+    /// The fingerprint is persisted in lockfiles: pin its exact value so a
+    /// change to the digest shows up as a test failure, not as spurious
+    /// "descriptor drift" in every existing lockfile.
+    #[test]
+    fn fingerprint_digest_is_stable() {
+        assert_eq!(
+            BuildLockfile::fingerprint_descriptor_git_sources(&BTreeMap::new()),
+            "3519056b2efa671e"
+        );
     }
 
     #[test]
