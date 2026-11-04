@@ -133,12 +133,13 @@ pub(crate) fn encode_arrow_ipc_data(arrow_array: &ArrayData) -> eyre::Result<Vec
     )]);
     let schema_ref = Arc::new(schema);
 
-    let array_ref = arrow::array::make_array(arrow_array.clone());
-    let batch = RecordBatch::try_new(schema_ref.clone(), vec![array_ref])
-        .context("failed to create RecordBatch for IPC encoding")?;
-
-    let mut buf = Vec::new();
-    {
+    // A received array arrow accepted can still make its writer panic (a
+    // corrupted run-end-encoded array), and nodes send received data on.
+    let buf = catch_panic("failed to encode Arrow IPC stream: arrow panicked", || {
+        let array_ref = arrow::array::make_array(arrow_array.clone());
+        let batch = RecordBatch::try_new(schema_ref.clone(), vec![array_ref])
+            .context("failed to create RecordBatch for IPC encoding")?;
+        let mut buf = Vec::new();
         let mut writer = StreamWriter::try_new(&mut buf, &schema_ref)
             .context("failed to create Arrow IPC StreamWriter")?;
         writer
@@ -147,7 +148,9 @@ pub(crate) fn encode_arrow_ipc_data(arrow_array: &ArrayData) -> eyre::Result<Vec
         writer
             .finish()
             .context("failed to finish Arrow IPC stream")?;
-    }
+        drop(writer);
+        Ok(buf)
+    })?;
 
     // Fail loudly at the producer instead of emitting a stream that every
     // receive path will unconditionally reject. `decode_arrow_ipc`,
@@ -229,73 +232,44 @@ fn array_from_single_column_batch(
 }
 
 /// Same, for dora-internal callers that want the raw [`ArrayData`].
+///
+/// Copies the bytes into a [`Buffer`](arrow::buffer::Buffer) and runs the
+/// zero-copy decoder on it, so both decoders accept and reject exactly the same
+/// streams. arrow's `StreamReader` is not used: it allocates the size a message
+/// claims before reading it, so a corrupt length aborts the process.
 pub(crate) fn decode_arrow_ipc_data(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
-    use arrow::ipc::reader::StreamReader;
-    use std::io::Cursor;
-
     if ipc_buf.len() > MAX_IPC_BYTES {
         eyre::bail!(
             "Arrow IPC payload too large: {} bytes (max {MAX_IPC_BYTES})",
             ipc_buf.len()
         );
     }
-
-    let cursor = Cursor::new(ipc_buf);
-    let mut reader =
-        StreamReader::try_new(cursor, None).context("failed to open Arrow IPC stream")?;
-
-    let batch = reader
-        .next()
-        .ok_or_else(|| eyre::eyre!("Arrow IPC stream contained no record batches"))?
-        .context("failed to read RecordBatch from IPC stream")?;
-
-    // Inspect what follows the first batch. A second decoded batch is a
-    // multi-batch stream; a decode *error* on the next message must be reported
-    // as such rather than mislabeled as "more than one batch"; `None` is the
-    // end-of-stream marker.
-    match reader.next() {
-        Some(Ok(_)) => eyre::bail!(MULTI_BATCH_ERROR),
-        Some(Err(e)) => {
-            return Err(e).context("failed to read RecordBatch from IPC stream");
-        }
-        None => {}
-    }
-
-    // Reject bytes after the end-of-stream marker so this path agrees with the
-    // zero-copy decoder (see `TRAILING_BYTES_ERROR`). `StreamReader` stops at the
-    // marker and would otherwise silently ignore anything after it; the inner
-    // `Cursor`'s position is how many bytes it consumed reaching that point.
-    let consumed = reader.get_ref().position() as usize;
-    if consumed != ipc_buf.len() {
-        eyre::bail!(TRAILING_BYTES_ERROR);
-    }
-
-    array_from_single_column_batch(batch)
+    decode_arrow_ipc_zero_copy_raw(arrow::buffer::Buffer::from(ipc_buf))
 }
 
-/// Decode an Arrow IPC stream from an Arrow [`Buffer`] **without copying** the
+/// Decode an Arrow IPC stream from an Arrow [`Buffer`](arrow::buffer::Buffer) **without copying** the
 /// payload buffers when they are properly aligned.
 ///
-/// Unlike [`decode_arrow_ipc`], which reads from a byte slice through
-/// `StreamReader` (and therefore allocates a fresh buffer and copies every
-/// array buffer out of the stream), this uses
-/// [`arrow::ipc::reader::StreamDecoder`], which slices the array buffers
-/// directly out of the provided [`Buffer`]. When the input buffer is suitably
-/// aligned — as Dora's shared-memory payloads always are (128-byte `AVec` /
-/// page-aligned Zenoh SHM) — the decoded array aliases the input and no payload
-/// copy happens.
+/// Unlike [`decode_arrow_ipc`], which first copies its byte slice into a new
+/// buffer, this runs [`arrow::ipc::reader::StreamDecoder`] directly on the
+/// provided `Buffer` and slices the array buffers out of it. When the input
+/// buffer is suitably aligned — as Dora's shared-memory payloads always are
+/// (128-byte `AVec` / page-aligned Zenoh SHM) — the decoded array aliases the
+/// input and no payload copy happens.
 ///
-/// The decoder runs with the default `require_alignment = false`, so an
-/// under-aligned input (e.g. an arbitrary heap `Vec`) is handled gracefully by
-/// copying just the misaligned buffers rather than erroring. This keeps the
-/// receive path robust while preserving zero-copy for the common SHM case.
+/// An input that does not start on an 8-byte boundary (e.g. a borrowed zenoh
+/// network payload) is first copied once into an aligned buffer; with an
+/// 8-byte-aligned input, the decoder's default `require_alignment = false`
+/// copies only a buffer that a type needs more aligned. This keeps the receive
+/// path robust while preserving zero-copy for the common SHM case.
 ///
 /// # Errors
 ///
 /// Like [`decode_arrow_ipc`], returns an error for an empty, truncated,
 /// multi-batch, or otherwise malformed stream, for a stream with trailing bytes
 /// after its end-of-stream marker, for a batch whose column count is not exactly
-/// one, and for any payload larger than 256 MB — it never panics on bad input.
+/// one, and for any payload larger than 256 MB — it never panics on bad input
+/// (a panic inside arrow is caught, so this needs the default `panic = "unwind"`).
 /// It accepts and rejects exactly the same streams as [`decode_arrow_ipc`].
 ///
 /// # Example
@@ -321,16 +295,62 @@ pub fn decode_arrow_ipc_zero_copy(payload: IpcPayload) -> eyre::Result<DoraArray
 
 /// Same, for dora-internal callers that already hold an Arrow buffer.
 pub(crate) fn decode_arrow_ipc_zero_copy_raw(
-    mut buffer: arrow::buffer::Buffer,
+    buffer: arrow::buffer::Buffer,
 ) -> eyre::Result<arrow::array::ArrayData> {
-    use arrow::ipc::reader::StreamDecoder;
-
     if buffer.len() > MAX_IPC_BYTES {
         eyre::bail!(
             "Arrow IPC payload too large: {} bytes (max {MAX_IPC_BYTES})",
             buffer.len()
         );
     }
+    let buffer = align_for_decode(buffer);
+    catch_arrow_panic(|| decode_single_batch(buffer))
+}
+
+/// Copy `buffer` into a new aligned buffer if it does not start on an 8-byte
+/// boundary; otherwise return it unchanged (no copy).
+///
+/// The IPC format pads every array buffer to 8 bytes from the start of the
+/// message, so an 8-byte-aligned input keeps every buffer 8-byte aligned. Below
+/// that, arrow realigns one array buffer at a time and panics doing it for a
+/// dense union. A borrowed zenoh network payload can start at any address;
+/// shared-memory and `AVec` payloads are at least 64-byte aligned and are never
+/// copied.
+pub(crate) fn align_for_decode(buffer: arrow::buffer::Buffer) -> arrow::buffer::Buffer {
+    if buffer.as_ptr().align_offset(8) == 0 {
+        buffer
+    } else {
+        arrow::buffer::Buffer::from(buffer.as_slice())
+    }
+}
+
+/// Run an arrow-ipc decode, turning a panic into an error.
+///
+/// arrow 59 (arrow-ipc, arrow-buffer, arrow-data) has `unwrap`s and asserts that
+/// panic on some malformed messages, and every decode here reads bytes from a
+/// peer or a file, so a corrupt payload must be an error, not a crash. This
+/// needs the default `panic = "unwind"`.
+pub(crate) fn catch_arrow_panic<T>(decode: impl FnOnce() -> eyre::Result<T>) -> eyre::Result<T> {
+    catch_panic(
+        "failed to decode Arrow IPC stream: the decoder panicked",
+        decode,
+    )
+}
+
+/// Run `f`, turning a panic into the error `"{what}: {reason}"`.
+fn catch_panic<T>(what: &str, f: impl FnOnce() -> eyre::Result<T>) -> eyre::Result<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
+        let reason = panic
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("unknown reason");
+        eyre::bail!("{what}: {reason}")
+    })
+}
+
+fn decode_single_batch(mut buffer: arrow::buffer::Buffer) -> eyre::Result<ArrayData> {
+    use arrow::ipc::reader::StreamDecoder;
 
     let mut decoder = StreamDecoder::new();
     let mut batch = None;
@@ -348,9 +368,9 @@ pub(crate) fn decode_arrow_ipc_zero_copy_raw(
                 // its `Finished` state, then errors on any byte after it. So
                 // once we already hold the batch, a decode error means the
                 // stream had extra bytes after a complete single-batch stream:
-                // report that as trailing garbage (matching the `StreamReader`
-                // path) rather than a generic decode failure. Before the batch,
-                // it is a genuinely malformed/truncated stream.
+                // report that as trailing garbage rather than a generic decode
+                // failure. Before the batch, it is a genuinely
+                // malformed/truncated stream.
                 let context = if batch.is_some() {
                     TRAILING_BYTES_ERROR
                 } else {
@@ -385,6 +405,11 @@ pub(crate) fn decode_arrow_ipc_zero_copy_raw(
         }
     }
 
+    // A stream that ends inside a message (for example inside a record batch's
+    // body, or halfway through the end-of-stream marker) is truncated.
+    decoder
+        .finish()
+        .context("truncated Arrow IPC stream: it ends inside a message")?;
     let batch = batch.ok_or_else(|| eyre::eyre!("Arrow IPC stream contained no record batches"))?;
 
     array_from_single_column_batch(batch)
@@ -461,13 +486,74 @@ mod tests {
         );
     }
 
+    /// A valid stream on a buffer that is not aligned (a borrowed zenoh network
+    /// payload can start at any address) decodes like on an aligned one. arrow's
+    /// own realignment panics on a dense union (#3863).
+    #[test]
+    fn misaligned_dense_union_decodes() {
+        use arrow::array::{Int32Array, UnionArray};
+        use arrow::buffer::ScalarBuffer;
+        use arrow_schema::{DataType, Field, UnionFields};
+
+        let fields: UnionFields = [
+            (
+                0i8,
+                std::sync::Arc::new(Field::new("a", DataType::Int32, false)),
+            ),
+            (
+                1i8,
+                std::sync::Arc::new(Field::new("b", DataType::Utf8, false)),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let union = UnionArray::try_new(
+            fields,
+            ScalarBuffer::from(vec![0i8, 1, 0]),
+            Some(ScalarBuffer::from(vec![0i32, 0, 1])),
+            vec![
+                std::sync::Arc::new(Int32Array::from(vec![10, 20])),
+                std::sync::Arc::new(StringArray::from(vec!["x"])),
+            ],
+        )
+        .unwrap();
+        let data = union.into_data();
+        let encoded = encode_arrow_ipc_data(&data).unwrap();
+
+        let mut shifted = vec![0u8; encoded.len() + 1];
+        shifted[1..].copy_from_slice(&encoded);
+        let misaligned = arrow::buffer::Buffer::from_vec(shifted).slice(1);
+        assert_ne!(misaligned.as_ptr() as usize % 8, 0);
+
+        assert_eq!(decode_arrow_ipc_zero_copy_raw(misaligned).unwrap(), data);
+        assert_eq!(decode_arrow_ipc_data(&encoded).unwrap(), data);
+    }
+
+    /// A buffer that is 8-byte aligned (what the IPC format needs) is decoded in
+    /// place, not copied, even when it is not aligned to arrow's 64/128-byte
+    /// allocation alignment: dora's shared memory only guarantees 64 bytes.
+    #[test]
+    fn an_eight_byte_aligned_buffer_is_not_copied() {
+        let data = UInt64Array::from(vec![1u64, 2, 3, 4]).into_data();
+        let encoded = encode_arrow_ipc_data(&data).unwrap();
+        let mut padded = vec![0u8; encoded.len() + 8];
+        padded[8..].copy_from_slice(&encoded);
+        let input = arrow::buffer::Buffer::from_vec(padded).slice(8);
+        assert_eq!(input.as_ptr() as usize % 8, 0);
+        assert_ne!(input.as_ptr() as usize % 64, 0);
+        let range = input.as_ptr() as usize..input.as_ptr() as usize + input.len();
+
+        let decoded = decode_arrow_ipc_zero_copy_raw(input).unwrap();
+        assert_eq!(decoded, data);
+        let values = decoded.buffers()[0].as_ptr() as usize;
+        assert!(range.contains(&values), "the values were copied");
+    }
+
     /// A valid single-batch stream with extra bytes appended after its
     /// end-of-stream marker must be rejected by *both* decoders. The arrow-ipc
-    /// `StreamDecoder` consumes the 8-byte end-of-stream marker and then errors
-    /// on any further byte, and `StreamReader` stops at the marker; without an
-    /// explicit check the two paths would disagree (one rejecting, one silently
-    /// ignoring the tail). No in-tree sender produces trailing bytes, so
-    /// rejecting them keeps the two decoders in lockstep on the same input.
+    /// `StreamDecoder` both use consumes the 8-byte end-of-stream marker and
+    /// then errors on any further byte. No in-tree sender produces trailing
+    /// bytes.
     #[test]
     fn ipc_decode_rejects_trailing_bytes() {
         let array = UInt64Array::from(vec![1, 2, 3]);
@@ -477,7 +563,7 @@ mod tests {
         encoded.extend_from_slice(&[0u8; 16]);
 
         let err = decode_arrow_ipc_data(&encoded)
-            .expect_err("a stream with trailing bytes must be rejected (StreamReader)");
+            .expect_err("a stream with trailing bytes must be rejected");
         assert!(
             err.to_string().contains("trailing bytes"),
             "unexpected error: {err}"
@@ -588,9 +674,8 @@ mod tests {
         }
     }
 
-    /// Production safety: an *under-aligned* input must still decode correctly.
-    /// The default decoder (`require_alignment = false`) falls back to copying
-    /// only the misaligned buffers rather than erroring.
+    /// Production safety: an *under-aligned* input must still decode correctly
+    /// (it is copied into an aligned buffer first) rather than erroring.
     #[test]
     fn ipc_zero_copy_decoder_handles_misaligned_input() {
         let array = UInt64Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8]);

@@ -9,13 +9,13 @@ use dora_message::id::NodeId;
 
 use crate::{BuildRecord, CoordinatorStore, DaemonInfo, DataflowRecord, validate_param_limits};
 
+/// Composite key for node parameter storage: (dataflow_id, node_id, param_key).
+type ParamKey = (Uuid, NodeId, String);
+
 /// In-memory implementation of [`CoordinatorStore`].
 ///
 /// State lives only in-process and is lost on restart.
 /// This is the default store used by the coordinator.
-/// Composite key for node parameter storage: (dataflow_id, node_id, param_key).
-type ParamKey = (Uuid, NodeId, String);
-
 pub struct InMemoryStore {
     daemons: RwLock<BTreeMap<DaemonId, DaemonInfo>>,
     dataflows: RwLock<BTreeMap<Uuid, DataflowRecord>>,

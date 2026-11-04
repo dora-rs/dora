@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 840 610" role="img" aria-labelledby="title description">
+  <title id="title">Distributed dora control and data paths</title>
+  <desc id="description">The CLI connects to the coordinator over WebSocket on port 6013. The coordinator connects to a daemon on each machine over WebSocket. Each daemon controls its local nodes over TCP. On the robot, the camera sends frames to the detector through shared memory. Across machines, the camera sends frames and the detector sends boxes to the workstation display over Zenoh. Dashed arrows show control; solid arrows show data.</desc>
+  <defs>
+    <marker id="control" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#53627a"/></marker>
+    <marker id="data" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10Z" fill="#147d70"/></marker>
+  </defs>
+  <rect width="840" height="610" rx="12" fill="#f5f7fa"/>
+  <g fill="#eaf0f5" stroke="#a5afbd" stroke-width="1.5">
+    <rect x="20" y="270" width="500" height="280" rx="12"/>
+    <rect x="550" y="270" width="270" height="280" rx="12"/>
+  </g>
+  <g fill="none" stroke="#53627a" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#control)">
+    <path d="M420 65V130"/>
+    <path d="M380 180V225H275V320"/>
+    <path d="M460 180V225H685V320"/>
+    <path d="M240 370 130 430"/>
+    <path d="M310 370 385 430"/>
+    <path d="M685 370V430"/>
+  </g>
+  <g fill="none" stroke="#147d70" stroke-width="2.5" marker-end="url(#data)">
+    <path d="M190 455H340"/>
+    <path d="M470 455H620"/>
+    <path d="M125 480V520H685V480"/>
+  </g>
+  <g fill="#fff" stroke="#53627a" stroke-width="1.5">
+    <rect x="355" y="15" width="130" height="50" rx="8"/>
+    <rect x="340" y="130" width="160" height="50" rx="8"/>
+    <rect x="210" y="320" width="130" height="50" rx="8"/>
+    <rect x="620" y="320" width="130" height="50" rx="8"/>
+    <rect x="60" y="430" width="130" height="50" rx="8"/>
+    <rect x="340" y="430" width="130" height="50" rx="8"/>
+    <rect x="620" y="430" width="130" height="50" rx="8"/>
+  </g>
+  <g fill="#172235" font-family="system-ui, sans-serif" font-size="18" text-anchor="middle">
+    <text x="420" y="47">CLI</text><text x="420" y="162">Coordinator</text>
+    <text x="275" y="352">Daemon</text><text x="685" y="352">Daemon</text>
+    <text x="125" y="462">camera</text><text x="405" y="462">detector</text><text x="685" y="462">display</text>
+    <text x="78" y="299">robot</text><text x="620" y="299">workstation</text>
+  </g>
+  <g fill="#41516b" font-family="system-ui, sans-serif" font-size="15">
+    <text x="435" y="95">WebSocket</text><text x="435" y="115">port 6013</text>
+    <text x="175" y="250">WebSocket</text><text x="640" y="250">WebSocket</text>
+    <text x="157" y="395">TCP</text><text x="355" y="395">TCP</text><text x="700" y="405">TCP</text>
+  </g>
+  <g fill="#12695f" font-family="system-ui, sans-serif" font-size="15" text-anchor="middle">
+    <text x="265" y="415">frame</text><text x="265" y="435">shared memory</text>
+    <text x="585" y="415">boxes</text><text x="585" y="435">Zenoh</text>
+    <text x="400" y="510">frame, Zenoh</text>
+  </g>
+  <g font-family="system-ui, sans-serif" font-size="15">
+    <path d="M160 580H205" stroke="#53627a" stroke-width="2" stroke-dasharray="6 5"/>
+    <text x="215" y="585" fill="#41516b">Control plane</text>
+    <path d="M470 580H515" stroke="#147d70" stroke-width="2.5"/>
+    <text x="525" y="585" fill="#12695f">Data plane</text>
+  </g>
+</svg>

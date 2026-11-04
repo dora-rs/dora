@@ -349,15 +349,49 @@ fn cached_source_differs(clone_dir: &Path, git_url: &str, catalog_subpath: &str)
     }
 }
 
-/// Run a git command, returning trimmed stdout.
-fn git(dir: Option<&Path>, args: &[&str]) -> eyre::Result<String> {
+/// Git's per-repository environment (`git rev-parse --local-env-vars`) minus
+/// the `GIT_CONFIG_PARAMETERS` / `GIT_CONFIG_COUNT` config overrides, which
+/// carry user settings such as a proxy rather than naming a repository.
+const REPO_LOCAL_GIT_ENV: &[&str] = &[
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
+/// A `git` command for a dora-managed clone (an index cache, a pinned
+/// package checkout), run in `dir` when given.
+///
+/// The repository-locating variables are removed: git exports `GIT_DIR`,
+/// `GIT_INDEX_FILE` and friends to hooks, and CI steps set them too, and they
+/// take precedence over the working directory. Inherited, they would point
+/// every command — `reset --hard` and `checkout` included — at the caller's
+/// own repository instead of the clone. Credential prompts are disabled, so a
+/// private URL fails instead of hanging.
+pub fn git_command(dir: Option<&Path>) -> Command {
     let mut command = Command::new("git");
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
-    // never hang on a credential prompt (e.g. a private index URL)
+    for var in REPO_LOCAL_GIT_ENV {
+        command.env_remove(var);
+    }
     command.env("GIT_TERMINAL_PROMPT", "0");
-    let output = command
+    command
+}
+
+/// Run a git command, returning trimmed stdout.
+fn git(dir: Option<&Path>, args: &[&str]) -> eyre::Result<String> {
+    let output = git_command(dir)
         .args(args)
         .output()
         .context("failed to run `git` — is git installed?")?;
@@ -401,8 +435,7 @@ source:
     }
 
     fn run_git(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .current_dir(dir)
+        let status = git_command(Some(dir))
             .args([
                 "-c",
                 "user.email=test@dora.rs",
@@ -428,6 +461,32 @@ source:
             git: Some(remote.to_str().unwrap().to_string()),
             path: Some("node-index".into()),
             namespaces: vec![],
+        }
+    }
+
+    /// Every repository-locating variable this git knows about is cleared,
+    /// so an inherited `GIT_DIR` cannot redirect a cache command to the
+    /// caller's repository.
+    #[test]
+    fn git_command_clears_the_repo_local_environment() {
+        let output = Command::new("git")
+            .args(["rev-parse", "--local-env-vars"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let local_vars = String::from_utf8(output.stdout).unwrap();
+
+        let command = git_command(None);
+        let removed: BTreeSet<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_str().unwrap().to_owned())
+            .collect();
+        for var in local_vars.lines() {
+            if matches!(var, "GIT_CONFIG_PARAMETERS" | "GIT_CONFIG_COUNT") {
+                continue;
+            }
+            assert!(removed.contains(var), "`{var}` is inherited");
         }
     }
 

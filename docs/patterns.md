@@ -241,7 +241,10 @@ receiver's input queue is cleared of all older messages before the
 flush message is delivered. This enables instant interruption in
 voice pipelines -- when the user speaks over TTS output, the ASR node
 sends a new segment with `flush: true`, and the TTS node immediately
-discards any queued audio chunks from the previous response.
+discards any queued audio chunks from the previous response. Older
+chunks that a pattern-aware wait (`recv_service_response`,
+`recv_action_result`) already set aside for the node's own event loop
+are discarded too.
 
 **Note**: flush discards *all* queued messages on the input regardless of
 `session_id`. Do not multiplex independent sessions on a single input

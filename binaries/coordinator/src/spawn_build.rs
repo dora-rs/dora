@@ -5,7 +5,7 @@
 use crate::{
     MAX_ARCHIVED_DATAFLOWS, MAX_DATAFLOW_RESULTS, MAX_FINISHED_BUILDS, cancel_pending_restart,
     close_topic_subscribers_on_finish,
-    handlers::{dataflow_result, send_log_message},
+    handlers::{dataflow_result, send_status_log_message},
     spawn_result_timeout,
     state::{
         ArchivedDataflow, CachedResult, DaemonConnections, PendingRestart, RunningBuild,
@@ -334,31 +334,6 @@ pub(crate) fn finalize_build(
     }
 }
 
-/// Scan `running_dataflows` for spawns that have been pending past
-/// [`spawn_result_timeout`] and resolve them as terminally failed.
-///
-/// For each stuck dataflow:
-/// 1. Roll back any daemons that already reported a successful spawn
-///    (fire-and-forget; failures are logged).
-/// 2. Set `spawn_result` to an error so `wait_for_spawn` waiters are
-///    unblocked with an actionable message instead of hanging on the
-///    client-side RPC deadline.
-/// 3. Persist the dataflow as `Failed` so a restarted coordinator does
-///    not re-resurrect it.
-/// 4. **Tear down in-memory state**: archive the dataflow, drain
-///    `stop_reply_senders`, close `topic_subscribers`, send a final
-///    "dataflow failed" log to `log_subscribers`, then remove from
-///    `running_dataflows`. Mirrors the `DataflowFinishedOnDaemon` teardown
-///    so the dataflow is no longer visible to `Check` / `List` /
-///    `DaemonStatusReport` reconciliation / `Clean` / etc. as if it
-///    were still active. Without this step, those handlers would
-///    contradict the watchdog's "terminally failed" verdict
-///    (PR #1854 round-5 Findings 1 and 2).
-///
-/// Idempotent: `CachedResult::set_result` is a no-op on `Cached`, and
-/// removed dataflows simply don't reappear in the next pass, so
-/// re-running this on subsequent heartbeats is safe.
-///
 /// FIFO-evict *finished* entries from `dataflow_results` until it is within
 /// [`MAX_DATAFLOW_RESULTS`].
 ///
@@ -386,6 +361,31 @@ pub(crate) fn cap_dataflow_results(
     }
 }
 
+/// Scan `running_dataflows` for spawns that have been pending past
+/// [`spawn_result_timeout`] and resolve them as terminally failed.
+///
+/// For each stuck dataflow:
+/// 1. Roll back any daemons that already reported a successful spawn
+///    (fire-and-forget; failures are logged).
+/// 2. Set `spawn_result` to an error so `wait_for_spawn` waiters are
+///    unblocked with an actionable message instead of hanging on the
+///    client-side RPC deadline.
+/// 3. Persist the dataflow as `Failed` so a restarted coordinator does
+///    not re-resurrect it.
+/// 4. **Tear down in-memory state**: archive the dataflow, drain
+///    `stop_reply_senders`, close `topic_subscribers`, send a final
+///    "dataflow failed" log to `log_subscribers`, then remove from
+///    `running_dataflows`. Mirrors the `DataflowFinishedOnDaemon` teardown
+///    so the dataflow is no longer visible to `Check` / `List` /
+///    `DaemonStatusReport` reconciliation / `Clean` / etc. as if it
+///    were still active. Without this step, those handlers would
+///    contradict the watchdog's "terminally failed" verdict
+///    (PR #1854 round-5 Findings 1 and 2).
+///
+/// Idempotent: `CachedResult::set_result` is a no-op on `Cached`, and
+/// removed dataflows simply don't reappear in the next pass, so
+/// re-running this on subsequent heartbeats is safe.
+///
 /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593)
 /// (issue [#1592](https://github.com/dora-rs/dora/issues/1592)).
 #[allow(clippy::too_many_arguments)]
@@ -555,7 +555,7 @@ pub(crate) async fn teardown_failed_spawn(
     );
 
     // Final log message to anyone subscribed.
-    send_log_message(
+    send_status_log_message(
         &mut df.log_subscribers,
         &LogMessage {
             build_id: None,
@@ -571,8 +571,7 @@ pub(crate) async fn teardown_failed_spawn(
             timestamp: clock.new_timestamp().get_time().to_system_time().into(),
             fields: None,
         },
-    )
-    .await;
+    );
 
     // Close topic subscribers so attached clients see a clean end-of-
     // stream rather than hanging.
@@ -719,7 +718,7 @@ pub(crate) async fn check_build_timeouts(
 
         // Final log to subscribers so attached `dora build --attach`
         // sessions see a clean end-of-stream rather than hanging.
-        send_log_message(
+        send_status_log_message(
             &mut build.log_subscribers,
             &LogMessage {
                 build_id: Some(build_id),
@@ -735,8 +734,7 @@ pub(crate) async fn check_build_timeouts(
                 timestamp: clock.new_timestamp().get_time().to_system_time().into(),
                 fields: None,
             },
-        )
-        .await;
+        );
 
         // Insert into finished_builds so a `wait_for_build` registered
         // AFTER the watchdog fired also receives the cached error

@@ -256,6 +256,8 @@ Asynchronous iterator over incoming events destined for this node. Implements th
 
 The event stream closes itself after a `Stop` event is received. Nodes should exit once the stream ends.
 
+A `Stop(StopCause::AllInputsClosed)` is only returned once every input queued before it has been returned, so breaking out of the loop on it loses no inputs. A `Stop(StopCause::Manual)` (`dora stop`, Ctrl-C) is returned ahead of queued inputs so the node can react quickly.
+
 ```rust
 // Block until the next event arrives. Returns None when the stream closes.
 // Uses an internal EventScheduler that may reorder events for fairness.
@@ -340,6 +342,7 @@ pub enum StopCause {
     Manual,
 
     // All inputs were closed (upstream nodes exited). Only sent if the node has inputs.
+    // `recv`/`recv_async` yield it only once no inputs are left queued.
     AllInputsClosed,
 }
 ```
@@ -459,8 +462,9 @@ impl DoraArray {
 
 Data from `Event::Input` arrives as `DoraArray`. Use the `TryFrom<&DoraArray>`
 conversions (`bool`, the primitive integer/float types, `String`, `&str`, the
-`chrono` date/time types, `&[T]`, `Vec<T>`) or `into_vec::<T>()` to extract
-typed values without naming an Arrow type.
+`chrono` date/time types, `&[T]` and `Vec<T>` of the primitive types,
+`Vec<bool>`, `Vec<String>`) or `into_vec::<T>()` to extract typed values
+without naming an Arrow type.
 
 To reach the Arrow array itself, enable the feature naming your Arrow major —
 see [Arrow version policy](#arrow-version-policy).
@@ -794,6 +798,7 @@ measured against:
   release. The frozen contract is the C header and that ABI; the arrow-rs major
   version behind it stays exempt.
 - **`dora-message`'s control plane is frozen on the wire, not as a Rust API.** The CLI↔coordinator↔daemon modules (`cli_to_coordinator`, `coordinator_to_cli`, `coordinator_to_daemon`, `daemon_to_coordinator`) are JSON with named fields and externally-tagged enums, and nothing outside this workspace names their types. A command grows by appending a `#[serde(default)]` field to a variant that is `#[non_exhaustive]` — an old peer ignores the unknown key, a new peer defaults the missing one — and the variant is built through a constructor (`ControlRequest::topic_subscribe`, `RegisterResult::ok`). Default only where the default *is* the old behaviour; where absence has to change the outcome, make the field an `Option` and decide on `None` explicitly, as `check_topic_protocol` does for `protocol_version`. Marking a variant `#[non_exhaustive]` is a one-time Rust-API break that needs a transitional `cargo-semver-checks` allow until the next release; the field additions after it are minor. A new *variant* is still a deliberate decision: an old peer fails with `unknown variant`, which breaks a rolling upgrade where daemons restart one at a time. The wire gate applies the same rule — field appended: warn, field removed, retyped or variant removed: break — and keeps the strict positional match for the postcard modules, where an appended field shifts every later byte. It does not yet see whether the appended field carries `#[serde(default)]` (the renderer drops that attribute, since it only widens decoding); a non-`Option` field without it makes every older peer's request fail with `missing field`, so until the gate checks that, the reviewer does.
+- **A new node→daemon request must expect a reply.** The node↔daemon `DaemonRequest` protocol is postcard, so a daemon cannot decode a variant it predates, and it then cannot tell whether the node is blocked waiting for an answer. The three requests that get no binary reply — `SendMessage`, `OutputSent` and `NodeConfig` (answered in JSON) — are fixed by the frozen wire format and always decode. Every variant added after them must be answered with a binary `DaemonReply` (`expects_tcp_binary_reply()` returns `true`). An undecodable request is then always one that waits for a reply, so a daemon can answer it with `DaemonReply::Result(Err(..))` and keep the connection open, and the newer node gets an ordinary error back from its request instead of a hang or a closed connection. A new fire-and-forget request would break this: the daemon would have to guess, and an unsolicited error frame would shift every later request/reply pair on that connection by one. The rule is pinned by `node_to_daemon::reply_policy_tests`, which fails to compile until a new variant is classified.
 
 `dora-node-api-cxx`'s optional `ros2-bridge` feature is not covered — it is
 off by default and pulls in the exempt `dora-ros2-bridge`.

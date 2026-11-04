@@ -1,6 +1,6 @@
 use crate::command::{Executable, default_tracing};
 use crate::common::CoordinatorOptions;
-use crate::common::connect_to_coordinator;
+use crate::common::{connect_to_coordinator, coordinator_rejected};
 use crate::common::{expect_reply, send_control_request};
 use crate::formatting::OutputFormat;
 use crate::ws_client::WsSession;
@@ -28,6 +28,9 @@ pub struct ComponentStatus {
     pub status: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub address: Option<String>,
+    /// Why a running coordinator refused this CLI (only for `"refused"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 fn collect_status(coordinator_addr: SocketAddr) -> (StatusOutput, bool) {
@@ -38,15 +41,30 @@ fn collect_status(coordinator_addr: SocketAddr) -> (StatusOutput, bool) {
             ComponentStatus {
                 status: "running",
                 address: Some(coordinator_addr.to_string()),
+                error: None,
             },
             Some(session),
         ),
+        // Reachable, so "not running" would send the user to `dora up`,
+        // which cannot start a second coordinator on this port.
+        Err(err) if coordinator_rejected(&err) => {
+            error_occurred = true;
+            (
+                ComponentStatus {
+                    status: "refused",
+                    address: Some(coordinator_addr.to_string()),
+                    error: Some(format!("{err:#}")),
+                },
+                None,
+            )
+        }
         Err(_) => {
             error_occurred = true;
             (
                 ComponentStatus {
                     status: "not running",
                     address: None,
+                    error: None,
                 },
                 None,
             )
@@ -64,18 +82,21 @@ fn collect_status(coordinator_addr: SocketAddr) -> (StatusOutput, bool) {
         ComponentStatus {
             status: "running",
             address: None,
+            error: None,
         }
     } else if session.is_some() {
         error_occurred = true;
         ComponentStatus {
             status: "not running",
             address: None,
+            error: None,
         }
     } else {
         error_occurred = true;
         ComponentStatus {
             status: "unknown",
             address: None,
+            error: None,
         }
     };
 
@@ -109,6 +130,23 @@ fn print_status_table(output: &StatusOutput) -> eyre::Result<()> {
         if let Some(addr) = &output.coordinator.address {
             writeln!(stdout, "  Address: {addr}")?;
         }
+    } else if output.coordinator.status == "refused" {
+        let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
+        write!(stdout, "✗ ")?;
+        let _ = stdout.reset();
+        writeln!(stdout, "Coordinator: Running, but refused this CLI")?;
+        if let Some(addr) = &output.coordinator.address {
+            writeln!(stdout, "  Address: {addr}")?;
+        }
+        if let Some(error) = &output.coordinator.error {
+            for line in error.lines() {
+                if line.is_empty() {
+                    writeln!(stdout)?;
+                } else {
+                    writeln!(stdout, "  {line}")?;
+                }
+            }
+        }
     } else {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
         write!(stdout, "✗ ")?;
@@ -134,7 +172,12 @@ fn print_status_table(output: &StatusOutput) -> eyre::Result<()> {
             let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
             write!(stdout, "✗ ")?;
             let _ = stdout.reset();
-            writeln!(stdout, "Daemon: Unknown (coordinator not available)")?;
+            let reason = if output.coordinator.status == "refused" {
+                "coordinator refused the connection"
+            } else {
+                "coordinator not available"
+            };
+            writeln!(stdout, "Daemon: Unknown ({reason})")?;
         }
     }
 
@@ -209,5 +252,48 @@ impl Executable for Status {
         }
 
         check_environment(addr, self.format)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_status;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn refused_coordinator_is_not_reported_as_not_running() {
+        // `--auth` coordinator, wrong token: it is running, so "not running"
+        // would send the user to `dora up`, which cannot start a second one.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            stream
+                .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+
+        let (output, error_occurred) = collect_status(addr);
+        server.join().unwrap();
+        assert!(error_occurred);
+        assert_eq!(output.coordinator.status, "refused");
+        assert_eq!(output.coordinator.address, Some(addr.to_string()));
+        let error = output.coordinator.error.expect("refusal carries its error");
+        assert!(error.contains("authentication failed"), "{error}");
+    }
+
+    #[test]
+    fn closed_port_is_reported_as_not_running() {
+        let addr = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let (output, error_occurred) = collect_status(addr);
+        assert!(error_occurred);
+        assert_eq!(output.coordinator.status, "not running");
+        assert!(output.coordinator.error.is_none());
     }
 }

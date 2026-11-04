@@ -238,35 +238,32 @@ impl Message {
             _ => quote! {},
         };
 
-        let def = if self.members.is_empty() {
+        let fields = if self.members.is_empty() {
             quote! {
-                #[allow(non_camel_case_types)]
-                #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-                #attributes
-                pub struct #struct_raw_name {
-                    #[serde(skip)]
-                    pub(super) _dummy: u8,
-                }
-
-                #cxx_consts
+                // ROS's `structure_needs_at_least_one_member`: a message
+                // with no fields is still one byte on the wire.
+                pub(super) _dummy: u8,
             }
         } else {
             quote! {
-                #[allow(non_camel_case_types)]
-                #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-                #attributes
-                pub struct #struct_raw_name {
-                    #(#rust_type_def_inner)*
-                }
-
-                #[allow(non_camel_case_types)]
-                #[allow(dead_code)]
-                pub struct #struct_raw_vec_name {
-                    data: Vec<#struct_raw_name>
-                }
-
-                #cxx_consts
+                #(#rust_type_def_inner)*
             }
+        };
+        let def = quote! {
+            #[allow(non_camel_case_types)]
+            #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+            #attributes
+            pub struct #struct_raw_name {
+                #fields
+            }
+
+            #[allow(non_camel_case_types)]
+            #[allow(dead_code)]
+            pub struct #struct_raw_vec_name {
+                data: Vec<#struct_raw_name>
+            }
+
+            #cxx_consts
         };
         let default = if self.members.is_empty() {
             quote! {
@@ -590,5 +587,71 @@ mod codegen_tests {
                 "expected `{escaped}` in generated code:\n{generated}"
             );
         }
+    }
+
+    // ROS gives a message with no fields one `uint8` member
+    // (`structure_needs_at_least_one_member`), so the placeholder must be
+    // serialized: with `#[serde(skip)]` dora sent an empty body, refused ROS's
+    // byte on Zenoh, and misread the fields after a nested empty message.
+    #[test]
+    fn an_empty_message_serializes_its_one_byte_member() {
+        let message = Message {
+            package: "test_pkg".to_string(),
+            name: "Empty".to_string(),
+            members: vec![],
+            constants: vec![],
+        };
+        let (def, _impls) = message.struct_token_stream("test_pkg", false);
+        let generated = format_valid_rust(def);
+        assert!(
+            generated.contains("pub(super) _dummy: u8,") && !generated.contains("serde"),
+            "expected a serialized `_dummy: u8` member in:\n{generated}"
+        );
+    }
+
+    // A `wstring` default names `U16String` through the parent module, which
+    // re-exports it in both crates that include this code (`crate::messages`
+    // in dora-ros2-bridge, `crate::ros2` in dora-node-api-cxx). A
+    // `crate::messages` path didn't compile in the C++ crate (#3949).
+    #[test]
+    fn a_wstring_default_names_u16string_through_the_parent_module() {
+        let message = Message {
+            package: "test_pkg".to_string(),
+            name: "WStr".to_string(),
+            members: vec![Member {
+                name: "value".to_string(),
+                r#type: crate::types::primitives::GenericString::WString.into(),
+                default: Some(vec!["Hello".to_string()]),
+            }],
+            constants: vec![],
+        };
+        for cxx in [false, true] {
+            let (_def, impls) = message.struct_token_stream("test_pkg", cxx);
+            let generated = format_valid_rust(impls);
+            assert!(
+                generated.contains(r#"value: super::ffi::U16String::from_str("Hello"),"#),
+                "expected the default through `super::ffi` in:\n{generated}"
+            );
+        }
+    }
+
+    // cxx implements `Vec<T>` for a shared struct only in the bridge that
+    // defines it, and only if `Vec<T>` appears there. Without the `_Vec_`
+    // helper, an `std_msgs/Empty[]` field in another package did not compile.
+    #[test]
+    fn an_empty_message_has_the_vec_helper_struct() {
+        let message = Message {
+            package: "test_pkg".to_string(),
+            name: "Empty".to_string(),
+            members: vec![],
+            constants: vec![],
+        };
+        let (def, _impls) = message.struct_token_stream("test_pkg", true);
+        let generated = format_valid_rust(def);
+        assert!(
+            generated
+                .contains("pub struct test_pkg_Vec_Empty {\n    data: Vec<test_pkg__Empty>,\n}"),
+            "expected the `test_pkg_Vec_Empty` helper struct in:\n{generated}"
+        );
     }
 }

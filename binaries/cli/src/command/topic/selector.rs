@@ -217,7 +217,6 @@ fn resolve_topics(
                     data_id: output,
                 })
         }));
-        return Ok(topics);
     }
 
     for s in data {
@@ -231,14 +230,17 @@ fn resolve_topics(
             let node = *node_map
                 .get(&node_id)
                 .with_context(|| unknown_node_err(&node_id))?;
-            topics.extend(
-                node_topic_outputs(node)
-                    .into_iter()
-                    .map(|output| TopicIdentifier {
-                        node_id: node_id.clone(),
-                        data_id: output,
-                    }),
-            );
+            let outputs = node_topic_outputs(node);
+            if outputs.is_empty() {
+                bail!(
+                    "node `{node_id}` declares no outputs\n\n  \
+                     hint: select a node that declares `outputs`, or a `node/output` pair"
+                );
+            }
+            topics.extend(outputs.into_iter().map(|output| TopicIdentifier {
+                node_id: node_id.clone(),
+                data_id: output,
+            }));
             continue;
         }
 
@@ -346,6 +348,38 @@ nodes:
         let msg = format!("{err:#}");
         assert!(msg.contains("unknown node `ghost`"), "unexpected: {msg}");
         assert!(msg.contains("available nodes"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn empty_selector_without_outputs_errors() {
+        // Regression (dora-rs/dora#3909): the no-argument form returned an
+        // empty topic set instead of the "no outputs" error, so `echo` and
+        // `hz` subscribed to nothing and waited for data that never came.
+        let descriptor: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: sink
+    path: sink
+    inputs:
+      tick: dora/timer/millis/10
+",
+        )
+        .expect("parse descriptor");
+        let err = resolve_topics(&[], &descriptor).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("no outputs found"), "unexpected: {msg}");
+    }
+
+    #[test]
+    fn bare_node_without_outputs_names_the_node() {
+        // Regression (dora-rs/dora#3909): this blamed the whole dataflow
+        // ("no outputs found in this dataflow") although `camera` has outputs.
+        let err = resolve_topics(&["sink".to_string()], &descriptor()).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("node `sink` declares no outputs"),
+            "unexpected: {msg}"
+        );
     }
 
     #[test]

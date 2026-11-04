@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 pub struct TopicFrame {
     pub subscription_id: uuid::Uuid,
-    pub payload: std::sync::Arc<[u8]>,
+    pub payload: std::sync::Arc<Vec<u8>>,
 }
 
 pub(crate) struct TopicSubscriber {
@@ -100,7 +100,7 @@ mod tests {
         sub.close();
         let frame = TopicFrame {
             subscription_id: uuid::Uuid::new_v4(),
-            payload: std::sync::Arc::from(vec![].into_boxed_slice()),
+            payload: std::sync::Arc::new(Vec::new()),
         };
         assert!(sub.send_frame(frame).await.is_err());
     }

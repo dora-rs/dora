@@ -33,6 +33,8 @@ redb-backend = ["dora-coordinator/redb-backend", "dep:fs2", "dep:libc"]
 [dependencies]
 arrow = { workspace = true, features = ["ipc"] }
 arrow-schema = { workspace = true }
+base64 = "0.22"
+flate2 = "1.1"
 clap = { version = "4.6.1", features = ["derive", "string", "env"] }
 clap_complete = "4.6.7"
 eyre = { workspace = true }
@@ -74,12 +76,16 @@ sysinfo = "0.39"
 env_logger = "0.11.11"
 # self_update 0.44 made the HTTP backend an explicit feature; without
 # `reqwest` (or `ureq`) it fails to compile under default-features = false.
-self_update = { version = "0.44.0", features = [
+# 1.x also puts each release backend behind a feature (`github`) and renamed
+# `compression-flate2` to `compression-tar-gz`. 1.3.1 is the first release on
+# zip 9 (RUSTSEC-2026-0367/0368/0369/0429).
+self_update = { version = "1.3.3", features = [
     "reqwest",
     "rustls",
+    "github",
     "archive-zip",
     "archive-tar",
-    "compression-flate2",
+    "compression-tar-gz",
 ], default-features = false }
 self-replace = "1.5.0"
 dunce = "1.0.5"
@@ -108,3 +114,6 @@ dist = true
 # `dora recording export` round-trip test to assemble the recorded `Output`
 # payload.
 aligned-vec = { version = "0.6.4", features = ["serde"] }
+# The version arrow-ipc pins; used only to build a crafted IPC schema message
+# in the `topic info` tests.
+flatbuffers = "25.12.19"

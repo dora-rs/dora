@@ -17,7 +17,7 @@ use dora_core::{
         validate,
     },
     topics::{
-        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, MulticastScouting,
+        DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST, MulticastScouting,
         open_zenoh_session_with_listen, validate_zenoh_listen, zenoh_bind_address_for,
     },
     uhlc::{self, HLC},
@@ -173,7 +173,8 @@ mod zenoh_bind;
 pub(crate) use debug_topic::{DebugSchemaCache, prepare_debug_topic_frame, retain_debug_schema};
 pub(crate) use event_types::{
     CONTROL_EVENT_HEADROOM, DaemonNodeEvent, DoraEvent, Event, InterDaemonEvent,
-    NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound, send_with_timestamp,
+    NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound, send_timestamped,
+    send_with_timestamp,
 };
 pub(crate) use fault_tolerance::{CascadingErrorCauses, FaultToleranceStats};
 pub(crate) use local_delivery::{
@@ -414,6 +415,11 @@ pub struct Daemon {
     pub(crate) machine_id: Option<String>,
     pub(crate) running: HashMap<DataflowId, RunningDataflow>,
     pub(crate) working_dir: HashMap<DataflowId, PathBuf>,
+    /// Nodes whose working directory differs from the dataflow's base
+    /// `working_dir` (a `deploy.working_dir`, or a git/hub clone dir). A
+    /// node's log is written under its own working directory, so `dora logs`
+    /// must look there; nodes absent from this map log under the base one.
+    pub(crate) node_log_dirs: HashMap<DataflowId, BTreeMap<NodeId, PathBuf>>,
     pub(crate) events_tx: mpsc::Sender<Timestamped<Event>>,
     pub(crate) coordinator_sender: Option<coordinator::CoordinatorSender>,
     pub(crate) last_coordinator_heartbeat: Instant,
@@ -455,6 +461,12 @@ pub struct Daemon {
     /// the `dora up` daemon, whose nodes are deliberately decoupled from it
     /// (#2029).
     pub(crate) bind_nodes_to_parent: bool,
+    /// The dynamic-node port this daemon failed to listen on because another
+    /// process holds it, if so. A dynamic node of ours would connect to that
+    /// process instead (likely another daemon, which may hand it another
+    /// dataflow's config), so dataflows and nodes needing one are refused.
+    /// Always `None` for `dora run`, which fails outright instead (#3814).
+    pub(crate) dynamic_node_port_unavailable: Option<u16>,
     /// A `Destroy` that is holding its reply until this daemon's node
     /// processes are gone (#2980).
     pub(crate) pending_destroy: Option<PendingDestroy>,
@@ -466,7 +478,7 @@ pub struct Daemon {
     pub(crate) builds: BTreeMap<BuildId, BuildInfo>,
     pub(crate) git_manager: GitManager,
     /// Carry-over state for the `dora top` metrics sampler. See [`MetricsState`].
-    pub(crate) metrics_state: Arc<std::sync::Mutex<MetricsState>>,
+    pub(crate) metrics_state: Arc<tokio::sync::Mutex<MetricsState>>,
     /// Opaque, dataflow-scoped store for out-of-tree extensions. See
     /// `extension_table` and `docs/extensions.md`.
     pub(crate) extensions: ExtensionTable,
@@ -694,11 +706,12 @@ impl Daemon {
         // the whole loop so the channel stays open across reconnect gaps; each
         // iteration streams a clone of it.
         let (dynamic_node_events_tx, dynamic_node_events_rx) = flume::bounded(10);
-        let _listen_port = local_listener::spawn_listener_loop(
+        let listen_port = local_listener::spawn_listener_loop(
             (LOCALHOST, local_listen_port).into(),
             dynamic_node_events_tx,
         )
         .await?;
+        let dynamic_node_port_unavailable = listen_port.is_none().then_some(local_listen_port);
 
         loop {
             // Sized for bursts of inter-daemon events
@@ -795,7 +808,7 @@ impl Daemon {
                                     daemon_id.clone(),
                                 ),
                             };
-                            let (built, rx) = Self::build_daemon(
+                            let (mut built, rx) = Self::build_daemon(
                                 machine_id.clone(),
                                 Some(coordinator_sender),
                                 daemon_id,
@@ -826,6 +839,7 @@ impl Daemon {
                                 false,
                             )
                             .await?;
+                            built.dynamic_node_port_unavailable = dynamic_node_port_unavailable;
                             daemon = Some(built);
                             dora_events_rx = Some(rx);
                         }
@@ -1020,12 +1034,12 @@ impl Daemon {
             .iter()
             .any(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic());
         if has_dynamic_nodes {
-            // Spawn local listener for dynamic nodes
-            let _listen_port = local_listener::spawn_listener_loop(
-                (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
-                events_tx,
-            )
-            .await?;
+            let port = local_listener::run_listen_port(
+                std::env::var(DORA_DAEMON_LOCAL_LISTEN_PORT_ENV)
+                    .ok()
+                    .as_deref(),
+            )?;
+            local_listener::spawn_run_listener(port, events_tx).await?;
         }
         let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
             inner: Event::DynamicNode(e.inner),
@@ -1325,6 +1339,9 @@ impl Daemon {
             })
             .await
             .wrap_err("failed to open zenoh session")?;
+        // Lets another daemon's link-probe diagnostics, which list the zids it
+        // is linked to, be matched against this daemon (#3711).
+        tracing::info!("zenoh session open with id {}", zenoh_session.zid());
         // Same-host control notifications (`PeerMessage::Register`/`PeerMessage::Free`) go over
         // zenoh SHM: the payload stays in shared memory and peer daemons
         if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {
@@ -1379,6 +1396,7 @@ impl Daemon {
             .for_daemon(daemon_id.clone()),
             running: HashMap::new(),
             working_dir: HashMap::new(),
+            node_log_dirs: HashMap::new(),
             events_tx: dora_events_tx,
             coordinator_sender,
             last_coordinator_heartbeat: Instant::now(),
@@ -1398,6 +1416,7 @@ impl Daemon {
             zenoh_routable_addr: Some(zenoh_bind.addr()).filter(|addr| !addr.is_loopback()),
             disable_multicast,
             bind_nodes_to_parent,
+            dynamic_node_port_unavailable: None,
             pending_destroy: None,
             zenoh_publish_tx,
             remote_daemon_events_tx,
@@ -1407,7 +1426,7 @@ impl Daemon {
             pool: dora_tensor_pool::daemon::PoolState::new(),
             builds,
             sessions: Default::default(),
-            metrics_state: Arc::new(std::sync::Mutex::new(MetricsState::default())),
+            metrics_state: Arc::new(tokio::sync::Mutex::new(MetricsState::default())),
         };
 
         Ok((daemon, dora_events_rx))
@@ -1461,15 +1480,18 @@ impl Daemon {
         dataflow_id: Uuid,
         result: &DataflowDaemonResult,
     ) -> eyre::Result<()> {
-        let msg = serde_json::to_vec(&Timestamped {
-            inner: CoordinatorRequest::Event {
-                daemon_id: self.daemon_id.clone(),
-                event: DaemonEvent::AllNodesFinished {
-                    dataflow_id,
-                    result: result.clone(),
+        let timestamp = self.clock.new_timestamp();
+        let msg = extract_err_from_stderr::encode_bounded_finish_report(result, |result| {
+            Ok(serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::AllNodesFinished {
+                        dataflow_id,
+                        result: result.clone(),
+                    },
                 },
-            },
-            timestamp: self.clock.new_timestamp(),
+                timestamp,
+            })?)
         })?;
         sender
             .send_event(&msg)

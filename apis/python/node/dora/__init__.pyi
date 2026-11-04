@@ -172,7 +172,10 @@ class Node:
         events = node.drain()
         for event in events:
             print(event)
-        ```"""
+        ```
+
+        While another receive (such as a pending `recv_async`) holds the event
+        stream, this returns an empty list instead of waiting for it."""
 
     def try_recv(self) -> typing.Optional[dict]:
         """`.try_recv()` gives you the next input in the queue that the node has received.
@@ -181,10 +184,16 @@ class Node:
 
         ```python
         event = node.try_recv()
-        ```"""
+        ```
+
+        While another receive (such as a pending `recv_async`) holds the event
+        stream, this returns `None` instead of waiting for it."""
 
     def is_empty(self) -> bool:
-        """Check if there are any buffered events in the event stream."""
+        """Check if there are any buffered events in the event stream.
+
+        While another receive (such as a pending `recv_async`) holds the event
+        stream, this returns `True` instead of waiting for it."""
 
     def send_output(
         self, output_id: str, data: pyarrow.Array, metadata: dict = None
@@ -202,7 +211,11 @@ class Node:
 
         ```python
         node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
-        ```"""
+        ```
+
+        Sending 4 KiB or more of data releases the GIL, so other Python
+        threads keep running while it copies ``data``. Don't change ``data``
+        from another thread until ``send_output`` returns."""
 
     def send_output_raw(
         self, output_id: str, data_length: int, metadata: dict = None

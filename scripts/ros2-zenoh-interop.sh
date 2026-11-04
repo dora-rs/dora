@@ -6,7 +6,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/scripts/cargo-target-dir.sh"
 TARGET_DIR="$(cargo_target_dir "$ROOT")"
 COMPOSE=(docker compose -f "$ROOT/docker-compose.ros2-zenoh.yml" --profile)
-CASES=(topic-pub topic-sub service-client service-server action-client action-server graph domain namespace qos-transient-local)
+CASES=(topic-pub topic-sub service-client service-server action-client action-server graph domain namespace qos-transient-local parameters rosout)
 DISTRO=${1:-}
 CASE=${2:-all}
 
@@ -61,7 +61,7 @@ fi
 # these jobs have ever had (#3263, #2987). What the pin was actually good for
 # is caught here instead: record the version that landed, so a future breakage
 # names it, and floor it, so a build too old to interop fails by name rather
-# than as ten confusing case failures.
+# than as a confusing failure of every case.
 case "$DISTRO" in
   humble) rmw_floor=0.1.9 ;;
   kilted) rmw_floor=0.6.7 ;;

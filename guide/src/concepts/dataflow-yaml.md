@@ -51,7 +51,7 @@ Every node requires an `id`. All other fields are optional (though most nodes ne
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | **Required.** Unique identifier. Must not contain `/`. Whitespace is discouraged |
+| `id` | string | **Required.** Unique identifier. Only ASCII letters, digits, `_`, `.` and `-` (no `/`, no whitespace); must not be empty, start with `.`, or be the reserved id `dora` |
 | `name` | string | Human-readable display name (metadata only, used in tooling and logs) |
 | `description` | string | Documentation string (metadata only, not used at runtime) |
 

@@ -466,14 +466,24 @@ impl TensorPoolManager {
     /// belongs to at most one daemon, so `is_local_node` keeps the sweep
     /// host-safe without narrowing what it can reclaim.
     ///
-    /// Segments are named `dora_pool_{dataflow_id}_{node_id}_{counter}`. Node
-    /// ids may contain `_`, the counter never does, so the last component
-    /// splits off the node id; a name that does not fit the pattern belongs
-    /// to nobody identifiable and is left alone.
-    pub fn cleanup_orphans(dataflow_id: &str, is_local_node: impl Fn(&str) -> bool) {
+    /// Segments are named `dora_pool_{dataflow_id}_{node_id}_{counter}`, or
+    /// `dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}` when the
+    /// daemon has a machine id (it hands `DORA_MACHINE_ID` to every node it
+    /// spawns, and the node qualifies its segment names with it). Both forms
+    /// are swept. Node ids may contain `_`, the counter never does, so the
+    /// last component splits off the node id; a name that does not fit the
+    /// pattern belongs to nobody identifiable and is left alone.
+    pub fn cleanup_orphans(
+        dataflow_id: &str,
+        machine_id: Option<&str>,
+        is_local_node: impl Fn(&str) -> bool,
+    ) {
         #[cfg(target_os = "linux")]
         {
-            let prefix = format!("dora_pool_{}_", dataflow_id);
+            let prefix = format!("dora_pool_{dataflow_id}_");
+            let machine_prefix = machine_id
+                .filter(|m| !m.is_empty())
+                .map(|m| format!("dora_pool_{m}_{dataflow_id}_"));
             match std::fs::read_dir("/dev/shm") {
                 Ok(entries) => {
                     for entry in entries.flatten() {
@@ -481,6 +491,11 @@ impl TensorPoolManager {
                         let name = name.to_string_lossy();
                         let Some((node_id, counter)) = name
                             .strip_prefix(&prefix)
+                            .or_else(|| {
+                                machine_prefix
+                                    .as_deref()
+                                    .and_then(|machine_prefix| name.strip_prefix(machine_prefix))
+                            })
                             .and_then(|rest| rest.rsplit_once('_'))
                         else {
                             continue;
@@ -508,7 +523,7 @@ impl TensorPoolManager {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (dataflow_id, is_local_node);
+            let _ = (dataflow_id, machine_id, is_local_node);
         }
     }
 
@@ -929,7 +944,7 @@ mod tests {
     #[test]
     fn cleanup_orphans_runs_without_panic() {
         // Sweep should run cleanly without panicking regardless of platform.
-        TensorPoolManager::cleanup_orphans("test-dataflow-uuid", |_| true);
+        TensorPoolManager::cleanup_orphans("test-dataflow-uuid", None, |_| true);
     }
 
     /// Two daemons on one host serve one dataflow, so both see the other's
@@ -942,7 +957,6 @@ mod tests {
     fn cleanup_orphans_leaves_another_daemons_segments_alone() {
         // Unique per run, so concurrent tests cannot collide in /dev/shm.
         let dataflow_id = format!("test-df-{}-scoped", std::process::id());
-        let segment = |name: &str| std::path::PathBuf::from(format!("/dev/shm/{name}"));
         // (segment name, must survive the sweep)
         let files = [
             (format!("dora_pool_{dataflow_id}_local_0"), false),
@@ -959,24 +973,55 @@ mod tests {
             // Another dataflow entirely, even for a local node id.
             (format!("dora_pool_{dataflow_id}other_local_0"), true),
         ];
-        for (file, _) in &files {
+        assert_sweep(&files, || {
+            TensorPoolManager::cleanup_orphans(&dataflow_id, None, |node| {
+                matches!(node, "local" | "local_with_underscore")
+            })
+        });
+    }
+
+    /// Create each `/dev/shm` segment in `files`, run `sweep`, then check
+    /// which segments survived against the expected flag. Segments are
+    /// removed before asserting so a failure leaves nothing behind.
+    #[cfg(target_os = "linux")]
+    fn assert_sweep(files: &[(String, bool)], sweep: impl FnOnce()) {
+        let segment = |name: &str| std::path::PathBuf::from(format!("/dev/shm/{name}"));
+        for (file, _) in files {
             std::fs::write(segment(file), b"x").unwrap();
         }
-
-        TensorPoolManager::cleanup_orphans(&dataflow_id, |node| {
-            matches!(node, "local" | "local_with_underscore")
-        });
-
-        let outcome: Vec<(&str, bool)> = files
+        sweep();
+        let kept: Vec<bool> = files
             .iter()
-            .map(|(file, _)| (file.as_str(), segment(file).exists()))
+            .map(|(file, _)| segment(file).exists())
             .collect();
-        for (file, _) in &files {
+        for (file, _) in files {
             let _ = std::fs::remove_file(segment(file));
         }
-        for ((file, expected_kept), (_, kept)) in files.iter().zip(&outcome) {
-            assert_eq!(kept, expected_kept, "{file}");
+        for ((file, expected_kept), kept) in files.iter().zip(kept) {
+            assert_eq!(kept, *expected_kept, "{file}");
         }
+    }
+
+    /// A daemon with a machine id passes `DORA_MACHINE_ID` to its nodes, which
+    /// then name their segments `dora_pool_{machine_id}_{dataflow_id}_...`.
+    /// The sweep must reclaim those too, or a node that crashed before
+    /// registering its pool leaks the segment on every machine-id deployment.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cleanup_orphans_reclaims_machine_qualified_segments() {
+        let dataflow_id = format!("test-df-{}-machine", std::process::id());
+        // (segment name, must survive the sweep)
+        let files = [
+            (format!("dora_pool_m1_{dataflow_id}_local_0"), false),
+            (format!("dora_pool_{dataflow_id}_local_1"), false),
+            // Same machine, but a node this daemon does not spawn.
+            (format!("dora_pool_m1_{dataflow_id}_remote_0"), true),
+            // A sibling daemon on the same host with another machine id.
+            (format!("dora_pool_m2_{dataflow_id}_local_0"), true),
+        ];
+        assert_sweep(&files, || {
+            TensorPoolManager::cleanup_orphans(&dataflow_id, Some("m1"), |node| node == "local")
+        });
     }
 
     // -- dora#2881: pools must be reclaimed once nothing can reach them --

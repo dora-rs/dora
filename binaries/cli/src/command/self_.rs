@@ -48,25 +48,27 @@ impl Executable for SelfSubCommand {
                 if check_only {
                     // Only check if an update is available
                     match status.get_latest_release() {
-                        Ok(release) => {
+                        Ok(releases) => {
+                            let Some(release) = releases.latest() else {
+                                bail!("failed to check for updates: no release found");
+                            };
+                            let release_version = release.version();
                             let current_version = self_update::cargo_crate_version!();
                             // Semver comparison — a dev/pre-release build that is
                             // ahead of the latest published release must not be
                             // offered a downgrade.
                             let newer = self_update::version::bump_is_greater(
                                 current_version,
-                                &release.version,
+                                release_version,
                             )
-                            .unwrap_or(current_version != release.version);
+                            .unwrap_or(current_version != release_version);
                             if newer {
                                 println!(
-                                    "An update is available: {}. Run 'dora self update' to update",
-                                    release.version
+                                    "An update is available: {release_version}. Run 'dora self update' to update"
                                 );
                             } else {
                                 println!(
-                                    "Dora CLI is up to date (current: {current_version}, latest release: {})",
-                                    release.version
+                                    "Dora CLI is up to date (current: {current_version}, latest release: {release_version})"
                                 );
                             }
                         }
@@ -75,14 +77,14 @@ impl Executable for SelfSubCommand {
                 } else {
                     // Perform the actual update
                     match status.update() {
-                        Ok(update_status) => match update_status {
-                            self_update::Status::UpToDate(version) => {
+                        Ok(update_status) => {
+                            let version = update_status.version();
+                            if update_status.is_updated() {
+                                println!("Successfully updated Dora CLI to version: {version}");
+                            } else {
                                 println!("Dora CLI is already at the latest version: {version}");
                             }
-                            self_update::Status::Updated(version) => {
-                                println!("Successfully updated Dora CLI to version: {version}");
-                            }
-                        },
+                        }
                         Err(e) => bail!("failed to update: {e}"),
                     }
                 }

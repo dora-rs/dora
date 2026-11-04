@@ -1,5 +1,3 @@
-#![allow(clippy::test_attr_in_doctest)]
-
 //! This document describes how to write [integration tests] for Dora nodes.
 //!
 //! [integration tests]: https://en.wikipedia.org/wiki/Integration_testing
@@ -26,51 +24,82 @@
 //! See the [`setup_integration_testing`] function documentation for details.
 //!
 //! ### Example
-//! ```rust, ignore
-//! #[test]
-//! fn test_main_function() -> eyre::Result<()> {
-//!    // specify the events that should be sent to the node
-//!    let events = vec![
-//!        TimedIncomingEvent {
-//!            time_offset_secs: 0.01,
-//!            event: IncomingEvent::Input {
-//!                id: "tick".into(),
-//!                metadata: None,
-//!                data: None,
-//!            },
-//!        },
-//!        TimedIncomingEvent {
-//!            time_offset_secs: 0.055,
-//!            event: IncomingEvent::Stop,
-//!        },
-//!    ];
-//!    let inputs = dora_node_api::integration_testing::TestingInput::Input(
-//!        IntegrationTestInput::new("node_id".parse().unwrap(), events),
-//!    );
 //!
-//!    // send the node's outputs to a channel so we can verify them later
-//!    let (tx, mut rx) = dora_node_api::integration_testing::output_channel();
-//!    let outputs = dora_node_api::integration_testing::TestingOutput::ToChannel(tx);
+//! The node below forwards every `tick` input as a `count` output. The test feeds it two ticks and
+//! a stop event, runs its `main` function, and compares the outputs it sent.
 //!
-//!    // don't include time offsets in the outputs to make them deterministic
-//!    let options = TestingOptions {
-//!        skip_output_time_offsets: true,
-//!    };
+//! ```
+//! use dora_node_api::{
+//!     DoraNode, Event, IntoArrow,
+//!     integration_testing::{
+//!         IntegrationTestInput, TestingInput, TestingOptions, TestingOutput, drain_outputs,
+//!         integration_testing_format::{IncomingEvent, TimedIncomingEvent},
+//!         output_channel, setup_integration_testing,
+//!     },
+//! };
 //!
-//!     // setup the integration testing environment -> this will make `DoraNode::init_from_env``
-//!     // initialize the node in testing mode
-//!     integration_testing::setup_integration_testing(inputs, outputs, options);
-//!
-//!     // call the node's main function
-//!     crate::main()?;
-//!
-//!     // collect the nodes's outputs and compare them
-//!     let outputs = dora_node_api::integration_testing::drain_outputs(&mut rx);
-//!     assert_eq!(outputs, expected_outputs);
-//!
+//! /// The node's `main` function, initialized through `DoraNode::init_from_env`.
+//! fn node_main() -> eyre::Result<()> {
+//!     let (mut node, mut events) = DoraNode::init_from_env()?;
+//!     let mut count = 0u32;
+//!     while let Some(event) = events.recv() {
+//!         if let Event::Input { id, metadata, .. } = event
+//!             && id.as_str() == "tick"
+//!         {
+//!             count += 1;
+//!             node.send_output("count".into(), metadata.parameters, count.into_arrow())?;
+//!         }
+//!     }
 //!     Ok(())
 //! }
+//!
+//! # fn main() -> eyre::Result<()> {
+//! // specify the events that should be sent to the node
+//! let tick = |time_offset_secs| TimedIncomingEvent {
+//!     time_offset_secs,
+//!     event: IncomingEvent::Input {
+//!         id: "tick".into(),
+//!         metadata: None,
+//!         data: None,
+//!     },
+//! };
+//! let events = vec![
+//!     tick(0.01),
+//!     tick(0.02),
+//!     TimedIncomingEvent {
+//!         time_offset_secs: 0.03,
+//!         event: IncomingEvent::Stop,
+//!     },
+//! ];
+//! let inputs = TestingInput::Input(IntegrationTestInput::new("node_id".parse()?, events));
+//!
+//! // send the node's outputs to a channel so we can verify them later
+//! let (tx, mut rx) = output_channel();
+//! let outputs = TestingOutput::ToChannel(tx);
+//!
+//! // don't include time offsets in the outputs to make them deterministic
+//! let options = TestingOptions {
+//!     skip_output_time_offsets: true,
+//! };
+//!
+//! // set up the integration testing environment -> this makes `DoraNode::init_from_env`
+//! // initialize the node in testing mode
+//! setup_integration_testing(inputs, outputs, options);
+//!
+//! // call the node's main function
+//! node_main()?;
+//!
+//! // collect the node's outputs and compare them
+//! let outputs = drain_outputs(&mut rx);
+//! let data: Vec<_> = outputs.iter().map(|output| output["data"].clone()).collect();
+//! assert_eq!(data, [serde_json::json!([1]), serde_json::json!([2])]);
+//! assert!(outputs.iter().all(|output| output["id"] == "count"));
+//! # Ok(())
+//! # }
 //! ```
+//!
+//! In a crate, put the setup and assertions in a `#[test]` function and call the node's real
+//! `main` function (e.g. `crate::main()`).
 //!
 //! ## Testing through Environment Variables
 //!
@@ -127,22 +156,40 @@
 //!
 //! ### Example
 //!
-//! ```rust, ignore
-//! #[test]
-//! fn test_run_function() -> eyre::Result<()> {
-//!     // specify the events that should be sent to the node
-//!     let events = vec![...]; // see above for details
-//!     let inputs = dora_node_api::integration_testing::TestingInput::Input(
-//!          IntegrationTestInput::new("node_id".parse().unwrap(), events),
-//!     );
+//! ```
+//! use dora_node_api::{
+//!     DoraNode, EventStream,
+//!     integration_testing::{
+//!         IntegrationTestInput, TestingInput, TestingOutput,
+//!         integration_testing_format::{IncomingEvent, TimedIncomingEvent},
+//!     },
+//! };
 //!
-//!     let outputs = dora_node_api::integration_testing::TestingOutput::ToFile(
-//!        std::path::PathBuf::from("path/to/outputs.jsonl"),
-//!     );
-//!
-//!     let (node, events) = DoraNode::init_testing(inputs, outputs, Default::default())?;
-//!     do_something_with_node_and_events(node, events)?;
+//! /// The code under test, taking an already initialized node.
+//! fn run(_node: DoraNode, mut events: EventStream) -> eyre::Result<usize> {
+//!     Ok(std::iter::from_fn(|| events.recv()).count())
 //! }
+//!
+//! # fn main() -> eyre::Result<()> {
+//! // specify the events that should be sent to the node (see above for details)
+//! let events = vec![TimedIncomingEvent {
+//!     time_offset_secs: 0.01,
+//!     event: IncomingEvent::Stop,
+//! }];
+//! let inputs = TestingInput::Input(IntegrationTestInput::new("node_id".parse()?, events));
+//!
+//! # let outputs_path =
+//! #     std::env::temp_dir().join(format!("dora-doctest-outputs-{}.jsonl", std::process::id()));
+//! # /*
+//! let outputs_path = std::path::PathBuf::from("path/to/outputs.jsonl");
+//! # */
+//! let outputs = TestingOutput::ToFile(outputs_path.clone());
+//!
+//! let (node, events) = DoraNode::init_testing(inputs, outputs, Default::default())?;
+//! assert_eq!(run(node, events)?, 1);
+//! # std::fs::remove_file(&outputs_path).ok();
+//! # Ok(())
+//! # }
 //! ```
 //!
 //!
