@@ -597,6 +597,19 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             })
         }
 
+        /// `name` as the generated topic and service endpoints use it on
+        /// native Zenoh: a relative name is under the node's namespace, as rcl
+        /// resolves it (and DDS, via ros2-client `Name::to_dds_name`, except
+        /// that it writes `//` under the root namespace).
+        #[cfg(feature = "rmw-zenoh")]
+        pub fn zenoh_full_name(node: &dora_ros2_bridge::transport::zenoh::Node, name: String) -> String {
+            if name.starts_with('/') {
+                name
+            } else {
+                format!("{}/{}", node.namespace().trim_end_matches('/'), name)
+            }
+        }
+
         /// Data key and graph token for a service endpoint on native Zenoh,
         /// shared by the generated service clients and servers.
         #[cfg(feature = "rmw-zenoh")]
@@ -608,13 +621,7 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             name: String,
             qos: &ffi::Ros2QosPolicies,
         ) -> eyre::Result<(dora_ros2_bridge::transport::zenoh::keyexpr::DataKey, dora_ros2_bridge::transport::zenoh::keyexpr::TopicToken)> {
-            // A relative name is under the node's namespace, as on DDS
-            // (ros2-client `Name::to_dds_name`).
-            let name = if name.starts_with('/') {
-                name
-            } else {
-                format!("{}/{}", node.namespace().trim_end_matches('/'), name)
-            };
+            let name = zenoh_full_name(node, name);
             let identity = dora_ros2_bridge::transport::zenoh::compatibility::resolve_service(
                 compatibility,
                 package,
@@ -817,7 +824,7 @@ fn generate_package_rust_imports_for_cxx() -> proc_macro2::TokenStream {
         use crate::ros2::default_impl::neutral_qos;
         #[cfg(feature = "rmw-zenoh")]
         #[allow(unused_imports)]
-        use crate::ros2::default_impl::zenoh_service_endpoint;
+        use crate::ros2::default_impl::{zenoh_full_name, zenoh_service_endpoint};
     }
 }
 
