@@ -433,6 +433,42 @@ meta->set_string("goal_status", "succeeded");
 send_output_with_metadata(sender, "result", result_data, std::move(meta));
 ```
 
+### Extension seam
+
+The daemon's opaque extension table, for transports that live outside dora. See [extensions.md](extensions.md) for what it guarantees and `examples/c++-extension-seam/` for a runnable example. The namespace parameter is called `ns` because `namespace` is a C++ keyword.
+
+```cpp
+// Store opaque bytes under (ns, key). Only the storing node may overwrite a key.
+DoraResult extension_store(
+    const rust::Box<OutputSender>& sender,
+    rust::Str ns,
+    rust::Str key,
+    rust::Slice<const uint8_t> value);
+
+// Read the bytes back; `remove` drops the entry in the same round trip.
+DoraExtensionValue extension_load(
+    const rust::Box<OutputSender>& sender,
+    rust::Str ns,
+    rust::Str key,
+    bool remove);
+
+// Drop the entry and notify every node that stored or loaded it.
+// Dropping an absent key succeeds.
+DoraResult extension_drop(
+    const rust::Box<OutputSender>& sender,
+    rust::Str ns,
+    rust::Str key);
+
+// Keys in `ns` dropped since the last call. Not delivered as events: poll it.
+rust::Vec<rust::String> drain_dropped_extension_keys(rust::Str ns);
+
+struct DoraExtensionValue {
+    bool                  found;  // false if the key is absent, or on error: check `error` first
+    rust::Vec<uint8_t>    value;  // empty unless found
+    rust::String          error;  // empty on success
+};
+```
+
 ### CombinedEvents (ROS2 integration)
 
 When using the optional `ros2-bridge` feature, node events and ROS2 subscription events can be merged into a single stream.
