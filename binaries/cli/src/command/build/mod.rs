@@ -72,7 +72,7 @@ use crate::{
 };
 
 use distributed::{build_distributed_dataflow, wait_until_dataflow_built};
-use local::build_dataflow_locally;
+use local::{BuildLayout, build_dataflow_locally};
 use lockfile::BuildLockfile;
 
 mod distributed;
@@ -545,7 +545,10 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
                 dataflow_descriptor,
                 &git_sources,
                 &dataflow_session,
-                local_working_dir,
+                BuildLayout {
+                    working_dir: local_working_dir,
+                    hub_cache_dir: dora_core::build::default_hub_cache_dir(),
+                },
                 uv,
                 parallel,
                 &hub_override_node_dirs,

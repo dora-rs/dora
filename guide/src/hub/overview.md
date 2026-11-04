@@ -64,6 +64,33 @@ yank`. Explicit `[[index]]` bindings in `hub.toml` still win for their
 namespaces. Plain HTTP is accepted for loopback hosts (local tests); for a
 trusted LAN mirror, set `DORA_HUB_ALLOW_INSECURE_REGISTRY=1`.
 
+## Hub source cache
+
+Resolved `hub:` nodes are checked out and built in a per-user cache **outside
+the dataflow/project directory**:
+
+- Linux: `$XDG_CACHE_HOME/dora/hub` (usually `~/.cache/dora/hub`)
+- macOS: `~/Library/Caches/dora/hub`
+- Windows: `%LOCALAPPDATA%\dora\hub`
+
+Override the root with `DORA_HUB_CACHE_DIR`:
+
+```bash
+DORA_HUB_CACHE_DIR=/var/cache/dora-hub dora build dataflow.yml
+```
+
+Sources live under `<cache>/sources/<host>/<repo>/<rev>`. Keeping them outside
+the project is intentional: Cargo resolves workspaces by walking up ancestor
+directories, so checking a standalone package out below a project that has a
+`Cargo.toml` can make Cargo believe the package belongs to the project's
+workspace. A project-local `.dorahub/` directory would still sit below that
+`Cargo.toml` and would not fix the problem.
+
+`dora run` and distributed builds use the same cache on the machine that builds
+the node. For a remote daemon, set `DORA_HUB_CACHE_DIR` in the daemon's
+environment (or use the platform default). `--hub-override` is unaffected: it
+deliberately builds from the user's local checkout.
+
 ## A package reference
 
 A `hub:` value is `[<namespace>/]<name>@<version-requirement>`:

@@ -23,10 +23,74 @@ mod build_command;
 mod git;
 mod logger;
 
+/// Environment override for the Hub source/build cache.
+pub const HUB_CACHE_DIR_ENV: &str = "DORA_HUB_CACHE_DIR";
+
+/// Root directory for Hub source checkouts and build artifacts.
+///
+/// This is deliberately outside the dataflow/project directory. Cargo walks
+/// ancestors when resolving a package's workspace; checking a standalone
+/// package out under a user project that contains a `Cargo.toml` makes Cargo
+/// believe the package belongs to that workspace. A cache outside the project
+/// avoids that class of failure while preserving a package's own monorepo
+/// workspace when one exists.
+///
+/// `DORA_HUB_CACHE_DIR` overrides the platform default. The actual source
+/// checkouts live under `<cache>/sources/<host>/<repo>/<rev>`.
+pub fn default_hub_cache_dir() -> PathBuf {
+    if let Some(path) = std::env::var_os(HUB_CACHE_DIR_ENV).filter(|value| !value.is_empty()) {
+        return absolute_path(PathBuf::from(path));
+    }
+    platform_cache_dir()
+}
+
+fn absolute_path(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&path))
+            .unwrap_or(path)
+    }
+}
+
+fn platform_cache_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(base) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(base).join("dora").join("hub");
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Caches")
+                .join("dora")
+                .join("hub");
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(base) = std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
+            return PathBuf::from(base).join("dora").join("hub");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(".cache").join("dora").join("hub");
+        }
+    }
+    std::env::temp_dir().join("dora-hub-cache")
+}
+
 #[derive(Clone)]
 pub struct Builder {
     pub session_id: SessionId,
     pub base_working_dir: PathBuf,
+    /// Where Hub git sources are cloned and built. Kept separate from
+    /// `base_working_dir` so a dataflow inside a Cargo workspace cannot make
+    /// Cargo mistake a standalone Hub package for a workspace member.
+    pub hub_cache_dir: PathBuf,
     pub uv: bool,
 }
 
@@ -52,7 +116,7 @@ impl Builder {
             if let Some(subdir) = &subdir {
                 validate_subdir(subdir)?;
             }
-            let target_dir = self.base_working_dir.join("git");
+            let target_dir = self.hub_cache_dir.join("sources");
             let git_folder = git_manager.choose_clone_dir(
                 self.session_id,
                 repo,

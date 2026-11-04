@@ -56,6 +56,7 @@ impl Daemon {
         let builder = build::Builder {
             session_id,
             base_working_dir,
+            hub_cache_dir: build::default_hub_cache_dir(),
             uv,
         };
         self.git_manager.clear_planned_builds(session_id);

@@ -11,11 +11,20 @@ use eyre::Context;
 
 use crate::session::DataflowSession;
 
+/// Filesystem roots for one local build. `working_dir` is the user's dataflow
+/// directory (used for local/path nodes); `hub_cache_dir` is outside the
+/// project and is used for Hub git checkouts.
+#[derive(Clone, Debug)]
+pub struct BuildLayout {
+    pub working_dir: PathBuf,
+    pub hub_cache_dir: PathBuf,
+}
+
 pub fn build_dataflow_locally(
     dataflow: Descriptor,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
-    working_dir: PathBuf,
+    layout: BuildLayout,
     uv: bool,
     parallel: bool,
     node_working_dir_overrides: &BTreeMap<NodeId, PathBuf>,
@@ -26,7 +35,7 @@ pub fn build_dataflow_locally(
         dataflow,
         git_sources,
         dataflow_session,
-        working_dir,
+        layout,
         uv,
         parallel,
         node_working_dir_overrides,
@@ -37,14 +46,15 @@ async fn build_dataflow(
     dataflow: Descriptor,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
-    base_working_dir: PathBuf,
+    layout: BuildLayout,
     uv: bool,
     parallel: bool,
     node_working_dir_overrides: &BTreeMap<NodeId, PathBuf>,
 ) -> eyre::Result<BuildInfo> {
     let builder = Builder {
         session_id: dataflow_session.session_id,
-        base_working_dir,
+        base_working_dir: layout.working_dir,
+        hub_cache_dir: layout.hub_cache_dir,
         uv,
     };
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
@@ -240,7 +250,10 @@ mod tests {
                 descriptor.clone(),
                 &BTreeMap::new(),
                 &DataflowSession::default(),
-                tmp.path().to_owned(),
+                BuildLayout {
+                    working_dir: tmp.path().to_owned(),
+                    hub_cache_dir: tmp.path().join("hub-cache"),
+                },
                 false,
                 parallel,
                 &BTreeMap::new(),

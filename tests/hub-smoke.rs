@@ -59,6 +59,9 @@ fn write(path: &Path, content: &str) {
 
 struct Fixture {
     _tmp: tempfile::TempDir,
+    /// Deliberately separate from `_tmp`: the Hub source cache must be outside
+    /// the project/dataflow root.
+    cache: tempfile::TempDir,
     root: PathBuf,
     hub_config: PathBuf,
 }
@@ -128,6 +131,7 @@ fn build_fixture() -> Fixture {
 
     Fixture {
         _tmp: tmp,
+        cache: tempfile::tempdir().unwrap(),
         root,
         hub_config,
     }
@@ -136,6 +140,9 @@ fn build_fixture() -> Fixture {
 fn dora(fixture: &Fixture) -> Command {
     let mut cmd = Command::new(dora_bin());
     cmd.env("DORA_HUB_CONFIG", &fixture.hub_config);
+    // keep each test hermetic and outside its dataflow directory; the cache is
+    // deliberately not derived from the dataflow path
+    cmd.env("DORA_HUB_CACHE_DIR", fixture.cache.path());
     // the fixture index entries point at a `file://` source repo; opt in to
     // local sources, which a public index would otherwise reject
     cmd.env("DORA_HUB_ALLOW_LOCAL_SOURCES", "1");
@@ -188,6 +195,15 @@ fn hub_end_to_end() {
         .output()
         .unwrap();
     assert!(out.status.success(), "build failed: {}", stderr(&out));
+    // Hub git sources must not be checked out under the dataflow directory.
+    // Cargo resolves a package's workspace by walking ancestors; a checkout
+    // below a user project with a Cargo.toml can be mistaken for a workspace
+    // member. The source cache is a sibling of the project, not a child.
+    assert!(
+        fixture.cache.path().join("sources").is_dir(),
+        "hub source cache was not created at {}",
+        fixture.cache.path().join("sources").display()
+    );
     let lockfile = fixture.root.join("flow/dataflow.dora-lock.yaml");
     let lock = std::fs::read_to_string(&lockfile).unwrap();
     assert!(lock.contains("subdir: node-hub/hello"), "lockfile: {lock}");
