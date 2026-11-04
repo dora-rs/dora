@@ -638,11 +638,11 @@ pub enum TestingOutput {
     // Write outputs as JSONL to any writer.
     ToWriter(Box<dyn std::io::Write + Send>),
 
-    // Send each output as a JSON object to an unbounded channel.
-    // Build the pair with `integration_testing::unbounded_channel()` and read it
-    // with `integration_testing::drain_outputs()`. Unbounded because nothing
-    // drains the channel while the node runs.
-    ToChannel(UnboundedSender<OutputJson>),
+    // Send each output as a JSON object to the paired `OutputReceiver`.
+    // Build the pair with `integration_testing::output_channel()` and read it
+    // with `integration_testing::drain_outputs()` once the node has finished.
+    // Unbounded because nothing drains the channel while the node runs.
+    ToChannel(OutputSender),
 }
 ```
 

@@ -283,8 +283,9 @@ control plane, fallback names travel separately from the strict descriptor;
 older components ignore them and retain their original lookup behavior. An
 existing module-local executable still works with those components, but a
 command available only through fallback requires the updated components.
-Descriptors sent to node APIs and `dora info` omit this internal metadata, so
-existing node binaries and clients can continue reading them.
+Descriptors sent to node APIs, and the one in the coordinator's `Info` reply
+(which `dora node info` shows), omit this internal metadata, so existing node
+binaries and clients can continue reading them.
 
 Two consequences worth knowing:
 

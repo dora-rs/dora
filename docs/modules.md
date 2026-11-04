@@ -314,4 +314,5 @@ Automatic fallback applies only to a single extensionless name. Paths with
 folders and dotted names such as `worker.py`, `node.v2` and `tool.exe` retain
 module-relative lookup. Use updated CLI, coordinator and daemon binaries for
 fallback; older components ignore the optional control metadata and keep their
-original lookup behavior. Descriptors sent to nodes and `dora info` omit it.
+original lookup behavior. Descriptors sent to nodes, and the one in the
+coordinator's `Info` reply (which `dora node info` shows), omit it.
