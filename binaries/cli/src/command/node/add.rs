@@ -30,13 +30,13 @@ impl Executable for Add {
         let node: dora_message::descriptor::Node =
             serde_yaml::from_str(&yaml_content).wrap_err("failed to parse node YAML")?;
 
-        let reply = send_control_request(&session, &ControlRequest::AddNode { dataflow_id, node })?;
+        let reply = send_control_request(&session, &ControlRequest::AddNode { dataflow_id, node })
+            .wrap_err("failed to add node")?;
 
         match reply {
             ControlRequestReply::NodeAdded { node_id, .. } => {
                 println!("Node `{node_id}` added to dataflow {dataflow_id}");
             }
-            ControlRequestReply::Error(err) => bail!("failed to add node: {err}"),
             other => bail!("unexpected reply: {other:?}"),
         }
         Ok(())

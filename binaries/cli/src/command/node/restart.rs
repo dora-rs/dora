@@ -69,7 +69,6 @@ impl Executable for Restart {
                 println!("Node `{node_id}` restart initiated");
                 Ok(())
             }
-            ControlRequestReply::Error(err) => bail!("{err}"),
             other => bail!("unexpected reply: {other:?}"),
         }
     }
