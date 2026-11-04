@@ -528,7 +528,7 @@
           ]
         },
         "output_framing": {
-          "description": "Per-output framing overrides (default: Raw for all).\n\nMaps output identifiers to their wire framing mode.\nOutputs not listed here use the default `Raw` framing.",
+          "description": "Per-output framing overrides. Accepted for 1.x schema compatibility\nbut ignored: every output is encoded as Arrow IPC whatever its entry\nhere says (see [`OutputFraming`]).",
           "type": [
             "object",
             "null"
@@ -760,7 +760,7 @@
           ]
         },
         "output_framing": {
-          "description": "Per-output framing overrides (default: Raw for all).",
+          "description": "Per-output framing overrides. Ignored: every output is encoded as\nArrow IPC (see [`OutputFraming`]).",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/OutputFraming"
@@ -847,15 +847,15 @@
       "type": "string"
     },
     "OutputFraming": {
-      "description": "Wire framing mode for an output.",
+      "description": "Wire framing requested for an output via `output_framing`.\n\nAccepted for dora 1.x schema compatibility only: neither value changes\nanything. Every output is encoded as Arrow IPC regardless of this\nsetting.",
       "oneOf": [
         {
-          "description": "Raw Arrow buffer layout (default, current behavior).",
+          "description": "The default.",
           "type": "string",
           "const": "raw"
         },
         {
-          "description": "Arrow IPC stream format — self-describing, schema + record batches.",
+          "description": "Arrow IPC stream format.",
           "type": "string",
           "const": "arrow-ipc"
         }
@@ -1305,7 +1305,7 @@
           ]
         },
         "output_framing": {
-          "description": "Per-output framing overrides (default: Raw for all).",
+          "description": "Per-output framing overrides. Ignored: every output is encoded as\nArrow IPC (see [`OutputFraming`]).",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/OutputFraming"
