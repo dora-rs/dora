@@ -48,11 +48,7 @@ use eyre::{Context, bail, eyre};
 
 use super::{ARROW_BUFFER_ALIGNMENT as ALIGN, IpcPayload};
 use dora_arrow_convert::{DoraArray, internal::array_ref};
-
-/// IPC stream continuation marker (precedes every message length prefix).
-const CONTINUATION_MARKER: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
-/// Bytes of the message length/continuation prefix (continuation + i32 length).
-const PREFIX_LEN: usize = 8;
+use dora_core::schema_once::{CONTINUATION_MARKER, PREFIX_LEN};
 
 #[inline]
 fn round_up(n: usize, align: usize) -> usize {
@@ -861,39 +857,18 @@ fn encode_uint8_prepared_into(
 /// [`encode_ipc_into`] (so a receiver can split it into the schema prefix and
 /// the record-batch+body), or `None` if `stream` is not a framed IPC message.
 pub fn schema_block_len(stream: &[u8]) -> Option<usize> {
-    if stream.len() < PREFIX_LEN || stream[0..4] != CONTINUATION_MARKER {
-        return None;
-    }
-    let metadata_len = i32::from_le_bytes(stream[4..8].try_into().ok()?);
-    let block = PREFIX_LEN.checked_add(usize::try_from(metadata_len).ok()?)?;
-    (block <= stream.len()).then_some(block)
+    dora_core::schema_once::schema_block_len(stream)
 }
 
 /// Schema identity of a full IPC stream: the FNV-1a hash of its leading schema
 /// block, plus the block itself. This pairing IS the schema-once wire contract
 /// — the producer (`publish_schema_once`), the node receive path (in-band
 /// priming), and the daemon's `dora topic` rebuild all derive the hash from
-/// exactly these bytes via this function (the producer via
-/// `schema_block_and_hash_reusing`, which this wraps); independent
-/// re-derivations could drift and silently break batch↔schema matching.
+/// exactly these bytes, through the one implementation in
+/// `dora_core::schema_once`; independent re-derivations could drift and
+/// silently break batch↔schema matching.
 pub fn schema_block_and_hash(stream: &[u8]) -> Option<(u64, &[u8])> {
-    schema_block_and_hash_reusing(stream, None)
-}
-
-/// [`schema_block_and_hash`], but returns `known`'s hash without hashing again
-/// when the schema block is byte-identical to `known`'s block. `known` must be
-/// a pair this function returned earlier.
-pub(crate) fn schema_block_and_hash_reusing<'a>(
-    stream: &'a [u8],
-    known: Option<(u64, &[u8])>,
-) -> Option<(u64, &'a [u8])> {
-    let block = schema_block_len(stream)?;
-    let schema = stream.get(..block)?;
-    let hash = match known {
-        Some((hash, known_schema)) if known_schema == schema => hash,
-        _ => dora_message::metadata::fnv1a(schema),
-    };
-    Some((hash, schema))
+    dora_core::schema_once::schema_block_and_hash(stream)
 }
 
 /// Given a full IPC stream, return the schema-less record-batch slice —
