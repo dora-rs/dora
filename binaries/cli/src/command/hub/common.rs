@@ -7,6 +7,20 @@ use dora_hub_client::{
 };
 use eyre::Context;
 
+/// A `git` command for the user's own node repository at `dir`, as `dora hub
+/// init` and `dora hub publish` read it (the `origin` remote, the commit to
+/// pin, the files committed at it).
+///
+/// Built by hub-client's `git_command`, which drops the repository-locating
+/// variables (`GIT_DIR`, `GIT_WORK_TREE`, ...) that git exports to hooks and
+/// CI steps sometimes set. They take precedence over the working directory,
+/// so inherited they would make these commands read *another* repository's
+/// HEAD and `origin`, and `publish` would pin the wrong commit (the same
+/// class #3967 fixed for the index cache).
+pub(super) fn node_repo_git(dir: &std::path::Path) -> std::process::Command {
+    dora_hub_client::transport::git_command(Some(dir))
+}
+
 /// Strip control and bidirectional/format characters from index-supplied
 /// strings before printing them (a hostile index entry could otherwise inject
 /// terminal escapes or visually reorder the rendered line).
@@ -88,7 +102,77 @@ impl HubContext {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize;
+    use super::{node_repo_git, sanitize};
+
+    /// `dora hub init`/`publish` must not let an inherited `GIT_DIR` and its
+    /// siblings point their git commands at another repository.
+    #[test]
+    fn node_repo_git_drops_the_repository_locating_environment() {
+        let dir = std::path::Path::new(".");
+        let command = node_repo_git(dir);
+        let removed: Vec<_> = command
+            .get_envs()
+            .filter(|(_, value)| value.is_none())
+            .map(|(key, _)| key.to_string_lossy().into_owned())
+            .collect();
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+        ] {
+            assert!(removed.iter().any(|r| r == var), "`{var}` is inherited");
+        }
+        assert_eq!(command.get_current_dir(), Some(dir));
+    }
+
+    /// `dora hub publish` runs from the node's directory, usually a
+    /// subdirectory of its repository (`node-hub/hello`), and relies on
+    /// `rev-parse --show-prefix` finding the enclosing repository from there.
+    /// A discovery ceiling on this helper, as managed clones get, would break
+    /// that (dora-rs/dora#4017 review).
+    #[test]
+    fn node_repo_git_finds_the_repository_from_a_node_subdirectory() {
+        let repo = tempfile::tempdir().unwrap();
+        let node = repo.path().join("node-hub/hello");
+        std::fs::create_dir_all(&node).unwrap();
+        // Through `node_repo_git` too: a plain `git` would inherit `GIT_DIR` /
+        // `GIT_INDEX_FILE` when the tests run from a git hook, and commit
+        // into the developer's own repository (dora-rs/dora#4017 review).
+        let git = |args: &[&str]| {
+            let status = node_repo_git(repo.path())
+                .args([
+                    "-c",
+                    "user.email=t@dora.rs",
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "--quiet"]);
+        std::fs::write(node.join("dora-node.yml"), "name: hello\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "--quiet", "-m", "init"]);
+
+        let output = node_repo_git(&node)
+            .args(["rev-parse", "--show-prefix"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "node-hub/hello/"
+        );
+    }
 
     #[test]
     fn strips_c0_control_and_escape() {

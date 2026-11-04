@@ -148,6 +148,18 @@ mod ffi {
         error: String,
     }
 
+    /// Result of `extension_load`.
+    ///
+    /// `found` is false when the key is not in the table (never stored,
+    /// or already dropped), and `value` is then empty. A failed request
+    /// sets `error` and also leaves `found` false, so check `error`
+    /// first: a failure is not the same as an absent key.
+    struct DoraExtensionValue {
+        found: bool,
+        value: Vec<u8>,
+        error: String,
+    }
+
     /// Payload of a `DoraEventType::NodeFailed` event.
     struct DoraNodeFailed {
         /// Inputs on this node that will stop receiving data because
@@ -260,7 +272,9 @@ mod ffi {
         /// (`API_KEY: "${HOST_VAR}"`, expanded at descriptor parse
         /// time per `libraries/message/src/descriptor.rs`'s
         /// `with_expand_envs`) both appear as plain strings in the
-        /// output. Don't pipe this into shared logs or telemetry
+        /// output, with each `$` written as `$$` so that decoding the
+        /// JSON as a descriptor again gives back the same value.
+        /// Don't pipe this into shared logs or telemetry
         /// without sanitizing if your dataflow can carry secrets in
         /// env vars.
         fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> Result<String>;
@@ -315,7 +329,8 @@ mod ffi {
 
         /// Arrow-payload variant of `send_service_request`. Consumes the
         /// Arrow C Data Interface structs behind `array_ptr` /
-        /// `schema_ptr` exactly like `send_arrow_output` does.
+        /// `schema_ptr` exactly like `send_arrow_output` does, including
+        /// rejecting an already-released struct with an error.
         unsafe fn send_arrow_service_request(
             output_sender: &mut Box<OutputSender>,
             output_id: String,
@@ -364,6 +379,42 @@ mod ffi {
             timeout_ms: u64,
         ) -> DoraPatternResult;
 
+        // -------------------------------------------------------------
+        // Extension seam (docs/extensions.md)
+        //
+        // The namespace parameter is `ns` because `namespace` is a C++
+        // keyword and would break the generated header.
+        // -------------------------------------------------------------
+
+        /// Store an opaque value in the daemon's dataflow-scoped
+        /// extension table. dora never interprets `ns`, `key` or `value`;
+        /// it reclaims the entry when this node exits or the dataflow
+        /// finishes. Only the storing node may overwrite a key.
+        /// Mirrors `dora_node_api::DoraNode::extension_store`.
+        fn extension_store(
+            output_sender: &Box<OutputSender>,
+            ns: &str,
+            key: &str,
+            value: &[u8],
+        ) -> DoraResult;
+        /// Read an opaque value back. With `remove` set, the entry is
+        /// dropped in the same round trip.
+        fn extension_load(
+            output_sender: &Box<OutputSender>,
+            ns: &str,
+            key: &str,
+            remove: bool,
+        ) -> DoraExtensionValue;
+        /// Drop an opaque value, notifying every node that stored or
+        /// loaded it. Dropping an absent key succeeds, so a retry after a
+        /// lost reply is safe.
+        fn extension_drop(output_sender: &Box<OutputSender>, ns: &str, key: &str) -> DoraResult;
+        /// Take the keys in namespace `ns` dropped since the last call, so
+        /// the caller can release whatever it derived from them. Drop
+        /// notifications are not delivered as events: poll this wherever
+        /// the extension next runs.
+        fn drain_dropped_extension_keys(ns: &str) -> Vec<String>;
+
         fn next(self: &mut CombinedEvents) -> CombinedEvent;
 
         fn is_dora(self: &CombinedEvent) -> bool;
@@ -392,6 +443,14 @@ mod ffi {
             metadata: Box<Metadata>,
         ) -> DoraResult;
 
+        /// Send an Arrow array on a named output, taking ownership of the
+        /// Arrow C Data Interface structs behind `array_ptr` / `schema_ptr`.
+        ///
+        /// Unless a pointer is null, both structs are consumed on every
+        /// path (the caller's copies are zeroed), including when an error
+        /// is returned. An already-released struct (`release == NULL`),
+        /// for example one resent after a failed call, is rejected with an
+        /// error.
         unsafe fn send_arrow_output(
             output_sender: &mut Box<OutputSender>,
             id: String,
@@ -1522,6 +1581,80 @@ fn pattern_failure(
     }
 }
 
+// ---------------------------------------------------------------------
+// Extension seam (docs/extensions.md)
+// ---------------------------------------------------------------------
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn extension_store(
+    sender: &Box<OutputSender>,
+    ns: &str,
+    key: &str,
+    value: &[u8],
+) -> ffi::DoraResult {
+    let mut node = match lock_node(&sender.0, "extension_store") {
+        Ok(node) => node,
+        Err(error) => return ffi::DoraResult { error },
+    };
+    match node.extension_store(ns, key, value.to_vec()) {
+        Ok(()) => ffi::DoraResult {
+            error: String::new(),
+        },
+        Err(err) => ffi::DoraResult {
+            error: format!("{err:?}"),
+        },
+    }
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn extension_load(
+    sender: &Box<OutputSender>,
+    ns: &str,
+    key: &str,
+    remove: bool,
+) -> ffi::DoraExtensionValue {
+    let mut node = match lock_node(&sender.0, "extension_load") {
+        Ok(node) => node,
+        Err(error) => return extension_load_failed(error),
+    };
+    match node.extension_load(ns, key, remove) {
+        Ok(value) => ffi::DoraExtensionValue {
+            found: value.is_some(),
+            value: value.unwrap_or_default(),
+            error: String::new(),
+        },
+        Err(err) => extension_load_failed(format!("{err:?}")),
+    }
+}
+
+fn extension_load_failed(error: String) -> ffi::DoraExtensionValue {
+    ffi::DoraExtensionValue {
+        found: false,
+        value: Vec::new(),
+        error,
+    }
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn extension_drop(sender: &Box<OutputSender>, ns: &str, key: &str) -> ffi::DoraResult {
+    let mut node = match lock_node(&sender.0, "extension_drop") {
+        Ok(node) => node,
+        Err(error) => return ffi::DoraResult { error },
+    };
+    match node.extension_drop(ns, key) {
+        Ok(()) => ffi::DoraResult {
+            error: String::new(),
+        },
+        Err(err) => ffi::DoraResult {
+            error: format!("{err:?}"),
+        },
+    }
+}
+
+fn drain_dropped_extension_keys(ns: &str) -> Vec<String> {
+    dora_node_api::event_stream::extensions::drain_dropped_keys(ns)
+}
+
 pub struct MergedEvents {
     events: Option<Box<dyn Stream<Item = MergedEvent<ExternalEvent>> + Unpin>>,
     #[cfg(any(feature = "ros2-bridge", test))]
@@ -1572,6 +1705,18 @@ unsafe fn send_arrow_output_impl(
     unsafe {
         std::ptr::write(array_ptr, std::mem::zeroed());
         std::ptr::write(schema_ptr, std::mem::zeroed());
+    }
+
+    // A released struct (`release == NULL`), typically one resent after a
+    // failed call already consumed it, has no valid buffers or format
+    // string: importing it panics inside arrow, which aborts across the cxx
+    // bridge. Reject it instead. Returning here drops the owned copies, so a
+    // still-live partner struct is released and the contract stays
+    // "consumed unless a pointer is null".
+    if array.is_released() || schema.release.is_none() {
+        return ffi::DoraResult {
+            error: "Received an already released Arrow array or schema".to_string(),
+        };
     }
 
     match unsafe { arrow::ffi::from_ffi(array, &schema) } {
@@ -2219,6 +2364,58 @@ mod tests {
             "non-send node operations must fail-stop as well: {}",
             log.error
         );
+
+        let loaded = extension_load(&sender, "ns", "key", false);
+        assert!(
+            !loaded.found && loaded.error.contains("poisoned"),
+            "extension operations must fail-stop too: {}",
+            loaded.error
+        );
+    }
+
+    /// A load that fails must say so rather than look like an absent key: a
+    /// transport reads "absent" as "the value is gone" and releases what it
+    /// derived from it. The testing daemon rejects extension requests, which
+    /// gives a real failed round trip.
+    #[test]
+    fn a_failed_extension_load_is_an_error_not_an_absent_key() {
+        let (sender, _rx, _events) = testing_output_sender();
+
+        let loaded = extension_load(&sender, "ns", "key", true);
+        assert!(!loaded.found);
+        assert!(loaded.value.is_empty());
+        assert_eq!(
+            loaded.error.lines().next(),
+            Some(
+                "unsupported request in integration-testing mode: \
+                 ExtensionLoad { namespace: \"ns\", key: \"key\", remove: true }"
+            ),
+            "the daemon's error must reach C++: {}",
+            loaded.error
+        );
+    }
+
+    #[test]
+    fn extension_store_and_drop_report_daemon_errors() {
+        let (sender, _rx, _events) = testing_output_sender();
+
+        let stored = extension_store(&sender, "ns", "key", &[1, 2, 3]);
+        assert_eq!(
+            stored.error.lines().next(),
+            Some(
+                "unsupported request in integration-testing mode: \
+                 ExtensionStore { namespace: \"ns\", key: \"key\", value: [1, 2, 3] }"
+            ),
+        );
+
+        let dropped = extension_drop(&sender, "ns", "key");
+        assert_eq!(
+            dropped.error.lines().next(),
+            Some(
+                "unsupported request in integration-testing mode: \
+                 ExtensionDrop { namespace: \"ns\", key: \"key\" }"
+            ),
+        );
     }
 
     /// A restart must reach C++ as itself, not as `Unknown`.
@@ -2249,5 +2446,100 @@ mod tests {
             event_as_node_restarted(event).is_err(),
             "a caller that branched wrongly must be told, not handed a plausible id"
         );
+    }
+
+    fn exported_u8_array() -> (arrow::ffi::FFI_ArrowArray, arrow::ffi::FFI_ArrowSchema) {
+        use arrow::array::{Array, UInt8Array};
+        arrow::ffi::to_ffi(&UInt8Array::from(vec![1u8, 2, 3]).to_data()).expect("export array")
+    }
+
+    /// Calls `send_arrow_output` the way C++ does, with pointers to the
+    /// caller's Arrow C Data Interface structs.
+    fn send_arrow(
+        sender: &mut Box<OutputSender>,
+        id: &str,
+        array: &mut arrow::ffi::FFI_ArrowArray,
+        schema: &mut arrow::ffi::FFI_ArrowSchema,
+    ) -> ffi::DoraResult {
+        unsafe {
+            send_arrow_output(
+                sender,
+                id.to_string(),
+                array as *mut _ as *mut u8,
+                schema as *mut _ as *mut u8,
+            )
+        }
+    }
+
+    /// A normal Arrow send is delivered and consumes the caller's structs.
+    #[test]
+    fn send_arrow_output_delivers_and_consumes_the_structs() {
+        use dora_node_api::integration_testing::drain_outputs;
+
+        let (mut sender, mut rx, _events) = testing_output_sender();
+        let (mut array, mut schema) = exported_u8_array();
+
+        let result = send_arrow(&mut sender, "out", &mut array, &mut schema);
+        assert!(result.error.is_empty(), "{}", result.error);
+        assert!(array.is_released(), "a send consumes the array");
+        assert!(schema.release.is_none(), "a send consumes the schema");
+
+        let received = drain_outputs(&mut rx);
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].get("id").and_then(|v| v.as_str()), Some("out"));
+        assert_eq!(received[0].get("data"), Some(&serde_json::json!([1, 2, 3])));
+    }
+
+    /// Released structs must be rejected with an error instead of panicking
+    /// inside arrow's import, which aborts the process across the cxx bridge.
+    #[test]
+    fn send_arrow_output_rejects_released_structs() {
+        let (mut sender, _rx, _events) = testing_output_sender();
+        let mut array = arrow::ffi::FFI_ArrowArray::empty();
+        let mut schema = arrow::ffi::FFI_ArrowSchema::empty();
+
+        let result = send_arrow(&mut sender, "out", &mut array, &mut schema);
+        assert!(result.error.contains("released"), "{}", result.error);
+    }
+
+    /// The typical way to hit the abort: a call fails after consuming the
+    /// structs (here an invalid output id), and the caller resends them.
+    /// The contract is unchanged: the first call still consumes both
+    /// structs; the resend now gets an error instead of aborting.
+    #[test]
+    fn send_arrow_output_resend_after_failed_call_is_an_error() {
+        let (mut sender, _rx, _events) = testing_output_sender();
+        let (mut array, mut schema) = exported_u8_array();
+
+        let result = send_arrow(&mut sender, "bad id", &mut array, &mut schema);
+        assert!(
+            result.error.contains("invalid output id"),
+            "{}",
+            result.error
+        );
+        assert!(
+            array.is_released(),
+            "a failed call still consumes the array"
+        );
+        assert!(
+            schema.release.is_none(),
+            "a failed call still consumes the schema"
+        );
+
+        let result = send_arrow(&mut sender, "out", &mut array, &mut schema);
+        assert!(result.error.contains("released"), "{}", result.error);
+    }
+
+    /// When only one struct is released, the live one is still consumed, so
+    /// "consumed unless a pointer is null" holds on the rejection path too.
+    #[test]
+    fn send_arrow_output_consumes_the_live_struct_when_the_other_is_released() {
+        let (mut sender, _rx, _events) = testing_output_sender();
+        let (mut array, _schema) = exported_u8_array();
+        let mut schema = arrow::ffi::FFI_ArrowSchema::empty();
+
+        let result = send_arrow(&mut sender, "out", &mut array, &mut schema);
+        assert!(result.error.contains("released"), "{}", result.error);
+        assert!(array.is_released(), "the live array must still be consumed");
     }
 }

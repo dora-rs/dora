@@ -2,7 +2,7 @@ use crate::{log_subscriber::LogSubscriber, topic_subscriber::TopicSubscriber};
 use dora_coordinator_store::{CoordinatorStore, DataflowRecord, DataflowStatus};
 use dora_core::config::NodeId;
 use dora_message::{
-    BuildId, SessionId,
+    BuildId, DataflowId, SessionId,
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, LogMessage},
     coordinator_to_daemon::{StateCatchUpEntry, StateCatchUpOperation},
@@ -42,6 +42,17 @@ pub(crate) struct LaunchContext {
     pub local_working_dir: Option<PathBuf>,
     pub write_events_to: Option<PathBuf>,
 }
+
+/// The [`LaunchContext`] of each dataflow that lost every daemon and was
+/// removed from `running_dataflows` by an orphan reclaim.
+///
+/// The persisted record does not carry it, so without this the entry that
+/// `reestablish_running_dataflow` rebuilds on reconnect would get
+/// [`LaunchContext::unknown`], and a later `dora restart` would relaunch with
+/// no build, a fresh session and no working directory. Kept in memory only:
+/// a coordinator restart still loses it. Entries whose dataflow is no longer
+/// `Recovering` are dropped by the recovery-timeout sweep.
+pub(crate) type ReclaimedLaunches = HashMap<DataflowId, LaunchContext>;
 
 impl LaunchContext {
     /// For a dataflow whose launch context was not kept (one recovered from

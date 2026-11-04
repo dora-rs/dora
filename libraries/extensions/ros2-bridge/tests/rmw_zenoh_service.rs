@@ -29,6 +29,23 @@ fn service_request_cdr_and_request_ids_are_preserved() {
     assert_eq!(pending.take(id(7, 1), Duration::ZERO).unwrap(), cdr);
 }
 
+/// Like rmw_zenoh (`ServiceData::take_request`: "duplicate sequence number
+/// in the map"), a request whose id is still pending is refused and the
+/// pending one is kept, so its answer can't go to the newer request.
+#[test]
+fn a_request_id_that_is_still_pending_is_refused() {
+    let mut pending = PendingRequests::new(64, Duration::from_secs(30));
+    pending.insert(id(1, 4), "first", Duration::ZERO).unwrap();
+    assert!(matches!(
+        pending.insert(id(1, 4), "second", Duration::ZERO),
+        Err(ServiceError::DuplicateRequest)
+    ));
+    assert_eq!(pending.take(id(1, 4), Duration::ZERO).unwrap(), "first");
+    // Once answered, the id can be used again.
+    pending.insert(id(1, 4), "third", Duration::ZERO).unwrap();
+    assert_eq!(pending.take(id(1, 4), Duration::ZERO).unwrap(), "third");
+}
+
 #[test]
 fn service_pending_is_bounded_and_expires_with_fake_clock() {
     let mut pending = PendingRequests::new(64, Duration::from_secs(30));
@@ -199,6 +216,84 @@ async fn multiple_complete_servers_remote_errors_and_disappearance_are_observabl
         client.call(vec![1], Duration::from_millis(20)).await,
         Err(ServiceError::Timeout)
     ));
+}
+
+/// A query that repeats the id of a request still waiting for its answer is
+/// dropped without a reply and never reaches the server, so the answer goes
+/// to the query that sent the id first. Like rmw_zenoh
+/// (`ServiceData::take_request`: "duplicate sequence number in the map").
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_repeated_request_id_does_not_take_the_pending_answer() {
+    use dora_ros2_bridge::transport::zenoh::{attachment::Attachment, service::RawServiceServer};
+
+    // A session no other process can find, so the server only sees the
+    // queries sent below.
+    let mut config = zenoh::Config::default();
+    config
+        .insert_json5("scouting/multicast/enabled", "false")
+        .unwrap();
+    config
+        .insert_json5("scouting/gossip/enabled", "false")
+        .unwrap();
+    config.insert_json5("listen/endpoints", "[]").unwrap();
+    let session = zenoh::open(config).await.unwrap();
+    let server =
+        RawServiceServer::declare(&session, "dora/test/repeated", 64, Duration::from_secs(30))
+            .await
+            .unwrap();
+    // A raw query with a request id we choose, sent like the service client
+    // sends one.
+    let query = |sequence_number: i64, payload: Vec<u8>| {
+        let session = session.clone();
+        async move {
+            let attachment = Attachment {
+                sequence_number,
+                source_timestamp_ns: 0,
+                gid: [10; 16],
+            };
+            session
+                .get("dora/test/repeated")
+                .target(zenoh::query::QueryTarget::AllComplete)
+                .consolidation(zenoh::query::ConsolidationMode::None)
+                .payload(payload)
+                .attachment(attachment.encode().unwrap())
+                .await
+                .unwrap()
+        }
+    };
+    let recv = || async {
+        tokio::time::timeout(Duration::from_secs(5), server.recv())
+            .await
+            .expect("the server gets a request")
+            .unwrap()
+    };
+
+    let first = query(1, vec![1]).await;
+    assert_eq!(recv().await.payload, vec![1]);
+
+    let repeated = query(1, vec![2]).await;
+    let ended = tokio::time::timeout(Duration::from_secs(5), repeated.recv_async())
+        .await
+        .expect("the repeated query ends");
+    assert!(ended.is_err(), "the repeated query got a reply");
+    // The repeated query was handled before it ended, so had it been passed
+    // on, the server would get it before this one.
+    let _next = query(2, vec![3]).await;
+    assert_eq!(
+        recv().await.payload,
+        vec![3],
+        "the repeated request reached the server"
+    );
+
+    server.reply(id(1, 10), &[11]).await.unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(5), first.recv_async())
+        .await
+        .expect("the first query gets its answer")
+        .unwrap();
+    assert_eq!(
+        reply.result().unwrap().payload().to_bytes().to_vec(),
+        vec![11]
+    );
 }
 
 /// A session whose Zenoh-level query timeout is shorter than the per-call

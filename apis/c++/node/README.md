@@ -304,6 +304,40 @@ the client waiting until its timeout instead of failing loudly. The same
 applies to `set_request_id` / `set_goal_id` / `set_goal_status` and their
 getters, which wrap the reserved metadata keys.
 
+## Extension Seam
+
+The same four extension-table operations as the Rust and Python APIs, for
+transports that live outside dora (see
+[`docs/extensions.md`](../../../docs/extensions.md)). dora stores opaque bytes
+under a `(namespace, key)` pair and cleans them up if the storing node exits.
+`examples/c++-extension-seam/` runs all four.
+
+```c++
+// Producer: store the descriptor, send only the key.
+auto stored = extension_store(dora_node.send_output, "my-transport", "frame-7", descriptor_slice);
+
+// Consumer: load it, then drop it when done.
+auto loaded = extension_load(dora_node.send_output, "my-transport", "frame-7", /* remove */ false);
+if (!loaded.error.empty())
+{
+    // the request failed; `found` is false here too, so check `error` first
+}
+else if (!loaded.found)
+{
+    // no such key: never stored, or already dropped
+}
+auto dropped = extension_drop(dora_node.send_output, "my-transport", "frame-7");
+
+// Anywhere the transport runs: release what dropped keys referred to.
+for (const auto &key : drain_dropped_extension_keys("my-transport"))
+{
+    release(std::string(key));
+}
+```
+
+Drop notifications are not delivered as events, so poll
+`drain_dropped_extension_keys` wherever your transport next runs.
+
 ## Using the ROS2 Bridge
 
 The `dora-ros2-bindings.h` contains function and struct definitions that allow interacting with ROS2 nodes.

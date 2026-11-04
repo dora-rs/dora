@@ -3292,6 +3292,9 @@ pub(crate) const SCHEMA_ONCE_REFRESH_INTERVAL: Duration = Duration::from_secs(5)
 struct SchemaOnceState {
     /// Hash of the schema confirmed published on the `@schema` subtopic.
     published_hash: u64,
+    /// The schema block `published_hash` was computed from, so a message with
+    /// the same block reuses the hash instead of hashing it again.
+    published_schema: Box<[u8]>,
     /// When the last full self-describing stream was sent on the data topic.
     last_full_stream: Instant,
 }
@@ -3354,10 +3357,13 @@ fn publish_schema_once(
     full_stream: &[u8],
     base_metadata: &Metadata,
 ) -> Option<Vec<u8>> {
-    let (hash, schema_bytes) = arrow_utils::ipc_encode::schema_block_and_hash(full_stream)?;
+    let state = schema_state.get(output_id);
+    let known = state.map(|state| (state.published_hash, &*state.published_schema));
+    let (hash, schema_bytes) =
+        arrow_utils::ipc_encode::schema_block_and_hash_reusing(full_stream, known)?;
 
     let now = Instant::now();
-    let decision = schema_once_decision(schema_state.get(output_id), hash, now);
+    let decision = schema_once_decision(state, hash, now);
     tracing::debug!(output = %output_id, decision = ?decision, "schema-once decision");
 
     match decision {
@@ -3376,6 +3382,7 @@ fn publish_schema_once(
                             output_id.clone(),
                             SchemaOnceState {
                                 published_hash: hash,
+                                published_schema: schema_bytes.into(),
                                 last_full_stream: now,
                             },
                         );
@@ -4500,6 +4507,7 @@ mod tests {
         let later = start + SCHEMA_ONCE_REFRESH_INTERVAL;
         let state = SchemaOnceState {
             published_hash: 7,
+            published_schema: Box::default(),
             last_full_stream: start,
         };
 
@@ -4530,6 +4538,68 @@ mod tests {
             schema_once_decision(Some(&state), 7, later),
             SchemaOnceDecision::SendFullStreamRefresh
         ));
+    }
+
+    /// A message whose schema block is byte-identical to the published one
+    /// reuses the recorded hash instead of hashing the block again; a changed
+    /// schema is still hashed and re-published.
+    #[test]
+    fn publish_schema_once_reuses_hash_of_unchanged_schema_block() {
+        use zenoh::Wait;
+
+        // Local-only session: no scouting, no listener, no peer.
+        let mut config = zenoh::Config::default();
+        config
+            .insert_json5("scouting/multicast/enabled", "false")
+            .unwrap();
+        config.insert_json5("listen/endpoints", "[]").unwrap();
+        let session = zenoh::open(config).wait().unwrap();
+
+        let mut publishers = HashMap::new();
+        let mut state = HashMap::new();
+        let dataflow_id = DataflowId::new_v4();
+        let node_id = NodeId::from("node".to_string());
+        let output_id = DataId::from("out".to_string());
+        let metadata = Metadata::new(uhlc::HLC::default().new_timestamp());
+        let encode = |array: arrow::array::ArrayRef| {
+            arrow_utils::encode_arrow_ipc_data(&array.to_data()).unwrap()
+        };
+        let floats = encode(Arc::new(arrow::array::Float32Array::from(vec![1.0; 64])));
+        let bytes = encode(Arc::new(arrow::array::UInt8Array::from(vec![7; 64])));
+        let mut publish = |stream: &[u8], state: &mut HashMap<DataId, SchemaOnceState>| {
+            publish_schema_once(
+                &mut publishers,
+                state,
+                &session,
+                dataflow_id,
+                &node_id,
+                &output_id,
+                stream,
+                &metadata,
+            )
+        };
+
+        // First message: the schema is hashed and published.
+        assert!(publish(&floats, &mut state).is_none());
+        let (floats_hash, _) = arrow_utils::ipc_encode::schema_block_and_hash(&floats).unwrap();
+        assert_eq!(state[&output_id].published_hash, floats_hash);
+
+        // Swap the recorded hash for a marker value. The next schema-less batch
+        // can only carry the marker if the hash came from the state rather
+        // than from hashing the (unchanged) block again.
+        let marker = floats_hash ^ 1;
+        state.get_mut(&output_id).unwrap().published_hash = marker;
+        let attachment = publish(&floats, &mut state).expect("schema-less batch");
+        let sent: Metadata = dora_message::decode(&attachment).unwrap();
+        assert_eq!(
+            sent.parameters.get(SCHEMA_HASH),
+            Some(&Parameter::Integer(marker as i64))
+        );
+
+        // A different schema is hashed and published again.
+        assert!(publish(&bytes, &mut state).is_none());
+        let (bytes_hash, _) = arrow_utils::ipc_encode::schema_block_and_hash(&bytes).unwrap();
+        assert_eq!(state[&output_id].published_hash, bytes_hash);
     }
 
     #[test]

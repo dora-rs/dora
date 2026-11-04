@@ -787,6 +787,65 @@ fn hub_publish_dry_run_previews_entry() {
     );
 }
 
+/// An inherited `GIT_DIR` (git exports it to hooks; CI steps sometimes set it)
+/// must not redirect `dora hub publish` to another repository: the preview has
+/// to pin the node repository's own commit and subdir, not the other one's.
+#[test]
+fn hub_publish_dry_run_ignores_an_inherited_git_dir() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub publish GIT_DIR test");
+        return;
+    }
+    let fixture = build_fixture();
+    let src = fixture.root.join("source");
+    let checkout = src.join("node-hub/hello");
+    let node_commit = String::from_utf8(
+        Command::new("git")
+            .current_dir(&src)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    // Another repository, with a different HEAD, that `GIT_DIR` points at.
+    let other = fixture.root.join("other");
+    write(&other.join("README"), "not the node repo\n");
+    git(&other, &["init", "--quiet", "-b", "main"]);
+    git(&other, &["add", "."]);
+    git(&other, &["commit", "--quiet", "-m", "other"]);
+
+    let out = dora(&fixture)
+        .env("GIT_DIR", other.join(".git"))
+        .args([
+            "hub",
+            "publish",
+            checkout.to_str().unwrap(),
+            "--dry-run",
+            "--repo",
+            &format!("file://{}", src.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "publish --dry-run failed with GIT_DIR set: {}",
+        stderr(&out)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&format!("rev: {node_commit}")),
+        "expected the node repo's commit {node_commit} in the preview:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("subdir: node-hub/hello"),
+        "expected the node repo's subdir in the preview:\n{stdout}"
+    );
+}
+
 /// End-to-end: `dora hub publish` writes a pinned index entry that `dora build`
 /// then resolves and builds — the publish→consume loop, fully local (P3.1).
 #[test]

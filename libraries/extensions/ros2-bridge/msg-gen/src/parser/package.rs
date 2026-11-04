@@ -36,13 +36,7 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs_in: &[P]) -> Result<Vec<P
                 root_dir.to_string_lossy().to_string() + "/**/" + ros_format + "/*." + ros_format;
             for entry in glob(&pattern).context("Failed to read glob pattern")? {
                 let path = entry.context("Could not glob given path")?;
-                let file_name = path
-                    .clone()
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .to_string();
+                let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
 
                 let package_path = path
                     .parent()
@@ -131,6 +125,7 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs_in: &[P]) -> Result<Vec<P
             .iter()
             .filter_map(|dep| map.get(dep).cloned())
             .collect();
+        package.sort_messages();
     }
 
     Ok(packages)

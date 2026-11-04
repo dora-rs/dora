@@ -125,7 +125,6 @@ mod spawn_build;
 mod state;
 #[cfg(test)]
 mod tests;
-mod timeout_streak;
 mod topic_debug;
 mod topic_subscriber;
 mod topology;
@@ -186,7 +185,8 @@ pub async fn start(
 /// Like [`start`] but allows enabling token authentication.
 ///
 /// When `auth` is `true`, the coordinator generates a random token on startup,
-/// writes it to `~/.config/dora/.dora-token`, and requires all clients to
+/// writes it to `.dora-token` in the working directory and in the user config
+/// directory (see [`dora_message::auth::write_token`]), and requires all clients to
 /// present it via the `Authorization: Bearer <token>` header.
 pub async fn start_with_auth(
     bind: SocketAddr,
@@ -360,6 +360,10 @@ pub(crate) struct Coordinator {
     pub(crate) finished_builds: IndexMap<BuildId, CachedResult>,
     pub(crate) running_dataflows: HashMap<DataflowId, RunningDataflow>,
     pub(crate) pending_restarts: HashMap<DataflowId, PendingRestart>,
+    /// Launch contexts of dataflows removed from `running_dataflows` by an
+    /// orphan reclaim, restored when a daemon reconnects and re-reports them
+    /// (see [`state::ReclaimedLaunches`]).
+    pub(crate) reclaimed_launches: state::ReclaimedLaunches,
     pub(crate) dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     pub(crate) archived_dataflows: IndexMap<DataflowId, ArchivedDataflow>,
     pub(crate) daemon_connections: DaemonConnections,
@@ -466,6 +470,7 @@ async fn start_inner(
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::new(),
         pending_restarts: HashMap::new(),
+        reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections: DaemonConnections::default(),

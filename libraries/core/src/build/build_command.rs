@@ -93,7 +93,7 @@ pub async fn run_build_command(
 
         let mut child = cmd
             .spawn()
-            .wrap_err_with(|| format!("failed to spawn `{build}`"))?;
+            .wrap_err_with(|| format!("failed to spawn `{build_line}`"))?;
 
         let child_stdout = BufReader::new(
             child
@@ -110,7 +110,7 @@ pub async fn run_build_command(
         let exit_status =
             wait_forwarding_output(&mut child, child_stdout, child_stderr, stdout_tx.clone())
                 .await
-                .wrap_err_with(|| format!("failed to run `{build}`"))?;
+                .wrap_err_with(|| format!("failed to run `{build_line}`"))?;
         if !exit_status.success() {
             return Err(eyre!("build command `{build_line}` returned {exit_status}"));
         }
@@ -876,6 +876,31 @@ mod tests {
     #[test]
     fn build_command_lines_empty_input_yields_no_commands() {
         assert!(build_command_lines("\n   \n\t\n").next().is_none());
+    }
+
+    /// A failing line of a multi-line `build:` block is named on its own, not
+    /// as the whole block, which would blame the lines that succeeded.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_error_names_only_the_failing_build_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let err = super::run_build_command(
+            "true\ndora-nonexistent-build-tool --flag",
+            dir.path(),
+            false,
+            None,
+            &None,
+            tx,
+        )
+        .await
+        .expect_err("the second line names a program that does not exist");
+        let message = format!("{err:#}");
+        assert!(
+            message.contains("failed to spawn `dora-nonexistent-build-tool --flag`"),
+            "unexpected error: {message}"
+        );
+        assert!(!message.contains("`true"), "unexpected error: {message}");
     }
 
     #[test]

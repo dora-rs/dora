@@ -96,8 +96,13 @@ where
 
 pub fn lib_main(args: Args) {
     if let Err(err) = args.command.execute() {
-        eprintln!("\n\n{}", "[ERROR]".bold().red());
-        eprintln!("{err:?}");
+        print_error(&err);
         std::process::exit(1);
     }
+}
+
+/// Print a command's error to stderr the way every `dora` command reports one.
+fn print_error(err: &eyre::Report) {
+    eprintln!("\n\n{}", "[ERROR]".bold().red());
+    eprintln!("{err:?}");
 }

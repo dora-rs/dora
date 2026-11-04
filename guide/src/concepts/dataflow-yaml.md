@@ -135,7 +135,7 @@ inputs:
   sensor:   dora/logs/info/sensor   # info+ from specific node
 ```
 
-Each message arrives as a JSON-encoded `LogMessage` string. See [Logging](logging.md#doralogs----automatic-log-aggregation) for details.
+Each message arrives as a JSON-encoded `LogMessage` string. See [Logging](../operations/logging.md#doralogs----automatic-log-aggregation) for details.
 
 #### Outputs
 
@@ -193,11 +193,11 @@ Types also appear on `dora graph` edge labels when annotated.
 
 ### Arrow IPC Framing
 
-Per-output wire framing override. Default is `raw` (Arrow buffer layout). Set to `arrow-ipc` for self-describing Arrow IPC stream format.
+Accepted for 1.x compatibility but has no effect: every output is encoded as Arrow IPC whatever this key says, so `raw` and `arrow-ipc` behave identically.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `output_framing` | map | `{}` | Per-output framing: `raw` (default) or `arrow-ipc` |
+| `output_framing` | map | `{}` | Ignored. Values: `raw` or `arrow-ipc` |
 
 ```yaml
 - id: sensor
@@ -266,7 +266,7 @@ Example:
 
 When using `send_stdout_as` or `send_logs_as`, include the output name in the `outputs` list so downstream nodes can subscribe to it.
 
-For a complete guide to all logging features, see [Logging](logging.md).
+For a complete guide to all logging features, see [Logging](../operations/logging.md).
 
 ### Fault Tolerance
 
@@ -374,7 +374,7 @@ A runtime node holds exactly one operator: the operator runtime refuses to start
 - id: preprocess
   operators:
     - id: preprocessor
-      shared-library: ../../target/debug/libpreprocess
+      shared-library: ../../target/debug/preprocess
       inputs:
         raw: sensor/data
       outputs:
@@ -382,7 +382,7 @@ A runtime node holds exactly one operator: the operator runtime refuses to start
 - id: analyze
   operators:
     - id: analyzer
-      shared-library: ../../target/debug/libanalyze
+      shared-library: ../../target/debug/analyze
       inputs:
         data: preprocess/preprocessor/processed
       outputs:
@@ -394,7 +394,7 @@ A runtime node holds exactly one operator: the operator runtime refuses to start
 | Field | Description |
 |-------|-------------|
 | `python` | Python script path, or `{source: "script.py", conda_env: "myenv"}` |
-| `shared-library` | Path to a shared library (`.so`/`.dylib`/`.dll`) |
+| `shared-library` | Path to a shared library, without the `lib` prefix or the `.so`/`.dylib`/`.dll` extension (the runtime adds them for the current platform) |
 
 Operators also support `inputs`, `outputs`, `build`, `send_stdout_as`, `send_logs_as`, `min_log_level`, `max_log_size`, and `max_rotated_files` with the same semantics as node-level fields.
 

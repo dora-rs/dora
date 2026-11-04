@@ -19,10 +19,10 @@ Dora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework 
 - [Architecture Guide](#architecture-guide)
 - [Writing Nodes](#writing-nodes)
 - [Writing Operators](#writing-operators)
-- [Distributed Deployments](#distributed-deployments) -- see also [Distributed Deployment Guide](distributed-deployment.md) for cluster management, scheduling, and operations
+- [Distributed Deployments](#distributed-deployments) -- see also [Distributed Deployment Guide](distributed.md) for cluster management, scheduling, and operations
 - [Troubleshooting](#troubleshooting)
 - [Debugging and Observability](debugging.md) -- standalone guide covering record/replay, topic inspection, log analysis, and resource monitoring
-- **API References:** [Rust](api-rust.md) | [Python](api-python.md) | [C](api-c.md) | [C++](api-cxx.md)
+- **API References:** [Rust](../languages/rust.md) | [Python](../languages/python.md) | [C](../languages/c.md) | [C++](../languages/cpp.md)
 
 ---
 
@@ -225,7 +225,7 @@ nodes:
   - id: runtime-node
     operators:
       - id: preprocessor
-        shared-library: ../../target/debug/libpreprocess
+        shared-library: ../../target/debug/preprocess
         inputs:
           raw: sensor/data
         outputs:
@@ -1037,7 +1037,7 @@ dora expand dataflow.yml
 dora expand --module modules/navigation.module.yml
 ```
 
-See the [Modules Guide](modules.md) for full documentation on module composition.
+See the [Modules Guide](../concepts/modules.md) for full documentation on module composition.
 
 #### `dora graph`
 
@@ -1096,7 +1096,7 @@ dora validate dataflow.yml
 dora validate --strict-types dataflow.yml
 ```
 
-See the [Type Annotations Guide](types.md) for the full type library and usage details.
+See the [Type Annotations Guide](../concepts/types.md) for the full type library and usage details.
 
 ---
 
@@ -1173,7 +1173,7 @@ All environment variables serve as fallbacks. CLI flags always take precedence.
 | `DORA_LOG_FORMAT` | `pretty` | `run`, `logs` | Default output format |
 | `DORA_LOG_FILTER` | | `run`, `logs` | Default per-node level overrides |
 | `DORA_ALLOW_SHELL_NODES` | | `run` | Enable shell node execution |
-| `DORA_RUNTIME_TYPE_CHECK` | | `run`, `start` | Runtime type checking: `warn` (log mismatches) or `error` (fail on mismatch). See [Type Annotations](types.md#runtime-type-checking) |
+| `DORA_RUNTIME_TYPE_CHECK` | | `run`, `start` | Runtime type checking: `warn` (log mismatches) or `error` (fail on mismatch). See [Type Annotations](../concepts/types.md#runtime-type-checking) |
 
 ```bash
 # Set defaults for a development session
@@ -1612,7 +1612,7 @@ dora coordinator --store redb
 
 State is persisted to `~/.dora/coordinator.redb`. On restart, stale dataflows are marked as failed and the coordinator resumes normal operation.
 
-> For managed cluster deployments (cluster.yml, SSH-based lifecycle, label scheduling, systemd services, rolling upgrades), see the [Distributed Deployment Guide](distributed-deployment.md).
+> For managed cluster deployments (cluster.yml, SSH-based lifecycle, label scheduling, systemd services, rolling upgrades), see the [Distributed Deployment Guide](distributed.md).
 
 ---
 

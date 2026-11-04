@@ -22,6 +22,7 @@ static BUILD_SERVICE_NODES: Once = Once::new();
 static BUILD_ACTION_NODES: Once = Once::new();
 static BUILD_CROSS_LANGUAGE_NODES: Once = Once::new();
 static BUILD_VALIDATED_PIPELINE_NODES: Once = Once::new();
+static BUILD_RECORD_REPLAY_NODES: Once = Once::new();
 static BUILD_QUEUE_LATEST_RUST: Once = Once::new();
 static BUILD_MAVLINK2_BRIDGE_NODES: Once = Once::new();
 
@@ -1087,6 +1088,23 @@ fn ensure_validated_pipeline_nodes_built() {
     });
 }
 
+/// `dora record` spawns `dora-record-node` and `dora replay` spawns
+/// `dora-replay-node`. Pre-build them so neither CLI step falls into a cold
+/// cargo compile (which, per PR #1641, can take minutes on a fresh
+/// rust-cache).
+fn ensure_record_replay_nodes_built() {
+    BUILD_RECORD_REPLAY_NODES.call_once(|| {
+        let status = Command::new("cargo")
+            .args(["build", "-p", "dora-record-node", "-p", "dora-replay-node"])
+            .status()
+            .expect("failed to build record/replay nodes");
+        assert!(
+            status.success(),
+            "failed to build dora-record-node / dora-replay-node"
+        );
+    });
+}
+
 #[test]
 fn smoke_validated_pipeline() {
     ensure_validated_pipeline_nodes_built();
@@ -1260,36 +1278,32 @@ fn write_absolute_path_validated_pipeline_fixture() -> std::path::PathBuf {
 fn contract_record_replay_reproduces_validated_pipeline() {
     ensure_cli_built();
     ensure_validated_pipeline_nodes_built();
-
-    // record spawns `dora-record-node`; replay spawns `dora-replay-node`.
-    // Pre-build so neither CLI step falls into a cold cargo compile
-    // (which, per PR #1641, can take minutes on a fresh rust-cache).
-    let build_status = Command::new("cargo")
-        .args(["build", "-p", "dora-record-node", "-p", "dora-replay-node"])
-        .status()
-        .expect("failed to build record/replay nodes");
-    assert!(
-        build_status.success(),
-        "failed to build dora-record-node / dora-replay-node"
-    );
-
+    ensure_record_replay_nodes_built();
     let dora = dora_bin();
 
-    // On a loaded CI runner the record-node spawn can be slow enough that
-    // the body read times out before the node sends its first message,
-    // surfacing as "TCP read body timed out" — an infrastructure stall, not a
-    // semantic break in the recording. Retry the whole record+replay cycle a
-    // bounded number of times on *that signature in the record step only*; the
-    // replay step treats TCP timeouts as semantic failures (the recording is
-    // already known-good, so a missing message is a real regression). A missing
+    // The replay step treats TCP timeouts as semantic failures (the
+    // recording is already known-good, so a missing message is a real
+    // regression), so only a record-step timeout is retried. A missing
     // SUCCESS marker on an otherwise-clean run fails immediately.
+    retry_on_infra_timeout("record/replay", || record_replay_once(&dora));
+}
+
+/// Run `step` until it succeeds, retrying it a bounded number of times when
+/// it fails with [`RecordReplayFailure::InfraTimeout`], and panic on any
+/// other failure.
+///
+/// On a loaded CI runner the record-node spawn can be slow enough that the
+/// body read times out before the node sends its first message, surfacing as
+/// "TCP read body timed out" — an infrastructure stall, not a semantic break
+/// in the recording.
+fn retry_on_infra_timeout(label: &str, mut step: impl FnMut() -> Result<(), RecordReplayFailure>) {
     const MAX_ATTEMPTS: u32 = 3;
     for attempt in 1..=MAX_ATTEMPTS {
-        match record_replay_once(&dora) {
+        match step() {
             Ok(()) => return,
             Err(RecordReplayFailure::InfraTimeout(detail)) if attempt < MAX_ATTEMPTS => {
                 eprintln!(
-                    "record/replay attempt {attempt}/{MAX_ATTEMPTS} hit a TCP read timeout \
+                    "{label} attempt {attempt}/{MAX_ATTEMPTS} hit a TCP read timeout \
                      (infra stall, not a semantic break); retrying.\n{detail}"
                 );
             }
@@ -1343,11 +1357,14 @@ fn classify_record_replay(
     }
 }
 
-/// One record+replay cycle: record the validated pipeline, then replay the
-/// recording, asserting both reach the SUCCESS marker. Returns `Err` (rather
-/// than panicking) so the caller can retry on an infra timeout.
-fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
-    let success_marker = "sink: SUCCESS - validated 10 doubled values";
+/// What the validated pipeline's sink prints once it checked every value.
+const VALIDATED_PIPELINE_SUCCESS: &str = "sink: SUCCESS - validated 10 doubled values";
+
+/// Record the validated pipeline into `drec`, checking that the recorded run
+/// reaches the SUCCESS marker and leaves a non-empty recording. Returns `Err`
+/// (rather than panicking) so the caller can retry on an infra timeout.
+fn record_validated_pipeline(dora: &str, drec: &Path) -> Result<(), RecordReplayFailure> {
+    let success_marker = VALIDATED_PIPELINE_SUCCESS;
 
     // Use the absolute-path fixture instead of examples/validated-pipeline/dataflow.yml:
     // `dora record` writes its modified descriptor into a tempfile in
@@ -1357,11 +1374,7 @@ fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
     // using absolute `path:`) sidesteps that.
     let yaml = write_absolute_path_validated_pipeline_fixture();
 
-    // Stable per-test filename; --test-threads=1 means no cross-test
-    // contention. Use std::env::temp_dir so macOS `/var/folders/...`
-    // works alongside `/tmp` on Linux.
-    let drec = std::env::temp_dir().join("dora-record-replay-validated-pipeline.drec");
-    let _ = std::fs::remove_file(&drec);
+    let _ = std::fs::remove_file(drec);
 
     // ---- Step 1: record ----
     let rec = Command::new(dora)
@@ -1382,7 +1395,7 @@ fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
     // stdout/stderr and the .drec on disk.
     let _ = std::fs::remove_file(&yaml);
     if !rec.status.success() {
-        let _ = std::fs::remove_file(&drec);
+        let _ = std::fs::remove_file(drec);
         return Err(classify_record_replay(
             &format!("{rec_stdout}{rec_stderr}"),
             format!(
@@ -1393,7 +1406,7 @@ fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
         ));
     }
     if !(rec_stdout.contains(success_marker) || rec_stderr.contains(success_marker)) {
-        let _ = std::fs::remove_file(&drec);
+        let _ = std::fs::remove_file(drec);
         return Err(classify_record_replay(
             &format!("{rec_stdout}{rec_stderr}"),
             format!(
@@ -1404,7 +1417,7 @@ fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
         ));
     }
     if !(drec.exists()
-        && std::fs::metadata(&drec)
+        && std::fs::metadata(drec)
             .map(|m| m.len() > 0)
             .unwrap_or(false))
     {
@@ -1412,6 +1425,20 @@ fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
             "dora record did not produce a non-empty .drec at {drec:?}"
         )));
     }
+    Ok(())
+}
+
+/// One record+replay cycle: record the validated pipeline, then replay the
+/// recording, asserting both reach the SUCCESS marker. Returns `Err` (rather
+/// than panicking) so the caller can retry on an infra timeout.
+fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
+    let success_marker = VALIDATED_PIPELINE_SUCCESS;
+
+    // Stable per-test filename; --test-threads=1 means no cross-test
+    // contention. Use std::env::temp_dir so macOS `/var/folders/...`
+    // works alongside `/tmp` on Linux.
+    let drec = std::env::temp_dir().join("dora-record-replay-validated-pipeline.drec");
+    record_validated_pipeline(dora, &drec)?;
 
     // ---- Step 2: replay ----
     // Unpaced (`--speed 0`): the shape that used to drop on the direct
@@ -1454,6 +1481,97 @@ fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
         ));
     }
     Ok(())
+}
+
+/// `dora recording diff` (#3755) on real recordings: two runs of the
+/// deterministic validated pipeline match (exit 0), a copy that lost its last
+/// message differs (exit 1), and a file that is not a recording is an error
+/// (exit 2), the exit codes `diff` uses.
+#[test]
+fn contract_recording_diff_compares_two_runs_of_validated_pipeline() {
+    ensure_cli_built();
+    ensure_validated_pipeline_nodes_built();
+    ensure_record_replay_nodes_built();
+    let dora = dora_bin();
+
+    let dir = std::env::temp_dir();
+    let old = dir.join("dora-recording-diff-old.drec");
+    let new = dir.join("dora-recording-diff-new.drec");
+    let cut = dir.join("dora-recording-diff-cut.drec");
+    let not_a_recording = dir.join("dora-recording-diff-not-a-recording.drec");
+
+    for drec in [&old, &new] {
+        retry_on_infra_timeout("record", || record_validated_pipeline(&dora, drec));
+    }
+
+    // A finished recording ends with a 24-byte footer. Cutting it off and one
+    // byte more tears the last record (every record here is an Arrow IPC
+    // stream, far longer than 25 bytes), which the reader treats as the end
+    // of the recording, so the copy holds one message fewer and no footer.
+    let bytes = std::fs::read(&old).expect("failed to read the old recording");
+    std::fs::write(&cut, &bytes[..bytes.len() - 25]).expect("failed to write the cut copy");
+    std::fs::write(&not_a_recording, "nodes: []\n").expect("failed to write a non-recording");
+
+    // (exit code, stdout, stderr) of `dora recording diff old new`.
+    let diff = |old: &Path, new: &Path| {
+        let output = Command::new(&dora)
+            .args(["recording", "diff"])
+            .arg(old)
+            .arg(new)
+            .output()
+            .expect("failed to spawn dora recording diff");
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let same = diff(&old, &new);
+    let shorter = diff(&old, &cut);
+    let error = diff(&old, &not_a_recording);
+    for path in [&old, &new, &cut, &not_a_recording] {
+        let _ = std::fs::remove_file(path);
+    }
+
+    assert_eq!(
+        same,
+        (
+            Some(0),
+            "Recordings match: 20 messages on 2 outputs\n".to_string(),
+            String::new()
+        ),
+        "two finished runs of the validated pipeline should match with no warning"
+    );
+
+    let (code, stdout, stderr) = shorter;
+    assert_eq!(code, Some(1), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    // Which output was recorded last depends on scheduling.
+    assert!(
+        [
+            "`source/value`: 10 messages in the old recording, 9 in the new one\n",
+            "`transform/doubled`: 10 messages in the old recording, 9 in the new one\n",
+        ]
+        .contains(&stdout.as_str()),
+        "unexpected report for the cut copy:\n{stdout}"
+    );
+    assert_eq!(
+        stderr,
+        format!(
+            "warning: recording `{}` has no footer: it was not finished cleanly \
+             (a crash or a second Ctrl-C) and may be missing its last messages\n",
+            cut.display()
+        )
+    );
+
+    let (code, stdout, stderr) = error;
+    assert_eq!(code, Some(2), "stdout:\n{stdout}");
+    assert!(
+        stderr.contains(&format!(
+            "failed to read the header of recording `{}`",
+            not_a_recording.display()
+        )),
+        "unexpected error output:\n{stderr}"
+    );
 }
 
 /// Run `dora run --stop-after <secs>s` against `yaml_path`, capture combined
@@ -2413,6 +2531,9 @@ fn smoke_memory_pool_cuda2cuda() {
 // | c++-service-action        | covered: `examples` job via                          | covered  |
 // |                           | `[[example]] cxx-service-action` (cargo run          |          |
 // |                           | --example), same shape as `cxx-arrow-dataflow`       |          |
+// | c++-extension-seam        | covered: `examples` job via                          | covered  |
+// |                           | `[[example]] cxx-extension-seam` (cargo run          |          |
+// |                           | --example), same shape as `cxx-service-action`       |          |
 // | cmake-dataflow            | covered: `cli` job (3 OS), ci.yml CLI tests          | covered  |
 // | cpu-affinity-probe        | covered: nightly `cpu-affinity-smoke`                | covered  |
 // |                           | (.github/workflows/nightly.yml:535)                  |          |

@@ -57,9 +57,13 @@ pub fn parse_env_overrides(flags: &[String]) -> Result<BTreeMap<String, EnvValue
 ///   by the time a node sees it, which would let `--env` read host
 ///   secrets that `strip_denied_env` exists to keep out of nodes (that
 ///   guard matches key names, so an innocuous key sails through).
-///   YAML `env:` values are expanded CLI-side when the descriptor is
-///   read, so they reach the wire already substituted — `--env` is the
-///   only path that can put an unexpanded `$` on it.
+///   This build serializes each `$` as `$$`, which the next decode turns
+///   back into `$` (#3947), so the value reaches a current coordinator
+///   and daemon verbatim. A released 1.x coordinator, though, decodes
+///   that `$$` once and then forwards a bare `$` to the daemon, which
+///   expands it. The same holds for a YAML `env:` value whose CLI-side
+///   expansion contains `$`, but there the user wrote the `$` reference
+///   in their own dataflow file, while a `--env` value is a literal.
 /// * **Numeric-looking strings are coerced by released 1.x peers.**
 ///   Coordinators and daemons before the lossless `EnvValue` fix decode
 ///   `1.10` as `1.1` and `01234` as `1234`, and a newer CLI still talks to
@@ -67,10 +71,11 @@ pub fn parse_env_overrides(flags: &[String]) -> Result<BTreeMap<String, EnvValue
 ///   coerces, so the check below emulates the old decoding instead of
 ///   round-tripping through this build's `EnvValue`.
 ///
-/// Escaping cannot fix either: the value is deserialized twice, so a
-/// `$$` that survives one hop is expanded on the next. Rejecting is the
-/// honest option — silently handing a node a different value than the
-/// operator typed is worse than refusing to start.
+/// Neither is fixed for released 1.x coordinators, which a newer CLI
+/// still talks to: a `$$` that survives their decode is expanded by the
+/// daemon on the next hop. Rejecting is the honest option — silently
+/// handing a node a different value than the operator typed is worse than
+/// refusing to start.
 ///
 /// The `$` rule is deliberately **syntactic**, not "does this value
 /// survive a round-trip in the CLI's process". That round-trip is not a
@@ -273,9 +278,8 @@ mod tests {
         );
     }
 
-    /// A literal `$` cannot be carried either: escaping does not compose
-    /// across two deserialization hops, so this is refused rather than
-    /// silently mangled.
+    /// A literal `$` is refused too: a released 1.x coordinator decodes the
+    /// `$$` escape once and forwards a bare `$` for the daemon to expand.
     #[test]
     fn rejects_values_containing_a_literal_dollar() {
         let result = parse_env_overrides(&flags(&["PW=p$ssw0rd"]));
