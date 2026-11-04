@@ -486,9 +486,17 @@ mod typed {
     }
 
     async fn fixture(domain: usize, options: ActionServerOptions) -> Fixture {
+        fixture_with_config(domain, options, None).await
+    }
+
+    async fn fixture_with_config(
+        domain: usize,
+        options: ActionServerOptions,
+        config_uri: Option<String>,
+    ) -> Fixture {
         let context = Context::open(ContextOptions {
             domain_id: domain,
-            config_uri: None,
+            config_uri,
         })
         .await
         .unwrap();
@@ -669,7 +677,18 @@ mod typed {
             node,
             _session,
             ..
-        } = fixture(62, options(4)).await;
+        } = fixture_with_config(
+            62,
+            options(4),
+            Some(
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/zenoh-local-only.json5"
+                )
+                .into(),
+            ),
+        )
+        .await;
         let goal_id = client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
         next_goal(&server).await;
 
