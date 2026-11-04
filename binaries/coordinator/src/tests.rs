@@ -1559,14 +1559,16 @@ fn disconnect_cleanup_removes_daemon_from_running_dataflow_membership() {
     );
     assert!(
         df.spawn_result.is_pending(),
-        "disconnect cleanup must leave spawn_result to the watchdog"
+        "the cleanup only prunes membership; failing the spawn is \
+         apply_disconnect_actions' job"
     );
 }
 
-// #2028: a spawn-pending dataflow stays the spawn-timeout watchdog's
-// domain — disconnect cleanup must produce no action and not remove it.
+// #3736: a daemon of a spawn-pending dataflow disconnects -> the cleanup asks
+// to fail the spawn (never to reclaim it), and leaves the teardown itself to
+// `apply_disconnect_actions`.
 #[test]
-fn disconnect_of_spawn_pending_dataflow_produces_no_action() {
+fn disconnect_of_spawn_pending_dataflow_asks_to_fail_the_spawn() {
     let dataflow_id = DataflowId::from(Uuid::new_v4());
     let daemon_id = DaemonId::new(Some("gone".to_string()));
     let node_id: dora_core::config::NodeId = "sender".to_string().into();
@@ -1575,7 +1577,7 @@ fn disconnect_of_spawn_pending_dataflow_produces_no_action() {
 
     let mut running_dataflows = HashMap::new();
     running_dataflows.insert(dataflow_id, df);
-    let disconnected = BTreeSet::from([daemon_id]);
+    let disconnected = BTreeSet::from([daemon_id.clone()]);
 
     let actions = cleanup_disconnected_daemons_from_running_dataflows(
         &mut running_dataflows,
@@ -1583,14 +1585,17 @@ fn disconnect_of_spawn_pending_dataflow_produces_no_action() {
         &mut HashMap::new(),
     );
     assert!(
-        // spawn_result is Pending, so the dataflow should NOT trigger
-        // a ReclaimOrphaned action.
-        actions.is_empty(),
-        "spawn-pending dataflows must be left to the spawn-timeout watchdog"
+        matches!(
+            actions.as_slice(),
+            [DisconnectAction::FailPendingSpawn { uuid, daemons }]
+                if *uuid == dataflow_id && *daemons == disconnected
+        ),
+        "a spawn-pending dataflow that lost a daemon must be failed, got {} action(s)",
+        actions.len()
     );
     assert!(
         running_dataflows.contains_key(&dataflow_id),
-        "must not tear down a spawn-pending dataflow"
+        "the cleanup itself must not tear the dataflow down"
     );
 }
 
@@ -1632,6 +1637,280 @@ fn disconnect_releases_ready_barrier_when_last_pending_daemon_drops() {
         .expect("survivor dataflow must remain");
     assert_eq!(df.daemons, BTreeSet::from([daemon_a]));
     assert!(df.pending_daemons.is_empty());
+}
+
+/// Every coordinator event queued on `rx`.
+fn received_daemon_events(
+    rx: &mut tokio::sync::mpsc::Receiver<String>,
+) -> Vec<DaemonCoordinatorEvent> {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+    let mut events = Vec::new();
+    while let Ok(outbound) = rx.try_recv() {
+        let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+        events.push(outbound.params.inner);
+    }
+    events
+}
+
+/// A coordinator running one dataflow on daemons `a` (node `sender`) and `b`
+/// (node `receiver`), whose spawn is pending on both and whose ready barrier
+/// waits on both. `wait_for_spawn` is parked on the returned receiver.
+#[allow(clippy::type_complexity)]
+fn coordinator_with_two_daemon_pending_spawn(
+    dataflow_id: DataflowId,
+) -> (
+    Coordinator,
+    (DaemonId, Uuid),
+    (DaemonId, tokio::sync::mpsc::Receiver<String>),
+    tokio::sync::oneshot::Receiver<eyre::Result<ControlRequestReply>>,
+) {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let mut daemon_connections = DaemonConnections::default();
+    let (daemon_a, _rx_a) = connected_test_daemon(&mut daemon_connections, "a");
+    let (daemon_b, rx_b) = connected_test_daemon(&mut daemon_connections, "b");
+    let connection_a = daemon_connections
+        .connection_id_of(&daemon_a)
+        .expect("a is connected");
+
+    let mut df = test_running_dataflow(dataflow_id, daemon_a.clone(), "sender".to_string().into());
+    df.daemons.insert(daemon_b.clone());
+    df.node_to_daemon
+        .insert("receiver".to_string().into(), daemon_b.clone());
+    df.pending_daemons = BTreeSet::from([daemon_a.clone(), daemon_b.clone()]);
+    df.pending_spawn_results = BTreeSet::from([daemon_a.clone(), daemon_b.clone()]);
+    let (waiter_tx, waiter_rx) = tokio::sync::oneshot::channel();
+    df.spawn_result.register(waiter_tx);
+
+    let coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        daemon_connections,
+        store,
+    );
+    (
+        coordinator,
+        (daemon_a, connection_a),
+        (daemon_b, rx_b),
+        waiter_rx,
+    )
+}
+
+/// After `a` disconnected mid-spawn: the spawn failed naming `a`, the dataflow
+/// is torn down as terminally failed, `b` was told to stop it, and the ready
+/// barrier was never released.
+async fn assert_spawn_failed_by_disconnect(
+    coordinator: &Coordinator,
+    dataflow_id: DataflowId,
+    daemon_a: &DaemonId,
+    rx_b: &mut tokio::sync::mpsc::Receiver<String>,
+    waiter_rx: tokio::sync::oneshot::Receiver<eyre::Result<ControlRequestReply>>,
+) {
+    let reply = timeout(TokioDuration::from_secs(1), waiter_rx)
+        .await
+        .expect("wait_for_spawn must be released right away, not by the watchdog")
+        .expect("waiter must not be dropped");
+    let err = format!("{:?}", reply.expect_err("the spawn must fail"));
+    assert!(
+        err.contains(&format!("daemon `{daemon_a}` disconnected during spawn")),
+        "the error must name the disconnected daemon, got: {err}"
+    );
+
+    assert!(!coordinator.running_dataflows.contains_key(&dataflow_id));
+    assert!(coordinator.archived_dataflows.contains_key(&dataflow_id));
+    let record = coordinator
+        .store
+        .get_dataflow(&dataflow_id)
+        .expect("store lookup")
+        .expect("record present");
+    assert!(
+        matches!(
+            record.status,
+            StoreDataflowStatus::Failed { terminal: true, .. }
+        ),
+        "the store must record a terminal failure, got {:?}",
+        record.status
+    );
+
+    let events = received_daemon_events(rx_b);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            DaemonCoordinatorEvent::StopDataflow { dataflow_id: id, force: true, .. }
+                if *id == dataflow_id
+        )),
+        "the survivor must be told to stop the dataflow, got {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, DaemonCoordinatorEvent::AllNodesReady { .. })),
+        "the survivor's nodes must not be released, got {events:?}"
+    );
+}
+
+/// A survivor's report arriving after the disconnect failed the spawn must
+/// not bring the dataflow back or release its nodes.
+fn assert_not_resurrected(
+    coordinator: &Coordinator,
+    dataflow_id: DataflowId,
+    rx_b: &mut tokio::sync::mpsc::Receiver<String>,
+) {
+    assert!(!coordinator.running_dataflows.contains_key(&dataflow_id));
+    let record = coordinator
+        .store
+        .get_dataflow(&dataflow_id)
+        .expect("store lookup")
+        .expect("record present");
+    assert!(
+        matches!(
+            record.status,
+            StoreDataflowStatus::Failed { terminal: true, .. }
+        ),
+        "a late report must not resurrect the dataflow, got {:?}",
+        record.status
+    );
+    let events = received_daemon_events(rx_b);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, DaemonCoordinatorEvent::AllNodesReady { .. })),
+        "a late report must not release the survivor's nodes, got {events:?}"
+    );
+}
+
+// #3736: survivor `b` reports ready before its spawn result, then `a`
+// disconnects mid-spawn. The spawn must fail at once and `b` be stopped. On
+// `main` `b`'s later Ok resolved the spawn with the barrier never released,
+// so `b`'s nodes waited forever under a `Running` dataflow.
+#[tokio::test]
+async fn disconnect_mid_spawn_after_survivor_ready_fails_the_spawn() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let (mut coordinator, (daemon_a, connection_a), (daemon_b, mut rx_b), waiter_rx) =
+        coordinator_with_two_daemon_pending_spawn(dataflow_id);
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: daemon_b.clone(),
+                exited_before_subscribe: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    coordinator
+        .handle_daemon_exit(daemon_a.clone(), connection_a)
+        .await
+        .unwrap();
+    assert_spawn_failed_by_disconnect(&coordinator, dataflow_id, &daemon_a, &mut rx_b, waiter_rx)
+        .await;
+
+    coordinator
+        .handle_spawn_result(dataflow_id, daemon_b, Ok(()))
+        .await
+        .unwrap();
+    assert_not_resurrected(&coordinator, dataflow_id, &mut rx_b);
+}
+
+// The other order of the same race, and the common one: `b`'s spawn Ok
+// arrives while the spawn is still pending on `a`, then `a` disconnects. The
+// spawn must fail at once as well, rather than release `b`'s nodes and
+// force-stop them when the spawn watchdog fires.
+#[tokio::test]
+async fn disconnect_mid_spawn_after_survivor_spawned_fails_the_spawn() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let (mut coordinator, (daemon_a, connection_a), (daemon_b, mut rx_b), waiter_rx) =
+        coordinator_with_two_daemon_pending_spawn(dataflow_id);
+
+    coordinator
+        .handle_spawn_result(dataflow_id, daemon_b.clone(), Ok(()))
+        .await
+        .unwrap();
+    assert!(
+        coordinator.running_dataflows[&dataflow_id]
+            .spawn_result
+            .is_pending(),
+        "precondition: the spawn is still pending on `a`"
+    );
+    coordinator
+        .handle_daemon_exit(daemon_a.clone(), connection_a)
+        .await
+        .unwrap();
+    assert_spawn_failed_by_disconnect(&coordinator, dataflow_id, &daemon_a, &mut rx_b, waiter_rx)
+        .await;
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: daemon_b,
+                exited_before_subscribe: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    assert_not_resurrected(&coordinator, dataflow_id, &mut rx_b);
+}
+
+// A spawn the disconnect path failed is not failed a second time by the
+// spawn-timeout watchdog, even once its deadline has passed.
+#[tokio::test]
+async fn spawn_watchdog_skips_a_spawn_failed_by_a_disconnect() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let (mut coordinator, (daemon_a, connection_a), (_daemon_b, mut rx_b), waiter_rx) =
+        coordinator_with_two_daemon_pending_spawn(dataflow_id);
+    coordinator
+        .running_dataflows
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
+
+    coordinator
+        .handle_daemon_exit(daemon_a.clone(), connection_a)
+        .await
+        .unwrap();
+    assert_spawn_failed_by_disconnect(&coordinator, dataflow_id, &daemon_a, &mut rx_b, waiter_rx)
+        .await;
+    let record_before = coordinator
+        .store
+        .get_dataflow(&dataflow_id)
+        .unwrap()
+        .unwrap();
+    let results_before = format!("{:?}", coordinator.dataflow_results.get(&dataflow_id));
+
+    check_spawn_timeouts(
+        &mut coordinator.running_dataflows,
+        &mut coordinator.archived_dataflows,
+        &mut coordinator.dataflow_results,
+        &mut coordinator.daemon_connections,
+        &mut coordinator.pending_restarts,
+        &coordinator.clock,
+        coordinator.store.as_ref(),
+    )
+    .await;
+
+    let events = received_daemon_events(&mut rx_b);
+    assert!(
+        events.is_empty(),
+        "the watchdog must not roll the survivor back a second time, got {events:?}"
+    );
+    let record_after = coordinator
+        .store
+        .get_dataflow(&dataflow_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        format!("{:?}", record_after.status),
+        format!("{:?}", record_before.status),
+        "the watchdog must not overwrite the disconnect verdict"
+    );
+    assert_eq!(
+        format!("{:?}", coordinator.dataflow_results.get(&dataflow_id)),
+        results_before,
+        "the watchdog must not synthesize a second failure"
+    );
 }
 
 // #2028 deadlocks #2 + #3 + #2029 reclaim: the sole daemon of a running
@@ -1688,6 +1967,9 @@ async fn disconnect_reclaims_orphaned_running_dataflow() {
         &mut running_dataflows,
         &mut HashMap::new(),
         &mut daemon_connections,
+        &mut IndexMap::new(),
+        &mut IndexMap::new(),
+        &mut HashMap::new(),
         &store,
         &clock,
     )
@@ -1757,6 +2039,9 @@ async fn launch_context_survives_orphan_reclaim_and_reconnect() {
         &mut running_dataflows,
         &mut reclaimed_launches,
         &mut DaemonConnections::default(),
+        &mut IndexMap::new(),
+        &mut IndexMap::new(),
+        &mut HashMap::new(),
         &store,
         &clock,
     )

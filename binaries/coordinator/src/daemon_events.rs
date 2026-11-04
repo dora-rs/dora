@@ -170,6 +170,9 @@ impl Coordinator {
                 &mut self.running_dataflows,
                 &mut self.reclaimed_launches,
                 &mut self.daemon_connections,
+                &mut self.archived_dataflows,
+                &mut self.dataflow_results,
+                &mut self.pending_restarts,
                 &self.store,
                 &self.clock,
             )
@@ -190,12 +193,10 @@ impl Coordinator {
         // stuck waiting for one or more `spawn_result` reports and
         // release `wait_for_spawn` waiters with a clear error rather
         // than letting them hang on the client-side RPC deadline.
-        // Triggers on either failure mode:
-        //   1. A daemon accepted the spawn RPC but its internal flow
-        //      is hung (still heartbeating, never reports back).
-        //   2. Pending daemons all disconnected; the disconnect path
-        //      above cleared their entries from `pending_spawn_results`
-        //      but does not itself fire `spawn_result`.
+        // Triggers when a daemon accepted the spawn RPC but its internal
+        // flow is hung (still heartbeating, never reports back). A daemon
+        // that disconnects mid-spawn is handled by the disconnect path
+        // above, which fails the spawn right away (#3736).
         // Rescue of #1593 (issue #1592).
         //
         // SAFETY net only: 60 s is well above realistic per-daemon
@@ -347,6 +348,9 @@ impl Coordinator {
                 &mut self.running_dataflows,
                 &mut self.reclaimed_launches,
                 &mut self.daemon_connections,
+                &mut self.archived_dataflows,
+                &mut self.dataflow_results,
+                &mut self.pending_restarts,
                 &self.store,
                 &self.clock,
             )
