@@ -1372,6 +1372,11 @@ impl DoraNode {
             None => (Arc::new(HashMap::new()), None),
         };
 
+        // Register control before the reader can queue NextEvent on the shared
+        // testing-daemon channel and wait for a future scheduled input.
+        let control_channel =
+            ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
+                .wrap_err("failed to init control channel")?;
         let event_stream = EventStream::init(
             dataflow_id,
             &node_id,
@@ -1391,9 +1396,6 @@ impl DoraNode {
         if let Some(handshake) = &startup_handshake {
             handshake.settle(ZENOH_STARTUP_GRACE);
         }
-        let control_channel =
-            ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
-                .wrap_err("failed to init control channel")?;
         let runtime_type_checks = match RuntimeTypeCheck::from_env() {
             RuntimeTypeCheck::Off => None,
             mode => {
