@@ -377,7 +377,9 @@ Example with exponential backoff:
 
 ### Arrow IPC Framing
 
-By default, outputs use a raw Arrow buffer layout (zero-copy, no schema overhead). For self-describing wire format with full schema metadata, enable Arrow IPC framing per output:
+Every output is encoded as Arrow IPC, and dora nodes always decode it with its schema. There is nothing to enable. (Small messages on the node-to-node zenoh path may carry only the record batch, with the schema published once on a separate `@schema` subtopic, so a raw zenoh subscriber cannot assume each payload is a self-contained IPC stream.)
+
+The `output_framing` key is still accepted, so 1.x dataflows that set it keep loading, but it has no effect:
 
 ```yaml
 - id: sensor
@@ -388,9 +390,7 @@ By default, outputs use a raw Arrow buffer layout (zero-copy, no schema overhead
     image: arrow-ipc
 ```
 
-When `arrow-ipc` framing is set, data is serialized as Arrow IPC stream format (schema + record batches). Receivers automatically detect the framing mode via a `_framing` metadata key and decode accordingly. This is useful when consumers need schema introspection or when interoperating with external Arrow tools.
-
-Values: `raw` (default) or `arrow-ipc`.
+Values: `raw` or `arrow-ipc`; both behave identically.
 
 ### CPU Affinity
 
