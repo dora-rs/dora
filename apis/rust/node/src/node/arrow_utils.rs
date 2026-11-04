@@ -133,8 +133,10 @@ pub(crate) fn encode_arrow_ipc_data(arrow_array: &ArrayData) -> eyre::Result<Vec
     )]);
     let schema_ref = Arc::new(schema);
 
-    // A received array arrow accepted can still make its writer panic (a
-    // corrupted run-end-encoded array), and nodes send received data on.
+    // An array can still make arrow's writer panic, and nodes send received
+    // data on. Before arrow 59.3.2 a corrupted run-end-encoded array passed
+    // validation and did; arrow >= 59.3.2 rejects that one at decode, and the
+    // guard stays for arrays arrow never validated and other writer panics.
     let buf = catch_panic("failed to encode Arrow IPC stream: arrow panicked", || {
         let array_ref = arrow::array::make_array(arrow_array.clone());
         let batch = RecordBatch::try_new(schema_ref.clone(), vec![array_ref])
