@@ -2530,6 +2530,7 @@ fn test_coordinator(
         finished_builds: IndexMap::new(),
         running_dataflows,
         pending_restarts: HashMap::new(),
+        reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections,
@@ -6797,6 +6798,7 @@ async fn clean_keeps_a_dataflow_awaiting_reclaim() {
     crate::daemon_liveness::begin_orphaned_dataflow_reclaim(
         dataflow_id,
         &mut coordinator.running_dataflows,
+        &mut coordinator.reclaimed_launches,
         &coordinator.clock,
         store.as_ref(),
     )
