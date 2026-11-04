@@ -26,8 +26,10 @@ pub struct Up {
     /// Enable token authentication for the coordinator.
     ///
     /// When enabled, the coordinator generates a random token on startup
-    /// and writes it to ~/.config/dora/.dora-token. Clients must present
-    /// this token to connect.
+    /// and writes it to `.dora-token` in its working directory and in the
+    /// user config directory (`~/.config/dora` on Linux,
+    /// `~/Library/Application Support/dora` on macOS, `%APPDATA%\dora` on
+    /// Windows). Clients must present this token to connect.
     #[clap(long)]
     auth: bool,
     /// Network interface the coordinator binds to.
