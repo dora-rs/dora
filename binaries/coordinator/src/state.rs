@@ -629,6 +629,60 @@ impl RunningDataflow {
         self.state_log.retain(|entry| entry.sequence > min_ack);
     }
 
+    /// Re-link a daemon that reconnected and reported `reported_nodes` as
+    /// running.
+    ///
+    /// A daemon that went through the disconnect path re-registers under a
+    /// fresh `DaemonId`, so the ack kept for it is stored under the old one.
+    /// The old id is the disconnected daemon that ran these nodes: its ack
+    /// moves to `daemon_id`, so the catch-up resumes where it stopped instead
+    /// of seeing a gap and falling back to the full replay, which cannot
+    /// express a deleted param.
+    pub(crate) fn adopt_disconnected_daemon(
+        &mut self,
+        daemon_id: &DaemonId,
+        reported_nodes: &[NodeId],
+    ) {
+        let previous: BTreeSet<DaemonId> = reported_nodes
+            .iter()
+            .filter_map(|node| self.node_to_daemon.get(node))
+            .chain(std::iter::once(daemon_id))
+            .filter(|old| self.disconnected_daemons.contains(*old))
+            .cloned()
+            .collect();
+        let inherited = previous
+            .iter()
+            .filter_map(|old| self.daemon_ack_sequence.get(old).copied())
+            .min();
+        for old in &previous {
+            self.disconnected_daemons.remove(old);
+            if old != daemon_id {
+                self.daemon_ack_sequence.remove(old);
+            }
+        }
+        if let Some(ack) = inherited {
+            self.daemon_ack_sequence.insert(daemon_id.clone(), ack);
+        }
+    }
+
+    /// Stop keeping the state log for daemon `daemon_id`, which finished its
+    /// share of the dataflow, and for the disconnected daemon that ran
+    /// `finished_nodes`: a daemon that finished while disconnected reports it
+    /// after re-registering under a fresh id. Neither will apply an entry
+    /// again, so neither may hold the log back.
+    pub(crate) fn forget_finished_daemon<'a>(
+        &mut self,
+        daemon_id: &DaemonId,
+        finished_nodes: impl IntoIterator<Item = &'a NodeId>,
+    ) {
+        self.disconnected_daemons.remove(daemon_id);
+        for node in finished_nodes {
+            if let Some(old) = self.node_to_daemon.get(node) {
+                self.disconnected_daemons.remove(old);
+            }
+        }
+    }
+
     /// Record that `owner` applied log entry `sequence`, then prune the log.
     ///
     /// Every live daemon that now has nothing left to apply advances its ack

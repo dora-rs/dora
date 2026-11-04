@@ -94,6 +94,7 @@ impl Coordinator {
                     std::collections::hash_map::Entry::Occupied(mut entry) => {
                         let dataflow = entry.get_mut();
                         dataflow.daemons.remove(&daemon_id);
+                        dataflow.forget_finished_daemon(&daemon_id, result.node_results.keys());
                         tracing::info!(
                             "removed machine id: {daemon_id} from dataflow: {:#?}",
                             dataflow.uuid

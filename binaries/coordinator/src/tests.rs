@@ -2157,6 +2157,201 @@ fn error_reads_as_finished(msg: &str) -> bool {
     msg.contains("no running dataflow with id") || msg.contains("unknown dataflow")
 }
 
+/// A coordinator running one dataflow with a connected `owner` daemon that
+/// answers every param request with `Ok`, and a second daemon `gone` that
+/// runs `gone_node` and has no connection.
+fn coordinator_with_owner_and_gone(
+    dataflow_id: DataflowId,
+    owner: &DaemonId,
+    owner_node: &NodeId,
+    gone: &DaemonId,
+    gone_node: &NodeId,
+) -> Coordinator {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let conn = crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    tokio::spawn(async move {
+        #[derive(serde::Deserialize)]
+        struct OutboundRaw {
+            id: String,
+            params: Timestamped<DaemonCoordinatorEvent>,
+        }
+        while let Some(outbound) = rx.recv().await {
+            let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            let reply = match outbound.params.inner {
+                DaemonCoordinatorEvent::SetParam { .. } => {
+                    DaemonCoordinatorReply::SetParamResult(Ok(()))
+                }
+                DaemonCoordinatorEvent::DeleteParam { .. } => {
+                    DaemonCoordinatorReply::DeleteParamResult(Ok(()))
+                }
+                other => panic!("unexpected event: {other:?}"),
+            };
+            let request_id = Uuid::parse_str(&outbound.id).unwrap();
+            if let Some(reply_tx) = pending_replies.lock().await.remove(&request_id) {
+                let _ = reply_tx.send(serde_json::to_string(&reply).unwrap());
+            }
+        }
+    });
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(owner.clone(), conn);
+
+    let mut df = test_running_dataflow(dataflow_id, owner.clone(), owner_node.clone());
+    df.daemons.insert(gone.clone());
+    df.node_to_daemon.insert(gone_node.clone(), gone.clone());
+    df.daemon_ack_sequence = BTreeMap::from([(owner.clone(), 0), (gone.clone(), 0)]);
+
+    Coordinator {
+        running_builds: HashMap::new(),
+        finished_builds: IndexMap::new(),
+        running_dataflows: HashMap::from([(dataflow_id, df)]),
+        pending_restarts: HashMap::new(),
+        dataflow_results: IndexMap::new(),
+        archived_dataflows: IndexMap::new(),
+        daemon_connections,
+        clock: Arc::new(HLC::default()),
+        store: Arc::new(InMemoryStore::new()),
+        span_store: SpanStore::default(),
+        daemon_peer_addrs: Default::default(),
+        #[cfg(feature = "metrics")]
+        otel_metrics: crate::otel_metrics::new_shared(),
+        abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
+    }
+}
+
+async fn set_param(coordinator: &mut Coordinator, dataflow_id: DataflowId, node: &NodeId) {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_set_param(
+            dataflow_id,
+            node.clone(),
+            "gain".to_string(),
+            serde_json::json!(1),
+            reply_tx,
+        )
+        .await
+        .unwrap();
+    let _ = reply_rx.await.unwrap();
+}
+
+/// The lost-delete scenario end to end, through the production paths: the
+/// daemon drops (`cleanup_disconnected_daemons_from_running_dataflows`), a
+/// change on another daemon is applied and pruned, the delete for its node
+/// is queued, and it reconnects under the fresh `DaemonId` that `Register`
+/// mints. The reconnect catch-up must find the delete in the log rather than
+/// a gap that sends it to the full replay, which cannot express a delete.
+#[tokio::test]
+async fn a_delete_reaches_a_daemon_that_reconnects_under_a_new_id() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let owner = DaemonId::new(Some("owner".to_string()));
+    let gone = DaemonId::new(Some("gone".to_string()));
+    let owner_node: NodeId = "sender".to_string().into();
+    let gone_node: NodeId = "receiver".to_string().into();
+    let mut coordinator =
+        coordinator_with_owner_and_gone(dataflow_id, &owner, &owner_node, &gone, &gone_node);
+
+    cleanup_disconnected_daemons_from_running_dataflows(
+        &mut coordinator.running_dataflows,
+        &BTreeSet::from([gone.clone()]),
+        &mut coordinator.pending_restarts,
+    );
+    set_param(&mut coordinator, dataflow_id, &owner_node).await;
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_delete_param(dataflow_id, gone_node.clone(), "gain".to_string(), reply_tx)
+        .await
+        .unwrap();
+    assert!(
+        reply_rx.await.unwrap().is_err(),
+        "the forward to the disconnected daemon fails"
+    );
+    set_param(&mut coordinator, dataflow_id, &owner_node).await;
+
+    // `Register` gives the returning daemon a fresh id.
+    let returned = DaemonId::new(Some("gone".to_string()));
+    assert_ne!(returned, gone);
+    let record = dora_coordinator_store::DataflowRecord {
+        uuid: dataflow_id,
+        name: None,
+        descriptor_json: "{}".to_string(),
+        status: StoreDataflowStatus::Running,
+        daemon_ids: vec![owner, returned.clone()],
+        node_to_daemon: BTreeMap::new(),
+        uv: false,
+        ready_barrier_released: false,
+        barrier_exited_before_subscribe: Vec::new(),
+        generation: 1,
+        created_at: 0,
+        updated_at: 0,
+    };
+    let _ = reestablish_running_dataflow(
+        &mut coordinator.running_dataflows,
+        &record,
+        &returned,
+        std::slice::from_ref(&gone_node),
+    );
+
+    // What the reconnect catch-up in `handle_daemon_status_report` sends.
+    let df = &coordinator.running_dataflows[&dataflow_id];
+    let last_ack = df.daemon_ack_sequence.get(&returned).copied().unwrap_or(0);
+    let missed = df
+        .state_log_delta_for_daemon(last_ack, &returned)
+        .expect("catches up from the log, not the fallback replay");
+    assert!(
+        matches!(
+            missed.as_slice(),
+            [entry] if matches!(entry.operation, StateCatchUpOperation::DeleteParam { .. })
+        ),
+        "got: {missed:?}"
+    );
+    assert!(df.disconnected_daemons.is_empty());
+    assert!(!df.daemon_ack_sequence.contains_key(&gone));
+}
+
+/// A daemon whose nodes finish while it is disconnected reports that after
+/// re-registering under a fresh id. It will never apply another entry, so
+/// it must stop holding the state log back.
+#[tokio::test]
+async fn a_daemon_that_finished_while_disconnected_does_not_pin_the_log() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let owner = DaemonId::new(Some("owner".to_string()));
+    let gone = DaemonId::new(Some("gone".to_string()));
+    let owner_node: NodeId = "sender".to_string().into();
+    let gone_node: NodeId = "receiver".to_string().into();
+    let mut coordinator =
+        coordinator_with_owner_and_gone(dataflow_id, &owner, &owner_node, &gone, &gone_node);
+
+    cleanup_disconnected_daemons_from_running_dataflows(
+        &mut coordinator.running_dataflows,
+        &BTreeSet::from([gone.clone()]),
+        &mut coordinator.pending_restarts,
+    );
+    let returned = DaemonId::new(Some("gone".to_string()));
+    let result = DataflowDaemonResult {
+        timestamp: coordinator.clock.new_timestamp(),
+        node_results: BTreeMap::from([(gone_node.clone(), Ok(()))]),
+    };
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id: returned,
+                result,
+            },
+        )
+        .await
+        .unwrap();
+
+    // A change for the finished node, then one the owner applies.
+    set_param(&mut coordinator, dataflow_id, &gone_node).await;
+    set_param(&mut coordinator, dataflow_id, &owner_node).await;
+
+    let df = &coordinator.running_dataflows[&dataflow_id];
+    assert!(df.disconnected_daemons.is_empty());
+    assert!(df.state_log.is_empty(), "got: {:?}", df.state_log);
+}
+
 #[tokio::test]
 async fn replay_replays_persisted_param_to_daemon_connection() {
     #[derive(serde::Deserialize)]

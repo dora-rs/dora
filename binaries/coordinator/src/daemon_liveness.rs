@@ -240,8 +240,8 @@ pub(crate) fn reestablish_running_dataflow(
     reported_nodes: &[dora_core::config::NodeId],
 ) -> bool {
     if let Some(df) = running_dataflows.get_mut(&record.uuid) {
+        df.adopt_disconnected_daemon(daemon_id, reported_nodes);
         df.daemons.insert(daemon_id.clone());
-        df.disconnected_daemons.remove(daemon_id);
         df.pending_daemons.remove(daemon_id);
         df.pending_spawn_results.remove(daemon_id);
         for node in reported_nodes {
