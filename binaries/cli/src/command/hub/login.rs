@@ -16,9 +16,9 @@ pub struct Login {
     /// Registry base URL. Defaults to DORA_HUB_REGISTRY_URL or https://dora.pub.
     #[clap(long, env = "DORA_HUB_REGISTRY_URL", value_name = "URL")]
     registry: Option<String>,
-    /// Registry login (account name).
-    #[clap(long, env = "DORA_HUB_USERNAME", value_name = "LOGIN")]
-    username: Option<String>,
+    /// Account email.
+    #[clap(long, env = "DORA_HUB_EMAIL", value_name = "EMAIL")]
+    email: Option<String>,
     /// Password; prompted for if omitted.
     #[clap(
         long,
@@ -46,9 +46,9 @@ pub struct Login {
 impl Executable for Login {
     fn execute(self) -> eyre::Result<()> {
         let registry_url = self.registry.unwrap_or_else(registry::registry_url);
-        let username = match self.username {
-            Some(username) if !username.trim().is_empty() => username,
-            _ => inquire::Text::new("Registry login")
+        let email = match self.email {
+            Some(email) if !email.trim().is_empty() => email,
+            _ => inquire::Text::new("Email")
                 .prompt()
                 .context("login cancelled")?,
         };
@@ -63,7 +63,7 @@ impl Executable for Login {
         let client = RegistryClient::with_url(&registry_url, false)
             .context("invalid registry configuration")?;
         let session = client
-            .login(username.trim(), &password)
+            .login(email.trim(), &password)
             .with_context(|| format!("sign-in to {registry_url} failed"))?;
         let token = client
             .create_token(&session, &self.token_name, &self.scopes)

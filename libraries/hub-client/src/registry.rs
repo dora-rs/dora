@@ -282,11 +282,11 @@ impl RegistryClient {
     }
 
     /// Sign in and return the browser session cookie needed to mint a token.
-    pub fn login(&self, login: &str, password: &str) -> eyre::Result<RegistrySession> {
+    pub fn login(&self, email: &str, password: &str) -> eyre::Result<RegistrySession> {
         let response = self
             .client
             .post(format!("{}/api/v1/auth/login", self.base))
-            .json(&json!({ "login": login, "password": password }))
+            .json(&json!({ "email": email, "password": password }))
             .send()
             .with_context(|| format!("failed to reach registry {}", self.base))?;
         let status = response.status();

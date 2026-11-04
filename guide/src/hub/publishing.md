@@ -22,7 +22,7 @@ registry's fallback when the host is unreachable.
 2. A registry account and a publish token:
 
    ```bash
-   dora hub login                 # prompts for account/password; stores a token
+   dora hub login                 # prompts for email/password; stores a token
    dora hub token                 # inspect the saved token
    ```
 
