@@ -146,7 +146,7 @@ nodes:
       - result
 ```
 
-Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MODE`) into every node inside the module, overriding a node's own `env:` entry of the same name.
+Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MODE`) into every node inside the module, overriding a node's own `env:` entry of the same name. As with `env:` values, `$VAR` references in an injected param are expanded when the dataflow is expanded, against the `dora` CLI's environment, and `$$` is a literal `$`.
 
 ## Expansion Rules
 

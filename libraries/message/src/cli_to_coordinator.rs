@@ -472,7 +472,7 @@ impl ControlRequest {
 #[cfg(test)]
 mod path_fallback_tests {
     use super::*;
-    use crate::descriptor::Node;
+    use crate::descriptor::{EnvValue, Node};
 
     fn requests() -> [ControlRequest; 2] {
         let mut node = Node::new("module.worker".parse().unwrap());
@@ -563,6 +563,39 @@ mod path_fallback_tests {
             assert_eq!(request.to_wire_value().unwrap(), old);
             let restored = ControlRequest::from_wire_value(old.clone()).unwrap();
             assert_eq!(serde_json::to_value(restored).unwrap(), old);
+        }
+    }
+
+    /// An `env:` value whose CLI-side expansion contains `$` reaches the
+    /// coordinator as the CLI expanded it, and still does after the
+    /// coordinator forwards it, instead of being expanded again against the
+    /// coordinator's environment (#3947). The variable is unset, so a second
+    /// expansion would fail the decode.
+    #[test]
+    fn expanded_env_values_cross_the_wire_verbatim() {
+        let expanded = EnvValue::String("${DORA_TEST_WIRE_SURELY_UNSET}/p$ss".into());
+        for mut request in requests() {
+            if let ControlRequest::Build { dataflow, .. } | ControlRequest::Start { dataflow, .. } =
+                &mut request
+            {
+                dataflow.env = Some(BTreeMap::from([("X".into(), expanded.clone())]));
+                dataflow.nodes[0].env = Some(BTreeMap::from([("Y".into(), expanded.clone())]));
+            }
+            let wire = serde_json::to_vec(&request.to_wire_value().unwrap()).unwrap();
+            let decoded =
+                ControlRequest::from_wire_value(serde_json::from_slice(&wire).unwrap()).unwrap();
+            let (ControlRequest::Build { dataflow, .. } | ControlRequest::Start { dataflow, .. }) =
+                decoded
+            else {
+                unreachable!()
+            };
+            // The coordinator -> daemon hop encodes the descriptor again.
+            let forwarded: Descriptor =
+                serde_json::from_str(&serde_json::to_string(&dataflow).unwrap()).unwrap();
+            for d in [&dataflow, &forwarded] {
+                assert_eq!(d.env.as_ref().unwrap()["X"], expanded);
+                assert_eq!(d.nodes[0].env.as_ref().unwrap()["Y"], expanded);
+            }
         }
     }
 

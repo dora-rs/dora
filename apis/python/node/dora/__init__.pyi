@@ -90,7 +90,9 @@ class Node:
     def dataflow_descriptor(self) -> dict:
         """Returns the full dataflow descriptor that this node is part of.
 
-        This method returns the parsed dataflow YAML file."""
+        This method returns the parsed dataflow YAML file. Its `$VAR`
+        references are already expanded, and a `$` in an `env` string is
+        written as `$$`, the form that parses back to the same value."""
 
     def dataflow_id(self) -> str:
         """Returns the dataflow id."""
