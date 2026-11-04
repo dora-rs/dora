@@ -1,6 +1,8 @@
 use quote::{ToTokens, format_ident, quote};
 use syn::Ident;
 
+use std::collections::BTreeSet;
+
 use super::{ConstantType, MemberType};
 
 pub fn dds_name(package: &str, name: &str) -> String {
@@ -100,6 +102,25 @@ pub struct Message {
 }
 
 impl Message {
+    /// Returns the names of all messages in the same package that this message directly references.
+    pub fn internal_dependencies(&self) -> BTreeSet<String> {
+        let mut deps = BTreeSet::new();
+        for member in &self.members {
+            match member.r#type.nestable_type() {
+                super::primitives::NestableType::NamedType(named) => {
+                    deps.insert(named.0.clone());
+                }
+                super::primitives::NestableType::NamespacedType(ns)
+                    if ns.package == self.package && ns.namespace == "msg" =>
+                {
+                    deps.insert(ns.name.clone());
+                }
+                _ => {}
+            }
+        }
+        deps
+    }
+
     pub fn struct_token_stream(
         &self,
         package_name: &str,

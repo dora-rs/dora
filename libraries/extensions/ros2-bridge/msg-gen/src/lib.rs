@@ -99,6 +99,9 @@ fn detect_ros_service_mapping_ident_from(
 
 #[allow(clippy::cognitive_complexity)]
 pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macro2::TokenStream {
+    let mut package = package.clone();
+    package.sort_messages();
+    let package = &package;
     let mut shared_type_defs = Vec::new();
     let mut message_struct_impls = Vec::new();
     let mut message_topic_defs = Vec::new();
