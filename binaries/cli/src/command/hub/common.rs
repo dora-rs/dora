@@ -141,7 +141,14 @@ mod tests {
         // into the developer's own repository (dora-rs/dora#4017 review).
         let git = |args: &[&str]| {
             let status = node_repo_git(repo.path())
-                .args(["-c", "user.email=t@dora.rs", "-c", "user.name=t"])
+                .args([
+                    "-c",
+                    "user.email=t@dora.rs",
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
                 .args(args)
                 .status()
                 .unwrap();
