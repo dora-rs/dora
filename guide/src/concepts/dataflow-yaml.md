@@ -135,7 +135,7 @@ inputs:
   sensor:   dora/logs/info/sensor   # info+ from specific node
 ```
 
-Each message arrives as a JSON-encoded `LogMessage` string. See [Logging](logging.md#doralogs----automatic-log-aggregation) for details.
+Each message arrives as a JSON-encoded `LogMessage` string. See [Logging](../operations/logging.md#doralogs----automatic-log-aggregation) for details.
 
 #### Outputs
 
@@ -266,7 +266,7 @@ Example:
 
 When using `send_stdout_as` or `send_logs_as`, include the output name in the `outputs` list so downstream nodes can subscribe to it.
 
-For a complete guide to all logging features, see [Logging](logging.md).
+For a complete guide to all logging features, see [Logging](../operations/logging.md).
 
 ### Fault Tolerance
 
