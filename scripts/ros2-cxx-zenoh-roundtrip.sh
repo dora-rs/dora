@@ -10,6 +10,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/scripts/cargo-target-dir.sh"
 TARGET_DIR="$(cargo_target_dir "$ROOT")"
 FIXTURE="$ROOT/tests/ros2-cxx-zenoh"
+TYPE_DESCRIPTIONS="$ROOT/libraries/extensions/ros2-bridge/msg-gen/test_type_descriptions"
 
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
@@ -19,7 +20,13 @@ trap 'rm -rf "$OUT"' EXIT
 # pointing there isn't left with the fixture's bindings. (The static library
 # is rebuilt for the fixture too; the next build with the real
 # AMENT_PREFIX_PATH regenerates it, as build.rs reruns when that changes.)
-export AMENT_PREFIX_PATH="$FIXTURE/ament"
+# Use the same ROS type descriptions as the Rust tests.
+cp -R "$FIXTURE/ament" "$OUT/ament"
+cp "$TYPE_DESCRIPTIONS/action_msgs__srv__CancelGoal.json" \
+  "$OUT/ament/share/action_msgs/srv/CancelGoal.json"
+cp "$TYPE_DESCRIPTIONS/action_msgs__msg__GoalStatusArray.json" \
+  "$OUT/ament/share/action_msgs/msg/GoalStatusArray.json"
+export AMENT_PREFIX_PATH="$OUT/ament"
 export DORA_NODE_API_CXX_INSTALL="$OUT/install"
 cargo build --manifest-path "$ROOT/Cargo.toml" -p dora-node-api-cxx --features ros2-bridge
 

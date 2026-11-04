@@ -455,6 +455,7 @@ mod typed {
             zenoh::{Context, ContextOptions, Node, keyexpr::TopicToken},
         },
     };
+    use futures::{StreamExt, stream::FuturesUnordered};
     use serde::{Deserialize, Serialize};
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -478,6 +479,8 @@ mod typed {
         _session: Context,
         node: Node,
         client: Client,
+        keys: ActionKeys,
+        tokens: ActionTokens,
         server: Server,
         pump: tokio::task::JoinHandle<()>,
     }
@@ -522,7 +525,7 @@ mod typed {
             .await
             .unwrap();
         let pump = tokio::spawn(pump);
-        let client = Client::declare(&node, &keys, tokens, &qos, 1024 * 1024)
+        let client = Client::declare(&node, &keys, tokens.clone(), &qos, 1024 * 1024)
             .await
             .unwrap();
         client
@@ -533,6 +536,8 @@ mod typed {
             _session: context,
             node,
             client,
+            keys,
+            tokens,
             server,
             pump,
         }
@@ -654,6 +659,29 @@ mod typed {
             assert!(matches!(status, GoalStatusEnum::Aborted));
             assert_eq!(result.sequence, vec![7]);
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_goal_finishes_even_if_status_cannot_be_published() {
+        let Fixture {
+            client,
+            server,
+            node,
+            _session,
+            ..
+        } = fixture(62, options(4)).await;
+        let goal_id = client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
+        next_goal(&server).await;
+
+        node.session().close().await.unwrap();
+        server
+            .finish(goal_id, GoalStatusEnum::Succeeded, &Sequence::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            server.status(goal_id).await,
+            Some(GoalStatusEnum::Succeeded)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -894,6 +922,69 @@ mod typed {
         }
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn result_waiters_are_bounded_per_goal() {
+        use dora_ros2_bridge::transport::zenoh::service::ServiceError;
+
+        let Fixture {
+            client,
+            keys,
+            tokens,
+            node,
+            server,
+            _session,
+            ..
+        } = fixture(63, options(16)).await;
+        let other = Client::declare(&node, &keys, tokens, &Ros2Qos::default(), 1024 * 1024)
+            .await
+            .unwrap();
+        let first_goal = client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
+        next_goal(&server).await;
+        let second_goal = other.send_goal(&Goal { order: 2 }, TIMEOUT).await.unwrap();
+        next_goal(&server).await;
+
+        let mut waiters: FuturesUnordered<_> =
+            (0..4).map(|_| client.get_result(first_goal)).collect();
+        let rejected = tokio::time::timeout(TIMEOUT, waiters.next())
+            .await
+            .expect("the excess request should be rejected while the goal is running")
+            .unwrap();
+        assert!(
+            matches!(rejected, Err(ActionCallError::Service(ServiceError::Remote(ref error)))
+                if error.contains("result waiter limit")),
+            "{rejected:?}"
+        );
+
+        let second_result = Sequence { sequence: vec![2] };
+        server
+            .finish(second_goal, GoalStatusEnum::Succeeded, &second_result)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(TIMEOUT, other.get_result(second_goal))
+                .await
+                .unwrap()
+                .unwrap(),
+            (GoalStatusEnum::Succeeded, second_result)
+        );
+
+        let first_result = Sequence { sequence: vec![1] };
+        server
+            .finish(first_goal, GoalStatusEnum::Succeeded, &first_result)
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            assert_eq!(
+                tokio::time::timeout(TIMEOUT, waiters.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap(),
+                (GoalStatusEnum::Succeeded, first_result.clone())
+            );
+        }
+    }
+
     /// Goals nobody reads stay queued, also after they are aborted or evicted,
     /// so the queue is what bounds them: with it full, a new goal is rejected.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -974,6 +1065,7 @@ mod typed {
             pump,
             node,
             _session,
+            ..
         } = fixture(57, options(4)).await;
         drop(server);
         tokio::time::timeout(TIMEOUT, pump)

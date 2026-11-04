@@ -1046,6 +1046,8 @@ Action differences from DDS:
 - `send_goal` fails at once with "service request timed out" while no action
   server is matched (on DDS it waits until its timeout), so call
   `wait_for_action` first.
+- The server rejects new goals while 16 accepted goals are still unread. On
+  DDS the server blocks until there is room.
 - `send_result` returns once the result is stored, instead of waiting for the
   client's `request_result`; later requests get the stored result. A server
   keeps 16 goals: a new goal replaces the oldest finished one, whose result is
@@ -1058,6 +1060,11 @@ Action differences from DDS:
   cancel requests at all.
 - `request_result` for a goal the server doesn't know returns `Unknown` with
   default values, as rclcpp does.
+- If no action server is matched, `request_result` produces an immediate
+  error event on Zenoh. DDS silently drops the request.
+- The server holds up to three `get_result` requests per unfinished goal,
+  across all clients. It answers extra requests with an error. Once the
+  goal finishes, requests can fetch the stored result.
 - A client's `request_result` returns an error while 64 earlier calls are
   still waiting for their goal or for their result event to be read.
 

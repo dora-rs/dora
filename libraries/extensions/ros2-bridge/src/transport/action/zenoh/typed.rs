@@ -87,8 +87,13 @@ struct CancelGoalWire {
 /// Calls each of the client's action services can have in flight. A
 /// `get_result` call stays open until its goal ends, so this has to cover
 /// every goal a server runs at once (rcl_action servers have no fixed cap,
-/// dora's own allow up to 16).
+/// dora's own allow up to 16). Keep this at least as large as the generated
+/// C++ client's `MAX_PENDING_REQUESTS` so it can send every call it admits.
 const MAX_PENDING_CALLS: usize = 64;
+
+/// Three waiters across each of the 16 generated server's goals leaves room
+/// in the service's 64 shared slots to receive and answer new requests.
+const MAX_RESULT_WAITERS_PER_GOAL: usize = 3;
 
 /// Ties the message types to a client or server without owning a value, so
 /// both stay `Send` and `Sync` whatever the types are.
@@ -248,7 +253,9 @@ pub type ActionServerPump = BoxFuture<'static, ()>;
 /// the goal with [`finish`](Self::finish). Results stay available to
 /// `get_result` until the goal is evicted to make room for a new one. Like
 /// rclcpp, `get_result` for a goal the server doesn't know returns
-/// `STATUS_UNKNOWN` and a default result.
+/// `STATUS_UNKNOWN` and a default result. At most three result requests can
+/// wait on an unfinished goal across all clients. Extra requests receive a
+/// service error.
 pub struct TypedActionServer<G, R, F> {
     shared: Arc<Shared>,
     goals: flume::Receiver<(GoalId, G)>,
@@ -377,7 +384,9 @@ where
         }
         goal.status = status;
         let waiters = std::mem::take(&mut goal.waiters);
-        let published = self.shared.publish_status(&goals).await;
+        if let Err(error) = self.shared.publish_status(&goals).await {
+            tracing::warn!("failed to publish Zenoh action status: {error}");
+        }
         for request in waiters {
             if let Err(error) = self
                 .shared
@@ -390,7 +399,7 @@ where
             }
         }
         goals[index].result = Some(response);
-        published
+        Ok(())
     }
 }
 
@@ -494,6 +503,18 @@ impl Shared {
         let response = match goals.iter_mut().find(|goal| goal.id == goal_id) {
             Some(goal) => match &goal.result {
                 Some(response) => response,
+                None if goal.waiters.len() >= MAX_RESULT_WAITERS_PER_GOAL => {
+                    self.endpoints
+                        .get_result
+                        .reject(
+                            request.id,
+                            &format!(
+                                "result waiter limit of {MAX_RESULT_WAITERS_PER_GOAL} reached for this goal"
+                            ),
+                        )
+                        .await?;
+                    return Ok(());
+                }
                 None => {
                     goal.waiters.push(request.id);
                     return Ok(());
