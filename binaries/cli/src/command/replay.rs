@@ -290,13 +290,6 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     run.execute_with(true)
 }
 
-/// Rewrites each recorded node in the descriptor into a replay node: swaps its
-/// `path` for the `dora-replay-node` binary, strips the build/source/operator
-/// keys (including `hub:`/`ros2:`, which are exclusive with `path`, and a
-/// `path_sha256` or `path_fallback` that would now apply to the local replay
-/// binary), its `inputs`/`input_types` and its `send_stdout_as`/`send_logs_as`,
-/// republishes its recorded `outputs`, and injects the `DORA_REPLAY_*` env the
-/// replay node reads (file, node id, speed, loop).
 /// The recorded nodes in `nodes_to_replace` that `nodes` has no entry for,
 /// so replay cannot swap them for a replay node. A node inside a `module:` is
 /// recorded under its expanded id (`<module>.<inner>`), while the recording
@@ -313,6 +306,13 @@ fn unmapped_recorded_nodes(
         .collect()
 }
 
+/// Rewrites each recorded node in the descriptor into a replay node: swaps its
+/// `path` for the `dora-replay-node` binary, strips the build/source/operator
+/// keys (including `hub:`/`ros2:`, which are exclusive with `path`, and a
+/// `path_sha256` or `path_fallback` that would now apply to the local replay
+/// binary), its `inputs`/`input_types` and its `send_stdout_as`/`send_logs_as`,
+/// republishes its recorded `outputs`, and injects the `DORA_REPLAY_*` env the
+/// replay node reads (file, node id, speed, loop).
 fn replace_recorded_nodes_with_replay(
     nodes: &mut serde_yaml::Sequence,
     nodes_to_replace: &BTreeSet<String>,
