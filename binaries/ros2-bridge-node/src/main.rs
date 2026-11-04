@@ -2180,29 +2180,28 @@ fn run_multi_subscriber(
     messages: &Arc<HashMap<String, HashMap<String, Message>>>,
 ) -> eyre::Result<()> {
     let (tx, rx) = flume::bounded::<(String, ArrayData)>(10);
+    // Dropped once the event loop ends, to stop the subscriber threads. Each
+    // topic keeps its own thread so large messages decode in parallel.
+    let (stop, stop_rx) = flume::bounded::<()>(0);
 
     let mut handles = Vec::new();
     for (output_id, sub) in subscribers {
         let tx = tx.clone();
+        let stop_rx = stop_rx.clone();
         handles.push(std::thread::spawn(move || {
-            let stream = Box::pin(
-                sub.subscription
-                    .async_stream_seed(sub.deserializer)
-                    .filter_map(|result| async {
-                        match result {
-                            Ok((data, _info)) => Some(data),
-                            Err(e) => {
-                                tracing::warn!("ROS2 subscription error: {e:?}");
-                                None
-                            }
+            let stream = sub
+                .subscription
+                .async_stream_seed(sub.deserializer)
+                .filter_map(|result| async {
+                    match result {
+                        Ok((data, _info)) => Some(data),
+                        Err(e) => {
+                            tracing::warn!("ROS2 subscription error: {e:?}");
+                            None
                         }
-                    }),
-            );
-            for data in futures::executor::block_on_stream(stream) {
-                if tx.send((output_id.clone(), data)).is_err() {
-                    break;
-                }
-            }
+                    }
+                });
+            forward_until_stopped(&output_id, stream, stop_rx, &tx);
         }));
     }
     drop(tx);
@@ -2231,12 +2230,39 @@ fn run_multi_subscriber(
         }
     }
 
+    stop_and_join(stop, handles);
+    Ok(())
+}
+
+/// Forward `stream` into `tx`, tagged with `output_id`, until the stream ends,
+/// the receiver of `tx` is gone, or the sender of `stop` is dropped.
+///
+/// The `stop` check is what lets a subscriber thread on a quiet topic end: it
+/// waits for its next sample, so it would never try to send and notice that the
+/// receiver is gone, and a ROS subscription stream does not end on its own.
+fn forward_until_stopped<T>(
+    output_id: &str,
+    stream: impl futures::Stream<Item = T>,
+    stop: flume::Receiver<()>,
+    tx: &flume::Sender<(String, T)>,
+) {
+    let stream = Box::pin(stream.take_until(stop.into_recv_async()));
+    for data in futures::executor::block_on_stream(stream) {
+        if tx.send((output_id.to_owned(), data)).is_err() {
+            break;
+        }
+    }
+}
+
+/// Stop the threads running [`forward_until_stopped`] by dropping `stop`, then
+/// wait for them to finish.
+fn stop_and_join(stop: flume::Sender<()>, handles: Vec<std::thread::JoinHandle<()>>) {
+    drop(stop);
     for handle in handles {
         if let Err(e) = handle.join() {
             tracing::warn!("subscriber thread panicked: {e:?}");
         }
     }
-    Ok(())
 }
 
 fn handle_publish_input(
@@ -2901,5 +2927,85 @@ mod abort_result_tests {
         assert!(matches!(status, GoalEndStatus::Succeeded));
         let payload = serialize_cdr(&result).expect("valid result");
         assert_eq!(&payload[4..], &7i32.to_le_bytes());
+    }
+}
+
+#[cfg(test)]
+mod subscriber_thread_tests {
+    use super::{forward_until_stopped, stop_and_join};
+    use std::time::{Duration, Instant};
+
+    /// Spawn a forwarding thread per stream, as `run_multi_subscriber` does.
+    fn spawn_forwarders<S>(
+        streams: Vec<S>,
+        tx: &flume::Sender<(String, u32)>,
+    ) -> (flume::Sender<()>, Vec<std::thread::JoinHandle<()>>)
+    where
+        S: futures::Stream<Item = u32> + Send + 'static,
+    {
+        let (stop, stop_rx) = flume::bounded::<()>(0);
+        let handles = streams
+            .into_iter()
+            .enumerate()
+            .map(|(i, stream)| {
+                let (tx, stop_rx) = (tx.clone(), stop_rx.clone());
+                std::thread::spawn(move || {
+                    forward_until_stopped(&format!("out{i}"), stream, stop_rx, &tx)
+                })
+            })
+            .collect();
+        (stop, handles)
+    }
+
+    /// Run `stop_and_join` on a helper thread and assert it returns within a
+    /// few seconds, so a regression fails instead of hanging the test.
+    fn assert_stops_promptly(stop: flume::Sender<()>, handles: Vec<std::thread::JoinHandle<()>>) {
+        let joiner = std::thread::spawn(move || stop_and_join(stop, handles));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !joiner.is_finished() {
+            assert!(Instant::now() < deadline, "subscriber threads hung on stop");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// A topic that never publishes must not keep the bridge from stopping:
+    /// its thread waits for a sample that never comes, while the receiver is
+    /// still alive, so only the stop signal can end it.
+    #[test]
+    fn quiet_subscriptions_stop_promptly() {
+        let (tx, rx) = flume::bounded(10);
+        let (stop, handles) = spawn_forwarders(
+            vec![
+                futures::stream::pending::<u32>(),
+                futures::stream::pending(),
+            ],
+            &tx,
+        );
+        assert_stops_promptly(stop, handles);
+        drop(rx);
+    }
+
+    /// Each topic's samples reach the merged channel tagged with its output
+    /// before the stop, and the threads still end once stopped.
+    #[test]
+    fn samples_are_forwarded_until_stop() {
+        use futures::StreamExt;
+        let (tx, rx) = flume::bounded(10);
+        let (stop, handles) = spawn_forwarders(
+            vec![
+                futures::stream::iter(vec![1, 2]).chain(futures::stream::pending()),
+                futures::stream::iter(vec![3]).chain(futures::stream::pending()),
+            ],
+            &tx,
+        );
+        let mut received: Vec<_> = (0..3)
+            .map(|_| rx.recv_timeout(Duration::from_secs(5)).expect("sample"))
+            .collect();
+        received.sort();
+        assert_eq!(
+            received,
+            [("out0".into(), 1), ("out0".into(), 2), ("out1".into(), 3)]
+        );
+        assert_stops_promptly(stop, handles);
     }
 }
