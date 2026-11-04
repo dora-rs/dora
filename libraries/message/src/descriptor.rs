@@ -1675,27 +1675,26 @@ pub enum GitRepoRev {
 // instead of being expanded again against the receiving host's
 // environment (#3947). Released 1.x peers decode that the same way.
 #[allow(missing_docs)]
-#[derive(Debug, Clone, PartialEq, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum EnvValue {
     Bool(bool),
     Integer(i64),
     Float(f64),
+    #[serde(serialize_with = "serialize_escaping_dollars")]
     String(String),
 }
 
-impl Serialize for EnvValue {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            EnvValue::Bool(b) => serializer.serialize_bool(*b),
-            EnvValue::Integer(i) => serializer.serialize_i64(*i),
-            EnvValue::Float(f) => serializer.serialize_f64(*f),
-            // `$$` is what `$` expands from, so the next decode restores `s`.
-            EnvValue::String(s) if s.contains('$') => {
-                serializer.serialize_str(&s.replace('$', "$$"))
-            }
-            EnvValue::String(s) => serializer.serialize_str(s),
-        }
+/// `s` with each `$` written as `$$`, which is what `$` expands from, so the
+/// next decode restores `s`.
+fn serialize_escaping_dollars<S: serde::Serializer>(
+    s: &str,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    if s.contains('$') {
+        serializer.serialize_str(&s.replace('$', "$$"))
+    } else {
+        serializer.serialize_str(s)
     }
 }
 
