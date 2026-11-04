@@ -351,7 +351,10 @@ fn cached_source_differs(clone_dir: &Path, git_url: &str, catalog_subpath: &str)
 
 /// Git's per-repository environment (`git rev-parse --local-env-vars`) minus
 /// the `GIT_CONFIG_PARAMETERS` / `GIT_CONFIG_COUNT` config overrides, which
-/// carry user settings such as a proxy rather than naming a repository.
+/// carry user settings such as a proxy rather than naming a repository. It is
+/// the union across git releases: older ones (2.39, for one) still list
+/// `GIT_INTERNAL_SUPER_PREFIX`, and removing a variable that is not set is a
+/// no-op.
 const REPO_LOCAL_GIT_ENV: &[&str] = &[
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_CONFIG",
@@ -364,6 +367,7 @@ const REPO_LOCAL_GIT_ENV: &[&str] = &[
     "GIT_NO_REPLACE_OBJECTS",
     "GIT_REPLACE_REF_BASE",
     "GIT_PREFIX",
+    "GIT_INTERNAL_SUPER_PREFIX",
     "GIT_SHALLOW_FILE",
     "GIT_COMMON_DIR",
 ];
