@@ -190,6 +190,8 @@ fn child_process_map(sys: &sysinfo::System) -> HashMap<sysinfo::Pid, Vec<sysinfo
 /// A real child cannot start before its parent, so an edge to an older
 /// process is dropped. Start times have one-second resolution, so a stale
 /// edge within the same second survives; [`descendants`] still terminates.
+/// A start time of `0` means unknown (sysinfo reports it for a process it
+/// cannot open on Windows), so such a child keeps its edge.
 fn parent_edges(
     processes: impl IntoIterator<Item = (sysinfo::Pid, Option<sysinfo::Pid>, u64)>,
 ) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
@@ -198,7 +200,7 @@ fn parent_edges(
     let mut children_map: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
     for (pid, parent, start) in processes {
         let Some(parent) = parent else { continue };
-        if start_times.get(&parent).is_some_and(|&p| start < p) {
+        if start != 0 && start_times.get(&parent).is_some_and(|&p| start < p) {
             continue;
         }
         children_map.entry(parent).or_default().push(pid);
@@ -584,6 +586,15 @@ mod descendant_tests {
     #[test]
     fn a_cycle_ends_and_lists_each_process_once() {
         let children = edges(&[(1, Some(2), 5), (2, Some(1), 5), (3, Some(2), 5)]);
+        assert_eq!(sorted(descendants(&children, Pid::from_u32(1))), [2, 3]);
+    }
+
+    /// sysinfo reports a start time of `0` for a process it cannot open
+    /// (Windows), which is unknown, not older than its parent: the child and
+    /// its own children stay counted.
+    #[test]
+    fn a_child_with_an_unknown_start_time_keeps_its_edge() {
+        let children = edges(&[(1, None, 5), (2, Some(1), 0), (3, Some(2), 6)]);
         assert_eq!(sorted(descendants(&children, Pid::from_u32(1))), [2, 3]);
     }
 }
