@@ -117,8 +117,10 @@ EXAMPLES=(
   rust-ros2-dataflow-topic-pub
   rust-ros2-dataflow-topic-sub
   rust-ros2-dataflow-service-client
+  yaml-bridge-service
   rust-ros2-dataflow-service-server
   rust-ros2-dataflow-action-client
+  yaml-bridge-action
   rust-ros2-dataflow-action-server
   rust-ros2-dataflow-parameter
   python-ros2-dataflow
