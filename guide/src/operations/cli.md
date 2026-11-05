@@ -1290,6 +1290,7 @@ Per Node:
 
 Communication:
   - Zenoh shared memory directly between nodes for payloads >= 4 KiB (zero-copy)
+  - Zenoh (heap buffer) directly between nodes for smaller payloads
   - TCP between daemon and node for control messages and outputs relayed through the daemon
   - flume channels for internal event routing
 ```

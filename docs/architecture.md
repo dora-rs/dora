@@ -276,10 +276,13 @@ so the payload does not pass through the daemon (the *direct path*):
 - A payload of 4 KiB or more that cannot get an SHM buffer (the pool is momentarily full, or no SHM provider could be created at startup) is sent on the daemon path instead of Zenoh, because a fragmented Zenoh publish could be dropped silently (dora-rs/dora#2366). The node does not wait for the pool to drain
 - After each direct publish the node sends a small `OutputSent` request to the daemon, which uses it for input deadlines and circuit-breaker recovery. The payload itself is not copied through the daemon
 
-**Direct path or daemon path.** Before the dataflow starts, each node publishes startup markers on its outputs and its required consumers acknowledge them (the startup handshake, bounded by `ZENOH_STARTUP_GRACE`, 500 ms). An output uses the direct path only once its routes are proven this way, and the choice is then fixed for the node's lifetime. Otherwise the output uses the daemon path (node → daemon → receivers over TCP, payload carried in `DataMessage::Vec`, limited to `MAX_MESSAGE_BYTES`). The daemon computes this routing when it spawns the dataflow (`binaries/daemon/src/output_routing.rs`); an output stays on the daemon path when:
+**Direct path or daemon path.** Before the dataflow starts, each node publishes startup markers on its outputs and its required consumers acknowledge them (the startup handshake, bounded by `ZENOH_STARTUP_GRACE`, 500 ms). An output uses the direct path only once its routes are proven this way, and the choice is then fixed for the node's lifetime. Otherwise the output uses the daemon path (node → daemon → receivers over TCP, payload carried in `DataMessage::Vec`, limited to `MAX_MESSAGE_BYTES`). The daemon pins an output to the daemon path when it spawns the dataflow (`binaries/daemon/src/output_routing.rs`) if:
 
 - a consumer declares `queue_policy: backpressure`
-- a consumer runs under another daemon and is dynamic, or the producer has no endpoint that consumer's machine can dial
+- a consumer runs under another daemon and is dynamic, declares `input_timeout`, or the producer has no endpoint that consumer's machine can dial
+
+The node also keeps an output on the daemon path when:
+
 - the startup handshake does not complete within its window
 - the node has no Zenoh session (interactive or testing mode)
 
@@ -447,7 +450,7 @@ There is no separate release message: lifetime follows the Arrow `Buffer` that h
 |-----------|-------|
 | `ZERO_COPY_THRESHOLD` | 4096 bytes (override with `DORA_ZERO_COPY_THRESHOLD`) |
 | Node SHM pool size | 8 MiB (`shared_memory_pool_size` or `DORA_NODE_SHM_POOL_SIZE`) |
-| `MAX_MESSAGE_BYTES` | 64 MiB, daemon (TCP) path only; the direct Zenoh path has no such cap |
+| `MAX_MESSAGE_BYTES` | 64 MiB, daemon (TCP) path only; the direct path is bounded by the node's SHM pool instead, and a payload that does not fit takes the daemon path |
 
 ## Dataflow Specification
 
