@@ -338,6 +338,27 @@ pub(crate) fn write_events_to() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// A loopback address whose connections are refused, for tests of the
+/// "coordinator not running" path. The returned socket holds the port: it is
+/// bound but not listening, so a connect gets a refusal, and no other test in
+/// the binary can bind the port while the socket lives. Binding a
+/// `TcpListener` and dropping it frees the port instead, and a test running
+/// in parallel could take it before the connect, turning the refusal into a
+/// reset or a reply (#4026). Keep the socket alive for the whole test.
+#[cfg(test)]
+pub(crate) fn refused_port() -> (socket2::Socket, std::net::SocketAddr) {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )
+    .unwrap();
+    let any_port: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    socket.bind(&any_port.into()).unwrap();
+    let addr = socket.local_addr().unwrap().as_socket().unwrap();
+    (socket, addr)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -532,10 +553,7 @@ mod coordinator_rejected_tests {
 
     #[test]
     fn refused_connection_is_not_a_rejection() {
-        let addr = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        let (_port, addr) = super::refused_port();
         let err = connect_to_coordinator(addr)
             .err()
             .expect("closed port must fail the connection");
