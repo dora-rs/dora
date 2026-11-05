@@ -42,6 +42,7 @@ use eyre::{Context, eyre};
 pub use scheduler::Scheduler as EventScheduler;
 
 mod data_conversion;
+pub(crate) use data_conversion::shared_data_to_arrow_array;
 mod event;
 /// Drop notifications for the daemon's opaque extension table.
 pub mod extensions;

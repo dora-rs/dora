@@ -26,7 +26,7 @@ use eyre::{Context, ContextCompat};
 use crate::{
     arrow_utils::encode_arrow_ipc,
     daemon_connection::json_to_arrow::read_json_value_as_arrow,
-    event_stream::data_to_arrow_array,
+    event_stream::shared_data_to_arrow_array,
     integration_testing::{TestingInput, TestingOptions, TestingOutput},
 };
 
@@ -195,7 +195,7 @@ impl IntegrationTestingEvents {
         let start_timestamp = self.start_timestamp;
         let skip_output_time_offsets = self.options.skip_output_time_offsets;
 
-        let arc_data = data.as_ref().map(|d| std::sync::Arc::new(d.clone()));
+        let arc_data = data.as_ref().map(|d| Arc::new(d.clone()));
         let output = convert_output_to_json(
             output_id,
             metadata,
@@ -310,8 +310,11 @@ pub fn convert_output_to_json(
         start_timestamp,
         skip_output_time_offsets,
     );
-    if data.is_some() {
-        let data_array = data_to_arrow_array(data.clone().map(std::sync::Arc::unwrap_or_clone))
+    if let Some(data) = data {
+        // Decode in place: the caller keeps its `Arc`, so unwrapping it would
+        // always copy the whole payload.
+        let data_array = shared_data_to_arrow_array(data.clone())
+            .map(arrow::array::make_array)
             .context("failed to convert output to arrow array")?;
         append_arrow_array_json(&mut output, data_array)?;
     }
