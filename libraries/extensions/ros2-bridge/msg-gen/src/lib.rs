@@ -545,6 +545,20 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
         pub const SERVICE_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         pub const MAX_PENDING_REQUESTS: usize = 64;
 
+        /// Bounds of a generated action server: goals past
+        /// `ACTION_MAX_CONCURRENT_GOALS` in flight are rejected, and a goal
+        /// still running `ACTION_GOAL_TIMEOUT` (the daemon's
+        /// ACTION_RESULT_TIMEOUT) after it was accepted is aborted when the
+        /// next goal comes in, so abandoned goals can't wedge the server at
+        /// the cap.
+        pub const ACTION_MAX_CONCURRENT_GOALS: usize = 16;
+        pub const ACTION_GOAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+        /// Largest feedback or status message a generated action client
+        /// accepts on native Zenoh.
+        #[cfg(feature = "rmw-zenoh")]
+        pub const ZENOH_ACTION_MAX_PAYLOAD: usize = 64 * 1024 * 1024;
+
         /// The transport's id for a request a generated service server handed to
         /// C++ under an opaque `u64` token.
         pub enum PendingRequestId {
@@ -600,7 +614,7 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             })
         }
 
-        /// `name` as the generated topic and service endpoints use it on
+        /// `name` as the generated topic, service and action endpoints use it on
         /// native Zenoh: a relative name is under the node's namespace, as rcl
         /// resolves it (and DDS, via ros2-client `Name::to_dds_name`, except
         /// that it writes `//` under the root namespace).
@@ -819,12 +833,12 @@ fn generate_package_rust_imports_for_cxx() -> proc_macro2::TokenStream {
         #common
         #[allow(unused_imports)]
         use crate::ros2::default_impl::{
-            GeneratedNode, MAX_PENDING_REQUESTS, PendingRequestId, SERVICE_RESPONSE_TIMEOUT,
-            record_request,
+            ACTION_GOAL_TIMEOUT, ACTION_MAX_CONCURRENT_GOALS, GeneratedNode, MAX_PENDING_REQUESTS,
+            PendingRequestId, SERVICE_RESPONSE_TIMEOUT, record_request,
         };
         #[cfg(feature = "rmw-zenoh")]
         #[allow(unused_imports)]
-        use crate::ros2::default_impl::neutral_qos;
+        use crate::ros2::default_impl::{ZENOH_ACTION_MAX_PAYLOAD, neutral_qos};
         #[cfg(feature = "rmw-zenoh")]
         #[allow(unused_imports)]
         use crate::ros2::default_impl::{zenoh_full_name, zenoh_service_endpoint};
