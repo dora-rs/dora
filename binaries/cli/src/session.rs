@@ -340,10 +340,16 @@ fn node_source(kind: &CoreNodeKind) -> Option<&NodeSource> {
     }
 }
 
-/// FNV-1a 64-bit, lowercase hex (16 chars): the digest of both the session
-/// source fingerprint and `BuildLockfile::fingerprint_descriptor_git_sources`.
-/// Both are persisted, so the output must never change — it is pinned by
-/// `fingerprint_digest_is_stable` in the lockfile tests.
+/// FNV-1a 64-bit, lowercase hex (16 chars). Every digest made with it is
+/// persisted, so the output must never change:
+/// - the session's `source_fingerprint` (`DataflowSession::fingerprint_source`),
+/// - the session's `build_fingerprint` (`fingerprint_build_inputs`) — a
+///   changed digest here silently discards `build_id` and forces a rebuild of
+///   every dataflow,
+/// - the lockfile's `descriptor_fingerprint`
+///   (`BuildLockfile::fingerprint_descriptor_git_sources`).
+///
+/// Pinned by `fingerprint_digest_is_stable` in the lockfile tests.
 pub(crate) fn fnv1a_64_hex(bytes: &[u8]) -> String {
     format!("{:016x}", dora_message::metadata::fnv1a(bytes))
 }
