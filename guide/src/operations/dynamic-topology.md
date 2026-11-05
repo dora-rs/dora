@@ -46,7 +46,7 @@ starts a tick source for that interval.
 ## Current Limitations
 
 - Daemon-side node spawning for `AddNode` is pending (coordinator dispatch works, daemon logs a warning)
-- Cross-daemon dynamic topology not yet supported
+- Cross-daemon dynamic topology not yet supported: `dora node add` honours the node's `deploy` placement, but rejects a placement on a different daemon than the node's upstream producers
 - Dynamic nodes are not persisted across dataflow restart
 
 See the [Dynamic Topology Plan](../../../docs/plan-dynamic-topology.md) for the full design.

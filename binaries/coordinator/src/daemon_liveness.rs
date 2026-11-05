@@ -177,7 +177,11 @@ pub(crate) fn cleanup_disconnected_daemons_from_running_dataflows(
         let pending_was_nonempty = !df.pending_daemons.is_empty();
         let mut affected = false;
         for daemon_id in disconnected {
-            affected |= df.daemons.remove(daemon_id);
+            if df.daemons.remove(daemon_id) {
+                df.departed_daemons
+                    .insert(daemon_id.clone(), std::time::Instant::now());
+                affected = true;
+            }
             affected |= df.pending_daemons.remove(daemon_id);
             affected |= df.pending_spawn_results.remove(daemon_id);
         }
