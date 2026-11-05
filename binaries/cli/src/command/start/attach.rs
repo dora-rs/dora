@@ -29,65 +29,19 @@ pub fn attach_dataflow(
 ) -> Result<(), eyre::ErrReport> {
     let (tx, rx) = mpsc::channel();
 
-    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
-
-    let print_daemon_name = nodes.values().any(|n| n.deploy.is_some());
+    // Same check as the detached path in `start/mod.rs`; no need to resolve
+    // the descriptor for it.
+    let print_daemon_name = dataflow.nodes.iter().any(|n| n.deploy.is_some());
 
     // Setup dataflow file watcher if reload option is set. Only
     // `--hot-reload` needs the operator sources on this machine: the dataflow
     // is already running at this point, so a watch problem must not detach
     // it from this CLI (no logs, no Ctrl-C) — it only costs hot-reload.
-    let watcher_tx = tx.clone();
     let _watcher = if hot_reload {
-        let working_dir = dataflow_path
-            .canonicalize()
-            .context("failed to canonicalize dataflow path")?
-            .parent()
-            .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
-            .to_owned();
-        let node_path_lookup =
-            hot_reload_watch_paths(nodes.into_values(), &working_dir, dataflow_id);
-        let paths: Vec<PathBuf> = node_path_lookup.keys().cloned().collect();
-        let notifier = move |event| {
-            if let Ok(NotifyEvent {
-                paths,
-                kind: EventKind::Modify(ModifyKind::Data(_data)),
-                ..
-            }) = event
-            {
-                for path in paths {
-                    if let Some((dataflow_id, node_id, operator_id)) = node_path_lookup.get(&path) {
-                        // A filesystem event can arrive on the watcher thread
-                        // after the control loop has stopped and dropped `rx`
-                        // (the dataflow finished or errored out). A closed
-                        // channel just means the CLI is shutting down, so drop
-                        // the reload instead of panicking the watcher thread —
-                        // matching the ctrl-c and log senders in this function.
-                        let _ = watcher_tx.send(AttachEvent::Control(ControlRequest::Reload {
-                            dataflow_id: *dataflow_id,
-                            node_id: node_id.clone(),
-                            operator_id: operator_id.clone(),
-                        }));
-                    }
-                }
-                // TODO: Manage different file event
-            }
-        };
-
-        match RecommendedWatcher::new(
-            notifier,
-            Config::default().with_poll_interval(Duration::from_secs(1)),
-        ) {
-            Ok(mut watcher) => {
-                for path in &paths {
-                    if let Err(err) = watcher.watch(path, RecursiveMode::Recursive) {
-                        warn!("hot-reload: cannot watch `{}`: {err}", path.display());
-                    }
-                }
-                Some(watcher)
-            }
+        match hot_reload_lookup(&dataflow, &dataflow_path, dataflow_id) {
+            Ok(node_path_lookup) => start_hot_reload_watcher(node_path_lookup, tx.clone()),
             Err(err) => {
-                warn!("hot-reload disabled: cannot create a file watcher: {err}");
+                warn!("hot-reload disabled: {err:#}");
                 None
             }
         }
@@ -225,11 +179,85 @@ enum AttachEvent {
     Log(eyre::Result<LogMessage>),
 }
 
+/// The watch map for `--hot-reload`: see [`hot_reload_watch_paths`].
+fn hot_reload_lookup(
+    dataflow: &Descriptor,
+    dataflow_path: &Path,
+    dataflow_id: Uuid,
+) -> eyre::Result<HashMap<PathBuf, WatchedOperator>> {
+    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+    let working_dir = dataflow_path
+        .canonicalize()
+        .context("failed to canonicalize dataflow path")?
+        .parent()
+        .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
+        .to_owned();
+    Ok(hot_reload_watch_paths(
+        nodes.into_values(),
+        &working_dir,
+        dataflow_id,
+    ))
+}
+
+/// Watch every path in `node_path_lookup` and send a `Reload` for the
+/// matching operator when one is modified. `None` if no watcher could be
+/// created; a path that cannot be watched is skipped with a warning.
+fn start_hot_reload_watcher(
+    node_path_lookup: HashMap<PathBuf, WatchedOperator>,
+    watcher_tx: mpsc::Sender<AttachEvent>,
+) -> Option<RecommendedWatcher> {
+    let paths: Vec<PathBuf> = node_path_lookup.keys().cloned().collect();
+    let notifier = move |event| {
+        if let Ok(NotifyEvent {
+            paths,
+            kind: EventKind::Modify(ModifyKind::Data(_data)),
+            ..
+        }) = event
+        {
+            for path in paths {
+                if let Some((dataflow_id, node_id, operator_id)) = node_path_lookup.get(&path) {
+                    // A filesystem event can arrive on the watcher thread
+                    // after the control loop has stopped and dropped `rx`
+                    // (the dataflow finished or errored out). A closed
+                    // channel just means the CLI is shutting down, so drop
+                    // the reload instead of panicking the watcher thread —
+                    // matching the ctrl-c and log senders in this function.
+                    let _ = watcher_tx.send(AttachEvent::Control(ControlRequest::Reload {
+                        dataflow_id: *dataflow_id,
+                        node_id: node_id.clone(),
+                        operator_id: operator_id.clone(),
+                    }));
+                }
+            }
+            // TODO: Manage different file event
+        }
+    };
+
+    match RecommendedWatcher::new(
+        notifier,
+        Config::default().with_poll_interval(Duration::from_secs(1)),
+    ) {
+        Ok(mut watcher) => {
+            for path in &paths {
+                if let Err(err) = watcher.watch(path, RecursiveMode::Recursive) {
+                    warn!("hot-reload: cannot watch `{}`: {err}", path.display());
+                }
+            }
+            Some(watcher)
+        }
+        Err(err) => {
+            warn!("hot-reload disabled: cannot create a file watcher: {err}");
+            None
+        }
+    }
+}
+
 type WatchedOperator = (Uuid, NodeId, Option<OperatorId>);
 
 /// The local Python operator files `--hot-reload` watches, mapped to the
 /// operator to reload when one changes. A source is looked up relative to
-/// the dataflow directory, the way the Python runtime loads it (no `$PATH`
+/// the node's working directory — the dataflow directory, or its
+/// `deploy.working_dir` under it — which is the runtime's cwd (no `$PATH`
 /// or uv lookup). One that cannot be watched — a URL, or a file that only
 /// exists on the machine the node is deployed to — is skipped with a
 /// warning, since the dataflow runs fine without it.
@@ -245,6 +273,12 @@ fn hot_reload_watch_paths(
         let CoreNodeKind::Runtime(rn) = node.kind else {
             continue;
         };
+        // The runtime runs in the node's working dir: the dataflow dir, or
+        // `deploy.working_dir` under it (as the daemon resolves it).
+        let node_working_dir = match node.deploy.as_ref().and_then(|d| d.working_dir.as_ref()) {
+            Some(dir) => working_dir.join(dir),
+            None => working_dir.to_owned(),
+        };
         for op in rn.operators {
             let OperatorSource::Python(python_source) = &op.config.source else {
                 continue;
@@ -258,9 +292,10 @@ fn hot_reload_watch_paths(
             // real paths, and the lookup is a plain `==` on the event path, so
             // a symlinked or `..`-containing source would otherwise never
             // match its own modification events.
-            let Ok(path) = working_dir.join(source).canonicalize() else {
+            let Ok(path) = node_working_dir.join(source).canonicalize() else {
                 warn!(
-                    "not watching `{source}` for hot-reload: no such file in the dataflow directory"
+                    "not watching `{source}` for hot-reload: no such file in `{}`",
+                    node_working_dir.display()
                 );
                 continue;
             };
@@ -314,5 +349,33 @@ nodes:
             )],
         );
         assert!(lookup.contains_key(&working_dir.join("local_op.py")));
+    }
+
+    /// The runtime runs an operator in its node's `deploy.working_dir`, so
+    /// that is where its source is watched.
+    #[test]
+    fn hot_reload_watch_paths_uses_the_deploy_working_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/op.py"), "").unwrap();
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: deployed
+    deploy:
+      working_dir: sub
+    operators:
+      - id: op
+        python: op.py
+"#,
+        )
+        .unwrap();
+        let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+        let working_dir = dir.path().canonicalize().unwrap();
+
+        let lookup = hot_reload_watch_paths(nodes.into_values(), &working_dir, Uuid::new_v4());
+
+        let watched: Vec<_> = lookup.keys().collect();
+        assert_eq!(watched, [&working_dir.join("sub/op.py")]);
     }
 }
