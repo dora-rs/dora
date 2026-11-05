@@ -453,8 +453,8 @@ impl Action {
 
                         // The feedback subscription's QoS (reliability, durability,
                         // history) is the one the C++ caller chooses; the status topic
-                        // always uses the fixed action status QoS. Both queues hold 8
-                        // messages whatever the QoS depth.
+                        // always uses the fixed action status QoS. Each queue is capped
+                        // at eight messages, or the KEEP_LAST depth if it is lower.
                         let feedback_qos = neutral_qos(&qos.feedback_subscription)?;
                         let (keys, tokens) = dora_ros2_bridge::transport::action::zenoh::resolve_action_endpoints(
                             zenoh_node.domain(),
