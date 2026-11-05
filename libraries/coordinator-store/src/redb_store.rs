@@ -286,7 +286,7 @@ impl CoordinatorStore for RedbStore {
         // in the same write txn keeps `delete_dataflow` atomic and
         // prevents orphan rows accumulating in NODE_PARAMS when
         // `dora clean` removes a dataflow.
-        let param_prefix = format!("{uuid}{KEY_SEPARATOR}");
+        let (param_start, param_end) = make_dataflow_param_range(uuid);
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(DATAFLOWS)?;
@@ -294,9 +294,9 @@ impl CoordinatorStore for RedbStore {
         }
         {
             let mut params = txn.open_table(NODE_PARAMS)?;
-            params.retain_in(param_prefix.as_str().., |k, _| {
-                !k.starts_with(param_prefix.as_str())
-            })?;
+            // Bounded range: an open-ended `start..` would make `retain_in`
+            // visit every row of every dataflow sorted after this one.
+            params.retain_in(param_start.as_str()..param_end.as_str(), |_, _| false)?;
         }
         txn.commit()?;
         Ok(())
@@ -456,6 +456,19 @@ fn make_param_prefix(dataflow_id: &Uuid, node_id: &NodeId) -> Result<String> {
         "{dataflow_id}{sep}{node_str}{sep}",
         sep = KEY_SEPARATOR
     ))
+}
+
+/// Half-open key range `[start, end)` covering exactly the node-param rows
+/// of one dataflow. Every such key starts with `"{dataflow_id}\0"`; the end
+/// bound replaces the separator with the next code point (`\u{1}`), which
+/// sorts after all of them and before any other dataflow's keys.
+fn make_dataflow_param_range(dataflow_id: &Uuid) -> (String, String) {
+    const AFTER_SEPARATOR: char = '\u{1}';
+    const _: () = assert!(AFTER_SEPARATOR as u32 == KEY_SEPARATOR as u32 + 1);
+    (
+        format!("{dataflow_id}{KEY_SEPARATOR}"),
+        format!("{dataflow_id}{AFTER_SEPARATOR}"),
+    )
 }
 
 #[cfg(test)]
@@ -1175,6 +1188,53 @@ mod tests {
         assert_eq!(surviving.len(), 1, "other dataflows' params untouched");
         assert_eq!(surviving[0].0, "k1");
         assert_eq!(surviving[0].1, b"b1");
+    }
+
+    /// Three dataflow ids that are consecutive in key order.
+    fn adjacent_dataflow_ids() -> (Uuid, Uuid, Uuid) {
+        let df = Uuid::from_u128(0x5000_0000_0000_0000_0000_0000_0000_0000);
+        (
+            Uuid::from_u128(df.as_u128() - 1),
+            df,
+            Uuid::from_u128(df.as_u128() + 1),
+        )
+    }
+
+    /// The cascade range must cover every param row of the dataflow and
+    /// nothing of the dataflows sorted next to it.
+    #[test]
+    fn dataflow_param_range_is_tight() {
+        let (before, df, after) = adjacent_dataflow_ids();
+        let node: NodeId = "n".to_string().into();
+        let (start, end) = make_dataflow_param_range(&df);
+        let range = start.as_str()..end.as_str();
+
+        for key in ["", "k", "\u{10FFFF}"] {
+            let own = make_param_key(&df, &node, key).unwrap();
+            assert!(range.contains(&own.as_str()), "{own:?} not in range");
+        }
+        for other in [before, after] {
+            let key = make_param_key(&other, &node, "k").unwrap();
+            assert!(!range.contains(&key.as_str()), "{key:?} in range");
+        }
+    }
+
+    /// Deleting a dataflow leaves the params of the dataflows on either side
+    /// of it in key order untouched.
+    #[test]
+    fn delete_dataflow_keeps_neighbouring_params() {
+        let (store, _dir) = temp_store();
+        let (before, df, after) = adjacent_dataflow_ids();
+        let node: NodeId = "n".to_string().into();
+        for id in [&before, &df, &after] {
+            store.put_node_param(id, &node, "k", b"v").unwrap();
+        }
+
+        store.delete_dataflow(&df).unwrap();
+
+        assert!(store.list_node_params(&df, &node).unwrap().is_empty());
+        assert_eq!(store.list_node_params(&before, &node).unwrap().len(), 1);
+        assert_eq!(store.list_node_params(&after, &node).unwrap().len(), 1);
     }
 
     /// delete_node_param on a non-existent key is a no-op.

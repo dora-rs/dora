@@ -287,10 +287,7 @@ mod tests {
 
     #[test]
     fn closed_port_is_reported_as_not_running() {
-        let addr = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        let (_port, addr) = crate::common::refused_port();
         let (output, error_occurred) = collect_status(addr);
         assert!(error_occurred);
         assert_eq!(output.coordinator.status, "not running");

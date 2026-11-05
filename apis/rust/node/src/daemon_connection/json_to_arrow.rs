@@ -59,11 +59,17 @@ fn json_quote(data: &[u8]) -> String {
 }
 
 /// convert the given JSON object to the closed arrow representation
+///
+/// Set `coerce_primitive` when `schema` was inferred from `data`: inference
+/// widens conflicting scalar types (e.g. `[1, "a"]`) to `Utf8`, so the
+/// non-string values have to be coerced to match.
 pub fn read_json_value_as_arrow(
     data: &[serde_json::Value],
     schema: Arc<arrow_schema::Schema>,
+    coerce_primitive: bool,
 ) -> eyre::Result<ArrayData> {
     let mut decoder = arrow_json::reader::ReaderBuilder::new(schema)
+        .with_coerce_primitive(coerce_primitive)
         .build_decoder()
         .context("failed to build JSON decoder")?;
     decoder
@@ -101,7 +107,7 @@ mod tests {
         // batch; `column(0)` would otherwise index out of bounds and panic.
         let schema = Arc::new(Schema::empty());
         let values = [serde_json::json!({})];
-        let result = read_json_value_as_arrow(&values, schema);
+        let result = read_json_value_as_arrow(&values, schema, false);
         assert!(result.is_err());
     }
 

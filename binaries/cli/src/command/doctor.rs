@@ -534,10 +534,7 @@ mod coordinator_connect_tests {
 
     #[test]
     fn refused_connection_points_at_dora_up() {
-        let addr = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        let (_port, addr) = crate::common::refused_port();
         let err = connect_to_coordinator(addr)
             .err()
             .expect("closed port must fail the connection");
