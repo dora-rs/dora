@@ -534,10 +534,25 @@ mod coordinator_connect_tests {
 
     #[test]
     fn refused_connection_points_at_dora_up() {
-        let addr = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
+        // Keep the port bound but not listening for the whole test, so the
+        // connect is refused. Binding a `TcpListener` and dropping it frees
+        // the port, and a test running in parallel can bind it before we
+        // connect, which turns the expected refusal into a reset (#4026).
+        let socket = socket2::Socket::new(
+            socket2::Domain::IPV4,
+            socket2::Type::STREAM,
+            Some(socket2::Protocol::TCP),
+        )
+        .unwrap();
+        socket
+            .bind(
+                &"127.0.0.1:0"
+                    .parse::<std::net::SocketAddr>()
+                    .unwrap()
+                    .into(),
+            )
             .unwrap();
+        let addr = socket.local_addr().unwrap().as_socket().unwrap();
         let err = connect_to_coordinator(addr)
             .err()
             .expect("closed port must fail the connection");
