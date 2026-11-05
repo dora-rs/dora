@@ -71,7 +71,7 @@ re-resolves to the latest matching version.
 ### Search the catalog
 
 ```bash
-dora hub search yolo                    # name / description / keyword match
+dora hub search yolo                    # package key / name / description / keyword match
 dora hub search --category ml-inference # browse a category
 dora hub search lidar --platform linux-x86_64
 dora hub search                         # list everything

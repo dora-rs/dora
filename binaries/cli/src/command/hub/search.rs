@@ -155,7 +155,9 @@ mod tests {
 
     #[test]
     fn folds_case_beyond_ascii() {
-        let m = manifest("apiVersion: 1\ndescription: Détection of objects\n");
-        assert!(matches_query("acme/x", &m, &"DÉTECTION".to_lowercase()));
+        // A non-ASCII capital in the haystack: ASCII-only folding leaves
+        // `É` as is, so a lowercase query would not match it.
+        let m = manifest("apiVersion: 1\ndescription: DÉTECTION of objects\n");
+        assert!(matches_query("acme/x", &m, "détection"));
     }
 }
