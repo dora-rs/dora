@@ -340,18 +340,18 @@ fn node_source(kind: &CoreNodeKind) -> Option<&NodeSource> {
     }
 }
 
-/// FNV-1a 64-bit, lowercase hex (16 chars). Matches the digest shape used
-/// by `BuildLockfile::fingerprint_descriptor_git_sources` so the two
-/// fingerprints are visually distinguishable as the same family.
-fn fnv1a_64_hex(bytes: &[u8]) -> String {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-    let mut hash = FNV_OFFSET_BASIS;
-    for byte in bytes {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    format!("{hash:016x}")
+/// FNV-1a 64-bit, lowercase hex (16 chars). Every digest made with it is
+/// persisted, so the output must never change:
+/// - the session's `source_fingerprint` (`DataflowSession::fingerprint_source`),
+/// - the session's `build_fingerprint` (`fingerprint_build_inputs`) — a
+///   changed digest here silently discards `build_id` and forces a rebuild of
+///   every dataflow,
+/// - the lockfile's `descriptor_fingerprint`
+///   (`BuildLockfile::fingerprint_descriptor_git_sources`).
+///
+/// Pinned by `fingerprint_digest_is_stable` in the lockfile tests.
+pub(crate) fn fnv1a_64_hex(bytes: &[u8]) -> String {
+    format!("{:016x}", dora_message::metadata::fnv1a(bytes))
 }
 
 fn deserialize(session_file: &Path) -> eyre::Result<DataflowSession> {
