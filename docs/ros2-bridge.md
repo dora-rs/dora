@@ -1069,6 +1069,11 @@ Action differences from DDS:
 - A client's `request_result` returns an error while 64 earlier calls are
   still waiting for their goal or for their result event to be read.
 
+The public Rust `TypedActionServer` sizes its result service to at least 64
+pending requests, or `3 * max_goals + 16` if that is larger. The extra slots
+let it answer new requests while every unfinished goal has three waiters.
+A goal limit that overflows this calculation is rejected at declaration.
+
 On both transports, a goal still running 300 s after it was accepted is
 aborted when the next goal comes in, even while it publishes feedback. On
 Zenoh, `request_result` for it then returns `Aborted` with default values; on

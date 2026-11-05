@@ -601,6 +601,16 @@ pub mod zenoh {
             tokens: ActionTokens,
             qos: &Ros2Qos,
         ) -> Result<Self, ActionTransportError> {
+            Self::declare_with_result_limit(node, keys, tokens, qos, 64).await
+        }
+
+        async fn declare_with_result_limit(
+            node: &Node,
+            keys: &ActionKeys,
+            tokens: ActionTokens,
+            qos: &Ros2Qos,
+            max_pending_results: usize,
+        ) -> Result<Self, ActionTransportError> {
             let status_qos = action_status_qos(qos);
             Ok(Self {
                 send_goal: NodeServiceServer::declare(
@@ -615,7 +625,7 @@ pub mod zenoh {
                     node,
                     &keys.get_result,
                     tokens.get_result,
-                    64,
+                    max_pending_results,
                     GET_RESULT_TIMEOUT,
                 )
                 .await?,

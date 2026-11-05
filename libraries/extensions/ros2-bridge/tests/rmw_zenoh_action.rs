@@ -1010,6 +1010,103 @@ mod typed {
         }
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn result_capacity_scales_with_the_server_goal_limit() {
+        use dora_ros2_bridge::transport::zenoh::service::ServiceError;
+
+        let Fixture {
+            client,
+            keys,
+            tokens,
+            node,
+            server,
+            _session,
+            ..
+        } = local_fixture(65, options(32)).await;
+        let other = Client::declare(&node, &keys, tokens, &Ros2Qos::default(), 1024 * 1024)
+            .await
+            .unwrap();
+        let mut goals = Vec::new();
+        let mut pending = FuturesUnordered::new();
+        for order in 0..32 {
+            let requester = if order < 16 { &client } else { &other };
+            let goal = requester.send_goal(&Goal { order }, TIMEOUT).await.unwrap();
+            next_goal(&server).await;
+            goals.push(goal);
+            let mut requests: FuturesUnordered<_> = (0..4)
+                .map(|_| Box::pin(requester.get_result(goal)))
+                .collect();
+            let rejected = tokio::time::timeout(TIMEOUT, requests.next())
+                .await
+                .expect("the per-goal rejection must leave three pending requests")
+                .unwrap();
+            assert!(
+                matches!(rejected, Err(ActionCallError::Service(ServiceError::Remote(ref error)))
+                    if error == "result waiter limit of 3 reached for this goal"),
+                "goal {order}: {rejected:?}"
+            );
+            pending.extend(requests);
+        }
+        assert_eq!(pending.len(), 96);
+
+        let unknown = dora_ros2_bridge::ros2_client::action::GoalId::new_random();
+        assert_eq!(
+            tokio::time::timeout(TIMEOUT, other.get_result(unknown))
+                .await
+                .expect("the server needs room to answer new requests")
+                .unwrap(),
+            (GoalStatusEnum::Unknown, Sequence::default())
+        );
+        for (order, goal) in goals.into_iter().enumerate() {
+            server
+                .finish(
+                    goal,
+                    GoalStatusEnum::Succeeded,
+                    &Sequence {
+                        sequence: vec![order as i32],
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let mut answers = [0; 32];
+        while let Some(answer) = tokio::time::timeout(TIMEOUT, pending.next())
+            .await
+            .expect("an accepted waiter lost its result")
+        {
+            let (status, result) = answer.unwrap();
+            assert_eq!(status, GoalStatusEnum::Succeeded);
+            answers[result.sequence[0] as usize] += 1;
+        }
+        assert_eq!(answers, [3; 32]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_overflowing_result_capacity_is_rejected_before_declaration() {
+        let Fixture {
+            node,
+            keys,
+            tokens,
+            _session,
+            ..
+        } = local_fixture(66, options(1)).await;
+        for max_goals in [usize::MAX / 3, usize::MAX] {
+            let declared = Server::declare(
+                &node,
+                &keys,
+                tokens.clone(),
+                &Ros2Qos::default(),
+                options(max_goals),
+            )
+            .await;
+            assert!(matches!(
+                declared,
+                Err(ActionCallError::GoalLimitTooLarge { max_goals: actual })
+                    if actual == max_goals
+            ));
+        }
+    }
+
     /// Goals nobody reads stay queued, also after they are aborted or evicted,
     /// so the queue is what bounds them: with it full, a new goal is rejected.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

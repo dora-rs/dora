@@ -56,6 +56,8 @@ pub enum ActionCallError {
     Rejected,
     #[error("the action client was closed")]
     Closed,
+    #[error("the action server goal limit {max_goals} is too large")]
+    GoalLimitTooLarge { max_goals: usize },
 }
 
 // Borrowing versions of the `ros2_client` wire types, so sending doesn't need
@@ -92,9 +94,11 @@ struct CancelGoalWire {
 const MAX_PENDING_CALLS: usize = 64;
 
 /// Result requests that can wait on one unfinished goal, from all clients
-/// together. With the generated server's 16 goals that is at most 48 of the
-/// `get_result` service's 64 pending slots, so new requests still get in.
+/// together. The result service reserves this many slots for every goal.
 const MAX_RESULT_WAITERS_PER_GOAL: usize = 3;
+
+/// Extra result slots to receive new requests while all goals have waiters.
+const RESULT_REQUEST_HEADROOM: usize = 16;
 
 /// Ties the message types to a client or server without owning a value, so
 /// both stay `Send` and `Sync` whatever the types are.
@@ -234,6 +238,9 @@ where
 pub struct ActionServerOptions {
     /// Goals the server keeps at once. When full, the oldest finished goal
     /// makes room; if every goal is still running, new goals are rejected.
+    /// The result service has at least 64 slots, or three per goal plus 16
+    /// extra slots if that is larger. A limit that overflows this calculation
+    /// is rejected by `declare`.
     pub max_goals: usize,
     /// A goal still running this long after it was accepted is aborted (its
     /// result is the default value) when the next goal comes in, so a handler
@@ -301,6 +308,14 @@ where
         qos: &Ros2Qos,
         options: ActionServerOptions,
     ) -> Result<(Self, ActionServerPump), ActionCallError> {
+        let max_pending_results = options
+            .max_goals
+            .checked_mul(MAX_RESULT_WAITERS_PER_GOAL)
+            .and_then(|waiters| waiters.checked_add(RESULT_REQUEST_HEADROOM))
+            .ok_or(ActionCallError::GoalLimitTooLarge {
+                max_goals: options.max_goals,
+            })?
+            .max(MAX_PENDING_CALLS);
         let default_response = |status| {
             serialize_cdr(&GetResultWire {
                 status,
@@ -310,7 +325,14 @@ where
         let shared = Arc::new(Shared {
             aborted_response: default_response(GoalStatusEnum::Aborted)?,
             unknown_response: default_response(GoalStatusEnum::Unknown)?,
-            endpoints: ActionServer::declare(node, keys, tokens, qos).await?,
+            endpoints: ActionServer::declare_with_result_limit(
+                node,
+                keys,
+                tokens,
+                qos,
+                max_pending_results,
+            )
+            .await?,
             options,
             goals: Mutex::new(Vec::new()),
         });
