@@ -92,8 +92,15 @@ pub(crate) const CROSS_DATA_BIND_DEFAULT: &str = "0.0.0.0";
 /// origin keeps one pooled connection per mirror endpoint, plus one per
 /// concurrent write in flight, so the default leaves plenty of headroom for
 /// legitimate peers while staying well below a default `ulimit -n` of 1024.
-/// A connection over the cap is closed at once; the origin then falls back
-/// to the zenoh relay for that write.
+/// A connection over the cap is closed at once. That does not reliably reach
+/// the origin as an error: with an auth token, the origin's handshake reads
+/// the close and the write falls back to the zenoh relay, but without a
+/// token the origin's frame can fit in its send buffer and report success
+/// before the close arrives, so that write is lost and fails on its ack
+/// timeout. Direct writes therefore fail rather than degrade while the cap
+/// is exhausted. Making the origin detect a refusal in the token-less
+/// configuration needs an admission reply on every fresh connection, which
+/// is a wire change left to a follow-up.
 pub(crate) const CROSS_DATA_MAX_CONNECTIONS_ENV: &str = "DORA_MEMORY_POOL_MAX_DATA_CONNECTIONS";
 pub(crate) const CROSS_DATA_MAX_CONNECTIONS_DEFAULT: usize = 256;
 
@@ -153,6 +160,28 @@ pub(crate) async fn accept_cross_data_connections<F, Fut>(
             drop(permit);
         });
     }
+}
+
+/// Admit a freshly accepted data connection before any frame is served:
+/// `Ok(true)` once its first frame has started, `Ok(false)` when the peer
+/// closed it or sent nothing within `first_frame_timeout`, and `Err` when the
+/// auth handshake rejected it or the socket failed.
+///
+/// Auth handshake first, once per connection: a peer without the shared
+/// token is dropped before any frame can touch a mirror segment. Only when
+/// the daemon itself has a token configured (a token-less daemon accepts
+/// token-less peers — the handshake is a configured-deployment option, both
+/// ends set it or neither does).
+///
+/// The first-frame wait is bounded with or without a token, so a peer that
+/// connects and sends nothing cannot hold a listener slot for the full
+/// [`CROSS_DATA_IDLE_TIMEOUT`] (#4033).
+pub(crate) async fn admit_fresh_cross_data_conn(
+    stream: &mut tokio::net::TcpStream,
+    first_frame_timeout: std::time::Duration,
+) -> Result<bool, String> {
+    cross_data_auth_gate(stream).await?;
+    await_next_frame(stream, first_frame_timeout).await
 }
 
 /// Wait for the next frame on a data connection without consuming it:

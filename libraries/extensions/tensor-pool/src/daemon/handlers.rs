@@ -1131,16 +1131,17 @@ impl PoolState {
                     shm_provider.clone(),
                 );
                 async move {
-                    // Auth handshake first, once per connection: a peer
-                    // without the shared token is dropped before any frame
-                    // can touch a mirror segment. Only when the daemon
-                    // itself has a token configured (a token-less daemon
-                    // accepts token-less peers — the handshake is a
-                    // configured-deployment option, both ends set it or
-                    // neither does).
-                    if let Err(e) = cross_data_auth_gate(&mut stream).await {
-                        tracing::warn!("memory pool: direct-TCP auth rejected for {peer}: {e}");
-                        return;
+                    match admit_fresh_cross_data_conn(&mut stream, CROSS_DATA_FIRST_FRAME_TIMEOUT)
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => return,
+                        Err(e) => {
+                            tracing::warn!(
+                                "memory pool: direct-TCP connection from {peer} dropped: {e}"
+                            );
+                            return;
+                        }
                     }
                     loop {
                         match serve_cross_data_frame(

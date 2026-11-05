@@ -1586,4 +1586,32 @@ mod cross_pool_write_tests {
         .expect("a freed slot must be reused");
         accept.abort();
     }
+
+    /// Without an auth token (the default), a fresh connection that sends
+    /// nothing is still released after the first-frame bound rather than
+    /// the 300 s idle bound, so a silent peer cannot hold a listener slot
+    /// for minutes (#4033).
+    // The env lock is held across the awaits on purpose, as in the test
+    // above: a sibling test must not set the token mid-test.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn silent_fresh_connection_is_released_without_a_token() {
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+        assert!(CROSS_DATA_FIRST_FRAME_TIMEOUT < CROSS_DATA_IDLE_TIMEOUT);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            admit_fresh_cross_data_conn(&mut stream, std::time::Duration::from_millis(100)).await
+        });
+        let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let admitted = tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("a silent fresh connection must be released")
+            .unwrap();
+        assert_eq!(admitted, Ok(false));
+    }
 }
