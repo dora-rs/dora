@@ -1119,17 +1119,10 @@ impl PoolState {
         let shm_provider = self.shm_provider.clone();
         // Auth is read per connection (env lookup), so the daemon needs no
         // state here beyond the option the handshake checks.
-        tokio::spawn(async move {
-            loop {
-                let Ok((stream, peer)) = listener.accept().await else {
-                    // Transient errors (ECONNABORTED) are fine to retry
-                    // immediately, but a persistent one (e.g. EMFILE/ENFILE
-                    // fd exhaustion) would otherwise spin at 100% CPU —
-                    // bound the retry with a short sleep.
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    continue;
-                };
-                tracing::debug!("memory pool: direct-TCP data connection from {peer}");
+        tokio::spawn(accept_cross_data_connections(
+            listener,
+            cross_data_max_connections(),
+            move |mut stream, peer| {
                 let (tensor_pool, machine_id, session, clock, shm_provider) = (
                     tensor_pool.clone(),
                     machine_id.clone(),
@@ -1137,18 +1130,18 @@ impl PoolState {
                     clock.clone(),
                     shm_provider.clone(),
                 );
-                tokio::spawn(async move {
-                    let mut stream = stream;
-                    // Auth handshake first, once per connection: a peer
-                    // without the shared token is dropped before any frame
-                    // can touch a mirror segment. Only when the daemon
-                    // itself has a token configured (a token-less daemon
-                    // accepts token-less peers — the handshake is a
-                    // configured-deployment option, both ends set it or
-                    // neither does).
-                    if let Err(e) = cross_data_auth_gate(&mut stream).await {
-                        tracing::warn!("memory pool: direct-TCP auth rejected for {peer}: {e}");
-                        return;
+                async move {
+                    match admit_fresh_cross_data_conn(&mut stream, CROSS_DATA_FIRST_FRAME_TIMEOUT)
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => return,
+                        Err(e) => {
+                            tracing::warn!(
+                                "memory pool: direct-TCP connection from {peer} dropped: {e}"
+                            );
+                            return;
+                        }
                     }
                     loop {
                         match serve_cross_data_frame(
@@ -1171,9 +1164,9 @@ impl PoolState {
                             }
                         }
                     }
-                });
-            }
-        });
+                }
+            },
+        ));
     }
 
     /// Subscribe to this dataflow's extension topic for the cross-machine
