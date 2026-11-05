@@ -32,11 +32,16 @@ impl Executable for Search {
         let mut hits = Vec::new();
         for (_alias, catalog) in ctx.all_catalogs() {
             for (namespace, name) in catalog.all_packages() {
-                let Some((version, entry)) =
-                    latest_listed_version(&catalog, &namespace, &name, |warning| {
+                let (latest, warnings) = latest_listed_version(&catalog, &namespace, &name);
+                let print_warnings = || {
+                    for warning in &warnings {
                         eprintln!("  warning: {warning}");
-                    })
-                else {
+                    }
+                };
+                let Some((version, entry)) = latest else {
+                    // Nothing of this package can be listed: say why, whatever
+                    // the query.
+                    print_warnings();
                     continue;
                 };
                 let m = &entry.manifest;
@@ -54,6 +59,12 @@ impl Executable for Search {
                 if !query.is_empty() && !matches_query(m, &query) {
                     continue;
                 }
+                // Warnings about skipped versions matter only for a package
+                // that is shown, where they explain why an older version is
+                // listed. Printing them for every package would repeat them
+                // on every search, e.g. for each entry an older CLI cannot
+                // parse.
+                print_warnings();
                 hits.push((format!("{namespace}/{name}"), version, entry));
             }
         }
@@ -106,9 +117,11 @@ fn matches_query(m: &dora_core::manifest::NodeManifest, query: &str) -> bool {
 ///
 /// `versions()` returns every version, yanked ones included, so they are
 /// filtered here to match `resolve()` and `dora hub info` / `dora hub
-/// outdated`. Problems are reported through `warn` rather than returned, so
+/// outdated`. Problems are returned as warnings rather than as an error, so
 /// that one broken package does not end a search across every index, the same
-/// way `HubContext::all_catalogs` skips a broken index (#4053):
+/// way `HubContext::all_catalogs` skips a broken index (#4053). The warnings
+/// are sanitized, because they quote index content (a serde message names an
+/// unknown field verbatim) and an index may be hostile:
 ///
 /// - a package whose versions cannot be listed is skipped (`None`);
 /// - an unreadable entry is skipped in favour of the next lower version, with
@@ -118,27 +131,31 @@ fn latest_listed_version(
     catalog: &IndexCatalog,
     namespace: &str,
     name: &str,
-    mut warn: impl FnMut(String),
-) -> Option<(Version, IndexEntry)> {
+) -> (Option<(Version, IndexEntry)>, Vec<String>) {
+    let mut warnings = Vec::new();
     let versions = match catalog.versions(namespace, name) {
         Ok(versions) => versions,
         Err(err) => {
-            warn(format!("skipping package `{namespace}/{name}`: {err:#}"));
-            return None;
+            warnings.push(sanitize(&format!(
+                "skipping package `{namespace}/{name}`: {err:#}"
+            )));
+            return (None, warnings);
         }
     };
-    versions
-        .into_iter()
-        .rev()
-        .find_map(|v| match catalog.entry(namespace, name, &v) {
-            Ok(entry) => (!entry.yanked).then_some((v, entry)),
-            Err(err) => {
-                warn(format!(
-                    "skipping unreadable index entry for `{namespace}/{name}` {v}: {err:#}"
-                ));
-                None
-            }
-        })
+    let latest =
+        versions
+            .into_iter()
+            .rev()
+            .find_map(|v| match catalog.entry(namespace, name, &v) {
+                Ok(entry) => (!entry.yanked).then_some((v, entry)),
+                Err(err) => {
+                    warnings.push(sanitize(&format!(
+                        "skipping unreadable index entry for `{namespace}/{name}` {v}: {err:#}"
+                    )));
+                    None
+                }
+            });
+    (latest, warnings)
 }
 
 fn parse_category(s: &str) -> eyre::Result<Category> {
@@ -176,10 +193,8 @@ mod tests {
             ("1.0.0.yml", entry_yaml(false)),
             ("2.0.0.yml", "manifest: [not, a, manifest]\n".to_owned()),
         ]);
-        let mut warnings = Vec::new();
-        let (version, _) =
-            latest_listed_version(&catalog, "acme", "foo", |w| warnings.push(w)).unwrap();
-        assert_eq!(version.to_string(), "1.0.0");
+        let (latest, warnings) = latest_listed_version(&catalog, "acme", "foo");
+        assert_eq!(latest.unwrap().0.to_string(), "1.0.0");
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("acme/foo` 2.0.0"), "{warnings:?}");
     }
@@ -190,21 +205,39 @@ mod tests {
             ("1.0.0.yml", entry_yaml(false)),
             ("2.0.0.yml", entry_yaml(true)),
         ]);
-        let mut warnings = Vec::new();
-        let (version, _) =
-            latest_listed_version(&catalog, "acme", "foo", |w| warnings.push(w)).unwrap();
-        assert_eq!(version.to_string(), "1.0.0");
+        let (latest, warnings) = latest_listed_version(&catalog, "acme", "foo");
+        assert_eq!(latest.unwrap().0.to_string(), "1.0.0");
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// The serde message for an entry rejected by `deny_unknown_fields`
+    /// quotes the unknown key from the index file, and a double-quoted YAML
+    /// key can carry a terminal escape. The warning must not.
+    #[test]
+    fn warnings_strip_terminal_escapes_from_index_content() {
+        let hostile = format!(
+            "{}\"\\u001b[2J\\u001b]0;pwned\\u0007\": 1\n",
+            entry_yaml(false)
+        );
+        let (_tmp, catalog) = catalog(&[("1.0.0.yml", entry_yaml(false)), ("2.0.0.yml", hostile)]);
+        let (latest, warnings) = latest_listed_version(&catalog, "acme", "foo");
+        assert_eq!(latest.unwrap().0.to_string(), "1.0.0");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("pwned"), "{warnings:?}");
+        assert!(!warnings[0].chars().any(char::is_control), "{warnings:?}");
     }
 
     #[test]
     fn a_package_whose_versions_cannot_be_listed_is_skipped_with_a_warning() {
-        let (_tmp, catalog) = catalog(&[("1.0.0.yml", entry_yaml(false))]);
-        let mut warnings = Vec::new();
-        // An invalid key part makes `versions()` fail, like an unreadable
-        // package directory would.
-        let found = latest_listed_version(&catalog, "acme", "bad name", |w| warnings.push(w));
-        assert!(found.is_none());
+        let tmp = tempfile::tempdir().unwrap();
+        // A regular file where the package directory should be makes
+        // `read_dir` fail with an IO error other than NotFound, like an
+        // unreadable package directory would.
+        std::fs::create_dir_all(tmp.path().join("acme")).unwrap();
+        std::fs::write(tmp.path().join("acme/foo"), "").unwrap();
+        let catalog = IndexCatalog::open(tmp.path()).unwrap();
+        let (latest, warnings) = latest_listed_version(&catalog, "acme", "foo");
+        assert!(latest.is_none());
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("skipping package"), "{warnings:?}");
     }
