@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn folds_case_beyond_ascii() {
-        let m = manifest("apiVersion: 1\ndescription: Détection d'objets\n");
+        let m = manifest("apiVersion: 1\ndescription: Détection of objects\n");
         assert!(matches_query("acme/x", &m, &"DÉTECTION".to_lowercase()));
     }
 }
