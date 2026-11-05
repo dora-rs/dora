@@ -249,9 +249,8 @@ fn detect_rust(dir: &Path) -> Option<DetectedNode> {
 
 /// Best-effort namespace default: the GitHub org/user of the `origin` remote.
 fn detect_namespace(dir: &Path) -> String {
-    let output = std::process::Command::new("git")
+    let output = super::common::node_repo_git(dir)
         .args(["remote", "get-url", "origin"])
-        .current_dir(dir)
         .output();
     if let Ok(output) = output
         && output.status.success()

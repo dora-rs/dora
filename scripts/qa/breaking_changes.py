@@ -36,12 +36,14 @@ from pathlib import Path
 
 BREAK = "BREAK"  # incompatible in at least one direction -- fails the gate
 WARN = "WARN"  # worth a human look, does not fail the gate
+ACCEPTED = "ACCEPTED"  # a BREAK listed in ACCEPTED_FINDINGS -- does not fail the gate
 
 
 @dataclass
 class Finding:
     level: str
     detail: str
+    reason: str = ""  # why an ACCEPTED finding was accepted
 
 
 @dataclass
@@ -56,6 +58,9 @@ class SurfaceResult:
 
     def warns(self) -> list[Finding]:
         return [f for f in self.findings if f.level == WARN]
+
+    def accepted(self) -> list[Finding]:
+        return [f for f in self.findings if f.level == ACCEPTED]
 
 
 # --------------------------------------------------------------------------
@@ -721,8 +726,11 @@ def diff_schema(old: dict, new: dict) -> list[Finding]:
     return findings
 
 
+SCHEMA_SURFACE = "Dataflow YAML schema"
+
+
 def check_schema(root: Path, baseline: Baseline) -> SurfaceResult:
-    result = SurfaceResult(name="Dataflow YAML schema")
+    result = SurfaceResult(name=SCHEMA_SURFACE)
     checked = 0
     for rel in SCHEMAS:
         old_text = baseline.read(rel)
@@ -1223,6 +1231,64 @@ def check_version_guard(root: Path, baseline: Baseline) -> SurfaceResult:
 
 
 # --------------------------------------------------------------------------
+# Accepted findings
+# --------------------------------------------------------------------------
+
+# BREAK findings a maintainer has reviewed and accepted, keyed by the baseline
+# they were reported against: (surface name, exact finding text, reason).
+#
+# Only for a finding that cannot affect anything that works today -- no
+# dataflow that loads, no peer that connects, no user code that builds. A
+# finding that might is a 2.0 question, not an entry here.
+#
+# Keyed by baseline so an entry expires on its own: once the change ships in a
+# release, that release becomes the baseline and the finding is gone. A
+# baseline given as a commit hash matches no key, so nothing is accepted.
+# Entries that match nothing are printed, so a stale one stays visible.
+_INPUT_MAPPING_STRING_ONLY = (
+    "InputMapping's Deserialize is string-only since 1.0, so these object "
+    "forms never loaded"
+)
+ACCEPTED_FINDINGS: dict[str, list[tuple[str, str, str]]] = {
+    "v1.1.0": [
+        # #3707: the schema describes InputMapping as the string it is.
+        (SCHEMA_SURFACE, detail, _INPUT_MAPPING_STRING_ONLY)
+        for detail in [
+            "dora-schema.json #/$defs/InputMapping: oneOf no longer accepts `object{Timer}`",
+            "dora-schema.json #/$defs/InputMapping: oneOf no longer accepts `object{Logs}`",
+            "dora-schema.json #/$defs/InputMapping: oneOf no longer accepts `object{User}`",
+            "dora-schema.json #/$defs/Duration: removed from the schema",
+            "dora-schema.json #/$defs/LogSubscriptionFilter: removed from the schema",
+            "dora-schema.json #/$defs/UserInputMapping: removed from the schema",
+        ]
+    ],
+}
+
+
+def accept_findings(
+    results: list[SurfaceResult],
+    ref: str,
+    table: dict[str, list[tuple[str, str, str]]] = ACCEPTED_FINDINGS,
+) -> list[tuple[str, str, str]]:
+    """Downgrade the BREAKs `table` accepts for `ref` to ACCEPTED, in place.
+
+    Matched on the surface name and the whole finding text, never a
+    substring, so an entry cannot wave through a second finding that happens
+    to mention the same path. Returns the entries that matched nothing.
+    """
+    entries = table.get(ref, [])
+    reasons = {(surface, detail): reason for surface, detail, reason in entries}
+    used = set()
+    for result in results:
+        for finding in result.findings:
+            key = (result.name, finding.detail)
+            if finding.level == BREAK and key in reasons:
+                finding.level, finding.reason = ACCEPTED, reasons[key]
+                used.add(key)
+    return [e for e in entries if (e[0], e[1]) not in used]
+
+
+# --------------------------------------------------------------------------
 # Driver
 # --------------------------------------------------------------------------
 
@@ -1237,7 +1303,9 @@ CHECKS = [
 ]
 
 
-def run(root: Path, ref: str, fallback: str | None = None) -> tuple[list[SurfaceResult], int]:
+def run(
+    root: Path, ref: str, fallback: str | None = None
+) -> tuple[list[SurfaceResult], int, list[tuple[str, str, str]]]:
     baseline = Baseline(root, ref, fallback)
     results = []
     for check in CHECKS:
@@ -1261,7 +1329,8 @@ def run(root: Path, ref: str, fallback: str | None = None) -> tuple[list[Surface
                     ],
                 )
             )
-    return results, sum(len(r.breaks()) for r in results)
+    unused = accept_findings(results, ref)
+    return results, sum(len(r.breaks()) for r in results), unused
 
 
 def main() -> int:
@@ -1304,7 +1373,7 @@ def main() -> int:
         )
         return 2
 
-    results, break_count = run(
+    results, break_count, unused = run(
         root, ref, args.fallback_baseline or os.environ.get("BREAKING_FALLBACK_BASELINE")
     )
 
@@ -1318,10 +1387,15 @@ def main() -> int:
                             "name": r.name,
                             "skipped": r.skipped,
                             "findings": [
-                                {"level": f.level, "detail": f.detail} for f in r.findings
+                                {"level": f.level, "detail": f.detail}
+                                | ({"reason": f.reason} if f.reason else {})
+                                for f in r.findings
                             ],
                         }
                         for r in results
+                    ],
+                    "unused_accepted": [
+                        {"surface": s, "detail": d, "reason": why} for s, d, why in unused
                     ],
                 },
                 indent=2,
@@ -1335,16 +1409,27 @@ def main() -> int:
             status = f"skipped ({result.skipped})"
         elif result.breaks():
             status = f"BREAKING ({len(result.breaks())})"
-        elif result.warns():
-            status = f"ok, {len(result.warns())} additions"
         else:
             status = "ok"
+            if result.warns():
+                status += f", {len(result.warns())} additions"
+            if result.accepted():
+                status += f", {len(result.accepted())} accepted"
         detail = f" [{result.summary}]" if result.summary and not result.skipped else ""
         print(f"  {result.name:.<46} {status}{detail}")
         for finding in result.breaks():
             print(f"      BREAK  {finding.detail}")
+        for finding in result.accepted():
+            print(f"      accept {finding.detail}")
+            print(f"             ({finding.reason})")
         for finding in result.warns():
             print(f"      note   {finding.detail}")
+
+    if unused:
+        print()
+        print(f"  Accepted findings for {ref} that matched nothing (not a failure):")
+        for surface, detail, _ in unused:
+            print(f"      unused {surface}: {detail}")
 
     print()
     if break_count:

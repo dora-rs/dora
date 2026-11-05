@@ -316,8 +316,10 @@ fn decode_and_render(
     let len = data.len();
     let buffer = unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data)) };
     let array = decode_arrow_ipc_zero_copy(buffer)?;
-    // A decoded array can still make arrow panic while printing it (a
-    // corrupted run-end-encoded array passes arrow's validation).
+    // A decoded array can still make arrow panic while printing it. Before
+    // arrow 59.3.2 a corrupted run-end-encoded array passed validation and
+    // did; arrow >= 59.3.2 rejects that one at decode, and the guard stays as
+    // defence against other arrow panics.
     catch_arrow_panic("failed to print the payload: arrow panicked", || {
         render_array_json(array, buf)
     })
@@ -619,9 +621,11 @@ mod tests {
         assert!(err.to_string().contains("truncated"), "got: {err}");
     }
 
-    /// A run-end-encoded array whose run end was changed in transit passes
-    /// arrow's validation, and arrow panics while printing it; echo must
-    /// report an error instead of crashing (#3863).
+    /// A run-end-encoded array whose run end was changed in transit must be
+    /// an error, not a crash (#3863). Before arrow 59.3.2 it passed arrow's
+    /// validation and arrow panicked while printing it, which the guard in
+    /// `decode_and_render` catches; arrow 59.3.2 (apache/arrow-rs#11740)
+    /// rejects it while decoding, so it no longer reaches that guard.
     #[test]
     fn printing_a_corrupted_run_end_array_is_an_error() {
         use arrow::array::RunArray;
@@ -637,15 +641,15 @@ mod tests {
             .rposition(|w| w == [2, 0, 0, 0])
             .unwrap();
         bytes[run_end] = 1;
-        let decoded = decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from(bytes.as_slice()));
-        assert_eq!(decoded.unwrap().len(), 2);
-
         let payload = dora_message::aligned_vec::AVec::from_slice(128, &bytes);
         let mut buf = Vec::new();
-        let err = decode_and_render(payload, &mut buf)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("panicked"), "got: {err}");
+        let err = format!("{:#}", decode_and_render(payload, &mut buf).unwrap_err());
+        assert!(
+            err.starts_with("failed to decode Arrow IPC stream"),
+            "got: {err}"
+        );
+        assert!(err.contains("run_ends"), "got: {err}");
+        assert!(!err.contains("panicked"), "got: {err}");
     }
 
     #[test]

@@ -91,8 +91,9 @@ struct CancelGoalWire {
 /// C++ client's `MAX_PENDING_REQUESTS` so it can send every call it admits.
 const MAX_PENDING_CALLS: usize = 64;
 
-/// Three waiters across each of the 16 generated server's goals leaves room
-/// in the service's 64 shared slots to receive and answer new requests.
+/// Result requests that can wait on one unfinished goal, from all clients
+/// together. With the generated server's 16 goals that is at most 48 of the
+/// `get_result` service's 64 pending slots, so new requests still get in.
 const MAX_RESULT_WAITERS_PER_GOAL: usize = 3;
 
 /// Ties the message types to a client or server without owning a value, so

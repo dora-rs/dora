@@ -1046,8 +1046,9 @@ Action differences from DDS:
 - `send_goal` fails at once with "service request timed out" while no action
   server is matched (on DDS it waits until its timeout), so call
   `wait_for_action` first.
-- The server rejects new goals while 16 accepted goals are still unread. On
-  DDS the server blocks until there is room.
+- While C++ hasn't read 16 accepted goals, the server rejects new goals, also
+  after those goals were aborted as stale. On DDS the server rejects them too,
+  except in that stale case: there it stops taking goals until C++ reads one.
 - `send_result` returns once the result is stored, instead of waiting for the
   client's `request_result`; later requests get the stored result. A server
   keeps 16 goals: a new goal replaces the oldest finished one, whose result is

@@ -489,6 +489,14 @@ mod typed {
         fixture_with_config(domain, options, None).await
     }
 
+    async fn local_fixture(domain: usize, options: ActionServerOptions) -> Fixture {
+        let config = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/zenoh-local-only.json5"
+        );
+        fixture_with_config(domain, options, Some(config.into())).await
+    }
+
     async fn fixture_with_config(
         domain: usize,
         options: ActionServerOptions,
@@ -677,18 +685,7 @@ mod typed {
             node,
             _session,
             ..
-        } = fixture_with_config(
-            62,
-            options(4),
-            Some(
-                concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/tests/fixtures/zenoh-local-only.json5"
-                )
-                .into(),
-            ),
-        )
-        .await;
+        } = local_fixture(62, options(4)).await;
         let goal_id = client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
         next_goal(&server).await;
 
@@ -962,26 +959,35 @@ mod typed {
         let second_goal = other.send_goal(&Goal { order: 2 }, TIMEOUT).await.unwrap();
         next_goal(&server).await;
 
+        // One client asks for a running goal's result as often as it may: 64
+        // requests, as many as the service's shared pending slots. Three wait,
+        // the rest are refused.
         let mut waiters: FuturesUnordered<_> =
-            (0..4).map(|_| client.get_result(first_goal)).collect();
-        let rejected = tokio::time::timeout(TIMEOUT, waiters.next())
-            .await
-            .expect("the excess request should be rejected while the goal is running")
-            .unwrap();
-        assert!(
-            matches!(rejected, Err(ActionCallError::Service(ServiceError::Remote(ref error)))
-                if error.contains("result waiter limit")),
-            "{rejected:?}"
-        );
+            (0..64).map(|_| client.get_result(first_goal)).collect();
+        for _ in 0..61 {
+            let rejected = tokio::time::timeout(TIMEOUT, waiters.next())
+                .await
+                .expect("the excess requests should be refused while the goal runs")
+                .unwrap();
+            assert!(
+                matches!(&rejected, Err(ActionCallError::Service(ServiceError::Remote(error)))
+                    if error == "result waiter limit of 3 reached for this goal"),
+                "{rejected:?}"
+            );
+        }
 
+        // Another client's request still gets through: with all 64 slots
+        // taken it would be dropped and never answered.
         let second_result = Sequence { sequence: vec![2] };
+        let waiting = tokio::spawn(async move { other.get_result(second_goal).await });
         server
             .finish(second_goal, GoalStatusEnum::Succeeded, &second_result)
             .await
             .unwrap();
         assert_eq!(
-            tokio::time::timeout(TIMEOUT, other.get_result(second_goal))
+            tokio::time::timeout(TIMEOUT, waiting)
                 .await
+                .expect("the other client's request was not answered")
                 .unwrap()
                 .unwrap(),
             (GoalStatusEnum::Succeeded, second_result)
@@ -1036,6 +1042,109 @@ mod typed {
             );
         }
         assert_eq!(server.goals().len(), 1);
+    }
+
+    /// A `GetResult` request whose id is still waiting for one goal is
+    /// refused, as rmw_zenoh refuses a duplicate sequence number. Otherwise
+    /// the newer query would get the first goal's result, and repeats would
+    /// pile up as waiters.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_request_id_that_is_still_waiting_is_refused() {
+        use dora_ros2_bridge::{
+            ros2_client::action::{GetResultRequest, GoalId},
+            transport::zenoh::{attachment::Attachment, serialize_cdr},
+        };
+
+        let Fixture {
+            client,
+            server,
+            node,
+            _session,
+            ..
+        } = local_fixture(64, options(4)).await;
+        let first = client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
+        next_goal(&server).await;
+        let second = client.send_goal(&Goal { order: 2 }, TIMEOUT).await.unwrap();
+        next_goal(&server).await;
+
+        let endpoint =
+            ActionEndpoints::new("/fibonacci", "example_interfaces", "Fibonacci").get_result;
+        let key = format!("64{}/{}/hash", endpoint.name, endpoint.type_name);
+        // A raw `GetResult` query with a request id we choose, sent like the
+        // service client sends one (each reply as soon as it arrives).
+        let get_result = |goal_id: GoalId| {
+            let session = node.session().clone();
+            let key = key.clone();
+            async move {
+                let attachment = Attachment {
+                    sequence_number: 1,
+                    source_timestamp_ns: 0,
+                    gid: [9; 16],
+                };
+                session
+                    .get(key)
+                    .target(zenoh::query::QueryTarget::AllComplete)
+                    .consolidation(zenoh::query::ConsolidationMode::None)
+                    .payload(serialize_cdr(&GetResultRequest { goal_id }).unwrap())
+                    .attachment(attachment.encode().unwrap())
+                    .await
+                    .unwrap()
+            }
+        };
+        let waiting = get_result(first).await;
+        // A round trip through the same service, so the server has taken
+        // `waiting` before the repeats come in.
+        let unknown = dora_ros2_bridge::ros2_client::action::GoalId::new_random();
+        client.get_result(unknown).await.unwrap();
+
+        // Each duplicate must be dropped while the original ID is pending.
+        // Finishing the first goal frees the ID for any query handled later.
+        for goal_id in [second, first, second] {
+            let repeat = get_result(goal_id).await;
+            let ended = tokio::time::timeout(TIMEOUT, repeat.recv_async())
+                .await
+                .expect("a repeated request id was kept waiting");
+            assert!(ended.is_err(), "a repeated request id was answered");
+        }
+
+        server
+            .finish(
+                first,
+                GoalStatusEnum::Succeeded,
+                &Sequence { sequence: vec![1] },
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(TIMEOUT, waiting.recv_async())
+            .await
+            .expect("first goal's request not answered")
+            .unwrap();
+        let (status, result): (GoalStatusEnum, Sequence) = {
+            let response: dora_ros2_bridge::ros2_client::action::GetResultResponse<Sequence> =
+                dora_ros2_bridge::transport::zenoh::deserialize_cdr(
+                    &reply.result().unwrap().payload().to_bytes(),
+                )
+                .unwrap();
+            (response.status, response.result)
+        };
+        assert!(matches!(status, GoalStatusEnum::Succeeded));
+        assert_eq!(result.sequence, vec![1]);
+
+        // Once answered, the id is free again.
+        server
+            .finish(
+                second,
+                GoalStatusEnum::Succeeded,
+                &Sequence { sequence: vec![2] },
+            )
+            .await
+            .unwrap();
+        let again = get_result(second).await;
+        let reply = tokio::time::timeout(TIMEOUT, again.recv_async())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(reply.result().is_ok());
     }
 
     /// Closing the client ends a `get_result` still waiting for its goal, so

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Builds the generated C++ ROS 2 bindings (dora-node-api-cxx) against small
 # fixture packages, then runs C++ service and action client/server round trips
-# over native Zenoh for both identity profiles. CI has no ROS install, so without
-# this the generated cxx code is never compiled. Needs clang++, not ROS.
+# and a topic publish/subscribe over native Zenoh for both identity profiles.
+# CI has no ROS install, so without this the generated cxx code is never
+# compiled. Needs clang++, not ROS.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -26,6 +27,8 @@ cp "$TYPE_DESCRIPTIONS/action_msgs__srv__CancelGoal.json" \
   "$OUT/ament/share/action_msgs/srv/CancelGoal.json"
 cp "$TYPE_DESCRIPTIONS/action_msgs__msg__GoalStatusArray.json" \
   "$OUT/ament/share/action_msgs/msg/GoalStatusArray.json"
+cp "$TYPE_DESCRIPTIONS/example_interfaces__action__Fibonacci.json" \
+  "$OUT/ament/share/example_interfaces/action/Fibonacci.json"
 export AMENT_PREFIX_PATH="$OUT/ament"
 export DORA_NODE_API_CXX_INSTALL="$OUT/install"
 cargo build --manifest-path "$ROOT/Cargo.toml" -p dora-node-api-cxx --features ros2-bridge

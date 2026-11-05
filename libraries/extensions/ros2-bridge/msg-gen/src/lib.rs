@@ -99,6 +99,9 @@ fn detect_ros_service_mapping_ident_from(
 
 #[allow(clippy::cognitive_complexity)]
 pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macro2::TokenStream {
+    let mut package = package.clone();
+    package.sort_messages();
+    let package = &package;
     let mut shared_type_defs = Vec::new();
     let mut message_struct_impls = Vec::new();
     let mut message_topic_defs = Vec::new();
@@ -611,7 +614,7 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             })
         }
 
-        /// `name` as the generated service and action endpoints use it on
+        /// `name` as the generated topic, service and action endpoints use it on
         /// native Zenoh: a relative name is under the node's namespace, as rcl
         /// resolves it (and DDS, via ros2-client `Name::to_dds_name`, except
         /// that it writes `//` under the root namespace).

@@ -1,0 +1,12 @@
+nodes:
+  - id: producer
+    path: build/producer
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - handle
+
+  - id: consumer
+    path: build/consumer
+    inputs:
+      handle: producer/handle
