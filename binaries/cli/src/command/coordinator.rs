@@ -11,6 +11,7 @@ use eyre::Context;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::runtime::Builder;
+#[cfg(feature = "tracing")]
 use tracing::level_filters::LevelFilter;
 
 #[derive(Debug, clap::Args)]
@@ -63,7 +64,7 @@ impl Executable for Coordinator {
                 .wrap_err("failed to set up tracing subscriber")?;
         }
         #[cfg(not(feature = "tracing"))]
-        let span_store = ();
+        let span_store = None;
 
         let store = create_store(&self.store)?;
 
