@@ -1507,7 +1507,7 @@ This section is for developers who want to understand the framework internals, e
           │  ┌─────┐  ┌─────┐    │     │  ┌──────┐  ┌───────┐  │
           │  │Node1│  │Node2│    │     │  │Node3 │  │Node4  │  │
           │  └──┬──┘  └──┬──┘    │     │  └──┬───┘  └───┬───┘  │
-          │     │shmem    │shmem  │     │     │shmem      │shmem │
+          │     │tcp      │tcp    │     │     │tcp        │tcp   │
           │     └────┬────┘       │     │     └─────┬─────┘      │
           └──────────┼────────────┘     └───────────┼────────────┘
                      │                              │
@@ -1515,14 +1515,16 @@ This section is for developers who want to understand the framework internals, e
                               (cross-machine)
 ```
 
+Nodes talk to their daemon over TCP. Payloads of 4 KiB or more normally go directly between nodes over Zenoh shared memory, without passing through the daemon.
+
 ### Protocol Layers
 
 | Layer | Transport | Format | Use |
 |-------|-----------|--------|-----|
 | CLI <-> Coordinator | WebSocket | JSON (ControlRequest/Reply) | Commands, log streaming |
 | Coordinator <-> Daemon | WebSocket | JSON (DaemonCoordinatorEvent) | Node lifecycle, metrics |
-| Daemon <-> Node (small) | TCP / Unix socket | Custom binary | Control messages, small data |
-| Daemon <-> Node (large) | Shared memory | Zero-copy Arrow | Data messages > 4KB |
+| Daemon <-> Node | TCP (loopback) | postcard, length-prefixed | Control requests and events; outputs relayed through the daemon |
+| Node <-> Node | Zenoh (shared memory for payloads >= 4 KiB) | Arrow IPC + metadata attachment | Direct data path, bypasses the daemon |
 | Daemon <-> Daemon | Zenoh pub/sub | Arrow + metadata | Cross-machine data routing |
 
 ### Coordinator Internals
@@ -1578,15 +1580,16 @@ The daemon manages node processes on a single machine:
 Per Node:
   1. Build (if build command specified)
   2. Spawn process with DORA_NODE_CONFIG env var
-  3. Node registers via TCP/shmem handshake
+  3. Node connects to its per-node TCP listener and registers
   4. Route inputs/outputs between nodes
   5. Collect metrics (CPU, memory, I/O)
   6. Handle restart policy on exit
   7. Forward logs to coordinator
 
 Communication:
-  - Shared memory for messages > 4KB (zero-copy)
-  - TCP for control messages and small data
+  - Zenoh shared memory directly between nodes for payloads >= 4 KiB (zero-copy)
+  - Zenoh (heap buffer) directly between nodes for smaller payloads
+  - TCP between daemon and node for control messages and outputs relayed through the daemon
   - flume channels for internal event routing
 ```
 
@@ -1645,14 +1648,15 @@ Dora uses a **Unified Hybrid Logical Clock** (UHLC) for distributed causality. E
 
 ### Zero-Copy Shared Memory
 
-For large messages (> 4KB), the daemon uses shared memory regions:
+For large messages (>= 4 KiB), nodes use Zenoh shared memory (SHM):
 
-1. Sender node requests a shared memory slot from daemon
-2. Daemon allocates a region and returns the ID
-3. Sender writes Arrow data directly into shared memory
-4. Daemon notifies receiver node of the region ID
-5. Receiver reads directly from shared memory (zero-copy)
-6. Receiver sends a drop token when done
+1. The sender allocates a buffer from its Zenoh SHM pool (if the pool is full, the payload is relayed through the daemon instead)
+2. The sender writes the Arrow IPC payload into it and publishes it on Zenoh, with the metadata as an attachment
+3. A receiver on the same machine gets a reference to the same SHM mapping
+4. The receiver wraps it as an Arrow buffer and reads it directly (zero-copy)
+5. The buffer is released when the receiver drops that Arrow buffer
+
+This is the *direct path*: the daemon is not involved in the transfer and only receives an `OutputSent` notification. Outputs that cannot use it (for example one with a consumer that declares `queue_policy: backpressure`) are relayed through the daemon over TCP instead.
 
 This achieves 10-17x lower latency than ROS2 for large payloads.
 

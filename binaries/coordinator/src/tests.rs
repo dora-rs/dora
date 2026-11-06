@@ -1236,24 +1236,34 @@ fn connected_test_daemon(
     (daemon_id, rx)
 }
 
-/// The `exited_before_subscribe` of every `AllNodesReady` queued on `rx`.
-fn received_all_nodes_ready(rx: &mut tokio::sync::mpsc::Receiver<String>) -> Vec<Vec<NodeId>> {
+/// Every coordinator event queued on `rx`.
+fn received_daemon_events(
+    rx: &mut tokio::sync::mpsc::Receiver<String>,
+) -> Vec<DaemonCoordinatorEvent> {
     #[derive(serde::Deserialize)]
     struct OutboundRaw {
         params: Timestamped<DaemonCoordinatorEvent>,
     }
-    let mut frames = Vec::new();
+    let mut events = Vec::new();
     while let Ok(outbound) = rx.try_recv() {
         let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
-        if let DaemonCoordinatorEvent::AllNodesReady {
-            exited_before_subscribe,
-            ..
-        } = outbound.params.inner
-        {
-            frames.push(exited_before_subscribe);
-        }
+        events.push(outbound.params.inner);
     }
-    frames
+    events
+}
+
+/// The `exited_before_subscribe` of every `AllNodesReady` queued on `rx`.
+fn received_all_nodes_ready(rx: &mut tokio::sync::mpsc::Receiver<String>) -> Vec<Vec<NodeId>> {
+    received_daemon_events(rx)
+        .into_iter()
+        .filter_map(|event| match event {
+            DaemonCoordinatorEvent::AllNodesReady {
+                exited_before_subscribe,
+                ..
+            } => Some(exited_before_subscribe),
+            _ => None,
+        })
+        .collect()
 }
 
 /// A two-daemon dataflow whose ready barrier already released, with a
@@ -1559,14 +1569,16 @@ fn disconnect_cleanup_removes_daemon_from_running_dataflow_membership() {
     );
     assert!(
         df.spawn_result.is_pending(),
-        "disconnect cleanup must leave spawn_result to the watchdog"
+        "the cleanup only prunes membership; failing the spawn is \
+         apply_disconnect_actions' job"
     );
 }
 
-// #2028: a spawn-pending dataflow stays the spawn-timeout watchdog's
-// domain — disconnect cleanup must produce no action and not remove it.
+// #3736: a daemon of a spawn-pending dataflow disconnects -> the cleanup asks
+// to fail the spawn (never to reclaim it), and leaves the teardown itself to
+// `apply_disconnect_actions`.
 #[test]
-fn disconnect_of_spawn_pending_dataflow_produces_no_action() {
+fn disconnect_of_spawn_pending_dataflow_asks_to_fail_the_spawn() {
     let dataflow_id = DataflowId::from(Uuid::new_v4());
     let daemon_id = DaemonId::new(Some("gone".to_string()));
     let node_id: dora_core::config::NodeId = "sender".to_string().into();
@@ -1575,7 +1587,7 @@ fn disconnect_of_spawn_pending_dataflow_produces_no_action() {
 
     let mut running_dataflows = HashMap::new();
     running_dataflows.insert(dataflow_id, df);
-    let disconnected = BTreeSet::from([daemon_id]);
+    let disconnected = BTreeSet::from([daemon_id.clone()]);
 
     let actions = cleanup_disconnected_daemons_from_running_dataflows(
         &mut running_dataflows,
@@ -1583,14 +1595,17 @@ fn disconnect_of_spawn_pending_dataflow_produces_no_action() {
         &mut HashMap::new(),
     );
     assert!(
-        // spawn_result is Pending, so the dataflow should NOT trigger
-        // a ReclaimOrphaned action.
-        actions.is_empty(),
-        "spawn-pending dataflows must be left to the spawn-timeout watchdog"
+        matches!(
+            actions.as_slice(),
+            [DisconnectAction::FailPendingSpawn { uuid, daemons }]
+                if *uuid == dataflow_id && *daemons == disconnected
+        ),
+        "a spawn-pending dataflow that lost a daemon must be failed, got {} action(s)",
+        actions.len()
     );
     assert!(
         running_dataflows.contains_key(&dataflow_id),
-        "must not tear down a spawn-pending dataflow"
+        "the cleanup itself must not tear the dataflow down"
     );
 }
 
@@ -1632,6 +1647,276 @@ fn disconnect_releases_ready_barrier_when_last_pending_daemon_drops() {
         .expect("survivor dataflow must remain");
     assert_eq!(df.daemons, BTreeSet::from([daemon_a]));
     assert!(df.pending_daemons.is_empty());
+}
+
+/// A coordinator running one dataflow on daemons `a` (node `sender`) and `b`
+/// (node `receiver`), whose spawn is pending on both and whose ready barrier
+/// waits on both. `wait_for_spawn` is parked on the returned receiver.
+#[allow(clippy::type_complexity)]
+fn coordinator_with_two_daemon_pending_spawn(
+    dataflow_id: DataflowId,
+) -> (
+    Coordinator,
+    (DaemonId, Uuid),
+    (DaemonId, tokio::sync::mpsc::Receiver<String>),
+    tokio::sync::oneshot::Receiver<eyre::Result<ControlRequestReply>>,
+) {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let mut daemon_connections = DaemonConnections::default();
+    let (daemon_a, _rx_a) = connected_test_daemon(&mut daemon_connections, "a");
+    let (daemon_b, rx_b) = connected_test_daemon(&mut daemon_connections, "b");
+    let connection_a = daemon_connections
+        .connection_id_of(&daemon_a)
+        .expect("a is connected");
+
+    let mut df = test_running_dataflow(dataflow_id, daemon_a.clone(), "sender".to_string().into());
+    df.daemons.insert(daemon_b.clone());
+    df.node_to_daemon
+        .insert("receiver".to_string().into(), daemon_b.clone());
+    df.pending_daemons = BTreeSet::from([daemon_a.clone(), daemon_b.clone()]);
+    df.pending_spawn_results = BTreeSet::from([daemon_a.clone(), daemon_b.clone()]);
+    let (waiter_tx, waiter_rx) = tokio::sync::oneshot::channel();
+    df.spawn_result.register(waiter_tx);
+
+    let coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        daemon_connections,
+        store,
+    );
+    (
+        coordinator,
+        (daemon_a, connection_a),
+        (daemon_b, rx_b),
+        waiter_rx,
+    )
+}
+
+/// After `a` disconnected mid-spawn: the spawn failed naming `a`, the dataflow
+/// is torn down as terminally failed, `b` was told to stop it, and the ready
+/// barrier was never released.
+async fn assert_spawn_failed_by_disconnect(
+    coordinator: &Coordinator,
+    dataflow_id: DataflowId,
+    daemon_a: &DaemonId,
+    rx_b: &mut tokio::sync::mpsc::Receiver<String>,
+    waiter_rx: tokio::sync::oneshot::Receiver<eyre::Result<ControlRequestReply>>,
+) {
+    let reply = timeout(TokioDuration::from_secs(1), waiter_rx)
+        .await
+        .expect("wait_for_spawn must be released right away, not by the watchdog")
+        .expect("waiter must not be dropped");
+    let err = format!("{:?}", reply.expect_err("the spawn must fail"));
+    assert!(
+        err.contains(&format!("daemon `{daemon_a}` disconnected during spawn")),
+        "the error must name the disconnected daemon, got: {err}"
+    );
+
+    assert!(!coordinator.running_dataflows.contains_key(&dataflow_id));
+    assert!(coordinator.archived_dataflows.contains_key(&dataflow_id));
+    let record = coordinator
+        .store
+        .get_dataflow(&dataflow_id)
+        .expect("store lookup")
+        .expect("record present");
+    assert!(
+        matches!(
+            record.status,
+            StoreDataflowStatus::Failed { terminal: true, .. }
+        ),
+        "the store must record a terminal failure, got {:?}",
+        record.status
+    );
+
+    let events = received_daemon_events(rx_b);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            DaemonCoordinatorEvent::StopDataflow { dataflow_id: id, force: true, .. }
+                if *id == dataflow_id
+        )),
+        "the survivor must be told to stop the dataflow, got {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, DaemonCoordinatorEvent::AllNodesReady { .. })),
+        "the survivor's nodes must not be released, got {events:?}"
+    );
+}
+
+/// A survivor's report arriving after the disconnect failed the spawn must
+/// not bring the dataflow back or release its nodes. Returns the events the
+/// survivor was sent in response.
+fn assert_not_resurrected(
+    coordinator: &Coordinator,
+    dataflow_id: DataflowId,
+    rx_b: &mut tokio::sync::mpsc::Receiver<String>,
+) -> Vec<DaemonCoordinatorEvent> {
+    assert!(!coordinator.running_dataflows.contains_key(&dataflow_id));
+    let record = coordinator
+        .store
+        .get_dataflow(&dataflow_id)
+        .expect("store lookup")
+        .expect("record present");
+    assert!(
+        matches!(
+            record.status,
+            StoreDataflowStatus::Failed { terminal: true, .. }
+        ),
+        "a late report must not resurrect the dataflow, got {:?}",
+        record.status
+    );
+    let events = received_daemon_events(rx_b);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, DaemonCoordinatorEvent::AllNodesReady { .. })),
+        "a late report must not release the survivor's nodes, got {events:?}"
+    );
+    events
+}
+
+// #3736: survivor `b` reports ready before its spawn result, then `a`
+// disconnects mid-spawn. The spawn must fail at once and `b` be stopped. On
+// `main` `b`'s later Ok resolved the spawn with the barrier never released,
+// so `b`'s nodes waited forever under a `Running` dataflow.
+#[tokio::test]
+async fn disconnect_mid_spawn_after_survivor_ready_fails_the_spawn() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let (mut coordinator, (daemon_a, connection_a), (daemon_b, mut rx_b), waiter_rx) =
+        coordinator_with_two_daemon_pending_spawn(dataflow_id);
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: daemon_b.clone(),
+                exited_before_subscribe: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    coordinator
+        .handle_daemon_exit(daemon_a.clone(), connection_a)
+        .await
+        .unwrap();
+    assert_spawn_failed_by_disconnect(&coordinator, dataflow_id, &daemon_a, &mut rx_b, waiter_rx)
+        .await;
+
+    coordinator
+        .handle_spawn_result(dataflow_id, daemon_b, Ok(()))
+        .await
+        .unwrap();
+    let events = assert_not_resurrected(&coordinator, dataflow_id, &mut rx_b);
+    // `b` may have created the dataflow only after the first stop reached it,
+    // so its late Ok is answered with another stop.
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            DaemonCoordinatorEvent::StopDataflow { dataflow_id: id, force: true, .. }
+                if *id == dataflow_id
+        )),
+        "a late spawn Ok must stop the survivor again, got {events:?}"
+    );
+}
+
+// The other order of the same race, and the common one: `b`'s spawn Ok
+// arrives while the spawn is still pending on `a`, then `a` disconnects. The
+// spawn must fail at once as well, rather than release `b`'s nodes and
+// force-stop them when the spawn watchdog fires.
+#[tokio::test]
+async fn disconnect_mid_spawn_after_survivor_spawned_fails_the_spawn() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let (mut coordinator, (daemon_a, connection_a), (daemon_b, mut rx_b), waiter_rx) =
+        coordinator_with_two_daemon_pending_spawn(dataflow_id);
+
+    coordinator
+        .handle_spawn_result(dataflow_id, daemon_b.clone(), Ok(()))
+        .await
+        .unwrap();
+    assert!(
+        coordinator.running_dataflows[&dataflow_id]
+            .spawn_result
+            .is_pending(),
+        "precondition: the spawn is still pending on `a`"
+    );
+    coordinator
+        .handle_daemon_exit(daemon_a.clone(), connection_a)
+        .await
+        .unwrap();
+    assert_spawn_failed_by_disconnect(&coordinator, dataflow_id, &daemon_a, &mut rx_b, waiter_rx)
+        .await;
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::ReadyOnDaemon {
+                daemon_id: daemon_b,
+                exited_before_subscribe: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    let _ = assert_not_resurrected(&coordinator, dataflow_id, &mut rx_b);
+}
+
+// A spawn the disconnect path failed is not failed a second time by the
+// spawn-timeout watchdog, even once its deadline has passed.
+#[tokio::test]
+async fn spawn_watchdog_skips_a_spawn_failed_by_a_disconnect() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let (mut coordinator, (daemon_a, connection_a), (_daemon_b, mut rx_b), waiter_rx) =
+        coordinator_with_two_daemon_pending_spawn(dataflow_id);
+    coordinator
+        .running_dataflows
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
+
+    coordinator
+        .handle_daemon_exit(daemon_a.clone(), connection_a)
+        .await
+        .unwrap();
+    assert_spawn_failed_by_disconnect(&coordinator, dataflow_id, &daemon_a, &mut rx_b, waiter_rx)
+        .await;
+    let record_before = coordinator
+        .store
+        .get_dataflow(&dataflow_id)
+        .unwrap()
+        .unwrap();
+    let results_before = format!("{:?}", coordinator.dataflow_results.get(&dataflow_id));
+
+    check_spawn_timeouts(
+        &mut coordinator.running_dataflows,
+        &mut coordinator.archived_dataflows,
+        &mut coordinator.dataflow_results,
+        &mut coordinator.daemon_connections,
+        &mut coordinator.pending_restarts,
+        &coordinator.clock,
+        coordinator.store.as_ref(),
+    )
+    .await;
+
+    let events = received_daemon_events(&mut rx_b);
+    assert!(
+        events.is_empty(),
+        "the watchdog must not roll the survivor back a second time, got {events:?}"
+    );
+    let record_after = coordinator
+        .store
+        .get_dataflow(&dataflow_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        format!("{:?}", record_after.status),
+        format!("{:?}", record_before.status),
+        "the watchdog must not overwrite the disconnect verdict"
+    );
+    assert_eq!(
+        format!("{:?}", coordinator.dataflow_results.get(&dataflow_id)),
+        results_before,
+        "the watchdog must not synthesize a second failure"
+    );
 }
 
 // #2028 deadlocks #2 + #3 + #2029 reclaim: the sole daemon of a running
@@ -1688,6 +1973,9 @@ async fn disconnect_reclaims_orphaned_running_dataflow() {
         &mut running_dataflows,
         &mut HashMap::new(),
         &mut daemon_connections,
+        &mut IndexMap::new(),
+        &mut IndexMap::new(),
+        &mut HashMap::new(),
         &store,
         &clock,
     )
@@ -1757,6 +2045,9 @@ async fn launch_context_survives_orphan_reclaim_and_reconnect() {
         &mut running_dataflows,
         &mut reclaimed_launches,
         &mut DaemonConnections::default(),
+        &mut IndexMap::new(),
+        &mut IndexMap::new(),
+        &mut HashMap::new(),
         &store,
         &clock,
     )
@@ -1930,6 +2221,7 @@ async fn applied_param_changes_are_acked_and_pruned_from_the_state_log() {
     df.daemon_ack_sequence = BTreeMap::from([(owner.clone(), 1)]);
 
     let mut coordinator = Coordinator {
+        resent_finish_reports: Default::default(),
         running_builds: HashMap::new(),
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::from([(dataflow_id, df)]),
@@ -2004,6 +2296,7 @@ async fn wait_for_spawn_after_a_failed_spawn_reports_the_failure() {
     df.pending_spawn_results.insert(daemon_id.clone());
 
     let mut coordinator = Coordinator {
+        resent_finish_reports: Default::default(),
         running_builds: HashMap::new(),
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::from([(dataflow_id, df)]),
@@ -2067,6 +2360,7 @@ async fn wait_for_spawn_after_an_early_node_exit(
     df.pending_spawn_results.insert(daemon_id.clone());
 
     let mut coordinator = Coordinator {
+        resent_finish_reports: Default::default(),
         running_builds: HashMap::new(),
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::from([(dataflow_id, df)]),
@@ -2553,6 +2847,7 @@ fn test_coordinator(
     store: Arc<dyn CoordinatorStore>,
 ) -> Coordinator {
     Coordinator {
+        resent_finish_reports: Default::default(),
         running_builds: HashMap::new(),
         finished_builds: IndexMap::new(),
         running_dataflows,
@@ -6457,6 +6752,7 @@ async fn auto_recovery_respawns_with_the_original_launch_context() {
         pending_restarts: HashMap::new(),
         reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
+        resent_finish_reports: HashMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections,
         clock: Arc::new(HLC::default()),
@@ -6759,6 +7055,7 @@ async fn node_topology_changes_are_persisted() {
         pending_restarts: HashMap::new(),
         reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
+        resent_finish_reports: HashMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections,
         clock: Arc::new(HLC::default()),
@@ -6992,6 +7289,590 @@ async fn clean_keeps_a_dataflow_awaiting_reclaim() {
     assert!(
         store.get_dataflow(&dataflow_id).unwrap().is_some(),
         "the Recovering record must survive `dora clean`"
+    );
+}
+
+// -------------------------------------------------------------------
+// Resent finish reports for a dataflow left `Recovering` (dora-rs/dora#3631)
+// -------------------------------------------------------------------
+
+/// A `Coordinator` with empty state and the given store, mirroring what
+/// `start_inner` builds, without starting the event loop. Handler-level tests
+/// that need one event's worth of state use this instead of the WS harness.
+fn coordinator_with_store(store: Arc<dyn CoordinatorStore>) -> Coordinator {
+    test_coordinator(HashMap::new(), DaemonConnections::default(), store)
+}
+
+/// The record `begin_orphaned_dataflow_reclaim` leaves behind: the dataflow is
+/// out of `running_dataflows` and `Recovering` in the store, waiting for a
+/// daemon to reconnect and say what happened to it. The descriptor lists every
+/// node `node_to_daemon` assigns, which is what the coordinator checks a
+/// resent report against.
+fn recovering_record(
+    dataflow_id: DataflowId,
+    node_to_daemon: BTreeMap<NodeId, DaemonId>,
+) -> dora_coordinator_store::DataflowRecord {
+    let descriptor_nodes = node_to_daemon
+        .keys()
+        .map(|node_id| {
+            let id = node_id.to_string();
+            serde_json::json!({"id": id, "path": id, "outputs": ["message"]})
+        })
+        .collect();
+    recovering_record_with_nodes(dataflow_id, node_to_daemon, descriptor_nodes)
+}
+
+/// Like [`recovering_record`], but with the persisted descriptor written out
+/// explicitly. `node_to_daemon` is what the record assigns each node to, which
+/// after an earlier recovery can cover fewer nodes than the descriptor lists.
+fn recovering_record_with_nodes(
+    dataflow_id: DataflowId,
+    node_to_daemon: BTreeMap<NodeId, DaemonId>,
+    descriptor_nodes: Vec<serde_json::Value>,
+) -> dora_coordinator_store::DataflowRecord {
+    dora_coordinator_store::DataflowRecord {
+        uuid: dataflow_id,
+        name: Some("recovering".to_string()),
+        descriptor_json: serde_json::json!({ "nodes": descriptor_nodes }).to_string(),
+        status: StoreDataflowStatus::Recovering,
+        daemon_ids: Vec::new(),
+        node_to_daemon: node_to_daemon
+            .into_iter()
+            .map(|(node, daemon)| (node.to_string(), daemon.to_string()))
+            .collect(),
+        uv: false,
+        ready_barrier_released: true,
+        barrier_exited_before_subscribe: Vec::new(),
+        generation: 1,
+        created_at: 0,
+        updated_at: crate::state::now_millis(),
+    }
+}
+
+fn finish_result(
+    clock: &HLC,
+    node_results: BTreeMap<NodeId, Result<(), NodeError>>,
+) -> DataflowDaemonResult {
+    DataflowDaemonResult {
+        timestamp: clock.new_timestamp(),
+        node_results,
+    }
+}
+
+/// A finish report the daemon queued on a connection that died is resent when
+/// it reconnects (#3612). If the coordinator has already processed the
+/// disconnect, the orphan reclaim has taken the dataflow out of
+/// `running_dataflows` and left the store record `Recovering`. The resent
+/// report must finalize it there instead of being dropped and letting the
+/// recovery timeout rewrite it as a terminal `Failed` (#3631).
+#[tokio::test]
+async fn resent_finish_report_finalizes_a_recovering_dataflow() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("machine".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+    store
+        .put_dataflow(&recovering_record(
+            dataflow_id,
+            BTreeMap::from([(node_id.clone(), daemon_id.clone())]),
+        ))
+        .expect("seed recovering record");
+    let mut coordinator = coordinator_with_store(store.clone());
+    let clock = coordinator.clock.clone();
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id: daemon_id.clone(),
+                result: finish_result(&clock, BTreeMap::from([(node_id, Ok(()))])),
+            },
+        )
+        .await
+        .expect("handle the resent finish report");
+
+    let record = store
+        .get_dataflow(&dataflow_id)
+        .expect("store lookup")
+        .expect("record present");
+    assert!(
+        matches!(record.status, StoreDataflowStatus::Succeeded),
+        "a resent finish report must finalize the recovered dataflow, got {:?}",
+        record.status
+    );
+    assert!(
+        coordinator.dataflow_results.contains_key(&dataflow_id),
+        "the daemon's per-node results must be kept"
+    );
+}
+
+/// `Recovering` can also mean every daemon dropped while some were still
+/// running. A report that covers only part of the dataflow must not finalize
+/// it, or the daemon that has not reported yet is stopped as an orphan even
+/// though its dataflow is still running.
+#[tokio::test]
+async fn partial_resent_finish_report_leaves_the_dataflow_recovering() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let finished_daemon = DaemonId::new(Some("done".to_string()));
+    let running_daemon = DaemonId::new(Some("running".to_string()));
+    let finished_node: NodeId = "sender".to_string().into();
+    let running_node: NodeId = "receiver".to_string().into();
+    store
+        .put_dataflow(&recovering_record(
+            dataflow_id,
+            BTreeMap::from([
+                (finished_node.clone(), finished_daemon.clone()),
+                (running_node, running_daemon),
+            ]),
+        ))
+        .expect("seed recovering record");
+    let mut coordinator = coordinator_with_store(store.clone());
+    let clock = coordinator.clock.clone();
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id: finished_daemon.clone(),
+                result: finish_result(&clock, BTreeMap::from([(finished_node, Ok(()))])),
+            },
+        )
+        .await
+        .expect("handle the resent finish report");
+
+    let record = store
+        .get_dataflow(&dataflow_id)
+        .expect("store lookup")
+        .expect("record present");
+    assert!(
+        matches!(record.status, StoreDataflowStatus::Recovering),
+        "a report that does not cover the whole dataflow must not finalize it, got {:?}",
+        record.status
+    );
+    // The partial report is parked for the daemons still to report, but it must
+    // stay out of `dataflow_results`: every reader there treats an entry as a
+    // finished dataflow, so a partial one would make `dora list` say Finished
+    // and `dora stop` reply success without stopping the daemon still running.
+    assert!(
+        !coordinator.dataflow_results.contains_key(&dataflow_id),
+        "a partial resent report must not look like a finished dataflow"
+    );
+    assert!(
+        coordinator.resent_finish_reports.contains_key(&dataflow_id),
+        "the partial report is parked for the daemons still to report"
+    );
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    coordinator.handle_list(tx).await.expect("handle list");
+    let reply = rx.await.expect("list reply").expect("list ok");
+    let ControlRequestReply::DataflowList(list) = reply else {
+        panic!("expected a dataflow list, got {reply:?}");
+    };
+    assert!(
+        !list.0.iter().any(|entry| entry.id.uuid == dataflow_id),
+        "a still-recovering dataflow must not be listed as finished: {:?}",
+        list.0
+    );
+}
+
+/// A daemon never reports a result for a `path: dynamic` node — it sends no
+/// `SpawnedNodeResult` — so a coverage check that requires one never passes and
+/// the dataflow times out as `Failed`. The dynamic node must be skipped.
+#[tokio::test]
+async fn resent_finish_report_finalizes_a_dataflow_with_a_dynamic_node() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("machine".to_string()));
+    let sender: NodeId = "sender".to_string().into();
+    let dynamic: NodeId = "viz".to_string().into();
+    store
+        .put_dataflow(&recovering_record_with_nodes(
+            dataflow_id,
+            BTreeMap::from([
+                (sender.clone(), daemon_id.clone()),
+                (dynamic.clone(), daemon_id.clone()),
+            ]),
+            vec![
+                serde_json::json!({"id": "sender", "path": "sender", "outputs": ["message"]}),
+                serde_json::json!({"id": "viz", "path": "dynamic", "outputs": ["message"]}),
+            ],
+        ))
+        .expect("seed recovering record");
+    let mut coordinator = coordinator_with_store(store.clone());
+    let clock = coordinator.clock.clone();
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id,
+                // `viz` is dynamic, so the daemon reports no result for it.
+                result: finish_result(&clock, BTreeMap::from([(sender, Ok(()))])),
+            },
+        )
+        .await
+        .expect("handle the resent finish report");
+
+    let record = store
+        .get_dataflow(&dataflow_id)
+        .expect("store lookup")
+        .expect("record present");
+    assert!(
+        matches!(record.status, StoreDataflowStatus::Succeeded),
+        "a dataflow whose only unreported node is dynamic must still finalize, got {:?}",
+        record.status
+    );
+}
+
+/// A daemon whose whole share of a dataflow is `path: dynamic` nodes never
+/// finishes on its own: `should_finish` (`binaries/daemon/src/node_events.rs`)
+/// is only evaluated when a node stops, and its dynamic node is still running.
+/// It keeps reporting the dataflow as running. Skipping every dynamic node in
+/// the coverage check would settle such a dataflow while that daemon still runs
+/// it, and the daemon's next status report would then be stopped as an orphan.
+/// Only a dynamic node whose own daemon has reported may be skipped.
+#[tokio::test]
+async fn resent_finish_report_waits_for_a_dynamic_only_daemon() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    // `saved_*` is what the reclaim persisted; the reports arrive from the
+    // fresh `DaemonId`s the daemons registered with after reconnecting. Only
+    // the machine id survives that, which is what the check has to match on.
+    let saved_a = DaemonId::new(Some("a".to_string()));
+    let saved_b = DaemonId::new(Some("b".to_string()));
+    let reconnected_a = DaemonId::new(Some("a".to_string()));
+    let reconnected_b = DaemonId::new(Some("b".to_string()));
+    let sender: NodeId = "sender".to_string().into();
+    let dynamic: NodeId = "viz".to_string().into();
+    store
+        .put_dataflow(&recovering_record_with_nodes(
+            dataflow_id,
+            BTreeMap::from([(sender.clone(), saved_a), (dynamic.clone(), saved_b)]),
+            vec![
+                serde_json::json!({"id": "sender", "path": "sender", "outputs": ["message"]}),
+                serde_json::json!({"id": "viz", "path": "dynamic", "outputs": ["message"]}),
+            ],
+        ))
+        .expect("seed recovering record");
+    let mut coordinator = coordinator_with_store(store.clone());
+    let clock = coordinator.clock.clone();
+
+    // `sender` finished on daemon A, but `viz` is still running on daemon B,
+    // which hasn't reported. The dataflow must stay `Recovering` so B's status
+    // report can re-establish it instead of it being archived and B stopped.
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id: reconnected_a,
+                result: finish_result(&clock, BTreeMap::from([(sender.clone(), Ok(()))])),
+            },
+        )
+        .await
+        .expect("handle daemon A's resent finish report");
+
+    let record = store
+        .get_dataflow(&dataflow_id)
+        .expect("store lookup")
+        .expect("record present");
+    assert!(
+        matches!(record.status, StoreDataflowStatus::Recovering),
+        "a dynamic node on a daemon that hasn't reported must keep the dataflow \
+         Recovering, got {:?}",
+        record.status
+    );
+    assert!(
+        !coordinator.dataflow_results.contains_key(&dataflow_id),
+        "the partial report must not look like a finished dataflow"
+    );
+
+    // Daemon B reports too. It has no node result to send — `viz` is dynamic —
+    // but its report covers the dataflow, so it now settles.
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id: reconnected_b,
+                result: finish_result(&clock, BTreeMap::new()),
+            },
+        )
+        .await
+        .expect("handle daemon B's resent finish report");
+
+    let record = store
+        .get_dataflow(&dataflow_id)
+        .expect("store lookup")
+        .expect("record present");
+    assert!(
+        matches!(record.status, StoreDataflowStatus::Succeeded),
+        "a report from the dynamic node's daemon must let the dataflow settle, got {:?}",
+        record.status
+    );
+    assert!(
+        coordinator.dataflow_results.contains_key(&dataflow_id),
+        "the settled dataflow keeps the per-daemon results"
+    );
+}
+
+/// After a dataflow has been recovered once, `node_to_daemon` holds only the
+/// reconnecting daemon's nodes (`RunningDataflow::recovered`). A report that
+/// covers those must not settle a dataflow whose descriptor still lists a node
+/// on another daemon, or that daemon's live nodes are stopped as orphans.
+#[tokio::test]
+async fn resent_finish_report_does_not_settle_a_dataflow_another_daemon_still_runs() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_a = DaemonId::new(Some("a".to_string()));
+    let node_a: NodeId = "a".to_string().into();
+    // The record was reclaimed after `a`'s daemon re-established the dataflow
+    // on its own, so `node_to_daemon` covers only `a` while the descriptor
+    // still lists `b` too.
+    store
+        .put_dataflow(&recovering_record_with_nodes(
+            dataflow_id,
+            BTreeMap::from([(node_a.clone(), daemon_a.clone())]),
+            vec![
+                serde_json::json!({"id": "a", "path": "a", "outputs": ["message"]}),
+                serde_json::json!({"id": "b", "path": "b", "outputs": ["message"]}),
+            ],
+        ))
+        .expect("seed recovering record");
+    let mut coordinator = coordinator_with_store(store.clone());
+    let clock = coordinator.clock.clone();
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id: daemon_a.clone(),
+                result: finish_result(&clock, BTreeMap::from([(node_a, Ok(()))])),
+            },
+        )
+        .await
+        .expect("handle the resent finish report");
+
+    let record = store
+        .get_dataflow(&dataflow_id)
+        .expect("store lookup")
+        .expect("record present");
+    assert!(
+        matches!(record.status, StoreDataflowStatus::Recovering),
+        "a report covering only the reconnecting daemon's nodes must not settle \
+         a dataflow the descriptor still assigns elsewhere, got {:?}",
+        record.status
+    );
+}
+
+/// A dataflow settled from a resent report must be archived like one settled
+/// by the normal finish path, or `dora list` loses its name and name-based
+/// `logs` / `stop` stop resolving it.
+#[tokio::test]
+async fn resent_finish_report_archives_the_settled_dataflow() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("machine".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+    store
+        .put_dataflow(&recovering_record(
+            dataflow_id,
+            BTreeMap::from([(node_id.clone(), daemon_id.clone())]),
+        ))
+        .expect("seed recovering record");
+    let mut coordinator = coordinator_with_store(store.clone());
+    let clock = coordinator.clock.clone();
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id,
+                result: finish_result(&clock, BTreeMap::from([(node_id, Ok(()))])),
+            },
+        )
+        .await
+        .expect("handle the resent finish report");
+
+    assert!(
+        coordinator.archived_dataflows.contains_key(&dataflow_id),
+        "a settled dataflow must be archived so its name survives"
+    );
+    assert_eq!(
+        coordinator
+            .archived_dataflows
+            .get(&dataflow_id)
+            .and_then(|archived| archived.name.as_deref()),
+        Some("recovering"),
+    );
+    let resolved = crate::handlers::resolve_name(
+        "recovering".to_string(),
+        &coordinator.running_dataflows,
+        &coordinator.archived_dataflows,
+    )
+    .expect("the settled dataflow must resolve by name");
+    assert_eq!(resolved, dataflow_id);
+}
+
+/// When another daemon re-establishes a `Recovering` dataflow as `Running`, the
+/// partial reports parked for daemons that already finished belong in
+/// `dataflow_results`; otherwise the eventual finish settles without them.
+#[tokio::test]
+async fn reestablishing_a_dataflow_keeps_parked_finish_reports() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let finished_daemon = DaemonId::new(Some("done".to_string()));
+    let running_daemon = DaemonId::new(Some("running".to_string()));
+    let finished_node: NodeId = "sender".to_string().into();
+    let running_node: NodeId = "receiver".to_string().into();
+    let mut record = recovering_record_with_nodes(
+        dataflow_id,
+        BTreeMap::from([
+            (finished_node.clone(), finished_daemon.clone()),
+            (running_node.clone(), running_daemon.clone()),
+        ]),
+        vec![
+            serde_json::json!({"id": "sender", "path": "sender", "outputs": ["message"]}),
+            serde_json::json!({"id": "receiver", "path": "receiver", "outputs": ["message"]}),
+        ],
+    );
+    record.ready_barrier_released = false;
+    store.put_dataflow(&record).expect("seed recovering record");
+    let mut coordinator = coordinator_with_store(store.clone());
+    let clock = coordinator.clock.clone();
+
+    // `sender`'s daemon finished and its report arrived while the dataflow was
+    // still `Recovering`, so it is parked rather than in `dataflow_results`.
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id: finished_daemon.clone(),
+                result: finish_result(&clock, BTreeMap::from([(finished_node.clone(), Ok(()))])),
+            },
+        )
+        .await
+        .expect("park the partial report");
+    assert!(coordinator.resent_finish_reports.contains_key(&dataflow_id));
+
+    // The other daemon reconnects with its node still running.
+    coordinator
+        .handle_daemon_status_report(
+            running_daemon,
+            vec![dora_message::daemon_to_coordinator::DataflowStatusEntry {
+                dataflow_id,
+                running_nodes: vec![running_node],
+            }],
+        )
+        .await
+        .expect("handle the status report");
+
+    assert!(
+        coordinator.running_dataflows.contains_key(&dataflow_id),
+        "the dataflow must be re-established as running"
+    );
+    assert!(
+        coordinator.dataflow_results.contains_key(&dataflow_id),
+        "the parked report must move into dataflow_results on re-establish"
+    );
+    assert!(
+        !coordinator.resent_finish_reports.contains_key(&dataflow_id),
+        "the parked report must not be left behind"
+    );
+}
+
+/// A report is only a resend for a dataflow the coordinator lost track of.
+/// Once the record has settled — a normal finish, or the recovery-timeout
+/// verdict — a late report must keep being dropped, as it was before.
+#[tokio::test]
+async fn finish_report_for_a_settled_dataflow_is_still_dropped() {
+    for settled in [
+        StoreDataflowStatus::Succeeded,
+        StoreDataflowStatus::Failed {
+            error: "recovery timeout (60s): no daemon reconnected".to_string(),
+            terminal: true,
+        },
+    ] {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("machine".to_string()));
+        let node_id: NodeId = "sender".to_string().into();
+        let mut record = recovering_record(
+            dataflow_id,
+            BTreeMap::from([(node_id.clone(), daemon_id.clone())]),
+        );
+        record.status = settled.clone();
+        store.put_dataflow(&record).expect("seed settled record");
+        let mut coordinator = coordinator_with_store(store.clone());
+        let clock = coordinator.clock.clone();
+
+        coordinator
+            .handle_dataflow_event(
+                dataflow_id,
+                DataflowEvent::DataflowFinishedOnDaemon {
+                    daemon_id,
+                    result: finish_result(&clock, BTreeMap::from([(node_id, Ok(()))])),
+                },
+            )
+            .await
+            .expect("handle the late finish report");
+
+        let after = store
+            .get_dataflow(&dataflow_id)
+            .expect("store lookup")
+            .expect("record present");
+        assert_eq!(
+            after.status, settled,
+            "a late report must not rewrite a settled verdict"
+        );
+        assert!(
+            !coordinator.dataflow_results.contains_key(&dataflow_id),
+            "a settled dataflow must not gain a fresh result entry"
+        );
+    }
+}
+
+/// The first report for a dataflow the coordinator still holds as running goes
+/// through the normal finalize path: results recorded, store `Succeeded`,
+/// archived so `dora list` still knows its name.
+#[tokio::test]
+async fn first_finish_report_still_finalizes_a_running_dataflow() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("machine".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+    let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+    dataflow
+        .spawn_result
+        .set_result(Ok(ControlRequestReply::DataflowSpawned {
+            uuid: dataflow_id,
+        }));
+    store
+        .put_dataflow(&dataflow.make_record(StoreDataflowStatus::Running).unwrap())
+        .expect("seed running record");
+    let mut coordinator = coordinator_with_store(store.clone());
+    coordinator.running_dataflows.insert(dataflow_id, dataflow);
+    let clock = coordinator.clock.clone();
+
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id,
+                result: finish_result(&clock, BTreeMap::from([(node_id, Ok(()))])),
+            },
+        )
+        .await
+        .expect("handle the first finish report");
+
+    let record = store.get_dataflow(&dataflow_id).unwrap().unwrap();
+    assert!(
+        matches!(record.status, StoreDataflowStatus::Succeeded),
+        "first report must still finalize a running dataflow, got {:?}",
+        record.status
+    );
+    assert!(
+        coordinator.archived_dataflows.contains_key(&dataflow_id),
+        "the normal path still archives the finished dataflow"
     );
     assert!(coordinator.dataflow_results.contains_key(&dataflow_id));
 }

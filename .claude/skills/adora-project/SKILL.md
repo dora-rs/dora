@@ -23,8 +23,8 @@ CLI (WS:6013) --> Coordinator --> Daemon(s) --> Nodes / Operators
 ```
 
 - **Coordinator**: Single orchestrator, persistent state (in-memory or redb), label-based node scheduling
-- **Daemon**: Per-machine process manager, owns shared memory regions, TCP/Unix sockets to nodes
-- **Node**: Separate OS process, communicates via shared memory (>4KB) or TCP (small msgs)
+- **Daemon**: Per-machine process manager, one loopback TCP listener per node
+- **Node**: Separate OS process, talks to its daemon over TCP and sends data to other nodes over Zenoh (shared memory for payloads >= 4 KiB)
 - **Operator**: In-process (runtime), no IPC overhead
 
 ## Message Protocol
@@ -44,9 +44,9 @@ Messages are versioned. Version check happens at connection init.
 
 1. Coordinator sends `SpawnNode` to target Daemon (selected by labels)
 2. Daemon creates `RunningNode` with `RuntimeConfig` passed as env var (JSON)
-3. Node process starts, connects back to Daemon via TCP/Unix socket
+3. Node process starts, connects back to Daemon via TCP
 4. Node registers inputs/outputs, subscribes to data channels
-5. Data flows via bounded `flume` channels internally, shared memory for large payloads
+5. Data flows via bounded `flume` channels internally, Zenoh shared memory for large payloads
 6. On stop: soft kill (SIGTERM) -> grace period -> hard kill (SIGKILL)
 
 ## Key Abstractions

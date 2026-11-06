@@ -39,13 +39,7 @@ pub(super) async fn path_spawn_command(
                         .to_string(),
                 )
                 .await;
-            if cfg!(target_os = "windows") {
-                let cmd = Command::new("cmd");
-                cmd.args(["/C", &node.args.clone().unwrap_or_default()])
-            } else {
-                let cmd = Command::new("sh");
-                cmd.args(["-c", &node.args.clone().unwrap_or_default()])
-            }
+            shell_command(&node.args.clone().unwrap_or_default())
         }
         source => {
             // a checksum only means anything for a URL download — reject a
@@ -228,8 +222,141 @@ pub(super) async fn path_spawn_command(
     Ok(Some(cmd))
 }
 
+/// The command that runs the `args` of a `path: shell` node as a script.
+fn shell_command(script: &str) -> Command {
+    if cfg!(target_os = "windows") {
+        // `to_std_command` passes the script to `cmd` verbatim; `/S` makes `cmd`
+        // strip exactly the outer quotes added there.
+        Command::new("cmd").args(["/S", "/C", script])
+    } else {
+        Command::new("sh").args(["-c", script])
+    }
+}
+
+/// The script of a Windows shell node, i.e. a `cmd /S /C <script>` command.
+#[cfg(any(windows, test))]
+fn windows_shell_script(command: &Command) -> Option<&std::ffi::OsStr> {
+    let [s, c, script] = command.arguments.as_slice() else {
+        return None;
+    };
+    (command.name == "cmd" && s == "/S" && c == "/C").then_some(script.as_os_str())
+}
+
+/// Convert `command` for spawning.
+///
+/// A Windows shell node's script is handed to `cmd` verbatim, inside one pair of
+/// quotes: `cmd /S /C "<script>"`. `std` would instead escape each `"` in the
+/// script as `\"`, which `cmd` does not understand (`echo "a b"` printed
+/// `\"a b\"`). `/S` makes `cmd` strip exactly the outer pair, so a script that
+/// itself starts with a quote works too.
+pub(super) fn to_std_command(command: &Command) -> std::process::Command {
+    #[cfg(windows)]
+    if let Some(script) = windows_shell_script(command) {
+        use std::os::windows::process::CommandExt as _;
+
+        let mut without_script = command.clone();
+        without_script.arguments.pop();
+        let mut quoted = std::ffi::OsString::from("\"");
+        quoted.push(script);
+        quoted.push("\"");
+        let mut std_command = without_script.to_std();
+        std_command.raw_arg(quoted);
+        return std_command;
+    }
+    command.to_std()
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn windows_shell_script_recognizes_only_the_shell_node_form() {
+        let script = "echo \"a b\"";
+        let shell = Command::new("cmd").args(["/S", "/C", script]);
+        assert_eq!(windows_shell_script(&shell), Some(OsStr::new(script)));
+
+        // Anything else is an ordinary command and keeps `std`'s quoting.
+        for other in [
+            Command::new("cmd").args(["/C", script]),
+            Command::new("cmd").args(["/S", "/C", script, "extra"]),
+            Command::new("cmd").args(["/S", "/K", script]),
+            Command::new("sh").args(["/S", "/C", script]),
+        ] {
+            assert_eq!(windows_shell_script(&other), None, "{other:?}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn shell_command_has_the_form_the_converter_recognizes() {
+        let command = shell_command("echo hi");
+        assert_eq!(
+            windows_shell_script(&command),
+            Some(OsStr::new("echo hi")),
+            "`shell_command` and `windows_shell_script` must agree"
+        );
+    }
+
+    /// Runs `script` as a shell node would and returns (success, stdout, stderr).
+    fn run_shell_node(script: &str) -> (bool, String, String) {
+        let output = to_std_command(&shell_command(script))
+            .output()
+            .expect("failed to run the shell");
+        (
+            output.status.success(),
+            String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    }
+
+    #[test]
+    fn shell_node_runs_a_plain_command() {
+        let (ok, stdout, stderr) = run_shell_node("echo hello world");
+        assert!(ok, "{stderr}");
+        assert_eq!(stdout.trim(), "hello world");
+    }
+
+    /// `std` escapes a quote inside an argument as `\"`, which `cmd` does not
+    /// understand: it echoed `\"hello world\"` here.
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_node_keeps_quotes_in_the_script() {
+        let (ok, stdout, stderr) = run_shell_node(r#"echo "hello world""#);
+        assert!(ok, "{stderr}");
+        assert_eq!(stdout.trim(), r#""hello world""#);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_node_chains_quoted_commands() {
+        let (ok, stdout, stderr) = run_shell_node(r#"echo "a" && echo "b c""#);
+        assert!(ok, "{stderr}");
+        assert_eq!(
+            stdout.lines().map(str::trim).collect::<Vec<_>>(),
+            [r#""a""#, r#""b c""#]
+        );
+    }
+
+    /// A script that starts with a quote (a quoted program path) triggers
+    /// `cmd`'s quote-stripping rule unless `/S` is given.
+    #[cfg(windows)]
+    #[test]
+    fn windows_shell_node_may_start_with_a_quoted_program() {
+        let (ok, stdout, stderr) = run_shell_node(r#""%ComSpec%" /c echo "a b""#);
+        assert!(ok, "{stderr}");
+        assert_eq!(stdout.trim(), r#""a b""#);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_shell_node_keeps_quotes_in_the_script() {
+        let (ok, stdout, stderr) = run_shell_node(r#"echo "a b" && echo 'c d'"#);
+        assert!(ok, "{stderr}");
+        assert_eq!(stdout, "a b\nc d\n");
+    }
+
     #[test]
     fn shlex_splits_quoted_args() {
         let input = "--foo 'hello world' --bar";

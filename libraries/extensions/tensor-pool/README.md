@@ -59,6 +59,67 @@ node.free_tensor_pool(pool_id)
 Runnable dataflows are in [`examples/`](examples/), covering CPU↔CPU, CPU↔CUDA,
 CUDA↔CUDA and the negative lifecycle cases.
 
+### GPU pool placement and write completion
+
+For a local CUDA receiver, `register_tensor_pool(info, device="cuda:N")`
+allocates the pool on that receiver device and exports that allocation's IPC
+handle. A CUDA writer on another device copies the complete payload into this
+pool with `cudaMemcpyPeer` when P2P is available. Same-device writes use DtoD;
+without P2P the existing pinned-host staging fallback is used. The copy and
+receiver-device synchronization finish before the write generation is published.
+An allocation, copy, or completion failure is surfaced rather than publishing a
+successful frame. Each cross-device write includes a blocking full-payload copy
+and completion synchronization, so its cost grows with payload size; subsequent
+reads access receiver-local memory.
+
+The receiver's `device="cuda:N"` is resolved in the **writer's**
+`CUDA_VISIBLE_DEVICES` namespace. Host-staging and CPU-source registration
+already selected the receiver's device before allocating, and P2P registration
+follows the same rule; because the pool lives on the receiver, this is a
+requirement for every node that registers or writes a GPU pool: they must
+expose the same GPUs in the same order. If the masks differ, the same `cuda:N`
+names a different physical card and the pool is placed on a GPU the receiver
+did not ask for, while imports still succeed through lazy peer access. A
+writer rejects an unselectable index at registration on every local
+CUDA-receiver path; on the host-staging and CPU-source paths an index outside
+the writer's visible set used to be ignored, leaving the pool on the writer's
+current device. It cannot detect masks that are merely reordered; allocating by
+physical identity (UUID or PCI bus id) instead of an ordinal is a follow-up.
+
+The receiver imports the handle once and can retain its view across same-host,
+fixed-size writes, provided it acknowledges each frame before the next overwrite.
+Printing `tensor.device` alone does not establish the physical allocation device
+of a peer-accessible IPC mapping.
+
+The writer already needs a CUDA context on the receiver's GPU for cross-device
+pools: `_ensure_p2p_pair` selects both GPUs of the pair for a P2P write, and
+host-staging and CPU-source registration allocate on the receiver. Receiver
+placement does not add a context requirement. The per-process cost of those
+contexts — a few hundred MB of device memory on each GPU in the pair — persists
+for the life of the writer process and is not re-paid per frame; on a GPU
+shared with other work, budget for it on both cards.
+
+Regression checks:
+
+```bash
+# No CUDA hardware needed; exercises the actual embedded helpers with a fake driver.
+python -m unittest discover -s libraries/extensions/tensor-pool/tests
+
+# Needs a tensor-pool-enabled wheel/CLI and two visible P2P-capable GPUs.
+dora run libraries/extensions/tensor-pool/tests/cuda_target_pool.yml
+SOURCE_DEVICE=1 TARGET_DEVICE=0 dora run libraries/extensions/tensor-pool/tests/cuda_target_pool.yml
+```
+
+The GPU check queries the original allocation in the sender process, verifies
+that both registration and writes preserve the caller's CUDA device, and checks
+all bytes of four changing frames while retaining one receiver view. It is a
+correctness check, not a throughput benchmark.
+
+CPU-only Rust tests exercise the allocation orchestration used by registration,
+including receiver-device selection, failure cleanup and caller-device
+restoration. Fake-driver Python tests cover peer copies, host-staging fallback
+and copy or synchronization failures without requiring CUDA hardware.
+
 ## Known open defects
 
 | Issue | Symptom |

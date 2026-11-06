@@ -170,6 +170,9 @@ impl Coordinator {
                 &mut self.running_dataflows,
                 &mut self.reclaimed_launches,
                 &mut self.daemon_connections,
+                &mut self.archived_dataflows,
+                &mut self.dataflow_results,
+                &mut self.pending_restarts,
                 &self.store,
                 &self.clock,
             )
@@ -190,12 +193,10 @@ impl Coordinator {
         // stuck waiting for one or more `spawn_result` reports and
         // release `wait_for_spawn` waiters with a clear error rather
         // than letting them hang on the client-side RPC deadline.
-        // Triggers on either failure mode:
-        //   1. A daemon accepted the spawn RPC but its internal flow
-        //      is hung (still heartbeating, never reports back).
-        //   2. Pending daemons all disconnected; the disconnect path
-        //      above cleared their entries from `pending_spawn_results`
-        //      but does not itself fire `spawn_result`.
+        // Triggers when a daemon accepted the spawn RPC but its internal
+        // flow is hung (still heartbeating, never reports back). A daemon
+        // that disconnects mid-spawn is handled by the disconnect path
+        // above, which fails the spawn right away (#3736).
         // Rescue of #1593 (issue #1592).
         //
         // SAFETY net only: 60 s is well above realistic per-daemon
@@ -259,6 +260,11 @@ impl Coordinator {
                             };
                             record.generation += 1;
                             record.updated_at = now_ms;
+                            // Parked partial resent reports are for a dataflow
+                            // the coordinator has now terminally given up on;
+                            // nothing can settle it, so drop them rather than
+                            // let them accumulate.
+                            self.resent_finish_reports.remove(&record.uuid);
                             if let Err(e) = self.store.put_dataflow(&record) {
                                 tracing::warn!("failed to mark dataflow as Failed: {e}");
                             }
@@ -347,6 +353,9 @@ impl Coordinator {
                 &mut self.running_dataflows,
                 &mut self.reclaimed_launches,
                 &mut self.daemon_connections,
+                &mut self.archived_dataflows,
+                &mut self.dataflow_results,
+                &mut self.pending_restarts,
                 &self.store,
                 &self.clock,
             )
@@ -536,13 +545,24 @@ impl Coordinator {
                         // surviving nodes are visible + manageable again
                         // (#2029 P1) — store status alone doesn't drive
                         // `dora list` / `stop` / `logs`.
-                        if reestablish_running_dataflow(
+                        let barrier_released = reestablish_running_dataflow(
                             &mut self.running_dataflows,
                             &mut self.reclaimed_launches,
                             &record,
                             &daemon_id,
                             &entry.running_nodes,
-                        ) && let Some(df) = self.running_dataflows.get(&record.uuid)
+                        );
+                        if self.running_dataflows.contains_key(&record.uuid) {
+                            // A daemon that finished before the reclaim may
+                            // have parked its resent finish report here
+                            // (`record_resent_finish_report`). The dataflow is
+                            // running again, so fold those results into
+                            // `dataflow_results`; otherwise the eventual finish
+                            // would settle without them.
+                            self.merge_resent_finish_reports(record.uuid);
+                        }
+                        if barrier_released
+                            && let Some(df) = self.running_dataflows.get(&record.uuid)
                         {
                             // Barrier released while this daemon was
                             // gone; nothing else will tell it (#2998).

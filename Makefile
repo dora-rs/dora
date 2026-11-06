@@ -208,13 +208,18 @@ qa-test:
 # shared-library operator reaching the Python runtime is *delegated* to the
 # shared-lib backend rather than rejected, which is what keeps native
 # operators working under an embedded-Python daemon.
+#
+# `dora-tensor-pool-python` is here for the same reason as the three core
+# PyO3 crates: it is excluded from every bulk `cargo test` (its tests start an
+# interpreter), so this target is the only job that runs them.
 qa-test-python:
 	@cargo test --lib \
 		-p dora-cli-api-python \
 		-p dora-node-api-python \
 		-p dora-operator-api-python \
 		-p dora-ros2-bridge-python \
-		-p dora-runtime-python
+		-p dora-runtime-python \
+		-p dora-tensor-pool-python
 
 # Python-level unit tests of the `dora` package under apis/python/node/tests/
 # (the `dora` compat shim, the `dora.builder` API, and `dora.testing.MockNode`).

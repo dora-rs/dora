@@ -150,7 +150,7 @@ pub(crate) use ready_barrier::{
 };
 pub(crate) use spawn_build::{
     MAX_BUFFERED_LOG_MESSAGES, buffer_log_message, cap_dataflow_results, check_build_timeouts,
-    check_spawn_timeouts, finalize_build, handle_dataflow_spawn_result,
+    check_spawn_timeouts, fail_pending_spawn, finalize_build, handle_dataflow_spawn_result,
 };
 pub(crate) use topic_debug::{
     close_topic_subscribers_on_finish, live_topic_subscriptions,
@@ -366,6 +366,13 @@ pub(crate) struct Coordinator {
     /// (see [`state::ReclaimedLaunches`]).
     pub(crate) reclaimed_launches: state::ReclaimedLaunches,
     pub(crate) dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    /// Finish reports from daemons that reconnected for a dataflow the orphan
+    /// reclaim left `Recovering`. Parked here rather than in `dataflow_results`
+    /// until they cover every node the record assigns: readers treat any
+    /// `dataflow_results` entry as a finished dataflow, so a partial report
+    /// there would make `dora list` / `stop` / `clean` act on a dataflow that is
+    /// still recovering. See `Coordinator::record_resent_finish_report`.
+    pub(crate) resent_finish_reports: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     pub(crate) archived_dataflows: IndexMap<DataflowId, ArchivedDataflow>,
     pub(crate) daemon_connections: DaemonConnections,
     /// Node-lifecycle changes in flight or waiting, per dataflow.
@@ -485,6 +492,7 @@ async fn start_inner(
         pending_restarts: HashMap::new(),
         reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
+        resent_finish_reports: HashMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections: DaemonConnections::default(),
         topology: topology_lane::TopologyLanes::new(topology_tx),
