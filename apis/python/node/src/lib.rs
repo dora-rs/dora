@@ -668,8 +668,9 @@ impl Node {
     /// Returns the full dataflow descriptor that this node is part of.
     ///
     /// This method returns the parsed dataflow YAML file. Its `$VAR`
-    /// references are already expanded, and a `$` in an `env` string is
-    /// written as `$$`, the form that parses back to the same value.
+    /// references are already expanded, and an `env` string's `$` is
+    /// exactly what was in the YAML (or the expanded `$VAR` value) — not
+    /// the escaped `$$` form dora uses on its own internal wire hops.
     ///
     /// :rtype: dict
     pub fn dataflow_descriptor(&self, py: Python) -> eyre::Result<Py<PyAny>> {

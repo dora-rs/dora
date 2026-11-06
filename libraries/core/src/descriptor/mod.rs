@@ -658,6 +658,7 @@ pub fn without_path_fallback(descriptor: &Descriptor) -> Descriptor {
     for node in &mut descriptor.nodes {
         node.path_fallback = None;
     }
+    dora_message::descriptor::escape_descriptor_env_for_wire(&mut descriptor);
     descriptor
 }
 
