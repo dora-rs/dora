@@ -16,6 +16,7 @@ use std::{
     path::PathBuf,
 };
 use tokio::runtime::Builder;
+#[cfg(feature = "tracing")]
 use tracing::level_filters::LevelFilter;
 
 /// Parse `--worker-threads`, rejecting 0.
