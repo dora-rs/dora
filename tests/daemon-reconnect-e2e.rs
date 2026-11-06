@@ -735,3 +735,109 @@ fn late_output_from_a_finished_dataflow_does_not_kill_the_daemon() {
     // daemon attached. The `try_wait` above is what proves survival.
     list_active(port).expect("coordinator must still answer after the late outputs");
 }
+
+/// Run `dora start --detach` until its output contains `needle`, retrying
+/// while the daemon is still (re)registering. Returns the last output.
+fn start_until_output_contains(dora: &Path, port: u16, yml: &Path, needle: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let out = Command::new(dora)
+            .arg("start")
+            .arg(yml)
+            .arg("--detach")
+            .arg("--coordinator-port")
+            .arg(port.to_string())
+            .output()
+            .expect("failed to run dora start");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            !(out.status.success() && text.contains("dataflow started")),
+            "a dataflow with a dynamic node must be refused, but it started:\n{text}"
+        );
+        if text.contains(needle) || Instant::now() >= deadline {
+            return text;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// A `dora daemon` whose dynamic-node port is already taken must refuse
+/// dataflows with dynamic nodes: the node would connect to whatever holds
+/// the port instead (#3876). Pins the whole wiring, from the failed bind at
+/// startup to the spawn check, and that it survives a coordinator reconnect.
+#[test]
+fn daemon_refuses_dynamic_nodes_when_its_listen_port_is_taken() {
+    ensure_built();
+
+    let dora = bin("dora");
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let redb = tmp.path().join("coordinator.redb");
+    let coord_log = tmp.path().join("coordinator.log");
+    let daemon_log = tmp.path().join("daemon.log");
+    let dataflow_yml = tmp.path().join("dataflow.yml");
+    std::fs::write(
+        &dataflow_yml,
+        "nodes:\n  - id: dyn\n    path: dynamic\n    inputs:\n      tick: dora/timer/millis/100\n",
+    )
+    .expect("write dataflow yml");
+
+    // Stand-in for another daemon or `dora run` holding the port.
+    let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("bind holder");
+    let taken_port = holder.local_addr().unwrap().port();
+    let port = free_port();
+
+    let mut cleanup = Cleanup::default();
+    cleanup.coordinator = Some(spawn_coordinator(&dora, port, &redb, &coord_log));
+    wait_until(
+        || port_open(port),
+        Duration::from_secs(20),
+        "coordinator to accept connections",
+    );
+    let daemon_out = std::fs::File::create(&daemon_log).expect("create daemon log");
+    let daemon_err = daemon_out.try_clone().expect("clone daemon log");
+    cleanup.daemon = Some(
+        Command::new(&dora)
+            .arg("daemon")
+            .arg("--coordinator-port")
+            .arg(port.to_string())
+            .arg("--local-listen-port")
+            .arg(taken_port.to_string())
+            .stdout(Stdio::from(daemon_out))
+            .stderr(Stdio::from(daemon_err))
+            .spawn()
+            .expect("failed to spawn daemon"),
+    );
+
+    let needle = format!("could not listen on the dynamic-node port {taken_port}");
+    let text = start_until_output_contains(&dora, port, &dataflow_yml, &needle);
+    if !text.contains(&needle) {
+        dump_logs(&coord_log, &daemon_log);
+        panic!("expected the dynamic-node refusal, got:\n{text}");
+    }
+    assert!(text.contains("DORA_DAEMON_LOCAL_LISTEN_PORT"), "{text}");
+
+    // The daemon keeps its record of the failed bind across a coordinator
+    // restart: it re-registers without rebinding.
+    {
+        let coord = cleanup.coordinator.as_mut().unwrap();
+        coord.kill().expect("failed to kill coordinator");
+        coord.wait().expect("failed to reap coordinator");
+    }
+    wait_until(
+        || !port_open(port),
+        Duration::from_secs(10),
+        "coordinator port to close",
+    );
+    std::thread::sleep(Duration::from_secs(12));
+    cleanup.coordinator = Some(spawn_coordinator(&dora, port, &redb, &coord_log));
+    let text = start_until_output_contains(&dora, port, &dataflow_yml, &needle);
+    if !text.contains(&needle) {
+        dump_logs(&coord_log, &daemon_log);
+        panic!("expected the dynamic-node refusal after the reconnect, got:\n{text}");
+    }
+    drop(holder);
+}

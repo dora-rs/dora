@@ -16,6 +16,7 @@ use std::{
     path::PathBuf,
 };
 use tokio::runtime::Builder;
+#[cfg(feature = "tracing")]
 use tracing::level_filters::LevelFilter;
 
 /// Parse `--worker-threads`, rejecting 0.
@@ -28,6 +29,37 @@ fn parse_worker_threads(s: &str) -> Result<usize, String> {
         Ok(0) => Err("worker threads must be at least 1".to_string()),
         Ok(n) => Ok(n),
         Err(err) => Err(err.to_string()),
+    }
+}
+
+/// Stack size of the thread that drives the daemon on Windows.
+///
+/// The daemon's future is large: in a debug build, polling it needs more than
+/// the 1 MiB stack Windows gives the main thread, and the process dies with
+/// `STATUS_STACK_OVERFLOW` (#4011; #1964 was the same failure in `dora run`).
+/// Linux and macOS give the main thread 8 MiB, where the daemon has always
+/// run, so the Windows thread gets the same. Only address space is reserved
+/// up front; pages are committed as the stack grows.
+#[cfg(windows)]
+const DAEMON_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
+
+/// Runs `daemon` to completion: on Windows on a thread with
+/// `DAEMON_THREAD_STACK_SIZE`, elsewhere on the calling (main) thread, where
+/// it has always run and which `--rt`, `chrt -p` and `taskset -p` act on.
+fn drive_daemon(daemon: impl FnOnce() -> eyre::Result<()> + Send + 'static) -> eyre::Result<()> {
+    #[cfg(windows)]
+    {
+        std::thread::Builder::new()
+            .name("dora-daemon".into())
+            .stack_size(DAEMON_THREAD_STACK_SIZE)
+            .spawn(daemon)
+            .context("failed to spawn the daemon thread")?
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    }
+    #[cfg(not(windows))]
+    {
+        daemon()
     }
 }
 
@@ -265,7 +297,10 @@ impl Executable for Daemon {
             )
             .context("failed to initialize tracing")?
         };
-        rt.block_on(async {
+        // `rt` itself stays here, so it is still dropped after `_guard`, whose
+        // drop flushes OTLP telemetry through it.
+        let runtime = rt.handle().clone();
+        drive_daemon(move || runtime.block_on(async move {
                 match self.run_dataflow {
                     Some(dataflow_path) => {
                         tracing::info!("Starting dataflow `{}`", dataflow_path.display());
@@ -345,7 +380,7 @@ impl Executable for Daemon {
                         ).await
                     }
                 }
-            })
+            }))
             .context("failed to run dora-daemon")
     }
 }

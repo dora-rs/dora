@@ -11,6 +11,7 @@ use eyre::Context;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::runtime::Builder;
+#[cfg(feature = "tracing")]
 use tracing::level_filters::LevelFilter;
 
 #[derive(Debug, clap::Args)]
@@ -33,8 +34,10 @@ pub struct Coordinator {
     /// Enable token authentication.
     ///
     /// When enabled, the coordinator generates a random token on startup
-    /// and writes it to ~/.config/dora/.dora-token. Clients must present
-    /// this token to connect.
+    /// and writes it to `.dora-token` in its working directory and in the
+    /// user config directory (`~/.config/dora` on Linux,
+    /// `~/Library/Application Support/dora` on macOS, `%APPDATA%\dora` on
+    /// Windows). Clients must present this token to connect.
     #[clap(long)]
     auth: bool,
 }
@@ -61,7 +64,7 @@ impl Executable for Coordinator {
                 .wrap_err("failed to set up tracing subscriber")?;
         }
         #[cfg(not(feature = "tracing"))]
-        let span_store = ();
+        let span_store = None;
 
         let store = create_store(&self.store)?;
 

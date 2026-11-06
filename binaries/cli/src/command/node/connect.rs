@@ -4,7 +4,7 @@ use crate::{
     common::{CoordinatorOptions, resolve_dataflow_identifier_interactive, send_control_request},
 };
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
-use eyre::bail;
+use eyre::{Context, bail};
 
 /// Connect two nodes in a running dataflow (add a mapping).
 ///
@@ -43,13 +43,13 @@ impl Executable for Connect {
                 target_node: target_node.clone(),
                 target_input: target_input.clone(),
             },
-        )?;
+        )
+        .wrap_err("failed to connect")?;
 
         match reply {
             ControlRequestReply::MappingAdded { .. } => {
                 println!("{source_node}/{source_output} -> {target_node}/{target_input}");
             }
-            ControlRequestReply::Error(err) => bail!("failed to connect: {err}"),
             other => bail!("unexpected reply: {other:?}"),
         }
         Ok(())

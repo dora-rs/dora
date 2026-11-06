@@ -411,7 +411,9 @@ pub fn strip_internal_parameters(params: &mut MetadataParameters) {
 /// to the schema it was encoded against (see [`SCHEMA_HASH`]). The producer
 /// node, the consumer node, and the daemon's `dora topic` debug path all hash
 /// the same schema-block bytes with this function, so the value must stay
-/// identical across crates — keep this the single source of truth.
+/// identical across crates — keep this the single source of truth. The CLI
+/// also persists digests made with it (session and build-lockfile
+/// fingerprints), another reason it must never change.
 pub fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
     for b in bytes {

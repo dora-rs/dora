@@ -168,6 +168,7 @@ impl Coordinator {
             apply_disconnect_actions(
                 disconnect_actions,
                 &mut self.running_dataflows,
+                &mut self.reclaimed_launches,
                 &mut self.daemon_connections,
                 &self.store,
                 &self.clock,
@@ -230,6 +231,13 @@ impl Coordinator {
         let now_ms = state::now_millis();
         match self.store.list_dataflows() {
             Ok(records) => {
+                // A launch context is only worth keeping while a daemon may
+                // still reclaim its dataflow.
+                self.reclaimed_launches.retain(|uuid, _| {
+                    records
+                        .iter()
+                        .any(|r| r.uuid == *uuid && r.status == StoreDataflowStatus::Recovering)
+                });
                 for mut record in records {
                     if record.status == StoreDataflowStatus::Recovering {
                         let age_ms = now_ms.saturating_sub(record.updated_at);
@@ -342,6 +350,7 @@ impl Coordinator {
             apply_disconnect_actions(
                 disconnect_actions,
                 &mut self.running_dataflows,
+                &mut self.reclaimed_launches,
                 &mut self.daemon_connections,
                 &self.store,
                 &self.clock,
@@ -377,6 +386,7 @@ impl Coordinator {
     pub(crate) async fn handle_node_metrics(
         &mut self,
         dataflow_id: Uuid,
+        daemon_id: DaemonId,
         metrics: BTreeMap<NodeId, NodeMetrics>,
         network: Option<NetworkMetrics>,
     ) -> eyre::Result<()> {
@@ -403,7 +413,7 @@ impl Coordinator {
                     .insert(node_id.clone(), node_metrics.clone());
             }
             if let Some(net) = network {
-                dataflow.network_metrics = Some(net);
+                dataflow.network_metrics.insert(daemon_id, net);
             }
 
             #[cfg(feature = "metrics")]
@@ -464,6 +474,9 @@ impl Coordinator {
         // Dataflows whose persisted params are already being replayed to this
         // daemon, along with the ready barrier it missed.
         let mut params_replay_started = BTreeSet::new();
+        if let Some(connection) = self.daemon_connections.get_mut(&daemon_id) {
+            connection.status_reported = true;
+        }
         // Reconcile: if daemon reports a dataflow as running and it exists in
         // the store as Pending/Failed/Recovering, update it to Running.
         //
@@ -530,6 +543,7 @@ impl Coordinator {
                         // `dora list` / `stop` / `logs`.
                         let barrier_released = reestablish_running_dataflow(
                             &mut self.running_dataflows,
+                            &mut self.reclaimed_launches,
                             &record,
                             &daemon_id,
                             &entry.running_nodes,
@@ -582,6 +596,7 @@ impl Coordinator {
                         // but not the in-memory entry). Idempotent.
                         if reestablish_running_dataflow(
                             &mut self.running_dataflows,
+                            &mut self.reclaimed_launches,
                             &record,
                             &daemon_id,
                             &entry.running_nodes,
@@ -705,6 +720,11 @@ impl Coordinator {
                 continue;
             }
             df.last_recovery_attempt.insert(daemon_id.clone(), now);
+            // These nodes run again, so they constrain `dora node add`
+            // placement again (#3672).
+            for node in &spawn_nodes {
+                df.exited_nodes.remove(node);
+            }
             tracing::info!(
                 "auto-recovery: re-spawning {} node(s) for dataflow {uuid} on daemon {daemon_id}",
                 spawn_nodes.len()
@@ -885,6 +905,7 @@ impl Coordinator {
             // in-flight metrics pushes overwriting the row, for
             // BOTH Stopped and Failed.
             dataflow.node_finalized.insert(node_id.clone());
+            dataflow.exited_nodes.insert(node_id.clone());
             // Only arm the auto-expire side-band for clean Stopped
             // rows. Failed rows must stay visible until the dataflow
             // is stopped/destroyed — otherwise a crashed node would

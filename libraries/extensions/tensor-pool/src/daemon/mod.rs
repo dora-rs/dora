@@ -1508,4 +1508,110 @@ mod cross_pool_write_tests {
         server2.await.unwrap().unwrap();
         assert_eq!((), (), "shared token must pass the gate");
     }
+
+    /// A peer that connects and never sends the handshake is dropped after
+    /// the auth bound, not after the 300 s frame-read bound (#4033).
+    #[tokio::test]
+    async fn auth_gate_times_out_a_silent_peer() {
+        assert!(CROSS_DATA_AUTH_TIMEOUT < CROSS_DATA_READ_TIMEOUT);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            auth_gate_within(&mut stream, std::time::Duration::from_millis(100)).await
+        });
+        let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let err = tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("the gate must give up on a silent peer")
+            .unwrap()
+            .unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+    }
+
+    /// The data listener serves at most `max_connections` connections at
+    /// once and closes the ones over the cap, so a peer cannot exhaust the
+    /// daemon's fds; a freed slot is reused (#4033).
+    #[tokio::test]
+    async fn data_listener_closes_connections_over_the_cap() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (started_tx, mut started_rx) = tokio::sync::mpsc::unbounded_channel();
+        let accept = tokio::spawn(accept_cross_data_connections(
+            listener,
+            1,
+            move |mut stream, _peer| {
+                let started_tx = started_tx.clone();
+                async move {
+                    let _ = started_tx.send(());
+                    // Serve until the client closes.
+                    let mut buf = [0u8; 1];
+                    let _ = stream.read(&mut buf).await;
+                }
+            },
+        ));
+        let wait = std::time::Duration::from_secs(10);
+
+        let first = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tokio::time::timeout(wait, started_rx.recv())
+            .await
+            .expect("the first connection must be served")
+            .unwrap();
+
+        // Over the cap: closed by the listener without being served.
+        let mut second = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let mut buf = [0u8; 1];
+        let read = tokio::time::timeout(wait, second.read(&mut buf))
+            .await
+            .expect("a connection over the cap must be closed");
+        assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
+        assert!(started_rx.try_recv().is_err(), "must not be served");
+
+        // Closing the first connection frees its slot for a new one. The
+        // slot is freed once the serving task sees the EOF, so retry until
+        // a connection is served rather than racing that task.
+        drop(first);
+        tokio::time::timeout(wait, async {
+            loop {
+                let _third = tokio::net::TcpStream::connect(addr).await.unwrap();
+                let served =
+                    tokio::time::timeout(std::time::Duration::from_millis(200), started_rx.recv());
+                if served.await.is_ok() {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("a freed slot must be reused");
+        accept.abort();
+    }
+
+    /// Without an auth token (the default), a fresh connection that sends
+    /// nothing is still released after the first-frame bound rather than
+    /// the 300 s idle bound, so a silent peer cannot hold a listener slot
+    /// for minutes (#4033).
+    // The env lock is held across the awaits on purpose, as in the test
+    // above: a sibling test must not set the token mid-test.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn silent_fresh_connection_is_released_without_a_token() {
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+        assert!(CROSS_DATA_FIRST_FRAME_TIMEOUT < CROSS_DATA_IDLE_TIMEOUT);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            admit_fresh_cross_data_conn(&mut stream, std::time::Duration::from_millis(100)).await
+        });
+        let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let admitted = tokio::time::timeout(std::time::Duration::from_secs(10), server)
+            .await
+            .expect("a silent fresh connection must be released")
+            .unwrap();
+        assert_eq!(admitted, Ok(false));
+    }
 }

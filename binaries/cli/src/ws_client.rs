@@ -8,7 +8,7 @@ use eyre::{Context, eyre};
 use futures::{SinkExt, StreamExt};
 use std::{collections::HashMap, net::SocketAddr, sync::mpsc as std_mpsc};
 use tokio::sync::{mpsc, oneshot};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{self, Message};
 use uuid::Uuid;
 
 /// A coordinator answered at the address but turned this CLI away: it
@@ -29,6 +29,52 @@ impl std::fmt::Display for CoordinatorRejected {
 }
 
 impl std::error::Error for CoordinatorRejected {}
+
+/// Where the CLI looks for the `--auth` token, in the order
+/// [`dora_message::auth::discover_token`] tries them. The config directory
+/// is the platform's (`~/.config` only on Linux; `~/Library/Application
+/// Support` on macOS, `%APPDATA%` on Windows), so it is printed resolved.
+fn token_locations() -> String {
+    let config = dora_message::auth::config_token_path()
+        .map(|path| format!(", then {}", path.display()))
+        .unwrap_or_default();
+    format!(
+        "The CLI reads it from DORA_AUTH_TOKEN, then .dora-token in the current \
+         directory{config}. `dora up --auth` writes both files."
+    )
+}
+
+/// Explains why connecting to the coordinator at `addr` failed.
+///
+/// A refused connection is recognized by its `io::ErrorKind`, not by the OS
+/// message: that is localized, so no English text matches it everywhere.
+fn connect_failure(addr: SocketAddr, error: tungstenite::Error) -> eyre::Report {
+    let refused = matches!(
+        &error,
+        tungstenite::Error::Io(io) if io.kind() == std::io::ErrorKind::ConnectionRefused
+    );
+    let msg = error.to_string();
+    if refused {
+        eyre!(
+            "cannot connect to coordinator at {addr}: {msg}\n\n  \
+             hint: is the coordinator running? Start it with `dora up`"
+        )
+    } else if msg.contains("401") || msg.contains("Unauthorized") {
+        let locations = token_locations();
+        eyre::Report::new(CoordinatorRejected(format!(
+            "authentication failed connecting to coordinator at {addr}: {msg}\n\n  \
+             The coordinator was started with --auth and requires a valid token.\n  \
+             {locations}\n\n  \
+             Possible fixes:\n  \
+             - Run `dora down && dora up` to regenerate the token\n  \
+             - Ensure you're using the same user that started the coordinator\n  \
+             - Set DORA_AUTH_TOKEN env var to match the coordinator's token\n  \
+             - Restart without --auth to disable authentication"
+        )))
+    } else {
+        eyre!("failed to connect to coordinator at {addr}: {msg}")
+    }
+}
 
 /// Helper for deserializing incoming WS frames without going through
 /// `serde_json::Value` for the result/payload fields: they are handed to the
@@ -99,7 +145,6 @@ impl WsSession {
         let ws_url = format!("ws://{addr}/api/control");
         let ws_stream = rt
             .block_on(async {
-                use tokio_tungstenite::tungstenite;
                 let mut request = tungstenite::http::Request::builder()
                     .uri(&ws_url)
                     .header("Host", addr.to_string())
@@ -116,30 +161,7 @@ impl WsSession {
                 let request = request.body(()).expect("failed to build WS request");
                 tokio_tungstenite::connect_async(request).await
             })
-            .map_err(|e| {
-                let msg = e.to_string();
-                if msg.to_lowercase().contains("connection refused")
-                    || msg.contains("No connection could be made")
-                {
-                    eyre!(
-                        "cannot connect to coordinator at {addr}: {msg}\n\n  \
-                         hint: is the coordinator running? Start it with `dora up`"
-                    )
-                } else if msg.contains("401") || msg.contains("Unauthorized") {
-                    eyre::Report::new(CoordinatorRejected(format!(
-                        "authentication failed connecting to coordinator at {addr}: {msg}\n\n  \
-                         The coordinator was started with --auth and requires a valid token.\n  \
-                         The token is stored in ~/.config/dora/.dora-token\n\n  \
-                         Possible fixes:\n  \
-                         - Run `dora down && dora up` to regenerate the token\n  \
-                         - Ensure you're using the same user that started the coordinator\n  \
-                         - Set DORA_AUTH_TOKEN env var to match the coordinator's token\n  \
-                         - Restart without --auth to disable authentication"
-                    )))
-                } else {
-                    eyre!("failed to connect to coordinator at {addr}: {msg}")
-                }
-            })?
+            .map_err(|e| connect_failure(addr, e))?
             .0;
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -588,6 +610,22 @@ mod tests {
 
     fn raw(val: serde_json::Value) -> Box<RawValue> {
         serde_json::value::to_raw_value(&val).unwrap()
+    }
+
+    #[test]
+    fn refused_connection_points_at_dora_up_whatever_the_os_language() {
+        // How a Chinese Windows reports WSAECONNREFUSED (os error 10061).
+        let refused = tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "由于目标计算机积极拒绝，无法连接。 (os error 10061)",
+        ));
+        let addr: SocketAddr = "127.0.0.1:6013".parse().unwrap();
+        let text = connect_failure(addr, refused).to_string();
+        assert!(
+            text.contains("cannot connect to coordinator at 127.0.0.1:6013"),
+            "{text}"
+        );
+        assert!(text.contains("dora up"), "{text}");
     }
 
     #[test]

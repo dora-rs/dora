@@ -567,7 +567,7 @@ impl Ros2Node {
                     &dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
                 )?)
             }
-            dora_ros2_bridge::transport::Node::Zenoh(_) => {
+            dora_ros2_bridge::transport::Node::Zenoh(node) => {
                 let dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. } =
                     self.transport.config
                 else {
@@ -583,11 +583,19 @@ impl Ros2Node {
                     .ok()
                     .and_then(|value| value.parse().ok())
                     .unwrap_or(0);
-                let key = DataKey::new(domain, name, &identity)?.as_str().to_owned();
+                // A relative name is under the node's namespace, as on DDS
+                // (ros2-client `Name::to_dds_name`) and in rcl; the same rule
+                // as the generated C++ `zenoh_full_name` (msg-gen `lib.rs`).
+                let name = if name.starts_with('/') {
+                    name.to_owned()
+                } else {
+                    format!("{}/{}", node.namespace().trim_end_matches('/'), name)
+                };
+                let key = DataKey::new(domain, &name, &identity)?.as_str().to_owned();
                 TopicBackend::Zenoh {
                     key,
                     token: TopicToken {
-                        name: name.into(),
+                        name,
                         type_name: identity.dds_name.clone(),
                         type_hash: identity.key_hash_component(),
                         qos: ZenohQosMapping::from_ros_qos(&neutral_qos).to_string(),
@@ -2715,6 +2723,36 @@ mod publish_gil_tests {
         });
         assert!(client.is_ok(), "{:#}", client.err().unwrap());
         assert!(server.lock().unwrap().is_some());
+    }
+
+    /// On Zenoh a relative topic name is under the node's namespace, as on
+    /// DDS: it gets the same key and graph token name as the absolute name.
+    #[test]
+    fn zenoh_relative_topic_name_is_under_the_node_namespace() {
+        let (context, root) = zenoh_test_node("relative_topic", 85);
+        let robot = context
+            .new_node(
+                "relative_topic",
+                "/robot1",
+                Ros2NodeOptions::new(Some(false)),
+                None,
+            )
+            .unwrap();
+        let key_and_name = |node: &Ros2Node, name: &str| {
+            let topic = node
+                .create_topic(name, "gil_test_msgs/Count".into(), reliable())
+                .unwrap();
+            let TopicBackend::Zenoh { key, token, .. } = topic.topic else {
+                panic!("expected a Zenoh topic");
+            };
+            (key, token.name)
+        };
+
+        for (node, absolute) in [(&robot, "/robot1/chatter"), (&root, "/chatter")] {
+            let relative = key_and_name(node, "chatter");
+            assert_eq!(relative.1, absolute);
+            assert_eq!(relative, key_and_name(node, absolute));
+        }
     }
 }
 

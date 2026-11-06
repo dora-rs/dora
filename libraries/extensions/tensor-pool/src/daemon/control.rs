@@ -252,6 +252,21 @@ pub(crate) const CROSS_DATA_READ_TIMEOUT: std::time::Duration = std::time::Durat
 /// the split, so an idle connection is held no longer than it used to be;
 /// the origin notices a connection the mirror closed before reusing it.
 pub(crate) const CROSS_DATA_IDLE_TIMEOUT: std::time::Duration = CROSS_DATA_READ_TIMEOUT;
+/// Upper bound for the receive side of the direct-TCP auth handshake. The
+/// handshake is a fixed exchange of a few bytes plus the token, so it gets
+/// its own short bound rather than [`CROSS_DATA_READ_TIMEOUT`], which is
+/// sized for a 1 GiB frame: a peer that connects and sends nothing must not
+/// hold a daemon fd for minutes (#4033). Twice the origin's 5 s connect
+/// timeout leaves a slow link plenty of room.
+pub(crate) const CROSS_DATA_AUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long the mirror waits for the first frame on a fresh data connection,
+/// counted after the auth handshake when one is configured. The origin
+/// writes a frame right after connecting, so this is the same short bound
+/// as the handshake. It applies with or without a token, so that a peer
+/// that connects and sends nothing cannot hold one of the listener's
+/// connection slots for the full [`CROSS_DATA_IDLE_TIMEOUT`] (#4033). Later
+/// waits between frames on a pooled connection keep the long idle bound.
+pub(crate) const CROSS_DATA_FIRST_FRAME_TIMEOUT: std::time::Duration = CROSS_DATA_AUTH_TIMEOUT;
 
 /// Fixed part of [`cross_transfer_budget`]: connect, auth handshake and
 /// round trips, independent of the frame size.

@@ -67,6 +67,10 @@ elif a.case == "service-server":
     request_id, request = wait_until(lambda: server.take_request(timeout_s=0.1))
     values = request[0].as_py()
     server.send_response(request_id, pa.array([{"sum": values["a"] + values["b"]}]))
+    # Exiting right after the reply can strand the rclpy client's query: it
+    # gets the sum, then `rclpy.shutdown()` hits zenoh's 10 s close timeout
+    # and the case fails after both sides passed (#3921, #4026).
+    time.sleep(1)
 elif a.case == "action-client":
     client = node.create_action_client(
         "/fibonacci", "example_interfaces/Fibonacci", qos

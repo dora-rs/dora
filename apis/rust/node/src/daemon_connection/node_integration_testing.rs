@@ -589,12 +589,13 @@ fn read_input_data(data: InputData) -> eyre::Result<arrow::array::ArrayData> {
                     .unwrap_or(DataType::Null);
                 return Ok(arrow::array::new_empty_array(&data_type).to_data());
             }
+            let inferred = declared_schema.is_none();
             let schema = match declared_schema {
                 Some(schema) => schema,
                 None => arrow_json::reader::infer_json_schema_from_iterator(array.iter().map(Ok))?,
             };
             let schema = Arc::new(schema);
-            read_json_value_as_arrow(&array, schema.clone()).with_context(|| {
+            read_json_value_as_arrow(&array, schema.clone(), inferred).with_context(|| {
                 format!(
                     "failed to decode JSON value for data type {}",
                     schema
@@ -907,6 +908,62 @@ mod tests {
             json["data"],
             serde_json::json!([1.5, "NaN", "Infinity", "-Infinity", null]),
         );
+    }
+
+    #[test]
+    fn untyped_mixed_type_arrays_are_coerced_to_strings() {
+        // Without `data_type`, schema inference widens `[1, "a"]` to `Utf8`;
+        // decoding must coerce the number instead of failing with
+        // "expected string got 1" (dora-rs/dora#4054).
+        let decoded = read_input_data(InputData::JsonObject {
+            data: serde_json::json!([1, "a", true]),
+            data_type: None,
+        })
+        .expect("an untyped mixed-type fixture should read");
+        let decoded = arrow::array::StringArray::from(decoded);
+        assert_eq!(
+            decoded.iter().collect::<Vec<_>>(),
+            [Some("1"), Some("a"), Some("true")]
+        );
+
+        // Nested inside an object field as well.
+        let decoded = read_input_data(InputData::JsonObject {
+            data: serde_json::json!({"a": [1, "x"]}),
+            data_type: None,
+        })
+        .expect("a nested mixed-type array should read");
+        let decoded = arrow::array::StructArray::from(decoded);
+        let list = decoded
+            .column_by_name("a")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<arrow::array::ListArray>()
+            .unwrap()
+            .value(0);
+        let strings = list
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+        assert_eq!(strings.iter().collect::<Vec<_>>(), [Some("1"), Some("x")]);
+
+        // Same-type arrays still infer their own type.
+        let decoded = read_input_data(InputData::JsonObject {
+            data: serde_json::json!([1, 2]),
+            data_type: None,
+        })
+        .unwrap();
+        assert_eq!(decoded.data_type(), &DataType::Int64);
+    }
+
+    #[test]
+    fn declared_utf8_schema_stays_strict() {
+        // A declared `data_type` is not coerced: a number where the recording
+        // says `Utf8` is still an error.
+        let result = read_input_data(InputData::JsonObject {
+            data: serde_json::json!([1, "a"]),
+            data_type: Some(serde_json::json!("Utf8")),
+        });
+        assert!(result.is_err());
     }
 
     #[test]

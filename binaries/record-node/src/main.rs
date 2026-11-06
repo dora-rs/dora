@@ -341,6 +341,50 @@ fn skip_oversized_ipc(
     true
 }
 
+/// Encode `array` as the self-describing Arrow IPC stream a recorded event
+/// carries, or return `Ok(None)` when the stream is over
+/// [`dora_recording::MAX_RECORD_BYTES`] (counted in `summary` and warned once).
+///
+/// Uses the hand-rolled 1-copy fast path when the array is eligible — it copies
+/// each buffer straight into the aligned target — and falls back to the official
+/// writer otherwise, mirroring `DoraNode::send_output_array`.
+///
+/// Both paths check the size *before* the copies that follow the encode (the
+/// aligned buffer, then the postcard event in `main`), so a frame the writer
+/// would refuse anyway is dropped without them. On the fallback this covers a
+/// frame between `MAX_RECORD_BYTES` (64 MiB) and the 256 MiB IPC limit whose
+/// array cannot use the fast path: view types, dictionaries, and arrays with a
+/// non-zero offset. (A stream over the IPC limit never arrives as an input; the
+/// sender's encoder and the receiver's decoder both refuse it.)
+fn encode_recorded_ipc(
+    array: &dora_node_api::DoraArray,
+    summary: &mut RunSummary,
+    warned: &mut bool,
+    node: &NodeId,
+    output: &DataId,
+) -> eyre::Result<Option<AVec<u8, ConstAlign<128>>>> {
+    match arrow_utils::ipc_encode::PreparedIpc::new(array) {
+        Some(prepared) => {
+            if skip_oversized_ipc(prepared.byte_len(), summary, warned, node, output) {
+                return Ok(None);
+            }
+            let mut buf: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, prepared.byte_len());
+            prepared
+                .encode_into(&mut buf)
+                .wrap_err("failed to Arrow-IPC-encode recorded output")?;
+            Ok(Some(buf))
+        }
+        None => {
+            let ipc_bytes = arrow_utils::ipc_encode::encode_ipc_to_vec(array)
+                .wrap_err("failed to Arrow-IPC-encode recorded output")?;
+            if skip_oversized_ipc(ipc_bytes.len(), summary, warned, node, output) {
+                return Ok(None);
+            }
+            Ok(Some(AVec::from_slice(128, &ipc_bytes)))
+        }
+    }
+}
+
 /// Print the oversized-frame warning the first time a frame is skipped.
 fn warn_oversized_once(warned: &mut bool, len: usize, node: &NodeId, output: &DataId) {
     if !*warned {
@@ -462,45 +506,16 @@ fn main() -> eyre::Result<()> {
                     // preserves the declared type and length instead of
                     // collapsing it to `NullArray::new(0)`. (The deleted
                     // `type_info` sidecar used to preserve this; #2027/#2083.)
-                    //
-                    // Use the hand-rolled 1-copy fast path when the array type
-                    // is eligible — it copies each buffer straight into the
-                    // aligned target — falling back to the official writer
-                    // otherwise, mirroring `DoraNode::send_output_array`. The
-                    // previous code always went through the official writer
-                    // (which stages the body in an internal `Vec`, ~2 payload
-                    // copies) and then copied the result a third time into the
-                    // `AVec`, on every recorded message. `PreparedIpc` sizes
-                    // and encodes from one layout + header build.
-                    let encoded: AVec<u8, ConstAlign<128>> =
-                        match arrow_utils::ipc_encode::PreparedIpc::new(arrow_data) {
-                            Some(prepared) => {
-                                // Skip an over-cap frame before the two full-size
-                                // copies below (the aligned buffer and the postcard
-                                // event) rather than after them.
-                                if skip_oversized_ipc(
-                                    prepared.byte_len(),
-                                    &mut summary,
-                                    &mut warned_about_oversized,
-                                    source_node,
-                                    source_output,
-                                ) {
-                                    continue;
-                                }
-                                let mut buf: AVec<u8, ConstAlign<128>> =
-                                    AVec::__from_elem(128, 0, prepared.byte_len());
-                                prepared
-                                    .encode_into(&mut buf)
-                                    .wrap_err("failed to Arrow-IPC-encode recorded output")?;
-                                buf
-                            }
-                            None => {
-                                let ipc_bytes =
-                                    arrow_utils::ipc_encode::encode_ipc_to_vec(arrow_data)
-                                        .wrap_err("failed to Arrow-IPC-encode recorded output")?;
-                                AVec::from_slice(128, &ipc_bytes)
-                            }
-                        };
+                    let Some(encoded) = encode_recorded_ipc(
+                        arrow_data,
+                        &mut summary,
+                        &mut warned_about_oversized,
+                        source_node,
+                        source_output,
+                    )?
+                    else {
+                        continue;
+                    };
                     Some(encoded)
                 };
 
@@ -680,6 +695,45 @@ mod tests {
             timestamp_offset_nanos: 0,
             event_bytes: payload,
         }
+    }
+
+    #[test]
+    fn fallback_encode_skips_an_oversized_frame_before_copying_it() {
+        // A view type is not fast-path eligible, so it takes the official-writer
+        // fallback, as do dictionaries and arrays with a non-zero offset. The
+        // fallback must refuse an over-cap stream itself, not hand a full-size
+        // copy on to `main` for the writer to refuse later.
+        use dora_node_api::arrow_v59::array::{Array, BinaryViewArray};
+        let (node, output): (NodeId, DataId) =
+            ("camera".parse().unwrap(), "image".parse().unwrap());
+        let view = |value: &[u8]| -> dora_node_api::DoraArray {
+            let array: std::sync::Arc<dyn Array> =
+                std::sync::Arc::new(BinaryViewArray::from(vec![value]));
+            array.into()
+        };
+        let mut summary = RunSummary::default();
+        let mut warned = false;
+
+        let small = view(b"a small frame");
+        assert!(arrow_utils::ipc_encode::PreparedIpc::new(&small).is_none());
+        let encoded = encode_recorded_ipc(&small, &mut summary, &mut warned, &node, &output)
+            .unwrap()
+            .expect("a small frame is recorded");
+        let decoded = arrow_utils::decode_arrow_ipc(&encoded).unwrap();
+        assert_eq!(decoded.as_array(), small.as_array());
+        assert_eq!(summary.oversized_dropped, 0);
+        assert!(!warned);
+
+        let big = view(&vec![7u8; dora_recording::MAX_RECORD_BYTES]);
+        assert!(arrow_utils::ipc_encode::PreparedIpc::new(&big).is_none());
+        assert!(
+            encode_recorded_ipc(&big, &mut summary, &mut warned, &node, &output)
+                .unwrap()
+                .is_none(),
+            "an over-cap fallback frame must be skipped"
+        );
+        assert_eq!(summary.oversized_dropped, 1);
+        assert!(warned);
     }
 
     #[test]

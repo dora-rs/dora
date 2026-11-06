@@ -351,7 +351,10 @@ fn cached_source_differs(clone_dir: &Path, git_url: &str, catalog_subpath: &str)
 
 /// Git's per-repository environment (`git rev-parse --local-env-vars`) minus
 /// the `GIT_CONFIG_PARAMETERS` / `GIT_CONFIG_COUNT` config overrides, which
-/// carry user settings such as a proxy rather than naming a repository.
+/// carry user settings such as a proxy rather than naming a repository. It is
+/// the union across git releases: older ones (2.39, for one) still list
+/// `GIT_INTERNAL_SUPER_PREFIX`, and removing a variable that is not set is a
+/// no-op.
 const REPO_LOCAL_GIT_ENV: &[&str] = &[
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_CONFIG",
@@ -364,19 +367,23 @@ const REPO_LOCAL_GIT_ENV: &[&str] = &[
     "GIT_NO_REPLACE_OBJECTS",
     "GIT_REPLACE_REF_BASE",
     "GIT_PREFIX",
+    "GIT_INTERNAL_SUPER_PREFIX",
     "GIT_SHALLOW_FILE",
     "GIT_COMMON_DIR",
 ];
 
-/// A `git` command for a dora-managed clone (an index cache, a pinned
-/// package checkout), run in `dir` when given.
+/// A `git` command run in `dir` when given, with git's repository-locating
+/// environment removed.
 ///
-/// The repository-locating variables are removed: git exports `GIT_DIR`,
-/// `GIT_INDEX_FILE` and friends to hooks, and CI steps set them too, and they
-/// take precedence over the working directory. Inherited, they would point
-/// every command — `reset --hard` and `checkout` included — at the caller's
-/// own repository instead of the clone. Credential prompts are disabled, so a
-/// private URL fails instead of hanging.
+/// git exports `GIT_DIR`, `GIT_INDEX_FILE` and friends to hooks, and CI steps
+/// set them too, and they take precedence over the working directory.
+/// Inherited, they would point every command — `reset --hard` and `checkout`
+/// included — at the caller's own repository instead of the intended one.
+/// Credential prompts are disabled, so a private URL fails instead of hanging.
+///
+/// Repository discovery is left alone, so `dir` may be a subdirectory of the
+/// repository it operates on. For a clone dora manages itself, use
+/// [`managed_clone_git_command`].
 pub fn git_command(dir: Option<&Path>) -> Command {
     let mut command = Command::new("git");
     if let Some(dir) = dir {
@@ -389,9 +396,31 @@ pub fn git_command(dir: Option<&Path>) -> Command {
     command
 }
 
+/// A [`git_command`] for a dora-managed clone (an index cache, a pinned
+/// package checkout) rooted at `dir`.
+///
+/// Repository discovery is also stopped at `dir`: with `dir`'s parent as
+/// `GIT_CEILING_DIRECTORIES`, git still looks at `dir` itself but never above
+/// it. A clone whose `.git` is broken then fails as "not a git repository"
+/// (which the callers' self-heal re-clones) instead of resolving to whatever
+/// repository encloses the cache, where `reset --hard` would discard work
+/// (#4006).
+pub fn managed_clone_git_command(dir: Option<&Path>) -> Command {
+    let mut command = git_command(dir);
+    // git ignores a relative ceiling entry, so resolve `dir` against the
+    // working directory it is relative to
+    if let Some(parent) = dir
+        .and_then(|dir| std::path::absolute(dir).ok())
+        .and_then(|dir| dir.parent().map(Path::to_path_buf))
+    {
+        command.env("GIT_CEILING_DIRECTORIES", parent);
+    }
+    command
+}
+
 /// Run a git command, returning trimmed stdout.
 fn git(dir: Option<&Path>, args: &[&str]) -> eyre::Result<String> {
-    let output = git_command(dir)
+    let output = managed_clone_git_command(dir)
         .args(args)
         .output()
         .context("failed to run `git` — is git installed?")?;
@@ -488,6 +517,87 @@ source:
             }
             assert!(removed.contains(var), "`{var}` is inherited");
         }
+    }
+
+    /// Only the managed-clone command stops discovery: a plain
+    /// `git_command` must still find the repository enclosing a subdirectory
+    /// (`dora hub publish`/`init` run in a node directory of the user's repo).
+    #[test]
+    fn only_managed_clone_commands_stop_repository_discovery() {
+        let repo = tempfile::tempdir().unwrap();
+        make_remote(repo.path());
+        let subdir = repo.path().join("node-index/dora-rs");
+
+        let status = |mut command: Command| {
+            command
+                .args(["rev-parse", "--show-prefix"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        };
+        assert!(status(git_command(Some(&subdir))));
+        assert!(!status(managed_clone_git_command(Some(&subdir))));
+        assert!(status(managed_clone_git_command(Some(repo.path()))));
+    }
+
+    /// A cached clone whose `.git` is broken must not let git's repository
+    /// discovery climb into an enclosing work tree: refreshing would
+    /// otherwise `reset --hard` that outer repository (#4006).
+    #[test]
+    fn a_broken_cache_does_not_reach_an_enclosing_repo() {
+        let remote_dir = tempfile::tempdir().unwrap();
+        make_remote(remote_dir.path());
+        let index = remote_index(remote_dir.path());
+
+        // the cache root lives inside another clone of the same remote, so
+        // the outer repo has an `origin/HEAD` a stray reset could move to
+        let outer_dir = tempfile::tempdir().unwrap();
+        let outer = outer_dir.path().join("outer");
+        let status = git_command(None)
+            .args(["clone", "--quiet"])
+            .arg(remote_dir.path())
+            .arg(&outer)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let cache_root = outer.join("cache");
+
+        let mut fetcher = IndexFetcher::with_cache_root(cache_root.clone(), false);
+        fetcher.catalog_dir(&index, Path::new(".")).unwrap();
+
+        // corrupt the cached clone and leave uncommitted work in the outer repo
+        std::fs::remove_file(cache_root.join("test/.git/HEAD")).unwrap();
+        let precious = outer.join("node-index/dora-rs/dora-yolo/0.5.1.yml");
+        std::fs::write(&precious, "uncommitted edit").unwrap();
+
+        // move the remote on, so a refresh of the wrong repo would reset it
+        std::fs::write(
+            remote_dir
+                .path()
+                .join("node-index/dora-rs/dora-yolo/0.5.2.yml"),
+            ENTRY,
+        )
+        .unwrap();
+        commit_all(remote_dir.path(), "publish 0.5.2");
+
+        let mut fetcher = IndexFetcher::with_cache_root(cache_root.clone(), false);
+        let catalog_dir = fetcher.catalog_dir(&index, Path::new(".")).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&precious).unwrap(),
+            "uncommitted edit",
+            "the enclosing repository's work tree was reset"
+        );
+        assert!(
+            cache_root.join("test/.git/HEAD").exists(),
+            "the corrupt cache was not re-cloned"
+        );
+        let resolved = IndexCatalog::open(&catalog_dir)
+            .unwrap()
+            .resolve(&PackageRef::parse("dora-yolo@^0.5").unwrap())
+            .unwrap();
+        assert_eq!(resolved.version.to_string(), "0.5.2");
     }
 
     #[test]

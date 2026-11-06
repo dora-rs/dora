@@ -44,6 +44,7 @@ use daemon::Daemon;
 use doctor::Doctor;
 use down::Down;
 use expand::Expand;
+#[cfg(feature = "tracing")]
 use eyre::Context;
 use graph::Graph;
 use hub::Hub;

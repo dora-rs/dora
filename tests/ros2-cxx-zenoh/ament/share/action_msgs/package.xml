@@ -1,0 +1,2 @@
+<?xml version="1.0"?>
+<package format="3"><name>action_msgs</name><depend>builtin_interfaces</depend><depend>unique_identifier_msgs</depend></package>

@@ -99,7 +99,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.3.2
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -248,7 +248,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.3.2
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -322,7 +322,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.3.2
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -617,7 +617,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v10.3.2
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -1265,6 +1265,9 @@ jobs:
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+      # Same exclusions as ci.yml's `test` job, plus the tensor-pool Python
+      # crate: its tests spawn `python3 -m unittest`, which is not guaranteed
+      # on windows-latest's PATH. Keep the two lists in sync.
       - name: Test
         run: >
           cargo test --all
@@ -1274,6 +1277,7 @@ jobs:
           --exclude dora-runtime-python
           --exclude dora-cli-api-python
           --exclude dora-examples
+          --exclude dora-tensor-pool-python
 
       # ===== Tier 0 CLI smoke gates =====
       # Fast per-platform checks against the 80% CLI coverage gap in #215.
@@ -1365,6 +1369,16 @@ jobs:
     # sequence of from-scratch example builds still fits under the job cap on a
     # cold Windows runner (#2742).
     timeout-minutes: 120
+    # Same debuginfo trim as ci.yml's workflow-level env. This job keeps a
+    # full debug build of every example, the release `dora build` of the
+    # multiple-daemons nodes and the C/C++ example builds in one target dir,
+    # and with full debuginfo the Ubuntu runner ran out of disk during the
+    # C++ Dataflow step (the runner itself died writing its own log, #4026).
+    # Debug info is the bulk of those artifacts; `line-tables-only` keeps
+    # file:line in backtraces. Dev profile only — the release build is
+    # unaffected.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
@@ -1439,6 +1453,12 @@ jobs:
       - name: C++ Thread-Safe Output example
         timeout-minutes: 15
         run: cargo run --example cxx-thread-safe-output
+      # The extension seam from C++ (#2686): store, load and drop against a
+      # real daemon, plus the drop notification. Byte payloads only, so it
+      # needs no Arrow C++ either.
+      - name: C++ Extension Seam example
+        timeout-minutes: 15
+        run: cargo run --example cxx-extension-seam
       - name: Install Arrow C++ Library
         timeout-minutes: 10
         shell: bash
@@ -1686,7 +1706,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.2
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -1990,7 +2010,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.2
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
       - name: Install pyarrow + numpy
@@ -2006,9 +2026,9 @@ jobs:
       - name: Test ROS2 message generator
         run: cargo test -p dora-ros2-bridge-msg-gen
       # Compiles the generated C++ bindings against a fixture package (nothing
-      # else in CI does, since no ROS messages are installed) and runs a C++
-      # service round trip over native Zenoh.
-      - name: Generated C++ services over Zenoh
+      # else in CI does, since no ROS messages are installed) and runs C++
+      # service and action round trips over native Zenoh.
+      - name: Generated C++ services and actions over Zenoh
         run: scripts/ros2-cxx-zenoh-roundtrip.sh
       - name: Test ROS2 Python bridge basics
         run: cargo test -p dora-ros2-bridge-python

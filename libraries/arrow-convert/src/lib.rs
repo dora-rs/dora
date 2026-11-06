@@ -246,10 +246,12 @@ macro_rules! register_array_handlers {
         /// Returns an error if the array contains any null values (consistent
         /// with every other [`TryFrom<&DoraArray>`] impl in this crate), if the
         /// array's data type is not a supported integer or float type, or if any
-        /// element is out of range for an integer `T` (e.g. a negative float into
-        /// an unsigned target, NaN, or a magnitude the target cannot hold). A
-        /// merely fractional float is *in range* and is truncated, and a float
-        /// target never errors on range, per **Precision** above.
+        /// element is out of range for an integer `T` (e.g. NaN, a float of -1.0
+        /// or less into an unsigned target, or a magnitude the target cannot
+        /// hold). A merely fractional float is *in range* and is truncated, so a
+        /// negative float above -1.0 becomes `0` in an unsigned target rather
+        /// than erroring, and a float target never errors on range, per
+        /// **Precision** above.
         ///
         /// ```
         /// use dora_arrow_convert::{IntoArrow, into_vec};
@@ -271,6 +273,13 @@ macro_rules! register_array_handlers {
         /// // f64 -> f32 overflows to infinity instead of erroring.
         /// let huge = vec![1e300f64].into_arrow();
         /// assert_eq!(into_vec::<f32>(&huge).ok(), Some(vec![f32::INFINITY]));
+        ///
+        /// // A negative float truncates toward zero first: above -1.0 it becomes
+        /// // 0 in an unsigned target; -1.0 or less is out of range and errors.
+        /// let small_negative = vec![-0.5f64].into_arrow();
+        /// assert_eq!(into_vec::<u8>(&small_negative).ok(), Some(vec![0]));
+        /// let negative = vec![-1.0f64].into_arrow();
+        /// assert!(into_vec::<u8>(&negative).is_err());
         ///
         /// // NaN is out of range for an integer target, so it errors.
         /// let nan = vec![f64::NAN].into_arrow();

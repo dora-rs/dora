@@ -125,8 +125,8 @@ async fn send_topic_frame(
 /// undrained for as long as the request takes, which for `WaitForBuild` or
 /// `Stop` is the whole build or shutdown: live log lines past
 /// `MAX_QUEUED_LOG_BYTES` would be dropped, and once the 64 `binary_rx`
-/// frames are full every further topic frame costs the event loop a 100 ms
-/// send timeout.
+/// frames are full every further topic frame would be dropped, and the
+/// subscription closed after `MAX_TOPIC_SUBSCRIBER_STALL`.
 ///
 /// `Err` means the WebSocket send failed (the connection is gone).
 async fn await_reply_forwarding_pushes(
@@ -197,7 +197,7 @@ pub(crate) async fn handle_control_ws(
     // cap are dropped and reported to the reader.
     let (log_tx, mut log_rx) = crate::log_subscriber::log_queue();
     // Channel for binary topic data frames
-    let (binary_tx, mut binary_rx) = mpsc::channel::<crate::topic_subscriber::TopicFrame>(64);
+    let (binary_tx, mut binary_rx) = crate::topic_subscriber::topic_frame_channel(64);
     let mut topic_subscriptions: Vec<Uuid> = Vec::new();
     let mut publish_session: Option<zenoh::Session> = None;
 
@@ -229,7 +229,7 @@ pub(crate) async fn handle_control_ws(
                     }
                 };
 
-                let control_request: ControlRequest = match serde_json::from_value(req.params.clone()) {
+                let control_request: ControlRequest = match ControlRequest::from_wire_value(req.params.clone()) {
                     Ok(r) => r,
                     Err(e) => {
                         let resp = WsResponse::err(req.id, format!("invalid params: {e}"));

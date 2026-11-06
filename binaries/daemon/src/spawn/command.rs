@@ -3,7 +3,7 @@ use clonable_command::Command;
 use dora_core::{
     build::managed_python_interpreter,
     descriptor::{
-        DYNAMIC_SOURCE, SHELL_SOURCE, resolve_path, resolve_path_confined, source_is_url,
+        DYNAMIC_SOURCE, SHELL_SOURCE, resolve_node_path, resolve_path_confined, source_is_url,
     },
     get_python_path,
 };
@@ -136,7 +136,7 @@ pub(super) async fn path_spawn_command(
                         None
                     }
                 });
-                resolve_path(source.as_ref(), working_dir)
+                resolve_node_path(source.as_ref(), node.path_fallback.as_deref(), working_dir)
                     .wrap_err_with(|| format!("failed to resolve node source `{source}`"))?
             };
 

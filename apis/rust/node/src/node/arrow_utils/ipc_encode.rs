@@ -873,12 +873,27 @@ pub fn schema_block_len(stream: &[u8]) -> Option<usize> {
 /// block, plus the block itself. This pairing IS the schema-once wire contract
 /// — the producer (`publish_schema_once`), the node receive path (in-band
 /// priming), and the daemon's `dora topic` rebuild all derive the hash from
-/// exactly these bytes via this function; independent re-derivations could
-/// drift and silently break batch↔schema matching.
+/// exactly these bytes via this function (the producer via
+/// `schema_block_and_hash_reusing`, which this wraps); independent
+/// re-derivations could drift and silently break batch↔schema matching.
 pub fn schema_block_and_hash(stream: &[u8]) -> Option<(u64, &[u8])> {
+    schema_block_and_hash_reusing(stream, None)
+}
+
+/// [`schema_block_and_hash`], but returns `known`'s hash without hashing again
+/// when the schema block is byte-identical to `known`'s block. `known` must be
+/// a pair this function returned earlier.
+pub(crate) fn schema_block_and_hash_reusing<'a>(
+    stream: &'a [u8],
+    known: Option<(u64, &[u8])>,
+) -> Option<(u64, &'a [u8])> {
     let block = schema_block_len(stream)?;
     let schema = stream.get(..block)?;
-    Some((dora_message::metadata::fnv1a(schema), schema))
+    let hash = match known {
+        Some((hash, known_schema)) if known_schema == schema => hash,
+        _ => dora_message::metadata::fnv1a(schema),
+    };
+    Some((hash, schema))
 }
 
 /// Given a full IPC stream, return the schema-less record-batch slice —
@@ -2259,18 +2274,23 @@ mod tests {
         assert_eq!(decoded, data);
     }
 
-    /// A run-end-encoded array whose run end was changed in transit passes
-    /// arrow's validation, so it decodes; sending it on (what `dora replay`
-    /// and forwarding nodes do) makes arrow's writer panic, which must be an
-    /// error, not a crash (#3863).
+    /// A run-end-encoded array whose run end was changed in transit must be
+    /// an error, never a crash (#3863). Before arrow 59.3.2 it passed arrow's
+    /// validation and decoded, and sending it on (what `dora replay` and
+    /// forwarding nodes do) made arrow's writer panic. arrow 59.3.2
+    /// (apache/arrow-rs#11740) rejects it while decoding instead. The send
+    /// path's guard still matters for arrays arrow never validated, e.g. ones
+    /// built with `ArrayData::new_unchecked` or imported over FFI, so the same
+    /// corrupted array, built that way, must not be sent either.
     #[test]
     fn sending_a_corrupted_run_end_array_is_an_error() {
         use arrow::array::RunArray;
         use arrow::datatypes::Int32Type;
         let array =
             RunArray::<Int32Type>::try_new(&Int32Array::from(vec![2]), &Int32Array::from(vec![42]))
-                .unwrap();
-        let mut bytes = crate::arrow_utils::encode_arrow_ipc_data(&array.to_data()).unwrap();
+                .unwrap()
+                .into_data();
+        let mut bytes = crate::arrow_utils::encode_arrow_ipc_data(&array).unwrap();
         // The body holds the run end (2) and then the value (42).
         let value = bytes.windows(4).rposition(|w| w == [42, 0, 0, 0]).unwrap();
         let run_end = bytes[..value]
@@ -2278,10 +2298,24 @@ mod tests {
             .rposition(|w| w == [2, 0, 0, 0])
             .unwrap();
         bytes[run_end] = 1;
-        let decoded = decode_arrow_ipc_zero_copy_raw(Buffer::from(bytes)).unwrap();
-        assert_eq!(decoded.len(), 2);
+        let err = format!(
+            "{:#}",
+            decode_arrow_ipc_zero_copy_raw(Buffer::from(bytes)).unwrap_err()
+        );
+        assert!(err.contains("run_ends"), "got: {err}");
+        assert!(!err.contains("panicked"), "got: {err}");
 
-        let Err(err) = crate::SampleAllocator::heap().encode_arrow_data(&decoded) else {
+        // The array that decoded before arrow 59.3.2: two rows, but the only
+        // run ends after the first.
+        let values = array.child_data()[1].clone();
+        let corrupted = unsafe {
+            array
+                .into_builder()
+                .child_data(vec![Int32Array::from(vec![1]).into_data(), values])
+                .build_unchecked()
+        };
+        assert!(corrupted.validate_full().is_err());
+        let Err(err) = crate::SampleAllocator::heap().encode_arrow_data(&corrupted) else {
             panic!("a corrupted run-end array was sent");
         };
         assert!(err.to_string().contains("arrow panicked"), "got: {err}");
