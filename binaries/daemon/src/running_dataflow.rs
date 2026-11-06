@@ -1,7 +1,7 @@
 //! Running dataflow state and associated types.
 
 use crate::{
-    DoraEvent, OutputId, coordinator,
+    DoraEvent, OutputId, ZenohOutbound, coordinator,
     fault_tolerance::CascadingErrorCauses,
     pending::{DataflowStatus, PendingNodes},
     send_with_timestamp,
@@ -412,6 +412,13 @@ pub struct RunningDataflow {
     pub(crate) startup_timeout_kills: Arc<crossbeam_skiplist::SkipSet<(NodeId, u64)>>,
     pub(crate) node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
     pub(crate) publishers: BTreeMap<OutputId, ControlPublisher>,
+    pub(crate) control_publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
+    pub(crate) remote_output_queues: BTreeMap<OutputId, Sender<ZenohOutbound>>,
+    pub(crate) remote_output_queue_handles: BTreeMap<OutputId, tokio::task::JoinHandle<()>>,
+    pub(crate) retired_remote_output_queues: BTreeMap<OutputId, tokio::task::JoinHandle<()>>,
+    pub(crate) remote_close_delivery_tasks: HashMap<NodeId, tokio::task::JoinHandle<bool>>,
+    pub(crate) pending_remote_all_inputs_closed: BTreeMap<NodeId, u64>,
+    next_remote_close_token: u64,
     /// Reverse index from output to the set of CLI subscribers watching it.
     /// Hot-path read on every node output dispatch (`send_topic_debug_frames`)
     /// and on the `has_debug_watchers` check. Unsubscribe scans this map
@@ -528,6 +535,13 @@ impl RunningDataflow {
             startup_timeout_kills: Default::default(),
             node_stderr_most_recent: BTreeMap::new(),
             publishers: Default::default(),
+            control_publishers: Default::default(),
+            remote_output_queues: Default::default(),
+            remote_output_queue_handles: Default::default(),
+            retired_remote_output_queues: Default::default(),
+            remote_close_delivery_tasks: Default::default(),
+            pending_remote_all_inputs_closed: Default::default(),
+            next_remote_close_token: 0,
             debug_topic_watchers: Default::default(),
             debug_watched_outputs: Default::default(),
             finished_tx,
@@ -592,8 +606,49 @@ impl RunningDataflow {
         self.node_stderr_most_recent.remove(node_id);
         self.cascading_error_causes.forget(node_id);
         retain_other_nodes(&mut self.publishers, node_id);
+        retain_other_nodes(&mut self.control_publishers, node_id);
+        retain_other_nodes(&mut self.remote_output_queues, node_id);
+        self.retired_remote_output_queues
+            .retain(|_, handle| !handle.is_finished());
+        let retired: Vec<_> = self
+            .remote_output_queue_handles
+            .keys()
+            .filter(|output| &output.0 == node_id)
+            .cloned()
+            .collect();
+        for output in retired {
+            if let Some(handle) = self.remote_output_queue_handles.remove(&output) {
+                self.retired_remote_output_queues.insert(output, handle);
+            }
+        }
         self.missing_channel_warned.retain(|(n, _)| n != node_id);
         self.dropped_event_streams.remove(node_id);
+        self.remote_close_delivery_tasks.remove(node_id);
+        self.pending_remote_all_inputs_closed.remove(node_id);
+    }
+
+    pub(crate) fn mark_deferred_all_inputs_closed(&mut self, receiver_id: &NodeId) {
+        self.next_remote_close_token = self.next_remote_close_token.wrapping_add(1);
+        self.pending_remote_all_inputs_closed
+            .insert(receiver_id.clone(), self.next_remote_close_token);
+    }
+
+    pub(crate) fn note_deferred_all_inputs_closed(
+        &mut self,
+        receiver_id: &NodeId,
+        token: u64,
+        delivered: bool,
+    ) {
+        if self.pending_remote_all_inputs_closed.get(receiver_id) == Some(&token) {
+            self.pending_remote_all_inputs_closed.remove(receiver_id);
+            if delivered
+                && self.running_nodes.contains_key(receiver_id)
+                && self.is_finished(receiver_id)
+            {
+                self.all_inputs_closed_at
+                    .insert(receiver_id.clone(), Instant::now());
+            }
+        }
     }
 
     /// Record that a node deliberately dropped its daemon event stream on
@@ -642,6 +697,7 @@ impl RunningDataflow {
         self.startup_timeout_kills
             .remove(&(node_id.clone(), generation));
         self.all_inputs_closed_at.remove(node_id);
+        self.pending_remote_all_inputs_closed.remove(node_id);
         self.connected_nodes.remove(node_id);
         // The exiting incarnation's clean `EventStream::drop` set this marker
         // (it keeps its `running_nodes` entry across a restart). Clear it so the
@@ -1047,6 +1103,7 @@ impl RunningDataflow {
         // treated as connected (and silence-escalatable) before it re-subscribes
         // (dora-rs/dora#2270).
         self.all_inputs_closed_at.remove(node_id);
+        self.pending_remote_all_inputs_closed.remove(node_id);
         self.connected_nodes.remove(node_id);
         self.finish_escalated.remove(node_id);
         self.send_stop_and_schedule_kill(
@@ -1207,6 +1264,7 @@ impl RunningDataflow {
         // the selector does not treat the node as drained-and-eligible
         // on a timestamp from before the mapping was re-added (#2270).
         self.all_inputs_closed_at.remove(&target_node);
+        self.pending_remote_all_inputs_closed.remove(&target_node);
         self.open_inputs
             .entry(target_node.clone())
             .or_default()
