@@ -1,0 +1,17 @@
+nodes:
+  - id: sender
+    path: cuda_target_pool.py
+    env:
+      ROLE: sender
+    inputs:
+      ack: receiver/ack
+    outputs:
+      - data
+  - id: receiver
+    path: cuda_target_pool.py
+    env:
+      ROLE: receiver
+    inputs:
+      data: sender/data
+    outputs:
+      - ack

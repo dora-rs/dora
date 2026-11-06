@@ -1265,6 +1265,9 @@ jobs:
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+      # Same exclusions as ci.yml's `test` job, plus the tensor-pool Python
+      # crate: its tests spawn `python3 -m unittest`, which is not guaranteed
+      # on windows-latest's PATH. Keep the two lists in sync.
       - name: Test
         run: >
           cargo test --all
@@ -1274,6 +1277,7 @@ jobs:
           --exclude dora-runtime-python
           --exclude dora-cli-api-python
           --exclude dora-examples
+          --exclude dora-tensor-pool-python
 
       # ===== Tier 0 CLI smoke gates =====
       # Fast per-platform checks against the 80% CLI coverage gap in #215.
