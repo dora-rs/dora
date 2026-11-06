@@ -6978,35 +6978,7 @@ async fn clean_keeps_a_dataflow_awaiting_reclaim() {
 /// `start_inner` builds, without starting the event loop. Handler-level tests
 /// that need one event's worth of state use this instead of the WS harness.
 fn coordinator_with_store(store: Arc<dyn CoordinatorStore>) -> Coordinator {
-    let (_abortable, abort_handle) = futures::stream::abortable(futures::stream::empty::<()>());
-    #[cfg(feature = "tracing")]
-    let span_store: crate::SpanStore = None;
-    #[cfg(not(feature = "tracing"))]
-    let span_store: crate::SpanStore = ();
-    Coordinator {
-        running_builds: HashMap::new(),
-        finished_builds: IndexMap::new(),
-        running_dataflows: HashMap::new(),
-        pending_restarts: HashMap::new(),
-        dataflow_results: IndexMap::new(),
-        resent_finish_reports: HashMap::new(),
-        archived_dataflows: IndexMap::new(),
-        daemon_connections: DaemonConnections::default(),
-        clock: Arc::new(HLC::default()),
-        store,
-        span_store,
-        daemon_peer_addrs: Default::default(),
-        #[cfg(feature = "metrics")]
-        otel_metrics: crate::otel_metrics::new_shared(),
-        abort_handle,
-    }
-}
-
-fn epoch_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    test_coordinator(HashMap::new(), DaemonConnections::default(), store)
 }
 
 /// The record `begin_orphaned_dataflow_reclaim` leaves behind: the dataflow is
@@ -7051,7 +7023,7 @@ fn recovering_record_with_nodes(
         barrier_exited_before_subscribe: Vec::new(),
         generation: 1,
         created_at: 0,
-        updated_at: epoch_millis(),
+        updated_at: crate::state::now_millis(),
     }
 }
 
