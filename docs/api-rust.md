@@ -972,15 +972,10 @@ Corresponding dataflow YAML:
 
 ```yaml
 nodes:
-  - id: timer
-    path: dora/timer/millis/100
-    outputs:
-      - tick
-
   - id: my-node
     path: ./target/debug/my-node
     inputs:
-      tick: timer/tick
+      tick: dora/timer/millis/100
     outputs:
       - random
 
@@ -1045,16 +1040,11 @@ Corresponding dataflow YAML:
 
 ```yaml
 nodes:
-  - id: timer
-    path: dora/timer/millis/500
-    outputs:
-      - tick
-
   - id: runtime-node
     operator:
       shared-library: ./target/debug/my_operator
       inputs:
-        tick: timer/tick
+        tick: dora/timer/millis/500
       outputs:
         - status
 ```
