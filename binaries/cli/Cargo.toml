@@ -117,6 +117,3 @@ aligned-vec = { version = "0.6.4", features = ["serde"] }
 # The version arrow-ipc pins; used only to build a crafted IPC schema message
 # in the `topic info` tests.
 flatbuffers = "25.12.19"
-# Binds a TCP port without listening on it, so the refused-connection tests
-# (`common::refused_port`) hold a port no parallel test can take over.
-socket2 = "0.6"

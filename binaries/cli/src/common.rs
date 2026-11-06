@@ -339,24 +339,38 @@ pub(crate) fn write_events_to() -> Option<PathBuf> {
 }
 
 /// A loopback address whose connections are refused, for tests of the
-/// "coordinator not running" path. The returned socket holds the port: it is
-/// bound but not listening, so a connect gets a refusal, and no other test in
-/// the binary can bind the port while the socket lives. Binding a
-/// `TcpListener` and dropping it frees the port instead, and a test running
-/// in parallel could take it before the connect, turning the refusal into a
-/// reset or a reply (#4026). Keep the socket alive for the whole test.
+/// "coordinator not running" path. Keep the returned guard alive for the
+/// whole test: it holds the port so no other test in the binary can bind it.
+///
+/// The port is the local end of an established loopback connection. No
+/// socket listens on it, so a connect gets a RST, i.e. a refusal, on every
+/// OS. Two simpler ways to get such a port fail (#4026):
+/// - binding a `TcpListener` and dropping it frees the port, and a test
+///   running in parallel can take it before the connect, turning the
+///   refusal into a reset or a reply;
+/// - a bound but non-listening socket holds the port, but macOS drops the
+///   SYN to it silently, so the connect times out after ~75 s instead.
 #[cfg(test)]
-pub(crate) fn refused_port() -> (socket2::Socket, std::net::SocketAddr) {
-    let socket = socket2::Socket::new(
-        socket2::Domain::IPV4,
-        socket2::Type::STREAM,
-        Some(socket2::Protocol::TCP),
+pub(crate) fn refused_port() -> (RefusedPortGuard, std::net::SocketAddr) {
+    use std::net::{TcpListener, TcpStream};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (server, _) = listener.accept().unwrap();
+    let addr = client.local_addr().unwrap();
+    (
+        RefusedPortGuard {
+            _client: client,
+            _server: server,
+        },
+        addr,
     )
-    .unwrap();
-    let any_port: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    socket.bind(&any_port.into()).unwrap();
-    let addr = socket.local_addr().unwrap().as_socket().unwrap();
-    (socket, addr)
+}
+
+/// Holds the port returned by [`refused_port`]; see there.
+#[cfg(test)]
+pub(crate) struct RefusedPortGuard {
+    _client: std::net::TcpStream,
+    _server: std::net::TcpStream,
 }
 
 #[cfg(test)]
@@ -549,6 +563,19 @@ mod coordinator_rejected_tests {
             assert!(msg.contains(&config.display().to_string()), "{msg}");
         }
         assert!(!msg.contains("~/.config/dora/.dora-token"), "{msg}");
+    }
+
+    /// The helper's whole contract: a prompt refusal, not a reset or a
+    /// timeout. The callers' assertions can pass on a timeout too, which is
+    /// how a macOS-only timeout stayed hidden in all but one of them (#4026).
+    #[test]
+    fn refused_port_refuses_promptly() {
+        let (_port, addr) = super::refused_port();
+        let start = Instant::now();
+        let err = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(10))
+            .expect_err("nothing listens on the port");
+        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionRefused, "{err}");
+        assert!(start.elapsed() < Duration::from_secs(10));
     }
 
     #[test]
