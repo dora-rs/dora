@@ -303,8 +303,9 @@ mod cross_pool_write_tests {
                 "round {round}: interleaved bytes in mirror data"
             );
             // Seqlock: generation is even (complete) after the round.
-            let generation =
-                unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+            let generation = unsafe {
+                std::ptr::read_volatile(shmem.as_ptr().add(WRITE_GEN_OFFSET) as *const u64)
+            };
             assert_eq!(
                 generation % 2,
                 0,
@@ -514,7 +515,8 @@ mod cross_pool_write_tests {
         // The mirror's seqlock generation is untouched: no writer began,
         // so it stays at the initial odd (in-progress) value 1.
         let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
-        let generation = unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+        let generation =
+            unsafe { std::ptr::read_volatile(shmem.as_ptr().add(WRITE_GEN_OFFSET) as *const u64) };
         assert_eq!(
             generation, 1,
             "generation must be untouched (no write began)"
@@ -838,7 +840,8 @@ mod cross_pool_write_tests {
         let ack1 = server.await.unwrap().unwrap().unwrap();
         assert_eq!(ack1.2, 1);
         let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
-        let generation = unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+        let generation =
+            unsafe { std::ptr::read_volatile(shmem.as_ptr().add(WRITE_GEN_OFFSET) as *const u64) };
         assert_eq!(
             generation, 2,
             "frame 1 must complete the write (even gen 2)"
@@ -869,7 +872,8 @@ mod cross_pool_write_tests {
 
         // The generation stays odd (in-progress) — the fail-safe: readers
         // reject the torn frame rather than reading half-written bytes.
-        let generation = unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+        let generation =
+            unsafe { std::ptr::read_volatile(shmem.as_ptr().add(WRITE_GEN_OFFSET) as *const u64) };
         assert_eq!(generation, 3, "generation must stay odd on the torn frame");
         // A subsequent full write self-heals: begin keeps the odd
         // generation, writes the frame, and publishes the even one.
@@ -886,7 +890,8 @@ mod cross_pool_write_tests {
         client3.write_all(&frame3).await.unwrap();
         let ack3 = server3.await.unwrap().unwrap().unwrap();
         assert_eq!(ack3.2, 3);
-        let generation = unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+        let generation =
+            unsafe { std::ptr::read_volatile(shmem.as_ptr().add(WRITE_GEN_OFFSET) as *const u64) };
         assert_eq!(
             generation, 4,
             "the next full write must self-heal to an even generation"
@@ -1177,8 +1182,9 @@ mod cross_pool_write_tests {
                 "mirror data region must equal the payload"
             );
             // Seqlock: generation is even (complete) after the write.
-            let generation =
-                unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+            let generation = unsafe {
+                std::ptr::read_volatile(shmem.as_ptr().add(WRITE_GEN_OFFSET) as *const u64)
+            };
             assert_eq!(generation % 2, 0, "odd generation after write");
         });
     }

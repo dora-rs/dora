@@ -1,0 +1,20 @@
+# Single-machine Ascend NPU sender -> CPU receiver.
+# Requires torch_npu and an initialized CANN 8.x/9.x runtime.
+env:
+  sender_device: npu
+  receiver_device: cpu
+  message_num: 100
+  tensor_pool_scenario: throughput
+nodes:
+  - id: sender_node
+    path: sender.py
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - data
+  - id: receiver_node
+    path: receiver.py
+    inputs:
+      latency: sender_node/data
+    outputs:
+      - next_require

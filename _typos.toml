@@ -36,6 +36,8 @@ sitl = "sitl"
 # common-dialect MAVLink messages such as LOCAL_POSITION_NED.
 NED = "NED"
 ned = "ned"
+# Huawei Compute Architecture for Neural Networks (Ascend toolkit).
+CANN = "CANN"
 
 [default]
 # Scoped allow: GitHub user name "YOR-robot" appears in the downstream-user
