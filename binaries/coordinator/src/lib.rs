@@ -149,7 +149,7 @@ pub(crate) use ready_barrier::{
 };
 pub(crate) use spawn_build::{
     MAX_BUFFERED_LOG_MESSAGES, buffer_log_message, cap_dataflow_results, check_build_timeouts,
-    check_spawn_timeouts, finalize_build, handle_dataflow_spawn_result,
+    check_spawn_timeouts, fail_pending_spawn, finalize_build, handle_dataflow_spawn_result,
 };
 pub(crate) use topic_debug::{
     close_topic_subscribers_on_finish, live_topic_subscriptions,
