@@ -72,28 +72,32 @@ successful frame. Each cross-device write includes a blocking full-payload copy
 and completion synchronization, so its cost grows with payload size; subsequent
 reads access receiver-local memory.
 
-Device indices are process-local, so the receiver's `device="cuda:N"` is
-resolved in the **writer's** `CUDA_VISIBLE_DEVICES` namespace: every node that
-registers or writes a GPU pool must expose the same GPUs in the same order. If
-the masks differ, the same `cuda:N` names a different physical card and the pool
-is placed on a GPU the receiver did not ask for, while imports still succeed
-through lazy peer access. A writer rejects an unselectable index at
-registration, before any transport path is chosen, but it cannot detect masks
-that are merely reordered; allocating by physical identity (UUID or PCI bus id)
-instead of an ordinal is a follow-up.
+The receiver's `device="cuda:N"` is resolved in the **writer's**
+`CUDA_VISIBLE_DEVICES` namespace. Host-staging and CPU-source registration
+already selected the receiver's device before allocating, and P2P registration
+follows the same rule; because the pool lives on the receiver, this is a
+requirement for every node that registers or writes a GPU pool: they must
+expose the same GPUs in the same order. If the masks differ, the same `cuda:N`
+names a different physical card and the pool is placed on a GPU the receiver
+did not ask for, while imports still succeed through lazy peer access. A
+writer rejects an unselectable index at registration on every local
+CUDA-receiver path; on the host-staging and CPU-source paths an index outside
+the writer's visible set used to be ignored, leaving the pool on the writer's
+current device. It cannot detect masks that are merely reordered; allocating by
+physical identity (UUID or PCI bus id) instead of an ordinal is a follow-up.
 
 The receiver imports the handle once and can retain its view across same-host,
 fixed-size writes, provided it acknowledges each frame before the next overwrite.
 Printing `tensor.device` alone does not establish the physical allocation device
 of a peer-accessible IPC mapping.
 
-Because the *writer* allocates the pool on the receiver's device, a cross-device
-writer creates a CUDA context on the receiver's GPU the first time it registers
-or writes such a pool (the allocation, the IPC export, and enabling the
-bidirectional peer pair all need one). This is a one-time, per-process cost — a
-few hundred MB of device memory on each GPU in the pair — that persists for the
-life of the writer process; it is not re-paid per frame. On a GPU shared with
-other work, budget for it on both cards.
+The writer already needs a CUDA context on the receiver's GPU for cross-device
+pools: `_ensure_p2p_pair` selects both GPUs of the pair for a P2P write, and
+host-staging and CPU-source registration allocate on the receiver. Receiver
+placement does not add a context requirement. The per-process cost of those
+contexts — a few hundred MB of device memory on each GPU in the pair — persists
+for the life of the writer process and is not re-paid per frame; on a GPU
+shared with other work, budget for it on both cards.
 
 Regression checks:
 
