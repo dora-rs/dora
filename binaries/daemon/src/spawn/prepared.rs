@@ -680,7 +680,7 @@ impl PreparedNode {
                 }
 
                 #[allow(unused_mut)]
-                let mut std_command = command.to_std();
+                let mut std_command = super::command::to_std_command(command);
                 logger
                     .log(
                         LogLevel::Info,
