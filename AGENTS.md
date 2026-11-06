@@ -23,7 +23,8 @@ Key communication paths:
 - CLI <-> Coordinator: WebSocket
 - Coordinator <-> Daemon: WebSocket
 - Daemon <-> Daemon: Zenoh
-- Daemon <-> Node: shared memory for large payloads, TCP for small payloads
+- Daemon <-> Node: TCP (one loopback listener per node)
+- Node <-> Node: direct Zenoh data plane (zenoh shared memory for payloads of 4 KiB or more; daemon-path TCP fallback)
 
 ## Workspace Facts
 
