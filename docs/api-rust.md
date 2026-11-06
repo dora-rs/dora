@@ -1052,7 +1052,7 @@ nodes:
 
   - id: runtime-node
     operator:
-      shared_library: ./target/debug/libmy_operator
+      shared-library: ./target/debug/my_operator
       inputs:
         tick: timer/tick
       outputs:

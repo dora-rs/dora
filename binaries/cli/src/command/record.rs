@@ -774,9 +774,10 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
 
     let mut msg_count: u64 = 0;
     // Whether the stream ended on its own rather than because we asked it to.
-    // The coordinator evicts a subscriber that has timed out 100 consecutive
-    // times, and the CLI sees that as a bare `Disconnected` — indistinguishable
-    // from a clean finish unless we keep track (#3282).
+    // The coordinator closes a subscriber that takes no frame for 10 s
+    // (`MAX_TOPIC_SUBSCRIBER_STALL`), and the CLI sees that as a bare
+    // `Disconnected` — indistinguishable from a clean finish unless we keep
+    // track (#3282).
     let mut ended_unexpectedly = false;
     loop {
         // Check for Ctrl-C
@@ -854,7 +855,8 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         eprintln!(
             "Recording ended: the data stream closed before the recording was stopped. \
              Messages may be missing — the coordinator drops frames for a subscriber it \
-             cannot keep up with, and evicts it after 100 consecutive timeouts."
+             cannot keep up with as soon as its queue is full, and closes it after 10 \
+             seconds without accepting any frame."
         );
     }
     eprintln!(
