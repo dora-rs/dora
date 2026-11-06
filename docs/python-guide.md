@@ -142,16 +142,11 @@ Reference it in YAML with `operator` instead of `path`:
 
 ```yaml
 nodes:
-  - id: timer
-    path: dora/timer/millis/500
-    outputs:
-      - tick
-
   - id: doubler
     operator:
       python: doubler_op.py
       inputs:
-        tick: timer/tick
+        tick: dora/timer/millis/500
       outputs:
         - doubled
 ```
@@ -207,19 +202,14 @@ See [examples/python-logging](../examples/python-logging) for logging module int
 
 ## Timers
 
-Built-in timer nodes generate periodic ticks without writing any code:
+Built-in timer inputs generate periodic ticks without writing any code:
 
 ```yaml
 nodes:
-  - id: tick-source
-    path: dora/timer/millis/100    # tick every 100ms
-    outputs:
-      - tick
-
   - id: my-node
     path: my_node.py
     inputs:
-      tick: tick-source/tick
+      tick: dora/timer/millis/100    # tick every 100ms
 ```
 
 Also available: `dora/timer/hz/30` for 30 Hz.
