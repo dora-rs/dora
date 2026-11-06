@@ -320,8 +320,7 @@ impl From<InputDef> for Input {
 /// // A mapping without a `/` separator is rejected.
 /// assert!("no-slash".parse::<InputMapping>().is_err());
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
-#[schemars(transform = accept_input_mapping_string)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InputMapping {
     /// A built-in timer that fires at a fixed `interval`.
     ///
@@ -338,30 +337,28 @@ pub enum InputMapping {
     User(UserInputMapping),
 }
 
-/// Adds the `/`-separated string to `InputMapping`'s JSON schema.
-///
-/// The derive describes the enum's shape, but the `Serialize`/`Deserialize`
-/// impls go through [`fmt::Display`]/[`FromStr`], so a dataflow only ever
-/// contains the string form. Without it the published schema rejects every
-/// input (#3701). The derived object alternatives stay: the dataflow YAML
-/// schema is frozen for 1.x, and dropping an accepted alternative is a
-/// breaking change there.
+/// `InputMapping` is (de)serialized through [`fmt::Display`]/[`FromStr`], so a
+/// dataflow only ever contains the `/`-separated string, and the schema says
+/// exactly that (#3701). The enum's object shapes never loaded, so they are
+/// not offered as alternatives.
 ///
 /// The pattern only asks for a `/`, which is all [`FromStr`] checks before
 /// dispatching on the source. Anything stricter would reject inputs that
 /// `dora` accepts.
-fn accept_input_mapping_string(schema: &mut schemars::Schema) {
-    if let Some(serde_json::Value::Array(alternatives)) = schema.get_mut("oneOf") {
-        alternatives.insert(
-            0,
-            serde_json::json!({
-                "description": "`<source>/<output>` for another node's output, \
-                    `dora/timer/{unit}/{value}` for a built-in timer, or \
-                    `dora/logs[/{level}[/{node_id}]]` for node logs.",
-                "type": "string",
-                "pattern": "/",
-            }),
-        );
+impl JsonSchema for InputMapping {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "InputMapping".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "description": "The source an [`Input`] subscribes to: \
+                `<source>/<output>` for another node's output, \
+                `dora/timer/{unit}/{value}` for a built-in timer, or \
+                `dora/logs[/{level}[/{node_id}]]` for node logs.",
+            "type": "string",
+            "pattern": "/",
+        })
     }
 }
 
@@ -1356,17 +1353,14 @@ mod tests {
         assert_eq!(config.shared_memory_pool_size, None);
     }
 
-    // #3701: inputs are strings in YAML, so the schema has to accept one,
-    // and its pattern has to agree with what `FromStr` accepts.
+    // #3701: inputs are strings in YAML, so the schema describes only the
+    // string, and its pattern has to agree with what `FromStr` accepts.
     #[test]
-    fn input_mapping_schema_accepts_the_string_form() {
+    fn input_mapping_schema_is_the_string_form() {
         let schema = serde_json::to_value(schemars::schema_for!(InputMapping)).unwrap();
-        let alternatives = schema["oneOf"].as_array().expect("oneOf alternatives");
-        let string = alternatives
-            .iter()
-            .find(|alt| alt["type"] == "string")
-            .expect("InputMapping schema should accept the string form");
-        assert_eq!(string["pattern"], "/");
+        assert_eq!(schema["type"], "string");
+        assert_eq!(schema["pattern"], "/");
+        assert!(schema.get("oneOf").is_none(), "{schema}");
 
         for valid in ["camera/image", "dora/timer/millis/100", "dora/logs"] {
             assert!(valid.parse::<InputMapping>().is_ok(), "{valid}");
