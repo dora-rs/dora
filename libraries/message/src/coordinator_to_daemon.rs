@@ -187,6 +187,7 @@ pub enum DaemonCoordinatorEvent {
     /// Add a node to a running dataflow on this daemon.
     AddNode {
         dataflow_id: DataflowId,
+        #[serde(serialize_with = "crate::descriptor::serialize_resolved_node_for_wire")]
         node: crate::descriptor::ResolvedNode,
         uv: bool,
     },
@@ -212,7 +213,9 @@ pub enum DaemonCoordinatorEvent {
     /// (dora-rs/dora#2988 review, finding 2).
     ReplaceNode {
         dataflow_id: DataflowId,
+        #[serde(serialize_with = "crate::descriptor::serialize_resolved_node_for_wire")]
         node: crate::descriptor::ResolvedNode,
+        #[serde(serialize_with = "crate::descriptor::serialize_node_for_wire")]
         unresolved_node: crate::descriptor::Node,
         uv: bool,
         grace_duration: Option<Duration>,
@@ -308,6 +311,7 @@ pub struct SpawnDataflowNodes {
     /// Note that nodes with git sources still use a subdirectory of
     /// the base working dir.
     pub local_working_dir: Option<PathBuf>,
+    #[serde(serialize_with = "crate::descriptor::serialize_resolved_nodes_for_wire")]
     pub nodes: BTreeMap<NodeId, ResolvedNode>,
     #[serde(serialize_with = "crate::descriptor::serialize_without_path_fallback")]
     pub dataflow_descriptor: Descriptor,
@@ -407,5 +411,104 @@ mod path_fallback_tests {
             panic!("expected a custom node");
         };
         assert_eq!(custom.path_fallback.as_deref(), Some("worker"));
+    }
+}
+
+#[cfg(test)]
+mod env_escaping_wire_tests {
+    use super::*;
+    use crate::descriptor::{CoreNodeKind, CustomNode, EnvValue, Node};
+
+    /// `AddNode`, `ReplaceNode` and `SpawnDataflowNodes.nodes` carry a
+    /// `ResolvedNode` (and, for a custom node, its nested `CustomNode.envs`)
+    /// separately from `dataflow_descriptor`. Each of these wire fields must
+    /// escape `$` the same way `dataflow_descriptor` does, or a value
+    /// containing a literal `$` (the #3947 scenario: an already-expanded
+    /// secret like `p$ssw0rd`) gets expanded again against the daemon's
+    /// environment instead of arriving verbatim (#4067).
+    #[test]
+    fn resolved_node_env_and_custom_envs_escape_on_the_wire() {
+        let id: NodeId = "worker".parse().unwrap();
+        let env = BTreeMap::from([("PW".to_string(), EnvValue::String("p$ssw0rd".into()))]);
+
+        let mut custom = CustomNode::new("worker.py".into());
+        custom.envs = Some(env.clone());
+        let mut resolved = ResolvedNode::new(id.clone(), CoreNodeKind::Custom(custom));
+        resolved.env = Some(env.clone());
+
+        let mut unresolved = Node::new(id.clone());
+        unresolved.env = Some(env.clone());
+
+        let add = DaemonCoordinatorEvent::AddNode {
+            dataflow_id: DataflowId::from(uuid::Uuid::new_v4()),
+            node: resolved.clone(),
+            uv: false,
+        };
+        let replace = DaemonCoordinatorEvent::ReplaceNode {
+            dataflow_id: DataflowId::from(uuid::Uuid::new_v4()),
+            node: resolved.clone(),
+            unresolved_node: unresolved,
+            uv: false,
+            grace_duration: None,
+        };
+        let spawn = SpawnDataflowNodes {
+            build_id: None,
+            session_id: SessionId::generate(),
+            dataflow_id: DataflowId::from(uuid::Uuid::new_v4()),
+            local_working_dir: None,
+            nodes: BTreeMap::from([(id.clone(), resolved)]),
+            dataflow_descriptor: Descriptor::new(vec![]),
+            spawn_nodes: BTreeSet::from([id]),
+            uv: false,
+            write_events_to: None,
+            artifact_base_url: None,
+        };
+
+        // The wire bytes must carry the escaped form, not the literal: a
+        // peer decoding this JSON runs `with_expand_envs` on it, which would
+        // otherwise try (and, with `PW` unset in the test environment, fail)
+        // to expand `$ssw0rd` as a variable reference.
+        for (name, json) in [
+            ("AddNode", serde_json::to_string(&add).unwrap()),
+            ("ReplaceNode", serde_json::to_string(&replace).unwrap()),
+            ("SpawnDataflowNodes", serde_json::to_string(&spawn).unwrap()),
+        ] {
+            assert!(
+                json.contains("p$$ssw0rd"),
+                "{name} JSON must carry the escaped form, got: {json}"
+            );
+            assert!(
+                !json.contains("p$ssw0rd\""),
+                "{name} JSON must not also leak the unescaped literal, got: {json}"
+            );
+        }
+
+        let decoded_add: DaemonCoordinatorEvent =
+            serde_json::from_str(&serde_json::to_string(&add).unwrap()).unwrap();
+        let DaemonCoordinatorEvent::AddNode { node, .. } = decoded_add else {
+            panic!("expected AddNode");
+        };
+        assert_eq!(node.env, Some(env.clone()));
+        let CoreNodeKind::Custom(custom) = &node.kind else {
+            panic!("expected a custom node");
+        };
+        assert_eq!(custom.envs, Some(env.clone()));
+
+        let decoded_replace: DaemonCoordinatorEvent =
+            serde_json::from_str(&serde_json::to_string(&replace).unwrap()).unwrap();
+        let DaemonCoordinatorEvent::ReplaceNode {
+            node,
+            unresolved_node,
+            ..
+        } = decoded_replace
+        else {
+            panic!("expected ReplaceNode");
+        };
+        assert_eq!(node.env, Some(env.clone()));
+        assert_eq!(unresolved_node.env, Some(env.clone()));
+
+        let decoded_spawn: SpawnDataflowNodes =
+            serde_json::from_str(&serde_json::to_string(&spawn).unwrap()).unwrap();
+        assert_eq!(decoded_spawn.nodes.values().next().unwrap().env, Some(env));
     }
 }

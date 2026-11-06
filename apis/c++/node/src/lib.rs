@@ -271,12 +271,11 @@ mod ffi {
         /// (`API_KEY: "..."`) and host-environment substitutions
         /// (`API_KEY: "${HOST_VAR}"`, expanded at descriptor parse
         /// time per `libraries/message/src/descriptor.rs`'s
-        /// `with_expand_envs`) both appear as plain strings in the
-        /// output, with each `$` written as `$$` so that decoding the
-        /// JSON as a descriptor again gives back the same value.
-        /// Don't pipe this into shared logs or telemetry
-        /// without sanitizing if your dataflow can carry secrets in
-        /// env vars.
+        /// `with_expand_envs`) both appear in the output as the real,
+        /// already-expanded string — not the `$`-as-`$$` form dora uses
+        /// on its own internal wire hops. Don't pipe this into shared
+        /// logs or telemetry without sanitizing if your dataflow can
+        /// carry secrets in env vars.
         fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> Result<String>;
         fn send_output(
             output_sender: &mut Box<OutputSender>,
