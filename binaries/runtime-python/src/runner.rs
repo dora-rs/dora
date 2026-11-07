@@ -101,7 +101,7 @@ pub fn run(
         let operator = py
             .eval(c_str!("Operator()"), None, Some(&locals))
             .map_err(traceback)?;
-        let dataflow_descriptor_display = descriptor_for_display(dataflow_descriptor);
+        let dataflow_descriptor_display = descriptor_for_display(dataflow_descriptor)?;
         operator.setattr(
             "dataflow_descriptor",
             pythonize::pythonize(py, &dataflow_descriptor_display)?,

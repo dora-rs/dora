@@ -832,7 +832,8 @@ fn node_config_json(output_sender: &Box<OutputSender>) -> eyre::Result<String> {
 fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> eyre::Result<String> {
     let node = lock_node(&output_sender.0, "dataflow_descriptor_json").map_err(|e| eyre!(e))?;
     let desc = node.dataflow_descriptor()?;
-    let display = dora_core::descriptor::descriptor_for_display(desc);
+    let display = dora_core::descriptor::descriptor_for_display(desc)
+        .map_err(|e| eyre!("failed to serialize dataflow descriptor: {e}"))?;
     serde_json::to_string(&display)
         .map_err(|e| eyre!("failed to serialize dataflow descriptor: {e}"))
 }

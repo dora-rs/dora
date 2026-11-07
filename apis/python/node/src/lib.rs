@@ -678,7 +678,7 @@ impl Node {
         let descriptor = self
             .node
             .run(py, |node| node.dataflow_descriptor().cloned())?;
-        let display = dora_message::descriptor::descriptor_for_display(&descriptor);
+        let display = dora_message::descriptor::descriptor_for_display(&descriptor)?;
         Ok(pythonize::pythonize(py, &display).map(|x| x.unbind())?)
     }
 

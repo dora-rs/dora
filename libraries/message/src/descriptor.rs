@@ -1728,8 +1728,15 @@ fn serialize_escaping_dollars<S: serde::Serializer>(
 /// each node's `env` — rather than unescaping the whole serialized tree,
 /// so an unrelated string that happens to contain `$$` (a `build:` command,
 /// a description, ...) is left alone.
-pub fn descriptor_for_display(descriptor: &Descriptor) -> serde_json::Value {
-    let mut value = serde_json::to_value(descriptor).expect("Descriptor always serializes");
+///
+/// Returns the serialize error rather than unwrapping it: these callers run
+/// at an FFI boundary (the C++ `dataflow_descriptor_json`, pyo3), where a
+/// panic is undefined behaviour, and the originals already returned a
+/// fallible result here.
+pub fn descriptor_for_display(
+    descriptor: &Descriptor,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut value = serde_json::to_value(descriptor)?;
     if let Some(env) = value.get_mut("env") {
         unescape_json_env_map(env);
     }
@@ -1743,7 +1750,7 @@ pub fn descriptor_for_display(descriptor: &Descriptor) -> serde_json::Value {
             }
         }
     }
-    value
+    Ok(value)
 }
 
 /// Undoes [`serialize_escaping_dollars`] on every string value of a JSON
@@ -2292,7 +2299,7 @@ mod tests {
         assert_eq!(wire["nodes"][0]["env"]["K"], "a$$b");
 
         // `descriptor_for_display` undoes it, at both `env` locations.
-        let display = descriptor_for_display(&descriptor);
+        let display = descriptor_for_display(&descriptor).unwrap();
         assert_eq!(display["env"]["PRICE"], "50$ off");
         assert_eq!(display["nodes"][0]["env"]["K"], "a$b");
     }
@@ -2305,7 +2312,7 @@ mod tests {
         let mut node = Node::new("n".parse().unwrap());
         node.path = Some("echo $$ not an env escape".into());
         let descriptor = Descriptor::new(vec![node]);
-        let display = descriptor_for_display(&descriptor);
+        let display = descriptor_for_display(&descriptor).unwrap();
         assert_eq!(display["nodes"][0]["path"], "echo $$ not an env escape");
     }
 
