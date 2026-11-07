@@ -224,6 +224,10 @@ impl GraphCache {
             if state.generation != generation {
                 return Ok(state.generation);
             }
+            // A caller that gave up (its deadline won) dropped the receiver;
+            // without this its sender would stay queued until the graph
+            // changes, one per retry while a server never appears.
+            state.waiters.retain(|waiter| !waiter.is_canceled());
             let (sender, receiver) = oneshot::channel();
             state.waiters.push(sender);
             receiver
@@ -310,6 +314,43 @@ mod tests {
             .collect();
         assert_eq!(keys.len(), 2);
         assert!(keys.contains(&local), "local entity must not be evicted");
+    }
+
+    /// A discovery wait that gives up (its deadline won the race) drops the
+    /// future. Its notification must not stay queued until the graph changes,
+    /// or a server that never appears makes every retry leak one.
+    #[test]
+    fn canceled_graph_waiters_do_not_accumulate() {
+        use futures::FutureExt;
+
+        let cache = GraphCache::new(0);
+        let generation = cache.snapshot().generation;
+        for attempt in 1..=128 {
+            assert!(cache.wait_for_change(generation).now_or_never().is_none());
+            let retained = cache.state.lock().unwrap().waiters.len();
+            assert!(
+                retained <= 1,
+                "retained {retained} canceled graph waiters after {attempt} retries"
+            );
+        }
+    }
+
+    /// Dropping canceled waiters must not drop a live one.
+    #[test]
+    fn live_graph_waiter_survives_canceled_ones_and_is_woken() {
+        use futures::FutureExt;
+
+        let cache = GraphCache::new(0);
+        let generation = cache.snapshot().generation;
+        // Polled once so it is registered, then kept alive across the
+        // canceled attempts below.
+        let mut live = Box::pin(cache.wait_for_change(generation));
+        assert!((&mut live).now_or_never().is_none());
+        for _ in 0..4 {
+            assert!(cache.wait_for_change(generation).now_or_never().is_none());
+        }
+        cache.finish_initialization();
+        assert_eq!(live.now_or_never().unwrap().unwrap(), generation + 1);
     }
 
     /// Liveliness-token declaration/undeclaration propagates through the Zenoh
