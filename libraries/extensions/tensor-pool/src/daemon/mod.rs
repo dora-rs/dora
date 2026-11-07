@@ -1673,7 +1673,7 @@ mod cross_pool_write_tests {
     /// With an auth token, a peer that does not have it cannot take any of
     /// the listener's connection permits: connections that never finish the
     /// handshake only hold pre-admission slots, at most
-    /// `cross_data_max_pending_per_peer` from one address, so an origin with
+    /// `CROSS_DATA_MAX_PENDING_PER_PEER` from one address, so an origin with
     /// the token is still admitted while they sit there (#4065).
     // The env lock is held across the awaits on purpose, as in the tests
     // above: a sibling test must not change the token mid-test.
@@ -1696,8 +1696,7 @@ mod cross_pool_write_tests {
 
         // Room for every connection the silent peer opens, had it been let
         // into the cap at accept time as before.
-        let max_connections = 8;
-        assert!(cross_data_max_pending_per_peer(max_connections) < max_connections);
+        let max_connections = CROSS_DATA_MAX_PENDING_PER_PEER + 2;
         let (addr, mut admitted, accept) = admitting_listener(max_connections).await;
         let mut silent = Vec::new();
         for _ in 0..max_connections + 2 {
@@ -1748,8 +1747,8 @@ mod cross_pool_write_tests {
             .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
         let wait = std::time::Duration::from_secs(10);
-        let max_connections = 8;
-        let burst = cross_data_max_pending_per_peer(max_connections) + 1;
+        let burst = CROSS_DATA_MAX_PENDING_PER_PEER + 1;
+        let max_connections = burst;
         let (addr, mut admitted, accept) = admitting_listener(max_connections).await;
         let mut writes = Vec::new();
         for _ in 0..burst {

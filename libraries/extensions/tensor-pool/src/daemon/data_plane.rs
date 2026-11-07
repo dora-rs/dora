@@ -130,7 +130,7 @@ pub(crate) fn cross_data_max_connections() -> usize {
 /// holds the permit until it returns. So a peer without the auth token cannot
 /// keep legitimate origins out of the cap by opening connections and staying
 /// silent (#4065). Until then a connection holds a pre-admission slot, at
-/// most [`cross_data_max_pending_per_peer`] per peer when a token is set, and
+/// most [`CROSS_DATA_MAX_PENDING_PER_PEER`] per peer when a token is set, and
 /// `max_connections` in all, so the listener still holds at most
 /// `2 * max_connections` fds and tasks (#4033). A connection over either
 /// limit is closed at once. Each kind of refusal is logged once per run of
@@ -144,9 +144,7 @@ pub(crate) async fn accept_cross_data_connections<F, Fut>(
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     let pending = Arc::new(tokio::sync::Semaphore::new(max_connections));
-    let pending_per_peer = Arc::new(PendingPerPeer::new(cross_data_max_pending_per_peer(
-        max_connections,
-    )));
+    let pending_per_peer = Arc::new(PendingPerPeer::default());
     let cap = Arc::new(ConnectionCap {
         permits: Arc::new(tokio::sync::Semaphore::new(max_connections)),
         max_connections,
@@ -189,8 +187,7 @@ pub(crate) async fn accept_cross_data_connections<F, Fut>(
                 tracing::warn!(
                     "memory pool: refusing direct-TCP data connections (first from {peer}): \
                      too many waiting for admission ({max_connections} in all, \
-                     {} per peer)",
-                    pending_per_peer.limit,
+                     {CROSS_DATA_MAX_PENDING_PER_PEER} per peer)"
                 );
                 refusing = true;
             }
@@ -204,22 +201,21 @@ pub(crate) async fn accept_cross_data_connections<F, Fut>(
 }
 
 /// Connections from one peer the data listener lets wait for admission at
-/// once, when an auth token is configured: a quarter of the connection cap
-/// (64 by default). A peer cannot be told apart from a legitimate origin
-/// before it has authenticated, so this bounds what one host without the
-/// token can hold: without it, a single host opening connections and sending
-/// nothing would take every pre-admission slot and lock out every other
-/// origin (#4065). It is well above what one origin needs, since an origin
-/// opens one fresh connection per concurrent write and each is admitted
-/// within a round trip; an origin over it falls back to the zenoh relay, as
-/// with a full cap. Peers are counted per IPv4 address and per IPv6 /64 (see
-/// [`peer_key`]).
-pub(crate) fn cross_data_max_pending_per_peer(max_connections: usize) -> usize {
-    (max_connections / 4).max(1)
-}
+/// once, when an auth token is configured. A peer cannot be told apart from
+/// a legitimate origin before it has authenticated, so this bounds what one
+/// host without the token can hold: without it, a single host opening
+/// connections and sending nothing would take every pre-admission slot and
+/// lock out every other origin (#4065). Kept small and independent of the
+/// cap, so that filling the pre-admission pool takes many peers: with the
+/// default cap of 256, 32 distinct addresses or /64s. An origin whose burst
+/// of concurrent writes, each on a fresh connection, goes over it loses
+/// nothing: with a token, a refused connection fails the origin's handshake
+/// and that write falls back to the zenoh relay. Peers are counted per IPv4
+/// address and per IPv6 /64 (see [`peer_key`]).
+pub(crate) const CROSS_DATA_MAX_PENDING_PER_PEER: usize = 8;
 
 /// The address a peer is counted under for
-/// [`cross_data_max_pending_per_peer`]: its IPv4 address (also when it
+/// [`CROSS_DATA_MAX_PENDING_PER_PEER`]: its IPv4 address (also when it
 /// arrives IPv4-mapped on an IPv6 listener), or its IPv6 /64, since a single
 /// IPv6 host usually has a whole /64 to pick source addresses from.
 pub(crate) fn peer_key(ip: std::net::IpAddr) -> std::net::IpAddr {
@@ -292,20 +288,13 @@ pub(crate) struct ConnectionCap {
 }
 
 /// Connections waiting for admission, per peer (see
-/// [`cross_data_max_pending_per_peer`]).
+/// [`CROSS_DATA_MAX_PENDING_PER_PEER`]).
+#[derive(Default)]
 struct PendingPerPeer {
     counts: std::sync::Mutex<HashMap<std::net::IpAddr, usize>>,
-    limit: usize,
 }
 
 impl PendingPerPeer {
-    fn new(limit: usize) -> Self {
-        Self {
-            counts: Default::default(),
-            limit,
-        }
-    }
-
     /// Counts a connection from `ip` until the returned guard drops, or
     /// `None` when its peer already has the most it may.
     fn enter(self: Arc<Self>, ip: std::net::IpAddr) -> Option<PendingPeerSlot> {
@@ -313,7 +302,7 @@ impl PendingPerPeer {
         {
             let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
             let count = counts.entry(ip).or_default();
-            if *count >= self.limit {
+            if *count >= CROSS_DATA_MAX_PENDING_PER_PEER {
                 return None;
             }
             *count += 1;
