@@ -51,18 +51,16 @@ use dora_message::{
     id::{DataId, NodeId},
 };
 use eyre::eyre;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
     Coordinator, Event,
-    control_requests::producer_daemons,
+    control_requests::{ReplySender, producer_daemons},
     ensure_add_mapping_applied, ensure_add_node_applied, ensure_remove_mapping_applied,
     ensure_remove_node_applied, ensure_replace_node_applied, resolve_single_node,
     state::{PendingDaemonReply, RunningDataflow},
 };
-
-pub(crate) type ReplySender = oneshot::Sender<eyre::Result<ControlRequestReply>>;
 
 /// How many changes may wait behind the one in flight, per dataflow. They are
 /// operator commands; a queue this long means something is wrong, and
@@ -153,6 +151,17 @@ struct InFlight {
     waiter: tokio::task::AbortHandle,
     commit: Commit,
     reply_sender: ReplySender,
+    /// `NodeStopped` reports for the node this change starts, held back until
+    /// the change commits (see `park_node_stop`).
+    parked_stops: Vec<ParkedStop>,
+}
+
+/// A `NodeStopped` report received while the change that starts its node was
+/// still in flight.
+struct ParkedStop {
+    daemon_id: DaemonId,
+    node_id: NodeId,
+    clean_stop: bool,
 }
 
 #[derive(Default)]
@@ -182,6 +191,64 @@ impl TopologyLanes {
         Self::new(mpsc::channel(1).0)
     }
 
+    fn has_in_flight(&self) -> bool {
+        self.lanes.values().any(|lane| lane.in_flight.is_some())
+    }
+
+    /// A change is in flight or waiting on `dataflow_id`.
+    pub(crate) fn is_busy(&self, dataflow_id: &DataflowId) -> bool {
+        self.lanes
+            .get(dataflow_id)
+            .is_some_and(|lane| lane.in_flight.is_some() || !lane.waiting.is_empty())
+    }
+
+    /// Hold back a `NodeStopped` report for a node whose `AddNode`,
+    /// `ReplaceNode` or `RemoveNode` is still in flight, returning whether it
+    /// was held.
+    ///
+    /// The daemon's report travels on the event stream and the change's reply
+    /// on the topology stream, so the report can overtake the reply. Handled
+    /// right away it would be dropped (an added node is not yet known) or
+    /// undone by the commit (which clears the node's stopped markers), and
+    /// the node would show as running although it already exited.
+    /// [`Coordinator::handle_topology_reply`] replays held reports after the
+    /// commit: a removed node is then unknown and the report is ignored, as it
+    /// was when the loop waited for the reply. The daemon drops the exit of a
+    /// replaced incarnation, so a report during a replace is the new
+    /// incarnation's. (A report about the old incarnation that was sent before
+    /// the replace but is handled during it cannot be told apart: the report
+    /// carries no incarnation.)
+    pub(crate) fn park_node_stop(
+        &mut self,
+        dataflow_id: &DataflowId,
+        daemon_id: &DaemonId,
+        node_id: &NodeId,
+        clean_stop: bool,
+    ) -> bool {
+        let Some(in_flight) = self
+            .lanes
+            .get_mut(dataflow_id)
+            .and_then(|lane| lane.in_flight.as_mut())
+        else {
+            return false;
+        };
+        let starts_node = match &in_flight.commit {
+            Commit::AddNode { node_id: id, .. }
+            | Commit::ReplaceNode { node_id: id, .. }
+            | Commit::RemoveNode { node_id: id } => id == node_id,
+            Commit::AddMapping(_) | Commit::RemoveMapping(_) => false,
+        };
+        if !starts_node || &in_flight.daemon_id != daemon_id {
+            return false;
+        }
+        in_flight.parked_stops.push(ParkedStop {
+            daemon_id: daemon_id.clone(),
+            node_id: node_id.clone(),
+            clean_stop,
+        });
+        true
+    }
+
     /// No change is in flight or waiting on any dataflow.
     #[cfg(test)]
     pub(crate) fn is_idle(&self) -> bool {
@@ -198,6 +265,19 @@ struct Dispatched {
 }
 
 impl Coordinator {
+    /// Refuse an operation that snapshots the dataflow's descriptor while a
+    /// node-lifecycle change is still on its way to the stored descriptor.
+    /// A restart started now would re-create the dataflow without the change,
+    /// which the CLI was told had been applied.
+    pub(crate) fn ensure_no_topology_change(&self, dataflow_id: DataflowId) -> eyre::Result<()> {
+        if self.topology.is_busy(&dataflow_id) {
+            eyre::bail!(
+                "a node change is still in progress on dataflow {dataflow_id};                  retry the restart once it has completed"
+            );
+        }
+        Ok(())
+    }
+
     /// Queue a change on its dataflow's lane and start it if the lane is idle.
     /// The reply to `reply_sender` is sent when the change completes.
     pub(crate) async fn submit_topology_change(
@@ -276,6 +356,7 @@ impl Coordinator {
                     waiter,
                     commit,
                     reply_sender,
+                    parked_stops: Vec::new(),
                 });
             }
             return;
@@ -475,6 +556,7 @@ impl Coordinator {
         let InFlight {
             commit,
             reply_sender,
+            parked_stops,
             ..
         } = in_flight;
         let reply = match result {
@@ -488,6 +570,16 @@ impl Coordinator {
         // The CLI may have gone away while the change was in flight; the
         // change itself is committed regardless.
         let _ = reply_sender.send(reply);
+        // After the commit, so they apply to the state the change produced.
+        for stop in parked_stops {
+            self.handle_daemon_node_stopped(
+                stop.daemon_id,
+                dataflow_id,
+                stop.node_id,
+                stop.clean_stop,
+            )
+            .await?;
+        }
         self.pump_topology_lane(dataflow_id).await;
         Ok(())
     }
@@ -497,13 +589,24 @@ impl Coordinator {
     /// the whole dataflow's lane meanwhile. Called by the event loop after each
     /// event, so every way a daemon can leave is covered.
     pub(crate) async fn fail_topology_changes_of_gone_daemons(&mut self) {
+        // The daemon's reply is resolved by the WS reader before the
+        // disconnect is reported, but the waiter task may not have forwarded
+        // it yet. Let it run, so a reply that did arrive is committed (below,
+        // such a change is left to its `TopologyReply`) instead of being
+        // reported as unknown.
+        if self.topology.has_in_flight() {
+            tokio::task::yield_now().await;
+        }
         let gone: Vec<DataflowId> = self
             .topology
             .lanes
             .iter()
             .filter(|(_, lane)| {
                 lane.in_flight.as_ref().is_some_and(|f| {
-                    self.daemon_connections.connection_id_of(&f.daemon_id) != Some(f.connection_id)
+                    // A finished waiter has already queued its result.
+                    !f.waiter.is_finished()
+                        && self.daemon_connections.connection_id_of(&f.daemon_id)
+                            != Some(f.connection_id)
                 })
             })
             .map(|(id, _)| *id)

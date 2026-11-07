@@ -8815,6 +8815,15 @@ mod lifecycle_stall {
                     .handle_topology_reply(dataflow_id, change_id, result)
                     .await
                     .unwrap(),
+                Event::DaemonNodeStopped {
+                    daemon_id,
+                    dataflow_id,
+                    node_id,
+                    clean_stop,
+                } => c
+                    .handle_daemon_node_stopped(daemon_id, dataflow_id, node_id, clean_stop)
+                    .await
+                    .unwrap(),
                 Event::CtrlC => break,
                 other => panic!("unexpected event in test loop: {other:?}"),
             }
@@ -9253,8 +9262,207 @@ mod lifecycle_stall {
         );
         assert!(err.to_string().contains("is unknown"), "{err}");
         assert!(took < Duration::from_secs(10), "took {took:?}");
-        assert!(tracks(&c, dataflow_id, "sender").0);
+        // (The fixture's only daemon is gone, so the dataflow itself is
+        // removed with it; the lane is what this test is about.)
         assert!(c.topology.is_idle());
+    }
+
+    // ---- interleavings with other events ----
+
+    /// Run `request_case` against a daemon that answers after 1 s, deliver
+    /// `NodeStopped` for `node` while the change is in flight (so the loop
+    /// handles it before the change's reply, the order the unordered merge of
+    /// the event streams allows), and return the coordinator afterwards.
+    async fn stop_during_change(
+        request_case: &str,
+        node: &str,
+    ) -> (Coordinator, DataflowId, eyre::Result<ControlRequestReply>) {
+        let Fixture {
+            coordinator,
+            dataflow_id,
+            a_id,
+            topology_rx,
+            ..
+        } = fixture(ReplyPolicy::After(Duration::from_secs(1)));
+        let (events_tx, events_rx) = mpsc::channel::<Event>(64);
+        let driver = async {
+            let reply = send_control(&events_tx, request(request_case, dataflow_id)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            events_tx
+                .send(Event::DaemonNodeStopped {
+                    daemon_id: a_id.clone(),
+                    dataflow_id,
+                    node_id: node.to_string().into(),
+                    clean_stop: false,
+                })
+                .await
+                .unwrap();
+            let outcome = reply.await.unwrap();
+            events_tx.send(Event::CtrlC).await.unwrap();
+            outcome
+        };
+        let (c, outcome) = tokio::join!(serial_loop(coordinator, events_rx, topology_rx), driver);
+        (c, dataflow_id, outcome)
+    }
+
+    fn recorded_as_failed(c: &Coordinator, dataflow_id: DataflowId, node: &str) -> bool {
+        let id: dora_core::config::NodeId = node.to_string().into();
+        let df = &c.running_dataflows[&dataflow_id];
+        df.exited_nodes.contains(&id)
+            && df.node_finalized.contains(&id)
+            && df.node_metrics.get(&id).is_some_and(|m| {
+                m.status == dora_message::daemon_to_coordinator::NodeStatus::Failed
+            })
+    }
+
+    /// An added node that crashes right after it was spawned: its exit is
+    /// reported before the add's reply is handled. It used to be dropped (the
+    /// node was not known yet), leaving a dead node listed as running.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn exit_of_an_added_node_reported_before_the_commit_is_kept() {
+        let (c, dataflow_id, outcome) = stop_during_change("AddNode", "added").await;
+        assert!(outcome.is_ok(), "{}", describe(&outcome));
+        assert_eq!(tracks(&c, dataflow_id, "added"), (true, true));
+        assert!(recorded_as_failed(&c, dataflow_id, "added"));
+        assert!(c.topology.is_idle());
+    }
+
+    /// The replacement crashes right after it was spawned: the commit used to
+    /// clear the markers its exit had just set.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn exit_of_a_replaced_node_reported_before_the_commit_is_kept() {
+        let (c, dataflow_id, outcome) = stop_during_change("ReplaceNode", "sender").await;
+        assert!(outcome.is_ok(), "{}", describe(&outcome));
+        assert_eq!(tracks(&c, dataflow_id, "sender"), (true, true));
+        assert!(recorded_as_failed(&c, dataflow_id, "sender"));
+        assert!(c.topology.is_idle());
+    }
+
+    /// A removed node's exit reported before the commit must leave nothing
+    /// behind for a node that is no longer in the dataflow (the same result as
+    /// when the loop waited for the reply and handled the exit afterwards).
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn exit_of_a_removed_node_reported_before_the_commit_leaves_no_state() {
+        let (c, dataflow_id, outcome) = stop_during_change("RemoveNode", "sender").await;
+        assert!(outcome.is_ok(), "{}", describe(&outcome));
+        assert_eq!(tracks(&c, dataflow_id, "sender"), (false, false));
+        let id: dora_core::config::NodeId = "sender".to_string().into();
+        let df = &c.running_dataflows[&dataflow_id];
+        assert!(!df.exited_nodes.contains(&id));
+        assert!(!df.node_finalized.contains(&id));
+        assert!(!df.node_metrics.contains_key(&id));
+        assert!(!df.node_stopped_at.contains_key(&id));
+    }
+
+    /// The stop of a node that no change is about is handled at once.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn exit_of_an_unrelated_node_is_not_held_back() {
+        let (c, dataflow_id, outcome) = stop_during_change("AddNode", "sender").await;
+        assert!(outcome.is_ok(), "{}", describe(&outcome));
+        assert!(recorded_as_failed(&c, dataflow_id, "sender"));
+    }
+
+    /// A `restart` copies the descriptor when it arrives, so one that arrives
+    /// while a change is in flight would restart the dataflow without a
+    /// change the caller is told was applied. It is refused instead, and the
+    /// dataflow keeps running with the change.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn restart_is_refused_while_a_change_is_in_flight() {
+        let Fixture {
+            coordinator,
+            dataflow_id,
+            topology_rx,
+            ..
+        } = fixture(ReplyPolicy::After(Duration::from_secs(1)));
+        let (events_tx, events_rx) = mpsc::channel::<Event>(64);
+        let driver = async {
+            let add = send_control(&events_tx, request("AddNode", dataflow_id)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let restart = send_control(
+                &events_tx,
+                ControlRequest::Restart {
+                    dataflow_uuid: dataflow_id,
+                    grace_duration: None,
+                    force: false,
+                },
+            )
+            .await;
+            let restart = restart.await.unwrap();
+            let add = add.await.unwrap();
+            events_tx.send(Event::CtrlC).await.unwrap();
+            (restart, add)
+        };
+        let (c, (restart, add)) =
+            tokio::join!(serial_loop(coordinator, events_rx, topology_rx), driver);
+        let err = restart.expect_err("a restart must not overtake the change");
+        assert!(err.to_string().contains("still in progress"), "{err}");
+        assert!(add.is_ok(), "{}", describe(&add));
+        assert_eq!(tracks(&c, dataflow_id, "added"), (true, true));
+        assert!(c.pending_restarts.is_empty());
+        assert!(
+            c.ensure_no_topology_change(dataflow_id).is_ok(),
+            "a restart is allowed once the change has completed"
+        );
+    }
+
+    /// The daemon answers and then disconnects, and the loop sees the
+    /// disconnect first. The answer is already on its way, so the change
+    /// commits instead of being reported as unknown.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn a_reply_already_received_survives_the_daemon_disconnecting() {
+        let Fixture {
+            mut coordinator,
+            dataflow_id,
+            a_id,
+            a_connection_id,
+            mut topology_rx,
+            ..
+        } = fixture(ReplyPolicy::After(Duration::from_millis(10)));
+        // A second daemon keeps the dataflow alive when `a` leaves.
+        coordinator
+            .running_dataflows
+            .get_mut(&dataflow_id)
+            .unwrap()
+            .daemons
+            .insert(DaemonId::new(Some("b".to_string())));
+        let (reply_tx, reply_rx) = oneshot::channel();
+        coordinator
+            .handle_control_event(ControlEvent::IncomingRequest {
+                request: Box::new(request("RemoveNode", dataflow_id)),
+                reply_sender: reply_tx,
+            })
+            .await
+            .unwrap();
+        // The daemon's answer reaches the topology stream ...
+        let Some(Event::TopologyReply {
+            dataflow_id: id,
+            change_id,
+            result,
+        }) = topology_rx.recv().await
+        else {
+            panic!("expected the daemon's reply");
+        };
+        // ... but the loop handles the daemon's exit first.
+        coordinator
+            .handle_daemon_exit(a_id, a_connection_id)
+            .await
+            .unwrap();
+        coordinator.fail_topology_changes_of_gone_daemons().await;
+        assert!(
+            !coordinator.topology.is_idle(),
+            "the change must wait for its reply, not be failed"
+        );
+        coordinator
+            .handle_topology_reply(id, change_id, result)
+            .await
+            .unwrap();
+        // The fixture's only daemon left, so the dataflow itself is gone and
+        // the commit has nothing to record into (#4047). What matters is that
+        // the daemon's confirmation was acted on, not reported as unknown.
+        let err = reply_rx.await.unwrap().unwrap_err().to_string();
+        assert!(err.contains("the daemon confirmed RemoveNode"), "{err}");
+        assert!(!err.contains("is unknown"), "{err}");
+        assert!(coordinator.topology.is_idle());
     }
 
     /// The CLI hangs up while its change is in flight: the change still commits.

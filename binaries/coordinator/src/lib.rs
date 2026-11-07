@@ -417,7 +417,9 @@ async fn start_inner(
             .map(|_| Event::DaemonHeartbeatInterval);
 
     // Answers to topology changes, reported by the tasks that wait for the
-    // daemons so this loop does not (see `topology_lane`).
+    // daemons so this loop does not (see `topology_lane`). The event
+    // dispatch below is mirrored by `serial_loop` in
+    // `tests::lifecycle_stall`; keep the two in step.
     let (topology_tx, topology_rx) = tokio::sync::mpsc::channel::<Event>(64);
 
     // events that should be aborted on `dora down`

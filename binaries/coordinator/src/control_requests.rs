@@ -40,7 +40,7 @@ use std::{
 };
 use uuid::Uuid;
 
-type ReplySender = tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>;
+pub(crate) type ReplySender = tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>;
 
 impl Coordinator {
     pub(crate) async fn handle_control_event(&mut self, event: ControlEvent) -> eyre::Result<()> {
@@ -243,6 +243,10 @@ impl Coordinator {
                         grace_duration,
                         force,
                     } => {
+                        if let Err(err) = self.ensure_no_topology_change(dataflow_uuid) {
+                            let _ = reply_sender.send(Err(err));
+                            return Ok(());
+                        }
                         initiate_restart(
                             dataflow_uuid,
                             grace_duration,
@@ -264,6 +268,10 @@ impl Coordinator {
                         match resolve_name(name, &self.running_dataflows, &self.archived_dataflows)
                         {
                             Ok(dataflow_uuid) => {
+                                if let Err(err) = self.ensure_no_topology_change(dataflow_uuid) {
+                                    let _ = reply_sender.send(Err(err));
+                                    return Ok(());
+                                }
                                 initiate_restart(
                                     dataflow_uuid,
                                     grace_duration,
