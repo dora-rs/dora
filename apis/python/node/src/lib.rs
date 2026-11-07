@@ -670,14 +670,16 @@ impl Node {
     /// This method returns the parsed dataflow YAML file. Its `$VAR`
     /// references are already expanded, and an `env` string's `$` is
     /// exactly what was in the YAML (or the expanded `$VAR` value) — not
-    /// the escaped `$$` form dora uses on its own internal wire hops.
+    /// the `$$` form dora uses internally when the same descriptor crosses
+    /// a dora-to-dora wire hop.
     ///
     /// :rtype: dict
     pub fn dataflow_descriptor(&self, py: Python) -> eyre::Result<Py<PyAny>> {
         let descriptor = self
             .node
             .run(py, |node| node.dataflow_descriptor().cloned())?;
-        Ok(pythonize::pythonize(py, &descriptor).map(|x| x.unbind())?)
+        let display = dora_message::descriptor::descriptor_for_display(&descriptor);
+        Ok(pythonize::pythonize(py, &display).map(|x| x.unbind())?)
     }
 
     /// Returns the node configuration.

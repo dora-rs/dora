@@ -209,21 +209,7 @@ where
     for node in &mut descriptor.nodes {
         node.path_fallback = None;
     }
-    escape_descriptor_env_for_wire(&mut descriptor);
     descriptor.serialize(serializer)
-}
-
-/// Escapes every `$` as `$$` in `descriptor`'s own `env` and every node's
-/// `env`, in place, for a `Descriptor` about to cross a dora-to-dora wire
-/// hop. See the comment on `EnvValue` above. `pub`, not `pub(crate)`:
-/// `dora_core::descriptor::without_path_fallback` needs it for the hops it
-/// covers that this crate's own `serialize_without_path_fallback` does not
-/// reach (`DataflowInfo`, the daemon's per-node `DORA_NODE_CONFIG`).
-pub fn escape_descriptor_env_for_wire(descriptor: &mut Descriptor) {
-    escape_env_for_wire(&mut descriptor.env);
-    for node in &mut descriptor.nodes {
-        escape_env_for_wire(&mut node.env);
-    }
 }
 
 impl Descriptor {
@@ -1185,43 +1171,6 @@ pub struct ResolvedNode {
     pub kind: CoreNodeKind,
 }
 
-/// Escapes `node.env` and, for a custom node, its `CustomNode.envs`, in
-/// place, for a `ResolvedNode` about to cross the coordinator -> daemon wire
-/// hop (`AddNode`, `ReplaceNode`, `SpawnDataflowNodes.nodes`). See the
-/// comment on `EnvValue` above.
-fn escape_resolved_node_for_wire(node: &mut ResolvedNode) {
-    escape_env_for_wire(&mut node.env);
-    if let CoreNodeKind::Custom(custom) = &mut node.kind {
-        escape_env_for_wire(&mut custom.envs);
-    }
-}
-
-pub(crate) fn serialize_resolved_node_for_wire<S>(
-    node: &ResolvedNode,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    let mut node = node.clone();
-    escape_resolved_node_for_wire(&mut node);
-    node.serialize(serializer)
-}
-
-pub(crate) fn serialize_resolved_nodes_for_wire<S>(
-    nodes: &BTreeMap<NodeId, ResolvedNode>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    let mut nodes = nodes.clone();
-    for node in nodes.values_mut() {
-        escape_resolved_node_for_wire(node);
-    }
-    nodes.serialize(serializer)
-}
-
 #[allow(missing_docs)]
 impl ResolvedNode {
     /// A resolved node with the given ID and kind, and every other field left
@@ -1724,23 +1673,23 @@ pub enum GitRepoRev {
 // `1000`.
 //
 // The expansion happens on every decode, and the descriptor is decoded
-// once per hop (CLI -> coordinator -> daemon -> node). So, when a
-// `Descriptor`/`ResolvedNode`/`Node` is about to cross one of those hops, its
-// strings are escaped with each `$` written as `$$`, which the next decode
+// once per hop (CLI -> coordinator -> daemon -> node, the coordinator's
+// persisted store, the CLI's hub session file, and any future one). So a
+// string is serialized with each `$` written as `$$`, which the next decode
 // turns back into `$`: the value the CLI expanded reaches the node verbatim
 // instead of being expanded again against the receiving host's environment
 // (#3947). Released 1.x peers decode that the same way.
 //
-// That escaping is NOT part of this type's own `Serialize` impl below: a
-// bare `Descriptor`/`EnvValue` is also handed straight to user code (the
-// Python node's `dataflow_descriptor()`, a Python operator's
-// `self.dataflow_descriptor`, the C++ `dataflow_descriptor_json`), which
-// serializes it for display/introspection and never decodes it back through
-// `EnvValue`'s `Deserialize`. Escaping unconditionally there would leak the
-// wire encoding to user code as if it were the real value (#4067). So
-// `Serialize` here is a plain passthrough, and the handful of call sites
-// that actually send a value across a hop escape it explicitly first, via
-// `escape_env_for_wire`/`escape_resolved_node_for_wire` below.
+// Escaping here, unconditionally, rather than only at the specific places
+// that happen to send a `Descriptor` across a hop today, is deliberate:
+// every encode is then safe by construction, and a new hop added later does
+// not need to remember to opt in. The cost is that the three places that
+// serialize an already-decoded `Descriptor` straight to user code and never
+// decode it back — the Python node's `dataflow_descriptor()`, a Python
+// operator's `self.dataflow_descriptor`, the C++ `dataflow_descriptor_json`
+// — see the escaped form too. Each of those undoes it with
+// `descriptor_for_display` below rather than this type gaining an unescaped
+// mode (#4067).
 #[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
@@ -1748,42 +1697,65 @@ pub enum EnvValue {
     Bool(bool),
     Integer(i64),
     Float(f64),
+    #[serde(serialize_with = "serialize_escaping_dollars")]
     String(String),
 }
 
 /// `s` with each `$` written as `$$`, which is what `$` expands from, so the
-/// next decode restores `s`. Only for a value about to cross a dora-to-dora
-/// wire hop; see the comment on `EnvValue` above.
-fn escape_dollars(s: &str) -> String {
+/// next decode restores `s`.
+fn serialize_escaping_dollars<S: serde::Serializer>(
+    s: &str,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
     if s.contains('$') {
-        s.replace('$', "$$")
+        serializer.serialize_str(&s.replace('$', "$$"))
     } else {
-        s.to_owned()
+        serializer.serialize_str(s)
     }
 }
 
-/// Escapes every `EnvValue::String`'s `$` as `$$`, in place, in a map about
-/// to cross a dora-to-dora wire hop.
-fn escape_env_for_wire(env: &mut Option<BTreeMap<String, EnvValue>>) {
-    if let Some(env) = env {
-        for value in env.values_mut() {
-            if let EnvValue::String(s) = value {
-                *s = escape_dollars(s);
+/// `descriptor` as the three introspection points hand it to user code:
+/// `Node.dataflow_descriptor()` (Python), a Python operator's
+/// `self.dataflow_descriptor`, and the C++ `dataflow_descriptor_json`.
+///
+/// Serializing a `Descriptor` directly always escapes `$` as `$$` in every
+/// `env` string (see the comment on `EnvValue`), because the same
+/// `Serialize` impl is also how a `Descriptor` crosses a dora-to-dora wire
+/// hop. These three callers serialize the same, already-decoded
+/// `Descriptor` with no decode step after to undo that, so without this
+/// they would show the wire form instead of the real value (#4067). This
+/// walks only the two places `env` actually appears — `descriptor.env` and
+/// each node's `env` — rather than unescaping the whole serialized tree,
+/// so an unrelated string that happens to contain `$$` (a `build:` command,
+/// a description, ...) is left alone.
+pub fn descriptor_for_display(descriptor: &Descriptor) -> serde_json::Value {
+    let mut value = serde_json::to_value(descriptor).expect("Descriptor always serializes");
+    if let Some(env) = value.get_mut("env") {
+        unescape_json_env_map(env);
+    }
+    if let Some(nodes) = value
+        .get_mut("nodes")
+        .and_then(|nodes| nodes.as_array_mut())
+    {
+        for node in nodes {
+            if let Some(env) = node.get_mut("env") {
+                unescape_json_env_map(env);
             }
         }
     }
+    value
 }
 
-/// Escapes a bare [`Node`]'s `env`, for the one wire field that carries it
-/// outside a [`Descriptor`]: `DaemonCoordinatorEvent::ReplaceNode`'s
-/// `unresolved_node` (`dora node replace`'s original YAML-shape node).
-pub(crate) fn serialize_node_for_wire<S>(node: &Node, serializer: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    let mut node = node.clone();
-    escape_env_for_wire(&mut node.env);
-    node.serialize(serializer)
+/// Undoes [`serialize_escaping_dollars`] on every string value of a JSON
+/// object already known to be one `env:` map, in place.
+fn unescape_json_env_map(env: &mut serde_json::Value) {
+    if let Some(map) = env.as_object_mut() {
+        for value in map.values_mut() {
+            if let serde_json::Value::String(s) = value {
+                *s = s.replace("$$", "$");
+            }
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for EnvValue {
@@ -2268,34 +2240,22 @@ mod tests {
         ]);
         assert_eq!(descriptor.env.as_ref(), Some(&expected));
 
-        // Every hop: CLI -> coordinator -> daemon -> node over JSON. Escaping
-        // is explicit at the wire boundary (`escape_descriptor_env_for_wire`)
-        // rather than living in `EnvValue`'s own `Serialize` — see the
-        // comment on `EnvValue` — so each hop below escapes a clone before
-        // encoding, exactly as the real CLI/coordinator/daemon call sites do.
+        // Every hop: CLI -> coordinator -> daemon -> node over JSON.
         let mut current = descriptor;
         for hop in 0..3 {
-            let mut for_wire = current.clone();
-            escape_descriptor_env_for_wire(&mut for_wire);
-            let json = serde_json::to_string(&for_wire).unwrap();
+            let json = serde_json::to_string(&current).unwrap();
             current = serde_json::from_str(&json)
                 .unwrap_or_else(|e| panic!("JSON hop {hop} failed: {e}\n{json}"));
             assert_eq!(current.env.as_ref(), Some(&expected), "JSON hop {hop}");
         }
         // The YAML session file the CLI writes and rereads for `hub:` dataflows.
-        let mut for_wire = current.clone();
-        escape_descriptor_env_for_wire(&mut for_wire);
-        let yaml = serde_yaml::to_string(&for_wire).unwrap();
+        let yaml = serde_yaml::to_string(&current).unwrap();
         let reread: Descriptor = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(reread.env.as_ref(), Some(&expected), "YAML\n{yaml}");
     }
 
     /// Strings without `$` and typed values keep the plain encoding, so the
-    /// common case stays byte-identical to what 1.x peers send. A string's
-    /// `$` serializes as itself here: the `$` -> `$$` wire escaping lives in
-    /// the explicit wire-boundary helpers (`escape_descriptor_env_for_wire`
-    /// and friends), not in `EnvValue`'s own `Serialize` — see the comment
-    /// on `EnvValue` and `wire_helpers_escape_dollars_in_place` below.
+    /// common case stays byte-identical to what 1.x peers send.
     #[test]
     fn env_value_serializes_without_dollar_unchanged() {
         let json = |v: EnvValue| serde_json::to_string(&v).unwrap();
@@ -2304,77 +2264,49 @@ mod tests {
         assert_eq!(json(EnvValue::Integer(8080)), "8080");
         assert_eq!(json(EnvValue::Float(1.5)), "1.5");
         assert_eq!(json(EnvValue::Bool(true)), "true");
-        assert_eq!(json(EnvValue::String("a$b".into())), "\"a$b\"");
+        assert_eq!(json(EnvValue::String("a$b".into())), "\"a$$b\"");
     }
 
     /// `Node.dataflow_descriptor()` (Python), a Python operator's
     /// `self.dataflow_descriptor`, and the C++ `dataflow_descriptor_json`
-    /// all serialize an already-decoded, already-unescaped `Descriptor`
-    /// directly, with no further decode step to undo an escape. Before
-    /// #4067, `EnvValue`'s own `Serialize` escaped unconditionally, so this
-    /// leaf path showed `$$` instead of the real value.
+    /// all serialize an already-decoded `Descriptor` directly, with no
+    /// further decode step to undo the wire escape — `descriptor_for_display`
+    /// is what each of them must go through instead of a bare
+    /// `serde_json::to_value`/`pythonize` call (#4067).
     #[test]
-    fn leaf_serialization_of_descriptor_shows_the_raw_value() {
-        let mut descriptor = Descriptor::new(vec![]);
+    fn descriptor_for_display_shows_the_raw_value() {
+        let mut node = Node::new("n".parse().unwrap());
+        node.env = Some(BTreeMap::from([(
+            "K".to_string(),
+            EnvValue::String("a$b".into()),
+        )]));
+        let mut descriptor = Descriptor::new(vec![node]);
         descriptor.env = Some(BTreeMap::from([(
             "PRICE".to_string(),
             EnvValue::String("50$ off".into()),
         )]));
-        let value = serde_json::to_value(&descriptor).unwrap();
-        assert_eq!(value["env"]["PRICE"], "50$ off");
+
+        // A bare serialize still shows the wire-escaped form.
+        let wire = serde_json::to_value(&descriptor).unwrap();
+        assert_eq!(wire["env"]["PRICE"], "50$$ off");
+        assert_eq!(wire["nodes"][0]["env"]["K"], "a$$b");
+
+        // `descriptor_for_display` undoes it, at both `env` locations.
+        let display = descriptor_for_display(&descriptor);
+        assert_eq!(display["env"]["PRICE"], "50$ off");
+        assert_eq!(display["nodes"][0]["env"]["K"], "a$b");
     }
 
-    /// Each of `escape_descriptor_env_for_wire`, `serialize_resolved_node_for_wire`
-    /// and `serialize_node_for_wire` must actually escape `$`, in the exact
-    /// locations each covers, or the corresponding wire hop stops protecting
-    /// against the #3947 double-expansion.
+    /// `descriptor_for_display` targets only `env`/`nodes[].env`, so a `$$`
+    /// elsewhere in the descriptor (a path, a description, ...) that has
+    /// nothing to do with the escape must survive unchanged.
     #[test]
-    fn wire_helpers_escape_dollars_in_place() {
-        let mut descriptor = {
-            let mut node = Node::new("n".parse().unwrap());
-            node.env = Some(BTreeMap::from([(
-                "K".to_string(),
-                EnvValue::String("a$b".into()),
-            )]));
-            Descriptor::new(vec![node])
-        };
-        descriptor.env = Some(BTreeMap::from([(
-            "TOP".to_string(),
-            EnvValue::String("c$d".into()),
-        )]));
-        escape_descriptor_env_for_wire(&mut descriptor);
-        assert_eq!(
-            descriptor.env.as_ref().unwrap()["TOP"],
-            EnvValue::String("c$$d".into())
-        );
-        assert_eq!(
-            descriptor.nodes[0].env.as_ref().unwrap()["K"],
-            EnvValue::String("a$$b".into())
-        );
-
-        let mut custom = CustomNode::new("n.py".into());
-        custom.envs = Some(BTreeMap::from([(
-            "E".to_string(),
-            EnvValue::String("e$f".into()),
-        )]));
-        let mut resolved = ResolvedNode::new("n".parse().unwrap(), CoreNodeKind::Custom(custom));
-        resolved.env = Some(BTreeMap::from([(
-            "K".to_string(),
-            EnvValue::String("g$h".into()),
-        )]));
-        let value = serialize_resolved_node_for_wire(&resolved, serde_json::value::Serializer)
-            .expect("serialize");
-        assert_eq!(value["env"]["K"], "g$$h");
-        assert_eq!(value["custom"]["envs"]["E"], "e$$f");
-
-        let mut bare_node = Node::new("n".parse().unwrap());
-        bare_node.env = Some(BTreeMap::from([(
-            "K".to_string(),
-            EnvValue::String("i$j".into()),
-        )]));
-        let value =
-            serialize_node_for_wire(&bare_node, serde_json::value::Serializer).expect("serialize");
-        assert_eq!(value["env"]["K"], "i$$j");
+    fn descriptor_for_display_leaves_unrelated_dollar_signs_alone() {
+        let mut node = Node::new("n".parse().unwrap());
+        node.path = Some("echo $$ not an env escape".into());
+        let descriptor = Descriptor::new(vec![node]);
+        let display = descriptor_for_display(&descriptor);
+        assert_eq!(display["nodes"][0]["path"], "echo $$ not an env escape");
     }
 
     /// Assert that `constructed` serializes to exactly what `yaml`

@@ -589,15 +589,9 @@ mod path_fallback_tests {
             else {
                 unreachable!()
             };
-            // The coordinator -> daemon hop encodes the descriptor again,
-            // escaping explicitly at that wire boundary rather than inside
-            // `EnvValue`'s own `Serialize` — see the comment on `EnvValue`
-            // and `serialize_without_path_fallback`/
-            // `escape_descriptor_env_for_wire`.
-            let mut for_wire = dataflow.clone();
-            crate::descriptor::escape_descriptor_env_for_wire(&mut for_wire);
+            // The coordinator -> daemon hop encodes the descriptor again.
             let forwarded: Descriptor =
-                serde_json::from_str(&serde_json::to_string(&for_wire).unwrap()).unwrap();
+                serde_json::from_str(&serde_json::to_string(&dataflow).unwrap()).unwrap();
             for d in [&dataflow, &forwarded] {
                 assert_eq!(d.env.as_ref().unwrap()["X"], expanded);
                 assert_eq!(d.nodes[0].env.as_ref().unwrap()["Y"], expanded);
