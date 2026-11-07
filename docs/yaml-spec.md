@@ -186,7 +186,8 @@ for 60 seconds (wedged, or blocked on its own producer in a backpressure cycle)
 stops holding the producer, which then loses that message, and every further
 message to that receiver's full channel is dropped the same way, without
 another 60-second hold, until the receiver has drained its channel to at least
-half empty. From the first such drop on, delivery to that input is best effort:
+half empty. From the first such drop on, delivery to all of that receiver's
+`backpressure` inputs is best effort:
 a receiver that resumes but stays slower than its producer may never get its
 channel back to half empty, since the producer, no longer held, keeps it full,
 and then every message beyond the receiver's rate is dropped and counted for as
