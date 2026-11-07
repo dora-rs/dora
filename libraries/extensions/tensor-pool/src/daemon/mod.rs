@@ -1673,7 +1673,7 @@ mod cross_pool_write_tests {
     /// With an auth token, a peer that does not have it cannot take any of
     /// the listener's connection permits: connections that never finish the
     /// handshake only hold pre-admission slots, at most
-    /// `CROSS_DATA_MAX_PENDING_PER_PEER` from one address, so an origin with
+    /// `cross_data_max_pending_per_peer` from one address, so an origin with
     /// the token is still admitted while they sit there (#4065).
     // The env lock is held across the awaits on purpose, as in the tests
     // above: a sibling test must not change the token mid-test.
@@ -1696,7 +1696,8 @@ mod cross_pool_write_tests {
 
         // Room for every connection the silent peer opens, had it been let
         // into the cap at accept time as before.
-        let max_connections = CROSS_DATA_MAX_PENDING_PER_PEER + 1;
+        let max_connections = 8;
+        assert!(cross_data_max_pending_per_peer(max_connections) < max_connections);
         let (addr, mut admitted, accept) = admitting_listener(max_connections).await;
         let mut silent = Vec::new();
         for _ in 0..max_connections + 2 {
@@ -1716,6 +1717,53 @@ mod cross_pool_write_tests {
         assert_eq!(peer.ip(), std::net::IpAddr::from([127, 0, 0, 1]));
         assert!(admitted.try_recv().is_err(), "no silent peer is admitted");
         drop(silent);
+        accept.abort();
+    }
+
+    /// Peers are counted per IPv4 address and per IPv6 /64, so one IPv6
+    /// host cannot dodge the per-peer bound by using a new source address
+    /// for every connection.
+    #[test]
+    fn pending_peers_are_keyed_by_ipv4_address_or_ipv6_prefix() {
+        use std::net::IpAddr;
+        let v4: IpAddr = "192.0.2.7".parse().unwrap();
+        assert_eq!(peer_key(v4), v4);
+        assert_eq!(peer_key("::ffff:192.0.2.7".parse().unwrap()), v4);
+        let a = peer_key("2001:db8:1:2:aaaa::1".parse().unwrap());
+        let b = peer_key("2001:db8:1:2:ffff:1:2:3".parse().unwrap());
+        assert_eq!(a, b);
+        assert_eq!(a, "2001:db8:1:2::".parse::<IpAddr>().unwrap());
+        assert_ne!(a, peer_key("2001:db8:1:3::1".parse().unwrap()));
+    }
+
+    /// Without a token there is no per-peer bound: it would protect nothing
+    /// there, and would refuse an origin's burst of concurrent writes, each
+    /// on a fresh connection, at accept.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn without_a_token_one_peer_may_fill_the_pending_pool() {
+        use tokio::io::AsyncWriteExt;
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+        let wait = std::time::Duration::from_secs(10);
+        let max_connections = 8;
+        let burst = cross_data_max_pending_per_peer(max_connections) + 1;
+        let (addr, mut admitted, accept) = admitting_listener(max_connections).await;
+        let mut writes = Vec::new();
+        for _ in 0..burst {
+            writes.push(tokio::net::TcpStream::connect(addr).await.unwrap());
+        }
+        for write in &mut writes {
+            write.write_all(&[0]).await.unwrap();
+        }
+        for _ in 0..burst {
+            tokio::time::timeout(wait, admitted.recv())
+                .await
+                .expect("every connection of the burst must be admitted")
+                .unwrap();
+        }
         accept.abort();
     }
 
