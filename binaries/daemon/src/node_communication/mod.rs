@@ -1,7 +1,7 @@
 use crate::{
-    CONTROL_EVENT_HEADROOM, DaemonNodeEvent, Event, FaultToleranceStats, GAVE_UP_RECOVERY_ROOM,
+    CONTROL_EVENT_HEADROOM, DaemonNodeEvent, Event, FaultToleranceStats, GAVE_UP_RECOVERY_TAKES,
     NODE_EVENT_CHANNEL_CAPACITY,
-    local_delivery::{DeferredDelivery, DrainSignal},
+    local_delivery::{DeferredDelivery, DrainSignal, Recovery},
 };
 use dora_core::{
     config::{DataId, NodeId},
@@ -744,12 +744,21 @@ impl Listener {
         // would do the same while the channel is still full, so a receiver
         // that frees a few slots per read would stall its producer for another
         // full stall limit after every read (dora-rs/dora#3601).
-        if room >= GAVE_UP_RECOVERY_ROOM && self.drained.gave_up.load(Ordering::Relaxed) {
-            self.drained.gave_up.store(false, Ordering::Release);
-            tracing::info!(
+        // A receiver that resumed slower than its producer never gets there,
+        // since the producer, no longer held, refills the channel as fast as
+        // it drains: steady progress re-arms the hold too, on probation
+        // (dora-rs/dora#4083, see `DrainSignal::probation`).
+        match self.drained.note_take(room) {
+            Some(Recovery::Drained) => tracing::info!(
                 node = %self.node_id,
                 "receiver is draining again: holding its backpressure producers again"
-            );
+            ),
+            Some(Recovery::Progressing) => tracing::info!(
+                node = %self.node_id,
+                "receiver took {GAVE_UP_RECOVERY_TAKES} events since it was given up on: \
+                 holding its backpressure producers again, on probation"
+            ),
+            None => {}
         }
         if room <= CONTROL_EVENT_HEADROOM {
             self.drained.notify.notify_waiters();
@@ -828,6 +837,8 @@ pub(crate) async fn deliver_when_room(
         held: _held,
     } = delivery;
     let mut stalled = Duration::ZERO;
+    // Whether the receiver took an event while this delivery was held.
+    let mut woken = false;
     loop {
         // Register before looking, so a drain between the look and the
         // wait is not lost.
@@ -839,6 +850,15 @@ pub(crate) async fn deliver_when_room(
                 Ok(()) => {
                     if let Some(pending) = &pending {
                         pending.fetch_add(1, Ordering::Relaxed);
+                    }
+                    // The receiver drained while its producer was held: it is
+                    // slow, not wedged or in a cycle, so it gets the full
+                    // stall limit again.
+                    if woken && drained.probation.swap(false, Ordering::Relaxed) {
+                        tracing::debug!(
+                            node = %receiver,
+                            "receiver drains while its producer is held: probation over"
+                        );
                     }
                     return;
                 }
@@ -854,7 +874,10 @@ pub(crate) async fn deliver_when_room(
         // or not — and the health check must see it that way.
         last_activity.store(current_millis(), Ordering::Release);
         match tokio::time::timeout(BACKPRESSURE_STALL_TICK, notified).await {
-            Ok(()) => stalled = Duration::ZERO,
+            Ok(()) => {
+                stalled = Duration::ZERO;
+                woken = true;
+            }
             Err(_elapsed) => {
                 stalled += BACKPRESSURE_STALL_TICK;
                 // Another delivery to this receiver already gave up on it
@@ -868,6 +891,22 @@ pub(crate) async fn deliver_when_room(
                     ft_stats.record_drop(1, true);
                     return;
                 }
+                // A receiver held for again on probation that frees nothing
+                // for a tick is given up on once more, without the full stall
+                // limit: it stopped as soon as its producer was held, as one
+                // blocked on its own producer does (dora-rs/dora#3630).
+                if drained.probation.load(Ordering::Relaxed) {
+                    tracing::warn!(
+                        node = %receiver,
+                        "receiver on probation freed no room in {:?}: dropping a message \
+                         its input (queue_policy: backpressure) was promised, and giving up \
+                         on it again",
+                        BACKPRESSURE_STALL_TICK,
+                    );
+                    ft_stats.record_drop(1, true);
+                    drained.give_up();
+                    return;
+                }
                 if stalled >= BACKPRESSURE_STALL_LIMIT {
                     tracing::error!(
                         node = %receiver,
@@ -877,7 +916,7 @@ pub(crate) async fn deliver_when_room(
                         BACKPRESSURE_STALL_LIMIT,
                     );
                     ft_stats.record_drop(1, true);
-                    drained.gave_up.store(true, Ordering::Release);
+                    drained.give_up();
                     return;
                 }
             }
@@ -911,6 +950,7 @@ trait Connection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::GAVE_UP_RECOVERY_ROOM;
     use crate::test_tracing::TextCapture;
     use aligned_vec::AVec;
     use dora_core::config::DataId;
@@ -1342,6 +1382,157 @@ mod tests {
         .await;
         assert_eq!(pending.load(Ordering::Relaxed), 1);
         assert_eq!(lost(&listener), 2);
+    }
+
+    /// A listener whose receiver ran into the stall limit once, left at the
+    /// floor real traffic fills its channel to.
+    async fn given_up_listener() -> (Listener, mpsc::Sender<Timestamped<NodeEvent>>) {
+        let (mut listener, _tx) = listener();
+        let clock = listener.clock.clone();
+        let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        for _ in 0..NODE_EVENT_CHANNEL_CAPACITY - (CONTROL_EVENT_HEADROOM - 1) {
+            tx.try_send(input(&clock, 0)).unwrap();
+        }
+        listener.subscribed_events = Some(rx);
+        let (delivery, _pending) = deferred(&tx, &listener.drained, input(&clock, 0));
+        deliver_when_room(
+            delivery,
+            &listener.last_activity,
+            &listener.backpressure.ft_stats,
+        )
+        .await;
+        assert!(listener.drained.gave_up.load(Ordering::Relaxed));
+        (listener, tx)
+    }
+
+    fn take_one(listener: &mut Listener) {
+        listener
+            .subscribed_events
+            .as_mut()
+            .unwrap()
+            .try_recv()
+            .expect("a queued event");
+        listener.note_drained();
+    }
+
+    fn lost_messages(listener: &Listener) -> u64 {
+        listener
+            .backpressure
+            .ft_stats
+            .lost_backpressure_messages
+            .load(Ordering::Relaxed)
+    }
+
+    /// Takes one event, then refills the channel the way a producer that is
+    /// no longer held does: the daemon loop sends while the headroom is free.
+    fn take_and_refill(listener: &mut Listener, tx: &mpsc::Sender<Timestamped<NodeEvent>>) {
+        take_one(listener);
+        while tx.capacity() > CONTROL_EVENT_HEADROOM {
+            tx.try_send(input(&listener.clock, 0)).unwrap();
+        }
+    }
+
+    /// A receiver that stalled once and then resumed slower than its
+    /// producer never drains its channel to `GAVE_UP_RECOVERY_ROOM`: the
+    /// producer, no longer held, refills it as fast as it drains. Its steady
+    /// progress re-arms the hold anyway, on probation, and once a held
+    /// delivery gets in because the receiver drained meanwhile, it is fully
+    /// back to lossless delivery (dora-rs/dora#4083).
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_receiver_gets_backpressure_back_after_a_stall() {
+        let (mut listener, tx) = given_up_listener().await;
+        let clock = listener.clock.clone();
+
+        for _ in 0..GAVE_UP_RECOVERY_TAKES - 1 {
+            take_and_refill(&mut listener, &tx);
+        }
+        assert!(listener.drained.gave_up.load(Ordering::Relaxed));
+        take_and_refill(&mut listener, &tx);
+        assert_eq!(
+            tx.capacity(),
+            CONTROL_EVENT_HEADROOM,
+            "the channel stayed at its floor throughout"
+        );
+        assert!(
+            !listener.drained.gave_up.load(Ordering::Relaxed),
+            "steady progress re-arms the hold"
+        );
+        assert!(listener.drained.probation.load(Ordering::Relaxed));
+
+        // The producer's next message to the full channel is held again, and
+        // gets in as soon as the receiver takes its next event.
+        let lost_before = lost_messages(&listener);
+        tx.try_send(input(&clock, 0)).unwrap();
+        let (delivery, pending) = deferred(&tx, &listener.drained, input(&clock, 0));
+        let ft_stats = listener.backpressure.ft_stats.clone();
+        let deliver = tokio::spawn(async move {
+            deliver_when_room(delivery, &AtomicU64::new(0), &ft_stats).await
+        });
+        tokio::task::yield_now().await;
+        assert!(!deliver.is_finished(), "the producer is held");
+        take_one(&mut listener);
+        tokio::time::timeout(BACKPRESSURE_STALL_TICK / 2, deliver)
+            .await
+            .expect("the receiver's take lets the held delivery in")
+            .unwrap();
+        assert_eq!(pending.load(Ordering::Relaxed), 1);
+        assert_eq!(lost_messages(&listener), lost_before);
+        assert!(
+            !listener.drained.probation.load(Ordering::Relaxed),
+            "a receiver that drains while its producer is held is off probation"
+        );
+
+        // Off probation, a pause shorter than the stall limit is waited out.
+        let (delivery, pending) = deferred(&tx, &listener.drained, input(&clock, 0));
+        let ft_stats = listener.backpressure.ft_stats.clone();
+        let deliver = tokio::spawn(async move {
+            deliver_when_room(delivery, &AtomicU64::new(0), &ft_stats).await
+        });
+        tokio::time::sleep(BACKPRESSURE_STALL_TICK * 5).await;
+        assert!(!deliver.is_finished());
+        take_one(&mut listener);
+        deliver.await.unwrap();
+        assert_eq!(pending.load(Ordering::Relaxed), 1);
+        assert_eq!(lost_messages(&listener), lost_before);
+    }
+
+    /// A receiver that is held for again on probation and then frees nothing
+    /// — it is blocked on its own producer, as in a backpressure cycle — is
+    /// given up on again after one stall tick, not after another full stall
+    /// limit (dora-rs/dora#3630), and has to make steady progress all over
+    /// again before it is held for once more.
+    #[tokio::test(start_paused = true)]
+    async fn a_receiver_on_probation_that_stops_is_given_up_on_within_a_tick() {
+        let (mut listener, tx) = given_up_listener().await;
+        let clock = listener.clock.clone();
+        for _ in 0..GAVE_UP_RECOVERY_TAKES {
+            take_and_refill(&mut listener, &tx);
+        }
+        assert!(listener.drained.probation.load(Ordering::Relaxed));
+
+        let lost_before = lost_messages(&listener);
+        tx.try_send(input(&clock, 0)).unwrap();
+        let (delivery, pending) = deferred(&tx, &listener.drained, input(&clock, 0));
+        let started = tokio::time::Instant::now();
+        deliver_when_room(
+            delivery,
+            &listener.last_activity,
+            &listener.backpressure.ft_stats,
+        )
+        .await;
+        assert!(started.elapsed() <= BACKPRESSURE_STALL_TICK);
+        assert_eq!(pending.load(Ordering::Relaxed), 0);
+        assert_eq!(lost_messages(&listener), lost_before + 1);
+        assert!(listener.drained.gave_up.load(Ordering::Relaxed));
+        assert!(!listener.drained.probation.load(Ordering::Relaxed));
+
+        for _ in 0..GAVE_UP_RECOVERY_TAKES - 1 {
+            take_and_refill(&mut listener, &tx);
+        }
+        assert!(
+            listener.drained.gave_up.load(Ordering::Relaxed),
+            "the progress count starts over"
+        );
     }
 
     /// A stalled receiver's backlog used to come back in ONE reply; past the

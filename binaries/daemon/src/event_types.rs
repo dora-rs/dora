@@ -243,6 +243,14 @@ pub(crate) const CONTROL_EVENT_HEADROOM: usize = 50;
 /// mark and re-arm the hold that just ran into the stall limit.
 pub(crate) const GAVE_UP_RECOVERY_ROOM: usize = NODE_EVENT_CHANNEL_CAPACITY / 2;
 
+/// Events a given-up receiver must take before the daemon holds its
+/// backpressure producers for it again on probation, even though its channel
+/// never got back to [`GAVE_UP_RECOVERY_ROOM`] free: a consumer that resumed
+/// slower than its producer keeps the channel near full while it drains
+/// steadily (dora-rs/dora#4083). A wedged receiver takes nothing and never
+/// gets there.
+pub(crate) const GAVE_UP_RECOVERY_TAKES: usize = NODE_EVENT_CHANNEL_CAPACITY / 2;
+
 /// Send a node event with timestamp. Returns Ok(true) if delivered,
 /// Ok(false) if dropped (channel full/headroom), Err if channel closed.
 #[allow(clippy::result_large_err)]

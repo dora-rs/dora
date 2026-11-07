@@ -19,7 +19,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
         Arc, Mutex, PoisonError, atomic,
-        atomic::{AtomicBool, AtomicU64},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize},
     },
     time::Instant,
 };
@@ -69,12 +69,38 @@ pub(crate) struct DrainSignal {
     /// [`GAVE_UP_RECOVERY_ROOM`](crate::GAVE_UP_RECOVERY_ROOM) free slots or
     /// more; clearing it at the headroom a held delivery waits for would take
     /// one event off a stalled channel and re-arm the hold (dora-rs/dora#3630).
+    /// Also cleared, onto `probation`, once the receiver has taken
+    /// [`GAVE_UP_RECOVERY_TAKES`](crate::GAVE_UP_RECOVERY_TAKES) events since
+    /// it was given up on, so a consumer that resumed slower than its producer
+    /// gets backpressure back (dora-rs/dora#4083).
     pub gave_up: AtomicBool,
+    /// Events the receiver took since it was last given up on.
+    pub taken_since_gave_up: AtomicUsize,
+    /// Set when `gave_up` was cleared by steady progress rather than by a
+    /// drained channel. Its producers are held again, but a held delivery
+    /// that sees no take within one stall tick gives up on the receiver at
+    /// once instead of after the full stall limit: a receiver in a
+    /// backpressure cycle also makes progress while its own sends are being
+    /// dropped, and stops again as soon as they are held (dora-rs/dora#3630).
+    /// Cleared once a held delivery got in after the receiver took an event,
+    /// i.e. the receiver drains while its producer is held, or once the
+    /// channel is back to `GAVE_UP_RECOVERY_ROOM` free.
+    pub probation: AtomicBool,
     /// Set when the node dropped its event stream deliberately, so a held
     /// delivery that finds its channel closed afterwards is not a loss.
     pub stream_dropped: AtomicBool,
     /// Held deliveries per input, and the close events waiting for them.
     holds: Mutex<Holds>,
+}
+
+/// How a given-up receiver came back (see [`DrainSignal::note_take`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Recovery {
+    /// Its channel is back to `GAVE_UP_RECOVERY_ROOM` free.
+    Drained,
+    /// It took `GAVE_UP_RECOVERY_TAKES` events, but its channel stayed full:
+    /// held again, on probation.
+    Progressing,
 }
 
 /// See [`DrainSignal::holds`].
@@ -127,6 +153,46 @@ impl Holds {
 }
 
 impl DrainSignal {
+    /// Marks the receiver as given up on after a held delivery to it was
+    /// dropped (see [`Self::gave_up`]).
+    pub fn give_up(&self) {
+        self.probation.store(false, atomic::Ordering::Relaxed);
+        self.taken_since_gave_up.store(0, atomic::Ordering::Relaxed);
+        self.gave_up.store(true, atomic::Ordering::Release);
+    }
+
+    /// Notes that the receiver took one event out of its channel, leaving
+    /// `room` free slots, and returns whether that ended a `gave_up` mark.
+    pub fn note_take(&self, room: usize) -> Option<Recovery> {
+        let gave_up = self.gave_up.load(atomic::Ordering::Relaxed);
+        if room >= crate::GAVE_UP_RECOVERY_ROOM {
+            // Only touched when set: this runs on every take.
+            if self.probation.load(atomic::Ordering::Relaxed) {
+                self.probation.store(false, atomic::Ordering::Relaxed);
+            }
+            if !gave_up {
+                return None;
+            }
+            self.gave_up.store(false, atomic::Ordering::Release);
+            return Some(Recovery::Drained);
+        }
+        if !gave_up {
+            return None;
+        }
+        let taken = self
+            .taken_since_gave_up
+            .fetch_add(1, atomic::Ordering::Relaxed)
+            + 1;
+        if taken < crate::GAVE_UP_RECOVERY_TAKES {
+            return None;
+        }
+        // Probation first, so a producer that sees the mark gone also sees
+        // that its hold is a short one.
+        self.probation.store(true, atomic::Ordering::Relaxed);
+        self.gave_up.store(false, atomic::Ordering::Release);
+        Some(Recovery::Progressing)
+    }
+
     /// Counts a held delivery for `input` until the returned guard drops.
     pub fn hold(self: &Arc<Self>, input: &DataId) -> HeldInput {
         *self
