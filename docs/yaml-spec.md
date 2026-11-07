@@ -188,8 +188,9 @@ message to that receiver's full channel is dropped the same way, without
 another 60-second hold, until the receiver has drained its channel to at least
 half empty or has taken 500 events since. In the second case the receiver is
 on probation: its producers are held again, but a hold during which it takes
-nothing for one second drops the message and gives up on it again at once; a
-hold that ends because it took an event ends the probation. The routing applies to the producer's entire output, so every
+nothing for twice the longest gap between its takes since it was given up on
+(at least one second, at most 60) drops the message and gives up on it again
+at once; a hold that ends because it took an event ends the probation. The routing applies to the producer's entire output, so every
 consumer of that output leaves the zero-copy path, and the daemon path carries
 the 64 MiB per-message limit. A producer learns its routing when it starts, so
 `dora node add` and `dora node replace` refuse a `backpressure` input whose

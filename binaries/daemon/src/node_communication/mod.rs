@@ -892,16 +892,22 @@ pub(crate) async fn deliver_when_room(
                     return;
                 }
                 // A receiver held for again on probation that frees nothing
-                // for a tick is given up on once more, without the full stall
-                // limit: it stopped as soon as its producer was held, as one
-                // blocked on its own producer does (dora-rs/dora#3630).
-                if drained.probation.load(Ordering::Relaxed) {
+                // for well over the gaps it showed between its takes is given
+                // up on once more, without the full stall limit: it stopped as
+                // soon as its producer was held, as one blocked on its own
+                // producer does (dora-rs/dora#3630).
+                let patience = drained.probation.load(Ordering::Relaxed).then(|| {
+                    drained.probation_patience(BACKPRESSURE_STALL_TICK, BACKPRESSURE_STALL_LIMIT)
+                });
+                if let Some(patience) = patience
+                    && stalled >= patience
+                {
                     tracing::warn!(
                         node = %receiver,
                         "receiver on probation freed no room in {:?}: dropping a message \
                          its input (queue_policy: backpressure) was promised, and giving up \
                          on it again",
-                        BACKPRESSURE_STALL_TICK,
+                        stalled,
                     );
                     ft_stats.record_drop(1, true);
                     drained.give_up();
@@ -1494,6 +1500,39 @@ mod tests {
         deliver.await.unwrap();
         assert_eq!(pending.load(Ordering::Relaxed), 1);
         assert_eq!(lost_messages(&listener), lost_before);
+    }
+
+    /// A healthy consumer of large messages takes in bursts, one per batch
+    /// its node fetches, and can go well over a stall tick between them. On
+    /// probation it is waited for as long as twice the longest gap it showed
+    /// since it was given up on, so it is not given up on again for pausing
+    /// the way it has been all along.
+    #[tokio::test(start_paused = true)]
+    async fn probation_waits_for_a_receiver_as_long_as_its_gaps_between_takes() {
+        let (mut listener, tx) = given_up_listener().await;
+        let clock = listener.clock.clone();
+        let gap = BACKPRESSURE_STALL_TICK * 2;
+        for _ in 0..GAVE_UP_RECOVERY_TAKES {
+            tokio::time::sleep(gap).await;
+            take_and_refill(&mut listener, &tx);
+        }
+        assert!(listener.drained.probation.load(Ordering::Relaxed));
+
+        let lost_before = lost_messages(&listener);
+        tx.try_send(input(&clock, 0)).unwrap();
+        let (delivery, pending) = deferred(&tx, &listener.drained, input(&clock, 0));
+        let ft_stats = listener.backpressure.ft_stats.clone();
+        let deliver = tokio::spawn(async move {
+            deliver_when_room(delivery, &AtomicU64::new(0), &ft_stats).await
+        });
+        tokio::time::sleep(gap + BACKPRESSURE_STALL_TICK / 2).await;
+        assert!(!deliver.is_finished(), "still held after a usual gap");
+        take_one(&mut listener);
+        deliver.await.unwrap();
+        assert_eq!(pending.load(Ordering::Relaxed), 1);
+        assert_eq!(lost_messages(&listener), lost_before);
+        assert!(!listener.drained.gave_up.load(Ordering::Relaxed));
+        assert!(!listener.drained.probation.load(Ordering::Relaxed));
     }
 
     /// A receiver that is held for again on probation and then frees nothing

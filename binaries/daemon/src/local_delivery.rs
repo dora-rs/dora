@@ -19,9 +19,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
         Arc, Mutex, PoisonError, atomic,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize},
+        atomic::{AtomicBool, AtomicU64},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 
@@ -74,13 +74,13 @@ pub(crate) struct DrainSignal {
     /// it was given up on, so a consumer that resumed slower than its producer
     /// gets backpressure back (dora-rs/dora#4083).
     pub gave_up: AtomicBool,
-    /// Events the receiver took since it was last given up on.
-    pub taken_since_gave_up: AtomicUsize,
+    /// How the receiver has been taking events since it was last given up on.
+    progress: Mutex<Progress>,
     /// Set when `gave_up` was cleared by steady progress rather than by a
     /// drained channel. Its producers are held again, but a held delivery
-    /// that sees no take within one stall tick gives up on the receiver at
-    /// once instead of after the full stall limit: a receiver in a
-    /// backpressure cycle also makes progress while its own sends are being
+    /// that sees no take for [`Self::probation_patience`] gives up on the
+    /// receiver at once instead of after the full stall limit: a receiver in
+    /// a backpressure cycle also makes progress while its own sends are being
     /// dropped, and stops again as soon as they are held (dora-rs/dora#3630).
     /// Cleared once a held delivery got in after the receiver took an event,
     /// i.e. the receiver drains while its producer is held, or once the
@@ -101,6 +101,18 @@ pub(crate) enum Recovery {
     /// It took `GAVE_UP_RECOVERY_TAKES` events, but its channel stayed full:
     /// held again, on probation.
     Progressing,
+}
+
+/// See [`DrainSignal::progress`].
+#[derive(Debug, Default)]
+struct Progress {
+    /// Events taken since the receiver was given up on.
+    taken: usize,
+    /// When it was given up on, or took its last event since.
+    last: Option<tokio::time::Instant>,
+    /// The longest it went without taking an event since it was given up
+    /// on, counting from the give-up.
+    max_gap: Duration,
 }
 
 /// See [`DrainSignal::holds`].
@@ -157,8 +169,27 @@ impl DrainSignal {
     /// dropped (see [`Self::gave_up`]).
     pub fn give_up(&self) {
         self.probation.store(false, atomic::Ordering::Relaxed);
-        self.taken_since_gave_up.store(0, atomic::Ordering::Relaxed);
+        *self.progress.lock().unwrap_or_else(PoisonError::into_inner) = Progress {
+            last: Some(tokio::time::Instant::now()),
+            ..Progress::default()
+        };
         self.gave_up.store(true, atomic::Ordering::Release);
+    }
+
+    /// How long a held delivery waits, on probation, for the receiver to
+    /// take an event before giving up on it again: twice the longest gap
+    /// between its takes since it was given up on, within `min..=max`. A
+    /// healthy consumer takes in bursts, one per batch its node fetches, and
+    /// one of large messages can go well over a stall tick between them, so
+    /// a fixed tick would give up on it again at once; a receiver in a cycle
+    /// takes back to back while its sends are being dropped, and gets `min`.
+    pub fn probation_patience(&self, min: Duration, max: Duration) -> Duration {
+        let max_gap = self
+            .progress
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .max_gap;
+        max_gap.saturating_mul(2).clamp(min, max)
     }
 
     /// Notes that the receiver took one event out of its channel, leaving
@@ -179,12 +210,17 @@ impl DrainSignal {
         if !gave_up {
             return None;
         }
-        let taken = self
-            .taken_since_gave_up
-            .fetch_add(1, atomic::Ordering::Relaxed)
-            + 1;
-        if taken < crate::GAVE_UP_RECOVERY_TAKES {
-            return None;
+        {
+            let mut progress = self.progress.lock().unwrap_or_else(PoisonError::into_inner);
+            let now = tokio::time::Instant::now();
+            if let Some(last) = progress.last {
+                progress.max_gap = progress.max_gap.max(now - last);
+            }
+            progress.last = Some(now);
+            progress.taken += 1;
+            if progress.taken < crate::GAVE_UP_RECOVERY_TAKES {
+                return None;
+            }
         }
         // Probation first, so a producer that sees the mark gone also sees
         // that its hold is a short one.
