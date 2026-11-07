@@ -152,3 +152,36 @@ impl Executable for SelfSubCommand {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    /// The Windows release asset is made with PowerShell `Compress-Archive`,
+    /// which always writes Deflate entries. `self_update` only links a Deflate
+    /// decoder when `compression-zip-deflate` is enabled, so without it every
+    /// Windows `dora self update` fails after the download (#4034).
+    #[test]
+    fn self_update_extracts_a_deflate_zip() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("dora-cli-x86_64-pc-windows-msvc.zip");
+        let payload = b"MZ fake dora.exe payload ".repeat(64);
+
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer
+            .start_file("dora.exe", options)
+            .expect("Deflate support must be compiled into zip");
+        writer.write_all(&payload).unwrap();
+        writer.finish().unwrap();
+
+        let out = dir.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        self_update::Extract::from_source(&archive)
+            .archive(self_update::ArchiveKind::Zip)
+            .extract_file(&out, "dora.exe")
+            .expect("self_update must extract a Deflate zip entry");
+        assert_eq!(std::fs::read(out.join("dora.exe")).unwrap(), payload);
+    }
+}
