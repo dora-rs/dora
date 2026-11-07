@@ -1,6 +1,7 @@
 //! Direct-TCP data plane: the mirror-side listener and the origin-side sender.
 
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Direct-TCP cross-machine data plane.
 ///
@@ -92,12 +93,17 @@ pub(crate) const CROSS_DATA_BIND_DEFAULT: &str = "0.0.0.0";
 /// origin keeps one pooled connection per mirror endpoint, plus one per
 /// concurrent write in flight, so the default leaves plenty of headroom for
 /// legitimate peers while staying well below a default `ulimit -n` of 1024.
-/// A connection over the cap is closed at once. That does not reliably reach
-/// the origin as an error: with an auth token, the origin's handshake reads
-/// the close and the write falls back to the zenoh relay, but without a
+/// Only an admitted connection counts towards the cap: with an auth token,
+/// one that passed the handshake (#4065); connections still waiting for
+/// admission are bounded separately (see [`accept_cross_data_connections`]).
+/// A connection over the cap is closed. That does not reliably reach the
+/// origin as an error: with an auth token, the origin's handshake is
+/// rejected and the write falls back to the zenoh relay, but without a
 /// token the origin's frame can fit in its send buffer and report success
 /// before the close arrives, so that write is lost and fails on its ack
-/// timeout. Direct writes therefore fail rather than degrade while the cap
+/// timeout. Without a token, a peer is admitted as soon as it sends a byte,
+/// so a peer that can reach the port can still fill the cap; set the token
+/// wherever the port is reachable by untrusted hosts. Direct writes therefore fail rather than degrade while the cap
 /// is exhausted. Making the origin detect a refusal in the token-less
 /// configuration needs an admission reply on every fresh connection, which
 /// is a wire change left to a follow-up.
@@ -115,21 +121,35 @@ pub(crate) fn cross_data_max_connections() -> usize {
 }
 
 /// Accept loop of the direct-TCP data listener: serves each connection with
-/// `serve` on its own task, with at most `max_connections` served at once.
+/// `serve` on its own task, handing it the connection's [`AdmissionSlot`].
 ///
-/// A permit is taken before the task is spawned and held until `serve`
-/// returns, so the cap bounds both fds and tasks. A connection accepted while
-/// no permit is free is closed at once (#4033). The refusal is logged once
-/// per run of refusals, so a peer flooding the port cannot flood the log too.
+/// At most `max_connections` connections are served at once, but only an
+/// admitted one counts towards that cap: `serve` trades its slot for one of
+/// the `max_connections` permits with [`AdmissionSlot::admit`] once the peer
+/// has passed the auth handshake (see [`admit_fresh_cross_data_conn`]), and
+/// holds the permit until it returns. So a peer without the auth token cannot
+/// keep legitimate origins out of the cap by opening connections and staying
+/// silent (#4065). Until then a connection holds a pre-admission slot, at
+/// most [`CROSS_DATA_MAX_PENDING_PER_PEER`] per peer when a token is set, and
+/// `max_connections` in all, so the listener still holds at most
+/// `2 * max_connections` fds and tasks (#4033). A connection over either
+/// limit is closed at once. Each kind of refusal is logged once per run of
+/// refusals, so a peer flooding the port cannot flood the log too.
 pub(crate) async fn accept_cross_data_connections<F, Fut>(
     listener: tokio::net::TcpListener,
     max_connections: usize,
     serve: F,
 ) where
-    F: Fn(tokio::net::TcpStream, std::net::SocketAddr) -> Fut,
+    F: Fn(tokio::net::TcpStream, std::net::SocketAddr, AdmissionSlot) -> Fut,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
-    let permits = Arc::new(tokio::sync::Semaphore::new(max_connections));
+    let pending = Arc::new(tokio::sync::Semaphore::new(max_connections));
+    let pending_per_peer = Arc::new(PendingPerPeer::default());
+    let cap = Arc::new(ConnectionCap {
+        permits: Arc::new(tokio::sync::Semaphore::new(max_connections)),
+        max_connections,
+        refusing: AtomicBool::new(false),
+    });
     let mut refusing = false;
     loop {
         let Ok((stream, peer)) = listener.accept().await else {
@@ -140,12 +160,34 @@ pub(crate) async fn accept_cross_data_connections<F, Fut>(
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             continue;
         };
-        let Ok(permit) = permits.clone().try_acquire_owned() else {
+        // Without a token, any peer that can reach the port can fill the cap
+        // anyway, so a per-peer bound would only refuse an origin's burst of
+        // concurrent writes (each opens a fresh connection) and protect
+        // nothing.
+        let limit_per_peer = cross_data_auth_token().is_some();
+        let slot = pending
+            .clone()
+            .try_acquire_owned()
+            .ok()
+            .and_then(|pending| {
+                let peer_slot = if limit_per_peer {
+                    Some(pending_per_peer.clone().enter(peer.ip())?)
+                } else {
+                    None
+                };
+                Some(AdmissionSlot {
+                    _pending: pending,
+                    _peer: peer_slot,
+                    cap: cap.clone(),
+                    peer,
+                })
+            });
+        let Some(slot) = slot else {
             if !refusing {
                 tracing::warn!(
                     "memory pool: refusing direct-TCP data connections (first from {peer}): \
-                     {max_connections} already open; raise {CROSS_DATA_MAX_CONNECTIONS_ENV} \
-                     if this is expected"
+                     too many waiting for admission ({max_connections} in all, \
+                     {CROSS_DATA_MAX_PENDING_PER_PEER} per peer)"
                 );
                 refusing = true;
             }
@@ -154,24 +196,153 @@ pub(crate) async fn accept_cross_data_connections<F, Fut>(
         };
         refusing = false;
         tracing::debug!("memory pool: direct-TCP data connection from {peer}");
-        let served = serve(stream, peer);
-        tokio::spawn(async move {
-            served.await;
-            drop(permit);
-        });
+        tokio::spawn(serve(stream, peer, slot));
+    }
+}
+
+/// Connections from one peer the data listener lets wait for admission at
+/// once, when an auth token is configured. A peer cannot be told apart from
+/// a legitimate origin before it has authenticated, so this bounds what one
+/// host without the token can hold: without it, a single host opening
+/// connections and sending nothing would take every pre-admission slot and
+/// lock out every other origin (#4065). Kept small and independent of the
+/// cap, so that filling the pre-admission pool takes many peers: with the
+/// default cap of 256, 32 distinct addresses or /64s. An origin whose burst
+/// of concurrent writes, each on a fresh connection, goes over it loses
+/// nothing: with a token, a refused connection fails the origin's handshake
+/// and that write falls back to the zenoh relay. Peers are counted per IPv4
+/// address and per IPv6 /64 (see [`peer_key`]).
+pub(crate) const CROSS_DATA_MAX_PENDING_PER_PEER: usize = 8;
+
+/// The address a peer is counted under for
+/// [`CROSS_DATA_MAX_PENDING_PER_PEER`]: its IPv4 address (also when it
+/// arrives IPv4-mapped on an IPv6 listener), or its IPv6 /64, since a single
+/// IPv6 host usually has a whole /64 to pick source addresses from.
+pub(crate) fn peer_key(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip {
+        std::net::IpAddr::V4(_) => ip,
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => std::net::IpAddr::V4(v4),
+            None => std::net::IpAddr::V6(std::net::Ipv6Addr::from(
+                u128::from(v6) & !u128::from(u64::MAX),
+            )),
+        },
+    }
+}
+
+/// A data connection's place in the listener before it is admitted (see
+/// [`accept_cross_data_connections`]).
+pub(crate) struct AdmissionSlot {
+    _pending: tokio::sync::OwnedSemaphorePermit,
+    _peer: Option<PendingPeerSlot>,
+    cap: Arc<ConnectionCap>,
+    peer: std::net::SocketAddr,
+}
+
+impl AdmissionSlot {
+    /// A slot of its own listener with room for `max_connections`, for
+    /// tests that drive admission without an accept loop.
+    #[cfg(test)]
+    pub(crate) fn standalone(peer: std::net::SocketAddr, max_connections: usize) -> Self {
+        Self {
+            _pending: Arc::new(tokio::sync::Semaphore::new(1))
+                .try_acquire_owned()
+                .unwrap(),
+            _peer: None,
+            cap: Arc::new(ConnectionCap {
+                permits: Arc::new(tokio::sync::Semaphore::new(max_connections)),
+                max_connections,
+                refusing: AtomicBool::new(false),
+            }),
+            peer,
+        }
+    }
+
+    /// Leaves the pre-admission slot for one of the listener's
+    /// `max_connections` permits, or `None` when they are all taken.
+    pub(crate) fn admit(self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        let cap = &self.cap;
+        let Ok(permit) = cap.permits.clone().try_acquire_owned() else {
+            if !cap.refusing.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    "memory pool: refusing direct-TCP data connections (first from {}): \
+                     {} already open; raise {CROSS_DATA_MAX_CONNECTIONS_ENV} if this is expected",
+                    self.peer,
+                    cap.max_connections,
+                );
+            }
+            return None;
+        };
+        cap.refusing.store(false, Ordering::Relaxed);
+        Some(permit)
+    }
+}
+
+/// The listener's cap on served connections (see
+/// [`accept_cross_data_connections`]).
+pub(crate) struct ConnectionCap {
+    permits: Arc<tokio::sync::Semaphore>,
+    max_connections: usize,
+    /// Whether the last admission was refused, to log a run of refusals once.
+    refusing: AtomicBool,
+}
+
+/// Connections waiting for admission, per peer (see
+/// [`CROSS_DATA_MAX_PENDING_PER_PEER`]).
+#[derive(Default)]
+struct PendingPerPeer {
+    counts: std::sync::Mutex<HashMap<std::net::IpAddr, usize>>,
+}
+
+impl PendingPerPeer {
+    /// Counts a connection from `ip` until the returned guard drops, or
+    /// `None` when its peer already has the most it may.
+    fn enter(self: Arc<Self>, ip: std::net::IpAddr) -> Option<PendingPeerSlot> {
+        let ip = peer_key(ip);
+        {
+            let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
+            let count = counts.entry(ip).or_default();
+            if *count >= CROSS_DATA_MAX_PENDING_PER_PEER {
+                return None;
+            }
+            *count += 1;
+        }
+        Some(PendingPeerSlot { peers: self, ip })
+    }
+}
+
+pub(crate) struct PendingPeerSlot {
+    peers: Arc<PendingPerPeer>,
+    ip: std::net::IpAddr,
+}
+
+impl Drop for PendingPeerSlot {
+    fn drop(&mut self) {
+        let mut counts = self.peers.counts.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(count) = counts.get_mut(&self.ip) {
+            *count -= 1;
+            if *count == 0 {
+                counts.remove(&self.ip);
+            }
+        }
     }
 }
 
 /// Admit a freshly accepted data connection before any frame is served:
-/// `Ok(true)` once its first frame has started, `Ok(false)` when the peer
-/// closed it or sent nothing within `first_frame_timeout`, and `Err` when the
-/// auth handshake rejected it or the socket failed.
+/// `Ok(Some(permit))` once its first frame has started, with the permit that
+/// counts it towards the listener's cap; `Ok(None)` when the peer closed it,
+/// sent nothing within `first_frame_timeout`, or the cap is full; and `Err`
+/// when the auth handshake rejected it or the socket failed.
 ///
 /// Auth handshake first, once per connection: a peer without the shared
-/// token is dropped before any frame can touch a mirror segment. Only when
-/// the daemon itself has a token configured (a token-less daemon accepts
+/// token is dropped before any frame can touch a mirror segment, and before
+/// it can take a place in the cap (#4065). The permit is taken between
+/// checking the token and accepting it, so an origin refused for want of
+/// room sees a rejected handshake and falls back to the zenoh relay. Only
+/// when the daemon itself has a token configured (a token-less daemon accepts
 /// token-less peers — the handshake is a configured-deployment option, both
-/// ends set it or neither does).
+/// ends set it or neither does). Without a token the permit is taken once the
+/// first frame has started, the earliest point a peer has shown anything.
 ///
 /// The first-frame wait is bounded with or without a token, so a peer that
 /// connects and sends nothing cannot hold a listener slot for the full
@@ -179,9 +350,23 @@ pub(crate) async fn accept_cross_data_connections<F, Fut>(
 pub(crate) async fn admit_fresh_cross_data_conn(
     stream: &mut tokio::net::TcpStream,
     first_frame_timeout: std::time::Duration,
-) -> Result<bool, String> {
-    cross_data_auth_gate(stream).await?;
-    await_next_frame(stream, first_frame_timeout).await
+    slot: AdmissionSlot,
+) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, String> {
+    let permit = if cross_data_auth_token().is_some() {
+        match auth_gate_then(stream, CROSS_DATA_AUTH_TIMEOUT, || slot.admit()).await? {
+            Some(permit) => permit,
+            None => return Ok(None),
+        }
+    } else {
+        if !await_next_frame(stream, first_frame_timeout).await? {
+            return Ok(None);
+        }
+        return Ok(slot.admit());
+    };
+    if !await_next_frame(stream, first_frame_timeout).await? {
+        return Ok(None);
+    }
+    Ok(Some(permit))
 }
 
 /// Wait for the next frame on a data connection without consuming it:

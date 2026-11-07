@@ -1122,7 +1122,7 @@ impl PoolState {
         tokio::spawn(accept_cross_data_connections(
             listener,
             cross_data_max_connections(),
-            move |mut stream, peer| {
+            move |mut stream, peer, slot| {
                 let (tensor_pool, machine_id, session, clock, shm_provider) = (
                     tensor_pool.clone(),
                     machine_id.clone(),
@@ -1131,18 +1131,24 @@ impl PoolState {
                     shm_provider.clone(),
                 );
                 async move {
-                    match admit_fresh_cross_data_conn(&mut stream, CROSS_DATA_FIRST_FRAME_TIMEOUT)
-                        .await
+                    // Held until the connection is done: it is what counts
+                    // the connection towards the listener's cap.
+                    let _permit = match admit_fresh_cross_data_conn(
+                        &mut stream,
+                        CROSS_DATA_FIRST_FRAME_TIMEOUT,
+                        slot,
+                    )
+                    .await
                     {
-                        Ok(true) => {}
-                        Ok(false) => return,
+                        Ok(Some(permit)) => permit,
+                        Ok(None) => return,
                         Err(e) => {
                             tracing::warn!(
                                 "memory pool: direct-TCP connection from {peer} dropped: {e}"
                             );
                             return;
                         }
-                    }
+                    };
                     loop {
                         match serve_cross_data_frame(
                             &tensor_pool,
