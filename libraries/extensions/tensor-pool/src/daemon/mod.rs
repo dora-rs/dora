@@ -1541,9 +1541,12 @@ mod cross_pool_write_tests {
         let accept = tokio::spawn(accept_cross_data_connections(
             listener,
             1,
-            move |mut stream, _peer| {
+            move |mut stream, _peer, slot: AdmissionSlot| {
                 let started_tx = started_tx.clone();
                 async move {
+                    let Some(_permit) = slot.admit() else {
+                        return;
+                    };
                     let _ = started_tx.send(());
                     // Serve until the client closes.
                     let mut buf = [0u8; 1];
@@ -1604,8 +1607,14 @@ mod cross_pool_write_tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            admit_fresh_cross_data_conn(&mut stream, std::time::Duration::from_millis(100)).await
+            let (mut stream, peer) = listener.accept().await.unwrap();
+            admit_fresh_cross_data_conn(
+                &mut stream,
+                std::time::Duration::from_millis(100),
+                AdmissionSlot::standalone(peer, 1),
+            )
+            .await
+            .map(|permit| permit.is_some())
         });
         let _client = tokio::net::TcpStream::connect(addr).await.unwrap();
         let admitted = tokio::time::timeout(std::time::Duration::from_secs(10), server)
@@ -1613,5 +1622,142 @@ mod cross_pool_write_tests {
             .expect("a silent fresh connection must be released")
             .unwrap();
         assert_eq!(admitted, Ok(false));
+    }
+
+    /// Connects to `addr` from the loopback address `from`, so a test can
+    /// stand in for several peers.
+    async fn connect_from(from: [u8; 4], addr: std::net::SocketAddr) -> tokio::net::TcpStream {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind(std::net::SocketAddr::from((from, 0))).unwrap();
+        socket.connect(addr).await.unwrap()
+    }
+
+    /// A data listener whose connections go through the real admission,
+    /// reporting each admitted one on the returned channel and then serving
+    /// it until the peer closes.
+    async fn admitting_listener(
+        max_connections: usize,
+    ) -> (
+        std::net::SocketAddr,
+        tokio::sync::mpsc::UnboundedReceiver<std::net::SocketAddr>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (admitted_tx, admitted_rx) = tokio::sync::mpsc::unbounded_channel();
+        let accept = tokio::spawn(accept_cross_data_connections(
+            listener,
+            max_connections,
+            move |mut stream, peer, slot| {
+                let admitted_tx = admitted_tx.clone();
+                async move {
+                    let Ok(Some(_permit)) = admit_fresh_cross_data_conn(
+                        &mut stream,
+                        CROSS_DATA_FIRST_FRAME_TIMEOUT,
+                        slot,
+                    )
+                    .await
+                    else {
+                        return;
+                    };
+                    let _ = admitted_tx.send(peer);
+                    let mut buf = [0u8; 64];
+                    while matches!(stream.read(&mut buf).await, Ok(n) if n > 0) {}
+                }
+            },
+        ));
+        (addr, admitted_rx, accept)
+    }
+
+    /// With an auth token, a peer that does not have it cannot take any of
+    /// the listener's connection permits: connections that never finish the
+    /// handshake only hold pre-admission slots, at most
+    /// `CROSS_DATA_MAX_PENDING_PER_PEER` from one address, so an origin with
+    /// the token is still admitted while they sit there (#4065).
+    // The env lock is held across the awaits on purpose, as in the tests
+    // above: a sibling test must not change the token mid-test.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn silent_peers_without_the_token_cannot_fill_the_connection_cap() {
+        use tokio::io::AsyncWriteExt;
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("DORA_MEMORY_POOL_AUTH_TOKEN", "test-shared-secret") };
+        struct EnvGuard;
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+            }
+        }
+        let _guard = EnvGuard;
+        let wait = std::time::Duration::from_secs(10);
+
+        // Room for every connection the silent peer opens, had it been let
+        // into the cap at accept time as before.
+        let max_connections = CROSS_DATA_MAX_PENDING_PER_PEER + 1;
+        let (addr, mut admitted, accept) = admitting_listener(max_connections).await;
+        let mut silent = Vec::new();
+        for _ in 0..max_connections + 2 {
+            silent.push(connect_from([127, 0, 0, 2], addr).await);
+        }
+
+        let mut origin = connect_from([127, 0, 0, 1], addr).await;
+        tokio::time::timeout(wait, auth_handshake_send(&mut origin, "test-shared-secret"))
+            .await
+            .expect("the origin's handshake must be answered")
+            .expect("the origin must be accepted while silent peers wait");
+        origin.write_all(&[0]).await.unwrap();
+        let peer = tokio::time::timeout(wait, admitted.recv())
+            .await
+            .expect("the origin must be admitted")
+            .unwrap();
+        assert_eq!(peer.ip(), std::net::IpAddr::from([127, 0, 0, 1]));
+        assert!(admitted.try_recv().is_err(), "no silent peer is admitted");
+        drop(silent);
+        accept.abort();
+    }
+
+    /// With an auth token, an origin refused because the connection cap is
+    /// full is told so in the handshake, so its write falls back to the
+    /// zenoh relay instead of being lost.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn a_full_cap_rejects_the_handshake() {
+        use tokio::io::AsyncWriteExt;
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("DORA_MEMORY_POOL_AUTH_TOKEN", "test-shared-secret") };
+        struct EnvGuard;
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+            }
+        }
+        let _guard = EnvGuard;
+        let wait = std::time::Duration::from_secs(10);
+
+        let (addr, mut admitted, accept) = admitting_listener(1).await;
+        let mut first = tokio::net::TcpStream::connect(addr).await.unwrap();
+        auth_handshake_send(&mut first, "test-shared-secret")
+            .await
+            .unwrap();
+        first.write_all(&[0]).await.unwrap();
+        tokio::time::timeout(wait, admitted.recv())
+            .await
+            .expect("the first origin must be admitted")
+            .unwrap();
+
+        let mut second = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let err =
+            tokio::time::timeout(wait, auth_handshake_send(&mut second, "test-shared-secret"))
+                .await
+                .expect("the second origin's handshake must be answered")
+                .expect_err("the cap is full");
+        assert!(err.contains("rejected"), "{err}");
+        drop(first);
+        accept.abort();
     }
 }
