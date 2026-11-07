@@ -93,9 +93,15 @@ struct CancelGoalWire {
 /// C++ client's `MAX_PENDING_REQUESTS` so it can send every call it admits.
 const MAX_PENDING_CALLS: usize = 64;
 
-/// Result requests that can wait on one unfinished goal, from all clients
-/// together. The result service reserves this many slots for every goal.
-const MAX_RESULT_WAITERS_PER_GOAL: usize = 3;
+/// Distinct clients that can wait on one unfinished goal's result at once.
+/// The result service reserves this many slots for every goal.
+///
+/// `rcl_action` has no such limit; a client identified by `client_gid` only
+/// ever holds one slot here regardless of how many times it retries (see
+/// `record_waiter`), so this is a defense-in-depth memory bound against a
+/// single goal's genuinely distinct observers, not the mechanism that
+/// protects against a flaky or retrying one (#4066).
+const MAX_RESULT_WAITERS_PER_GOAL: usize = 16;
 
 /// Extra result slots to receive new requests while all goals have waiters.
 const RESULT_REQUEST_HEADROOM: usize = 16;
@@ -293,6 +299,41 @@ struct ServerGoal {
     result: Option<Vec<u8>>,
     /// `GetResult` requests that came in before the goal finished.
     waiters: Vec<RequestId>,
+}
+
+/// What `record_waiter` did with an incoming `GetResult` request.
+#[derive(Debug, PartialEq, Eq)]
+enum WaiterAdmission {
+    /// No existing waiter shared this request's `client_gid`; added.
+    Added,
+    /// This `client_gid` already had a waiter; its request is superseded.
+    Replaced,
+    /// No existing waiter shared this `client_gid`, and `goal` is already at
+    /// `MAX_RESULT_WAITERS_PER_GOAL` other clients.
+    Rejected,
+}
+
+/// Records `request_id` as waiting on `goal`'s result, or decides not to.
+///
+/// A dropped or retrying client's next `GetResult` carries the same
+/// `client_gid` with a new `sequence_number`; that waiter's entry is
+/// replaced rather than added, so such a client cannot grow past one slot
+/// and lock out every other observer of this goal — including the client
+/// that actually sent it (#4066).
+fn record_waiter(goal: &mut ServerGoal, request_id: RequestId) -> WaiterAdmission {
+    if let Some(existing) = goal
+        .waiters
+        .iter_mut()
+        .find(|id| id.client_gid == request_id.client_gid)
+    {
+        *existing = request_id;
+        return WaiterAdmission::Replaced;
+    }
+    if goal.waiters.len() >= MAX_RESULT_WAITERS_PER_GOAL {
+        return WaiterAdmission::Rejected;
+    }
+    goal.waiters.push(request_id);
+    WaiterAdmission::Added
 }
 
 impl<G, R, F> TypedActionServer<G, R, F>
@@ -526,22 +567,21 @@ impl Shared {
         let response = match goals.iter_mut().find(|goal| goal.id == goal_id) {
             Some(goal) => match &goal.result {
                 Some(response) => response,
-                None if goal.waiters.len() >= MAX_RESULT_WAITERS_PER_GOAL => {
-                    self.endpoints
-                        .get_result
-                        .reject(
-                            request.id,
-                            &format!(
-                                "result waiter limit of {MAX_RESULT_WAITERS_PER_GOAL} reached for this goal"
-                            ),
-                        )
-                        .await?;
-                    return Ok(());
-                }
-                None => {
-                    goal.waiters.push(request.id);
-                    return Ok(());
-                }
+                None => match record_waiter(goal, request.id) {
+                    WaiterAdmission::Added | WaiterAdmission::Replaced => return Ok(()),
+                    WaiterAdmission::Rejected => {
+                        self.endpoints
+                            .get_result
+                            .reject(
+                                request.id,
+                                &format!(
+                                    "result waiter limit of {MAX_RESULT_WAITERS_PER_GOAL} reached for this goal"
+                                ),
+                            )
+                            .await?;
+                        return Ok(());
+                    }
+                },
             },
             None => &self.unknown_response,
         };
@@ -826,5 +866,77 @@ mod tests {
         // Full of running goals.
         let goals = vec![goal(1, 10, Executing), goal(2, 20, Canceling)];
         assert_eq!(admit(&goals, id(3), 2), None);
+    }
+
+    /// `RequestId` with the given client (`client_gid`'s first byte) and
+    /// sequence number, as a distinct retry of the same call carries.
+    fn request_id(client: u8, sequence_number: i64) -> RequestId {
+        RequestId {
+            sequence_number,
+            client_gid: [client; 16],
+        }
+    }
+
+    #[test]
+    fn record_waiter_replaces_the_same_clients_earlier_request() {
+        let mut goal = goal(1, 10, Executing);
+        assert_eq!(
+            record_waiter(&mut goal, request_id(1, 1)),
+            WaiterAdmission::Added
+        );
+        // A retry: same client, new sequence number.
+        assert_eq!(
+            record_waiter(&mut goal, request_id(1, 2)),
+            WaiterAdmission::Replaced
+        );
+        assert_eq!(goal.waiters, vec![request_id(1, 2)]);
+    }
+
+    /// A client that drops and retries its `GetResult` call every time it
+    /// times out must never grow past one slot, however many times it
+    /// retries — otherwise it alone could reach
+    /// `MAX_RESULT_WAITERS_PER_GOAL` and lock out every other observer,
+    /// including the client that actually sent the goal (#4066).
+    #[test]
+    fn a_retrying_client_cannot_exhaust_the_waiter_cap_alone() {
+        let mut goal = goal(1, 10, Executing);
+        for sequence_number in 0..(MAX_RESULT_WAITERS_PER_GOAL as i64 * 5) {
+            record_waiter(&mut goal, request_id(1, sequence_number));
+        }
+        assert_eq!(goal.waiters.len(), 1);
+
+        // The room it left behind is still enough for the real caller and
+        // other distinct observers.
+        for client in 2..=MAX_RESULT_WAITERS_PER_GOAL as u8 {
+            assert_eq!(
+                record_waiter(&mut goal, request_id(client, 0)),
+                WaiterAdmission::Added
+            );
+        }
+        assert_eq!(goal.waiters.len(), MAX_RESULT_WAITERS_PER_GOAL);
+    }
+
+    #[test]
+    fn record_waiter_rejects_a_genuinely_new_client_once_full() {
+        let mut goal = goal(1, 10, Executing);
+        for client in 1..=MAX_RESULT_WAITERS_PER_GOAL as u8 {
+            assert_eq!(
+                record_waiter(&mut goal, request_id(client, 0)),
+                WaiterAdmission::Added
+            );
+        }
+        let overflow_client = MAX_RESULT_WAITERS_PER_GOAL as u8 + 1;
+        assert_eq!(
+            record_waiter(&mut goal, request_id(overflow_client, 0)),
+            WaiterAdmission::Rejected
+        );
+        assert_eq!(goal.waiters.len(), MAX_RESULT_WAITERS_PER_GOAL);
+
+        // That same client retrying still finds no room: rejection isn't
+        // itself recorded as a waiter.
+        assert_eq!(
+            record_waiter(&mut goal, request_id(overflow_client, 1)),
+            WaiterAdmission::Rejected
+        );
     }
 }
