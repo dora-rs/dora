@@ -1420,7 +1420,11 @@ impl EventStream {
     /// - `StreamEnded` — the event stream closed (dataflow stopping)
     ///   before a response arrived. The terminal `Stop` event is still
     ///   returned to the caller's next `recv()`.
-    /// - `StreamError` — an upstream error event surfaced during the wait.
+    /// - `StreamError` — an upstream error event surfaced during the wait,
+    ///   or the expected server node failed (exited with an error and will
+    ///   not be restarted), so no reply can arrive. The server's
+    ///   [`Event::NodeFailed`] is still returned to the caller's next
+    ///   `recv()`.
     ///
     /// A response that was already queued when the dataflow began stopping is
     /// still returned as `Ok`. The wait may have read the `Stop` while looking
@@ -1733,6 +1737,16 @@ impl EventStream {
                     self.buffer_passthrough(event);
                     return Err(PatternError::ServerRestarted(expected_server.to_string()));
                 }
+                CorrelationOutcome::ServerFailed => {
+                    let message = match &event {
+                        Event::NodeFailed { error, .. } => {
+                            format!("server `{expected_server}` failed: {error}")
+                        }
+                        _ => unreachable!("ServerFailed only returned for Event::NodeFailed"),
+                    };
+                    self.buffer_passthrough(event);
+                    return Err(PatternError::StreamError(message));
+                }
                 CorrelationOutcome::StreamError => {
                     if let Event::Error(err) = event {
                         return Err(PatternError::StreamError(err));
@@ -1809,6 +1823,10 @@ enum CorrelationOutcome {
     Match,
     /// `Event::NodeRestarted { id }` where `id == expected_server`.
     ServerRestarted,
+    /// `Event::NodeFailed { source_node_id }` where `source_node_id ==
+    /// expected_server`: the server exited with an error and the daemon will
+    /// not restart it, so the correlated reply can never arrive.
+    ServerFailed,
     /// `Event::Error(_)` — the stream surfaced an error.
     StreamError,
     /// Unrelated event, or a `Stop` (see `wait_for_correlation`) — buffer it
@@ -1829,6 +1847,9 @@ where
     }
     match event {
         Event::NodeRestarted { id } if id == expected_server => CorrelationOutcome::ServerRestarted,
+        Event::NodeFailed { source_node_id, .. } if source_node_id == expected_server => {
+            CorrelationOutcome::ServerFailed
+        }
         Event::Error(_) => CorrelationOutcome::StreamError,
         _ => CorrelationOutcome::Passthrough,
     }
@@ -2887,6 +2908,34 @@ mod tests {
     }
 
     #[test]
+    fn classify_expected_server_failure_returns_server_failed() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::NodeFailed {
+            affected_input_ids: vec![DataId::from("response".to_string())],
+            error: "exited with code 1".to_string(),
+            source_node_id: server.clone(),
+        };
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::ServerFailed
+        );
+    }
+
+    #[test]
+    fn classify_unrelated_node_failure_is_passthrough() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::NodeFailed {
+            affected_input_ids: vec![DataId::from("sensor".to_string())],
+            error: "exited with code 1".to_string(),
+            source_node_id: NodeId::from("other".to_string()),
+        };
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
     fn classify_stop_is_passthrough() {
         let server = NodeId::from("calc".to_string());
         let event = Event::Stop(StopCause::Manual);
@@ -3869,6 +3918,50 @@ mod tests {
         assert!(matches!(events.recv(), Some(Event::Stop(_))));
         assert!(matches!(&events.recv(), Some(Event::Input { id, .. }) if id.as_str() == "sensor"));
         assert!(events.recv().is_none());
+    }
+
+    /// A wait must end as soon as the expected server is reported failed: the
+    /// daemon sends `NodeFailed` only for a node it will not restart, so no
+    /// reply can follow. Before the fix the event was buffered as unrelated
+    /// and the wait ran on until its timeout — forever with `Duration::MAX`
+    /// while any other input kept the stream open.
+    #[test]
+    fn recv_service_response_ends_when_expected_server_fails() {
+        use crate::event_stream::thread::EventItem;
+        use dora_message::daemon_to_node::NodeEvent;
+
+        let (_node, mut events) = test_event_stream();
+        events.use_scheduler = true;
+        events.add_event(EventItem::NodeEvent {
+            event: NodeEvent::NodeFailed {
+                affected_input_ids: vec![DataId::from("response".to_string())],
+                error: "exited with code 1".to_string(),
+                source_node_id: NodeId::from("calc".to_string()),
+            },
+        });
+
+        let server = NodeId::from("calc".to_string());
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &server,
+            Duration::from_secs(5),
+        ));
+        match response {
+            Err(PatternError::StreamError(msg)) => {
+                assert!(msg.contains("`calc` failed"), "unexpected message: {msg}");
+                assert!(
+                    msg.contains("exited with code 1"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected StreamError for the failed server, got {other:?}"),
+        }
+
+        // The `NodeFailed` still reaches the caller's own loop.
+        assert!(matches!(
+            events.recv(),
+            Some(Event::NodeFailed { source_node_id, .. }) if source_node_id.as_ref() == "calc"
+        ));
     }
 
     /// After a `Stop` event is delivered, subsequent `recv` calls must
