@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -19,7 +19,8 @@ use ::dora_ros2_bridge::{
         GoalSlots, MAX_CONCURRENT_GOALS,
         zenoh::{
             ActionClient as ZenohActionClient, ActionKeys, ActionServer as ZenohActionServer,
-            ActionTokens, wait_for_server as wait_for_action_server,
+            ActionTokens, CancelableGoal, goal_accept_stamp, process_cancel_request,
+            wait_for_server as wait_for_action_server,
         },
     },
 };
@@ -1089,6 +1090,7 @@ impl Ros2Node {
             result_type_info,
             feedback_type_info,
             executing: GoalSlots::new(MAX_CONCURRENT_GOALS),
+            finished_zenoh: VecDeque::new(),
             zenoh_result_requests,
             pending_result_requests: HashMap::new(),
             pending_result_seq: 0,
@@ -1756,6 +1758,10 @@ pub struct Ros2ActionServer {
     result_type_info: TypeInfo<'static>,
     feedback_type_info: TypeInfo<'static>,
     executing: GoalSlots<String, PythonServerGoal>,
+    /// The last [`MAX_CONCURRENT_GOALS`] goals a Zenoh server finished, so a
+    /// cancel naming one is answered `ERROR_GOAL_TERMINATED` like `rcl_action`
+    /// does, rather than `ERROR_UNKNOWN_GOAL_ID` (#3996).
+    finished_zenoh: VecDeque<ZenohServerGoal>,
     zenoh_result_requests:
         Option<flume::Receiver<dora_ros2_bridge::transport::zenoh::service::ServiceRequest>>,
     pending_result_requests: HashMap<String, (dora_ros2_bridge::transport::RequestId, u64)>,
@@ -1773,7 +1779,34 @@ enum PythonServerGoal {
         ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
         Instant,
     ),
-    Zenoh(ros2_client::action::GoalId, Instant),
+    Zenoh(ZenohServerGoal, Instant),
+}
+
+/// A goal of a native-Zenoh action server, as its `CancelGoal` and status
+/// replies need it.
+#[derive(Clone, Copy)]
+struct ZenohServerGoal {
+    id: ros2_client::action::GoalId,
+    /// When the goal was accepted, as sent in the `SendGoal` response.
+    stamp: ros2_client::builtin_interfaces::Time,
+    status: ros2_client::action::GoalStatusEnum,
+}
+
+impl CancelableGoal for ZenohServerGoal {
+    fn goal_info(&self) -> ros2_client::action::GoalInfo {
+        ros2_client::action::GoalInfo {
+            goal_id: self.id,
+            stamp: self.stamp,
+        }
+    }
+
+    fn status(&self) -> ros2_client::action::GoalStatusEnum {
+        self.status
+    }
+
+    fn set_status(&mut self, status: ros2_client::action::GoalStatusEnum) {
+        self.status = status;
+    }
 }
 
 impl PythonServerGoal {
@@ -2064,16 +2097,17 @@ impl Ros2ActionServer {
                         deserialize_cdr(&request.payload)?;
                     let accepted =
                         self.executing.len() < MAX_CONCURRENT_GOALS && decoded.goal.0.is_some();
-                    let response = serialize_cdr(&ros2_client::action::SendGoalResponse {
-                        accepted,
-                        stamp: ros2_client::builtin_interfaces::Time::ZERO,
-                    })?;
+                    let stamp = goal_accept_stamp();
+                    let response =
+                        serialize_cdr(&ros2_client::action::SendGoalResponse { accepted, stamp })?;
                     server.send_goal.reply(request.id, &response).await?;
                     Ok(decoded.goal.0.filter(|_| accepted).map(|data| {
-                        (
-                            PythonServerGoal::Zenoh(decoded.goal_id, Instant::now()),
-                            data,
-                        )
+                        let goal = ZenohServerGoal {
+                            id: decoded.goal_id,
+                            stamp,
+                            status: ros2_client::action::GoalStatusEnum::Executing,
+                        };
+                        (PythonServerGoal::Zenoh(goal, Instant::now()), data)
                     }))
                 }),
             }
@@ -2083,7 +2117,7 @@ impl Ros2ActionServer {
         };
         let goal_id = match &executing {
             PythonServerGoal::Dds(handle, _) => handle.goal_id().uuid.to_string(),
-            PythonServerGoal::Zenoh(id, _) => id.uuid.to_string(),
+            PythonServerGoal::Zenoh(goal, _) => goal.id.uuid.to_string(),
         };
         while self.executing.len() >= MAX_CONCURRENT_GOALS {
             let Some(oldest) = self
@@ -2118,9 +2152,9 @@ impl Ros2ActionServer {
                     )
                     .map_err(|error| eyre!("publish_feedback: {error:?}"))
                 }
-                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(id, _)) => {
+                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(goal, _)) => {
                     let payload = serialize_cdr(&ros2_client::action::FeedbackMessage {
-                        goal_id: *id,
+                        goal_id: goal.id,
                         feedback: BridgeMessage(Some(array_data)),
                     })?;
                     futures::executor::block_on(server.feedback.publish(&payload))?;
@@ -2173,7 +2207,7 @@ impl Ros2ActionServer {
                         }
                     })
                 }
-                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(id, _)) => {
+                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(goal, _)) => {
                     let status = end_status_to_status(end);
                     let response = serialize_cdr(&ros2_client::action::GetResultResponse {
                         status,
@@ -2209,7 +2243,7 @@ impl Ros2ActionServer {
                                         }
                                     };
                                 let key = decoded.goal_id.uuid.to_string();
-                                if decoded.goal_id == *id {
+                                if decoded.goal_id == goal.id {
                                     return Some(request.id);
                                 }
                                 // The key is a peer-controlled goal UUID; a flood of
@@ -2242,16 +2276,22 @@ impl Ros2ActionServer {
                 _ => eyre::bail!("action goal belongs to a different transport"),
             }
         })?;
-        self.executing.remove(goal_id);
+        if let Some(PythonServerGoal::Zenoh(mut goal, _)) = self.executing.remove(goal_id) {
+            goal.status = end_status_to_status(end);
+            remember_finished_goal(&mut self.finished_zenoh, goal);
+        }
         publish_python_zenoh_status(py, &self.server, &self.executing)?;
         Ok(())
     }
 
     /// Poll up to `timeout_s` (default 1.0) for a cancel request. Returns the
     /// goal_id strings the client asked to cancel that we still track, or None.
+    /// On native Zenoh, the request is answered like `rcl_action` does and only
+    /// the goals it newly moves to canceling are returned: a goal that is
+    /// already canceling is not returned again.
     #[pyo3(signature = (timeout_s=None))]
     pub fn take_cancel(
-        &self,
+        &mut self,
         py: Python<'_>,
         timeout_s: Option<f64>,
     ) -> eyre::Result<Option<Vec<String>>> {
@@ -2292,37 +2332,24 @@ impl Ros2ActionServer {
                     goal_info: ros2_client::action::GoalInfo,
                 }
                 let decoded: CancelRequest = deserialize_cdr(&request.payload)?;
-                let requested = decoded.goal_info.goal_id.uuid;
-                let mine: Vec<String> = self
-                    .executing
+                // Finished goals are offered too, so naming one is answered
+                // `GoalTerminated`; they are never canceled again.
+                let (goals_canceling, return_code) = process_cancel_request(
+                    self.executing
+                        .iter_mut()
+                        .filter_map(|(_, goal)| match goal {
+                            PythonServerGoal::Zenoh(goal, _) => Some(goal),
+                            PythonServerGoal::Dds(..) => None,
+                        })
+                        .chain(self.finished_zenoh.iter_mut()),
+                    &decoded.goal_info,
+                );
+                let mine: Vec<String> = goals_canceling
                     .iter()
-                    .filter_map(|(key, goal)| match goal {
-                        PythonServerGoal::Zenoh(id, _)
-                            if requested.is_nil() || id.uuid == requested =>
-                        {
-                            Some(key.clone())
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                let goals_canceling = mine
-                    .iter()
-                    .filter_map(|key| match self.executing.get(key) {
-                        Some(PythonServerGoal::Zenoh(id, _)) => {
-                            Some(ros2_client::action::GoalInfo {
-                                goal_id: *id,
-                                stamp: ros2_client::builtin_interfaces::Time::ZERO,
-                            })
-                        }
-                        _ => None,
-                    })
+                    .map(|info| info.goal_id.uuid.to_string())
                     .collect();
                 let response = ros2_client::action::CancelGoalResponse {
-                    return_code: if mine.is_empty() {
-                        ros2_client::action_msgs::CancelGoalResponseEnum::UnknownGoal
-                    } else {
-                        ros2_client::action_msgs::CancelGoalResponseEnum::None
-                    },
+                    return_code,
                     goals_canceling,
                 };
                 server
@@ -2332,6 +2359,84 @@ impl Ros2ActionServer {
                 Ok(Some(mine))
             }),
         })
+    }
+}
+
+/// Keep `goal` among the last [`MAX_CONCURRENT_GOALS`] finished goals.
+fn remember_finished_goal(finished: &mut VecDeque<ZenohServerGoal>, goal: ZenohServerGoal) {
+    if finished.len() >= MAX_CONCURRENT_GOALS {
+        finished.pop_front();
+    }
+    finished.push_back(goal);
+}
+
+#[cfg(test)]
+mod zenoh_cancel_tests {
+    use super::ros2_client::action::{GoalId, GoalInfo, GoalStatusEnum};
+    use super::ros2_client::action_msgs::CancelGoalResponseEnum;
+    use super::ros2_client::builtin_interfaces::Time;
+    use super::{
+        CancelableGoal, MAX_CONCURRENT_GOALS, ZenohServerGoal, process_cancel_request,
+        remember_finished_goal,
+    };
+    use std::collections::VecDeque;
+
+    fn goal(status: GoalStatusEnum) -> ZenohServerGoal {
+        ZenohServerGoal {
+            id: GoalId::new_random(),
+            stamp: Time::from_nanos(10),
+            status,
+        }
+    }
+
+    fn by_id(goal_id: GoalId) -> GoalInfo {
+        GoalInfo {
+            goal_id,
+            stamp: Time::ZERO,
+        }
+    }
+
+    /// A goal the server finished is still known: naming it is
+    /// `ERROR_GOAL_TERMINATED`, as in rcl, not `ERROR_UNKNOWN_GOAL_ID` (#3996).
+    #[test]
+    fn cancelling_a_finished_goal_reports_goal_terminated() {
+        let mut executing = [goal(GoalStatusEnum::Executing)];
+        let mut finished = VecDeque::new();
+        let done = goal(GoalStatusEnum::Succeeded);
+        remember_finished_goal(&mut finished, done);
+        let (canceling, code) = process_cancel_request(
+            executing.iter_mut().chain(finished.iter_mut()),
+            &by_id(done.id),
+        );
+        assert!(canceling.is_empty());
+        assert_eq!(code, CancelGoalResponseEnum::GoalTerminated);
+        assert_eq!(finished[0].status(), GoalStatusEnum::Succeeded);
+    }
+
+    /// A second cancel of the same goal finds it canceling: rcl answers
+    /// `ERROR_GOAL_TERMINATED` and does not list it again (#3996).
+    #[test]
+    fn a_canceling_goal_is_not_canceled_again() {
+        let mut executing = [goal(GoalStatusEnum::Executing)];
+        let id = executing[0].id;
+        let (canceling, code) = process_cancel_request(executing.iter_mut(), &by_id(id));
+        assert_eq!(canceling.len(), 1);
+        assert_eq!(code, CancelGoalResponseEnum::None);
+        let (canceling, code) = process_cancel_request(executing.iter_mut(), &by_id(id));
+        assert!(canceling.is_empty());
+        assert_eq!(code, CancelGoalResponseEnum::GoalTerminated);
+    }
+
+    #[test]
+    fn only_the_last_finished_goals_are_remembered() {
+        let mut finished = VecDeque::new();
+        let first = goal(GoalStatusEnum::Succeeded);
+        remember_finished_goal(&mut finished, first);
+        for _ in 0..MAX_CONCURRENT_GOALS {
+            remember_finished_goal(&mut finished, goal(GoalStatusEnum::Aborted));
+        }
+        assert_eq!(finished.len(), MAX_CONCURRENT_GOALS);
+        assert!(finished.iter().all(|goal| goal.id != first.id));
     }
 }
 
@@ -2361,12 +2466,9 @@ fn publish_python_zenoh_status(
         status_list: goals
             .iter()
             .filter_map(|(_, goal)| match goal {
-                PythonServerGoal::Zenoh(id, _) => Some(ros2_client::action_msgs::GoalStatus {
-                    goal_info: ros2_client::action::GoalInfo {
-                        goal_id: *id,
-                        stamp: ros2_client::builtin_interfaces::Time::ZERO,
-                    },
-                    status: ros2_client::action::GoalStatusEnum::Executing,
+                PythonServerGoal::Zenoh(goal, _) => Some(ros2_client::action_msgs::GoalStatus {
+                    goal_info: goal.goal_info(),
+                    status: goal.status,
                 }),
                 _ => None,
             })

@@ -842,7 +842,8 @@ class Ros2ActionServer:
 
         Returns the list of goal_id strings the client asked to cancel that this
         server still tracks (respond to each with `send_result(status="canceled")`),
-        or `None` on timeout."""
+        or `None` on timeout. On native Zenoh, a goal that an earlier request
+        already moved to canceling is not returned again."""
 
     def __repr__(self) -> str:
         """Return repr(self)."""
