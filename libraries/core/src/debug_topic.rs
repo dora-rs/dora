@@ -106,8 +106,8 @@ fn prime_debug_schema(
     }
 }
 
-/// Turn one sample observed by the daemon's debug subscriber into the
-/// `(metadata, data)` of an `Event::DebugTopicData`, or `None` to drop it.
+/// Turn one sample observed by a debug subscriber into the `(metadata, data)`
+/// of a `dora topic` frame, or `None` to drop it.
 ///
 /// When no `dora topic` watcher is attached to the output (`watched ==
 /// false`), the sample is dropped *before* the payload is copied, so an idle
@@ -194,15 +194,15 @@ mod debug_topic_tests {
         assert_eq!(out, Some(expected));
     }
 
-    /// End-to-end guard for the `dora topic info` bandwidth fix, mirroring the
-    /// daemon debug path (the topic subscriber in `Daemon::spawn_dataflow`):
+    /// End-to-end guard for the `dora topic info` bandwidth fix, mirroring
+    /// [`prepare_debug_topic_frame`]:
     /// rebuild the inspection stream, strip the internal wire keys, then stamp
     /// the *input* payload length under `WIRE_SIZE`. The CLI reader
     /// ([`debug_frame_wire_size`]) must then charge the schema-less on-wire
     /// size, not the rebuilt stream — otherwise bandwidth is over-reported by
     /// the prepended schema on every schema-once frame, worst for the
     /// small/frequent primitives the schema-once optimization targets (#2584).
-    /// Keep this in sync with the stamp site in `spawn_dataflow`.
+    /// Keep this in sync with the `WIRE_SIZE` stamp in [`prepare_debug_topic_frame`].
     #[test]
     fn on_wire_size_excludes_prepended_schema() {
         // --- schema-once frame: rebuilt = schema ++ batch, only batch on-wire.

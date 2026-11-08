@@ -425,9 +425,10 @@ impl Daemon {
                             .declare_subscriber(schema_topic.clone())
                             .history(HistoryConfig::default().detect_late_publishers())
                             .callback(move |sample| {
+                                let bytes = sample.payload().to_bytes();
                                 retain_published_schema(
                                     &mut cache.lock().unwrap_or_else(|e| e.into_inner()),
-                                    &sample.payload().to_bytes(),
+                                    &bytes,
                                 );
                             })
                             .await
