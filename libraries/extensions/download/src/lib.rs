@@ -359,13 +359,17 @@ where
     // `remove_file` calls on the `Err` paths alone missed the drop case and
     // left a hidden, possibly multi-GB `.partial` behind each time, under a
     // fresh name every retry.
+    //
+    // The file is created synchronously, before the guard is armed: tokio's
+    // async `File::create` runs on the blocking pool, and a drop that lands
+    // while it is in flight would unlink a path not yet created, leaving the
+    // file the open then creates. Creating a file is one cheap syscall.
+    let file = std::fs::File::create(&tmp_path).wrap_err("failed to create target file")?;
     let mut tmp_guard = RemoveOnDrop(Some(tmp_path.clone()));
     let mut hasher = Sha256::new();
     let mut response = response;
     let stream_to_tmp = async {
-        let mut file = tokio::fs::File::create(&tmp_path)
-            .await
-            .wrap_err("failed to create target file")?;
+        let mut file = tokio::fs::File::from_std(file);
         while let Some(chunk) = response
             .chunk()
             .await
@@ -980,25 +984,31 @@ mod tests {
             &target_dir,
             None,
         ));
-        // Drive the download until the server has sent the first body bytes,
-        // then give the client a moment to create the temp file and write them.
+        let partials = |dir: &std::path::Path| -> Vec<String> {
+            std::fs::read_dir(dir)
+                .map(|entries| {
+                    entries
+                        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        // Drive the download until the server has sent the first body bytes
+        // and the client has created its temp file (polled, not a fixed
+        // sleep, so a slow runner cannot make this flaky).
         tokio::select! {
             result = &mut download => panic!("download finished early: {result:?}"),
             _ = async {
                 body_sent_rx.await.unwrap();
-                tokio::time::sleep(Duration::from_millis(200)).await;
+                while partials(&target_dir).is_empty() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
             } => {}
         }
-        let partials = |dir: &std::path::Path| -> Vec<String> {
-            std::fs::read_dir(dir)
-                .unwrap()
-                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-                .collect()
-        };
         assert_eq!(
             partials(&target_dir).len(),
             1,
-            "expected the in-progress temp file to exist before cancelling"
+            "expected exactly the in-progress temp file before cancelling"
         );
 
         // Cancel by dropping the in-flight future.
