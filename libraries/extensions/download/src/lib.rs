@@ -353,17 +353,10 @@ where
         std::process::id(),
         COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    // Removes the temp file on every exit that does not move it into place —
-    // the error returns below, and also the future being dropped mid-download
-    // (a spawn task aborted, the runtime shutting down on Ctrl-C). Explicit
-    // `remove_file` calls on the `Err` paths alone missed the drop case and
-    // left a hidden, possibly multi-GB `.partial` behind each time, under a
-    // fresh name every retry.
-    //
-    // The file is created synchronously, before the guard is armed: tokio's
-    // async `File::create` runs on the blocking pool, and a drop that lands
-    // while it is in flight would unlink a path not yet created, leaving the
-    // file the open then creates. Creating a file is one cheap syscall.
+    // The guard removes the temp file on every exit except a successful
+    // rename, including the future being dropped mid-download (task aborted,
+    // runtime shut down on Ctrl-C). The file is created synchronously so the
+    // guard cannot race tokio's blocking-pool `File::create`.
     let file = std::fs::File::create(&tmp_path).wrap_err("failed to create target file")?;
     let mut tmp_guard = RemoveOnDrop(Some(tmp_path.clone()));
     let mut hasher = Sha256::new();
