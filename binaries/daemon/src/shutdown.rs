@@ -142,6 +142,11 @@ impl DestroyWait {
             ProcessRefreshKind::nothing(),
         );
 
+        #[cfg(not(unix))]
+        let mut refreshed_all = false;
+        #[cfg(not(unix))]
+        let mut children_map = None;
+
         let mut alive = Vec::new();
         for pid in pids.iter().copied() {
             let process = self.system.process(Pid::from_u32(pid));
@@ -150,8 +155,30 @@ impl DestroyWait {
             if leader_alive {
                 self.confirmed.insert(pid);
                 alive.push(pid);
-            } else if self.confirmed.contains(&pid) && !recycled && process_group_has_members(pid) {
-                alive.push(pid);
+            } else if self.confirmed.contains(&pid) && !recycled {
+                #[cfg(unix)]
+                {
+                    if process_group_has_members(pid) {
+                        alive.push(pid);
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    if !refreshed_all {
+                        self.system.refresh_processes_specifics(
+                            ProcessesToUpdate::All,
+                            true,
+                            ProcessRefreshKind::nothing(),
+                        );
+                        refreshed_all = true;
+                        children_map = Some(crate::metrics::child_process_map(&self.system));
+                    }
+                    if children_map.as_ref().is_some_and(|map| {
+                        !crate::metrics::descendants(map, Pid::from_u32(pid)).is_empty()
+                    }) {
+                        alive.push(pid);
+                    }
+                }
             }
         }
         alive
@@ -163,19 +190,10 @@ impl DestroyWait {
 /// Signal 0 performs the permission and existence checks without delivering
 /// anything, so this asks the kernel the question directly rather than
 /// enumerating every process on the machine.
+#[cfg(unix)]
 fn process_group_has_members(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        // SAFETY: signal 0 delivers nothing; this is a pure existence check.
-        unsafe { libc::kill(-(pid as i32), 0) == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        // Windows has no process groups in this sense; the job object the
-        // node was spawned into ties its children to the leader's lifetime.
-        let _ = pid;
-        false
-    }
+    // SAFETY: signal 0 delivers nothing; this is a pure existence check.
+    unsafe { libc::kill(-(pid as i32), 0) == 0 }
 }
 
 /// Kill the node's whole process group, not just the pid the daemon tracks.
@@ -203,17 +221,25 @@ fn kill_process_group(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
-        // Windows: nodes are spawned into a job object, which terminates
-        // their children along with them.
+        // Windows has no process groups, so terminate the process and all of
+        // its living descendants in the process tree.
         let mut system = System::new();
         system.refresh_processes_specifics(
-            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+            ProcessesToUpdate::All,
             true,
             ProcessRefreshKind::nothing(),
         );
-        system
-            .process(Pid::from_u32(pid))
-            .is_some_and(|process| process.kill())
+        let children_map = crate::metrics::child_process_map(&system);
+        let mut killed_any = false;
+        for child_pid in crate::metrics::descendants(&children_map, Pid::from_u32(pid)) {
+            if let Some(child) = system.process(child_pid) {
+                killed_any |= child.kill();
+            }
+        }
+        if let Some(process) = system.process(Pid::from_u32(pid)) {
+            killed_any |= process.kill();
+        }
+        killed_any
     }
 }
 
@@ -279,10 +305,10 @@ fn leads_own_group(pid: u32) -> bool {
     }
     #[cfg(not(unix))]
     {
-        // No process groups here; `process_group_has_members` already returns
-        // false, so the fallback this gates is unreachable.
+        // On Windows there are no Unix process groups. A running process at `pid`
+        // that is not our child is an OS stranger that has recycled `pid`.
         let _ = pid;
-        false
+        true
     }
 }
 
@@ -299,12 +325,6 @@ fn is_live_child(process: &sysinfo::Process, own_pid: u32) -> bool {
 mod tests {
     use super::*;
 
-    // The `#[cfg(unix)]` tests below drive a real process through the Unix
-    // process model: `/bin/sleep`, process groups, `CommandExt::process_group`.
-    // They are compiled out rather than `ignore`d because `ignore` only skips
-    // a test at *runtime* — the body still has to compile, and the Unix-only
-    // APIs it uses do not exist on Windows (dora-rs/dora#2742).
-    #[cfg(unix)]
     use std::process::{Command, Stdio};
 
     #[cfg(unix)]
@@ -317,9 +337,19 @@ mod tests {
             .expect("failed to spawn sleep")
     }
 
+    #[cfg(windows)]
+    fn spawn_sleeper() -> std::process::Child {
+        Command::new("ping")
+            .args(["127.0.0.1", "-n", "300"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn ping")
+    }
+
     /// A node that will not exit is killed once the deadline passes — the
     /// case #2980 is about.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test(start_paused = true)]
     async fn a_node_that_outlives_the_deadline_is_killed() {
         let mut child = spawn_sleeper();
@@ -413,10 +443,74 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[tokio::test(start_paused = true)]
+    async fn a_wrapper_that_exits_does_not_hide_its_surviving_child() {
+        use std::io::BufRead;
+
+        let mut wrapper = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Start-Process ping -ArgumentList '127.0.0.1 -n 300'; Write-Host READY; [Console]::In.ReadLine()",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn wrapper");
+        let pid = wrapper.id();
+
+        // Wait until powershell has spawned ping and is waiting on stdin.
+        let mut stdout = std::io::BufReader::new(wrapper.stdout.take().expect("wrapper stdout"));
+        let mut line = String::new();
+        stdout
+            .read_line(&mut line)
+            .expect("read READY from wrapper");
+        assert_eq!(line.trim(), "READY");
+
+        let mut wait = DestroyWait::new();
+        assert_eq!(
+            wait.poll(&[pid]),
+            DestroyProgress::Waiting,
+            "the wrapper is alive, so this is an ordinary wait"
+        );
+
+        // Close stdin so the wrapper's `ReadLine` returns and it exits; ping lives on.
+        drop(wrapper.stdin.take());
+        wrapper.wait().expect("failed to wait for wrapper");
+
+        assert_eq!(
+            wait.poll(&[pid]),
+            DestroyProgress::Waiting,
+            "the leader is gone but its child process tree is not — the node is still running"
+        );
+
+        tokio::time::advance(DESTROY_WAIT + Duration::from_secs(1)).await;
+        assert_eq!(wait.poll(&[pid]), DestroyProgress::Waiting);
+        assert_eq!(
+            wait.killed_pids,
+            vec![pid],
+            "the surviving child process tree must be killed"
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match wait.poll(&[pid]) {
+                DestroyProgress::Done => break,
+                other => assert!(
+                    std::time::Instant::now() < deadline,
+                    "the killed process tree never went away: {other:?}"
+                ),
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// The common case must stay free: a node that exits on its own is never
     /// killed, and the destroy completes as soon as it is gone rather than
     /// sitting out the deadline.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test(start_paused = true)]
     async fn a_node_that_exits_on_its_own_is_not_killed() {
         let mut child = spawn_sleeper();
@@ -437,7 +531,7 @@ mod tests {
 
     /// A pid the OS recycled after the node exited belongs to a stranger.
     /// Killing it would be worse than the leak this module exists to fix.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[tokio::test(start_paused = true)]
     async fn a_process_that_is_not_our_child_is_left_alone() {
         let mut child = spawn_sleeper();

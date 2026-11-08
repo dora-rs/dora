@@ -172,7 +172,7 @@ fn metrics_refresh_kind() -> sysinfo::ProcessRefreshKind {
 }
 
 /// Parent -> children edges for every process in `sys`.
-fn child_process_map(sys: &sysinfo::System) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
+pub(crate) fn child_process_map(sys: &sysinfo::System) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
     parent_edges(
         sys.processes()
             .iter()
@@ -241,7 +241,7 @@ fn aggregate_process_tree(
 ///
 /// The edges can contain a cycle (see [`parent_edges`]), so the walk keeps a
 /// visited set; without it a cycle looped forever while growing the stack.
-fn descendants(
+pub(crate) fn descendants(
     children_map: &HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
     root: sysinfo::Pid,
 ) -> Vec<sysinfo::Pid> {
