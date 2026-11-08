@@ -343,10 +343,11 @@ impl Coordinator {
         result: DataflowDaemonResult,
     ) {
         let uuid = record.uuid;
-        self.resent_finish_reports
-            .entry(uuid)
-            .or_default()
-            .insert(daemon_id, result);
+        let parked = self.resent_finish_reports.entry(uuid).or_default();
+        parked.insert(daemon_id, result);
+        // Every result the dataflow has: the reclaim parked the daemons that
+        // had finished before it here too (`begin_orphaned_dataflow_reclaim`).
+        let parked = &*parked;
 
         // The persisted descriptor is the record's authoritative node set.
         // `node_to_daemon` cannot decide coverage on its own: after an earlier
@@ -366,13 +367,7 @@ impl Coordinator {
         // holds the ids from before the reclaim, and a reconnecting daemon
         // registers under a fresh `DaemonId`, so a node's daemon is matched by
         // machine id, the part that survives the reconnect.
-        let reported_daemons: BTreeSet<&DaemonId> = self
-            .dataflow_results
-            .get(&uuid)
-            .into_iter()
-            .chain(self.resent_finish_reports.get(&uuid))
-            .flat_map(|results| results.keys())
-            .collect();
+        let reported_daemons: BTreeSet<&DaemonId> = parked.keys().collect();
         // A daemon never reports a result for a `path: dynamic` node — they
         // send no `SpawnedNodeResult` — so requiring one would keep the
         // dataflow `Recovering` until the recovery timeout. A dynamic node is
@@ -401,12 +396,8 @@ impl Coordinator {
             })
             .map(|node| node.id.to_string())
             .collect();
-        let reported: BTreeSet<String> = self
-            .dataflow_results
-            .get(&uuid)
-            .into_iter()
-            .chain(self.resent_finish_reports.get(&uuid))
-            .flat_map(|results| results.values())
+        let reported: BTreeSet<String> = parked
+            .values()
             .flat_map(|result| result.node_results.keys())
             .map(|node_id| node_id.to_string())
             .collect();
@@ -418,13 +409,7 @@ impl Coordinator {
             return;
         }
 
-        let status = dataflow_store_status(
-            self.dataflow_results
-                .get(&uuid)
-                .into_iter()
-                .chain(self.resent_finish_reports.get(&uuid))
-                .flat_map(|results| results.values()),
-        );
+        let status = dataflow_store_status(parked.values());
         record.status = status;
         record.generation += 1;
         record.updated_at = now_millis();
