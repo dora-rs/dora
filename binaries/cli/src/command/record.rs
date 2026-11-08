@@ -773,6 +773,9 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         .collect();
 
     let mut msg_count: u64 = 0;
+    // Messages skipped because they exceed the per-record cap (see
+    // `write_proxy_entry`).
+    let mut oversized: u64 = 0;
     // Whether the stream ended on its own rather than because we asked it to.
     // The coordinator closes a subscriber that takes no frame for 10 s
     // (`MAX_TOPIC_SUBSCRIBER_STALL`), and the CLI sees that as a bare
@@ -819,7 +822,9 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                     timestamp_offset_nanos: dora_recording::offset_since(start),
                     event_bytes,
                 };
-                writer.write_entry(&entry)?;
+                if !write_proxy_entry(&mut writer, &entry, &mut oversized)? {
+                    continue;
+                }
                 msg_count += 1;
 
                 if msg_count.is_multiple_of(100) {
@@ -859,6 +864,13 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
              seconds without accepting any frame."
         );
     }
+    if oversized > 0 {
+        eprintln!(
+            "WARNING: {oversized} message(s) exceeded the per-record size limit and were \
+             skipped. THIS RECORDING IS INCOMPLETE. Such frames cannot be recorded in the \
+             `.drec` format."
+        );
+    }
     eprintln!(
         "Recording finished: {} messages, {:.2} MB",
         footer.total_messages,
@@ -866,6 +878,34 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     );
 
     Ok(())
+}
+
+/// Append one proxied entry, skipping it — rather than failing the whole
+/// capture — when it exceeds [`dora_recording::MAX_RECORD_BYTES`]. Returns
+/// whether the entry was written; a skip bumps `oversized` and warns on the
+/// first occurrence. Genuine I/O errors still propagate.
+///
+/// This is the same skip-and-continue rule the record node applies: one
+/// oversized frame must not abort a recording that is otherwise succeeding,
+/// and a bare `write_entry` error here returned before `finish()` ran, leaving
+/// a footer-less file and dropping every later message.
+fn write_proxy_entry<W: std::io::Write>(
+    writer: &mut RecordingWriter<W>,
+    entry: &RecordEntry,
+    oversized: &mut u64,
+) -> eyre::Result<bool> {
+    let Some(len) = writer.write_entry_skip_oversized(entry)? else {
+        return Ok(true);
+    };
+    *oversized += 1;
+    if *oversized == 1 {
+        eprintln!(
+            "WARNING: skipping a {len}-byte message from {}/{} that exceeds the per-record \
+             limit — this recording will be incomplete.",
+            entry.node_id, entry.output_id
+        );
+    }
+    Ok(false)
 }
 
 fn find_record_node_binary() -> eyre::Result<PathBuf> {
@@ -975,6 +1015,39 @@ mod tests {
             uuid: Uuid::new_v4(),
             name: name.map(str::to_string),
         }
+    }
+
+    /// Regression: an entry over the per-record cap used to fail
+    /// `write_entry` and abort the whole `--proxy` capture before the footer
+    /// was written. It must be skipped and counted, and the writer must stay
+    /// usable for the entries after it.
+    #[test]
+    fn proxy_recording_skips_an_oversized_entry_and_keeps_going() {
+        let header = RecordingHeader {
+            version: dora_recording::FORMAT_VERSION,
+            start_nanos: 0,
+            dataflow_id: Uuid::nil(),
+            descriptor_yaml: b"nodes: []".to_vec(),
+        };
+        let mut writer = RecordingWriter::new(Vec::new(), &header).unwrap();
+        let entry = |event_bytes: Vec<u8>| RecordEntry {
+            node_id: "cam".to_string(),
+            output_id: "image".to_string(),
+            timestamp_offset_nanos: 0,
+            event_bytes,
+        };
+        let mut oversized = 0;
+
+        let too_big = entry(vec![0; dora_recording::MAX_RECORD_BYTES]);
+        assert!(!write_proxy_entry(&mut writer, &too_big, &mut oversized).unwrap());
+        assert_eq!(oversized, 1);
+
+        let small = entry(vec![1, 2, 3]);
+        assert!(write_proxy_entry(&mut writer, &small, &mut oversized).unwrap());
+        assert_eq!(oversized, 1);
+
+        let footer = writer.finish().unwrap();
+        assert_eq!(footer.total_messages, 1);
     }
 
     #[test]
