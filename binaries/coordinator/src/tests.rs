@@ -9465,6 +9465,49 @@ mod lifecycle_stall {
         assert!(coordinator.topology.is_idle());
     }
 
+    /// The owning daemon reported the node's exit (held back for the change)
+    /// and then disconnected without replying. The change fails as unknown,
+    /// but the exit must not be lost with it: on `main` it was processed once
+    /// the failed wait returned.
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn held_exit_survives_the_change_failing_on_a_disconnect() {
+        let Fixture {
+            mut coordinator,
+            dataflow_id,
+            a_id,
+            ..
+        } = fixture(ReplyPolicy::Never);
+        let (reply_tx, reply_rx) = oneshot::channel();
+        coordinator
+            .handle_control_event(ControlEvent::IncomingRequest {
+                request: Box::new(request("RemoveNode", dataflow_id)),
+                reply_sender: reply_tx,
+            })
+            .await
+            .unwrap();
+        coordinator
+            .handle_daemon_node_stopped(
+                a_id.clone(),
+                dataflow_id,
+                "sender".to_string().into(),
+                false,
+            )
+            .await
+            .unwrap();
+        // The daemon's connection goes away (the dataflow itself stays, so
+        // the exit has somewhere to be recorded).
+        coordinator.daemon_connections.remove(&a_id);
+        coordinator.fail_topology_changes_of_gone_daemons().await;
+
+        let err = reply_rx.await.unwrap().unwrap_err().to_string();
+        assert!(err.contains("disconnected before it replied"), "{err}");
+        assert!(
+            recorded_as_failed(&coordinator, dataflow_id, "sender"),
+            "the held exit must still be applied"
+        );
+        assert!(coordinator.topology.is_idle());
+    }
+
     /// The CLI hangs up while its change is in flight: the change still commits.
     #[tokio::test(flavor = "current_thread", start_paused = true)]
     async fn cli_cancellation_does_not_lose_the_commit() {

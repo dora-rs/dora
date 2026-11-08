@@ -272,7 +272,8 @@ impl Coordinator {
     pub(crate) fn ensure_no_topology_change(&self, dataflow_id: DataflowId) -> eyre::Result<()> {
         if self.topology.is_busy(&dataflow_id) {
             eyre::bail!(
-                "a node change is still in progress on dataflow {dataflow_id};                  retry the restart once it has completed"
+                "a node change is still in progress on dataflow {dataflow_id}; \
+                 retry the restart once it has completed"
             );
         }
         Ok(())
@@ -627,6 +628,22 @@ impl Coordinator {
                 in_flight.daemon_id,
                 in_flight.commit.describe()
             )));
+            // Exits held back for the change are still news: apply them as
+            // the loop would have had the change never been in flight.
+            // Exits held back for the change are still news: apply them as
+            // the loop would have had the change never been in flight.
+            for stop in in_flight.parked_stops {
+                self.handle_daemon_node_stopped(
+                    stop.daemon_id,
+                    dataflow_id,
+                    stop.node_id,
+                    stop.clean_stop,
+                )
+                .await
+                .unwrap_or_else(|err| {
+                    tracing::warn!(%dataflow_id, "failed to apply a held node exit: {err:#}");
+                });
+            }
             self.pump_topology_lane(dataflow_id).await;
         }
     }
