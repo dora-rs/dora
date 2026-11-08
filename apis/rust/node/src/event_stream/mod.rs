@@ -1424,7 +1424,10 @@ impl EventStream {
     ///   or the expected server node failed (exited with an error and will
     ///   not be restarted), so no reply can arrive. The server's
     ///   [`Event::NodeFailed`] is still returned to the caller's next
-    ///   `recv()`.
+    ///   `recv()`, and later waits on the same server fail the same way
+    ///   while it stays buffered. `NodeFailed` is delivered only by the
+    ///   client's own daemon, so this covers a server on the same machine; a
+    ///   remote server's failure still ends the wait only at `timeout`.
     ///
     /// A response that was already queued when the dataflow began stopping is
     /// still returned as `Ok`. The wait may have read the `Stop` while looking
@@ -1704,6 +1707,23 @@ impl EventStream {
         {
             return Ok(event);
         }
+        // A failure of the expected server is different: it is permanent, so a
+        // `NodeFailed` buffered by an earlier wait (for this server or another)
+        // still means no reply can come. Without this check a wait started
+        // after that buffering would never see the failure again — the stream
+        // delivers it once — and ran on to its deadline. A `NodeRestarted`
+        // for the server buffered after the failure supersedes it. The event
+        // stays buffered for the caller's own loop.
+        let latest_lifecycle = self.pending_passthrough.iter().rev().find(|event| {
+            matches!(event, Event::NodeFailed { source_node_id, .. } if source_node_id == expected_server)
+                || matches!(event, Event::NodeRestarted { id } if id == expected_server)
+        });
+        if let Some(Event::NodeFailed { error, .. }) = latest_lifecycle {
+            return Err(PatternError::StreamError(server_failed_message(
+                expected_server,
+                error,
+            )));
+        }
 
         // Compute the wait deadline, clamping a `timeout` so large that the
         // addition would overflow the monotonic clock, so a caller passing e.g.
@@ -1737,13 +1757,7 @@ impl EventStream {
                     self.buffer_passthrough(event);
                     return Err(PatternError::ServerRestarted(expected_server.to_string()));
                 }
-                CorrelationOutcome::ServerFailed => {
-                    let message = match &event {
-                        Event::NodeFailed { error, .. } => {
-                            format!("server `{expected_server}` failed: {error}")
-                        }
-                        _ => unreachable!("ServerFailed only returned for Event::NodeFailed"),
-                    };
+                CorrelationOutcome::ServerFailed(message) => {
                     self.buffer_passthrough(event);
                     return Err(PatternError::StreamError(message));
                 }
@@ -1826,7 +1840,7 @@ enum CorrelationOutcome {
     /// `Event::NodeFailed { source_node_id }` where `source_node_id ==
     /// expected_server`: the server exited with an error and the daemon will
     /// not restart it, so the correlated reply can never arrive.
-    ServerFailed,
+    ServerFailed(String),
     /// `Event::Error(_)` — the stream surfaced an error.
     StreamError,
     /// Unrelated event, or a `Stop` (see `wait_for_correlation`) — buffer it
@@ -1847,12 +1861,22 @@ where
     }
     match event {
         Event::NodeRestarted { id } if id == expected_server => CorrelationOutcome::ServerRestarted,
-        Event::NodeFailed { source_node_id, .. } if source_node_id == expected_server => {
-            CorrelationOutcome::ServerFailed
+        Event::NodeFailed {
+            source_node_id,
+            error,
+            ..
+        } if source_node_id == expected_server => {
+            CorrelationOutcome::ServerFailed(server_failed_message(expected_server, error))
         }
         Event::Error(_) => CorrelationOutcome::StreamError,
         _ => CorrelationOutcome::Passthrough,
     }
+}
+
+/// The [`PatternError::StreamError`] message for a wait whose expected server
+/// failed.
+fn server_failed_message(server: &NodeId, error: &str) -> String {
+    format!("server `{server}` failed: {error}")
 }
 
 /// Which bound a buffered passthrough event counts against.
@@ -2917,7 +2941,9 @@ mod tests {
         };
         assert_eq!(
             classify_correlation_event(&event, &server, is_request_match("req-42")),
-            CorrelationOutcome::ServerFailed
+            CorrelationOutcome::ServerFailed(
+                "server `calc` failed: exited with code 1".to_string()
+            )
         );
     }
 
@@ -3962,6 +3988,46 @@ mod tests {
             events.recv(),
             Some(Event::NodeFailed { source_node_id, .. }) if source_node_id.as_ref() == "calc"
         ));
+    }
+
+    /// A server's `NodeFailed` that an earlier wait buffered (while waiting on a
+    /// different server) must still end a later wait on the failed server: the
+    /// stream delivers it only once.
+    #[test]
+    fn recv_service_response_sees_a_failure_buffered_by_an_earlier_wait() {
+        let failed = || Event::NodeFailed {
+            affected_input_ids: vec![DataId::from("response".to_string())],
+            error: "exited with code 1".to_string(),
+            source_node_id: NodeId::from("calc".to_string()),
+        };
+        let (_node, mut events) = test_event_stream();
+        events.buffer_passthrough(failed());
+
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &NodeId::from("calc".to_string()),
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&response, Err(PatternError::StreamError(msg)) if msg.contains("`calc` failed")),
+            "expected StreamError for the already-failed server, got {response:?}"
+        );
+
+        // A later restart of the same server supersedes the buffered failure.
+        let (_node, mut events) = test_event_stream();
+        events.buffer_passthrough(failed());
+        events.buffer_passthrough(Event::NodeRestarted {
+            id: NodeId::from("calc".to_string()),
+        });
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &NodeId::from("calc".to_string()),
+            Duration::from_millis(200),
+        ));
+        assert!(
+            !matches!(&response, Err(PatternError::StreamError(_))),
+            "a restart after the failure must not report the server failed, got {response:?}"
+        );
     }
 
     /// After a `Stop` event is delivered, subsequent `recv` calls must
