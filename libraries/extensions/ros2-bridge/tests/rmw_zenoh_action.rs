@@ -1297,12 +1297,21 @@ mod typed {
             .await
             .expect("pump kept running")
             .unwrap();
-        assert!(
-            client
-                .wait_for_server(&node, Instant::now() + Duration::from_millis(500))
+        // The server's liveliness tokens are undeclared when it is dropped, but
+        // the client's graph hears about it asynchronously, and
+        // `wait_for_server` answers at once while the endpoints are still
+        // listed. Asking only once raced that update (it failed on a slow
+        // Windows runner), so ask until the graph has dropped the server.
+        tokio::time::timeout(TIMEOUT, async {
+            while client
+                .wait_for_server(&node, Instant::now() + Duration::from_millis(50))
                 .await
-                .is_err(),
-            "server still in the ROS graph"
-        );
+                .is_ok()
+            {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("server still in the ROS graph");
     }
 }
