@@ -205,13 +205,30 @@ impl PoolState {
                 // sender node id, derived from the pool id like
                 // `cross_pool_shmem_name`; the sender node never runs on
                 // this host, so the node-exit reclaim never fires —
-                // `PeerMessage::Free` drops the entry explicitly.
+                // `PeerMessage::Free` drops the entry explicitly, and a
+                // failed mirror creation rolls it back (#4100).
+                //
+                // Mirror allocation cap: `size` comes from a remote daemon
+                // (untrusted cross-machine input). Without a cap, a buggy or
+                // corrupted peer could drive an unbounded /dev/shm
+                // allocation here (memory-exhaustion DoS). Matches the
+                // 1 GiB registration cap enforced on the local side; the
+                // error flows back through `PeerMessage::RegisterAck`.
+                // Checked before the descriptor store: receivers trust the
+                // stored `size`, so an over-cap one must never reach the
+                // table (#4100).
+                let size_error = (size > MIRROR_SIZE_CAP).then(|| {
+                    format!("cross-machine pool size {size} exceeds the 1 GiB mirror cap")
+                });
                 let mirror_shmem_name = TensorPoolManager::cross_pool_shmem_name(
                     svc.machine_id().unwrap_or_default().as_str(),
                     &dataflow_id.to_string(),
                     &shared_memory_id,
                 );
-                if let Some(mirror_shmem_name) = &mirror_shmem_name {
+                let mut descriptor_stored = false;
+                if let Some(mirror_shmem_name) = &mirror_shmem_name
+                    && size_error.is_none()
+                {
                     // Fallible owner parse: the node id segment comes from
                     // the wire (`pool_{node}_{counter}`), and
                     // `NodeId::from(String)` panics on an invalid id
@@ -240,11 +257,13 @@ impl PoolState {
                             "memory pool: failed to store mirror descriptor for {shared_memory_id}: {e}"
                         );
                     } else {
+                        descriptor_stored = true;
                         tracing::info!(
                             "memory pool: stored mirror descriptor for {shared_memory_id}"
                         );
                     }
                 }
+                let sink = svc.peer_message_sink();
                 // Advertise this daemon's direct-TCP data listener so the
                 // origin can bypass the zenoh relay for per-frame writes.
                 let data_port = self.cross_data_listener_port;
@@ -267,19 +286,9 @@ impl PoolState {
                         }
                     });
                 tokio::spawn(async move {
-                    // Mirror allocation cap: the `PeerMessage::Register` event's
-                    // `size` comes from a remote daemon (untrusted
-                    // cross-machine input). Without a cap, a buggy or
-                    // corrupted peer could drive an unbounded /dev/shm
-                    // allocation here (memory-exhaustion DoS). Matches
-                    // the 1 GiB registration cap enforced on the local
-                    // side; the error flows back through `PeerMessage::RegisterAck`.
-                    let result = if size > 1024 * 1024 * 1024 {
-                        Err(eyre::eyre!(
-                            "cross-machine pool size {size} exceeds the 1 GiB mirror cap"
-                        ))
-                    } else {
-                        create_cross_pool_shmem(
+                    let result = match size_error {
+                        Some(e) => Err(eyre::eyre!(e)),
+                        None => create_cross_pool_shmem(
                             &dataflow_id,
                             local_machine_id.as_deref().unwrap_or_default(),
                             &shared_memory_id,
@@ -288,7 +297,7 @@ impl PoolState {
                             &shape,
                             &device,
                             Some(&shmem_name),
-                        )
+                        ),
                     };
                     let (mut ok, mut error) = match result {
                         Ok(()) => (true, None),
@@ -339,6 +348,38 @@ impl PoolState {
                             "memory pool: failed to mirror pool {shared_memory_id}: {}",
                             error.as_deref().unwrap_or("unknown")
                         );
+                    }
+                    // A failed registration must not leave the descriptor
+                    // stored above: receivers would resolve a pool whose
+                    // segment does not exist, and the origin records no
+                    // cross-machine entry after `ok: false`, so it never
+                    // sends the `Free` that would drop it (#4100). This task
+                    // cannot reach the extension table, so post a local
+                    // `Free` back to the event loop, where it runs after the
+                    // store. Skipped while an earlier attempt for the same
+                    // pool holds a live mirror (a retried register whose
+                    // first ack was lost): that mirror owns the descriptor.
+                    // The check runs here, not when the event loop handles
+                    // the `Free`; an origin retry lands only after its 5 s
+                    // ack timeout, so a retry slipping in between needs an
+                    // event loop that far behind *and* a creation failure
+                    // that heals on the retry.
+                    if !ok
+                        && descriptor_stored
+                        && tensor_pool
+                            .cross_peer(&dataflow_id.to_string(), &shared_memory_id)
+                            .is_none()
+                    {
+                        let rollback = PeerMessage::Free {
+                            shared_memory_id: shared_memory_id.clone(),
+                        };
+                        match pool_event(&clock, &dataflow_id, None, &rollback) {
+                            Ok(event) => sink(event).await,
+                            Err(e) => tracing::warn!(
+                                "memory pool: failed to roll back the mirror descriptor \
+                                 for {shared_memory_id}: {e}"
+                            ),
+                        }
                     }
                     if let Err(e) = publish_pool_message(
                         &session,
@@ -1330,5 +1371,120 @@ pub(crate) fn node_reply(response: &NodeResponse) -> DaemonReply {
     match postcard::to_allocvec(response) {
         Ok(payload) => DaemonReply::ExtensionReply { payload },
         Err(e) => DaemonReply::Result(Err(format!("tensor-pool reply encode failed: {e}"))),
+    }
+}
+
+#[cfg(test)]
+mod mirror_register_tests {
+    use super::test_services::{FakeServices, enable_cross_machine};
+    use super::*;
+
+    const POOL: &str = "pool_sender_1";
+
+    fn register(size: usize) -> PeerMessage {
+        PeerMessage::Register {
+            origin_machine_id: "A".to_string(),
+            shared_memory_id: POOL.to_string(),
+            shmem_name: "dora_test_no_such_sender_segment".to_string(),
+            size,
+            dtype: "uint8".to_string(),
+            shape: vec![size as i64],
+            device: "cpu".to_string(),
+        }
+    }
+
+    /// An over-cap `size` is untrusted remote input that receivers would
+    /// trust as the pool size, so it must never reach the extension table
+    /// (#4100).
+    // The guard only serializes the env var across tests; holding it over
+    // the awaits is the point.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn over_cap_register_stores_no_descriptor() {
+        let _env = enable_cross_machine();
+        let (mut svc, mut sink_rx) = FakeServices::new("B").await;
+        let mut state = PoolState::new();
+        let df = Uuid::new_v4();
+        state.subscribe_dataflow(&mut svc, df);
+
+        state
+            .handle_pool_peer_message(&mut svc, df, register(MIRROR_SIZE_CAP + 1))
+            .await
+            .unwrap();
+        assert!(
+            svc.table.is_empty(),
+            "an over-cap register must not store a descriptor"
+        );
+        // Nothing was stored, so the failed task has nothing to roll back.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), sink_rx.recv())
+                .await
+                .is_err(),
+            "no rollback expected for a descriptor that was never stored"
+        );
+        state.cleanup_dataflow(df).await;
+    }
+
+    /// A register whose mirror cannot be created must not leave its
+    /// descriptor behind: the origin gets `ok: false`, records no
+    /// cross-machine entry, and so never sends the `Free` that would drop
+    /// it (#4100).
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[cfg(target_os = "linux")]
+    async fn failed_mirror_rolls_back_its_descriptor() {
+        let _env = enable_cross_machine();
+        let (mut svc, mut sink_rx) = FakeServices::new("B").await;
+        let mut state = PoolState::new();
+        let df = Uuid::new_v4();
+        state.subscribe_dataflow(&mut svc, df);
+
+        // A directory squatting on the mirror's /dev/shm name makes the
+        // segment creation fail: it is neither a live mirror nor a stale
+        // segment that can be unlinked.
+        let mirror = TensorPoolManager::cross_pool_shmem_name("B", &df.to_string(), POOL).unwrap();
+        let squatter = std::path::PathBuf::from(format!("/dev/shm/{mirror}"));
+        std::fs::create_dir(&squatter).unwrap();
+        struct RemoveDir(std::path::PathBuf);
+        impl Drop for RemoveDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir(&self.0);
+            }
+        }
+        let _squatter = RemoveDir(squatter);
+
+        state
+            .handle_pool_peer_message(&mut svc, df, register(4096))
+            .await
+            .unwrap();
+        assert!(
+            svc.table.contains_key(&(df, POOL.to_string())),
+            "the descriptor is stored before the mirror task runs"
+        );
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(10), sink_rx.recv())
+            .await
+            .expect("the failed mirror task must post a rollback")
+            .expect("sink closed");
+        let InterDaemonEvent::ExtensionMessage {
+            dataflow_id,
+            namespace,
+            target_machine,
+            payload,
+        } = event.inner
+        else {
+            panic!("unexpected event: {:?}", event.inner)
+        };
+        // The event loop routes it like any peer message.
+        state
+            .handle_extension_message(&mut svc, dataflow_id, namespace, target_machine, payload)
+            .await
+            .unwrap();
+        assert!(
+            !svc.table.contains_key(&(df, POOL.to_string())),
+            "the failed register's descriptor must be dropped"
+        );
+        assert_eq!(svc.dropped, vec![(df, POOL.to_string())]);
+        state.cleanup_dataflow(df).await;
     }
 }

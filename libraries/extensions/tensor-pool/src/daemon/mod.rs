@@ -34,6 +34,8 @@ mod handlers;
 mod mirror;
 mod services;
 mod state;
+#[cfg(test)]
+mod test_services;
 
 pub use services::{BoxFuture, DaemonServices, PeerMessageSink};
 pub use state::PoolState;
@@ -65,6 +67,11 @@ pub(crate) use zenoh::bytes::ZBytes;
 pub(crate) use zenoh::qos::CongestionControl;
 pub(crate) use zenoh::sample::Locality;
 pub(crate) use zenoh::shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder};
+
+/// Largest pool a peer may ask this daemon to mirror. `size` in a
+/// `PeerMessage::Register` is untrusted remote input; this matches the
+/// 1 GiB cap on local registrations.
+pub(crate) const MIRROR_SIZE_CAP: usize = 1024 * 1024 * 1024;
 
 /// How long a cross-machine register waits for the mirror's acknowledgement
 /// before retrying. The remote's subscription is established in parallel with
