@@ -1617,3 +1617,6 @@ mod cross_pool_write_tests {
         assert_eq!(admitted, Ok(false));
     }
 }
+
+#[cfg(test)]
+mod register_timeout_tests;
