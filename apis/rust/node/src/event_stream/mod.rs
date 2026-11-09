@@ -1728,12 +1728,13 @@ impl EventStream {
         }
         // A server failure is permanent, and the stream delivers its
         // `NodeFailed` only once — possibly to the caller's own loop or an
-        // earlier wait — so check what has already been seen.
+        // earlier wait — so check what has already been seen. A reply the
+        // server sent before failing may still be queued, though.
         if let Some(error) = self.failed_servers.get(expected_server) {
-            return Err(PatternError::StreamError(server_failed_message(
-                expected_server,
-                error,
-            )));
+            let message = server_failed_message(expected_server, error);
+            return self
+                .take_queued_match(|event| is_match(event, needle))
+                .ok_or(PatternError::StreamError(message));
         }
 
         // Compute the wait deadline, clamping a `timeout` so large that the
@@ -1770,7 +1771,12 @@ impl EventStream {
                 }
                 CorrelationOutcome::ServerFailed(message) => {
                     self.buffer_passthrough(event);
-                    return Err(PatternError::StreamError(message));
+                    // The scheduler serves control events ahead of queued
+                    // inputs, so a reply the server sent just before failing
+                    // can still be waiting behind its `NodeFailed`.
+                    return self
+                        .take_queued_match(|event| is_match(event, needle))
+                        .ok_or(PatternError::StreamError(message));
                 }
                 CorrelationOutcome::StreamError => {
                     if let Event::Error(err) = event {
@@ -1783,6 +1789,31 @@ impl EventStream {
                 }
             }
         }
+    }
+}
+
+impl EventStream {
+    /// Without blocking, read every event already queued for this node and
+    /// return the first one matching `is_match`; the others are buffered for
+    /// the caller's own loop, in order, as the wait loop does.
+    ///
+    /// Used when the expected server is known to have failed: no new reply can
+    /// arrive, but one sent before the failure may be queued behind the
+    /// `NodeFailed`, which the scheduler serves first. Only the scheduler path
+    /// reorders; without it events arrive in send order, so the reply would
+    /// already have been read.
+    fn take_queued_match(&mut self, is_match: impl Fn(&Event) -> bool) -> Option<Event> {
+        if !self.use_scheduler {
+            return None;
+        }
+        self.absorb_ready_events();
+        while let Some(event) = self.pop_scheduled(false) {
+            if is_match(&event) {
+                return Some(event);
+            }
+            self.buffer_passthrough(event);
+        }
+        None
     }
 }
 
@@ -3991,6 +4022,52 @@ mod tests {
             events.recv(),
             Some(Event::NodeFailed { source_node_id, .. }) if source_node_id.as_ref() == "calc"
         ));
+    }
+
+    /// Regression (review of #4097): a reply the server sent just before it
+    /// failed is queued behind the `NodeFailed`, which the scheduler serves
+    /// first. The wait must still return that reply — now, and on a later
+    /// call — rather than report the failure.
+    #[test]
+    fn recv_service_response_returns_a_reply_queued_before_the_failure() {
+        let calc = NodeId::from("calc".to_string());
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_input_with_params_for_testing("response", request_id_params("req-1"));
+        events.push_scheduler_input_with_params_for_testing("response", request_id_params("req-2"));
+        events.push_scheduler_event_for_testing(calc_failed());
+
+        let first = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&first, Ok(Event::Input { id, .. }) if id.as_str() == "response"),
+            "expected the reply queued before the failure, got {first:?}"
+        );
+        // `req-2`'s reply was buffered while looking; the server is known to
+        // have failed, but the buffered reply still wins.
+        let second = futures::executor::block_on(events.recv_service_response(
+            "req-2",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&second, Ok(Event::Input { .. })),
+            "expected the buffered req-2 reply, got {second:?}"
+        );
+        // With no reply left, the failure is reported.
+        let third = futures::executor::block_on(events.recv_service_response(
+            "req-3",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&third, Err(PatternError::StreamError(_))),
+            "expected StreamError once no reply is queued, got {third:?}"
+        );
+        // The `NodeFailed` itself still reaches the caller's loop.
+        assert!(matches!(events.recv(), Some(Event::NodeFailed { .. })));
     }
 
     fn calc_failed() -> dora_message::daemon_to_node::NodeEvent {
