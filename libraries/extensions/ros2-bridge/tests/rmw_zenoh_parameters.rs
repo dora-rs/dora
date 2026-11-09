@@ -61,13 +61,13 @@ async fn call<Req: Serialize, Res: DeserializeOwned>(
 }
 
 /// Calls `<node_name>/<service>`.
-async fn call_on<Req: Serialize, Res: DeserializeOwned>(
+/// Declare a client for `node_name`'s `rcl_interfaces` service `service`.
+async fn declare_client(
     node: &Node,
     node_name: &str,
     service: &str,
     type_name: &str,
-    request: &Req,
-) -> Res {
+) -> NodeServiceClient {
     let identity = resolve_service(
         RmwZenohCompatibility::Humble,
         "rcl_interfaces",
@@ -83,9 +83,19 @@ async fn call_on<Req: Serialize, Res: DeserializeOwned>(
         type_hash: identity.key_hash_component(),
         qos: "::,1000:,:,:,,".into(),
     };
-    let client = NodeServiceClient::declare(node, key.as_str(), token, 4)
+    NodeServiceClient::declare(node, key.as_str(), token, 4)
         .await
-        .unwrap();
+        .unwrap()
+}
+
+async fn call_on<Req: Serialize, Res: DeserializeOwned>(
+    node: &Node,
+    node_name: &str,
+    service: &str,
+    type_name: &str,
+    request: &Req,
+) -> Res {
+    let client = declare_client(node, node_name, service, type_name).await;
     let response = client
         .call(serialize_cdr(request).unwrap(), Duration::from_secs(5))
         .await
@@ -660,6 +670,11 @@ async fn a_set_is_answered_during_a_get_burst() {
         names: vec!["speed".into()],
     })
     .unwrap();
+    // Declared before the burst: declaring a client takes time, and doing it
+    // after the gets were spawned let a slow runner answer hundreds of them
+    // before the set was even sent (571 of 900 on windows-latest), which says
+    // nothing about the services taking turns.
+    let set_client = declare_client(&node, "/robot/turns", "set_parameters", "SetParameters").await;
     let answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let gets: Vec<_> = (0..900)
         .map(|_| {
@@ -670,25 +685,29 @@ async fn a_set_is_answered_during_a_get_burst() {
             })
         })
         .collect();
-    let set: SetParametersResponse = call_on(
-        &node,
-        "/robot/turns",
-        "set_parameters",
-        "SetParameters",
-        &SetParametersRequest {
-            parameter: vec![parameter("speed", ParameterValue::Double(2.0))],
-        },
-    )
-    .await;
-    let gets_before_set = answered.load(std::sync::atomic::Ordering::SeqCst);
+    let answered_at_send = answered.load(std::sync::atomic::Ordering::SeqCst);
+    let response = set_client
+        .call(
+            serialize_cdr(&SetParametersRequest {
+                parameter: vec![parameter("speed", ParameterValue::Double(2.0))],
+            })
+            .unwrap(),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+    let set: SetParametersResponse = deserialize_cdr(&response).unwrap();
+    let answered_meanwhile = answered.load(std::sync::atomic::Ordering::SeqCst) - answered_at_send;
     assert!(set.results[0].successful);
     for get in gets {
         get.await.unwrap();
     }
     // Waiting for the whole burst would mean ~900; taking turns answers the
-    // set right after the get being served when it arrived.
+    // set right after the get being served when it arrived. Only the gets
+    // answered between sending the set and its reply count.
     assert!(
-        gets_before_set < 450,
-        "{gets_before_set} of 900 gets answered before the set"
+        answered_meanwhile < 450,
+        "{answered_meanwhile} gets were answered while the set waited \
+         ({answered_at_send} of 900 had been answered when it was sent)"
     );
 }
