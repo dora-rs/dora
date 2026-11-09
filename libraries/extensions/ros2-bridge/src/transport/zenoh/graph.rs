@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 
@@ -65,6 +65,11 @@ struct State {
     waiters: Vec<oneshot::Sender<Result<u64, GraphError>>>,
     closed: bool,
     initialized: bool,
+    /// Own tokens whose echo from the liveliness subscriber may still be on
+    /// its way. Own tokens are recorded synchronously when declared and
+    /// dropped, so the echo is redundant; it must not re-add a token that was
+    /// dropped before the echoed put got here.
+    own_echoes: BTreeSet<String>,
 }
 
 /// Upper bound on liveliness entities retained in the graph cache. The tokens
@@ -114,6 +119,12 @@ impl GraphCache {
         if state.closed {
             return Err(GraphError::Closed);
         }
+        if local {
+            state.own_echoes.insert(key.to_owned());
+        } else if state.own_echoes.contains(key) && !state.entities.contains_key(key) {
+            // The late echo of an own token that has already been dropped.
+            return Ok(GraphUpdate(false));
+        }
         if let Some(entry) = state.entities.get_mut(key) {
             // Already known. Upgrade to local if this is our own declaration —
             // the subscriber may have echoed the token back before we ran.
@@ -155,7 +166,19 @@ impl GraphCache {
         Ok(GraphUpdate(true))
     }
 
+    /// Record the removal of a liveliness token observed from the ROS graph.
     pub fn apply_delete(&self, key: &str) -> Result<GraphUpdate, GraphError> {
+        self.remove(key, false)
+    }
+
+    /// Record that the local process dropped one of its own tokens. Unlike
+    /// [`apply_delete`](Self::apply_delete), this keeps expecting the token's
+    /// echo, so a late echoed put does not bring the token back.
+    pub fn apply_delete_local(&self, key: &str) -> Result<GraphUpdate, GraphError> {
+        self.remove(key, true)
+    }
+
+    fn remove(&self, key: &str, local: bool) -> Result<GraphUpdate, GraphError> {
         let token = LivelinessKey::parse(key).map_err(GraphError::MalformedToken)?;
         if token.domain != self.domain {
             return Ok(GraphUpdate(false));
@@ -163,6 +186,22 @@ impl GraphCache {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.closed {
             return Err(GraphError::Closed);
+        }
+        if local {
+            // A token zenoh never echoes would stay here forever; once there
+            // are more than `limit`, forget those of dropped tokens. A late
+            // echo of one of them can then show it again, until its delete.
+            if state.own_echoes.len() > self.limit {
+                let State {
+                    own_echoes,
+                    entities,
+                    ..
+                } = &mut *state;
+                own_echoes.retain(|own| own == key || entities.contains_key(own));
+            }
+        } else {
+            // The echoed delete comes after the echoed put: nothing to wait for.
+            state.own_echoes.remove(key);
         }
         if state.entities.remove(key).is_none() {
             return Ok(GraphUpdate(false));
@@ -310,6 +349,46 @@ mod tests {
             .collect();
         assert_eq!(keys.len(), 2);
         assert!(keys.contains(&local), "local entity must not be evicted");
+    }
+
+    #[test]
+    fn late_echo_of_an_undeclared_local_token_is_ignored() {
+        // Our own tokens are recorded synchronously, and the liveliness
+        // subscriber echoes them back later. If the echoed put is still queued
+        // when the token is dropped, it must not bring the entity back: the
+        // graph would show a dropped server until the echoed delete arrives.
+        let cache = GraphCache::new(0);
+        let key = node_key("own");
+        cache.apply_put_local(&key).unwrap();
+        cache.apply_delete_local(&key).unwrap();
+        assert!(!cache.apply_put(&key).unwrap().changed());
+        assert!(cache.snapshot().entities.is_empty());
+        // The echoed delete ends the tracking without touching the graph.
+        assert!(!cache.apply_delete(&key).unwrap().changed());
+        assert!(cache.state.lock().unwrap().own_echoes.is_empty());
+    }
+
+    #[test]
+    fn echo_of_a_live_local_token_is_a_no_op() {
+        let cache = GraphCache::new(0);
+        let key = node_key("own");
+        cache.apply_put_local(&key).unwrap();
+        assert!(!cache.apply_put(&key).unwrap().changed());
+        assert_eq!(cache.snapshot().entities.len(), 1);
+        cache.apply_delete_local(&key).unwrap();
+        assert!(cache.snapshot().entities.is_empty());
+    }
+
+    #[test]
+    fn own_echo_tracking_is_bounded() {
+        // A token that zenoh never echoes must not be tracked forever.
+        let cache = GraphCache::with_limit(0, 2);
+        for i in 0..8 {
+            let key = node_key(&format!("n{i}"));
+            cache.apply_put_local(&key).unwrap();
+            cache.apply_delete_local(&key).unwrap();
+        }
+        assert!(cache.state.lock().unwrap().own_echoes.len() <= 2);
     }
 
     /// Liveliness-token declaration/undeclaration propagates through the Zenoh
