@@ -10,27 +10,18 @@ pub(crate) struct FakeServices {
     pub clock: Arc<HLC>,
     pub table: HashMap<(Uuid, String), Vec<u8>>,
     pub dropped: Vec<(Uuid, String)>,
+    /// What [`DaemonServices::resolve_machine`] answers for every machine.
+    pub resolved: Option<std::net::SocketAddr>,
     pub sink_tx: tokio::sync::mpsc::UnboundedSender<Timestamped<InterDaemonEvent>>,
 }
 
+/// The receiving end of a [`FakeServices`] sink.
+pub(crate) type SinkReceiver = tokio::sync::mpsc::UnboundedReceiver<Timestamped<InterDaemonEvent>>;
+
 impl FakeServices {
-    /// A daemon on `machine_id` with a zenoh session that neither scouts
-    /// nor listens, so the test cannot reach (or be reached by) any other
-    /// zenoh instance on the host. Returns the receiving end of the sink.
-    pub async fn new(
-        machine_id: &str,
-    ) -> (
-        Self,
-        tokio::sync::mpsc::UnboundedReceiver<Timestamped<InterDaemonEvent>>,
-    ) {
-        let mut cfg = zenoh::Config::default();
-        cfg.insert_json5("scouting/multicast/enabled", "false")
-            .unwrap();
-        cfg.insert_json5("scouting/gossip/enabled", "false")
-            .unwrap();
-        cfg.insert_json5("listen/endpoints", "{ peer: [] }")
-            .unwrap();
-        let session = zenoh::open(cfg).await.unwrap();
+    /// A daemon on `machine_id` that uses the given zenoh session. Returns
+    /// the receiving end of the sink.
+    pub fn with_session(machine_id: &str, session: zenoh::Session) -> (Self, SinkReceiver) {
         let (sink_tx, sink_rx) = tokio::sync::mpsc::unbounded_channel();
         let services = Self {
             machine_id: machine_id.to_string(),
@@ -38,6 +29,7 @@ impl FakeServices {
             clock: Arc::new(HLC::default()),
             table: HashMap::new(),
             dropped: Vec::new(),
+            resolved: None,
             sink_tx,
         };
         (services, sink_rx)
@@ -77,7 +69,8 @@ impl DaemonServices for FakeServices {
     }
 
     fn resolve_machine(&self, _machine_id: String) -> BoxFuture<Option<std::net::SocketAddr>> {
-        Box::pin(async { None })
+        let resolved = self.resolved;
+        Box::pin(async move { resolved })
     }
 
     fn peer_message_sink(&self) -> PeerMessageSink {
@@ -87,6 +80,37 @@ impl DaemonServices for FakeServices {
             Box::pin(async {}) as BoxFuture<()>
         })
     }
+}
+
+/// A zenoh session that never scouts, listens only on `listen` and dials
+/// only `connect` (IPv4 loopback ports), so a test can neither reach nor be
+/// reached by any other zenoh instance on the host.
+pub(crate) async fn isolated_session(listen: Option<u16>, connect: Option<u16>) -> zenoh::Session {
+    let endpoints = |port: Option<u16>| match port {
+        Some(port) => format!(r#"{{ peer: ["tcp/127.0.0.1:{port}"] }}"#),
+        None => "{ peer: [] }".to_string(),
+    };
+    let mut cfg = zenoh::Config::default();
+    for (key, value) in [
+        ("scouting/multicast/enabled", "false".to_string()),
+        ("scouting/gossip/enabled", "false".to_string()),
+        ("listen/endpoints", endpoints(listen)),
+        ("connect/endpoints", endpoints(connect)),
+    ] {
+        cfg.insert_json5(key, &value).unwrap();
+    }
+    zenoh::open(cfg).await.unwrap()
+}
+
+/// Two sessions linked over loopback TCP. Pool messages are published with
+/// `Locality::Remote`, so a test that observes them needs a second session.
+pub(crate) async fn linked_sessions() -> (zenoh::Session, zenoh::Session) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let listening = isolated_session(Some(port), None).await;
+    let dialing = isolated_session(None, Some(port)).await;
+    (listening, dialing)
 }
 
 /// Serializes tests that enable the cross-machine opt-in through the
