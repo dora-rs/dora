@@ -1376,7 +1376,9 @@ pub(crate) fn node_reply(response: &NodeResponse) -> DaemonReply {
 
 #[cfg(test)]
 mod mirror_register_tests {
-    use super::test_services::{FakeServices, enable_cross_machine};
+    use super::test_services::{
+        FakeServices, enable_cross_machine, isolated_session, linked_sessions,
+    };
     use super::*;
 
     const POOL: &str = "pool_sender_1";
@@ -1402,10 +1404,18 @@ mod mirror_register_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn over_cap_register_stores_no_descriptor() {
         let _env = enable_cross_machine();
-        let (mut svc, mut sink_rx) = FakeServices::new("B").await;
+        let (mirror_session, origin_session) = linked_sessions().await;
+        let (mut svc, mut sink_rx) = FakeServices::with_session("B", mirror_session);
         let mut state = PoolState::new();
         let df = Uuid::new_v4();
         state.subscribe_dataflow(&mut svc, df);
+        let origin = origin_session
+            .declare_subscriber(pool_message_topic(&df, None))
+            .await
+            .unwrap();
+        // Let the origin's subscription reach the mirror before the one
+        // ack is published.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
         state
             .handle_pool_peer_message(&mut svc, df, register(MIRROR_SIZE_CAP + 1))
@@ -1415,11 +1425,28 @@ mod mirror_register_tests {
             svc.table.is_empty(),
             "an over-cap register must not store a descriptor"
         );
+
+        // The origin still learns why.
+        let sample = tokio::time::timeout(std::time::Duration::from_secs(10), origin.recv_async())
+            .await
+            .expect("the mirror must answer the register")
+            .unwrap();
+        let event = Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(
+            &sample.payload().to_bytes(),
+        )
+        .unwrap();
+        let InterDaemonEvent::ExtensionMessage { payload, .. } = event.inner else {
+            panic!("unexpected event: {:?}", event.inner)
+        };
+        let ack = postcard::from_bytes(&payload).unwrap();
+        let PeerMessage::RegisterAck { ok, error, .. } = ack else {
+            panic!("expected a RegisterAck, got {ack:?}")
+        };
+        assert!(!ok);
+        assert!(error.unwrap().contains("1 GiB mirror cap"));
         // Nothing was stored, so the failed task has nothing to roll back.
         assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(2), sink_rx.recv())
-                .await
-                .is_err(),
+            sink_rx.try_recv().is_err(),
             "no rollback expected for a descriptor that was never stored"
         );
         state.cleanup_dataflow(df).await;
@@ -1434,7 +1461,8 @@ mod mirror_register_tests {
     #[cfg(target_os = "linux")]
     async fn failed_mirror_rolls_back_its_descriptor() {
         let _env = enable_cross_machine();
-        let (mut svc, mut sink_rx) = FakeServices::new("B").await;
+        let (mut svc, mut sink_rx) =
+            FakeServices::with_session("B", isolated_session(None, None).await);
         let mut state = PoolState::new();
         let df = Uuid::new_v4();
         state.subscribe_dataflow(&mut svc, df);
