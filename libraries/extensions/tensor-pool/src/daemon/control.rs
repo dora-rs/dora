@@ -173,6 +173,20 @@ pub(crate) async fn release_cross_pool(
     }
 }
 
+/// How many `PeerMessage::Free`s the mirror has handled for this pool.
+pub(crate) fn free_epoch(
+    epochs: &std::sync::Mutex<HashMap<(Uuid, String), u64>>,
+    dataflow_id: Uuid,
+    shared_memory_id: &str,
+) -> u64 {
+    epochs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(dataflow_id, shared_memory_id.to_string()))
+        .copied()
+        .unwrap_or(0)
+}
+
 /// Pending synchronous register confirmations:
 /// (dataflow id, pool id) -> ack channel. Keyed by dataflow too: every
 /// node process restarts its pool counter from zero, so a bare pool id

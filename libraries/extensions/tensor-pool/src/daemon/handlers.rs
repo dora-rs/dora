@@ -1389,17 +1389,3 @@ pub(crate) fn node_reply(response: &NodeResponse) -> DaemonReply {
         Err(e) => DaemonReply::Result(Err(format!("tensor-pool reply encode failed: {e}"))),
     }
 }
-
-/// How many `PeerMessage::Free`s the mirror has handled for this pool.
-fn free_epoch(
-    epochs: &std::sync::Mutex<HashMap<(Uuid, String), u64>>,
-    dataflow_id: Uuid,
-    shared_memory_id: &str,
-) -> u64 {
-    epochs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&(dataflow_id, shared_memory_id.to_string()))
-        .copied()
-        .unwrap_or(0)
-}
