@@ -702,12 +702,26 @@ async fn a_set_is_answered_during_a_get_burst() {
     for get in gets {
         get.await.unwrap();
     }
-    // Waiting for the whole burst would mean ~900; taking turns answers the
-    // set right after the get being served when it arrived. Only the gets
-    // answered between sending the set and its reply count.
-    assert!(
-        answered_meanwhile < 450,
-        "{answered_meanwhile} gets were answered while the set waited \
-         ({answered_at_send} of 900 had been answered when it was sent)"
-    );
+    // Gets still waiting when the set was sent. A service that takes turns
+    // answers the set right after the get in progress, so only a few of them
+    // are answered first; one that served the burst before the set answers
+    // nearly all of them. Only the gets answered between sending the set and
+    // its reply count, and the bound is relative to those still waiting.
+    let waiting = 900 - answered_at_send;
+    if waiting < 450 {
+        // Most of the burst was gone before the set could be sent (a slow
+        // runner), so there is little left for the set to queue behind and
+        // this run cannot show the services taking turns. Say so instead of
+        // passing silently.
+        eprintln!(
+            "inconclusive: {answered_at_send} of 900 gets were already answered when the set \
+             was sent, only {waiting} were still waiting"
+        );
+    } else {
+        assert!(
+            answered_meanwhile < waiting / 2,
+            "{answered_meanwhile} of the {waiting} gets still waiting were answered while the \
+             set waited"
+        );
+    }
 }
