@@ -1454,6 +1454,7 @@ mod tests {
             "tcp/[::1]",
             "tcp/[::ffff:127.0.0.1]:5456",
             "tcp/localhost:5456",
+            "tcp/LOCALHOST:5456",
             "udp/127.1.2.3:1",
         ] {
             assert!(zenoh_endpoint_is_loopback(endpoint), "{endpoint}");
