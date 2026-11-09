@@ -199,7 +199,7 @@ impl PoolState {
                 let shm_provider = self.shm_provider.clone();
                 let generations = self.mirror_generations.clone();
                 let generation =
-                    bump_mirror_generation(&generations, dataflow_id, &shared_memory_id, false);
+                    bump_mirror_generation(&generations, dataflow_id, &shared_memory_id).await;
                 // Replicate the pool descriptor into the local extension
                 // table before the mirror creation task runs, so a
                 // receiver's daemon query resolves it from the first
@@ -270,6 +270,30 @@ impl PoolState {
                         }
                     });
                 tokio::spawn(async move {
+                    // Only the latest `Register` for this pool may build its
+                    // mirror. A task that a later `Free` (an origin giving up
+                    // on a register it sent to a backlogged mirror, #4101) or
+                    // a later `Register` (a restarted node reuses its pool
+                    // ids) has superseded must not create, register or undo
+                    // anything: the mirror's names are shared, so it would
+                    // replace or unlink the newer registration's segment. It
+                    // sends no ack either — the origin waits for the first
+                    // ack of its pending register, and the newest attempt
+                    // answers that. The lock is held until the pool is
+                    // registered, so a `Free` or `Register` handled meanwhile
+                    // waits (millisecond-scale, without blocking the event loop
+                    // thread) and then finds the entry.
+                    let generation_guard = generations.lock().await;
+                    let latest = generation_guard
+                        .get(&(dataflow_id, shared_memory_id.clone()))
+                        .copied()
+                        .unwrap_or_default();
+                    if latest > generation {
+                        tracing::info!(
+                            "memory pool: skipping a superseded register of {shared_memory_id}"
+                        );
+                        return;
+                    }
                     // Mirror allocation cap: the `PeerMessage::Register` event's
                     // `size` comes from a remote daemon (untrusted
                     // cross-machine input). Without a cap, a buggy or
@@ -313,38 +337,9 @@ impl PoolState {
                             origin_machine_id.clone(),
                             mirror_shmem_name.clone(),
                         );
-                        // A `Free` handled after this task's `Register` (an
-                        // origin giving up on a register it sent to a
-                        // backlogged mirror, #4101) found nothing to free
-                        // yet, so undo the mirror here. Checked after the
-                        // registration, so a later free finds the entry
-                        // instead. Check and undo hold the generation lock:
-                        // a newer `Register` for the same pool id cannot be
-                        // handled in between and lose its mirror to this
-                        // undo, which works by the shared names. No ack:
-                        // the origin has stopped waiting for this one, and
-                        // a nack could resolve a newer register's wait.
-                        {
-                            let generations = generations.lock().unwrap_or_else(|e| e.into_inner());
-                            let latest = generations
-                                .get(&(dataflow_id, shared_memory_id.clone()))
-                                .copied()
-                                .unwrap_or_default();
-                            if latest.freed && latest.generation > generation {
-                                tensor_pool.unregister_cross_pool(
-                                    &dataflow_id.to_string(),
-                                    &shared_memory_id,
-                                );
-                                if let Some(name) = &mirror_shmem_name {
-                                    remove_cross_pool_shmem(name);
-                                }
-                                tracing::info!(
-                                    "memory pool: pool {shared_memory_id} was freed before \
-                                     its mirror was registered; undone"
-                                );
-                                return;
-                            }
-                        }
+                    }
+                    drop(generation_guard);
+                    if ok {
                         // The dataflow may have finished while this task
                         // ran; see [`MemoryPoolSubscriber`]. Registering
                         // behind the finish-time drain would strand the
@@ -398,14 +393,10 @@ impl PoolState {
                 Ok(())
             }
             PeerMessage::Free { shared_memory_id } => {
-                // Before the unregister: a creation task that registers
-                // after this point sees the free and undoes its mirror.
-                bump_mirror_generation(
-                    &self.mirror_generations,
-                    dataflow_id,
-                    &shared_memory_id,
-                    true,
-                );
+                // A creation task for an earlier `Register` that has not
+                // built its mirror yet now skips it.
+                bump_mirror_generation(&self.mirror_generations, dataflow_id, &shared_memory_id)
+                    .await;
                 self.tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id);
                 // The replicated mirror descriptor goes away with the
@@ -1317,7 +1308,7 @@ impl PoolState {
         }
         self.mirror_generations
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .await
             .retain(|(df, _), _| *df != dataflow_id);
 
         // Drain this dataflow's per-(dataflow, pool) cross-write state:

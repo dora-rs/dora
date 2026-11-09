@@ -1934,14 +1934,16 @@ mod register_timeout_tests {
     /// handles an old `Register`, the origin's rollback `Free` and the new
     /// node's `Register` back to back, the old creation task must neither
     /// undo the new registration's mirror (they share names) nor nack the
-    /// origin, whose wait for the new register it could resolve.
+    /// origin, whose wait for the new register it could resolve, nor
+    /// replace the new mirror with one of its own size.
     #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[cfg(target_os = "linux")]
     async fn stale_creation_task_leaves_a_newer_registration_alone() {
         let _env = enable_cross_machine();
         let pool = "pool_sender_1";
-        for _ in 0..10 {
+        const NEW_SIZE: usize = 1 << 20;
+        for _ in 0..20 {
             let (mirror_session, origin_session) = linked_sessions().await;
             let (mut mirror, _sink) = FakeServices::with_session("B", mirror_session);
             let mut state = PoolState::new();
@@ -1953,21 +1955,24 @@ mod register_timeout_tests {
                 .unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-            let register = postcard::to_allocvec(&PeerMessage::Register {
-                origin_machine_id: "A".to_string(),
-                shared_memory_id: pool.to_string(),
-                shmem_name: "dora_test_no_such_sender_segment".to_string(),
-                size: 4096,
-                dtype: "uint8".to_string(),
-                shape: vec![4096],
-                device: "cpu".to_string(),
-            })
-            .unwrap();
+            let register = |size: usize| {
+                postcard::to_allocvec(&PeerMessage::Register {
+                    origin_machine_id: "A".to_string(),
+                    shared_memory_id: pool.to_string(),
+                    shmem_name: "dora_test_no_such_sender_segment".to_string(),
+                    size,
+                    dtype: "uint8".to_string(),
+                    shape: vec![size as i64],
+                    device: "cpu".to_string(),
+                })
+                .unwrap()
+            };
             let free = postcard::to_allocvec(&PeerMessage::Free {
                 shared_memory_id: pool.to_string(),
             })
             .unwrap();
-            for payload in [register.clone(), free, register] {
+            // The restarted node registers a different size.
+            for payload in [register(4096), free, register(NEW_SIZE)] {
                 state
                     .handle_extension_message(
                         &mut mirror,
@@ -1985,7 +1990,7 @@ mod register_timeout_tests {
                 "/dev/shm/{}",
                 TensorPoolManager::cross_pool_shmem_name("B", &df.to_string(), pool).unwrap()
             );
-            let survived = std::path::Path::new(&segment).exists();
+            let size = std::fs::metadata(&segment).map(|m| m.len() as usize);
             let tracked = state
                 .tensor_pool
                 .cross_peer(&df.to_string(), pool)
@@ -2006,7 +2011,11 @@ mod register_timeout_tests {
             }
             state.cleanup_dataflow(df).await;
             let _ = std::fs::remove_file(&segment);
-            assert!(survived, "the newer registration's segment was undone");
+            let size = size.expect("the newer registration's segment was undone");
+            assert!(
+                size >= NEW_SIZE,
+                "the newer registration's segment was replaced by the old one ({size} bytes)"
+            );
             assert!(tracked, "the newer registration is no longer tracked");
             assert!(described, "the newer registration's descriptor is gone");
             assert!(!nacked, "the origin got a nack for a live registration");

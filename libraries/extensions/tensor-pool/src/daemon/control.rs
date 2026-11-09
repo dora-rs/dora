@@ -173,39 +173,28 @@ pub(crate) async fn release_cross_pool(
     }
 }
 
-/// Mirror side: the latest `PeerMessage::Register` or `PeerMessage::Free`
-/// handled for one `(dataflow id, pool id)`.
+/// Mirror side: a counter per `(dataflow id, pool id)` that every
+/// `PeerMessage::Register` and `PeerMessage::Free` bumps.
 ///
-/// A mirror-creation task runs after its `Register` was handled and may
-/// finish after later messages for the same pool. It compares the
-/// generation its `Register` got with the current one: a `Free` that came
-/// after it means the origin gave up on the register (#4101), so the task
-/// undoes its mirror; a newer `Register` (a node restart reuses its pool
-/// ids) owns the mirror, which the task must then leave alone.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct MirrorGeneration {
-    pub generation: u64,
-    /// Whether the latest message was a `Free`.
-    pub freed: bool,
-}
+/// A mirror-creation task runs after its `Register` was handled, possibly
+/// after later messages for the same pool. It builds the mirror only while
+/// its `Register` is still the latest message: a later `Free` means the
+/// origin gave up on it (#4101), and a later `Register` (a node restart
+/// reuses its pool ids) owns the mirror's names.
+pub(crate) type MirrorGenerations = tokio::sync::Mutex<HashMap<(Uuid, String), u64>>;
 
-pub(crate) type MirrorGenerations = std::sync::Mutex<HashMap<(Uuid, String), MirrorGeneration>>;
-
-/// Record a `Register` (`freed: false`) or `Free` (`freed: true`) for the
-/// pool and return the generation it got.
-pub(crate) fn bump_mirror_generation(
+/// Record a `Register` or `Free` for the pool and return its generation.
+pub(crate) async fn bump_mirror_generation(
     generations: &MirrorGenerations,
     dataflow_id: Uuid,
     shared_memory_id: &str,
-    freed: bool,
 ) -> u64 {
-    let mut generations = generations.lock().unwrap_or_else(|e| e.into_inner());
-    let entry = generations
+    let mut generations = generations.lock().await;
+    let generation = generations
         .entry((dataflow_id, shared_memory_id.to_string()))
         .or_default();
-    entry.generation += 1;
-    entry.freed = freed;
-    entry.generation
+    *generation += 1;
+    *generation
 }
 
 /// Pending synchronous register confirmations:
