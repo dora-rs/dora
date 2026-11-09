@@ -35,6 +35,9 @@ struct InputState {
     /// Number of this input's events in `queue`, kept in step with it so the
     /// per-push cap check does not have to scan the queue.
     queued: usize,
+    /// Running count of this input's events dropped at the cap; drives the
+    /// rate-limited drop log (see [`should_log_drop`]).
+    dropped: u64,
 }
 
 impl InputState {
@@ -43,6 +46,7 @@ impl InputState {
             cap: policy.effective_cap(size),
             policy,
             queued: 0,
+            dropped: 0,
         }
     }
 }
@@ -127,11 +131,13 @@ impl InputBuffer {
         }
     }
 
-    fn add_event(&mut self, event: Event) {
+    /// Queue `event`, dropping the oldest event of the same input if that
+    /// puts it over its cap. Returns whether a drop was logged.
+    fn add_event(&mut self, event: Event) -> bool {
         let Event::Input { id, .. } = &event else {
             // Not an input (e.g. `InputClosed`) — nothing to cap.
             self.queue.push_back(event);
-            return;
+            return false;
         };
 
         // Only the pushed input can now exceed its cap: every other input was
@@ -162,25 +168,48 @@ impl InputBuffer {
         // whole backlog exactly when the runtime is behind.
         state.queued += 1;
         let over_cap = state.queued.saturating_sub(state.cap);
+        let mut logged_drop = false;
         if over_cap > 0 {
             // Make room before pushing, so the newest `cap` (this event
             // included) stay queued in FIFO order. `effective_cap` is always
             // >= 1, so a single push can only put an input one over.
-            if let QueuePolicy::Backpressure = state.policy {
-                tracing::error!(
-                    "backpressure input `{id}` hit hard cap, dropping oldest to prevent OOM"
-                );
-            }
             let dropped = drop_oldest(&mut self.queue, id, over_cap);
             debug_assert_eq!(
                 dropped, over_cap,
                 "queued count for `{id}` exceeds the queue"
             );
             state.queued -= dropped;
-            tracing::warn!("dropped {dropped} operator inputs because event queue was too full");
+            // An operator slower than its input sits at the cap, so this runs
+            // for every incoming message. Log at a power-of-two cadence, like
+            // the node-side scheduler, instead of once or twice per message.
+            state.dropped = state.dropped.saturating_add(dropped as u64);
+            if should_log_drop(state.dropped) {
+                logged_drop = true;
+                let total = state.dropped;
+                if let QueuePolicy::Backpressure = state.policy {
+                    tracing::error!(
+                        "backpressure input `{id}` hit hard cap, dropping oldest to \
+                         prevent OOM ({total} dropped so far)"
+                    );
+                } else {
+                    tracing::warn!(
+                        "dropped operator input `{id}` because its queue was full \
+                         ({total} dropped so far)"
+                    );
+                }
+            }
         }
         self.queue.push_back(event);
+        logged_drop
     }
+}
+
+/// Whether the drop that brings an input's running drop count to `count`
+/// should be logged: at 1, 2, 4, 8, … so a lasting overload keeps being
+/// reported, but only O(log N) times for N drops. Mirrors the node-side
+/// `should_warn_drop` in `dora-node-api`.
+fn should_log_drop(count: u64) -> bool {
+    count.is_power_of_two()
 }
 
 /// Remove up to `count` of the oldest queued events of input `id`, returning
@@ -362,5 +391,23 @@ mod tests {
                 .contains_key(&DataId::from("undeclared".to_string())),
             "the default cap must be recorded for the unconfigured input"
         );
+    }
+
+    // An operator slower than its input sits at the cap, so every push drops
+    // one event. The drop log must follow a power-of-two cadence over the
+    // running count, not fire once (or twice) per message.
+    #[test]
+    fn drops_are_counted_and_logged_at_power_of_two_cadence() {
+        let id = DataId::from("fast".to_string());
+        let mut buffer =
+            InputBuffer::new(BTreeMap::from([(id.clone(), (2, QueuePolicy::DropOldest))]));
+
+        let logged = (0..1002)
+            .filter(|_| buffer.add_event(input_event("fast")))
+            .count();
+
+        assert_eq!(buffer.inputs[&id].dropped, 1000);
+        // 1, 2, 4, …, 512: ten log lines for a thousand drops.
+        assert_eq!(logged, 10);
     }
 }
