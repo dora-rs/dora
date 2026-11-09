@@ -685,6 +685,16 @@ async fn a_set_is_answered_during_a_get_burst() {
             })
         })
         .collect();
+    // Send the set once the burst is being served, so it queues behind it. Sent
+    // earlier it could reach the server before the gets, and a service that
+    // starved it would pass.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while answered.load(std::sync::atomic::Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the burst was never served");
     let answered_at_send = answered.load(std::sync::atomic::Ordering::SeqCst);
     let response = set_client
         .call(
