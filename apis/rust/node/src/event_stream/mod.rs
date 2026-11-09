@@ -1446,7 +1446,10 @@ impl EventStream {
     ///   `recv()`, and later waits on the same server fail the same way
     ///   until it restarts. `NodeFailed` is delivered only by the
     ///   client's own daemon, so this covers a server on the same machine; a
-    ///   remote server's failure still ends the wait only at `timeout`.
+    ///   remote server's failure still ends the wait only at `timeout`. A
+    ///   reply already queued when the failure is seen is still returned, but
+    ///   one still in flight on the zenoh data plane when the daemon's
+    ///   `NodeFailed` arrives reaches the caller's loop as a plain input.
     ///
     /// A response that was already queued when the dataflow began stopping is
     /// still returned as `Ok`. The wait may have read the `Stop` while looking
@@ -1807,7 +1810,11 @@ impl EventStream {
             return None;
         }
         self.absorb_ready_events();
-        while let Some(event) = self.pop_scheduled(false) {
+        // Once a `Stop` has been read — before this call or by this drain —
+        // keep to the post-`Stop` contract: only already-queued inputs may
+        // follow it, so trailing control events are discarded, exactly as
+        // `recv_from_stream` does.
+        while let Some(event) = self.pop_scheduled(self.stop_received) {
             if is_match(&event) {
                 return Some(event);
             }
@@ -4068,6 +4075,43 @@ mod tests {
         );
         // The `NodeFailed` itself still reaches the caller's loop.
         assert!(matches!(events.recv(), Some(Event::NodeFailed { .. })));
+    }
+
+    /// Review of #4097: draining the queue after a server failure must keep
+    /// the post-`Stop` contract — one `Stop`, then only already-queued inputs,
+    /// never a second `Stop` or other control events.
+    #[test]
+    fn server_failure_drain_delivers_nothing_but_inputs_after_stop() {
+        use dora_message::daemon_to_node::NodeEvent;
+        let calc = NodeId::from("calc".to_string());
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_event_for_testing(calc_failed());
+        events.push_scheduler_event_for_testing(NodeEvent::Stop);
+        events.push_scheduler_event_for_testing(NodeEvent::Stop);
+
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&response, Err(PatternError::StreamError(_))),
+            "expected StreamError for the failed server, got {response:?}"
+        );
+
+        let mut rest = Vec::new();
+        while let Some(event) = events.recv() {
+            rest.push(event);
+        }
+        let stops = rest.iter().filter(|e| matches!(e, Event::Stop(_))).count();
+        assert_eq!(stops, 1, "exactly one Stop must be delivered, got {rest:?}");
+        let after_stop = rest
+            .iter()
+            .skip_while(|e| !matches!(e, Event::Stop(_)))
+            .skip(1)
+            .filter(|e| !matches!(e, Event::Input { .. }))
+            .count();
+        assert_eq!(after_stop, 0, "only inputs may follow Stop, got {rest:?}");
     }
 
     fn calc_failed() -> dora_message::daemon_to_node::NodeEvent {
