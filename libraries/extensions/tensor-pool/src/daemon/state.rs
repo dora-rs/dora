@@ -67,6 +67,11 @@ pub struct PoolState {
     /// port; absent pools fall back to the zenoh relay.
     pub(crate) cross_data_endpoints:
         Arc<std::sync::Mutex<HashMap<(Uuid, String), std::net::SocketAddr>>>,
+    /// Mirror side: how many `PeerMessage::Free`s each `(dataflow id, pool
+    /// id)` has received. A mirror-creation task compares it with the value
+    /// its `Register` saw, so a free handled while the task was still
+    /// creating the segment undoes the mirror instead of being lost (#4101).
+    pub(crate) mirror_free_epochs: Arc<std::sync::Mutex<HashMap<(Uuid, String), u64>>>,
 }
 
 impl PoolState {
@@ -93,6 +98,7 @@ impl PoolState {
             cross_data_listener_port: None,
             cross_data_conns: Arc::new(std::sync::Mutex::new(HashMap::new())),
             cross_data_endpoints: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            mirror_free_epochs: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 

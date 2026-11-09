@@ -1862,4 +1862,71 @@ mod register_timeout_tests {
         assert_eq!(registers, 3, "the origin retries the register twice");
         assert!(freed, "the origin must free the mirror after giving up");
     }
+
+    /// The rollback `Free` can be handled by a backlogged mirror right after
+    /// the last `Register`, before that register's creation task has made
+    /// anything. The task must then undo the mirror it creates, or the
+    /// segment leaks until dataflow finish after all (#4101).
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[cfg(target_os = "linux")]
+    async fn free_handled_before_the_mirror_exists_still_frees_it() {
+        use super::test_services::isolated_session;
+
+        let _env = enable_cross_machine();
+        let (mut mirror, _sink) =
+            FakeServices::with_session("B", isolated_session(None, None).await);
+        let mut state = PoolState::new();
+        let df = Uuid::new_v4();
+        let pool = "pool_sender_1";
+        state.subscribe_dataflow(&mut mirror, df);
+        let message = |message: &PeerMessage| postcard::to_allocvec(message).unwrap();
+
+        let register = PeerMessage::Register {
+            origin_machine_id: "A".to_string(),
+            shared_memory_id: pool.to_string(),
+            shmem_name: "dora_test_no_such_sender_segment".to_string(),
+            size: 4096,
+            dtype: "uint8".to_string(),
+            shape: vec![4096],
+            device: "cpu".to_string(),
+        };
+        let free = PeerMessage::Free {
+            shared_memory_id: pool.to_string(),
+        };
+        for payload in [message(&register), message(&free)] {
+            state
+                .handle_extension_message(
+                    &mut mirror,
+                    df,
+                    NAMESPACE.to_string(),
+                    Some("B".to_string()),
+                    payload,
+                )
+                .await
+                .unwrap();
+        }
+
+        let segment = format!(
+            "/dev/shm/{}",
+            TensorPoolManager::cross_pool_shmem_name("B", &df.to_string(), pool).unwrap()
+        );
+        // The creation task runs on its own; give it ample time.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let leaked = std::path::Path::new(&segment).exists();
+        let _ = std::fs::remove_file(&segment);
+        assert!(!leaked, "the freed pool's mirror segment survived");
+        assert!(
+            state
+                .tensor_pool
+                .cross_peer(&df.to_string(), pool)
+                .is_none(),
+            "the freed pool is still tracked"
+        );
+        assert!(
+            mirror.table.is_empty(),
+            "the freed pool's descriptor survived"
+        );
+        state.cleanup_dataflow(df).await;
+    }
 }

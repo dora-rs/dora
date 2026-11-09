@@ -197,6 +197,9 @@ impl PoolState {
                 // Pool creation happens inside spawn (creation is millisecond-scale but publishing may Block)
                 let tensor_pool = self.tensor_pool.clone();
                 let shm_provider = self.shm_provider.clone();
+                let free_epochs = self.mirror_free_epochs.clone();
+                let free_epoch_at_register =
+                    free_epoch(&free_epochs, dataflow_id, &shared_memory_id);
                 // Replicate the pool descriptor into the local extension
                 // table before the mirror creation task runs, so a
                 // receiver's daemon query resolves it from the first
@@ -314,7 +317,14 @@ impl PoolState {
                         // ran; see [`MemoryPoolSubscriber`]. Registering
                         // behind the finish-time drain would strand the
                         // segment for the daemon's lifetime, so undo it.
-                        if dataflow_live.load(atomic::Ordering::SeqCst) {
+                        // Same for a `Free` handled while this task ran (an
+                        // origin giving up on a register it sent to a
+                        // backlogged mirror, #4101): it found nothing to
+                        // free yet. Checked after the registration, so a
+                        // free that comes later finds the entry instead.
+                        let freed = free_epoch(&free_epochs, dataflow_id, &shared_memory_id)
+                            != free_epoch_at_register;
+                        if dataflow_live.load(atomic::Ordering::SeqCst) && !freed {
                             tracing::info!(
                                 "memory pool: mirrored cross-machine pool {shared_memory_id} (size {size})"
                             );
@@ -330,9 +340,15 @@ impl PoolState {
                             // for a dataflow that is already gone.
                             ok = false;
                             direct = false;
-                            error = Some(format!(
-                                "dataflow {dataflow_id} finished before the mirror was registered"
-                            ));
+                            error = Some(if freed {
+                                format!(
+                                    "pool {shared_memory_id} was freed before the mirror was registered"
+                                )
+                            } else {
+                                format!(
+                                    "dataflow {dataflow_id} finished before the mirror was registered"
+                                )
+                            });
                         }
                     } else {
                         tracing::warn!(
@@ -363,6 +379,14 @@ impl PoolState {
                 Ok(())
             }
             PeerMessage::Free { shared_memory_id } => {
+                // Before the unregister: a creation task that registers
+                // after this point sees the bump and undoes its mirror.
+                *self
+                    .mirror_free_epochs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .entry((dataflow_id, shared_memory_id.clone()))
+                    .or_default() += 1;
                 self.tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id);
                 // The replicated mirror descriptor goes away with the
@@ -1272,6 +1296,10 @@ impl PoolState {
         if let Some(subscriber) = self.subscribers.remove(&dataflow_id) {
             subscriber.shutdown();
         }
+        self.mirror_free_epochs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(df, _), _| *df != dataflow_id);
 
         // Drain this dataflow's per-(dataflow, pool) cross-write state:
         // these maps are keyed by a fresh per-dataflow UUID and are never
@@ -1360,4 +1388,18 @@ pub(crate) fn node_reply(response: &NodeResponse) -> DaemonReply {
         Ok(payload) => DaemonReply::ExtensionReply { payload },
         Err(e) => DaemonReply::Result(Err(format!("tensor-pool reply encode failed: {e}"))),
     }
+}
+
+/// How many `PeerMessage::Free`s the mirror has handled for this pool.
+fn free_epoch(
+    epochs: &std::sync::Mutex<HashMap<(Uuid, String), u64>>,
+    dataflow_id: Uuid,
+    shared_memory_id: &str,
+) -> u64 {
+    epochs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&(dataflow_id, shared_memory_id.to_string()))
+        .copied()
+        .unwrap_or(0)
 }
