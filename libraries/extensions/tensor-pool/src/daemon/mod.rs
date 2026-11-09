@@ -34,6 +34,8 @@ mod handlers;
 mod mirror;
 mod services;
 mod state;
+#[cfg(test)]
+mod test_services;
 
 pub use services::{BoxFuture, DaemonServices, PeerMessageSink};
 pub use state::PoolState;
