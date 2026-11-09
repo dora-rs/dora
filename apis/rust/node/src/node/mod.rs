@@ -144,6 +144,46 @@ mod runtime_type_check_tests {
 /// value (overridable via `DORA_ZERO_COPY_THRESHOLD`).
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
+/// Upper bound for a `DORA_ZERO_COPY_THRESHOLD` override.
+///
+/// Every payload below the threshold is published with an express heap `put`,
+/// which has to fit a single zenoh batch: `batch_size` is a `u16`, so a batch
+/// is at most 64 KiB, and a larger express message is fragmented and silently
+/// dropped (dora-rs/dora#2366). A threshold above this bound would send
+/// mid-size payloads down that lossy path instead of SHM or the daemon, so the
+/// override is clamped here. The remaining room in the batch is left for the
+/// metadata attachment and the transport headers. The bound assumes zenoh's
+/// default (and largest) batch size; a `ZENOH_CONFIG_PATH` that lowers
+/// `batch_size` lowers the safe threshold with it.
+const MAX_ZERO_COPY_THRESHOLD: usize = 32 * 1024;
+
+/// Parse a `DORA_ZERO_COPY_THRESHOLD` override, falling back to
+/// [`ZERO_COPY_THRESHOLD`] when it is absent or invalid and clamping it to
+/// [`MAX_ZERO_COPY_THRESHOLD`].
+fn parse_zero_copy_threshold(raw: Option<&str>) -> usize {
+    let Some(raw) = raw else {
+        return ZERO_COPY_THRESHOLD;
+    };
+    match raw.trim().parse::<usize>() {
+        Ok(value) if value > MAX_ZERO_COPY_THRESHOLD => {
+            tracing::warn!(
+                "DORA_ZERO_COPY_THRESHOLD={value} exceeds the {MAX_ZERO_COPY_THRESHOLD}-byte \
+                 maximum (larger heap-published payloads would not fit one zenoh batch \
+                 and be dropped); using {MAX_ZERO_COPY_THRESHOLD}"
+            );
+            MAX_ZERO_COPY_THRESHOLD
+        }
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!(
+                "invalid DORA_ZERO_COPY_THRESHOLD={raw:?} ({err}); \
+                 using default {ZERO_COPY_THRESHOLD}"
+            );
+            ZERO_COPY_THRESHOLD
+        }
+    }
+}
+
 /// How many large outbound sends are traced hop-by-hop
 /// (dora-rs/dora#2742 diagnostic; see [`DoraNode::send_output_sample`]).
 ///
@@ -1267,10 +1307,8 @@ impl DoraNode {
             // `shared_memory_pool_size` / `DORA_NODE_SHM_POOL_SIZE`) to keep more
             // large outputs zero-copy.
             .unwrap_or(8 * 1024 * 1024);
-        let zenoh_zero_copy_threshold = std::env::var("DORA_ZERO_COPY_THRESHOLD")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(ZERO_COPY_THRESHOLD);
+        let zenoh_zero_copy_threshold =
+            parse_zero_copy_threshold(std::env::var("DORA_ZERO_COPY_THRESHOLD").ok().as_deref());
         let (zenoh_session, zenoh_shm_provider, owned_runtime) = if !is_standard_mode {
             (None, None, None)
         } else {
@@ -2297,7 +2335,8 @@ impl DoraNode {
     /// Outputs whose raw payload is at least this many bytes are published via
     /// zenoh shared memory (zero-copy for local subscribers); smaller outputs
     /// are published via zenoh with a heap-buffered put. Configured via the
-    /// `DORA_ZERO_COPY_THRESHOLD` env var, defaulting to
+    /// `DORA_ZERO_COPY_THRESHOLD` env var (at most 32 KiB, so a heap-published
+    /// payload still fits one zenoh batch), defaulting to
     /// [`ZERO_COPY_THRESHOLD`].
     pub fn zero_copy_threshold(&self) -> usize {
         self.sample_allocator.zero_copy_threshold
@@ -3754,6 +3793,27 @@ mod tests {
         IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
         integration_testing_format::{IncomingEvent, TimedIncomingEvent},
     };
+
+    #[test]
+    fn zero_copy_threshold_override_is_parsed_and_clamped() {
+        assert_eq!(parse_zero_copy_threshold(None), ZERO_COPY_THRESHOLD);
+        assert_eq!(parse_zero_copy_threshold(Some(" 8192 ")), 8192);
+        assert_eq!(parse_zero_copy_threshold(Some("0")), 0);
+        assert_eq!(
+            parse_zero_copy_threshold(Some("not-a-number")),
+            ZERO_COPY_THRESHOLD
+        );
+        assert_eq!(
+            parse_zero_copy_threshold(Some(&MAX_ZERO_COPY_THRESHOLD.to_string())),
+            MAX_ZERO_COPY_THRESHOLD
+        );
+        // A threshold above one zenoh batch would send mid-size payloads
+        // through the fragmenting express heap put, where they are dropped.
+        assert_eq!(
+            parse_zero_copy_threshold(Some("1048576")),
+            MAX_ZERO_COPY_THRESHOLD
+        );
+    }
 
     fn required_acker(node: &str, input: &str) -> dora_message::daemon_to_node::RequiredAcker {
         dora_message::daemon_to_node::RequiredAcker {
