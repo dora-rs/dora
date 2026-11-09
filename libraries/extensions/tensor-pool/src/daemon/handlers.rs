@@ -197,9 +197,9 @@ impl PoolState {
                 // Pool creation happens inside spawn (creation is millisecond-scale but publishing may Block)
                 let tensor_pool = self.tensor_pool.clone();
                 let shm_provider = self.shm_provider.clone();
-                let free_epochs = self.mirror_free_epochs.clone();
-                let free_epoch_at_register =
-                    free_epoch(&free_epochs, dataflow_id, &shared_memory_id);
+                let generations = self.mirror_generations.clone();
+                let generation =
+                    bump_mirror_generation(&generations, dataflow_id, &shared_memory_id, false);
                 // Replicate the pool descriptor into the local extension
                 // table before the mirror creation task runs, so a
                 // receiver's daemon query resolves it from the first
@@ -313,18 +313,43 @@ impl PoolState {
                             origin_machine_id.clone(),
                             mirror_shmem_name.clone(),
                         );
+                        // A `Free` handled after this task's `Register` (an
+                        // origin giving up on a register it sent to a
+                        // backlogged mirror, #4101) found nothing to free
+                        // yet, so undo the mirror here. Checked after the
+                        // registration, so a later free finds the entry
+                        // instead. Check and undo hold the generation lock:
+                        // a newer `Register` for the same pool id cannot be
+                        // handled in between and lose its mirror to this
+                        // undo, which works by the shared names. No ack:
+                        // the origin has stopped waiting for this one, and
+                        // a nack could resolve a newer register's wait.
+                        {
+                            let generations = generations.lock().unwrap_or_else(|e| e.into_inner());
+                            let latest = generations
+                                .get(&(dataflow_id, shared_memory_id.clone()))
+                                .copied()
+                                .unwrap_or_default();
+                            if latest.freed && latest.generation > generation {
+                                tensor_pool.unregister_cross_pool(
+                                    &dataflow_id.to_string(),
+                                    &shared_memory_id,
+                                );
+                                if let Some(name) = &mirror_shmem_name {
+                                    remove_cross_pool_shmem(name);
+                                }
+                                tracing::info!(
+                                    "memory pool: pool {shared_memory_id} was freed before \
+                                     its mirror was registered; undone"
+                                );
+                                return;
+                            }
+                        }
                         // The dataflow may have finished while this task
                         // ran; see [`MemoryPoolSubscriber`]. Registering
                         // behind the finish-time drain would strand the
                         // segment for the daemon's lifetime, so undo it.
-                        // Same for a `Free` handled while this task ran (an
-                        // origin giving up on a register it sent to a
-                        // backlogged mirror, #4101): it found nothing to
-                        // free yet. Checked after the registration, so a
-                        // free that comes later finds the entry instead.
-                        let freed = free_epoch(&free_epochs, dataflow_id, &shared_memory_id)
-                            != free_epoch_at_register;
-                        if dataflow_live.load(atomic::Ordering::SeqCst) && !freed {
+                        if dataflow_live.load(atomic::Ordering::SeqCst) {
                             tracing::info!(
                                 "memory pool: mirrored cross-machine pool {shared_memory_id} (size {size})"
                             );
@@ -340,15 +365,9 @@ impl PoolState {
                             // for a dataflow that is already gone.
                             ok = false;
                             direct = false;
-                            error = Some(if freed {
-                                format!(
-                                    "pool {shared_memory_id} was freed before the mirror was registered"
-                                )
-                            } else {
-                                format!(
-                                    "dataflow {dataflow_id} finished before the mirror was registered"
-                                )
-                            });
+                            error = Some(format!(
+                                "dataflow {dataflow_id} finished before the mirror was registered"
+                            ));
                         }
                     } else {
                         tracing::warn!(
@@ -380,13 +399,13 @@ impl PoolState {
             }
             PeerMessage::Free { shared_memory_id } => {
                 // Before the unregister: a creation task that registers
-                // after this point sees the bump and undoes its mirror.
-                *self
-                    .mirror_free_epochs
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .entry((dataflow_id, shared_memory_id.clone()))
-                    .or_default() += 1;
+                // after this point sees the free and undoes its mirror.
+                bump_mirror_generation(
+                    &self.mirror_generations,
+                    dataflow_id,
+                    &shared_memory_id,
+                    true,
+                );
                 self.tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id);
                 // The replicated mirror descriptor goes away with the
@@ -1296,7 +1315,7 @@ impl PoolState {
         if let Some(subscriber) = self.subscribers.remove(&dataflow_id) {
             subscriber.shutdown();
         }
-        self.mirror_free_epochs
+        self.mirror_generations
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|(df, _), _| *df != dataflow_id);

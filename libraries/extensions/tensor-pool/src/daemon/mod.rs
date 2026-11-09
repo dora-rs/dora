@@ -1929,4 +1929,87 @@ mod register_timeout_tests {
         );
         state.cleanup_dataflow(df).await;
     }
+
+    /// A restarted node reuses its pool ids. When a backlogged mirror
+    /// handles an old `Register`, the origin's rollback `Free` and the new
+    /// node's `Register` back to back, the old creation task must neither
+    /// undo the new registration's mirror (they share names) nor nack the
+    /// origin, whose wait for the new register it could resolve.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[cfg(target_os = "linux")]
+    async fn stale_creation_task_leaves_a_newer_registration_alone() {
+        let _env = enable_cross_machine();
+        let pool = "pool_sender_1";
+        for _ in 0..10 {
+            let (mirror_session, origin_session) = linked_sessions().await;
+            let (mut mirror, _sink) = FakeServices::with_session("B", mirror_session);
+            let mut state = PoolState::new();
+            let df = Uuid::new_v4();
+            state.subscribe_dataflow(&mut mirror, df);
+            let origin = origin_session
+                .declare_subscriber(pool_message_topic(&df, None))
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+            let register = postcard::to_allocvec(&PeerMessage::Register {
+                origin_machine_id: "A".to_string(),
+                shared_memory_id: pool.to_string(),
+                shmem_name: "dora_test_no_such_sender_segment".to_string(),
+                size: 4096,
+                dtype: "uint8".to_string(),
+                shape: vec![4096],
+                device: "cpu".to_string(),
+            })
+            .unwrap();
+            let free = postcard::to_allocvec(&PeerMessage::Free {
+                shared_memory_id: pool.to_string(),
+            })
+            .unwrap();
+            for payload in [register.clone(), free, register] {
+                state
+                    .handle_extension_message(
+                        &mut mirror,
+                        df,
+                        NAMESPACE.to_string(),
+                        Some("B".to_string()),
+                        payload,
+                    )
+                    .await
+                    .unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            let segment = format!(
+                "/dev/shm/{}",
+                TensorPoolManager::cross_pool_shmem_name("B", &df.to_string(), pool).unwrap()
+            );
+            let survived = std::path::Path::new(&segment).exists();
+            let tracked = state
+                .tensor_pool
+                .cross_peer(&df.to_string(), pool)
+                .is_some();
+            let described = mirror.table.contains_key(&(df, pool.to_string()));
+            let mut nacked = false;
+            while let Ok(Some(sample)) = origin.try_recv() {
+                let event = Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(
+                    &sample.payload().to_bytes(),
+                )
+                .unwrap();
+                if let InterDaemonEvent::ExtensionMessage { payload, .. } = event.inner
+                    && let Ok(PeerMessage::RegisterAck { ok: false, .. }) =
+                        postcard::from_bytes(&payload)
+                {
+                    nacked = true;
+                }
+            }
+            state.cleanup_dataflow(df).await;
+            let _ = std::fs::remove_file(&segment);
+            assert!(survived, "the newer registration's segment was undone");
+            assert!(tracked, "the newer registration is no longer tracked");
+            assert!(described, "the newer registration's descriptor is gone");
+            assert!(!nacked, "the origin got a nack for a live registration");
+        }
+    }
 }
