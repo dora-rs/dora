@@ -7867,6 +7867,64 @@ async fn orphan_reclaim_keeps_earlier_finish_reports_out_of_dataflow_results() {
     assert!(results.contains_key(&remaining_daemon));
 }
 
+/// The orphan reclaim parks the results of daemons that already finished,
+/// and its `Recovering` write can fail, leaving the record `Running`. A daemon
+/// re-reporting the dataflow then takes the `Running` reconcile path, which
+/// must merge the parked results back too, or the dataflow settles without
+/// them (review of #4093).
+#[tokio::test]
+async fn reestablishing_a_running_record_keeps_parked_finish_reports() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let finished_daemon = DaemonId::new(Some("done".to_string()));
+    let running_daemon = DaemonId::new(Some("running".to_string()));
+    let finished_node: NodeId = "sender".to_string().into();
+    let running_node: NodeId = "receiver".to_string().into();
+    let mut record = recovering_record_with_nodes(
+        dataflow_id,
+        BTreeMap::from([
+            (finished_node.clone(), finished_daemon.clone()),
+            (running_node.clone(), running_daemon.clone()),
+        ]),
+        vec![
+            serde_json::json!({"id": "sender", "path": "sender", "outputs": ["message"]}),
+            serde_json::json!({"id": "receiver", "path": "receiver", "outputs": ["message"]}),
+        ],
+    );
+    record.status = StoreDataflowStatus::Running;
+    store.put_dataflow(&record).expect("seed running record");
+    let mut coordinator = coordinator_with_store(store.clone());
+    let clock = coordinator.clock.clone();
+    coordinator.resent_finish_reports.insert(
+        dataflow_id,
+        BTreeMap::from([(
+            finished_daemon.clone(),
+            finish_result(&clock, BTreeMap::from([(finished_node, Ok(()))])),
+        )]),
+    );
+
+    coordinator
+        .handle_daemon_status_report(
+            running_daemon,
+            vec![dora_message::daemon_to_coordinator::DataflowStatusEntry {
+                dataflow_id,
+                running_nodes: vec![running_node],
+            }],
+        )
+        .await
+        .expect("handle the status report");
+
+    assert!(coordinator.running_dataflows.contains_key(&dataflow_id));
+    assert!(
+        coordinator
+            .dataflow_results
+            .get(&dataflow_id)
+            .is_some_and(|results| results.contains_key(&finished_daemon)),
+        "the parked results must move into dataflow_results on re-establish"
+    );
+    assert!(!coordinator.resent_finish_reports.contains_key(&dataflow_id));
+}
+
 /// A report is only a resend for a dataflow the coordinator lost track of.
 /// Once the record has settled — a normal finish, or the recovery-timeout
 /// verdict — a late report must keep being dropped, as it was before.
