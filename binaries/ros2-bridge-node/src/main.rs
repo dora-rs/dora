@@ -3077,8 +3077,8 @@ mod subscriber_thread_tests {
 #[cfg(test)]
 mod narrowed_regression_tests {
     use super::{
-        Ros2BridgeConfig, Ros2QosConfig, action_status_qos, bridge_endpoint_qos,
-        create_ros_node, parse_dds_ros_domain_id, parse_ros_domain_id, service_or_action_qos,
+        Ros2BridgeConfig, Ros2QosConfig, action_status_qos, bridge_endpoint_qos, create_ros_node,
+        parse_dds_ros_domain_id, parse_ros_domain_id, service_or_action_qos,
     };
     use dora_ros2_bridge::transport::dds::from_rustdds_qos;
     use dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
@@ -3102,6 +3102,15 @@ mod narrowed_regression_tests {
         assert_eq!(parse_ros_domain_id(Some("65535")), 65535);
         assert_eq!(parse_ros_domain_id(Some("65536")), 65536);
         assert_eq!(parse_ros_domain_id(Some("4294967295")), 4_294_967_295);
+        assert_eq!(parse_ros_domain_id(Some(&usize::MAX.to_string())), usize::MAX);
+    }
+
+    /// A decimal string that does not fit in `usize` is malformed, not a
+    /// domain id, so it falls back to 0 like any other unparsable value.
+    #[test]
+    fn zenoh_domain_id_parser_rejects_values_that_overflow_usize() {
+        let overflowing = format!("{}0", usize::MAX);
+        assert_eq!(parse_ros_domain_id(Some(&overflowing)), 0);
     }
 
     #[test]
@@ -3170,7 +3179,8 @@ mod narrowed_regression_tests {
             .find(|line| line.contains(marker))
             .unwrap_or_else(|| {
                 panic!(
-                    "child did not report a node domain id for ROS_DOMAIN_ID={domain}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                    "child did not report a node domain id for ROS_DOMAIN_ID={domain}\n\
+                     stdout:\n{stdout}\nstderr:\n{stderr}"
                 )
             });
         line.split_once(marker)
@@ -3263,7 +3273,12 @@ mod narrowed_regression_tests {
         let qos = neutral(&service_or_action_qos(&config));
 
         assert_eq!(qos.durability, Durability::TransientLocal);
-        assert!(matches!(qos.liveliness, Liveliness::ManualByTopic { .. }));
+        assert_eq!(
+            qos.liveliness,
+            Liveliness::ManualByTopic {
+                lease_duration: Some(std::time::Duration::from_secs(3)),
+            }
+        );
         match qos.reliability {
             Reliability::Reliable { max_blocking_time } => {
                 assert_eq!(max_blocking_time, std::time::Duration::from_millis(250));

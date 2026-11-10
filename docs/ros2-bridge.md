@@ -468,13 +468,18 @@ nodes:
 | `keep_last` | `1` |
 | `keep_all` | `false` |
 
+These are the defaults for topics and for the Zenoh transport. DDS service and
+action endpoints are the exception: they always use reliable delivery and
+default to `keep_last: 10` (see [Service and action QoS](#service-and-action-qos-dds-only)).
+
 ### Domain ID
 
 The bridge reads `ROS_DOMAIN_ID` from the environment. The DDS transport accepts
 domains `0` to `232` only, because DDS derives its well-known ports from the
 domain id; a missing value defaults to `0`, while a malformed or out-of-range
 value logs a warning and falls back to `0`. The Zenoh transport has no such
-limit and preserves any valid non-negative integer.
+limit: it preserves any non-negative domain id that fits in a platform-sized
+unsigned integer (`usize`), and falls back to `0` for values that do not.
 
 ### Per-Topic QoS Override
 
@@ -517,6 +522,24 @@ Neither topic sets `output:`/`input:`, so both use the topic-derived ids (`fast_
 | `keep_all` | `true`, `false` (mutually exclusive intent with `keep_last`) |
 | `lease_duration` | Finite non-negative float (seconds) |
 | `max_blocking_time` | Finite non-negative float (seconds) |
+
+### Service and action QoS (DDS only)
+
+On the DDS transport, service and action endpoints do not use the configured
+topic QoS verbatim:
+
+- **Reliability is forced to reliable.** ROS 2 service and action endpoints
+  require reliable delivery, so a `reliable: false` config is ignored for these
+  channels.
+- **`keep_last` defaults to `10`** when the config does not set it. An explicit
+  `keep_last` or `keep_all` is still honoured.
+- **The action status channel is forced to `transient_local` durability**, on
+  both the client subscription and the server publisher, because ROS 2 action
+  clients subscribe to the status topic with transient-local durability.
+
+All other fields (`liveliness`, `lease_duration`, `max_blocking_time`) are
+passed through unchanged. The Zenoh transport is unaffected: it uses the
+configured QoS as-is.
 
 ---
 
@@ -1113,7 +1136,7 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
 - **Native action server discovery (ros2-client#4)**: a Dora-hosted *action* server is not discoverable by a real `rcl`-based client; pair it with a Dora client. Service servers are unaffected.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
-- **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable. Reliability is always forced to reliable for these channels, so a best-effort `qos` config is ignored for services and actions; the action status channel is additionally forced to `transient_local` durability.
+- **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable. On the DDS transport these channels additionally apply the override described in [Service and action QoS](#service-and-action-qos-dds-only); the Zenoh transport uses the configured QoS unchanged.
 - **`AMENT_PREFIX_PATH` required**: The bridge fails at startup if no ROS2 message definitions are found.
 - **Max 64 topics**: Multi-topic mode supports at most 64 topics per bridge node.
 - **Max 8 concurrent action goals**: Additional goals receive `Aborted` status when the limit is reached.
