@@ -481,6 +481,8 @@ nodes:
 | `"1GB"` or `"1G"` | 1,073,741,824 |
 | `"1000"` | 1,000 (plain number = bytes) |
 
+The size must be greater than zero: `max_log_size: "0"` (or `"0KB"`, ...) fails dataflow validation, since it would rotate the file after every line. To turn rotation off, leave `max_log_size` out.
+
 When the active log file exceeds the configured size, the daemon:
 
 1. Flushes and closes the current file

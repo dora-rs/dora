@@ -566,6 +566,12 @@ impl ResolvedNodeExt for ResolvedNode {
             None => Ok(None),
             Some(s) => {
                 let bytes = parse_byte_size(&s)?;
+                // The daemon rotates once `bytes_written >= max_log_size`, so a
+                // zero size would flush, rename and recreate the log file after
+                // every single line, keeping only the last few lines on disk.
+                if bytes == 0 {
+                    bail!("`max_log_size` must be greater than 0 (got {s:?})");
+                }
                 Ok(Some(bytes))
             }
         }
@@ -3844,6 +3850,22 @@ nodes:
                 "expected '{expected}' to be mentioned in error, got: {err}"
             );
         }
+    }
+
+    #[test]
+    fn max_log_size_rejects_zero() {
+        let node = |size: &str| -> ResolvedNode {
+            let mut custom = custom_node();
+            custom.max_log_size = Some(size.to_owned());
+            ResolvedNode::new(NodeId::from("n".to_owned()), CoreNodeKind::Custom(custom))
+        };
+
+        for zero in ["0", "0B", "0KB", "0MB"] {
+            let err = node(zero).max_log_size().unwrap_err().to_string();
+            assert!(err.contains("greater than 0"), "{zero}: {err}");
+        }
+        assert_eq!(node("1").max_log_size().unwrap(), Some(1));
+        assert_eq!(node("50MB").max_log_size().unwrap(), Some(50 * 1024 * 1024));
     }
 
     #[test]
