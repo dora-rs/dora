@@ -3102,7 +3102,10 @@ mod narrowed_regression_tests {
         assert_eq!(parse_ros_domain_id(Some("65535")), 65535);
         assert_eq!(parse_ros_domain_id(Some("65536")), 65536);
         assert_eq!(parse_ros_domain_id(Some("4294967295")), 4_294_967_295);
-        assert_eq!(parse_ros_domain_id(Some(&usize::MAX.to_string())), usize::MAX);
+        assert_eq!(
+            parse_ros_domain_id(Some(&usize::MAX.to_string())),
+            usize::MAX
+        );
     }
 
     /// A decimal string that does not fit in `usize` is malformed, not a
