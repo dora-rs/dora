@@ -4442,7 +4442,9 @@ fn reload_dataflow_with_subscribed_node() -> (
     dataflow
         .pending_messages
         .insert(node_id.clone(), Arc::new(AtomicU64::new(0)));
-    dataflow.running_nodes.insert(node_id.clone(), test_running_node());
+    dataflow
+        .running_nodes
+        .insert(node_id.clone(), test_running_node());
     (dataflow, node_id, rx)
 }
 
@@ -4471,8 +4473,8 @@ async fn reload_to_a_live_local_node_is_delivered_and_counted() {
         ),
         "the node must receive exactly one Reload event: {events:?}"
     );
-    let pending = daemon.running[&dataflow_id].pending_messages[&node_id]
-        .load(atomic::Ordering::Relaxed);
+    let pending =
+        daemon.running[&dataflow_id].pending_messages[&node_id].load(atomic::Ordering::Relaxed);
     assert_eq!(pending, 1, "a delivered reload must be counted as pending");
 }
 
@@ -4492,7 +4494,10 @@ async fn reload_to_a_full_local_channel_reports_an_error() {
         timestamp: clock.new_timestamp(),
     };
     let mut queued = 0;
-    while dataflow.subscribe_channels[&node_id].try_send(filler()).is_ok() {
+    while dataflow.subscribe_channels[&node_id]
+        .try_send(filler())
+        .is_ok()
+    {
         queued += 1;
     }
     assert_eq!(queued, NODE_EVENT_CHANNEL_CAPACITY);
@@ -4519,9 +4524,12 @@ async fn reload_to_a_full_local_channel_reports_an_error() {
             .contains_key(&node_id),
         "a full channel must not be pruned"
     );
-    let pending = daemon.running[&dataflow_id].pending_messages[&node_id]
-        .load(atomic::Ordering::Relaxed);
-    assert_eq!(pending, 0, "a dropped reload must not be counted as pending");
+    let pending =
+        daemon.running[&dataflow_id].pending_messages[&node_id].load(atomic::Ordering::Relaxed);
+    assert_eq!(
+        pending, 0,
+        "a dropped reload must not be counted as pending"
+    );
     assert_eq!(
         drain_events(&mut rx).len(),
         queued,
@@ -4573,7 +4581,9 @@ async fn reload_to_a_local_node_without_a_subscription_explains_why() {
     let dataflow_id = dataflow.id;
     let node_id = NodeId::from("node".to_string());
     // Hosted here, but no `subscribe_channels` entry.
-    dataflow.running_nodes.insert(node_id.clone(), test_running_node());
+    dataflow
+        .running_nodes
+        .insert(node_id.clone(), test_running_node());
     daemon.running.insert(dataflow_id, dataflow);
 
     let err = daemon
