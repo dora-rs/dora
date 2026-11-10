@@ -152,6 +152,7 @@ Known gap: `dora self update` destructive swap path (tracked in
 | Running → Recovering transition on coord restart | `state-reconstruction-smoke` | Nightly | Contract |
 | Daemon auto-reconnect after coord freeze | `daemon-reconnect-smoke` (Linux only) | Nightly | Contract |
 | Full reconciliation back to Running post-restart | no automated coverage | — | Gap (aspirational per `state-reconstruction-smoke` docstring) |
+| Damaged store file is rejected, never served with altered records | `damaged_store_is_rejected_or_reads_back_intact` + siblings in `redb_store.rs`; `e2e_up_reports_corrupt_coordinator_store` | PR | Contract |
 
 ## Cross-language interop
 

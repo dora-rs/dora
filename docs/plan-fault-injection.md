@@ -127,7 +127,7 @@ Each scenario has the form: **Setup → Fault → Expected recovery → Invarian
 
 **Invariant**: the coordinator must NOT silently accept corrupted data or panic with an unhelpful stack trace. If it starts, every record it returns must be valid.
 
-**Status**: Not implemented. Simplest of the set — no subprocess choreography needed, just file manipulation.
+**Status**: Implemented at the store level, behaviour (a). `RedbStore::open` verifies the file with redb's integrity check and rejects a damaged one with a `redb store is corrupt` error (or, when redb can fall back to the previous commit, opens without the last write and logs a warning); `dora up` adds the `--recreate-store` hint. Covered by `damaged_store_is_rejected_or_reads_back_intact` and its siblings in `libraries/coordinator-store/src/redb_store.rs`, and by `e2e_up_reports_corrupt_coordinator_store` in `tests/ws-cli-e2e.rs`. Before the check, about a third of 64-byte windows in a 200 KB store were opened and served with altered or missing records, and a few percent panicked inside redb.
 
 ### 3.4 Network partition during state catch-up
 
