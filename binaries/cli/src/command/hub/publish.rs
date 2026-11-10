@@ -48,7 +48,9 @@ pub struct Publish {
     #[clap(long, value_name = "REF")]
     rev: Option<String>,
     /// Source git repository URL. Defaults to the `origin` remote of the
-    /// node's directory.
+    /// node's directory; SSH remotes of known public hosts (atomgit.com,
+    /// github.com, …) are rewritten to their HTTPS URL so consumers can clone
+    /// without an SSH key.
     #[clap(long, value_name = "URL")]
     repo: Option<String>,
     /// Package version (semver). Defaults to `[package].version` (Cargo) or
@@ -90,10 +92,16 @@ impl Executable for Publish {
         // the pin, and consumers would clone the old commit while trusting it).
         let repo = match &self.repo {
             Some(r) => r.trim().to_string(),
-            None => git_in(dir, &["remote", "get-url", "origin"]).context(
-                "no `--repo` given and the directory has no `origin` remote — \
-                 pass `--repo <url>`",
-            )?,
+            None => {
+                let origin = git_in(dir, &["remote", "get-url", "origin"]).context(
+                    "no `--repo` given and the directory has no `origin` remote — \
+                     pass `--repo <url>`",
+                )?;
+                // An SSH origin is a valid clone URL for the publisher, but an
+                // anonymous consumer cannot use it. Record the public HTTPS
+                // form for known hosting platforms; anything else passes through.
+                dora_hub_client::normalize_public_repo_url(&origin).unwrap_or(origin)
+            }
         };
         // The repo URL is consumed by others as an untrusted index source, and
         // the resolver only accepts https/ssh/file/scp-style/abs-path forms.
