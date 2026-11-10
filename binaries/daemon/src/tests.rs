@@ -4423,18 +4423,13 @@ fn reclaim_drops_owned_entries_and_notifies_readers() {
 // -- Reload delivery errors (PR #3215, reload-only scope) -------------------
 //
 // The `Reload` control request (sent by `dora start --hot-reload`'s file
-// watcher, not by a `dora node reload` command) used to report success no
-// matter what happened to the event: a full per-node channel dropped it
-// silently, a closed one was pruned silently, and a node this daemon does
-// not host was skipped silently. The coordinator already turns a
-// `ReloadResult(Err)` into a visible CLI failure, so the daemon only has to
-// stop swallowing the three cases. These tests drive the real
-// `Daemon::send_reload` (the same entry point
-// `DaemonCoordinatorEvent::ReloadDataflow` calls) and pin the error text so
-// the CLI message stays actionable.
+// watcher) used to report success whatever happened to the event: a full
+// per-node channel dropped it, a closed one was pruned, and a local node
+// without a subscription was skipped. The coordinator turns a
+// `ReloadResult(Err)` into a visible CLI failure, so these tests drive the
+// real `Daemon::send_reload` and pin the error text.
 
-/// A dataflow with one local node `node` that has subscribed, plus the
-/// receiver half of its event channel.
+/// A dataflow with one subscribed local node `node`, plus its event receiver.
 fn reload_dataflow_with_subscribed_node() -> (
     RunningDataflow,
     NodeId,
@@ -4447,7 +4442,6 @@ fn reload_dataflow_with_subscribed_node() -> (
     dataflow
         .pending_messages
         .insert(node_id.clone(), Arc::new(AtomicU64::new(0)));
-    dataflow.connected_nodes.insert(node_id.clone());
     dataflow.running_nodes.insert(node_id.clone(), test_running_node());
     (dataflow, node_id, rx)
 }
@@ -4528,10 +4522,11 @@ async fn reload_to_a_full_local_channel_reports_an_error() {
     let pending = daemon.running[&dataflow_id].pending_messages[&node_id]
         .load(atomic::Ordering::Relaxed);
     assert_eq!(pending, 0, "a dropped reload must not be counted as pending");
-    // Drain the fillers so the receiver is not left holding them.
-    for _ in 0..queued {
-        rx.try_recv().expect("filler event");
-    }
+    assert_eq!(
+        drain_events(&mut rx).len(),
+        queued,
+        "the dropped reload must not have been queued behind the fillers"
+    );
 }
 
 /// A closed channel (the node's event stream is gone) must be reported, and
@@ -4568,8 +4563,7 @@ async fn reload_to_a_closed_local_channel_reports_an_error_and_prunes_it() {
 }
 
 /// A node this daemon hosts but that has not subscribed yet (still starting
-/// up, or it dropped its event stream) cannot receive the reload. Saying so
-/// is the difference between "reload did nothing" and a silent success.
+/// up, or it dropped its event stream) cannot receive the reload.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn reload_to_a_local_node_without_a_subscription_explains_why() {
     let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
@@ -4597,9 +4591,8 @@ async fn reload_to_a_local_node_without_a_subscription_explains_why() {
     );
 }
 
-/// A node that runs on another daemon is not this daemon's to reload. That
-/// stays a success here: the coordinator fans the request out to every daemon
-/// of the dataflow, and the daemon that hosts the node answers for it.
+/// A node that runs on another daemon is not this daemon's to reload: the
+/// coordinator fans the request out, and the hosting daemon answers for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn reload_for_a_node_hosted_elsewhere_is_not_an_error() {
     let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
