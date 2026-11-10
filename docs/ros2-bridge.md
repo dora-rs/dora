@@ -468,6 +468,14 @@ nodes:
 | `keep_last` | `1` |
 | `keep_all` | `false` |
 
+### Domain ID
+
+The bridge reads `ROS_DOMAIN_ID` from the environment. The DDS transport accepts
+domains `0` to `232` only, because DDS derives its well-known ports from the
+domain id; a missing value defaults to `0`, while a malformed or out-of-range
+value logs a warning and falls back to `0`. The Zenoh transport has no such
+limit and preserves any valid non-negative integer.
+
 ### Per-Topic QoS Override
 
 In multi-topic mode, each topic can override the bridge-level QoS:
@@ -1105,7 +1113,7 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
 - **Native action server discovery (ros2-client#4)**: a Dora-hosted *action* server is not discoverable by a real `rcl`-based client; pair it with a Dora client. Service servers are unaffected.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
-- **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable.
+- **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable. Reliability is always forced to reliable for these channels, so a best-effort `qos` config is ignored for services and actions; the action status channel is additionally forced to `transient_local` durability.
 - **`AMENT_PREFIX_PATH` required**: The bridge fails at startup if no ROS2 message definitions are found.
 - **Max 64 topics**: Multi-topic mode supports at most 64 topics per bridge node.
 - **Max 8 concurrent action goals**: Additional goals receive `Aborted` status when the limit is reached.

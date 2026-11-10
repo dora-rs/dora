@@ -171,10 +171,7 @@ fn run_zenoh_mode(
         unreachable!()
     };
     tracing::info!(profile = ?compatibility, config_source = if config_uri.is_some() { "explicit" } else { "environment-or-default" }, "starting native ROS2 Zenoh transport");
-    let domain_id = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain_id = parse_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
     let context = futures::executor::block_on(ZenohContext::open(ZenohContextOptions {
         domain_id,
         config_uri: config_uri
@@ -215,10 +212,7 @@ fn run_zenoh_topic_mode(
         unreachable!()
     };
     let resolver = TypeDescriptionResolver::from_ament_prefix_path();
-    let domain_id = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain_id = parse_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
     let mut publishers = Vec::new();
     let mut subscribers = Vec::new();
     for topic in resolve_topics(config)? {
@@ -336,10 +330,7 @@ fn run_zenoh_service_mode(
         &service_name,
         &TypeDescriptionResolver::from_ament_prefix_path(),
     )?;
-    let domain_id = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain_id = parse_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
     let key = DataKey::new(domain_id, name, &identity)?;
     let qos = config.qos.to_neutral_qos();
     let token = TopicToken {
@@ -553,10 +544,7 @@ fn run_zenoh_action_mode(
     };
     let cancel = resolve_service(compatibility, "action_msgs", "CancelGoal", &resolver)?;
     let status = resolve_message(compatibility, "action_msgs", "GoalStatusArray", &resolver)?;
-    let domain = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain = parse_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
     let endpoints = dora_ros2_bridge::transport::action::ActionEndpoints::new(
         action_name,
         &package,
@@ -1237,7 +1225,7 @@ fn run_topic_mode(
 ) -> eyre::Result<()> {
     let topics = resolve_topics(&config)?;
 
-    let (mut ros_node, _pool) = create_ros_node(&config)?;
+    let (mut ros_node, _ros_context, _pool) = create_ros_node(&config)?;
 
     let mut subscribers: Vec<(String, SubscriptionStream)> = Vec::new();
     let mut publishers: Vec<(
@@ -1340,9 +1328,9 @@ fn run_service_mode(
         messages: messages.clone(),
     };
 
-    let (mut ros_node, _pool) = create_ros_node(&config)?;
+    let (mut ros_node, _ros_context, _pool) = create_ros_node(&config)?;
 
-    let service_qos = config.qos.to_rustdds_qos();
+    let service_qos = bridge_endpoint_qos(&config);
 
     match role {
         Ros2Role::Client => {
@@ -1583,8 +1571,9 @@ fn run_action_mode(
     let result_type_info = make_type_info("Result");
     let feedback_type_info = make_type_info("Feedback");
 
-    let (mut ros_node, _pool) = create_ros_node(&config)?;
-    let qos = config.qos.to_rustdds_qos();
+    let (mut ros_node, _ros_context, _pool) = create_ros_node(&config)?;
+    let qos = bridge_endpoint_qos(&config);
+    let status_qos = action_status_qos(&config.qos);
     let action_ros2_name = absolute_ros2_name(action_name)?;
     let action_type_name = ros2_client::ActionTypeName::new(&package, &type_name);
 
@@ -1595,7 +1584,7 @@ fn run_action_mode(
                 result_service: qos.clone(),
                 cancel_service: qos.clone(),
                 feedback_subscription: qos.clone(),
-                status_subscription: qos,
+                status_subscription: status_qos,
             };
 
             let client = ros_node
@@ -1621,7 +1610,7 @@ fn run_action_mode(
                 result_service: qos.clone(),
                 cancel_service: qos.clone(),
                 feedback_publisher: qos.clone(),
-                status_publisher: qos,
+                status_publisher: status_qos,
             };
 
             let server = ros_node
@@ -2303,9 +2292,14 @@ struct SubscriptionStream {
 
 fn create_ros_node(
     config: &Ros2BridgeConfig,
-) -> eyre::Result<(ros2_client::Node, futures::executor::ThreadPool)> {
+) -> eyre::Result<(
+    ros2_client::Node,
+    ros2_client::Context,
+    futures::executor::ThreadPool,
+)> {
+    let domain_id = parse_dds_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
     let ros_context =
-        ros2_client::Context::new().map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
+        create_ros_context(domain_id).map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
     let node_name = config
         .node_name
         .clone()
@@ -2330,7 +2324,37 @@ fn create_ros_node(
     })
     .context("failed to spawn ros2 spinner")?;
 
-    Ok((ros_node, pool))
+    Ok((ros_node, ros_context, pool))
+}
+
+fn create_ros_context(domain_id: u16) -> rustdds::dds::CreateResult<ros2_client::Context> {
+    ros2_client::Context::with_options(ros2_client::ContextOptions::new().domain_id(domain_id))
+}
+
+/// Parse `ROS_DOMAIN_ID` for the Zenoh transport.
+///
+/// Zenoh keys carry the domain id as a `usize` and have no DDS port limit, so
+/// every valid value is preserved, including values above `u16::MAX`.
+fn parse_ros_domain_id(value: Option<&str>) -> usize {
+    value.and_then(|value| value.parse().ok()).unwrap_or(0)
+}
+
+/// Parse `ROS_DOMAIN_ID` for the DDS transport.
+///
+/// DDS derives its well-known ports from the domain id and overflows above 232,
+/// so out-of-range and malformed values warn and fall back to domain 0. A
+/// missing value silently defaults to 0.
+fn parse_dds_ros_domain_id(value: Option<&str>) -> u16 {
+    let Some(value) = value else {
+        return 0;
+    };
+    match value.parse::<u16>() {
+        Ok(domain_id) if domain_id <= 232 => domain_id,
+        _ => {
+            tracing::warn!("invalid ROS_DOMAIN_ID `{value}`; defaulting to DDS domain 0");
+            0
+        }
+    }
 }
 
 /// Wait for a ROS2 service to become available.
@@ -2454,6 +2478,40 @@ fn resolve_topics(config: &Ros2BridgeConfig) -> eyre::Result<Vec<Ros2TopicConfig
         (None, Some(topics)) => Ok(topics.clone()),
         _ => eyre::bail!("topic mode requires exactly one of `topic` or `topics` to be set"),
     }
+}
+
+/// QoS for DDS service and action endpoints.
+///
+/// Topic QoS defaults to best effort, but ROS 2 service and action endpoints
+/// require reliable delivery, so `reliable` is always forced on and a
+/// best-effort configuration is ignored.
+fn service_or_action_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
+    Ros2QosConfig {
+        reliable: true,
+        keep_last: config.keep_last.or(Some(10)),
+        ..config.clone()
+    }
+    .to_rustdds_qos()
+}
+
+/// QoS for the service and action endpoints of a bridge config.
+fn bridge_endpoint_qos(config: &Ros2BridgeConfig) -> rustdds::QosPolicies {
+    service_or_action_qos(&config.qos)
+}
+
+/// QoS for the action status channel.
+///
+/// ROS 2 action clients subscribe to the status topic with transient-local
+/// durability, so the status publisher and subscription always use reliable,
+/// transient-local delivery regardless of the configured topic QoS.
+fn action_status_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
+    Ros2QosConfig {
+        reliable: true,
+        keep_last: config.keep_last.or(Some(10)),
+        durability: Some("transient_local".to_string()),
+        ..config.clone()
+    }
+    .to_rustdds_qos()
 }
 
 trait ToNeutralQos {
@@ -3007,5 +3065,262 @@ mod subscriber_thread_tests {
             [("out0".into(), 1), ("out0".into(), 2), ("out1".into(), 3)]
         );
         assert_stops_promptly(stop, handles);
+    }
+}
+
+/// Regression tests for the narrowed PR2878 scope.
+///
+/// The Zenoh parser must preserve every valid `usize` domain id, while the DDS
+/// parser caps at 232 because DDS derives its well-known ports from the domain
+/// id. The real-node tests exercise `create_ros_node` in a child process so the
+/// `ROS_DOMAIN_ID` environment variable is never mutated process-wide.
+#[cfg(test)]
+mod narrowed_regression_tests {
+    use super::{
+        Ros2BridgeConfig, Ros2QosConfig, action_status_qos, bridge_endpoint_qos,
+        create_ros_node, parse_dds_ros_domain_id, parse_ros_domain_id, service_or_action_qos,
+    };
+    use dora_ros2_bridge::transport::dds::from_rustdds_qos;
+    use dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
+
+    /// Env var marking a self-spawned child process.
+    const CHILD_MARKER_ENV: &str = "PR2878_TEST_CHILD";
+
+    // ---- domain id parsing -------------------------------------------------
+
+    /// Zenoh keys carry the domain id as a `usize` with no DDS port limit, so
+    /// the parser must not cap at 232.
+    #[test]
+    fn zenoh_domain_id_parser_does_not_cap_above_232() {
+        assert_eq!(parse_ros_domain_id(Some("232")), 232);
+        assert_eq!(parse_ros_domain_id(Some("233")), 233);
+        assert_eq!(parse_ros_domain_id(Some("300")), 300);
+    }
+
+    #[test]
+    fn zenoh_domain_id_parser_preserves_values_above_u16() {
+        assert_eq!(parse_ros_domain_id(Some("65535")), 65535);
+        assert_eq!(parse_ros_domain_id(Some("65536")), 65536);
+        assert_eq!(parse_ros_domain_id(Some("4294967295")), 4_294_967_295);
+    }
+
+    #[test]
+    fn zenoh_domain_id_parser_falls_back_to_zero_for_missing_or_malformed_input() {
+        assert_eq!(parse_ros_domain_id(None), 0);
+        assert_eq!(parse_ros_domain_id(Some("")), 0);
+        assert_eq!(parse_ros_domain_id(Some("not-a-number")), 0);
+        assert_eq!(parse_ros_domain_id(Some("-1")), 0);
+    }
+
+    #[test]
+    fn dds_domain_id_parser_keeps_values_within_the_dds_cap() {
+        assert_eq!(parse_dds_ros_domain_id(Some("0")), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("181")), 181);
+        assert_eq!(parse_dds_ros_domain_id(Some("232")), 232);
+    }
+
+    #[test]
+    fn dds_domain_id_parser_caps_above_232() {
+        assert_eq!(parse_dds_ros_domain_id(Some("233")), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("300")), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("65535")), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("65536")), 0);
+    }
+
+    #[test]
+    fn dds_domain_id_parser_falls_back_to_zero_for_missing_or_malformed_input() {
+        assert_eq!(parse_dds_ros_domain_id(None), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("")), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("not-a-number")), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("-1")), 0);
+    }
+
+    // ---- real node domain id (subprocess, child-only env) ------------------
+
+    /// Runs `create_ros_node` in a child process with `ROS_DOMAIN_ID` set only
+    /// in that child, and returns the domain id the created node reports.
+    ///
+    /// The child is this same test binary re-invoked with `--exact` on the
+    /// child-only test below, so no process-global env mutation happens in the
+    /// parent and parallel tests cannot race on `ROS_DOMAIN_ID`.
+    fn node_domain_id_in_child(domain: &str) -> i32 {
+        let exe = std::env::current_exe().expect("current test executable");
+        let output = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "narrowed_regression_tests::child_reports_created_node_domain_id",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("ROS_DOMAIN_ID", domain)
+            .env(CHILD_MARKER_ENV, "1")
+            .output()
+            .expect("spawn child test process");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "child process failed for ROS_DOMAIN_ID={domain}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+
+        let marker = "PR2878_CHILD_NODE_DOMAIN_ID=";
+        let line = stdout
+            .lines()
+            .find(|line| line.contains(marker))
+            .unwrap_or_else(|| {
+                panic!(
+                    "child did not report a node domain id for ROS_DOMAIN_ID={domain}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                )
+            });
+        line.split_once(marker)
+            .expect("marker split")
+            .1
+            .trim()
+            .parse()
+            .expect("child domain id is an integer")
+    }
+
+    /// Child half of `node_domain_id_in_child`. Does nothing unless the marker
+    /// env var is present, so a normal test run treats it as a no-op.
+    #[test]
+    fn child_reports_created_node_domain_id() {
+        if std::env::var_os(CHILD_MARKER_ENV).is_none() {
+            return;
+        }
+        let config = Ros2BridgeConfig::default();
+        let node = create_ros_node(&config).expect("create ROS2 node").0;
+        println!("PR2878_CHILD_NODE_DOMAIN_ID={}", node.domain_id());
+    }
+
+    #[test]
+    fn created_node_uses_requested_domain_id() {
+        assert_eq!(node_domain_id_in_child("181"), 181);
+    }
+
+    #[test]
+    fn created_node_falls_back_to_domain_zero_above_the_dds_cap() {
+        assert_eq!(node_domain_id_in_child("233"), 0);
+    }
+
+    // ---- service / action endpoint QoS -------------------------------------
+
+    fn neutral(qos: &dora_ros2_bridge::rustdds::QosPolicies) -> Ros2Qos {
+        from_rustdds_qos(qos)
+    }
+
+    #[test]
+    fn service_endpoint_qos_is_reliable_with_keep_last_ten_by_default() {
+        let qos = neutral(&service_or_action_qos(&Ros2QosConfig::default()));
+
+        assert!(matches!(qos.reliability, Reliability::Reliable { .. }));
+        assert_eq!(qos.history, History::KeepLast { depth: 10 });
+        assert_eq!(qos.durability, Durability::Volatile);
+    }
+
+    #[test]
+    fn service_endpoint_qos_forces_reliable_even_when_config_is_best_effort() {
+        let config = Ros2QosConfig {
+            reliable: false,
+            ..Ros2QosConfig::default()
+        };
+        let qos = neutral(&service_or_action_qos(&config));
+
+        assert!(matches!(qos.reliability, Reliability::Reliable { .. }));
+    }
+
+    #[test]
+    fn service_endpoint_qos_keeps_explicit_history_depth() {
+        let config = Ros2QosConfig {
+            keep_last: Some(20),
+            ..Ros2QosConfig::default()
+        };
+        let qos = neutral(&service_or_action_qos(&config));
+
+        assert_eq!(qos.history, History::KeepLast { depth: 20 });
+    }
+
+    #[test]
+    fn service_endpoint_qos_keeps_keep_all() {
+        let config = Ros2QosConfig {
+            keep_all: true,
+            ..Ros2QosConfig::default()
+        };
+        let qos = neutral(&service_or_action_qos(&config));
+
+        assert_eq!(qos.history, History::KeepAll);
+    }
+
+    #[test]
+    fn service_endpoint_qos_preserves_durability_liveliness_and_blocking_time() {
+        let config = Ros2QosConfig {
+            durability: Some("transient_local".to_string()),
+            liveliness: Some("manual_by_topic".to_string()),
+            lease_duration: Some(3.0),
+            max_blocking_time: Some(0.25),
+            ..Ros2QosConfig::default()
+        };
+        let qos = neutral(&service_or_action_qos(&config));
+
+        assert_eq!(qos.durability, Durability::TransientLocal);
+        assert!(matches!(qos.liveliness, Liveliness::ManualByTopic { .. }));
+        match qos.reliability {
+            Reliability::Reliable { max_blocking_time } => {
+                assert_eq!(max_blocking_time, std::time::Duration::from_millis(250));
+            }
+            Reliability::BestEffort => panic!("service endpoint QoS must be reliable"),
+        }
+    }
+
+    #[test]
+    fn bridge_endpoint_qos_uses_the_configured_qos() {
+        let config = Ros2BridgeConfig {
+            qos: Ros2QosConfig {
+                keep_last: Some(20),
+                ..Ros2QosConfig::default()
+            },
+            ..Ros2BridgeConfig::default()
+        };
+
+        let qos = neutral(&bridge_endpoint_qos(&config));
+
+        assert!(matches!(qos.reliability, Reliability::Reliable { .. }));
+        assert_eq!(qos.history, History::KeepLast { depth: 20 });
+    }
+
+    // ---- action status QoS -------------------------------------------------
+
+    #[test]
+    fn action_status_qos_is_reliable_transient_local_by_default() {
+        let qos = neutral(&action_status_qos(&Ros2QosConfig::default()));
+
+        assert!(matches!(qos.reliability, Reliability::Reliable { .. }));
+        assert_eq!(qos.durability, Durability::TransientLocal);
+        assert_eq!(qos.history, History::KeepLast { depth: 10 });
+    }
+
+    #[test]
+    fn action_status_qos_overrides_best_effort_volatile_config() {
+        let config = Ros2QosConfig {
+            reliable: false,
+            durability: Some("volatile".to_string()),
+            ..Ros2QosConfig::default()
+        };
+        let qos = neutral(&action_status_qos(&config));
+
+        assert!(matches!(qos.reliability, Reliability::Reliable { .. }));
+        assert_eq!(qos.durability, Durability::TransientLocal);
+    }
+
+    #[test]
+    fn action_status_qos_keeps_explicit_history_depth() {
+        let config = Ros2QosConfig {
+            keep_last: Some(3),
+            ..Ros2QosConfig::default()
+        };
+        let qos = neutral(&action_status_qos(&config));
+
+        assert_eq!(qos.history, History::KeepLast { depth: 3 });
+        assert_eq!(qos.durability, Durability::TransientLocal);
     }
 }

@@ -57,9 +57,9 @@ fn main() -> eyre::Result<()> {
                         };
                         sequence.push(val);
 
-                        let feedback = make_list_struct("partial_sequence", &sequence)?;
+                        let feedback = make_list_struct("sequence", &sequence)?;
                         node.send_output(feedback_output.clone(), params.clone(), feedback)?;
-                        println!("Feedback: partial_sequence={sequence:?}");
+                        println!("Feedback: sequence={sequence:?}");
                     }
 
                     // Send final result
