@@ -173,28 +173,52 @@ pub(crate) async fn release_cross_pool(
     }
 }
 
-/// Mirror side: a counter per `(dataflow id, pool id)` that every
-/// `PeerMessage::Register` and `PeerMessage::Free` bumps.
+/// Mirror side: the generation of the latest `PeerMessage::Register` of
+/// every pool that is currently registered.
 ///
 /// A mirror-creation task runs after its `Register` was handled, possibly
 /// after later messages for the same pool. It builds the mirror only while
-/// its `Register` is still the latest message: a later `Free` means the
-/// origin gave up on it (#4101), and a later `Register` (a node restart
-/// reuses its pool ids) owns the mirror's names.
-pub(crate) type MirrorGenerations = tokio::sync::Mutex<HashMap<(Uuid, String), u64>>;
+/// its `Register` is still the pool's entry: a later `Free` removes the
+/// entry (the origin gave up on the register, #4101), and a later
+/// `Register` (a node restart reuses its pool ids) replaces it and owns the
+/// mirror's names. Only registered pools have an entry, so the table does
+/// not grow with the pools a long-running dataflow frees, and a `Free` that
+/// arrives late adds nothing.
+#[derive(Debug, Default)]
+pub(crate) struct MirrorRegistrations {
+    /// Daemon-wide, so a re-registered pool id never gets an old value back.
+    last_generation: u64,
+    pub current: HashMap<(Uuid, String), u64>,
+}
 
-/// Record a `Register` or `Free` for the pool and return its generation.
-pub(crate) async fn bump_mirror_generation(
+pub(crate) type MirrorGenerations = tokio::sync::Mutex<MirrorRegistrations>;
+
+/// Record a `Register` for the pool and return its generation.
+pub(crate) async fn note_mirror_register(
     generations: &MirrorGenerations,
     dataflow_id: Uuid,
     shared_memory_id: &str,
 ) -> u64 {
     let mut generations = generations.lock().await;
-    let generation = generations
-        .entry((dataflow_id, shared_memory_id.to_string()))
-        .or_default();
-    *generation += 1;
-    *generation
+    generations.last_generation += 1;
+    let generation = generations.last_generation;
+    generations
+        .current
+        .insert((dataflow_id, shared_memory_id.to_string()), generation);
+    generation
+}
+
+/// Record a `Free` for the pool: any registration still pending is void.
+pub(crate) async fn note_mirror_free(
+    generations: &MirrorGenerations,
+    dataflow_id: Uuid,
+    shared_memory_id: &str,
+) {
+    generations
+        .lock()
+        .await
+        .current
+        .remove(&(dataflow_id, shared_memory_id.to_string()));
 }
 
 /// Pending synchronous register confirmations:

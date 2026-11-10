@@ -2021,4 +2021,70 @@ mod register_timeout_tests {
             assert!(!nacked, "the origin got a nack for a live registration");
         }
     }
+
+    /// The register generations hold only pools that are registered: a
+    /// `Free` removes the pool's entry, and a `Free` that arrives after the
+    /// dataflow was cleaned up adds none, so the table does not grow with
+    /// the pools a long-running dataflow registers and frees.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[cfg(target_os = "linux")]
+    async fn register_generations_track_only_registered_pools() {
+        use super::test_services::isolated_session;
+
+        let _env = enable_cross_machine();
+        let (mut mirror, _sink) =
+            FakeServices::with_session("B", isolated_session(None, None).await);
+        let mut state = PoolState::new();
+        let df = Uuid::new_v4();
+        state.subscribe_dataflow(&mut mirror, df);
+        let entries = |state: &PoolState| {
+            let generations = state.mirror_generations.clone();
+            async move { generations.lock().await.current.len() }
+        };
+        let deliver = |message: PeerMessage| postcard::to_allocvec(&message).unwrap();
+
+        for round in 0..8 {
+            let pool = format!("pool_sender_{round}");
+            let register = deliver(PeerMessage::Register {
+                origin_machine_id: "A".to_string(),
+                shared_memory_id: pool.clone(),
+                shmem_name: "dora_test_no_such_sender_segment".to_string(),
+                size: 4096,
+                dtype: "uint8".to_string(),
+                shape: vec![4096],
+                device: "cpu".to_string(),
+            });
+            state
+                .handle_extension_message(&mut mirror, df, NAMESPACE.to_string(), None, register)
+                .await
+                .unwrap();
+            assert_eq!(entries(&state).await, 1, "a registered pool has its entry");
+            let free = deliver(PeerMessage::Free {
+                shared_memory_id: pool.clone(),
+            });
+            state
+                .handle_extension_message(&mut mirror, df, NAMESPACE.to_string(), None, free)
+                .await
+                .unwrap();
+            assert_eq!(entries(&state).await, 0, "a freed pool keeps an entry");
+            // Let the (now superseded) creation task finish.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let segment = format!(
+                "/dev/shm/{}",
+                TensorPoolManager::cross_pool_shmem_name("B", &df.to_string(), &pool).unwrap()
+            );
+            let _ = std::fs::remove_file(segment);
+        }
+
+        state.cleanup_dataflow(df).await;
+        let late_free = deliver(PeerMessage::Free {
+            shared_memory_id: "pool_sender_0".to_string(),
+        });
+        state
+            .handle_extension_message(&mut mirror, df, NAMESPACE.to_string(), None, late_free)
+            .await
+            .unwrap();
+        assert_eq!(entries(&state).await, 0, "a late free left an entry behind");
+    }
 }

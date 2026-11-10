@@ -199,7 +199,7 @@ impl PoolState {
                 let shm_provider = self.shm_provider.clone();
                 let generations = self.mirror_generations.clone();
                 let generation =
-                    bump_mirror_generation(&generations, dataflow_id, &shared_memory_id).await;
+                    note_mirror_register(&generations, dataflow_id, &shared_memory_id).await;
                 // Replicate the pool descriptor into the local extension
                 // table before the mirror creation task runs, so a
                 // receiver's daemon query resolves it from the first
@@ -284,11 +284,11 @@ impl PoolState {
                     // waits (millisecond-scale, without blocking the event loop
                     // thread) and then finds the entry.
                     let generation_guard = generations.lock().await;
-                    let latest = generation_guard
+                    let current = generation_guard
+                        .current
                         .get(&(dataflow_id, shared_memory_id.clone()))
-                        .copied()
-                        .unwrap_or_default();
-                    if latest > generation {
+                        .copied();
+                    if current != Some(generation) {
                         tracing::info!(
                             "memory pool: skipping a superseded register of {shared_memory_id}"
                         );
@@ -395,8 +395,7 @@ impl PoolState {
             PeerMessage::Free { shared_memory_id } => {
                 // A creation task for an earlier `Register` that has not
                 // built its mirror yet now skips it.
-                bump_mirror_generation(&self.mirror_generations, dataflow_id, &shared_memory_id)
-                    .await;
+                note_mirror_free(&self.mirror_generations, dataflow_id, &shared_memory_id).await;
                 self.tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id);
                 // The replicated mirror descriptor goes away with the
@@ -1309,6 +1308,7 @@ impl PoolState {
         self.mirror_generations
             .lock()
             .await
+            .current
             .retain(|(df, _), _| *df != dataflow_id);
 
         // Drain this dataflow's per-(dataflow, pool) cross-write state:
