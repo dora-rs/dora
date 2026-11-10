@@ -16,10 +16,12 @@ use crate::{
 /// cannot tell whether the sender waits for an answer. With this rule, an
 /// undecodable request always waits for one, and the daemon can answer it
 /// with an error while keeping the connection open. Only `SendMessage`,
-/// `OutputSent` and `NodeConfig` get no binary reply; their variant tags are
-/// part of the frozen 1.x wire format. Their payloads can still fail to
-/// decode, which [`frame_expects_reply`](Self::frame_expects_reply) handles.
-/// See "Stability scope at 1.0" in `docs/api-rust.md`.
+/// `OutputSent` and `NodeConfig` get no binary reply; they are part of the
+/// frozen 1.x wire format and must always decode. A change to the metadata
+/// wire format they carry must bump [`Metadata::CURRENT_VERSION`].
+/// [`frame_expects_reply`](Self::frame_expects_reply) is the daemon's fallback
+/// if one still fails to decode. See "Stability scope at 1.0" in
+/// `docs/api-rust.md`.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
@@ -155,10 +157,12 @@ impl DaemonRequest {
     /// For a daemon that failed to [`decode`](crate::decode) the frame: it must
     /// answer a request whose sender blocks on a reply, and must not answer one
     /// whose sender reads nothing, or the unsolicited frame would shift every
-    /// later request/reply pair on the connection by one. The variant tag of
-    /// the fire-and-forget requests is frozen, but their payload is not:
-    /// `SendMessage` and `OutputSent` carry [`Metadata`] parameters, and a newer
-    /// node may use a parameter kind this daemon predates (#4114).
+    /// later request/reply pair on the connection by one.
+    ///
+    /// This is defence in depth (#4114). The fire-and-forget requests are
+    /// expected to always decode: a payload change that breaks that, such as a
+    /// new [`Parameter`](crate::metadata::Parameter) kind, must bump
+    /// [`Metadata::CURRENT_VERSION`], which rejects the node at register time.
     ///
     /// Returns `false` only for `SendMessage` and `OutputSent` (neither a
     /// binary nor a JSON reply). Every other tag, including one this crate does
