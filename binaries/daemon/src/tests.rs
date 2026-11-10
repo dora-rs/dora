@@ -16,6 +16,7 @@ use dora_message::{
     coordinator_to_daemon::{StateCatchUpEntry, StateCatchUpOperation},
     daemon_to_node::{NodeConfig, NodeEvent},
     descriptor::{Descriptor, RestartPolicy},
+    id::OperatorId,
     metadata,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -4421,14 +4422,16 @@ fn reclaim_drops_owned_entries_and_notifies_readers() {
 
 // -- Reload delivery errors (PR #3215, reload-only scope) -------------------
 //
-// `dora node reload` used to report success no matter what happened to the
-// `Reload` event: a full per-node channel dropped it silently, a closed one
-// was pruned silently, and a node this daemon does not host was skipped
-// silently. The coordinator already turns a `ReloadResult(Err)` into a
-// visible CLI failure, so the daemon only has to stop swallowing the three
-// cases. These tests drive the real `Daemon::send_reload` (the same entry
-// point `DaemonCoordinatorEvent::ReloadDataflow` calls) and pin the error
-// text so the CLI message stays actionable.
+// The `Reload` control request (sent by `dora start --hot-reload`'s file
+// watcher, not by a `dora node reload` command) used to report success no
+// matter what happened to the event: a full per-node channel dropped it
+// silently, a closed one was pruned silently, and a node this daemon does
+// not host was skipped silently. The coordinator already turns a
+// `ReloadResult(Err)` into a visible CLI failure, so the daemon only has to
+// stop swallowing the three cases. These tests drive the real
+// `Daemon::send_reload` (the same entry point
+// `DaemonCoordinatorEvent::ReloadDataflow` calls) and pin the error text so
+// the CLI message stays actionable.
 
 /// A dataflow with one local node `node` that has subscribed, plus the
 /// receiver half of its event channel.
@@ -4486,7 +4489,7 @@ async fn reload_to_a_full_local_channel_reports_an_error() {
     let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
     let clock = Arc::new(HLC::default());
     let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
-    let (mut dataflow, node_id, mut rx) = reload_dataflow_with_subscribed_node();
+    let (dataflow, node_id, mut rx) = reload_dataflow_with_subscribed_node();
     let dataflow_id = dataflow.id;
 
     // Fill the channel to capacity without draining it.
@@ -4538,7 +4541,7 @@ async fn reload_to_a_closed_local_channel_reports_an_error_and_prunes_it() {
     let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
     let clock = Arc::new(HLC::default());
     let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
-    let (mut dataflow, node_id, rx) = reload_dataflow_with_subscribed_node();
+    let (dataflow, node_id, rx) = reload_dataflow_with_subscribed_node();
     let dataflow_id = dataflow.id;
     drop(rx);
     daemon.running.insert(dataflow_id, dataflow);
