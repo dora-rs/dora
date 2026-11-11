@@ -128,6 +128,7 @@ mod tests;
 mod topic_debug;
 mod topic_subscriber;
 mod topology;
+mod topology_lane;
 mod traces;
 mod ws_control;
 mod ws_daemon;
@@ -374,6 +375,8 @@ pub(crate) struct Coordinator {
     pub(crate) resent_finish_reports: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     pub(crate) archived_dataflows: IndexMap<DataflowId, ArchivedDataflow>,
     pub(crate) daemon_connections: DaemonConnections,
+    /// Node-lifecycle changes in flight or waiting, per dataflow.
+    pub(crate) topology: topology_lane::TopologyLanes,
     pub(crate) clock: Arc<HLC>,
     pub(crate) store: Arc<dyn CoordinatorStore>,
     pub(crate) span_store: SpanStore,
@@ -413,9 +416,21 @@ async fn start_inner(
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
             .map(|_| Event::DaemonHeartbeatInterval);
 
+    // Answers to topology changes, reported by the tasks that wait for the
+    // daemons so this loop does not (see `topology_lane`). The event
+    // dispatch below is mirrored by `serial_loop` in
+    // `tests::lifecycle_stall`; keep the two in step.
+    let (topology_tx, topology_rx) = tokio::sync::mpsc::channel::<Event>(64);
+
     // events that should be aborted on `dora down`
-    let (abortable_events, abort_handle) =
-        futures::stream::abortable((events, daemon_heartbeat_interval).merge());
+    let (abortable_events, abort_handle) = futures::stream::abortable(
+        (
+            events,
+            daemon_heartbeat_interval,
+            ReceiverStream::new(topology_rx),
+        )
+            .merge(),
+    );
 
     let mut events = abortable_events;
 
@@ -482,6 +497,7 @@ async fn start_inner(
         resent_finish_reports: HashMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections: DaemonConnections::default(),
+        topology: topology_lane::TopologyLanes::new(topology_tx),
         clock,
         store,
         span_store,
@@ -597,7 +613,21 @@ async fn start_inner(
                     .handle_daemon_node_stopped(daemon_id, dataflow_id, node_id, clean_stop)
                     .await?
             }
+            Event::TopologyReply {
+                dataflow_id,
+                change_id,
+                result,
+            } => {
+                coordinator
+                    .handle_topology_reply(dataflow_id, change_id, result)
+                    .await?
+            }
         }
+
+        // Whatever event just ran may have removed a daemon (exit, watchdog,
+        // re-registration): a topology change waiting on it will not be
+        // answered, so fail it now instead of at its timeout.
+        coordinator.fail_topology_changes_of_gone_daemons().await;
 
         // warn if event handling took too long -> the main loop should never be blocked for too long
         let elapsed = start.elapsed();

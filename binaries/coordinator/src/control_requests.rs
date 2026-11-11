@@ -1,11 +1,10 @@
 //! Requests from the CLI (and other control clients) over the WebSocket
 //! control plane.
 
+use crate::topology_lane::{MappingSpec, TopologyRequest};
 use crate::{
-    ControlEvent, Coordinator, cancel_pending_restart, ensure_add_mapping_applied,
-    ensure_add_node_applied, ensure_delete_param_forward_applied, ensure_remove_mapping_applied,
-    ensure_remove_node_applied, ensure_replace_node_applied, ensure_set_param_forward_applied,
-    handle_get_trace_spans, handle_get_traces,
+    ControlEvent, Coordinator, cancel_pending_restart, ensure_delete_param_forward_applied,
+    ensure_set_param_forward_applied, handle_get_trace_spans, handle_get_traces,
     handlers::{
         attach_log_subscriber, build_dataflow, dataflow_result, handle_destroy, parse_logs_node_id,
         reload_dataflow, resolve_name, restart_node, retrieve_logs, start_dataflow, stop_dataflow,
@@ -13,7 +12,7 @@ use crate::{
     },
     initiate_restart, live_topic_subscriptions,
     log_subscriber::LogSubscriber,
-    resolve_param_target, resolve_single_node, start_topic_debug_stream,
+    resolve_param_target, start_topic_debug_stream,
     state::{LaunchContext, ParamTarget, RunningDataflow},
     stop_topic_debug_stream, topic_publish_output_id,
 };
@@ -41,7 +40,7 @@ use std::{
 };
 use uuid::Uuid;
 
-type ReplySender = tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>;
+pub(crate) type ReplySender = tokio::sync::oneshot::Sender<eyre::Result<ControlRequestReply>>;
 
 impl Coordinator {
     pub(crate) async fn handle_control_event(&mut self, event: ControlEvent) -> eyre::Result<()> {
@@ -244,6 +243,10 @@ impl Coordinator {
                         grace_duration,
                         force,
                     } => {
+                        if let Err(err) = self.ensure_no_topology_change(dataflow_uuid) {
+                            let _ = reply_sender.send(Err(err));
+                            return Ok(());
+                        }
                         initiate_restart(
                             dataflow_uuid,
                             grace_duration,
@@ -265,6 +268,10 @@ impl Coordinator {
                         match resolve_name(name, &self.running_dataflows, &self.archived_dataflows)
                         {
                             Ok(dataflow_uuid) => {
+                                if let Err(err) = self.ensure_no_topology_change(dataflow_uuid) {
+                                    let _ = reply_sender.send(Err(err));
+                                    return Ok(());
+                                }
                                 initiate_restart(
                                     dataflow_uuid,
                                     grace_duration,
@@ -1241,158 +1248,19 @@ impl Coordinator {
         Ok(())
     }
 
+    // The node-lifecycle changes do not wait for the daemon here: waiting in
+    // the serial event loop stalled every other event for up to 30 s, heartbeats
+    // included. They are queued on their dataflow's lane and finish in
+    // `topology_lane` when the daemon's answer arrives as an event.
+
     pub(crate) async fn handle_add_node(
         &mut self,
         dataflow_id: Uuid,
         node: Node,
         reply_sender: ReplySender,
     ) -> eyre::Result<()> {
-        let result = match self.running_dataflows.get_mut(&dataflow_id) {
-            Some(dataflow) => {
-                // Check the stored topology, not `node_to_daemon`: a dataflow
-                // rebuilt after a coordinator restart or orphan reclaim maps
-                // only the nodes its reconnected daemons still run, so an
-                // exited node (or one on a daemon that has not reported yet)
-                // would pass, and the push below would persist a duplicate id
-                // that the next re-establish fails to resolve (#3759).
-                if dataflow.descriptor.nodes.iter().any(|n| n.id == node.id) {
-                    Err(eyre!(
-                        "node '{}' already exists in dataflow {dataflow_id}",
-                        node.id
-                    ))
-                } else {
-                    // Keep a clone of the original Node so
-                    // we can push it into the stored
-                    // descriptor after a successful spawn
-                    // (so `dora info` reflects the new
-                    // node).
-                    let original_node = node.clone();
-
-                    // See `resolve_single_node` for what
-                    // the running descriptor contributes
-                    // (env carry-through #2919,
-                    // single-operator output prefixing
-                    // #2877).
-                    match resolve_single_node(node, &dataflow.descriptor) {
-                        Ok((node_id, resolved_node)) => {
-                            // Honour the node's `deploy` placement
-                            // among the dataflow's daemons (#3672).
-                            let daemon_id = producer_daemons(
-                                &resolved_node,
-                                &dataflow.nodes,
-                                &dataflow.node_to_daemon,
-                                &dataflow.daemons,
-                                &dataflow.exited_nodes,
-                                &dataflow.departed_daemons,
-                                &dataflow.persisted_placement,
-                                &self.daemon_connections,
-                            )
-                            .and_then(|producer_daemons| {
-                                self.daemon_connections.resolve_add_node_daemon(
-                                    &dataflow.daemons,
-                                    &producer_daemons,
-                                    resolved_node.deploy.as_ref(),
-                                )
-                            });
-                            match daemon_id {
-                                Ok(did) => {
-                                    let msg = serde_json::to_vec(&Timestamped {
-                                        inner: DaemonCoordinatorEvent::AddNode {
-                                            dataflow_id,
-                                            node: resolved_node.clone(),
-                                            uv: dataflow.uv,
-                                        },
-                                        timestamp: self.clock.new_timestamp(),
-                                    })?;
-                                    match self.daemon_connections.get_mut(&did) {
-                                        Some(conn) => {
-                                            match conn.send_and_receive(&msg).await {
-                                                Ok(reply_raw) => {
-                                                    // Validate the daemon reply is
-                                                    // specifically an `AddNodeResult`
-                                                    // (not just any non-error reply)
-                                                    // before committing state. Without
-                                                    // this, a `SetParamResult` or an
-                                                    // explicit `AddNodeResult(Err)`
-                                                    // would still be reported as
-                                                    // applied and corrupt the dataflow
-                                                    // state (#1682, rescue of #1757).
-                                                    // The validator's error is folded
-                                                    // into the `Err` arm of `result`
-                                                    // (via explicit `Err(e) => Err(e)`
-                                                    // below — no `?`), which the
-                                                    // coordinator's main loop sends
-                                                    // back to the CLI as
-                                                    // `ControlRequestReply::Error`.
-                                                    // Addresses phil-opp's review of
-                                                    // #1757 (do not tear down the
-                                                    // event loop on a recoverable
-                                                    // per-request failure).
-                                                    match ensure_add_node_applied(
-                                                        &reply_raw, &node_id,
-                                                    ) {
-                                                        Ok(()) => {
-                                                            dataflow
-                                                                .node_to_daemon
-                                                                .insert(node_id.clone(), did);
-                                                            // Update the stored descriptor
-                                                            // and resolved nodes so
-                                                            // `dora info` reflects the
-                                                            // new node.
-                                                            dataflow
-                                                                .descriptor
-                                                                .nodes
-                                                                .push(original_node);
-                                                            dataflow.nodes.insert(
-                                                                node_id.clone(),
-                                                                resolved_node,
-                                                            );
-                                                            // Clear any stale Stopped/
-                                                            // Finalized state for this
-                                                            // node id so the new
-                                                            // incarnation's metrics push
-                                                            // isn't blocked by the prior
-                                                            // stop's `node_stopped_at` /
-                                                            // `node_finalized` entries.
-                                                            dataflow
-                                                                .node_stopped_at
-                                                                .remove(&node_id);
-                                                            dataflow
-                                                                .node_finalized
-                                                                .remove(&node_id);
-                                                            dataflow.exited_nodes.remove(&node_id);
-                                                            dataflow.node_metrics.remove(&node_id);
-                                                            dataflow.persist_topology_change(
-                                                                &*self.store,
-                                                            );
-                                                            Ok(ControlRequestReply::NodeAdded {
-                                                                dataflow_id,
-                                                                node_id,
-                                                            })
-                                                        }
-                                                        Err(e) => Err(e),
-                                                    }
-                                                }
-                                                Err(e) => Err(eyre!("daemon dispatch failed: {e}")),
-                                            }
-                                        }
-                                        None => Err(eyre!("no connection for daemon {did}")),
-                                    }
-                                }
-                                Err(e) => Err(e.wrap_err(format!(
-                                    "cannot place node in dataflow {dataflow_id}"
-                                ))),
-                            }
-                        }
-                        // `resolve_single_node` already
-                        // prefixes the resolve context.
-                        Err(e) => Err(e),
-                    }
-                }
-            }
-            None => Err(eyre!("no running dataflow with ID {dataflow_id}")),
-        };
-        let _ = reply_sender.send(result);
+        self.submit_topology_change(dataflow_id, TopologyRequest::AddNode { node }, reply_sender)
+            .await;
         Ok(())
     }
 
@@ -1403,59 +1271,15 @@ impl Coordinator {
         grace_duration: Option<Duration>,
         reply_sender: ReplySender,
     ) -> eyre::Result<()> {
-        let result = match self.running_dataflows.get(&dataflow_id) {
-            Some(dataflow) => {
-                match dataflow.node_to_daemon.get(&node_id) {
-                    Some(daemon_id) => {
-                        let msg = serde_json::to_vec(&Timestamped {
-                            inner: DaemonCoordinatorEvent::RemoveNode {
-                                dataflow_id,
-                                node_id: node_id.clone(),
-                                grace_duration,
-                            },
-                            timestamp: self.clock.new_timestamp(),
-                        })?;
-                        match self.daemon_connections.get_mut(daemon_id) {
-                            Some(conn) => {
-                                match conn.send_and_receive(&msg).await {
-                                    Ok(reply_raw) => {
-                                        match ensure_remove_node_applied(&reply_raw, &node_id) {
-                                            Ok(()) => {
-                                                // Clean up coordinator state
-                                                // (inverse of AddNode inserts)
-                                                if let Some(dataflow) =
-                                                    self.running_dataflows.get_mut(&dataflow_id)
-                                                {
-                                                    dataflow.node_to_daemon.remove(&node_id);
-                                                    dataflow
-                                                        .descriptor
-                                                        .nodes
-                                                        .retain(|n| n.id != node_id);
-                                                    dataflow.nodes.remove(&node_id);
-                                                    dataflow.persist_topology_change(&*self.store);
-                                                }
-                                                Ok(ControlRequestReply::NodeRemoved {
-                                                    dataflow_id,
-                                                    node_id,
-                                                })
-                                            }
-                                            Err(e) => Err(e),
-                                        }
-                                    }
-                                    Err(e) => Err(eyre!("daemon dispatch failed: {e}")),
-                                }
-                            }
-                            None => Err(eyre!("no connection for daemon {daemon_id}")),
-                        }
-                    }
-                    None => Err(eyre!(
-                        "node '{node_id}' not found in dataflow {dataflow_id}"
-                    )),
-                }
-            }
-            None => Err(eyre!("no running dataflow with ID {dataflow_id}")),
-        };
-        let _ = reply_sender.send(result);
+        self.submit_topology_change(
+            dataflow_id,
+            TopologyRequest::RemoveNode {
+                node_id,
+                grace_duration,
+            },
+            reply_sender,
+        )
+        .await;
         Ok(())
     }
 
@@ -1466,90 +1290,15 @@ impl Coordinator {
         grace_duration: Option<Duration>,
         reply_sender: ReplySender,
     ) -> eyre::Result<()> {
-        let result = async {
-            // Route to the daemon that OWNS the id — a
-            // replace targets an existing node, unlike
-            // AddNode's first-daemon placement.
-            let original_node = node.clone();
-            // Resolve inside the borrow so the running
-            // descriptor can be passed by reference; the
-            // borrow ends before `daemon_connections` is
-            // taken mutably below.
-            let (daemon_id, uv, node_id, resolved_node) = {
-                let dataflow = self
-                    .running_dataflows
-                    .get(&dataflow_id)
-                    .ok_or_else(|| eyre!("no running dataflow with ID {dataflow_id}"))?;
-                let daemon_id =
-                    dataflow
-                        .node_to_daemon
-                        .get(&node.id)
-                        .cloned()
-                        .ok_or_else(|| {
-                            eyre!(
-                                "node '{}' not found in dataflow {dataflow_id}; \
-                                                 use `dora node add` to add a new node",
-                                node.id
-                            )
-                        })?;
-                let (node_id, resolved_node) = resolve_single_node(node, &dataflow.descriptor)?;
-                (daemon_id, dataflow.uv, node_id, resolved_node)
-            };
-            let msg = serde_json::to_vec(&Timestamped {
-                inner: DaemonCoordinatorEvent::ReplaceNode {
-                    dataflow_id,
-                    node: resolved_node.clone(),
-                    // Ship the original YAML-shape node so
-                    // the daemon can assign the descriptor
-                    // entry wholesale, mirroring the
-                    // `*existing = original_node` commit
-                    // this arm does below.
-                    unresolved_node: original_node.clone(),
-                    uv,
-                    grace_duration,
-                },
-                timestamp: self.clock.new_timestamp(),
-            })?;
-            let conn = self
-                .daemon_connections
-                .get_mut(&daemon_id)
-                .ok_or_else(|| eyre!("no connection for daemon {daemon_id}"))?;
-            let reply_raw = conn
-                .send_and_receive(&msg)
-                .await
-                .map_err(|e| eyre!("daemon dispatch failed: {e}"))?;
-            // Commit coordinator state only after the
-            // daemon confirms with the specific reply
-            // variant (#1682 contract).
-            ensure_replace_node_applied(&reply_raw, &node_id)?;
-            if let Some(dataflow) = self.running_dataflows.get_mut(&dataflow_id) {
-                if let Some(existing) = dataflow
-                    .descriptor
-                    .nodes
-                    .iter_mut()
-                    .find(|n| n.id == node_id)
-                {
-                    *existing = original_node;
-                } else {
-                    dataflow.descriptor.nodes.push(original_node);
-                }
-                dataflow.nodes.insert(node_id.clone(), resolved_node);
-                // Clear stale lifecycle markers so the new
-                // incarnation's metrics are not suppressed
-                // (same set AddNode clears).
-                dataflow.node_stopped_at.remove(&node_id);
-                dataflow.node_finalized.remove(&node_id);
-                dataflow.exited_nodes.remove(&node_id);
-                dataflow.node_metrics.remove(&node_id);
-                dataflow.persist_topology_change(&*self.store);
-            }
-            Ok(ControlRequestReply::NodeReplaced {
-                dataflow_id,
-                node_id,
-            })
-        }
+        self.submit_topology_change(
+            dataflow_id,
+            TopologyRequest::ReplaceNode {
+                node,
+                grace_duration,
+            },
+            reply_sender,
+        )
         .await;
-        let _ = reply_sender.send(result);
         Ok(())
     }
 
@@ -1562,50 +1311,14 @@ impl Coordinator {
         target_input: DataId,
         reply_sender: ReplySender,
     ) -> eyre::Result<()> {
-        let result = match self.running_dataflows.get(&dataflow_id) {
-            Some(dataflow) => match dataflow.node_to_daemon.get(&target_node) {
-                Some(daemon_id) => {
-                    let msg = serde_json::to_vec(&Timestamped {
-                        inner: DaemonCoordinatorEvent::AddMapping {
-                            dataflow_id,
-                            source_node: source_node.clone(),
-                            source_output: source_output.clone(),
-                            target_node: target_node.clone(),
-                            target_input: target_input.clone(),
-                        },
-                        timestamp: self.clock.new_timestamp(),
-                    })?;
-                    match self.daemon_connections.get_mut(daemon_id) {
-                        Some(conn) => match conn.send_and_receive(&msg).await {
-                            Ok(reply_raw) => {
-                                // Validate the daemon reply is specifically an
-                                // `AddMappingResult` before reporting success,
-                                // mirroring the #1682 / #1873 rescue for AddNode.
-                                let src = format!("{source_node}/{source_output}");
-                                let tgt = format!("{target_node}/{target_input}");
-                                match ensure_add_mapping_applied(&reply_raw, &src, &tgt) {
-                                    Ok(()) => Ok(ControlRequestReply::MappingAdded {
-                                        dataflow_id,
-                                        source_node,
-                                        source_output,
-                                        target_node,
-                                        target_input,
-                                    }),
-                                    Err(e) => Err(e),
-                                }
-                            }
-                            Err(e) => Err(eyre!("daemon dispatch failed: {e}")),
-                        },
-                        None => Err(eyre!("no connection for daemon {daemon_id}")),
-                    }
-                }
-                None => Err(eyre!(
-                    "target node '{target_node}' not found in dataflow {dataflow_id}"
-                )),
-            },
-            None => Err(eyre!("no running dataflow with ID {dataflow_id}")),
+        let spec = MappingSpec {
+            source_node,
+            source_output,
+            target_node,
+            target_input,
         };
-        let _ = reply_sender.send(result);
+        self.submit_topology_change(dataflow_id, TopologyRequest::AddMapping(spec), reply_sender)
+            .await;
         Ok(())
     }
 
@@ -1618,47 +1331,18 @@ impl Coordinator {
         target_input: DataId,
         reply_sender: ReplySender,
     ) -> eyre::Result<()> {
-        let result = match self.running_dataflows.get(&dataflow_id) {
-            Some(dataflow) => match dataflow.node_to_daemon.get(&target_node) {
-                Some(daemon_id) => {
-                    let msg = serde_json::to_vec(&Timestamped {
-                        inner: DaemonCoordinatorEvent::RemoveMapping {
-                            dataflow_id,
-                            source_node: source_node.clone(),
-                            source_output: source_output.clone(),
-                            target_node: target_node.clone(),
-                            target_input: target_input.clone(),
-                        },
-                        timestamp: self.clock.new_timestamp(),
-                    })?;
-                    match self.daemon_connections.get_mut(daemon_id) {
-                        Some(conn) => match conn.send_and_receive(&msg).await {
-                            Ok(reply_raw) => {
-                                let src = format!("{source_node}/{source_output}");
-                                let tgt = format!("{target_node}/{target_input}");
-                                match ensure_remove_mapping_applied(&reply_raw, &src, &tgt) {
-                                    Ok(()) => Ok(ControlRequestReply::MappingRemoved {
-                                        dataflow_id,
-                                        source_node,
-                                        source_output,
-                                        target_node,
-                                        target_input,
-                                    }),
-                                    Err(e) => Err(e),
-                                }
-                            }
-                            Err(e) => Err(eyre!("daemon dispatch failed: {e}")),
-                        },
-                        None => Err(eyre!("no connection for daemon {daemon_id}")),
-                    }
-                }
-                None => Err(eyre!(
-                    "target node '{target_node}' not found in dataflow {dataflow_id}"
-                )),
-            },
-            None => Err(eyre!("no running dataflow with ID {dataflow_id}")),
+        let spec = MappingSpec {
+            source_node,
+            source_output,
+            target_node,
+            target_input,
         };
-        let _ = reply_sender.send(result);
+        self.submit_topology_change(
+            dataflow_id,
+            TopologyRequest::RemoveMapping(spec),
+            reply_sender,
+        )
+        .await;
         Ok(())
     }
 }

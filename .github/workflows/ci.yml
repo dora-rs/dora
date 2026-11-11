@@ -134,6 +134,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Shared dev-profile cache, written only by `test` (the fullest
           # builder). clippy/check/contract-tests restore it but never
           # save, so the race can't cache a check-only (.rmeta) subset.
@@ -186,6 +189,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Restore the shared dev-profile cache; only `test` writes it.
           shared-key: workspace
           save-if: false
@@ -268,6 +274,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # `test` is the SOLE writer of the shared dev-profile cache: it
           # runs the full `cargo build`/`test`, so its cache captures the
           # dependency codegen (.rlib) that a check/clippy cache omits.
@@ -435,6 +444,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Save only on `main`; PRs/merge-queue restore-only (see clippy job note).
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Now that this job runs in parallel with `test` (#2524) it no longer
@@ -586,6 +598,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Restore the shared dev-profile cache; only `test` writes it.
           shared-key: workspace
           save-if: false
@@ -705,6 +720,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Save only on `main`; PRs/merge-queue restore-only (see clippy job note).
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Runs in parallel with `test` (#2524); compiles the criterion
@@ -872,6 +890,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Its own key: rustdoc JSON for two revisions is a different artifact
           # set from the dev-profile `workspace` cache, and mixing them would
           # evict what the compile jobs restore from.
@@ -916,6 +937,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Save only on `main`; PRs restore-only (see clippy job note).
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo install cargo-lichking
