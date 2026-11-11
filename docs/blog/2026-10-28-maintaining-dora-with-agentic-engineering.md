@@ -385,3 +385,7 @@ With this setup, the maintainer's work is different from before, but there is st
 - Deciding when not to fix something (some 'bugs' can never happen in practice).
 
 Every merge in Dora is still a human decision.
+
+## Conclusion
+
+None of these techniques are new. What changed is that we now apply them consistently, because agents produce more changes than one person can read. The code and the CI setup are public in [the dora repository](https://github.com/dora-rs/dora), and contributions are welcome.
