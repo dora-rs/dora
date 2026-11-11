@@ -185,6 +185,9 @@ impl<K: std::hash::Hash + Eq, V> GoalSlots<K, V> {
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
+        self.values.iter_mut()
+    }
     pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
         self.values.iter()
     }
@@ -359,8 +362,8 @@ pub mod zenoh {
 
     mod typed;
     pub use typed::{
-        ActionCallError, ActionServerOptions, ActionServerPump, TypedActionClient,
-        TypedActionServer,
+        ActionCallError, ActionServerOptions, ActionServerPump, CancelableGoal, TypedActionClient,
+        TypedActionServer, goal_accept_stamp, process_cancel_request,
     };
 
     /// Data keys for the three services followed by feedback and status.
