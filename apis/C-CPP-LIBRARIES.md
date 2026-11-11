@@ -27,19 +27,19 @@ Intel macOS (`x86_64-apple-darwin`) is not published as a pre-built artifact —
 
 1. Go to the [Dora releases page](https://github.com/dora-rs/dora/releases)
 2. Download the archive for your target:
-   - C API: `dora-c-libraries-<target>.tar.gz` (or `.zip` on Windows)
-   - C++ API: `dora-cpp-libraries-<target>.tar.gz` (or `.zip` on Windows)
+   - C API: `dora-libraries-c-<target>.tar.gz` (or `.zip` on Windows)
+   - C++ API: `dora-libraries-cpp-<target>.tar.gz` (or `.zip` on Windows)
 
 ```bash
 # Example: download and extract C++ libraries for Linux x86_64
-tar xzf dora-cpp-libraries-x86_64-unknown-linux-gnu.tar.gz
+tar xzf dora-libraries-cpp-x86_64-unknown-linux-gnu.tar.gz
 ```
 
 ## Directory Structure
 
 **C libraries:**
 ```
-dora-c-libraries-<target>/
+dora-libraries-c-<target>/
 ├── include/
 │   ├── node_api.h
 │   ├── operator_api.h
@@ -52,7 +52,7 @@ dora-c-libraries-<target>/
 
 **C++ libraries:**
 ```
-dora-cpp-libraries-<target>/
+dora-libraries-cpp-<target>/
 ├── include/
 │   ├── dora-node-api.h
 │   └── dora-operator-api.h
@@ -108,7 +108,7 @@ target_link_libraries(my_node
 
 Configure with the prefix path pointing at the extracted archive:
 ```bash
-cmake -S . -B build -DCMAKE_PREFIX_PATH=/path/to/dora-c-libraries-<target>
+cmake -S . -B build -DCMAKE_PREFIX_PATH=/path/to/dora-libraries-c-<target>
 cmake --build build
 ```
 
@@ -146,7 +146,7 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(DORA_TARGET "x86_64-pc-windows-msvc")
 endif()
 
-set(DORA_C_DIR "${CMAKE_SOURCE_DIR}/dora-c-libraries-${DORA_TARGET}")
+set(DORA_C_DIR "${CMAKE_SOURCE_DIR}/dora-libraries-c-${DORA_TARGET}")
 
 add_executable(my_node main.c)
 target_include_directories(my_node PRIVATE ${DORA_C_DIR}/include)
@@ -175,7 +175,7 @@ set(CMAKE_CXX_STANDARD 20)
 
 # ... same platform detection as above ...
 
-set(DORA_CPP_DIR "${CMAKE_SOURCE_DIR}/dora-cpp-libraries-${DORA_TARGET}")
+set(DORA_CPP_DIR "${CMAKE_SOURCE_DIR}/dora-libraries-cpp-${DORA_TARGET}")
 
 # The bridge source file must be compiled with your code
 add_executable(my_node
@@ -206,14 +206,14 @@ endif()
 ```bash
 # C node
 gcc -o my_node main.c \
-    -Idora-c-libraries-x86_64-unknown-linux-gnu/include \
-    -Ldora-c-libraries-x86_64-unknown-linux-gnu/lib \
+    -Idora-libraries-c-x86_64-unknown-linux-gnu/include \
+    -Ldora-libraries-c-x86_64-unknown-linux-gnu/lib \
     -ldora_node_api_c -lpthread -ldl -lm -lrt
 
 # C++ node (must compile the bridge source too)
-g++ -std=c++20 -o my_node main.cpp dora-cpp-libraries-x86_64-unknown-linux-gnu/src/dora-node-api.cc \
-    -Idora-cpp-libraries-x86_64-unknown-linux-gnu/include \
-    -Ldora-cpp-libraries-x86_64-unknown-linux-gnu/lib \
+g++ -std=c++20 -o my_node main.cpp dora-libraries-cpp-x86_64-unknown-linux-gnu/src/dora-node-api.cc \
+    -Idora-libraries-cpp-x86_64-unknown-linux-gnu/include \
+    -Ldora-libraries-cpp-x86_64-unknown-linux-gnu/lib \
     -ldora_node_api_cxx -lpthread -ldl -lm -lrt
 ```
 
@@ -221,9 +221,9 @@ g++ -std=c++20 -o my_node main.cpp dora-cpp-libraries-x86_64-unknown-linux-gnu/s
 
 ```bash
 # C++ node
-clang++ -std=c++20 -o my_node main.cpp dora-cpp-libraries-aarch64-apple-darwin/src/dora-node-api.cc \
-    -Idora-cpp-libraries-aarch64-apple-darwin/include \
-    -Ldora-cpp-libraries-aarch64-apple-darwin/lib \
+clang++ -std=c++20 -o my_node main.cpp dora-libraries-cpp-aarch64-apple-darwin/src/dora-node-api.cc \
+    -Idora-libraries-cpp-aarch64-apple-darwin/include \
+    -Ldora-libraries-cpp-aarch64-apple-darwin/lib \
     -ldora_node_api_cxx \
     -framework CoreServices -framework Security -lpthread -lm -lc -lresolv
 ```
@@ -250,10 +250,10 @@ cargo build --release \
 To produce a find_package-ready prefix from a source build, run `xtask stage` after `cargo build`:
 
 ```bash
-cargo run -p xtask -- stage dora-node-api-c   target/release dora-c-libraries-local
-cargo run -p xtask -- stage dora-node-api-cxx target/release dora-cpp-libraries-local
+cargo run -p xtask -- stage dora-node-api-c   target/release dora-libraries-c-local
+cargo run -p xtask -- stage dora-node-api-cxx target/release dora-libraries-cpp-local
 
-cmake -S my-project -B build -DCMAKE_PREFIX_PATH=$(pwd)/dora-c-libraries-local
+cmake -S my-project -B build -DCMAKE_PREFIX_PATH=$(pwd)/dora-libraries-c-local
 ```
 
 The same `xtask stage` command drives the release-archive packaging in `.github/workflows/publish-c-cpp-libraries.yml`, so a local build produces exactly the layout consumers will see in the GitHub release artefacts.

@@ -576,6 +576,7 @@ mod zenoh_wire_compatibility_tests {
             "tcp/127.0.0.1:45001",
             "tcp/127.0.0.2:45001",
             "tcp/localhost:45001",
+            "tcp/LOCALHOST:45001",
             "tcp/127.0.0.1:45001?prio=high#iface=lo",
             "tcp/127.0.0.1:45001#iface=lo",
             "tcp/[::1]:45001?prio=high#iface=lo",
