@@ -1703,17 +1703,25 @@ mod cross_pool_write_tests {
             silent.push(connect_from([127, 0, 0, 2], addr).await);
         }
 
-        let mut origin = connect_from([127, 0, 0, 1], addr).await;
-        tokio::time::timeout(wait, auth_handshake_send(&mut origin, "test-shared-secret"))
-            .await
-            .expect("the origin's handshake must be answered")
-            .expect("the origin must be accepted while silent peers wait");
-        origin.write_all(&[0]).await.unwrap();
-        let peer = tokio::time::timeout(wait, admitted.recv())
-            .await
-            .expect("the origin must be admitted")
-            .unwrap();
-        assert_eq!(peer.ip(), std::net::IpAddr::from([127, 0, 0, 1]));
+        // Every permit stays available to origins with the token. Had the
+        // silent connections taken permits at accept time, even with the
+        // per-peer bound, only `max_connections - CROSS_DATA_MAX_PENDING_PER_PEER`
+        // origins would get in.
+        let mut origins = Vec::new();
+        for _ in 0..max_connections {
+            let mut origin = connect_from([127, 0, 0, 1], addr).await;
+            tokio::time::timeout(wait, auth_handshake_send(&mut origin, "test-shared-secret"))
+                .await
+                .expect("the origin's handshake must be answered")
+                .expect("the origin must be accepted while silent peers wait");
+            origin.write_all(&[0]).await.unwrap();
+            let peer = tokio::time::timeout(wait, admitted.recv())
+                .await
+                .expect("the origin must be admitted")
+                .unwrap();
+            assert_eq!(peer.ip(), std::net::IpAddr::from([127, 0, 0, 1]));
+            origins.push(origin);
+        }
         assert!(admitted.try_recv().is_err(), "no silent peer is admitted");
         drop(silent);
         accept.abort();

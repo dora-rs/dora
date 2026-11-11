@@ -101,12 +101,13 @@ pub(crate) const CROSS_DATA_BIND_DEFAULT: &str = "0.0.0.0";
 /// rejected and the write falls back to the zenoh relay, but without a
 /// token the origin's frame can fit in its send buffer and report success
 /// before the close arrives, so that write is lost and fails on its ack
-/// timeout. Without a token, a peer is admitted as soon as it sends a byte,
-/// so a peer that can reach the port can still fill the cap; set the token
-/// wherever the port is reachable by untrusted hosts. Direct writes therefore fail rather than degrade while the cap
+/// timeout. Direct writes therefore fail rather than degrade while the cap
 /// is exhausted. Making the origin detect a refusal in the token-less
 /// configuration needs an admission reply on every fresh connection, which
-/// is a wire change left to a follow-up.
+/// is a wire change left to a follow-up. Without a token, a peer is also
+/// admitted as soon as it sends a byte, so a peer that can reach the port
+/// can still fill the cap; set the token wherever the port is reachable by
+/// untrusted hosts.
 pub(crate) const CROSS_DATA_MAX_CONNECTIONS_ENV: &str = "DORA_MEMORY_POOL_MAX_DATA_CONNECTIONS";
 pub(crate) const CROSS_DATA_MAX_CONNECTIONS_DEFAULT: usize = 256;
 

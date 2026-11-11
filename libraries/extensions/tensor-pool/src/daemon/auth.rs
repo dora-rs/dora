@@ -65,7 +65,10 @@ pub(crate) async fn auth_handshake_send(
         .await
         .map_err(|e| format!("auth handshake reply read failed: {e}"))?;
     if reply[0] != AUTH_OK {
-        return Err("peer rejected the auth token".to_string());
+        return Err(
+            "peer rejected the handshake (token mismatch, or its connection cap is full)"
+                .to_string(),
+        );
     }
     Ok(())
 }
