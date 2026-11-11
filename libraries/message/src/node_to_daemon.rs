@@ -159,7 +159,7 @@ impl DaemonRequest {
     /// whose sender reads nothing, or the unsolicited frame would shift every
     /// later request/reply pair on the connection by one.
     ///
-    /// This is defence in depth (#4114). The fire-and-forget requests are
+    /// This is defence in depth. The fire-and-forget requests are
     /// expected to always decode: a payload change that breaks that, such as a
     /// new [`Parameter`](crate::metadata::Parameter) kind, must bump
     /// [`Metadata::CURRENT_VERSION`], which rejects the node at register time.

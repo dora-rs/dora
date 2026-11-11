@@ -147,7 +147,7 @@ impl Connection for TcpConnection {
                     // never sends an undecodable frame: this is a newer node,
                     // sending either a `DaemonRequest` variant this daemon
                     // predates or a known variant whose payload uses a newer
-                    // type (e.g. a new metadata `Parameter` kind, #4114).
+                    // type (e.g. a new metadata `Parameter` kind).
                     if !DaemonRequest::frame_expects_reply(&raw) {
                         // `SendMessage` / `OutputSent`: the node reads no reply,
                         // so answering would shift every later request/reply
