@@ -563,6 +563,33 @@ impl Scheduler {
         bump_drop_count(&mut self.dropped, &NON_INPUT_EVENT_ID)
     }
 
+    /// Discards the queued messages of `input` for a `flush: true` message.
+    ///
+    /// Streaming pattern's `flush: true` means "discard stale stream chunks".
+    /// It must NOT wipe service responses or action results that happen to
+    /// share the same input, because those carry `request_id` / `goal_id` /
+    /// `goal_status` correlations whose senders are waiting for them
+    /// (dora-rs/adora#146). Use the same correlation predicate that the
+    /// drop_oldest path uses and retain correlated events across the flush.
+    pub(crate) fn flush(&mut self, input: &DataId) {
+        let Some((_size, queue)) = self.event_queues.get_mut(input) else {
+            return;
+        };
+        let before = queue.len();
+        queue.retain(is_correlated);
+        let drained = before - queue.len();
+        if drained > 0 {
+            tracing::debug!("Flushed {drained} queued event(s) for input `{input}` (flush signal)");
+        }
+        if !queue.is_empty() {
+            tracing::debug!(
+                input = %input,
+                preserved = queue.len(),
+                "flush signal retained correlated (request_id/goal_id) events"
+            );
+        }
+    }
+
     pub(crate) fn add_event(&mut self, event: EventItem) {
         let event_id = input_id(&event);
         let should_flush = flush_target(&event).is_some();
@@ -573,30 +600,8 @@ impl Scheduler {
             return;
         };
 
-        // Flush older queued messages when flush=true is present.
-        //
-        // Streaming pattern's `flush: true` means "discard stale stream chunks".
-        // It must NOT wipe service responses or action results that happen to
-        // share the same input, because those carry `request_id` / `goal_id` /
-        // `goal_status` correlations whose senders are waiting for them
-        // (dora-rs/adora#146). Use the same correlation predicate that the
-        // drop_oldest path uses and retain correlated events across the flush.
-        if should_flush && let Some((_size, queue)) = self.event_queues.get_mut(event_id) {
-            let before = queue.len();
-            queue.retain(is_correlated);
-            let drained = before - queue.len();
-            if drained > 0 {
-                tracing::debug!(
-                    "Flushed {drained} queued event(s) for input `{event_id}` (flush signal)"
-                );
-            }
-            if !queue.is_empty() {
-                tracing::debug!(
-                    input = %event_id,
-                    preserved = queue.len(),
-                    "flush signal retained correlated (request_id/goal_id) events"
-                );
-            }
+        if should_flush {
+            self.flush(event_id);
         }
 
         // Enforce queue size limit.
@@ -1338,7 +1343,9 @@ mod tests {
         EventItem::ZenohInput {
             id: DataId::from(id.to_string()),
             metadata: std::sync::Arc::new(metadata),
-            data: dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+            data: crate::event_stream::arrival_bound::ZenohPayload::Settled(
+                dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+            ),
         }
     }
 
