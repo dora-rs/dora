@@ -1,29 +1,22 @@
-//! Regression test for the QoS that the bridge node actually advertises on its
-//! DDS service and action endpoints.
+//! Regression test for the QoS the bridge advertises on its DDS service and
+//! action endpoints: all reliable, action status additionally transient-local.
 //!
-//! ROS 2 service and action endpoints must be reliable, and the action status
-//! channel must additionally be transient-local. The bridge derives those
-//! policies in `bridge_endpoint_qos` / `action_status_qos`; if a call site in
-//! `run_service_mode` / `run_action_mode` ever falls back to the generic
-//! `config.qos.to_rustdds_qos()` (best-effort, volatile by default), the
-//! endpoints below silently degrade and ROS 2 peers stop interoperating.
-//!
-//! The test therefore launches the real binary once per role and observes the
-//! advertised endpoint policies from a separate DDS participant, instead of
-//! asserting on helper return values or source text.
-//!
-//! No ROS installation is required: `AMENT_PREFIX_PATH` is empty, so the node
-//! loads no message definitions. Nothing is serialized because the only input
-//! event is a delayed `Stop`, which keeps the service/action runtime alive
-//! while the endpoints are discovered.
+//! A call site in `run_service_mode` / `run_action_mode` that rebuilds its QoS
+//! from the generic `config.qos` (best-effort, volatile) degrades these
+//! endpoints silently, so the test launches the real binary per role and reads
+//! the advertised policies from a separate DDS participant. No ROS install is
+//! needed: `AMENT_PREFIX_PATH` is empty and the only input event is a delayed
+//! `Stop`, so nothing is serialized.
 
 use std::{
+    fs::File,
     path::PathBuf,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
 
-use dora_ros2_bridge::rustdds::{self, policy, DomainParticipant};
+use dora_message::descriptor::{Ros2BridgeConfig, Ros2Role};
+use dora_ros2_bridge::rustdds::{policy, DomainParticipant};
 
 /// Isolated DDS domain so the test never sees a real ROS 2 graph.
 const DOMAIN_ID: &str = "181";
@@ -32,20 +25,21 @@ const STOP_DELAY_SECS: f64 = 60.0;
 /// Upper bound for endpoint discovery.
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// `pid` plus nanoseconds, so no earlier run can satisfy this run's assertions.
+fn unique_suffix() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_nanos();
+    format!("{}_{nanos}", std::process::id())
+}
+
 /// Owns the temporary directory of one child run and removes it on drop.
 struct TempDir(PathBuf);
 
 impl TempDir {
     fn new(label: &str) -> Self {
-        let unique = format!(
-            "dora-ros2-endpoint-qos-{label}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock before unix epoch")
-                .as_nanos()
-        );
-        let path = std::env::temp_dir().join(unique);
+        let path = std::env::temp_dir().join(format!("dora-ros2-qos-{label}-{}", unique_suffix()));
         std::fs::create_dir_all(&path).expect("create temp dir");
         Self(path)
     }
@@ -62,21 +56,33 @@ impl Drop for TempDir {
 }
 
 /// Kills and reaps the bridge child on drop, including on panic.
-struct ChildGuard(Child);
+struct ChildGuard {
+    child: Child,
+    log: PathBuf,
+}
 
 impl ChildGuard {
-    fn spawn(config: &str, dir: &TempDir) -> Self {
+    fn spawn(config: &Ros2BridgeConfig, dir: &TempDir) -> Self {
+        // `Stop` is the serialized spelling of `IncomingEvent::Stop` (the enum
+        // has no `rename_all`), so the child stays alive for the whole run.
         let inputs = dir.join("inputs.json");
-        std::fs::write(
-            &inputs,
-            format!(
-                r#"{{"id":"qos_probe","events":[{{"time_offset_secs":{STOP_DELAY_SECS},"type":"Stop"}}]}}"#
-            ),
-        )
-        .expect("write integration test inputs");
+        let stop_event = serde_json::json!({
+            "id": "qos_probe",
+            "events": [{ "time_offset_secs": STOP_DELAY_SECS, "type": "Stop" }],
+        });
+        std::fs::write(&inputs, stop_event.to_string()).expect("write integration test inputs");
+
+        // Log to a file rather than a pipe: the node logs continuously and an
+        // unread pipe would eventually block it.
+        let log = dir.join("child.log");
+        let log_file = File::create(&log).expect("create child log");
+        let stderr = log_file.try_clone().expect("clone child log");
 
         let child = Command::new(env!("CARGO_BIN_EXE_dora-ros2-bridge-node"))
-            .env("DORA_ROS2_BRIDGE_CONFIG", config)
+            .env(
+                "DORA_ROS2_BRIDGE_CONFIG",
+                serde_json::to_string(config).expect("serialize bridge config"),
+            )
             .env("DORA_TEST_WITH_INPUTS", &inputs)
             .env("DORA_TEST_WRITE_OUTPUTS_TO", dir.join("outputs.jsonl"))
             .env("ROS_DOMAIN_ID", DOMAIN_ID)
@@ -86,34 +92,37 @@ impl ChildGuard {
             .env_remove("ROS_DISCOVERY_SERVER")
             .env_remove("ROS_STATIC_PEERS")
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(stderr))
             .spawn()
             .expect("spawn dora-ros2-bridge-node");
-        Self(child)
+        Self { child, log }
     }
 
-    /// Fails with the child's stderr when it exited before discovery finished.
-    fn assert_running(&mut self, role: &str) {
-        if let Some(status) = self.0.try_wait().expect("poll bridge child") {
-            let mut stderr = String::new();
-            if let Some(mut pipe) = self.0.stderr.take() {
-                use std::io::Read;
-                let _ = pipe.read_to_string(&mut stderr);
-            }
-            panic!("bridge child for {role} exited early with {status}:\n{stderr}");
+    /// Fails with the child's log when it exited before discovery finished.
+    fn assert_running(&mut self, label: &str) {
+        if let Some(status) = self.child.try_wait().expect("poll bridge child") {
+            panic!(
+                "bridge child for {label} exited early with {status}:\n{}",
+                self.log_contents()
+            );
         }
+    }
+
+    fn log_contents(&self) -> String {
+        std::fs::read_to_string(&self.log).unwrap_or_else(|e| format!("<unreadable log: {e}>"))
     }
 }
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
 /// One endpoint the bridge is expected to advertise.
+#[derive(Clone)]
 struct Expected {
     topic: String,
     /// `true` for a topic the bridge publishes, `false` for one it subscribes to.
@@ -121,40 +130,32 @@ struct Expected {
     transient_local: bool,
 }
 
+fn endpoint(topic: String, published: bool) -> Expected {
+    Expected {
+        topic,
+        published,
+        transient_local: false,
+    }
+}
+
+/// Service endpoints as seen by the **server**: it reads requests and writes
+/// replies. The client advertises the mirror image.
 fn service_endpoints(name: &str) -> Vec<Expected> {
     vec![
-        Expected {
-            topic: format!("rq/{name}Request"),
-            published: false,
-            transient_local: false,
-        },
-        Expected {
-            topic: format!("rr/{name}Reply"),
-            published: true,
-            transient_local: false,
-        },
+        endpoint(format!("rq/{name}Request"), false),
+        endpoint(format!("rr/{name}Reply"), true),
     ]
 }
 
+/// Action endpoints as seen by the **server**: it reads the three goal
+/// services' requests and writes their replies, feedback and status.
 fn action_endpoints(name: &str) -> Vec<Expected> {
     let mut endpoints = Vec::new();
     for service in ["send_goal", "get_result", "cancel_goal"] {
-        endpoints.push(Expected {
-            topic: format!("rq/{name}/_action/{service}Request"),
-            published: false,
-            transient_local: false,
-        });
-        endpoints.push(Expected {
-            topic: format!("rr/{name}/_action/{service}Reply"),
-            published: true,
-            transient_local: false,
-        });
+        endpoints.push(endpoint(format!("rq/{name}/_action/{service}Request"), false));
+        endpoints.push(endpoint(format!("rr/{name}/_action/{service}Reply"), true));
     }
-    endpoints.push(Expected {
-        topic: format!("rt/{name}/_action/feedback"),
-        published: true,
-        transient_local: false,
-    });
+    endpoints.push(endpoint(format!("rt/{name}/_action/feedback"), true));
     endpoints.push(Expected {
         topic: format!("rt/{name}/_action/status"),
         published: true,
@@ -163,8 +164,7 @@ fn action_endpoints(name: &str) -> Vec<Expected> {
     endpoints
 }
 
-/// Flips the direction of every endpoint: the peer role advertises the mirror
-/// image of the same topics.
+/// The peer role advertises the mirror image of the same topics.
 fn mirrored(endpoints: Vec<Expected>) -> Vec<Expected> {
     endpoints
         .into_iter()
@@ -175,33 +175,24 @@ fn mirrored(endpoints: Vec<Expected>) -> Vec<Expected> {
         .collect()
 }
 
-fn config(service: Option<&str>, action: Option<&str>, role: &str) -> String {
-    let mut value = serde_json::json!({
-        "role": role,
-        "namespace": "/",
-        "node_name": "qos_probe",
-    });
-    let object = value.as_object_mut().expect("json object");
-    match (service, action) {
-        (Some(name), None) => {
-            object.insert("service".into(), name.into());
-            object.insert("service_type".into(), "test_interfaces/Test".into());
-        }
-        (None, Some(name)) => {
-            object.insert("action".into(), name.into());
-            object.insert("action_type".into(), "test_interfaces/Test".into());
-        }
-        _ => panic!("exactly one of service/action must be set"),
+fn config(service: Option<&str>, action: Option<&str>, role: Ros2Role) -> Ros2BridgeConfig {
+    let type_name = |name: Option<&str>| name.map(|_| "test_interfaces/Test".to_string());
+    Ros2BridgeConfig {
+        service: service.map(str::to_string),
+        service_type: type_name(service),
+        action: action.map(str::to_string),
+        action_type: type_name(action),
+        role: Some(role),
+        node_name: Some("qos_probe".to_string()),
+        ..Default::default()
     }
-    value.to_string()
 }
 
 /// Runs one role and asserts every expected endpoint is advertised with
 /// reliable delivery and the expected durability.
-fn assert_role(label: &str, config: &str, expected: &[Expected]) {
+fn assert_role(label: &str, config: &Ros2BridgeConfig, expected: &[Expected]) {
     let dir = TempDir::new(label);
     let mut child = ChildGuard::spawn(config, &dir);
-
     let participant = DomainParticipant::new(DOMAIN_ID.parse().expect("domain id"))
         .expect("create observer participant");
 
@@ -213,7 +204,8 @@ fn assert_role(label: &str, config: &str, expected: &[Expected]) {
 
         missing.clear();
         for endpoint in expected {
-            let found = if endpoint.published {
+            let direction = if endpoint.published { "writer" } else { "reader" };
+            let qos = if endpoint.published {
                 writers
                     .iter()
                     .find(|data| data.publication_topic_data.topic_name() == &endpoint.topic)
@@ -224,111 +216,78 @@ fn assert_role(label: &str, config: &str, expected: &[Expected]) {
                     .find(|data| data.subscription_topic_data.topic_name() == &endpoint.topic)
                     .map(|data| data.subscription_topic_data.qos())
             };
-
-            let Some(qos) = found else {
-                missing.push(format!(
-                    "{} {}",
-                    if endpoint.published {
-                        "writer"
-                    } else {
-                        "reader"
-                    },
-                    endpoint.topic
-                ));
+            let Some(qos) = qos else {
+                missing.push(format!("{direction} {}", endpoint.topic));
                 continue;
             };
 
+            let durability = if endpoint.transient_local {
+                policy::Durability::TransientLocal
+            } else {
+                policy::Durability::Volatile
+            };
             assert!(
                 matches!(qos.reliability(), Some(policy::Reliability::Reliable { .. })),
-                "{label}: {} {} must be reliable, got {:?}",
-                if endpoint.published {
-                    "writer"
-                } else {
-                    "reader"
-                },
+                "{label}: {direction} {} must be reliable, got {:?}",
                 endpoint.topic,
                 qos.reliability()
             );
-
-            let durability = qos.durability();
-            if endpoint.transient_local {
-                assert_eq!(
-                    durability,
-                    Some(policy::Durability::TransientLocal),
-                    "{label}: {} {} must be transient-local",
-                    if endpoint.published {
-                        "writer"
-                    } else {
-                        "reader"
-                    },
-                    endpoint.topic
-                );
-            } else {
-                assert_eq!(
-                    durability,
-                    Some(policy::Durability::Volatile),
-                    "{label}: {} {} must stay volatile",
-                    if endpoint.published {
-                        "writer"
-                    } else {
-                        "reader"
-                    },
-                    endpoint.topic
-                );
-            }
+            assert_eq!(
+                qos.durability(),
+                Some(durability),
+                "{label}: {direction} {} has the wrong durability",
+                endpoint.topic
+            );
         }
 
         if missing.is_empty() {
             break;
         }
-        if Instant::now() >= deadline {
-            child.assert_running(label);
-            panic!("{label}: endpoints not discovered within {DISCOVERY_TIMEOUT:?}: {missing:?}");
-        }
         child.assert_running(label);
+        if Instant::now() >= deadline {
+            panic!(
+                "{label}: endpoints not discovered within {DISCOVERY_TIMEOUT:?}: {missing:?}\n{}",
+                child.log_contents()
+            );
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
 
     // The child must still be alive: the endpoints were advertised by the real
     // service/action runtime, not by a node that already shut down.
     child.assert_running(label);
-    drop(child);
-    drop(dir);
 }
 
-/// The bridge's service and action endpoints must be reliable, and the action
-/// status channel transient-local, in every role.
-///
 /// Detects a call site in `run_service_mode` / `run_action_mode` that rebuilds
-/// its QoS from the generic `config.qos` instead of the service/action
-/// selection: the default config is best-effort and volatile, so such a
-/// regression shows up as a best-effort or volatile endpoint here.
+/// its QoS from the generic `config.qos`: the default config is best-effort and
+/// volatile, so the regression shows up as a degraded endpoint here.
 #[test]
 fn service_and_action_endpoints_are_reliable_with_transient_local_status() {
-    let service = "qos_probe_service";
-    let action = "qos_probe_action";
+    let suffix = unique_suffix();
+    let service = format!("qos_probe_service_{suffix}");
+    let action = format!("qos_probe_action_{suffix}");
 
-    let service_topics = service_endpoints(service);
+    let service_topics = service_endpoints(&service);
     assert_role(
         "service-client",
-        &config(Some(service), None, "client"),
-        &service_topics,
+        &config(Some(&service), None, Ros2Role::Client),
+        &mirrored(service_topics.clone()),
     );
     assert_role(
         "service-server",
-        &config(Some(service), None, "server"),
-        &mirrored(service_topics),
+        &config(Some(&service), None, Ros2Role::Server),
+        &service_topics,
     );
 
-    let action_topics = action_endpoints(action);
+    let action_topics = action_endpoints(&action);
     assert_role(
         "action-client",
-        &config(None, Some(action), "client"),
-        &mirrored(action_topics),
+        &config(None, Some(&action), Ros2Role::Client),
+        &mirrored(action_topics.clone()),
     );
     assert_role(
         "action-server",
-        &config(None, Some(action), "server"),
+        &config(None, Some(&action), Ros2Role::Server),
         &action_topics,
     );
 }
