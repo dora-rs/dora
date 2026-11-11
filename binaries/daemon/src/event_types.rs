@@ -1,6 +1,7 @@
 //! Event types and channel helpers for the daemon event loop.
 
 use std::{
+    collections::VecDeque,
     sync::{Arc, atomic::AtomicU64},
     time::Duration,
 };
@@ -120,6 +121,10 @@ impl Event {
     }
 }
 
+/// Point-in-time values for one subscription. Share the immutable payloads
+/// until the listener builds the corresponding wire events.
+pub(crate) type ParamReplay = VecDeque<Timestamped<(String, Arc<[u8]>)>>;
+
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum DaemonNodeEvent {
@@ -129,6 +134,7 @@ pub enum DaemonNodeEvent {
     Subscribe {
         event_sender: mpsc::Sender<Timestamped<NodeEvent>>,
         pending_counter: Arc<AtomicU64>,
+        param_replay: oneshot::Sender<ParamReplay>,
         /// Notified whenever the subscribing listener takes an event out of
         /// `event_sender`'s channel (`RunningDataflow::drain_signals`).
         drained: Arc<crate::local_delivery::DrainSignal>,
