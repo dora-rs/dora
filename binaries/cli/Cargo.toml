@@ -77,12 +77,15 @@ env_logger = "0.11.11"
 # `reqwest` (or `ureq`) it fails to compile under default-features = false.
 # 1.x also puts each release backend behind a feature (`github`) and renamed
 # `compression-flate2` to `compression-tar-gz`. 1.3.1 is the first release on
-# zip 9 (RUSTSEC-2026-0367/0368/0369/0429).
+# zip 9 (RUSTSEC-2026-0367/0368/0369/0429). `compression-zip-deflate` is
+# required on Windows: the release .zip is written by `Compress-Archive`, which
+# always uses Deflate, and `archive-zip` alone links no decoder (#4034).
 self_update = { version = "1.3.3", features = [
     "reqwest",
     "rustls",
     "github",
     "archive-zip",
+    "compression-zip-deflate",
     "archive-tar",
     "compression-tar-gz",
 ], default-features = false }
@@ -121,3 +124,7 @@ aligned-vec = { version = "0.6.4", features = ["serde"] }
 # The version arrow-ipc pins; used only to build a crafted IPC schema message
 # in the `topic info` tests.
 flatbuffers = "25.12.19"
+# The zip version self_update uses, with no compression feature of its own: the
+# self-update regression test can only write and read a Deflate entry when the
+# `self_update` dependency above enables it (#4034).
+zip = { version = "9.3.0", default-features = false }
