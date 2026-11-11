@@ -153,3 +153,56 @@ fn help_describes_the_token_paste_flow_only() {
         );
     }
 }
+
+#[test]
+fn saves_a_registry_keyed_token_for_a_mirror() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_home = dir.path().join("config");
+    let output = Command::new(env!("CARGO_BIN_EXE_dora"))
+        .args(["hub", "login", "mirror-token"])
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("DORA_HUB_REGISTRY_URL", "http://127.0.0.1:8080")
+        .env_remove("DORA_HUB_TOKEN_FILE")
+        .env_remove("DORA_HUB_TOKEN")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "login failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let dora_dir = config_home.join("dora");
+    let mut entries: Vec<_> = fs::read_dir(&dora_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    entries.sort();
+    assert_eq!(entries.len(), 1, "unexpected token files: {entries:?}");
+    assert!(
+        entries[0].starts_with("hub-token-"),
+        "a mirror token must not use the shared official file: {entries:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(dora_dir.join(&entries[0])).unwrap(),
+        "mirror-token\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn refuses_to_write_a_token_through_a_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target");
+    let link = dir.path().join("hub-token");
+    fs::write(&target, "unchanged\n").unwrap();
+    symlink(&target, &link).unwrap();
+
+    let output = login(&link).arg("attacker-token").output().unwrap();
+    assert!(!output.status.success(), "a symlinked token path must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("symlink"), "unexpected error: {stderr}");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "unchanged\n");
+}

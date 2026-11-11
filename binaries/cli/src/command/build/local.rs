@@ -18,6 +18,9 @@ use crate::session::DataflowSession;
 pub struct BuildLayout {
     pub working_dir: PathBuf,
     pub hub_cache_dir: PathBuf,
+    /// `--offline`: do not probe the hosting source or fetch a registry
+    /// archive fallback.
+    pub offline: bool,
 }
 
 pub fn build_dataflow_locally(
@@ -51,6 +54,7 @@ async fn build_dataflow(
     parallel: bool,
     node_working_dir_overrides: &BTreeMap<NodeId, PathBuf>,
 ) -> eyre::Result<BuildInfo> {
+    let offline = layout.offline;
     let builder = Builder {
         session_id: dataflow_session.session_id,
         base_working_dir: layout.working_dir,
@@ -69,7 +73,11 @@ async fn build_dataflow(
         let node_id = node.id.clone();
         let mut git_source = git_sources.get(&node_id).cloned();
         let mut used_registry_fallback = false;
-        if let Some(source) = git_source.as_ref()
+        // `--offline` promises no network: skip both the hosting-source probe
+        // and the registry fallback. The build then uses an already-cached
+        // clone or fails, instead of silently reaching the internet.
+        if !offline
+            && let Some(source) = git_source.as_ref()
             && let Some(hub) = source.hub.as_ref()
         {
             let repo = source.repo.clone();
@@ -78,40 +86,58 @@ async fn build_dataflow(
                 .await
                 .unwrap_or(false);
             if !available {
-                let hub_name = hub.name.clone();
-                let hub_version = hub.version.clone();
-                let fallback = tokio::task::spawn_blocking(move || {
-                    registry_fallback_source(&hub_name, &hub_version)
-                })
-                .await;
-                match fallback {
-                    Ok(Ok(Some(fallback))) => {
-                        eprintln!(
-                            "  warning: hosting source for `{node_id}` is unavailable; \
-                             using the registry archive fallback"
-                        );
-                        git_source = Some(GitSource {
-                            repo: fallback.repo,
-                            commit_hash: fallback.commit_hash,
-                            subdir: None,
-                            hub: Some(hub.clone()),
-                        });
-                        used_registry_fallback = true;
+                // The archive fallback executes the package's build script, so
+                // only use it when the archive hash was pinned at resolution
+                // time (lockfile). Legacy pins without a checksum fail closed.
+                if let Some(expected_archive_sha256) = hub.archive_sha256.clone() {
+                    let hub_name = hub.name.clone();
+                    let hub_version = hub.version.clone();
+                    let fallback = tokio::task::spawn_blocking(move || {
+                        registry_fallback_source(
+                            &hub_name,
+                            &hub_version,
+                            Some(&expected_archive_sha256),
+                            false,
+                        )
+                    })
+                    .await;
+                    match fallback {
+                        Ok(Ok(Some(fallback))) => {
+                            eprintln!(
+                                "  warning: hosting source for `{node_id}` is unavailable; \
+                                 using the checksum-verified registry archive fallback"
+                            );
+                            git_source = Some(GitSource {
+                                repo: fallback.repo,
+                                commit_hash: fallback.commit_hash,
+                                subdir: None,
+                                hub: Some(hub.clone()),
+                            });
+                            used_registry_fallback = true;
+                        }
+                        Ok(Ok(None)) => {
+                            eprintln!(
+                                "  warning: hosting source for `{node_id}` is unavailable and \
+                                 the registry has no fallback archive"
+                            );
+                        }
+                        Ok(Err(error)) => {
+                            eprintln!(
+                                "  warning: registry fallback for `{node_id}` failed: {error:#}"
+                            );
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "  warning: registry fallback task for `{node_id}` failed: {error}"
+                            );
+                        }
                     }
-                    Ok(Ok(None)) => {
-                        eprintln!(
-                            "  warning: hosting source for `{node_id}` is unavailable and \
-                             the registry has no fallback archive"
-                        );
-                    }
-                    Ok(Err(error)) => {
-                        eprintln!("  warning: registry fallback for `{node_id}` failed: {error:#}");
-                    }
-                    Err(error) => {
-                        eprintln!(
-                            "  warning: registry fallback task for `{node_id}` failed: {error}"
-                        );
-                    }
+                } else {
+                    eprintln!(
+                        "  warning: hosting source for `{node_id}` is unavailable and the \
+                         lockfile has no pinned archive checksum; refusing the unverified \
+                         registry fallback (regenerate the lockfile to enable it)"
+                    );
                 }
             }
         }
@@ -253,6 +279,7 @@ mod tests {
                 BuildLayout {
                     working_dir: tmp.path().to_owned(),
                     hub_cache_dir: tmp.path().join("hub-cache"),
+                    offline: false,
                 },
                 false,
                 parallel,

@@ -3,12 +3,13 @@
 //! This follows `cargo login` rather than an in-CLI username/password sign-in:
 //! you create a scoped token at <https://dora.pub/account/tokens>, paste it at
 //! the prompt (or pass it as an argument), and the CLI stores it. The token is
-//! written to `~/.config/dora/hub-token` (0600, shared with the standalone
-//! `dora-hub` client).
+//! written to the per-registry token file (0600; the official registry keeps
+//! the historical `~/.config/dora/hub-token` shared with the `dora-hub` client).
 //!
 //! The registry defaults to <https://dora.pub>; `DORA_HUB_REGISTRY_URL`
-//! overrides it (local tests, mirrors). It selects which website the prompt
-//! points at; the token file itself is registry-independent, exactly as before.
+//! overrides it (local tests, mirrors). It selects both the website the prompt
+//! points at and the token file, so a token saved for one registry is not sent
+//! to another.
 
 use std::io::{self, BufRead, IsTerminal};
 
@@ -44,7 +45,8 @@ impl Executable for Login {
             bail!("the token must not be empty\n  create one at {tokens_url}");
         }
 
-        let path = registry::save_token(token).context("failed to save the token")?;
+        let path =
+            registry::save_token_for(&registry_url, token).context("failed to save the token")?;
         println!("token saved to {}", path.display());
         Ok(())
     }

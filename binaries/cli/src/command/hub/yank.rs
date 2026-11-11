@@ -14,7 +14,7 @@ use dora_hub_client::{
     config::ResolvedConfig,
     index::IndexEntry,
     reference::PackageRef,
-    registry::{REGISTRY_URL_ENV, RegistryClient, read_saved_token, registry_url},
+    registry::{REGISTRY_URL_ENV, RegistryClient, read_saved_token_for, registry_url},
     semver,
 };
 use eyre::{Context, ContextCompat, bail};
@@ -77,7 +77,7 @@ impl Executable for Yank {
                 .context("invalid registry configuration")?;
             let token = match self.token {
                 Some(token) if !token.trim().is_empty() => token,
-                _ => read_saved_token()?.context(
+                _ => read_saved_token_for(&registry_url)?.context(
                     "no registry token: run `dora hub login`, pass `--token`, or set DORA_HUB_TOKEN",
                 )?,
             };

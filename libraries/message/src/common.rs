@@ -529,6 +529,11 @@ pub struct HubProvenance {
     /// back-compat with lockfiles written before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_digest: Option<String>,
+    /// SHA-256 of the registry's source archive for this version, when the
+    /// package was resolved through the HTTP registry. Pinned so a later
+    /// fallback download cannot swap the archive behind `--locked`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_sha256: Option<String>,
 }
 
 /// Lockfile pin for a `hub:` node resolved to a prebuilt binary artifact

@@ -41,9 +41,9 @@ impl Executable for Search {
                 return Ok(());
             }
             for hit in hits {
-                print!("{}/{}", hit.namespace, hit.name);
+                print!("{}/{}", sanitize(&hit.namespace), sanitize(&hit.name));
                 if let Some(version) = &hit.latest_version {
-                    print!(" {version}");
+                    print!(" {}", sanitize(version));
                 }
                 if let Some(desc) = &hit.description {
                     print!(" — {}", sanitize(desc));

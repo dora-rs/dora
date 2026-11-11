@@ -122,12 +122,14 @@ fn resolve_node_bytes(
     manifest: &dora_core::manifest::NodeManifest,
     reference: &PackageRef,
     version: &dora_hub_client::semver::Version,
+    archive_sha256: Option<&str>,
 ) -> eyre::Result<NodeBytes> {
     let provenance = || -> eyre::Result<HubProvenance> {
         Ok(HubProvenance {
             name: reference.key(),
             version: version.to_string(),
             manifest_digest: Some(manifest_digest(manifest)?),
+            archive_sha256: archive_sha256.map(str::to_string),
         })
     };
     let git_bytes = |git: &str, rev: &str, subdir: Option<String>| -> eyre::Result<NodeBytes> {
@@ -301,12 +303,22 @@ fn resolve_locked_git(
     reference: &PackageRef,
     node_id: &NodeId,
     resolution: &mut HubResolution,
+    strict: bool,
 ) -> eyre::Result<Resolved> {
     let valid_hash = matches!(pin.commit_hash.len(), 40 | 64)
         && pin.commit_hash.chars().all(|c| c.is_ascii_hexdigit());
     if !valid_hash {
         eyre::bail!("node `{node_id}`: lockfile commit hash is not a valid hex hash");
     }
+    // The lockfile is a plain file: it can arrive from a PR or a template. Never
+    // hand its `repo` to git without the same scheme/transport/local-path gate
+    // used for index entries.
+    dora_hub_client::validate_git_url_untrusted(&pin.repo).with_context(|| {
+        format!(
+            "node `{node_id}`: lockfile git source `{}` is not an allowed hub source",
+            pin.repo
+        )
+    })?;
     let provenance = pin.hub.as_ref().with_context(|| {
         format!(
             "node `{node_id}`: lockfile entry has no hub provenance — \
@@ -371,18 +383,39 @@ fn resolve_locked_git(
         };
     match stale {
         Ok(true) => {
-            resolution.warnings.push(format!(
+            let message = format!(
                 "node `{node_id}`: the index entry for `{}@{version}` no longer matches the \
-                 lockfile pin — the index may have been rewritten; the lockfile pin is used",
+                 lockfile pin — the index may have been rewritten",
                 reference.key()
-            ));
+            );
+            if strict {
+                eyre::bail!(
+                    "{message}\n  regenerate with `dora build --write-lockfile` \
+                     (or drop `--locked` for a live re-resolution)"
+                );
+            }
+            resolution
+                .warnings
+                .push(format!("{message}; the lockfile pin is used"));
         }
-        Err(_) => {
-            resolution.warnings.push(format!(
+        Err(err) => {
+            let message = format!(
                 "node `{node_id}`: the index entry for `{}@{version}` has a malformed source — \
-                 the index may have been rewritten; the lockfile pin is used",
+                 the index may have been rewritten",
                 reference.key()
-            ));
+            );
+            if strict {
+                return Err(err).with_context(|| {
+                    format!(
+                        "node `{node_id}`: the lockfile pin for `{}@{version}` cannot be \
+                         verified against the index source",
+                        reference.key()
+                    )
+                });
+            }
+            resolution
+                .warnings
+                .push(format!("{message}; the lockfile pin is used"));
         }
         _ => {}
     }
@@ -416,6 +449,7 @@ fn resolve_live(
         &resolved.entry.manifest,
         reference,
         &resolved.version,
+        resolved.entry.archive_sha256.as_deref(),
     )
     .with_context(|| {
         format!(
@@ -728,7 +762,7 @@ pub fn resolve_hub_nodes(
                 }
             }
         } else if let Some(pin) = pin {
-            match resolve_locked_git(pin, &catalog, &reference, &node.id, &mut resolution) {
+            match resolve_locked_git(pin, &catalog, &reference, &node.id, &mut resolution, locked) {
                 Ok(resolved) => resolved,
                 Err(e) if locked => return Err(e),
                 Err(e) => {
@@ -858,6 +892,7 @@ pub fn resolve_hub_nodes(
                         name: reference.key(),
                         version: version.to_string(),
                         manifest_digest: Some(manifest_digest(manifest)?),
+                        archive_sha256: None,
                     },
                 };
                 node.path = Some(url);
@@ -944,7 +979,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            resolve_node_bytes(&covered, &manifest, &reference, &version).unwrap(),
+            resolve_node_bytes(&covered, &manifest, &reference, &version, None).unwrap(),
             NodeBytes::Binary { .. }
         ));
 
@@ -959,7 +994,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            resolve_node_bytes(&fallback, &manifest, &reference, &version).unwrap(),
+            resolve_node_bytes(&fallback, &manifest, &reference, &version, None).unwrap(),
             NodeBytes::Git(_)
         ));
 
@@ -968,7 +1003,7 @@ mod tests {
             binary: vec![art("nonexistent-arch")],
             ..Default::default()
         };
-        assert!(resolve_node_bytes(&uncovered, &manifest, &reference, &version).is_err());
+        assert!(resolve_node_bytes(&uncovered, &manifest, &reference, &version, None).is_err());
 
         // plain git source (no binary) -> git
         let git = SourceSpec {
@@ -977,7 +1012,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            resolve_node_bytes(&git, &manifest, &reference, &version).unwrap(),
+            resolve_node_bytes(&git, &manifest, &reference, &version, None).unwrap(),
             NodeBytes::Git(_)
         ));
     }
@@ -1001,6 +1036,7 @@ mod tests {
                 name: reference.key(),
                 version: "2.1.0".into(),
                 manifest_digest: None,
+                archive_sha256: None,
             },
         };
         let mut resolution = HubResolution::default();
@@ -1235,6 +1271,7 @@ mod tests {
             &resolved.entry.manifest,
             &reference,
             &resolved.version,
+            None,
         )
         .unwrap() else {
             panic!("expected the fallback-git source");
@@ -1243,7 +1280,8 @@ mod tests {
         let node_id = "lidar".parse().unwrap();
         let warnings = |pin| {
             let mut resolution = HubResolution::default();
-            resolve_locked_git(pin, &catalog, &reference, &node_id, &mut resolution).unwrap();
+            resolve_locked_git(pin, &catalog, &reference, &node_id, &mut resolution, false)
+                .unwrap();
             resolution.warnings
         };
         assert_eq!(warnings(&pin), Vec::<String>::new());
@@ -1255,6 +1293,37 @@ mod tests {
         assert!(
             stale_warnings[0].contains("no longer matches the lockfile pin"),
             "{stale_warnings:?}"
+        );
+
+        // strict `--locked` must not merely warn when the lockfile source no
+        // longer matches the index: it is a trust-boundary violation.
+        let mut resolution = HubResolution::default();
+        let err = resolve_locked_git(
+            &stale,
+            &catalog,
+            &reference,
+            &node_id,
+            &mut resolution,
+            true,
+        )
+        .err()
+        .expect("strict --locked must reject a stale source");
+        assert!(
+            format!("{err:#}").contains("no longer matches the lockfile pin"),
+            "unexpected error: {err:#}"
+        );
+
+        // a lockfile repo that would be rejected as an index source must not
+        // reach `git` at all.
+        let mut bad = pin.clone();
+        bad.repo = "ext::sh -c 'echo pwned'".into();
+        let mut resolution = HubResolution::default();
+        let err = resolve_locked_git(&bad, &catalog, &reference, &node_id, &mut resolution, false)
+            .err()
+            .expect("an invalid lockfile repo must be rejected");
+        assert!(
+            format!("{err:#}").contains("not an allowed hub source"),
+            "unexpected error: {err:#}"
         );
     }
 }

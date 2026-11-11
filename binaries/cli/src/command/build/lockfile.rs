@@ -246,6 +246,7 @@ mod tests {
                 name: "dora-rs/dora-yolo".into(),
                 version: "0.5.2".into(),
                 manifest_digest: Some("deadbeef".into()),
+                archive_sha256: None,
             });
             s
         });
@@ -343,6 +344,7 @@ mod tests {
                     name: "acme/lidar".into(),
                     version: "2.1.0".into(),
                     manifest_digest: Some("deadbeef".into()),
+                    archive_sha256: None,
                 },
             },
         );

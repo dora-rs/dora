@@ -8,6 +8,9 @@ use crate::command::Executable;
 #[derive(Debug, clap::Args)]
 /// Show or clear the saved registry token.
 pub struct Token {
+    /// Registry base URL. Defaults to DORA_HUB_REGISTRY_URL or https://dora.pub.
+    #[clap(long, env = "DORA_HUB_REGISTRY_URL", value_name = "URL")]
+    registry: Option<String>,
     /// Print the full token (use with care).
     #[clap(long, action)]
     show: bool,
@@ -18,13 +21,15 @@ pub struct Token {
 
 impl Executable for Token {
     fn execute(self) -> eyre::Result<()> {
-        let path = registry::token_file();
+        let registry_url = self.registry.unwrap_or_else(registry::registry_url);
+        let path = registry::token_file_for(&registry_url);
         if self.clear {
-            registry::clear_saved_token().context("failed to clear the saved token")?;
+            registry::clear_saved_token_for(&registry_url)
+                .context("failed to clear the saved token")?;
             println!("cleared {}", path.display());
             return Ok(());
         }
-        match registry::read_saved_token()? {
+        match registry::read_saved_token_for(&registry_url)? {
             Some(token) => {
                 if self.show {
                     println!("{token}");
@@ -36,10 +41,7 @@ impl Executable for Token {
                 }
             }
             None => {
-                let tokens_url = format!(
-                    "{}/account/tokens",
-                    registry::registry_url().trim_end_matches('/')
-                );
+                let tokens_url = format!("{}/account/tokens", registry_url.trim_end_matches('/'));
                 println!("no saved token at {}", path.display());
                 println!("run `dora hub login` to save a token from {tokens_url}");
             }

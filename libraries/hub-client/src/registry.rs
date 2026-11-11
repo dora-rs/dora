@@ -20,17 +20,22 @@
 use std::{
     collections::BTreeSet,
     fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use dora_core::manifest::NodeManifest;
 use eyre::{Context, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use url::Url;
 
-use crate::index::{BinaryArtifact, IndexEntry, SourceSpec, current_platform};
+use crate::{
+    index::{BinaryArtifact, IndexEntry, SourceSpec, current_platform},
+    transport::git_command,
+};
 
 /// Official registry. The website is not launched yet; this is the default
 /// that `dora build/run` and `dora hub publish` use when no override is set.
@@ -43,6 +48,16 @@ pub const ALLOW_INSECURE_REGISTRY_ENV: &str = "DORA_HUB_ALLOW_INSECURE_REGISTRY"
 pub const TOKEN_FILE_ENV: &str = "DORA_HUB_TOKEN_FILE";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Upper bound for a sparse-index response.
+const MAX_INDEX_BYTES: u64 = 4 * 1024 * 1024;
+/// Upper bound for small JSON responses (search, yank/publish replies).
+const MAX_JSON_BYTES: u64 = 1024 * 1024;
+/// Upper bound for the registry's source archive download.
+const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
+/// Upper bound for an error body kept for diagnostics.
+const MAX_ERROR_BYTES: u64 = 64 * 1024;
+/// Upper bound on archive entries, in addition to the expanded-size limit.
+const MAX_ARCHIVE_ENTRIES: usize = 100_000;
 
 /// The effective registry URL: env override or the official default.
 pub fn registry_url() -> String {
@@ -119,6 +134,9 @@ impl RegistryClient {
         let client = reqwest::blocking::Client::builder()
             .timeout(REQUEST_TIMEOUT)
             .user_agent(format!("dora-hub-client/{}", env!("CARGO_PKG_VERSION")))
+            // Never let an https:// registry redirect a token-bearing request
+            // to plaintext. Loopback test servers stay usable over http.
+            .https_only(normalized.scheme() == "https")
             .build()
             .context("failed to build registry HTTP client")?;
         Ok(Self {
@@ -177,18 +195,20 @@ impl RegistryClient {
             .send()
             .with_context(|| format!("registry request failed: {url}"))?;
         let status = response.status();
-        let body = response
-            .text()
-            .with_context(|| format!("failed to read registry response from {url}"))?;
         if status == reqwest::StatusCode::NOT_FOUND {
             bail!("package `{namespace}/{name}` was not found in the registry");
         }
         if !status.is_success() {
-            bail!(
-                "registry returned {status} for `{namespace}/{name}`{}",
-                registry_error_detail(&body)
-            );
+            let detail = read_limited(response, MAX_ERROR_BYTES, "registry error body")
+                .map(|bytes| registry_error_detail(&String::from_utf8_lossy(&bytes)))
+                .unwrap_or_default();
+            bail!("registry returned {status} for `{namespace}/{name}`{detail}");
         }
+        let body = read_limited(response, MAX_INDEX_BYTES, "sparse index response")
+            .with_context(|| format!("failed to read registry response from {url}"))?;
+        let body = String::from_utf8(body).with_context(|| {
+            format!("registry returned non-UTF-8 data for `{namespace}/{name}`")
+        })?;
         let mut entries = Vec::new();
         for (line_no, line) in body.lines().enumerate() {
             let line = line.trim();
@@ -244,6 +264,12 @@ impl RegistryClient {
 
     /// Search packages through the registry's read API.
     pub fn search(&self, query: &str) -> eyre::Result<Vec<RegistryPackage>> {
+        if self.offline {
+            bail!(
+                "registry search requires network access; remove `--offline` or use a \
+                 configured index"
+            );
+        }
         let mut request = self.client.get(format!("{}/api/v1/packages", self.base));
         if !query.trim().is_empty() {
             request = request.query(&[("q", query.trim())]);
@@ -354,6 +380,11 @@ struct SparseEntry {
     vers: String,
     manifest: Value,
     source: Value,
+    /// SHA-256 of the uploaded source archive (the registry's `cksum`).
+    /// Optional for compatibility with older registry builds, but a missing or
+    /// malformed value disables the fallback rather than trusting the bytes.
+    #[serde(default)]
+    cksum: Option<String>,
     #[serde(default)]
     yanked: bool,
     #[serde(default)]
@@ -379,6 +410,18 @@ impl SparseEntry {
             .with_context(|| format!("invalid manifest for `{namespace}/{name}@{version}`"))?;
         let source = source_spec(&self.source)
             .with_context(|| format!("invalid source for `{namespace}/{name}@{version}`"))?;
+        let archive_sha256 = match self.cksum {
+            Some(cksum) => {
+                if cksum.len() != 64 || !cksum.chars().all(|c| c.is_ascii_hexdigit()) {
+                    bail!(
+                        "registry returned a malformed archive checksum for \
+                         `{namespace}/{name}@{version}`"
+                    );
+                }
+                Some(cksum.to_ascii_lowercase())
+            }
+            None => None,
+        };
         Ok((
             version,
             IndexEntry {
@@ -387,6 +430,7 @@ impl SparseEntry {
                 published: self.published.or(self.pubtime),
                 yanked: self.yanked,
                 yank_reason: self.yank_reason,
+                archive_sha256,
             },
         ))
     }
@@ -512,6 +556,22 @@ fn registry_error_detail(body: &str) -> String {
     if let Ok(value) = serde_json::from_str::<Value>(body)
         && let Some(detail) = value["errors"][0]["detail"].as_str()
     {
+        // Registry responses are untrusted input that ends up in a terminal.
+        // Strip control/ANSI and bidi formatting before echoing a short detail.
+        let detail: String = detail
+            .chars()
+            .filter(|c| {
+                !c.is_control()
+                    && !matches!(
+                        *c,
+                        '\u{061c}'
+                            | '\u{200b}'..='\u{200f}'
+                            | '\u{202a}'..='\u{202e}'
+                            | '\u{2060}'..='\u{2069}'
+                    )
+            })
+            .take(300)
+            .collect();
         return format!(": {detail}");
     }
     String::new()
@@ -519,30 +579,51 @@ fn registry_error_detail(body: &str) -> String {
 
 fn json_response(response: reqwest::blocking::Response) -> eyre::Result<Value> {
     let status = response.status();
-    let body = response
-        .text()
-        .context("failed to read registry response")?;
+    let bytes = read_limited(response, MAX_JSON_BYTES, "registry JSON response")?;
+    let body = String::from_utf8(bytes).context("registry returned non-UTF-8 JSON")?;
     if !status.is_success() {
         bail!("registry returned {status}{}", registry_error_detail(&body));
     }
     serde_json::from_str(&body).with_context(|| format!("invalid registry JSON response: {body}"))
 }
 
-/// Path to the saved publish token (shared with the Hub website's CLI docs).
+/// Path to the saved publish token for the *official* registry.
+///
+/// Kept for compatibility with the standalone `dora-hub` client. Use
+/// [`token_file_for`] whenever a specific `--registry`/env target matters: a
+/// token saved for dora.pub must not be sent to a mirror.
 pub fn token_file() -> PathBuf {
+    token_file_for(DEFAULT_REGISTRY_URL)
+}
+
+/// Path to the token file for `registry_url`.
+///
+/// The official registry keeps the historical `~/.config/dora/hub-token` path
+/// (shared with the server's `dora-hub` client). Other registries get a
+/// registry-keyed file so switching `DORA_HUB_REGISTRY_URL` cannot leak an
+/// official token to a test mirror. `DORA_HUB_TOKEN_FILE` still overrides all
+/// registries explicitly.
+pub fn token_file_for(registry_url: &str) -> PathBuf {
     if let Ok(path) = std::env::var(TOKEN_FILE_ENV)
         && !path.trim().is_empty()
     {
         return PathBuf::from(path);
     }
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("dora")
-        .join("hub-token")
+    let base = registry_url.trim().trim_end_matches('/');
+    let config_dir = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+    if base.is_empty() || base.eq_ignore_ascii_case(DEFAULT_REGISTRY_URL) {
+        return config_dir.join("dora").join("hub-token");
+    }
+    let key = &sha256_hex(base.as_bytes())[..16];
+    config_dir.join("dora").join(format!("hub-token-{key}"))
 }
 
 pub fn read_saved_token() -> eyre::Result<Option<String>> {
-    let path = token_file();
+    read_saved_token_for(&registry_url())
+}
+
+pub fn read_saved_token_for(registry_url: &str) -> eyre::Result<Option<String>> {
+    let path = token_file_for(registry_url);
     match fs::read_to_string(&path) {
         Ok(token) => {
             let token = token.trim().to_string();
@@ -554,24 +635,63 @@ pub fn read_saved_token() -> eyre::Result<Option<String>> {
 }
 
 pub fn save_token(token: &str) -> eyre::Result<PathBuf> {
-    let path = token_file();
+    save_token_for(DEFAULT_REGISTRY_URL, token)
+}
+
+pub fn save_token_for(registry_url: &str, token: &str) -> eyre::Result<PathBuf> {
+    let path = token_file_for(registry_url);
+    write_private_token_file(&path, token)?;
+    Ok(path)
+}
+
+fn write_private_token_file(path: &Path, token: &str) -> eyre::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create `{}`", parent.display()))?;
     }
-    fs::write(&path, format!("{}\n", token.trim()))
-        .with_context(|| format!("failed to write `{}`", path.display()))?;
+    let contents = format!("{}\n", token.trim());
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        // Refuse to clobber a symlink: a token write must not be redirectable
+        // to an arbitrary file that an attacker can pre-create.
+        if let Ok(metadata) = fs::symlink_metadata(path)
+            && metadata.file_type().is_symlink()
+        {
+            eyre::bail!(
+                "refusing to write the token through symlink `{}`",
+                path.display()
+            );
+        }
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true).mode(0o600);
+        // O_NOFOLLOW closes the check-then-open race on Unix.
+        options.custom_flags(libc::O_NOFOLLOW);
+        let mut file = options
+            .open(path)
+            .with_context(|| format!("failed to open `{}`", path.display()))?;
+        file.write_all(contents.as_bytes())
+            .with_context(|| format!("failed to write `{}`", path.display()))?;
+        // The mode above already creates it 0600; this also tightens a
+        // pre-existing file written by an older dora.
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
             .with_context(|| format!("failed to restrict permissions on `{}`", path.display()))?;
     }
-    Ok(path)
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents)
+            .with_context(|| format!("failed to write `{}`", path.display()))?;
+    }
+    Ok(())
 }
 
 pub fn clear_saved_token() -> eyre::Result<()> {
-    let path = token_file();
+    clear_saved_token_for(&registry_url())
+}
+
+pub fn clear_saved_token_for(registry_url: &str) -> eyre::Result<()> {
+    let path = token_file_for(registry_url);
     match fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -596,39 +716,72 @@ pub struct FallbackSource {
 pub fn registry_fallback_source(
     hub_name: &str,
     version: &str,
+    expected_archive_sha256: Option<&str>,
+    offline: bool,
 ) -> eyre::Result<Option<FallbackSource>> {
+    if offline {
+        eyre::bail!("registry archive fallback is disabled by `--offline`");
+    }
     let (namespace, name) = hub_name
         .split_once('/')
         .ok_or_else(|| eyre::eyre!("invalid hub package name `{hub_name}`"))?;
-    let client = RegistryClient::new(false)?;
-    client.fallback_source(namespace, name, version)
+    let client = RegistryClient::new(offline)?;
+    client.fallback_source(namespace, name, version, expected_archive_sha256)
 }
 
 impl RegistryClient {
     /// Materialize the registry archive as a local git repo (cached per
     /// registry/package/version). Returns `None` when the registry has no
     /// archive for that version.
+    ///
+    /// The archive is only accepted when its SHA-256 matches the checksum
+    /// pinned at resolution time. A missing checksum is a hard error: the
+    /// fallback executes build scripts, so "we could not verify it" must not
+    /// silently degrade to "trust the network".
     pub fn fallback_source(
         &self,
         namespace: &str,
         name: &str,
         version: &str,
+        expected_archive_sha256: Option<&str>,
     ) -> eyre::Result<Option<FallbackSource>> {
         validate_component("namespace", namespace)?;
         validate_component("package name", name)?;
         validate_component("version", version)?;
-        let repo_dir = self
-            .cache_root
-            .join("fallback")
-            .join(namespace)
-            .join(name)
-            .join(version);
+        let expected = expected_archive_sha256
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                eyre::eyre!(
+                    "`{namespace}/{name}@{version}` has no pinned archive checksum; \
+                     refusing the unverified registry fallback\n  hint: regenerate the \
+                     lockfile with `dora build --write-lockfile`"
+                )
+            })?
+            .to_ascii_lowercase();
+        if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
+            eyre::bail!("`{namespace}/{name}@{version}` has a malformed pinned archive checksum");
+        }
+
+        let fallback_dir = self.cache_root.join("fallback").join(namespace).join(name);
+        let repo_dir = fallback_dir.join(version);
+        let marker = fallback_dir.join(format!("{version}.sha256"));
+
         if repo_dir.join(".git").is_dir() {
-            let rev = git(&repo_dir, &["rev-parse", "HEAD"])?;
-            return Ok(Some(FallbackSource {
-                repo: file_url(&repo_dir)?,
-                commit_hash: rev,
-            }));
+            let marker_matches = fs::read_to_string(&marker)
+                .map(|cached| cached.trim().eq_ignore_ascii_case(&expected))
+                .unwrap_or(false);
+            if marker_matches {
+                let rev = git(&repo_dir, &["rev-parse", "HEAD"])?;
+                return Ok(Some(FallbackSource {
+                    repo: file_url(&repo_dir)?,
+                    commit_hash: rev,
+                }));
+            }
+            // A fallback left by an older build (no marker) or a different
+            // archive must never be reused: drop it and re-download.
+            fs::remove_dir_all(&repo_dir)
+                .with_context(|| format!("failed to clear `{}`", repo_dir.display()))?;
+            let _ = fs::remove_file(&marker);
         }
 
         let url = format!(
@@ -645,11 +798,26 @@ impl RegistryClient {
             return Ok(None);
         }
         if !status.is_success() {
-            bail!("registry archive returned {status} for `{namespace}/{name}@{version}`");
+            let detail = read_limited(response, MAX_ERROR_BYTES, "registry error body")
+                .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+                .unwrap_or_default();
+            bail!(
+                "registry archive returned {status} for `{namespace}/{name}@{version}`{}",
+                if detail.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {detail}")
+                }
+            );
         }
-        let bytes = response
-            .bytes()
-            .context("failed to read registry archive")?;
+        let bytes = read_limited(response, MAX_ARCHIVE_BYTES, "registry archive")?;
+        let actual = sha256_hex(&bytes);
+        if actual != expected {
+            bail!(
+                "registry archive checksum mismatch for `{namespace}/{name}@{version}`: \
+                 pinned {expected}, downloaded {actual}"
+            );
+        }
         let temp = tempfile::TempDir::new().context("failed to create fallback tempdir")?;
         extract_archive(&bytes, temp.path())?;
 
@@ -677,11 +845,45 @@ impl RegistryClient {
             ],
         )?;
         let commit_hash = git(&repo_dir, &["rev-parse", "HEAD"])?;
+        fs::write(&marker, format!("{expected}\n"))
+            .with_context(|| format!("failed to record `{}`", marker.display()))?;
         Ok(Some(FallbackSource {
             repo: file_url(&repo_dir)?,
             commit_hash,
         }))
     }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn read_limited(
+    mut response: reqwest::blocking::Response,
+    limit: u64,
+    what: &str,
+) -> eyre::Result<Vec<u8>> {
+    if let Some(length) = response.content_length()
+        && length > limit
+    {
+        bail!("{what} is {length} bytes, above the {limit}-byte limit");
+    }
+    let mut bytes = Vec::new();
+    response
+        .by_ref()
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("failed to read {what}"))?;
+    if bytes.len() as u64 > limit {
+        bail!("{what} exceeds the {limit}-byte limit");
+    }
+    Ok(bytes)
 }
 
 fn file_url(path: &Path) -> eyre::Result<String> {
@@ -692,9 +894,7 @@ fn file_url(path: &Path) -> eyre::Result<String> {
 }
 
 fn git(dir: &Path, args: &[&str]) -> eyre::Result<String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let output = git_command(Some(dir))
         .args(args)
         .output()
         .context("failed to run git for registry fallback")?;
@@ -712,10 +912,34 @@ fn extract_archive(archive: &[u8], dest: &Path) -> eyre::Result<()> {
     let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(archive));
     let mut archive = tar::Archive::new(decoder);
     let mut total = 0u64;
+    let mut entry_count = 0usize;
     for entry in archive.entries().context("invalid registry archive")? {
+        entry_count += 1;
+        if entry_count > MAX_ARCHIVE_ENTRIES {
+            bail!("registry archive has more than {MAX_ARCHIVE_ENTRIES} entries");
+        }
         let mut entry = entry.context("invalid registry archive entry")?;
-        if entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link() {
-            bail!("registry archive must not contain links");
+        let entry_type = entry.header().entry_type();
+        // tar metadata records (PAX/GNU long names) are not files to extract;
+        // the tar crate already resolves their payloads for the real entries.
+        if entry_type.is_pax_global_extensions()
+            || entry_type.is_pax_local_extensions()
+            || entry_type.is_gnu_longname()
+            || entry_type.is_gnu_longlink()
+        {
+            continue;
+        }
+        if entry_type.is_symlink()
+            || entry_type.is_hard_link()
+            || entry_type.is_fifo()
+            || entry_type.is_character_special()
+            || entry_type.is_block_special()
+            || entry_type.is_gnu_sparse()
+        {
+            bail!("registry archive contains an unsupported entry type");
+        }
+        if !(entry_type.is_file() || entry_type.is_dir()) {
+            bail!("registry archive contains a non-file, non-directory entry");
         }
         let path = entry
             .path()
@@ -773,24 +997,41 @@ fn copy_tree(src: &Path, dst: &Path) -> eyre::Result<()> {
 /// reachable? A broken source triggers the registry archive fallback before
 /// the build pipeline tries (and fails) to clone it.
 pub fn source_available(repo: &str, commit: &str) -> bool {
-    if repo.starts_with("file://") || repo.starts_with('/') {
-        let path = repo.strip_prefix("file://").unwrap_or(repo);
-        let output = std::process::Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .args(["cat-file", "-e", &format!("{commit}^{{commit}}")])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output();
-        return output.map(|o| o.status.success()).unwrap_or(false);
-    }
     if repo.contains(char::is_control) {
         return false;
     }
-    let output = std::process::Command::new("git")
-        .args(["ls-remote", "--quiet", "--", repo, "HEAD"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output();
-    output.map(|o| o.status.success()).unwrap_or(false)
+    if repo.starts_with("file://") || repo.starts_with('/') {
+        let path = repo.strip_prefix("file://").unwrap_or(repo);
+        let mut command = git_command(Some(Path::new(path)));
+        command.args(["cat-file", "-e", &format!("{commit}^{{commit}}")]);
+        return git_status_with_timeout(command, Duration::from_secs(5));
+    }
+    let mut command = git_command(None);
+    command.args(["ls-remote", "--quiet", "--", repo, "HEAD"]);
+    // A registry-supplied source URL must not be able to hang the build. The
+    // child is killed on timeout; `spawn_blocking` cannot cancel a stuck
+    // `Command::output()` otherwise.
+    git_status_with_timeout(command, Duration::from_secs(15))
+}
+
+fn git_status_with_timeout(mut command: std::process::Command, timeout: Duration) -> bool {
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) => {}
+            Err(_) => return false,
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 #[cfg(test)]
@@ -942,6 +1183,139 @@ mod tests {
         let url = format!("file://{}", dir.path().display());
         assert!(source_available(&url, &rev));
         assert!(!source_available(&format!("{url}-missing"), &rev));
+    }
+
+    fn test_archive() -> Vec<u8> {
+        use std::io::Write;
+
+        let body = b"print('hi')\n";
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_path("hello.py").unwrap();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder.append(&header, &body[..]).unwrap();
+        let tar = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&tar).unwrap();
+        gz.finish().unwrap()
+    }
+
+    fn serve_archive_once(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+        use std::{
+            io::{Read, Write},
+            net::TcpListener,
+            thread,
+        };
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        (format!("http://{address}"), server)
+    }
+
+    #[test]
+    fn extraction_rejects_symlink_entries() {
+        use std::io::Write;
+
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_path("escape").unwrap();
+        header.set_link_name("/etc/passwd").unwrap();
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_cksum();
+        builder.append(&header, &[][..]).unwrap();
+        let tar = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&tar).unwrap();
+        let archive = gz.finish().unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let err = extract_archive(&archive, dest.path()).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("unsupported entry type"),
+            "unexpected error: {err:#}"
+        );
+        assert!(!dest.path().join("escape").exists());
+    }
+
+    #[test]
+    fn offline_registry_search_refuses_network() {
+        let cache = tempfile::tempdir().unwrap();
+        let client =
+            RegistryClient::with_base("http://127.0.0.1:1", cache.path().to_path_buf(), true)
+                .unwrap();
+        let err = client.search("hello").unwrap_err();
+        assert!(
+            format!("{err:#}").contains("requires network access"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn fallback_verifies_archive_checksum_and_reuses_cache() {
+        let archive = test_archive();
+        let expected = sha256_hex(&archive);
+        let (base, server) = serve_archive_once(archive);
+        let cache = tempfile::tempdir().unwrap();
+        let client = RegistryClient::with_base(&base, cache.path().to_path_buf(), false).unwrap();
+
+        let first = client
+            .fallback_source("acme", "hello", "0.1.0", Some(&expected))
+            .unwrap()
+            .expect("fallback archive");
+        // the second call must use the checksum marker instead of the network;
+        // the test server only accepts one request.
+        let second = client
+            .fallback_source("acme", "hello", "0.1.0", Some(&expected))
+            .unwrap()
+            .expect("cached fallback");
+        assert_eq!(first.commit_hash, second.commit_hash);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fallback_rejects_archive_checksum_mismatch() {
+        let archive = test_archive();
+        let (base, server) = serve_archive_once(archive);
+        let cache = tempfile::tempdir().unwrap();
+        let client = RegistryClient::with_base(&base, cache.path().to_path_buf(), false).unwrap();
+        let err = client
+            .fallback_source("acme", "hello", "0.1.0", Some(&"0".repeat(64)))
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("checksum mismatch"),
+            "unexpected error: {err:#}"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fallback_refuses_a_pin_without_checksum() {
+        let cache = tempfile::tempdir().unwrap();
+        let client =
+            RegistryClient::with_base("http://127.0.0.1:1", cache.path().to_path_buf(), false)
+                .unwrap();
+        let err = client
+            .fallback_source("acme", "hello", "0.1.0", None)
+            .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("no pinned archive checksum"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]

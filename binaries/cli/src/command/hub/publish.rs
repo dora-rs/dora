@@ -13,7 +13,7 @@
 //! official `node-index` lands with the index bootstrap (P2.3).
 
 use std::{
-    io::Write,
+    io::{self, BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
 };
 
@@ -28,6 +28,7 @@ use dora_hub_client::{
     index::{IndexEntry, SourceSpec},
     registry::{self as hub_registry, PublishMetadata, RegistryClient},
     semver,
+    transport::git_command,
 };
 use eyre::{Context, ContextCompat, bail};
 
@@ -43,6 +44,9 @@ pub struct Publish {
     /// Validate and print the index entry without writing it or opening a PR.
     #[clap(long, action)]
     dry_run: bool,
+    /// Skip the confirmation prompt when publishing to the public dora.pub registry.
+    #[clap(long, action)]
+    yes: bool,
     /// Git ref (tag, branch, or commit) to pin as the source. Defaults to the
     /// current `HEAD`.
     #[clap(long, value_name = "REF")]
@@ -186,6 +190,7 @@ impl Executable for Publish {
                 self.license,
                 self.repository,
                 self.dry_run,
+                self.yes,
             );
         }
 
@@ -202,6 +207,7 @@ impl Executable for Publish {
             published: Some(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)),
             yanked: false,
             yank_reason: None,
+            archive_sha256: None,
         };
         let entry_yaml =
             serde_yaml::to_string(&entry).context("failed to serialize index entry")?;
@@ -315,6 +321,7 @@ fn publish_to_registry(
     license: Option<String>,
     repository: Option<String>,
     dry_run: bool,
+    yes: bool,
 ) -> eyre::Result<()> {
     let registry_url = registry_override
         .map(str::to_string)
@@ -364,9 +371,20 @@ fn publish_to_registry(
         return Ok(());
     }
 
+    if !yes && registry_url.trim_end_matches('/') == hub_registry::DEFAULT_REGISTRY_URL {
+        confirm_public_publish(
+            &registry_url,
+            namespace,
+            name,
+            &version.to_string(),
+            archive.len(),
+            &commit[..12],
+        )?;
+    }
+
     let token = match token_override {
         Some(token) if !token.trim().is_empty() => token.trim().to_string(),
-        _ => hub_registry::read_saved_token()?.context(
+        _ => hub_registry::read_saved_token_for(&registry_url)?.context(
             "no registry token: run `dora hub login`, pass `--token`, or set DORA_HUB_TOKEN",
         )?,
     };
@@ -380,13 +398,44 @@ fn publish_to_registry(
     Ok(())
 }
 
+fn confirm_public_publish(
+    registry_url: &str,
+    namespace: &str,
+    name: &str,
+    version: &str,
+    archive_len: usize,
+    commit: &str,
+) -> eyre::Result<()> {
+    eprintln!(
+        "about to publish `{namespace}/{name}` v{version} to the PUBLIC registry \
+         {registry_url}\n  archive: {archive_len} bytes from commit {commit}\n  \
+         anyone will be able to download the committed source tree"
+    );
+    if !io::stdin().is_terminal() {
+        eyre::bail!(
+            "refusing to publish to the public registry without confirmation\n  \
+             pass `--yes` in non-interactive runs, or `--dry-run` to preview"
+        );
+    }
+    eprint!("publish to {registry_url}? [y/N] ");
+    io::stderr().flush().context("failed to flush prompt")?;
+    let mut answer = String::new();
+    io::stdin()
+        .lock()
+        .read_line(&mut answer)
+        .context("failed to read confirmation")?;
+    let answer = answer.trim().to_ascii_lowercase();
+    if !matches!(answer.as_str(), "y" | "yes") {
+        eyre::bail!("publish cancelled");
+    }
+    Ok(())
+}
+
 fn git_archive(dir: &Path, treeish: &str) -> eyre::Result<Vec<u8>> {
     // `git archive <commit>:<subdir>` only works from the repository root;
     // from a tracked subdirectory git reports "current working directory is
     // not tracked". Find the root first, then archive there.
-    let root = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let root = git_command(Some(dir))
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .context("failed to locate the git repository root")?;
@@ -397,9 +446,7 @@ fn git_archive(dir: &Path, treeish: &str) -> eyre::Result<Vec<u8>> {
         );
     }
     let root = String::from_utf8_lossy(&root.stdout).trim().to_string();
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
+    let output = git_command(Some(Path::new(&root)))
         .args(["archive", "--format=tar", treeish])
         .output()
         .context("failed to run git archive")?;
@@ -414,9 +461,7 @@ fn git_archive(dir: &Path, treeish: &str) -> eyre::Result<Vec<u8>> {
 
 /// Run `git <args>` in `dir`, returning trimmed stdout or an error on failure.
 fn git_in(dir: &Path, args: &[&str]) -> eyre::Result<String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let output = git_command(Some(dir))
         .args(args)
         .output()
         .context("failed to run git")?;

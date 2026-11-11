@@ -548,6 +548,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
                 BuildLayout {
                     working_dir: local_working_dir,
                     hub_cache_dir: dora_core::build::default_hub_cache_dir(),
+                    offline,
                 },
                 uv,
                 parallel,

@@ -22,5 +22,9 @@ tar = "0.4"
 tempfile = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 serde_json = { workspace = true }
+sha2 = "0.11"
 url = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 

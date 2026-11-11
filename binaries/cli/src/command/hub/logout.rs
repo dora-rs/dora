@@ -7,12 +7,18 @@ use crate::command::Executable;
 
 #[derive(Debug, clap::Args)]
 /// Remove the saved registry token.
-pub struct Logout;
+pub struct Logout {
+    /// Registry base URL. Defaults to DORA_HUB_REGISTRY_URL or https://dora.pub.
+    #[clap(long, env = "DORA_HUB_REGISTRY_URL", value_name = "URL")]
+    registry: Option<String>,
+}
 
 impl Executable for Logout {
     fn execute(self) -> eyre::Result<()> {
-        let path = registry::token_file();
-        registry::clear_saved_token().context("failed to remove the saved token")?;
+        let registry_url = self.registry.unwrap_or_else(registry::registry_url);
+        let path = registry::token_file_for(&registry_url);
+        registry::clear_saved_token_for(&registry_url)
+            .context("failed to remove the saved token")?;
         println!("logged out (removed {})", path.display());
         Ok(())
     }
