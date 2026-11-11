@@ -503,11 +503,11 @@ mod tests {
         assert!(!stdout_enabled!("dora=error", "dora_core", Level::WARN));
         assert!(stdout_enabled!("dora=error", "dora_daemon", Level::ERROR));
         assert!(!stdout_enabled!("zen=error", "zenoh", Level::WARN));
-        // A global level or a typo'd level is not a broader directive: the
+        // A global level or an unknown level is not a broader directive: the
         // defaults stay.
         assert!(stdout_enabled!("error", "dora_daemon", Level::INFO));
         assert!(!stdout_enabled!("error", "zenoh", Level::INFO));
-        assert!(!stdout_enabled!("zen=eror", "zenoh", Level::INFO));
+        assert!(!stdout_enabled!("zen=loud", "zenoh", Level::INFO));
         // Raising verbosity still works.
         assert!(stdout_enabled!("zenoh=debug", "zenoh", Level::DEBUG));
         assert!(stdout_enabled!(
@@ -633,7 +633,7 @@ mod tests {
             "info",
             "",
             "dora[span]=error",
-            "dora=eror",
+            "dora=loud",
         ] {
             assert_eq!(broader(env_log), None, "{env_log}");
         }
