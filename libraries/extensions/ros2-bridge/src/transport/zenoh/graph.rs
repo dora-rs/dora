@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 
@@ -65,6 +65,12 @@ struct State {
     waiters: Vec<oneshot::Sender<Result<u64, GraphError>>>,
     closed: bool,
     initialized: bool,
+    /// Own tokens already undeclared whose liveliness `Delete` echo has not
+    /// arrived yet. The session's liveliness subscriber echoes every own
+    /// token, on its own thread and some time later, so a `Put` echo still
+    /// in flight when the token is dropped would bring the entity back
+    /// until the `Delete` echo follows (#4096).
+    dropped_local: BTreeSet<String>,
 }
 
 /// Upper bound on liveliness entities retained in the graph cache. The tokens
@@ -114,6 +120,10 @@ impl GraphCache {
         if state.closed {
             return Err(GraphError::Closed);
         }
+        if !local && state.dropped_local.contains(key) {
+            // A late echo of an own token that is already gone.
+            return Ok(GraphUpdate(false));
+        }
         if let Some(entry) = state.entities.get_mut(key) {
             // Already known. Upgrade to local if this is our own declaration —
             // the subscriber may have echoed the token back before we ran.
@@ -155,7 +165,19 @@ impl GraphCache {
         Ok(GraphUpdate(true))
     }
 
+    /// Record a liveliness token removed from the (untrusted) ROS graph.
     pub fn apply_delete(&self, key: &str) -> Result<GraphUpdate, GraphError> {
+        self.remove(key, false)
+    }
+
+    /// Record that the local process undeclared one of its own tokens. The
+    /// entity leaves the graph at once, and a late liveliness echo of it
+    /// cannot bring it back.
+    pub fn apply_delete_local(&self, key: &str) -> Result<GraphUpdate, GraphError> {
+        self.remove(key, true)
+    }
+
+    fn remove(&self, key: &str, local: bool) -> Result<GraphUpdate, GraphError> {
         let token = LivelinessKey::parse(key).map_err(GraphError::MalformedToken)?;
         if token.domain != self.domain {
             return Ok(GraphUpdate(false));
@@ -163,6 +185,19 @@ impl GraphCache {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.closed {
             return Err(GraphError::Closed);
+        }
+        if local {
+            // Bounded like the entities: should echoes stop arriving (the
+            // session is closing), forgetting the tombstones only re-opens
+            // the brief window they close.
+            if state.dropped_local.len() >= self.limit {
+                state.dropped_local.clear();
+            }
+            state.dropped_local.insert(key.to_owned());
+        } else {
+            // The `Delete` echo ends the window: no echo of this key is in
+            // flight any more.
+            state.dropped_local.remove(key);
         }
         if state.entities.remove(key).is_none() {
             return Ok(GraphUpdate(false));
@@ -315,6 +350,36 @@ mod tests {
             .collect();
         assert_eq!(keys.len(), 2);
         assert!(keys.contains(&local), "local entity must not be evicted");
+    }
+
+    /// The session echoes its own tokens to the graph thread some time
+    /// later. A `Put` echo that lands after the token was dropped must not
+    /// bring the entity back (#4096), and the `Delete` echo that follows
+    /// ends the guard, so the key is an ordinary remote key again.
+    #[test]
+    fn late_echo_of_a_dropped_local_token_is_ignored() {
+        let cache = GraphCache::new(0);
+        let local = node_key("local");
+        let keys = |cache: &GraphCache| -> Vec<String> {
+            cache
+                .snapshot()
+                .entities
+                .into_iter()
+                .map(|entity| entity.key)
+                .collect()
+        };
+        cache.apply_put_local(&local).unwrap();
+        assert!(cache.apply_delete_local(&local).unwrap().0);
+        assert!(keys(&cache).is_empty());
+
+        // The echoes, late.
+        assert!(!cache.apply_put(&local).unwrap().0);
+        assert!(keys(&cache).is_empty(), "a late echo revived the entity");
+        assert!(!cache.apply_delete(&local).unwrap().0);
+
+        // Past the echoes, the key is handled like any other.
+        assert!(cache.apply_put(&local).unwrap().0);
+        assert_eq!(keys(&cache), vec![local]);
     }
 
     /// Liveliness-token declaration/undeclaration propagates through the Zenoh
