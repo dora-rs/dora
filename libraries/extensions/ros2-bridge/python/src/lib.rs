@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -19,7 +19,8 @@ use ::dora_ros2_bridge::{
         GoalSlots, MAX_CONCURRENT_GOALS,
         zenoh::{
             ActionClient as ZenohActionClient, ActionKeys, ActionServer as ZenohActionServer,
-            ActionTokens, wait_for_server as wait_for_action_server,
+            ActionTokens, CancelableGoal, goal_accept_stamp, process_cancel_request,
+            wait_for_server as wait_for_action_server,
         },
     },
 };
@@ -1089,6 +1090,7 @@ impl Ros2Node {
             result_type_info,
             feedback_type_info,
             executing: GoalSlots::new(MAX_CONCURRENT_GOALS),
+            zenoh_cancel: Default::default(),
             zenoh_result_requests,
             pending_result_requests: HashMap::new(),
             pending_result_seq: 0,
@@ -1756,6 +1758,10 @@ pub struct Ros2ActionServer {
     result_type_info: TypeInfo<'static>,
     feedback_type_info: TypeInfo<'static>,
     executing: GoalSlots<String, PythonServerGoal>,
+    /// What a native-Zenoh server's cancel requests have changed. It sits
+    /// behind a lock so `take_cancel` keeps taking `&self`: a thread waiting
+    /// for a cancel request must not block `send_feedback` on another thread.
+    zenoh_cancel: std::sync::Mutex<ZenohCancelState>,
     zenoh_result_requests:
         Option<flume::Receiver<dora_ros2_bridge::transport::zenoh::service::ServiceRequest>>,
     pending_result_requests: HashMap<String, (dora_ros2_bridge::transport::RequestId, u64)>,
@@ -1773,7 +1779,54 @@ enum PythonServerGoal {
         ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
         Instant,
     ),
-    Zenoh(ros2_client::action::GoalId, Instant),
+    Zenoh(ZenohServerGoal, Instant),
+}
+
+/// The cancel bookkeeping of a native-Zenoh action server.
+#[derive(Default)]
+struct ZenohCancelState {
+    /// Keys of the executing goals a cancel request moved to canceling.
+    canceling: HashSet<String>,
+    /// The last [`MAX_CONCURRENT_GOALS`] goals the server finished, so a cancel
+    /// naming one is answered `ERROR_GOAL_TERMINATED` like `rcl_action` does.
+    finished: VecDeque<ZenohServerGoal>,
+}
+
+impl ZenohCancelState {
+    fn lock(state: &std::sync::Mutex<Self>) -> std::sync::MutexGuard<'_, Self> {
+        // The state stays consistent if a holder panicked: every update is a
+        // single insert or remove.
+        state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// A goal of a native-Zenoh action server, as its `CancelGoal` and status
+/// replies need it.
+#[derive(Clone, Copy)]
+struct ZenohServerGoal {
+    id: ros2_client::action::GoalId,
+    /// When the goal was accepted, as sent in the `SendGoal` response.
+    stamp: ros2_client::builtin_interfaces::Time,
+    status: ros2_client::action::GoalStatusEnum,
+}
+
+impl CancelableGoal for ZenohServerGoal {
+    fn goal_info(&self) -> ros2_client::action::GoalInfo {
+        ros2_client::action::GoalInfo {
+            goal_id: self.id,
+            stamp: self.stamp,
+        }
+    }
+
+    fn status(&self) -> ros2_client::action::GoalStatusEnum {
+        self.status
+    }
+
+    fn set_status(&mut self, status: ros2_client::action::GoalStatusEnum) {
+        self.status = status;
+    }
 }
 
 impl PythonServerGoal {
@@ -2064,16 +2117,17 @@ impl Ros2ActionServer {
                         deserialize_cdr(&request.payload)?;
                     let accepted =
                         self.executing.len() < MAX_CONCURRENT_GOALS && decoded.goal.0.is_some();
-                    let response = serialize_cdr(&ros2_client::action::SendGoalResponse {
-                        accepted,
-                        stamp: ros2_client::builtin_interfaces::Time::ZERO,
-                    })?;
+                    let stamp = goal_accept_stamp();
+                    let response =
+                        serialize_cdr(&ros2_client::action::SendGoalResponse { accepted, stamp })?;
                     server.send_goal.reply(request.id, &response).await?;
                     Ok(decoded.goal.0.filter(|_| accepted).map(|data| {
-                        (
-                            PythonServerGoal::Zenoh(decoded.goal_id, Instant::now()),
-                            data,
-                        )
+                        let goal = ZenohServerGoal {
+                            id: decoded.goal_id,
+                            stamp,
+                            status: ros2_client::action::GoalStatusEnum::Executing,
+                        };
+                        (PythonServerGoal::Zenoh(goal, Instant::now()), data)
                     }))
                 }),
             }
@@ -2083,7 +2137,7 @@ impl Ros2ActionServer {
         };
         let goal_id = match &executing {
             PythonServerGoal::Dds(handle, _) => handle.goal_id().uuid.to_string(),
-            PythonServerGoal::Zenoh(id, _) => id.uuid.to_string(),
+            PythonServerGoal::Zenoh(goal, _) => goal.id.uuid.to_string(),
         };
         while self.executing.len() >= MAX_CONCURRENT_GOALS {
             let Some(oldest) = self
@@ -2095,9 +2149,12 @@ impl Ros2ActionServer {
                 break;
             };
             self.executing.remove(&oldest);
+            ZenohCancelState::lock(&self.zenoh_cancel)
+                .canceling
+                .remove(&oldest);
         }
         self.executing.insert(goal_id.clone(), executing)?;
-        publish_python_zenoh_status(py, &self.server, &self.executing)?;
+        publish_python_zenoh_status(py, &self.server, &self.executing, &self.zenoh_cancel)?;
         Ok(Some((goal_id, arr.to_pyarrow(py)?.unbind())))
     }
 
@@ -2118,9 +2175,9 @@ impl Ros2ActionServer {
                     )
                     .map_err(|error| eyre!("publish_feedback: {error:?}"))
                 }
-                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(id, _)) => {
+                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(goal, _)) => {
                     let payload = serialize_cdr(&ros2_client::action::FeedbackMessage {
-                        goal_id: *id,
+                        goal_id: goal.id,
                         feedback: BridgeMessage(Some(array_data)),
                     })?;
                     futures::executor::block_on(server.feedback.publish(&payload))?;
@@ -2173,7 +2230,7 @@ impl Ros2ActionServer {
                         }
                     })
                 }
-                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(id, _)) => {
+                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(goal, _)) => {
                     let status = end_status_to_status(end);
                     let response = serialize_cdr(&ros2_client::action::GetResultResponse {
                         status,
@@ -2209,7 +2266,7 @@ impl Ros2ActionServer {
                                         }
                                     };
                                 let key = decoded.goal_id.uuid.to_string();
-                                if decoded.goal_id == *id {
+                                if decoded.goal_id == goal.id {
                                     return Some(request.id);
                                 }
                                 // The key is a peer-controlled goal UUID; a flood of
@@ -2242,13 +2299,21 @@ impl Ros2ActionServer {
                 _ => eyre::bail!("action goal belongs to a different transport"),
             }
         })?;
-        self.executing.remove(goal_id);
-        publish_python_zenoh_status(py, &self.server, &self.executing)?;
+        if let Some(PythonServerGoal::Zenoh(mut goal, _)) = self.executing.remove(goal_id) {
+            goal.status = end_status_to_status(end);
+            let mut state = ZenohCancelState::lock(&self.zenoh_cancel);
+            state.canceling.remove(goal_id);
+            remember_finished_goal(&mut state.finished, goal);
+        }
+        publish_python_zenoh_status(py, &self.server, &self.executing, &self.zenoh_cancel)?;
         Ok(())
     }
 
     /// Poll up to `timeout_s` (default 1.0) for a cancel request. Returns the
     /// goal_id strings the client asked to cancel that we still track, or None.
+    /// On native Zenoh, the request is answered like `rcl_action` does and only
+    /// the goals it newly moves to canceling are returned: a goal that is
+    /// already canceling is not returned again.
     #[pyo3(signature = (timeout_s=None))]
     pub fn take_cancel(
         &self,
@@ -2256,82 +2321,205 @@ impl Ros2ActionServer {
         timeout_s: Option<f64>,
     ) -> eyre::Result<Option<Vec<String>>> {
         let timeout = timeout_or(timeout_s, 1.0);
-        py.detach(|| match &self.server {
-            ActionServerBackend::Dds(server) => futures::executor::block_on(async {
-                let recv = server.receive_cancel_request();
-                futures::pin_mut!(recv);
-                let delay = futures_timer::Delay::new(timeout);
-                let cancel_handle = match futures::future::select(recv, delay).await {
-                    futures::future::Either::Left((r, _)) => {
-                        r.map_err(|e| eyre!("receive_cancel_request: {e:?}"))?
+        let canceled: Option<Vec<String>> = py.detach(|| -> eyre::Result<_> {
+            match &self.server {
+                ActionServerBackend::Dds(server) => futures::executor::block_on(async {
+                    let recv = server.receive_cancel_request();
+                    futures::pin_mut!(recv);
+                    let delay = futures_timer::Delay::new(timeout);
+                    let cancel_handle = match futures::future::select(recv, delay).await {
+                        futures::future::Either::Left((r, _)) => {
+                            r.map_err(|e| eyre!("receive_cancel_request: {e:?}"))?
+                        }
+                        futures::future::Either::Right(_) => return Ok(None),
+                    };
+                    let goals: Vec<_> = cancel_handle.goals().collect();
+                    server
+                        .respond_to_cancel_requests(&cancel_handle, goals.iter().copied())
+                        .await
+                        .map_err(|e| eyre!("respond_to_cancel_requests: {e:?}"))?;
+                    let mine: Vec<String> = goals
+                        .iter()
+                        .map(|g| g.uuid.to_string())
+                        .filter(|s| self.executing.contains_key(s))
+                        .collect();
+                    Ok(Some(mine))
+                }),
+                ActionServerBackend::Zenoh(server) => futures::executor::block_on(async {
+                    let recv = server.cancel_goal.recv();
+                    futures::pin_mut!(recv);
+                    let delay = futures_timer::Delay::new(timeout);
+                    let request = match futures::future::select(recv, delay).await {
+                        futures::future::Either::Left((result, _)) => result?,
+                        futures::future::Either::Right(_) => return Ok(None),
+                    };
+                    #[derive(serde::Deserialize)]
+                    struct CancelRequest {
+                        goal_info: ros2_client::action::GoalInfo,
                     }
-                    futures::future::Either::Right(_) => return Ok(None),
-                };
-                let goals: Vec<_> = cancel_handle.goals().collect();
-                server
-                    .respond_to_cancel_requests(&cancel_handle, goals.iter().copied())
-                    .await
-                    .map_err(|e| eyre!("respond_to_cancel_requests: {e:?}"))?;
-                let mine: Vec<String> = goals
-                    .iter()
-                    .map(|g| g.uuid.to_string())
-                    .filter(|s| self.executing.contains_key(s))
-                    .collect();
-                Ok(Some(mine))
-            }),
-            ActionServerBackend::Zenoh(server) => futures::executor::block_on(async {
-                let recv = server.cancel_goal.recv();
-                futures::pin_mut!(recv);
-                let delay = futures_timer::Delay::new(timeout);
-                let request = match futures::future::select(recv, delay).await {
-                    futures::future::Either::Left((result, _)) => result?,
-                    futures::future::Either::Right(_) => return Ok(None),
-                };
-                #[derive(serde::Deserialize)]
-                struct CancelRequest {
-                    goal_info: ros2_client::action::GoalInfo,
+                    let decoded: CancelRequest = deserialize_cdr(&request.payload)?;
+                    let (goals_canceling, return_code) = answer_zenoh_cancel(
+                        &self.executing,
+                        &mut ZenohCancelState::lock(&self.zenoh_cancel),
+                        &decoded.goal_info,
+                    );
+                    let mine: Vec<String> = goals_canceling
+                        .iter()
+                        .map(|info| info.goal_id.uuid.to_string())
+                        .collect();
+                    let response = ros2_client::action::CancelGoalResponse {
+                        return_code,
+                        goals_canceling,
+                    };
+                    server
+                        .cancel_goal
+                        .reply(request.id, &serialize_cdr(&response)?)
+                        .await?;
+                    Ok(Some(mine))
+                }),
+            }
+        })?;
+        if canceled.is_some() {
+            // Clients learn that goals are canceling from the status topic,
+            // as with rclcpp and the YAML bridge. A no-op on DDS.
+            publish_python_zenoh_status(py, &self.server, &self.executing, &self.zenoh_cancel)?;
+        }
+        Ok(canceled)
+    }
+}
+
+/// Answers a native-Zenoh `CancelGoal` request with the shared, rcl-conformant
+/// [`process_cancel_request`], recording the goals it moves to canceling in
+/// `state`. Finished goals are offered too, so naming one is answered
+/// `GoalTerminated`; they are never canceled again.
+fn answer_zenoh_cancel(
+    executing: &GoalSlots<String, PythonServerGoal>,
+    state: &mut ZenohCancelState,
+    requested: &ros2_client::action::GoalInfo,
+) -> (
+    Vec<ros2_client::action::GoalInfo>,
+    ros2_client::action_msgs::CancelGoalResponseEnum,
+) {
+    use ros2_client::action::GoalStatusEnum;
+    let ZenohCancelState {
+        canceling,
+        finished,
+    } = state;
+    let mut active: Vec<(&String, ZenohServerGoal)> = executing
+        .iter()
+        .filter_map(|(key, goal)| match goal {
+            PythonServerGoal::Zenoh(goal, _) => {
+                let mut goal = *goal;
+                if canceling.contains(key) {
+                    goal.status = GoalStatusEnum::Canceling;
                 }
-                let decoded: CancelRequest = deserialize_cdr(&request.payload)?;
-                let requested = decoded.goal_info.goal_id.uuid;
-                let mine: Vec<String> = self
-                    .executing
-                    .iter()
-                    .filter_map(|(key, goal)| match goal {
-                        PythonServerGoal::Zenoh(id, _)
-                            if requested.is_nil() || id.uuid == requested =>
-                        {
-                            Some(key.clone())
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                let goals_canceling = mine
-                    .iter()
-                    .filter_map(|key| match self.executing.get(key) {
-                        Some(PythonServerGoal::Zenoh(id, _)) => {
-                            Some(ros2_client::action::GoalInfo {
-                                goal_id: *id,
-                                stamp: ros2_client::builtin_interfaces::Time::ZERO,
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                let response = ros2_client::action::CancelGoalResponse {
-                    return_code: if mine.is_empty() {
-                        ros2_client::action_msgs::CancelGoalResponseEnum::UnknownGoal
-                    } else {
-                        ros2_client::action_msgs::CancelGoalResponseEnum::None
-                    },
-                    goals_canceling,
-                };
-                server
-                    .cancel_goal
-                    .reply(request.id, &serialize_cdr(&response)?)
-                    .await?;
-                Ok(Some(mine))
-            }),
+                Some((key, goal))
+            }
+            PythonServerGoal::Dds(..) => None,
         })
+        .collect();
+    let answer = process_cancel_request(
+        active
+            .iter_mut()
+            .map(|(_, goal)| goal)
+            .chain(finished.iter_mut()),
+        requested,
+    );
+    for (key, goal) in &active {
+        if goal.status == GoalStatusEnum::Canceling {
+            canceling.insert((*key).clone());
+        }
+    }
+    answer
+}
+
+/// Keep `goal` among the last [`MAX_CONCURRENT_GOALS`] finished goals.
+fn remember_finished_goal(finished: &mut VecDeque<ZenohServerGoal>, goal: ZenohServerGoal) {
+    if finished.len() >= MAX_CONCURRENT_GOALS {
+        finished.pop_front();
+    }
+    finished.push_back(goal);
+}
+
+#[cfg(test)]
+mod zenoh_cancel_tests {
+    use super::ros2_client::action::{GoalId, GoalInfo, GoalStatusEnum};
+    use super::ros2_client::action_msgs::CancelGoalResponseEnum;
+    use super::ros2_client::builtin_interfaces::Time;
+    use super::{
+        CancelableGoal, GoalSlots, MAX_CONCURRENT_GOALS, PythonServerGoal, ZenohCancelState,
+        ZenohServerGoal, answer_zenoh_cancel, process_cancel_request, remember_finished_goal,
+    };
+    use std::collections::VecDeque;
+
+    fn goal(status: GoalStatusEnum) -> ZenohServerGoal {
+        ZenohServerGoal {
+            id: GoalId::new_random(),
+            stamp: Time::from_nanos(10),
+            status,
+        }
+    }
+
+    fn by_id(goal_id: GoalId) -> GoalInfo {
+        GoalInfo {
+            goal_id,
+            stamp: Time::ZERO,
+        }
+    }
+
+    /// A goal the server finished is still known: naming it is
+    /// `ERROR_GOAL_TERMINATED`, as in rcl.
+    #[test]
+    fn cancelling_a_finished_goal_reports_goal_terminated() {
+        let mut executing = [goal(GoalStatusEnum::Executing)];
+        let mut finished = VecDeque::new();
+        let done = goal(GoalStatusEnum::Succeeded);
+        remember_finished_goal(&mut finished, done);
+        let (canceling, code) = process_cancel_request(
+            executing.iter_mut().chain(finished.iter_mut()),
+            &by_id(done.id),
+        );
+        assert!(canceling.is_empty());
+        assert_eq!(code, CancelGoalResponseEnum::GoalTerminated);
+        assert_eq!(finished[0].status(), GoalStatusEnum::Succeeded);
+    }
+
+    /// A second cancel of the same goal finds it canceling: rcl answers
+    /// `ERROR_GOAL_TERMINATED` and does not list it again. The
+    /// canceling state survives between requests in `ZenohCancelState`.
+    #[test]
+    fn a_canceling_goal_is_not_canceled_again() {
+        let mut executing = GoalSlots::new(MAX_CONCURRENT_GOALS);
+        let running = goal(GoalStatusEnum::Executing);
+        let key = running.id.uuid.to_string();
+        executing
+            .insert(
+                key.clone(),
+                PythonServerGoal::Zenoh(running, std::time::Instant::now()),
+            )
+            .unwrap();
+        let mut state = ZenohCancelState::default();
+
+        let (canceling, code) = answer_zenoh_cancel(&executing, &mut state, &by_id(running.id));
+        assert_eq!(canceling.len(), 1);
+        assert_eq!(code, CancelGoalResponseEnum::None);
+        assert!(state.canceling.contains(&key));
+
+        let (canceling, code) = answer_zenoh_cancel(&executing, &mut state, &by_id(running.id));
+        assert!(canceling.is_empty());
+        assert_eq!(code, CancelGoalResponseEnum::GoalTerminated);
+    }
+
+    #[test]
+    fn only_the_last_finished_goals_are_remembered() {
+        let mut finished = VecDeque::new();
+        let first = goal(GoalStatusEnum::Succeeded);
+        remember_finished_goal(&mut finished, first);
+        for _ in 0..MAX_CONCURRENT_GOALS {
+            remember_finished_goal(&mut finished, goal(GoalStatusEnum::Aborted));
+        }
+        assert_eq!(finished.len(), MAX_CONCURRENT_GOALS);
+        assert!(finished.iter().all(|goal| goal.id != first.id));
     }
 }
 
@@ -2353,24 +2541,31 @@ fn publish_python_zenoh_status(
     py: Python<'_>,
     server: &ActionServerBackend,
     goals: &GoalSlots<String, PythonServerGoal>,
+    cancel: &std::sync::Mutex<ZenohCancelState>,
 ) -> eyre::Result<()> {
     let ActionServerBackend::Zenoh(server) = server else {
         return Ok(());
     };
-    let status = ros2_client::action_msgs::GoalStatusArray {
-        status_list: goals
-            .iter()
-            .filter_map(|(_, goal)| match goal {
-                PythonServerGoal::Zenoh(id, _) => Some(ros2_client::action_msgs::GoalStatus {
-                    goal_info: ros2_client::action::GoalInfo {
-                        goal_id: *id,
-                        stamp: ros2_client::builtin_interfaces::Time::ZERO,
-                    },
-                    status: ros2_client::action::GoalStatusEnum::Executing,
-                }),
-                _ => None,
-            })
-            .collect(),
+    let status = {
+        let cancel = ZenohCancelState::lock(cancel);
+        ros2_client::action_msgs::GoalStatusArray {
+            status_list: goals
+                .iter()
+                .filter_map(|(key, goal)| match goal {
+                    PythonServerGoal::Zenoh(goal, _) => {
+                        Some(ros2_client::action_msgs::GoalStatus {
+                            goal_info: goal.goal_info(),
+                            status: if cancel.canceling.contains(key) {
+                                ros2_client::action::GoalStatusEnum::Canceling
+                            } else {
+                                goal.status
+                            },
+                        })
+                    }
+                    _ => None,
+                })
+                .collect(),
+        }
     };
     let payload = serialize_cdr(&status)?;
     // A reliable Zenoh publish can wait for the network: don't hold the GIL.
@@ -2583,7 +2778,13 @@ mod publish_gil_tests {
         let hold_up = HoldUp::declare(&node, &keys.status);
 
         let thread_ran = hold_up.run_with_python_thread(|py| {
-            publish_python_zenoh_status(py, &server.server, &server.executing).unwrap();
+            publish_python_zenoh_status(
+                py,
+                &server.server,
+                &server.executing,
+                &server.zenoh_cancel,
+            )
+            .unwrap();
         });
         assert!(thread_ran);
     }
