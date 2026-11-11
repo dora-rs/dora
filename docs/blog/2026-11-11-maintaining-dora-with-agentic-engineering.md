@@ -4,7 +4,7 @@ Dora is a framework for robotics and AI applications. Other people use it to bui
 
 ## Why we switched to agent-written code
 
-Until early 2026, we wrote dora's code by hand. In February 2026, we started to use AI coding agents. Since May, agents write most of the code, and a single maintainer reviews and merges it.
+Until February 2026, we wrote dora's code by hand. Then we started to use AI coding agents. Since May, agents write most of the code, and a single maintainer reviews and merges it.
 
 We switched because agents let us develop much faster. This allowed us to implement features that users had requested for a long time. For example, request/reply services were first requested in December 2023 ([#390](https://github.com/dora-rs/dora/issues/390)) and are now part of dora. It also allowed us to prepare and release dora 1.0 within a few months.
 
@@ -17,7 +17,7 @@ We switched because agents let us develop much faster. This allowed us to implem
 
 *(Numbers as of 2026-10-08. The commit share counts commits with an agent co-author line, so it measures commits, not lines of code.)*
 
-With this many changes, one person can't read every line of every pull request. Instead, we use several layers of automated checks. The rest of this post describes them. It is based on a talk at [GOSIM Shenzhen 2026](https://shenzhen2026.gosim.org/).
+With this many changes, one person can't read every line of every pull request. Instead, we use several layers of automated checks, which this post describes. It is based on a talk at [GOSIM Shenzhen 2026](https://shenzhen2026.gosim.org/).
 
 ## What makes dora hard for AI agents
 
@@ -39,7 +39,7 @@ That makes dora a distributed system, so bugs are often:
 - **Platform-specific:** a test passes on Linux and fails on Windows.
 - **Between components:** each part is correct, but the combination isn't.
 
-With the latest models, AI agents are very capable. Given a clear task, even a large one, they usually get it right. However, such a distributed, multi-language, multi-OS environment is still a challenge to them.
+With the latest models, AI agents are very capable. Given a clear task, even a large one, they usually get it right. However, such a distributed, multi-language, multi-OS environment is still a challenge for them.
 
 ## Five layers of checks
 
@@ -57,9 +57,9 @@ The rest of this post goes through the above layers in detail and then describes
 
 ## The language: Rust
 
-The Rust compiler checks a lot before a program ever runs. Every value has exactly one owner, which rules out use-after-free and double-free bugs. Sharing data between threads has to be explicitly safe, which rules out data races. "There may be no value" and "this can fail" are part of the type, so they can't be ignored by accident. On top of that, we run `clippy` with hundreds of extra lint rules and treat every warning as an error.
+The Rust compiler checks a lot before a program ever runs. Every value has exactly one owner, which rules out use-after-free and double-free bugs. Sharing data between threads has to be explicitly safe, which prevents data races. "There may be no value" and "this can fail" are part of the type, so they can't be ignored by accident. On top of that, we run `clippy`, which adds several hundred lint rules, and treat every warning as an error.
 
-If the code compiles, whole classes of bugs are ruled out. Rust's error messages are also precise enough that an agent can usually fix the problem on its own: it writes code, the compiler explains what is wrong, and the agent tries again until the code compiles.
+Rust's error messages are also precise enough that an agent can usually fix the problem on its own: it writes code, the compiler explains what is wrong, and the agent tries again until the code compiles.
 
 Two simple examples show why this matters for code written by agents. The first is exhaustive matching. Say an agent adds a new way for a node to exit (the example is simplified):
 
@@ -79,7 +79,7 @@ match exit {
 
 In many languages, code that looks at the exit reason would silently ignore the new case. In Rust, the compiler lists every place in the codebase that has to handle it, so neither the agent nor the reviewer has to find them.
 
-The second is distinct types for things that look the same. dora has node IDs, operator IDs and dataflow IDs. Underneath, they are all strings, but each has its own type ([`libraries/message/src/id.rs`](../../libraries/message/src/id.rs)):
+The second is distinct types for things that look the same. Dora has node IDs, operator IDs and dataflow IDs. Underneath, they are all strings, but each has its own type ([`libraries/message/src/id.rs`](../../libraries/message/src/id.rs)):
 
 ```rust
 struct NodeId(String);
@@ -94,7 +94,7 @@ When a rule matters, we try to encode it in the types, because then it is enforc
 
 ## The architecture
 
-dora is split into a few components, each with one job. The command-line tool talks to a coordinator, the coordinator manages one daemon per machine, and the daemons start your nodes and move data between them.
+Dora is split into a few components, each with one job. The command-line tool talks to a coordinator, the coordinator manages one daemon per machine, and the daemons start your nodes and move data between them.
 
 ![The CLI talks to the coordinator, which manages one daemon per machine; the daemons start your nodes and move data between them](images/agentic-engineering/architecture.png)
 
@@ -108,7 +108,7 @@ Because Rust is a compiled language that can be linked efficiently with the othe
 
 ## The test suite
 
-The test suite is the layer that actually checks most of the code. Dora has about 2,750 tests:
+The test suite is the layer that actually checks most of the code. Dora has about 2,800 tests:
 
 | Tests | Count | Example |
 |---|---|---|
@@ -132,7 +132,7 @@ So we decided to split our test suite into multiple tiers:
 
 ### A merge queue with batching
 
-Even the Linux run before a merge takes about 40 minutes, so we use a merge queue that batches pull requests.
+The pre-merge run still takes about 40 minutes, so we use a merge queue that batches pull requests.
 
 ![Approved PRs go into a queue; batches of up to 8 are tested together and merged; a failing batch is split to find and remove the culprit](images/agentic-engineering/merge-queue.png)
 
@@ -203,9 +203,9 @@ So it's important to set a clear rule: **a regression test must fail on main wit
 
 ### Mutation testing
 
-Mutation testing is an interesting technique that applies that rule to every line. A tool introduces small bugs on purpose, such as turning `a + b` into `a - b`, `>=` into `>`, or returning an empty list instead of the real one, and runs the tests after each change. If no test fails, that code isn't really tested.
+[Mutation testing](https://en.wikipedia.org/wiki/Mutation_testing) is a technique that applies that rule to every line. A tool introduces small bugs on purpose, such as turning `a + b` into `a - b`, `>=` into `>`, or returning an empty list instead of the real one, and runs the tests after each change. If no test fails, that code isn't really tested.
 
-However, it is slow: a full run over our core crates takes 10 to 18 hours. So it is not automated. We run it manually from time to time to improve the tests of one part of the code. The first run on the core library raised the share of caught mutations from 37% to 43% with 22 new tests, so our tests still miss many of these small bugs, and there is a lot left to improve.
+However, it is slow: a full run over our core crates takes 10 to 18 hours. So it is not automated. We run it manually from time to time to improve the tests of one part of the code. After the first run on the core library, we added 22 tests, which raised the share of caught mutations from 37% to 43%. That means more than half of these small bugs still go unnoticed, so there is a lot left to improve.
 
 ## AI reviews
 
@@ -228,9 +228,9 @@ These are some of the instructions in its prompt:
 >
 > *Don't post a comment at all when there are no new findings since the last review comment.*
 
-We added the first instruction because an agent that wrote the code also wrote the description, and the description says what the agent intended, which isn't always what the code does. The last instruction keeps the noise down: a bot that comments every two hours, even with nothing new to say, would bury every pull request in comments.
+We added the first instruction because the agent that wrote the code usually also wrote the description, and the description says what the agent intended, which isn't always what the code does. The last instruction keeps the noise down: a bot that comments after every run, even with nothing new to say, would bury every pull request in comments.
 
-We checked how well it works on the roughly 960 pull requests it reviewed between June and early October, with hand-checked samples:
+To see how well it works, we checked a sample of its findings by hand, from the roughly 960 pull requests it reviewed between June and early October:
 
 - **Most findings are correct**. About 4% were clearly wrong, and about 15% if you also count real problems that it described as more serious than they were.
 - **A review without findings doesn't mean much**. In about one in four pull requests, something real was found later, usually something minor and usually by a later review before the merge.
@@ -244,11 +244,11 @@ The layers discussed so far react to changes. This layer includes routines that 
 
 ![Spot-checks, merge reviews and nightly failures file issues; a fix routine turns issues into PRs; the deep scan opens PRs directly; all PRs get AI reviews, then a human decides and the merge queue merges](images/agentic-engineering/routines.png)
 
-Two routines look for problems and file issues, and nightly test failures become issues automatically. A deep scan opens pull requests directly. We explain those below.
+A spot-check of a random module and a review of recent merges look for problems and file issues, and nightly test failures become issues automatically. A deep scan opens pull requests directly. We explain these routines below.
 
 A fix routine tries to turn each issue into a pull request. It is allowed to give up: if it can't fix something, or the issue needs a human decision, it leaves a comment instead.
 
-All of these pull requests then go through the AI review and the routine that opened them keeps fixing them. This often takes multiple rounds. Only then a human takes a look and makes the merge decision (which then goes through the merge queue).
+All of these pull requests then go through the AI review and the routine that opened them keeps fixing them. This often takes multiple rounds. Only then does a human look at the pull request and decide whether to merge it. The merge itself goes through the merge queue.
 
 Let's take a closer look at some of these routines:
 
@@ -258,7 +258,7 @@ Let's take a closer look at some of these routines:
 
 Every other review looks at what changed, but many bugs live in code that hasn't changed in months. Random sampling makes sure every part of the codebase gets looked at eventually.
 
-Two examples for bugs found by the spot checks in older code:
+Two examples of bugs that the spot-check found in older code:
 
 - `dora logs --node cam` also showed the logs of a node called `cam.left`, because it matched every log file starting with `log_cam` ([#3449](https://github.com/dora-rs/dora/issues/3449)).
 - A dataflow with two nodes of the same name was accepted, and one of the two nodes was silently dropped instead of reporting an error. A check for duplicate names existed, but only in one code path ([#2393](https://github.com/dora-rs/dora/issues/2393)).
@@ -305,19 +305,17 @@ The routines also catch each other's mistakes. One example:
 
 *(Times in UTC: the deep scan's pull request [#3593](https://github.com/dora-rs/dora/pull/3593), the merge review's issue [#3604](https://github.com/dora-rs/dora/issues/3604), and the fix [#3609](https://github.com/dora-rs/dora/pull/3609).)*
 
-All tests passed on the first change because CI runs on 64-bit machines. The merge review noticed that dora is also built for 32-bit ARM boards, which are common on robots. The bug was fixed about 29 hours after it was merged.
+The deep scan had replaced a duplicated size parser with an existing shared one. The shared parser uses a type that can only hold values up to 4 GB on 32-bit systems, so log size limits of 4 GB or more were suddenly rejected there. All tests passed because CI runs on 64-bit machines. The merge review noticed that dora is also built for 32-bit ARM boards, which are common on robots. The bug was fixed about 29 hours after it was merged.
 
 ## The road to dora 1.0
 
 ![Release timeline: v0.5.0 in March 2026, five release candidates from April to August 27, v1.0.0 on September 2, v1.0.1 on September 3, v1.1.0 on October 7](images/agentic-engineering/releases.png)
 
-dora 1.0 was released on September 2, after five release candidates.
-
 For dora, 1.0 is mainly a stability guarantee: code and configs you write against 1.0 keep working for all of 1.x. That is a hard promise to keep when hundreds of changes land every month.
 
-The 1.0 release is where most of the AI-generated code was published, so this was only possible because the discussed layers of checks gave us confidence in the code.
+Most of the agent-written code first reached users in 1.0. We could only make this promise because the checks described above gave us confidence in that code.
 
-In the following, we will focus on the automatic checks and some key decisions for the 1.0 release. For full details, see our [1.0 announcement](2026-09-02-dora-1.0.md) post.
+This section focuses on the automatic checks and some key decisions for the 1.0 release. For the full details, see the [1.0 announcement](2026-09-02-dora-1.0.md).
 
 ### What we promise in 1.0, and how we check it
 
@@ -340,11 +338,11 @@ To make sure that no agent breaks this promise by accident, every stable surface
 
 If an agent renames a flag or removes a field, the build fails and says what broke. Whether the break is intended, and has to wait for 2.0, is a human decision.
 
-These automated changes are very useful to us, but they are only best-effort. Not every breaking change is detected by them, so human review is still needed here.
+These automated checks are very useful to us, but they are only best-effort. They don't catch every breaking change, so human review is still needed here.
 
 ### Breaking changes before 1.0
 
-We decided to deliberately do a few breaking changes before releasing 1.0:
+Before releasing 1.0, we made a few breaking changes on purpose:
 
 - **We changed the message encoding.** The old library that we used was unmaintained and had no written specification of its format.
 - **We made message types extensible**, so they can get new fields in 1.x without a 2.0.
@@ -354,13 +352,13 @@ We made sure that each of those breaks produces a clear error message instead of
 
 ### How we decided 1.0 was ready
 
-A project like dora will never be perfect, bug-free, or finished. So we made the decision that Dora is ready for 1.0 based on the following:
+A project like dora will never be perfect, bug-free, or finished. So we based the decision on the following criteria:
 
-- We published five release candidates and no open critical bugs were known.
-- 11 nightly CI runs in a row with all jobs green (and many more with only flaky test failures before).
-- We did a lot of preparation work for ensuring backwards and forwards compatibility.
+- We published five release candidates, and no critical bugs were open.
+- The nightly CI passed 11 times in a row with all jobs green. Before that, many runs failed only because of flaky tests.
+- We did a lot of work to ensure backward and forward compatibility.
 - A benchmark against 0.5 showed 7–39% lower median latency at every message size.
-- We created a [migration guide](../migration-from-0.x.md) for users of 0.x.
+- We wrote a [migration guide](../migration-from-0.x.md) for users of 0.x.
 
 Based on this, we made the 1.0 release on September 2.
 
@@ -368,11 +366,11 @@ Based on this, we made the 1.0 release on September 2.
 
 ### And then 1.0.1, the next day
 
-And of course we directly discovered a bug the next day that we didn't catch before: [building from source with `cargo install dora-cli` failed](https://github.com/dora-rs/dora/issues/3400). Building from source through our GitHub repo still worked and the pre-built binaries worked as well, so the issue was not affecting many people fortunately.
+The very next day, we found a bug that none of our checks had caught: [building from source with `cargo install dora-cli` failed](https://github.com/dora-rs/dora/issues/3400). Building from a clone of the repository and the prebuilt binaries still worked, so fortunately few people were affected.
 
-The problem was that one of Dora's packages read a file from a neighboring folder in the repository. In the repository, that folder exists, so every build and test passed. However, a published package on `crates.io` only contains its own files, so the published version couldn't find it.
+The problem was that one of dora's packages read a file from a neighboring folder in the repository. In the repository, that folder exists, so every build and test passed. However, a published package on `crates.io` only contains its own files, so the published version couldn't find it.
 
-We quickly [fixed this](https://github.com/dora-rs/dora/pull/3401) and released 1.0.1. Of course, we added an automated check so that this type of bug cannot happen again.
+We quickly [fixed this](https://github.com/dora-rs/dora/pull/3401) and released 1.0.1. For historical reasons, our release process skipped cargo's own check of the published packages, so we turned that check on. We also added an automated check on every pull request, so that this type of bug cannot happen again.
 
 ## What the human does
 
@@ -382,9 +380,9 @@ With this setup, the maintainer's work is different from before, but there is st
 - Writing and reviewing the plans for big features before any code is written.
 - Reading high-risk changes carefully, like anything that touches the message format or a public API, and skimming low-risk ones.
 - Checking the approach. Agents don't always pick the right one: a fix can be hacky, more complicated than it needs to be, or make a symptom go away instead of fixing the cause, and still pass every check.
-- Deciding when not to fix something (some 'bugs' can never happen in practice).
+- Deciding when not to fix something, for example a reported bug that can't happen in practice.
 
-Every merge in Dora is still a human decision.
+Every merge in dora is still a human decision.
 
 ## Conclusion
 
