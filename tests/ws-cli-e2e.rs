@@ -190,6 +190,14 @@ impl CoordinatorStore for FailingListStore {
     ) -> eyre::Result<()> {
         self.inner.delete_node_param(dataflow_id, node_id, key)
     }
+
+    fn list_node_param_tombstones(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> eyre::Result<Vec<String>> {
+        self.inner.list_node_param_tombstones(dataflow_id, node_id)
+    }
 }
 
 /// Start a minimal control websocket server that acks `TopicSubscribe` and

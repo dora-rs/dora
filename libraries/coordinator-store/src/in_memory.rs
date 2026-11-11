@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::RwLock;
 
 use dora_message::common::DaemonId;
@@ -21,6 +21,9 @@ pub struct InMemoryStore {
     dataflows: RwLock<BTreeMap<Uuid, DataflowRecord>>,
     builds: RwLock<BTreeMap<Uuid, BuildRecord>>,
     params: RwLock<BTreeMap<ParamKey, Vec<u8>>>,
+    /// Deleted param keys. Written only while holding the `params` write
+    /// lock, so a key is never both set and tombstoned.
+    tombstones: RwLock<BTreeSet<ParamKey>>,
 }
 
 impl InMemoryStore {
@@ -30,6 +33,7 @@ impl InMemoryStore {
             dataflows: RwLock::new(BTreeMap::new()),
             builds: RwLock::new(BTreeMap::new()),
             params: RwLock::new(BTreeMap::new()),
+            tombstones: RwLock::new(BTreeSet::new()),
         }
     }
 }
@@ -135,6 +139,13 @@ impl CoordinatorStore for InMemoryStore {
                 .map_err(|e| eyre!("lock poisoned: {e}"))?;
             params.retain(|(df, _, _), _| df != uuid);
         }
+        {
+            let mut tombstones = self
+                .tombstones
+                .write()
+                .map_err(|e| eyre!("lock poisoned: {e}"))?;
+            tombstones.retain(|(df, _, _)| df != uuid);
+        }
         Ok(())
     }
 
@@ -188,10 +199,12 @@ impl CoordinatorStore for InMemoryStore {
             .params
             .write()
             .map_err(|e| eyre!("lock poisoned: {e}"))?;
-        params.insert(
-            (*dataflow_id, node_id.clone(), key.to_string()),
-            value.to_vec(),
-        );
+        let param_key = (*dataflow_id, node_id.clone(), key.to_string());
+        self.tombstones
+            .write()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?
+            .remove(&param_key);
+        params.insert(param_key, value.to_vec());
         Ok(())
     }
 
@@ -234,8 +247,31 @@ impl CoordinatorStore for InMemoryStore {
             .params
             .write()
             .map_err(|e| eyre!("lock poisoned: {e}"))?;
-        params.remove(&(*dataflow_id, node_id.clone(), key.to_string()));
+        let param_key = (*dataflow_id, node_id.clone(), key.to_string());
+        if params.remove(&param_key).is_some() {
+            self.tombstones
+                .write()
+                .map_err(|e| eyre!("lock poisoned: {e}"))?
+                .insert(param_key);
+        }
         Ok(())
+    }
+
+    fn list_node_param_tombstones(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> Result<Vec<String>> {
+        let tombstones = self
+            .tombstones
+            .read()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        let start = (*dataflow_id, node_id.clone(), String::new());
+        Ok(tombstones
+            .range(start..)
+            .take_while(|(df, nid, _)| df == dataflow_id && nid == node_id)
+            .map(|(_, _, key)| key.clone())
+            .collect())
     }
 }
 
@@ -342,6 +378,39 @@ mod tests {
         assert_eq!(store.list_node_params(&df, &node).unwrap().len(), 1);
     }
 
+    /// Deleting a set key tombstones it, deleting a key that was never set
+    /// does not, and setting the key again clears the tombstone.
+    #[test]
+    fn param_delete_records_a_tombstone_that_put_clears() {
+        let store = InMemoryStore::new();
+        let df = Uuid::new_v4();
+        let node: NodeId = "sensor".to_string().into();
+        let other: NodeId = "sensor2".to_string().into();
+        store.put_node_param(&df, &node, "gain", b"1").unwrap();
+        store.put_node_param(&df, &other, "gain", b"1").unwrap();
+
+        store.delete_node_param(&df, &node, "gain").unwrap();
+        store.delete_node_param(&df, &node, "never_set").unwrap();
+        assert_eq!(
+            store.list_node_param_tombstones(&df, &node).unwrap(),
+            vec!["gain".to_string()]
+        );
+        assert!(
+            store
+                .list_node_param_tombstones(&df, &other)
+                .unwrap()
+                .is_empty()
+        );
+
+        store.put_node_param(&df, &node, "gain", b"2").unwrap();
+        assert!(
+            store
+                .list_node_param_tombstones(&df, &node)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
     /// A `\0`-containing param key must be rejected here just as the redb
     /// backend rejects it (it reserves `\0` as a composite-key separator), so
     /// the two backends agree on which input is valid.
@@ -366,8 +435,23 @@ mod tests {
         store.put_node_param(&df_a, &node, "k1", b"a1").unwrap();
         store.put_node_param(&df_a, &node, "k2", b"a2").unwrap();
         store.put_node_param(&df_b, &node, "k1", b"b1").unwrap();
+        store.delete_node_param(&df_a, &node, "k2").unwrap();
+        store.put_node_param(&df_b, &node, "k2", b"b2").unwrap();
+        store.delete_node_param(&df_b, &node, "k2").unwrap();
 
         store.delete_dataflow(&df_a).unwrap();
+
+        assert!(
+            store
+                .list_node_param_tombstones(&df_a, &node)
+                .unwrap()
+                .is_empty(),
+            "tombstones for cleaned dataflow must be removed"
+        );
+        assert_eq!(
+            store.list_node_param_tombstones(&df_b, &node).unwrap(),
+            vec!["k2".to_string()]
+        );
 
         assert!(
             store.list_node_params(&df_a, &node).unwrap().is_empty(),

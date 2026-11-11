@@ -214,7 +214,7 @@ pub trait CoordinatorStore: Send + Sync {
     fn get_dataflow(&self, uuid: &Uuid) -> Result<Option<DataflowRecord>>;
     fn list_dataflows(&self) -> Result<Vec<DataflowRecord>>;
     /// Delete a dataflow record. Cascades to every `put_node_param`
-    /// row that belongs to the same `uuid` so callers (e.g.
+    /// row and param tombstone that belongs to the same `uuid` so callers (e.g.
     /// `dora clean`) don't have to walk node params separately and
     /// orphan param rows can't accumulate in long-lived stores.
     ///
@@ -239,6 +239,7 @@ pub trait CoordinatorStore: Send + Sync {
     /// Set a runtime parameter for a node in a dataflow.
     ///
     /// Enforces `MAX_PARAM_KEY_BYTES` and `MAX_PARAM_VALUE_BYTES` limits.
+    /// Clears the key's tombstone, if any, in the same atomic step.
     fn put_node_param(
         &self,
         dataflow_id: &Uuid,
@@ -263,5 +264,18 @@ pub trait CoordinatorStore: Send + Sync {
     ) -> Result<Vec<(String, Vec<u8>)>>;
 
     /// Delete a single runtime parameter.
+    ///
+    /// If the key was set, a tombstone for it is recorded in the same atomic
+    /// step, so a full param replay can tell a daemon that missed the delete
+    /// to remove the key from its node. Tombstones last until the key is set
+    /// again or the dataflow is deleted. A key that was never set gets none:
+    /// no node can have it.
     fn delete_node_param(&self, dataflow_id: &Uuid, node_id: &NodeId, key: &str) -> Result<()>;
+
+    /// List the tombstoned param keys of a node (see `delete_node_param`).
+    fn list_node_param_tombstones(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> Result<Vec<String>>;
 }
