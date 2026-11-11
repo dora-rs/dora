@@ -927,10 +927,9 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&target_dir).await;
     }
 
-    /// Regression: a download whose future is dropped part-way (a spawn task
-    /// aborted, the runtime shut down on Ctrl-C) must not leave its
-    /// `.dora-download-*.partial` behind. Cleanup used to run only on the
-    /// explicit `Err` returns.
+    /// A download whose future is dropped part-way (a spawn task aborted, the
+    /// runtime shut down on Ctrl-C) must not leave its
+    /// `.dora-download-*.partial` behind.
     #[tokio::test]
     async fn cancelled_download_removes_its_partial_file() {
         use std::time::Duration;
