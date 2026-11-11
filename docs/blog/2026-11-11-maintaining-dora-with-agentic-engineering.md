@@ -19,7 +19,7 @@ We switched because agents let us develop much faster. This allowed us to implem
 
 With this many changes, one person can't read every line of every pull request. Instead, we use several layers of automated checks, which this post describes. It is based on a talk at [GOSIM Shenzhen 2026](https://shenzhen2026.gosim.org/).
 
-## What makes dora hard for AI agents
+## What dora is, and why that is hard for agents
 
 In dora, you describe your application as a graph of small programs, called nodes, in a YAML file, and dora starts them, connects them, and moves data between them. This pattern works well for both robotic and AI applications:
 
@@ -53,7 +53,7 @@ Every change goes through five layers of checks. Each of them catches a differen
 
 On top of that there is human review, focused on high-risk changes.
 
-The rest of this post goes through the above layers in detail and then describes how we used them for the 1.0 release.
+The rest of this post goes through these layers and the remaining human work in detail, and then describes how we used them for the 1.0 release.
 
 ## The language: Rust
 
@@ -244,13 +244,11 @@ The layers discussed so far react to changes. This layer includes routines that 
 
 ![Spot-checks, merge reviews and nightly failures file issues; a fix routine turns issues into PRs; the deep scan opens PRs directly; all PRs get AI reviews, then a human decides and the merge queue merges](images/agentic-engineering/routines.png)
 
-A spot-check of a random module and a review of recent merges look for problems and file issues, and nightly test failures become issues automatically. A deep scan opens pull requests directly. We explain these routines below.
-
-A fix routine tries to turn each issue into a pull request. It is allowed to give up: if it can't fix something, or the issue needs a human decision, it leaves a comment instead.
+A spot-check of a random module and a review of recent merges look for problems and file issues, and nightly test failures become issues automatically. A fix routine turns each issue into a pull request, and a deep scan opens pull requests directly. We explain these routines below.
 
 All of these pull requests then go through the AI review and the routine that opened them keeps fixing them. This often takes multiple rounds. Only then does a human look at the pull request and decide whether to merge it. The merge itself goes through the merge queue.
 
-Let's take a closer look at some of these routines:
+Let's take a closer look at each of them:
 
 ### Spot-check of a random module
 
@@ -297,6 +295,10 @@ Some of the bugs it fixed:
 
 These bugs are small, but each of them would have hit a user sooner or later.
 
+### The fix routine
+
+The fix routine tries to turn each issue into a pull request. It is allowed to give up: if it can't fix something, or the issue needs a human decision, it leaves a comment instead of guessing.
+
 ### Routines check each other
 
 The routines also catch each other's mistakes. One example:
@@ -306,6 +308,18 @@ The routines also catch each other's mistakes. One example:
 *(Times in UTC: the deep scan's pull request [#3593](https://github.com/dora-rs/dora/pull/3593), the merge review's issue [#3604](https://github.com/dora-rs/dora/issues/3604), and the fix [#3609](https://github.com/dora-rs/dora/pull/3609).)*
 
 The deep scan had replaced a duplicated size parser with an existing shared one. The shared parser uses a type that can only hold values up to 4 GB on 32-bit systems, so log size limits of 4 GB or more were suddenly rejected there. All tests passed because CI runs on 64-bit machines. The merge review noticed that dora is also built for 32-bit ARM boards, which are common on robots. The bug was fixed about 29 hours after it was merged.
+
+## What the human does
+
+With this setup, the maintainer's work is different from before, but there is still a lot of it:
+
+- Deciding what to build, and in which order.
+- Writing and reviewing the plans for big features before any code is written.
+- Reading high-risk changes carefully, like anything that touches the message format or a public API, and skimming low-risk ones.
+- Checking the approach. Agents don't always pick the right one: a fix can be hacky, more complicated than it needs to be, or make a symptom go away instead of fixing the cause, and still pass every check.
+- Deciding when not to fix something, for example a reported bug that can't happen in practice.
+
+Every merge in dora is still a human decision.
 
 ## The road to dora 1.0
 
@@ -340,25 +354,13 @@ If an agent renames a flag or removes a field, the build fails and says what bro
 
 These automated checks are very useful to us, but they are only best-effort. They don't catch every breaking change, so human review is still needed here.
 
-### Breaking changes before 1.0
-
-Before releasing 1.0, we made a few breaking changes on purpose:
-
-- **We changed the message encoding.** The old library that we used was unmaintained and had no written specification of its format.
-- **We made message types extensible**, so they can get new fields in 1.x without a 2.0.
-- **We took the Apache Arrow version out of the promise**, so dora can upgrade Arrow during 1.x. Users pick the Arrow version through a feature flag.
-
-We made sure that each of those breaks produces a clear error message instead of silently wrong data.
-
 ### How we decided 1.0 was ready
 
 A project like dora will never be perfect, bug-free, or finished. So we based the decision on the following criteria:
 
 - We published five release candidates, and no critical bugs were open.
 - The nightly CI passed 11 times in a row with all jobs green. Before that, many runs failed only because of flaky tests.
-- We did a lot of work to ensure backward and forward compatibility.
-- A benchmark against 0.5 showed 7–39% lower median latency at every message size.
-- We wrote a [migration guide](../migration-from-0.x.md) for users of 0.x.
+- We did a lot of work to ensure backward and forward compatibility. The release candidates also made a few breaking changes on purpose, for example making message types extensible so that they can get new fields during 1.x.
 
 Based on this, we made the 1.0 release on September 2.
 
@@ -371,18 +373,6 @@ The very next day, we found a bug that none of our checks had caught: [building 
 The problem was that one of dora's packages read a file from a neighboring folder in the repository. In the repository, that folder exists, so every build and test passed. However, a published package on `crates.io` only contains its own files, so the published version couldn't find it.
 
 We quickly [fixed this](https://github.com/dora-rs/dora/pull/3401) and released 1.0.1. For historical reasons, our release process skipped cargo's own check of the published packages, so we turned that check on. We also added an automated check on every pull request, so that this type of bug cannot happen again.
-
-## What the human does
-
-With this setup, the maintainer's work is different from before, but there is still a lot of it:
-
-- Deciding what to build, and in which order.
-- Writing and reviewing the plans for big features before any code is written.
-- Reading high-risk changes carefully, like anything that touches the message format or a public API, and skimming low-risk ones.
-- Checking the approach. Agents don't always pick the right one: a fix can be hacky, more complicated than it needs to be, or make a symptom go away instead of fixing the cause, and still pass every check.
-- Deciding when not to fix something, for example a reported bug that can't happen in practice.
-
-Every merge in dora is still a human decision.
 
 ## Conclusion
 
