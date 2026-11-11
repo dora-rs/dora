@@ -31,8 +31,6 @@ Dataflows are flexible in several ways:
 - **Machines:** A dataflow can run on a single machine or be split across multiple machines.
 - **Operating systems:** Dora runs on Linux, macOS and Windows, and you can freely combine different operating systems when splitting a dataflow.
 
-![Distributed dora: dashed control paths connect CLI, coordinator, daemons and nodes; solid data paths use shared memory on the robot and Zenoh across machines.](images/dora-distributed-dataflow.svg)
-
 That makes dora a distributed system, so bugs are often:
 
 - **Non-deterministic:** they show up under load, during shutdown, or on a flaky network.
