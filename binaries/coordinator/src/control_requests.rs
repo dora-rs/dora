@@ -943,8 +943,10 @@ impl Coordinator {
             }
         };
         // A dataflow whose record is `Recovering` (an orphan reclaim
-        // waiting for a daemon to reconnect) is not finished, whatever
-        // partial `dataflow_results` it has.
+        // waiting for a daemon to reconnect) is not finished. The reclaim
+        // parks its partial results in `resent_finish_reports`, so this is
+        // a second line of defence for any entry that still lands in
+        // `dataflow_results`.
         let recovering: BTreeSet<Uuid> = records
             .iter()
             .filter(|record| matches!(record.status, StoreDataflowStatus::Recovering))

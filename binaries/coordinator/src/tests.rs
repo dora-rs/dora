@@ -1993,6 +1993,7 @@ async fn disconnect_reclaims_orphaned_running_dataflow() {
         &mut IndexMap::new(),
         &mut IndexMap::new(),
         &mut HashMap::new(),
+        &mut HashMap::new(),
         &store,
         &clock,
     )
@@ -2064,6 +2065,7 @@ async fn launch_context_survives_orphan_reclaim_and_reconnect() {
         &mut DaemonConnections::default(),
         &mut IndexMap::new(),
         &mut IndexMap::new(),
+        &mut HashMap::new(),
         &mut HashMap::new(),
         &store,
         &clock,
@@ -7707,6 +7709,8 @@ async fn clean_keeps_a_dataflow_awaiting_reclaim() {
         dataflow_id,
         &mut coordinator.running_dataflows,
         &mut coordinator.reclaimed_launches,
+        &mut coordinator.dataflow_results,
+        &mut coordinator.resent_finish_reports,
         &coordinator.clock,
         store.as_ref(),
     )
@@ -8220,6 +8224,178 @@ async fn reestablishing_a_dataflow_keeps_parked_finish_reports() {
     );
 }
 
+/// A multi-daemon dataflow where one daemon finished before the other dropped
+/// off. The orphan reclaim takes it out of `running_dataflows`. Left in
+/// `dataflow_results`, the finished daemon's results would read as a finished
+/// dataflow: `dora list` would show it Finished, `dora stop` would reply
+/// success without stopping the daemon still running it, and
+/// `cap_dataflow_results` could evict the results before the reconnecting
+/// daemon's resent report needs them to settle the record.
+#[tokio::test]
+async fn orphan_reclaim_keeps_earlier_finish_reports_out_of_dataflow_results() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let finished_daemon = DaemonId::new(Some("a".to_string()));
+    let remaining_daemon = DaemonId::new(Some("b".to_string()));
+    let finished_node: NodeId = "early".to_string().into();
+    let remaining_node: NodeId = "sender".to_string().into();
+    let df = test_running_dataflow(
+        dataflow_id,
+        remaining_daemon.clone(),
+        remaining_node.clone(),
+    );
+    let mut coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, df)]),
+        Default::default(),
+        store.clone(),
+    );
+    let clock = coordinator.clock.clone();
+    coordinator.dataflow_results.insert(
+        dataflow_id,
+        BTreeMap::from([(
+            finished_daemon.clone(),
+            finish_result(&clock, BTreeMap::from([(finished_node.clone(), Ok(()))])),
+        )]),
+    );
+    crate::daemon_liveness::begin_orphaned_dataflow_reclaim(
+        dataflow_id,
+        &mut coordinator.running_dataflows,
+        &mut coordinator.reclaimed_launches,
+        &mut coordinator.dataflow_results,
+        &mut coordinator.resent_finish_reports,
+        &coordinator.clock,
+        store.as_ref(),
+    )
+    .await;
+    assert!(matches!(
+        store.get_dataflow(&dataflow_id).unwrap().map(|r| r.status),
+        Some(StoreDataflowStatus::Recovering)
+    ));
+
+    // `dora list` must not show the recovering dataflow as finished.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    coordinator.handle_list(tx).await.expect("handle list");
+    let ControlRequestReply::DataflowList(list) = rx.await.unwrap().expect("list ok") else {
+        panic!("expected a dataflow list");
+    };
+    assert!(
+        !list.0.iter().any(|entry| entry.id.uuid == dataflow_id),
+        "a Recovering dataflow must not be listed as finished: {:?}",
+        list.0
+    );
+
+    // `dora stop` must not report a successful stop it never sent.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_stop(dataflow_id, None, false, tx)
+        .await
+        .expect("handle stop");
+    let reply = rx.await.unwrap();
+    assert!(
+        !matches!(reply, Ok(ControlRequestReply::DataflowStopped { .. })),
+        "stop must not reply success for a dataflow still Recovering: {reply:?}"
+    );
+
+    // Finished history filling up must not evict the earlier daemon's results.
+    for _ in 0..=MAX_DATAFLOW_RESULTS {
+        coordinator
+            .dataflow_results
+            .insert(DataflowId::from(Uuid::new_v4()), BTreeMap::new());
+    }
+    cap_dataflow_results(
+        &mut coordinator.dataflow_results,
+        &coordinator.running_dataflows,
+    );
+
+    // The remaining daemon reconnects and resends its finish report: the
+    // record settles with both daemons' results.
+    coordinator
+        .handle_dataflow_event(
+            dataflow_id,
+            DataflowEvent::DataflowFinishedOnDaemon {
+                daemon_id: remaining_daemon.clone(),
+                result: finish_result(&clock, BTreeMap::from([(remaining_node, Ok(()))])),
+            },
+        )
+        .await
+        .expect("handle the resent finish report");
+    let record = store.get_dataflow(&dataflow_id).unwrap().expect("record");
+    assert!(
+        matches!(record.status, StoreDataflowStatus::Succeeded),
+        "the resent report must settle the record, got {:?}",
+        record.status
+    );
+    let results = coordinator
+        .dataflow_results
+        .get(&dataflow_id)
+        .expect("settled results");
+    assert!(
+        results
+            .get(&finished_daemon)
+            .is_some_and(|r| r.node_results.contains_key(&finished_node)),
+        "the earlier daemon's results must survive the reclaim window: {results:?}"
+    );
+    assert!(results.contains_key(&remaining_daemon));
+}
+
+/// The orphan reclaim parks the results of daemons that already finished,
+/// and its `Recovering` write can fail, leaving the record `Running`. A daemon
+/// re-reporting the dataflow then takes the `Running` reconcile path, which
+/// must merge the parked results back too, or the dataflow settles without
+/// them.
+#[tokio::test]
+async fn reestablishing_a_running_record_keeps_parked_finish_reports() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let finished_daemon = DaemonId::new(Some("done".to_string()));
+    let running_daemon = DaemonId::new(Some("running".to_string()));
+    let finished_node: NodeId = "sender".to_string().into();
+    let running_node: NodeId = "receiver".to_string().into();
+    let mut record = recovering_record_with_nodes(
+        dataflow_id,
+        BTreeMap::from([
+            (finished_node.clone(), finished_daemon.clone()),
+            (running_node.clone(), running_daemon.clone()),
+        ]),
+        vec![
+            serde_json::json!({"id": "sender", "path": "sender", "outputs": ["message"]}),
+            serde_json::json!({"id": "receiver", "path": "receiver", "outputs": ["message"]}),
+        ],
+    );
+    record.status = StoreDataflowStatus::Running;
+    store.put_dataflow(&record).expect("seed running record");
+    let mut coordinator = coordinator_with_store(store.clone());
+    let clock = coordinator.clock.clone();
+    coordinator.resent_finish_reports.insert(
+        dataflow_id,
+        BTreeMap::from([(
+            finished_daemon.clone(),
+            finish_result(&clock, BTreeMap::from([(finished_node, Ok(()))])),
+        )]),
+    );
+
+    coordinator
+        .handle_daemon_status_report(
+            running_daemon,
+            vec![dora_message::daemon_to_coordinator::DataflowStatusEntry {
+                dataflow_id,
+                running_nodes: vec![running_node],
+            }],
+        )
+        .await
+        .expect("handle the status report");
+
+    assert!(coordinator.running_dataflows.contains_key(&dataflow_id));
+    assert!(
+        coordinator
+            .dataflow_results
+            .get(&dataflow_id)
+            .is_some_and(|results| results.contains_key(&finished_daemon)),
+        "the parked results must move into dataflow_results on re-establish"
+    );
+    assert!(!coordinator.resent_finish_reports.contains_key(&dataflow_id));
+}
+
 /// A report is only a resend for a dataflow the coordinator lost track of.
 /// Once the record has settled — a normal finish, or the recovery-timeout
 /// verdict — a late report must keep being dropped, as it was before.
@@ -8450,6 +8626,8 @@ async fn producer_daemons_waits_for_a_reclaimed_dataflows_daemon() {
         dataflow_id,
         &mut coordinator.running_dataflows,
         &mut coordinator.reclaimed_launches,
+        &mut coordinator.dataflow_results,
+        &mut coordinator.resent_finish_reports,
         &coordinator.clock,
         store.as_ref(),
     )

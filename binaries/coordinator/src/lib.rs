@@ -366,12 +366,16 @@ pub(crate) struct Coordinator {
     /// (see [`state::ReclaimedLaunches`]).
     pub(crate) reclaimed_launches: state::ReclaimedLaunches,
     pub(crate) dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
-    /// Finish reports from daemons that reconnected for a dataflow the orphan
-    /// reclaim left `Recovering`. Parked here rather than in `dataflow_results`
-    /// until they cover every node the record assigns: readers treat any
-    /// `dataflow_results` entry as a finished dataflow, so a partial report
-    /// there would make `dora list` / `stop` / `clean` act on a dataflow that is
-    /// still recovering. See `Coordinator::record_resent_finish_report`.
+    /// Finish reports for a dataflow the orphan reclaim left `Recovering`: the
+    /// results of daemons that finished before the reclaim (moved here by
+    /// `begin_orphaned_dataflow_reclaim`) and reports daemons resent after
+    /// reconnecting. Parked here rather than in `dataflow_results` until they
+    /// cover every node the record assigns: readers treat any
+    /// `dataflow_results` entry for a dataflow not in `running_dataflows` as a
+    /// finished dataflow, so a partial one there would make `dora list` /
+    /// `stop` / `clean` act on a dataflow that is still recovering,
+    /// and `cap_dataflow_results` could evict it. See
+    /// `Coordinator::record_resent_finish_report`.
     pub(crate) resent_finish_reports: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     pub(crate) archived_dataflows: IndexMap<DataflowId, ArchivedDataflow>,
     pub(crate) daemon_connections: DaemonConnections,

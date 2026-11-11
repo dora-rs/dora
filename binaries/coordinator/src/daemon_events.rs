@@ -172,6 +172,7 @@ impl Coordinator {
                 &mut self.daemon_connections,
                 &mut self.archived_dataflows,
                 &mut self.dataflow_results,
+                &mut self.resent_finish_reports,
                 &mut self.pending_restarts,
                 &self.store,
                 &self.clock,
@@ -355,6 +356,7 @@ impl Coordinator {
                 &mut self.daemon_connections,
                 &mut self.archived_dataflows,
                 &mut self.dataflow_results,
+                &mut self.resent_finish_reports,
                 &mut self.pending_restarts,
                 &self.store,
                 &self.clock,
@@ -598,13 +600,23 @@ impl Coordinator {
                         // missing from the live map (e.g. a later report,
                         // or a coordinator restart that loaded the record
                         // but not the in-memory entry). Idempotent.
-                        if reestablish_running_dataflow(
+                        let barrier_released = reestablish_running_dataflow(
                             &mut self.running_dataflows,
                             &mut self.reclaimed_launches,
                             &record,
                             &daemon_id,
                             &entry.running_nodes,
-                        ) && let Some(df) = self.running_dataflows.get(&record.uuid)
+                        );
+                        if self.running_dataflows.contains_key(&record.uuid) {
+                            // An orphan reclaim parks the results of daemons
+                            // that already finished, and its `Recovering`
+                            // write can fail and leave the record `Running`.
+                            // Merge them back as the arm above does, or the
+                            // dataflow settles without them.
+                            self.merge_resent_finish_reports(record.uuid);
+                        }
+                        if barrier_released
+                            && let Some(df) = self.running_dataflows.get(&record.uuid)
                         {
                             // Barrier released while this daemon was
                             // gone; nothing else will tell it (#2998).
