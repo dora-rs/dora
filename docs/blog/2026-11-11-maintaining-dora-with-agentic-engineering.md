@@ -41,7 +41,7 @@ With the latest models, AI agents are very capable. Given a clear task, even a l
 
 ## Five layers of checks
 
-Every change goes through five layers of checks. Each of them catches a different kind of mistake:
+No single check catches all of these bugs, so we combine several. Every change goes through five layers of checks, and each of them catches a different kind of mistake:
 
 1. **The language:** Rust rules out whole classes of bugs at compile time.
 2. **The architecture:** components with clear interfaces, and one implementation for all four languages.
