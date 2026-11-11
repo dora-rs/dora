@@ -483,12 +483,12 @@ impl<R: Read> RecordingReader<R> {
             // `read_array` / `read_slice` (see `parse_record`).
             //
             // A torn tail never ends in the footer, though: `finish` writes
-            // it after the last record. (In a recording without a footer a
-            // corrupt length past EOF still looks like a torn tail; the
-            // format cannot tell the two apart.) A short body that does was read to
-            // the end of a finished recording through a corrupt length
-            // prefix, and stopping here would drop every record after it
-            // without a word.
+            // it after the last record. A short body that ends in the footer
+            // was read to the end of a finished recording through a corrupt
+            // length prefix, and stopping here would drop every record after
+            // it without a word. (In a recording without a footer, a corrupt
+            // length past EOF still looks like a torn tail; the format cannot
+            // tell the two apart.)
             Ok(_) if ends_with_footer(&self.record_buf) => {
                 eyre::bail!(
                     "record length {record_len} runs past the end of the recording: \
@@ -915,8 +915,7 @@ mod tests {
     /// A corrupt length prefix in a finished recording that points past the
     /// end of the file must return `Err`. Its short body ends in the footer
     /// `finish` wrote, so it is not a torn tail from a crash, and stopping
-    /// there as if it were would drop every later record without a word
-    /// (dora-rs/dora#4128).
+    /// there as if it were would drop every later record without a word.
     #[test]
     fn record_len_past_the_footer_returns_err_not_dropped_records() {
         let header = sample_header();
