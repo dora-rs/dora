@@ -173,7 +173,7 @@ impl InputBuffer {
             }
             // A dropped service/action event leaves its caller waiting
             // forever, so spare those as the node-side scheduler does
-            // (dora-rs/adora#145).
+            // (`select_eviction`).
             match eviction_candidates(&self.queue, id) {
                 (_, Some(ordinary)) => {
                     self.queue.remove(ordinary);
@@ -206,8 +206,8 @@ impl InputBuffer {
                         );
                     }
                 }
-                // The counter ran ahead of the queue; the decrement below
-                // brings it back in step.
+                // The counter ran ahead of the queue and nothing can be
+                // evicted; the decrement below still keeps it at the cap.
                 (None, _) => debug_assert!(false, "queued count for `{id}` exceeds the queue"),
             }
             state.queued -= 1;
@@ -344,7 +344,7 @@ mod tests {
     }
 
     // A service response must not be evicted while an ordinary event of the
-    // same input can go instead, matching the node-side scheduler (adora#145).
+    // same input can go instead, matching the node-side scheduler.
     #[test]
     fn over_cap_evicts_an_ordinary_event_before_a_correlated_one() {
         let mut buffer = buffer_with_cap("x", 2);
