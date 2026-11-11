@@ -3399,7 +3399,7 @@ fn publish_schema_once(
     let state = schema_state.get(output_id);
     let known = state.map(|state| (state.published_hash, &*state.published_schema));
     let (hash, schema_bytes) =
-        arrow_utils::ipc_encode::schema_block_and_hash_reusing(full_stream, known)?;
+        dora_core::schema_once::schema_block_and_hash_reusing(full_stream, known)?;
 
     let now = Instant::now();
     let decision = schema_once_decision(state, hash, now);

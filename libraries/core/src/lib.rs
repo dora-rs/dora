@@ -18,8 +18,10 @@ pub use dora_message::{config, uhlc};
 
 #[cfg(feature = "build")]
 pub mod build;
+pub mod debug_topic;
 pub mod descriptor;
 pub mod manifest;
+pub mod schema_once;
 pub mod topics;
 pub mod types;
 

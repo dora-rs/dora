@@ -5,7 +5,7 @@ use crate::spawn::Spawner;
 use crate::{
     CoreNodeKindExt, Daemon, DebugSchemaCache, Event, InputDeadline, OutputId, RunningDataflow,
     STDERR_LOG_LINES_MAX, node_inputs, output_routing, prepare_debug_topic_frame,
-    retain_debug_schema, spawn,
+    retain_published_schema, spawn,
 };
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
@@ -426,10 +426,8 @@ impl Daemon {
                             .history(HistoryConfig::default().detect_late_publishers())
                             .callback(move |sample| {
                                 let bytes = sample.payload().to_bytes();
-                                let hash = dora_message::metadata::fnv1a(&bytes);
-                                retain_debug_schema(
+                                retain_published_schema(
                                     &mut cache.lock().unwrap_or_else(|e| e.into_inner()),
-                                    hash,
                                     &bytes,
                                 );
                             })
