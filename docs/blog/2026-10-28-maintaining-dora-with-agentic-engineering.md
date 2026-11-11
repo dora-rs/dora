@@ -25,8 +25,6 @@ In dora, you describe your application as a graph of small programs, called node
 
 ![Two example dataflows: a robot (camera, object detector, planner, motors) and an AI app (microphone, speech-to-text, LLM, text-to-speech)](images/agentic-engineering/pipelines.png)
 
-
-
 Dataflows are flexible in several ways:
 
 - **Languages:** Nodes can be written in Rust, Python, C or C++. A dataflow can combine nodes written in different languages, so you can choose (or change) the programming language for each node individually.
@@ -36,11 +34,13 @@ Dataflows are flexible in several ways:
 ![Distributed dora: dashed control paths connect CLI, coordinator, daemons and nodes; solid data paths use shared memory on the robot and Zenoh across machines.](images/dora-distributed-dataflow.svg)
 
 That makes dora a distributed system, so bugs are often:
+
 - **Non-deterministic:** they show up under load, during shutdown, or on a flaky network.
 - **Platform-specific:** a test passes on Linux and fails on Windows.
 - **Between components:** each part is correct, but the combination isn't.
 
 With the latest models, AI agents are very capable. Given a clear task, even a large one, they usually get it right. However, such a distributed, multi-language, multi-OS environment is still a challenge to them.
+
 ## Five layers of checks
 
 Every change goes through five layers of checks. Each of them catches a different kind of mistake:
@@ -52,8 +52,6 @@ Every change goes through five layers of checks. Each of them catches a differen
 5. **AI routines:** agents that look for problems on a schedule and fix them.
 
 On top of that there is human review, focused on high-risk changes.
-
-
 
 The rest of this post goes through the above layers in detail and then describes how we used them for the 1.0 release.
 
@@ -106,7 +104,8 @@ The components only talk to each other through clear interfaces, and those inter
 
 The second architectural choice is that there is only one implementation of the node API. The Python, C and C++ APIs are thin wrappers around the Rust API. With separate implementations, every fix would have to be made four times, and every review would have to check that four versions still behave the same. With thin wrappers, a bug fix in the Rust core fixes every language, and there is nothing to keep in sync. New features still have to be exposed in each wrapper, but that is a small amount of code.
 
-Because Rust is a compiled language that can be linked efficiently with the other languages, this wrapper pattern cases almost no performance overhead.
+Because Rust is a compiled language that can be linked efficiently with the other languages, this wrapper pattern causes almost no performance overhead.
+
 ## The test suite
 
 The test suite is the layer that actually checks most of the code. Dora has about 2,750 tests:
@@ -125,12 +124,12 @@ The end-to-end tests start a real coordinator and daemons, run example dataflows
 
 The full test suite takes about 40 minutes on Linux (longer on macOS and Windows), and we merge around 45 pull requests a week, on busy days 20 or more. Running the full suite for every pull request on every update doesn't fit.
 
-
-
 So we decided to split our test suite into multiple tiers:
+
 - **On every pull request update:** cheap checks like building, lints, formatting and API compatibility, in about ten minutes.
 - **Before every merge:** the test suite on Linux, plus a full build on macOS and Windows.
 - **Every night:** all tests and all example dataflows on Linux, macOS and Windows, and other jobs like cross-compiling for eight targets.
+
 ### A merge queue with batching
 
 Even the Linux run before a merge takes about 40 minutes, so we use a merge queue that batches pull requests.
@@ -179,8 +178,6 @@ fn tail_counts_only_level_filtered_lines() {
 
 The test looks fine at a glance, but it is completely independent of the actual code, since it calls the two helper functions directly, in the right order. If someone swapped the order back in the real code, the test would still pass.
 
-
-
 A review caught this issue, and the agent rewrote the change:
 
 ```rust
@@ -202,14 +199,14 @@ fn tail_counts_only_level_filtered_lines() {
 
 Now the test runs the same code that users run and the filter order is specified only in a single place in the codebase. Swapping the order back now affects the test too and makes it fail.
 
-
 So it's important to set a clear rule: **a regression test must fail on main without the fix.** The agents are told to check this, the AI reviewer is told to check it, and it is one of the first things to look at when reviewing a fix.
 
 ### Mutation testing
 
 Mutation testing is an interesting technique that applies that rule to every line. A tool introduces small bugs on purpose, such as turning `a + b` into `a - b`, `>=` into `>`, or returning an empty list instead of the real one, and runs the tests after each change. If no test fails, that code isn't really tested.
 
-However, tt is slow: a full run over our core crates takes 10 to 18 hours. So it is not automated. We run it manually from time to time to improve the tests of one part of the code. The first run on the core library raised the share of caught mutations from 37% to 43% with 22 new tests, so our tests still miss many of these small bugs, and there is a lot left to improve.
+However, it is slow: a full run over our core crates takes 10 to 18 hours. So it is not automated. We run it manually from time to time to improve the tests of one part of the code. The first run on the core library raised the share of caught mutations from 37% to 43% with 22 new tests, so our tests still miss many of these small bugs, and there is a lot left to improve.
+
 ## AI reviews
 
 Every few hours, a scheduled routine reviews every open pull request. It currently uses Claude Opus 5.5. Some details of how it works:
@@ -247,15 +244,11 @@ The layers discussed so far react to changes. This layer includes routines that 
 
 ![Spot-checks, merge reviews and nightly failures file issues; a fix routine turns issues into PRs; the deep scan opens PRs directly; all PRs get AI reviews, then a human decides and the merge queue merges](images/agentic-engineering/routines.png)
 
-Two routines look for problems and file issues, and nightly test failures become issues automatically. A deep scan opens pull requests directly.
- We explain those below.
-
-
+Two routines look for problems and file issues, and nightly test failures become issues automatically. A deep scan opens pull requests directly. We explain those below.
 
 A fix routine tries to turn each issue into a pull request. It is allowed to give up: if it can't fix something, or the issue needs a human decision, it leaves a comment instead.
 
-
-All of these pull requests then go through the AI review and the routine that opened them keeps fixing them. This often takes multiple rounds . Only then a human takes a look and makes the merge decision (which then goes through the merge queue).
+All of these pull requests then go through the AI review and the routine that opened them keeps fixing them. This often takes multiple rounds. Only then a human takes a look and makes the merge decision (which then goes through the merge queue).
 
 Let's take a closer look at some of these routines:
 
@@ -265,8 +258,6 @@ Let's take a closer look at some of these routines:
 
 Every other review looks at what changed, but many bugs live in code that hasn't changed in months. Random sampling makes sure every part of the codebase gets looked at eventually.
 
-
-
 Two examples for bugs found by the spot checks in older code:
 
 - `dora logs --node cam` also showed the logs of a node called `cam.left`, because it matched every log file starting with `log_cam` ([#3449](https://github.com/dora-rs/dora/issues/3449)).
@@ -274,7 +265,7 @@ Two examples for bugs found by the spot checks in older code:
 
 ### Review of the last two days of merges
 
-> *"Review recent (last 2 days) commits and pullz requests … for potential bugs or regressions. … also consider how the PRs/commit interact or conflict with each other."*
+> *"Review recent (last 2 days) commits and pull requests … for potential bugs or regressions. … also consider how the PRs/commit interact or conflict with each other."*
 
 The merge queue catches combinations of changes that don't compile. This routine looks for combinations that compile but are wrong. It also acts as another round of review for things that earlier reviews missed. It specifically looks for certain red flags such as skipped tests, overly broad error handling and incomplete refactors.
 
@@ -366,8 +357,8 @@ We made sure that each of those breaks produces a clear error message instead of
 A project like dora will never be perfect, bug-free, or finished. So we made the decision that Dora is ready for 1.0 based on the following:
 
 - We published five release candidates and no open critical bugs were known.
-- 11 nightly CI runs in a row with all jobs green (and many more with only flaky test failures before)
-- We did a lot of preparation work for ensuring backwards and forwards compatiblity.
+- 11 nightly CI runs in a row with all jobs green (and many more with only flaky test failures before).
+- We did a lot of preparation work for ensuring backwards and forwards compatibility.
 - A benchmark against 0.5 showed 7–39% lower median latency at every message size.
 - We created a [migration guide](../migration-from-0.x.md) for users of 0.x.
 
