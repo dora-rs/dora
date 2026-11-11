@@ -19,14 +19,16 @@ registry's fallback when the host is unreachable.
    read from `[package].version` (Cargo) / `[project].version` (pyproject) at the
    pinned commit, or supplied with `--version`. (Adding `version:` to the
    manifest is rejected — it uses `deny_unknown_fields`.)
-2. A registry account and a publish token:
+2. A registry account and a publish token. Create the token on the Hub website
+   (<https://dora.pub/account/tokens>), then save it locally:
 
    ```bash
-   dora hub login                 # prompts for email/password; stores a token
+   dora hub login                 # paste the token at the prompt
    dora hub token                 # inspect the saved token
    ```
 
-   Or create a token in the registry website and set `DORA_HUB_TOKEN`.
+   The token is cached at `~/.config/dora/hub-token` (mode `0600`). For a
+   one-off command, pass `--token` or set `DORA_HUB_TOKEN` instead.
 3. A git repository so `publish` can package the committed tree (a dirty
    working tree is intentionally ignored).
 4. Your `namespace` is owned by your account (the registry enforces this).
@@ -126,7 +128,7 @@ overwrite an existing version) instead of printing PR instructions. See
 dora hub init                      # scaffold dora-node.yml (if you haven't)
 dora validate --node-manifest dora-node.yml   # manifest is well-formed
 # commit dora-node.yml + the version bump
-dora hub login                     # create/save a publish token
+dora hub login                     # save a publish token created on dora.pub
 dora hub publish --dry-run         # validate + preview
 dora hub publish                   # upload to the registry (or append to a local index)
 ```

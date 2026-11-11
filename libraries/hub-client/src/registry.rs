@@ -27,7 +27,7 @@ use std::{
 use dora_core::manifest::NodeManifest;
 use eyre::{Context, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use url::Url;
 
 use crate::index::{BinaryArtifact, IndexEntry, SourceSpec, current_platform};
@@ -281,52 +281,6 @@ impl RegistryClient {
         json_response(response)
     }
 
-    /// Sign in and return the browser session cookie needed to mint a token.
-    pub fn login(&self, email: &str, password: &str) -> eyre::Result<RegistrySession> {
-        let response = self
-            .client
-            .post(format!("{}/api/v1/auth/login", self.base))
-            .json(&json!({ "email": email, "password": password }))
-            .send()
-            .with_context(|| format!("failed to reach registry {}", self.base))?;
-        let status = response.status();
-        let cookie = session_cookie(&response);
-        let body = response.text().unwrap_or_default();
-        if !status.is_success() {
-            bail!(
-                "registry login failed ({status}){}",
-                registry_error_detail(&body)
-            );
-        }
-        let cookie = cookie
-            .ok_or_else(|| eyre::eyre!("registry login succeeded without a session cookie"))?;
-        Ok(RegistrySession { cookie })
-    }
-
-    /// Create a scoped API token using a browser session.
-    pub fn create_token(
-        &self,
-        session: &RegistrySession,
-        name: &str,
-        scopes: &[String],
-    ) -> eyre::Result<String> {
-        let response = self
-            .client
-            .post(format!("{}/api/v1/me/tokens", self.base))
-            .header(
-                reqwest::header::COOKIE,
-                format!("dora_hub_session={}", session.cookie),
-            )
-            .json(&json!({ "name": name, "scopes": scopes }))
-            .send()
-            .with_context(|| format!("failed to reach registry {}", self.base))?;
-        let value = json_response(response)?;
-        value["token"]
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| eyre::eyre!("registry did not return a token"))
-    }
-
     /// Upload a package archive (`tar.gz`) with the Cargo-style length-prefixed
     /// body the registry expects.
     pub fn publish(
@@ -354,11 +308,7 @@ impl RegistryClient {
     }
 }
 
-/// A browser session cookie returned by `/api/v1/auth/login`.
-pub struct RegistrySession {
-    cookie: String,
-}
-
+/// A package summary returned by the registry's search API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryPackage {
     pub namespace: String,
@@ -556,17 +506,6 @@ fn cache_key(base: &str) -> String {
     } else {
         key
     }
-}
-
-fn session_cookie(response: &reqwest::blocking::Response) -> Option<String> {
-    response
-        .headers()
-        .get_all(reqwest::header::SET_COOKIE)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .find_map(|value| value.split(';').next())
-        .and_then(|pair| pair.strip_prefix("dora_hub_session="))
-        .map(str::to_string)
 }
 
 fn registry_error_detail(body: &str) -> String {
@@ -857,6 +796,7 @@ pub fn source_available(repo: &str, commit: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn default_url_is_official() {

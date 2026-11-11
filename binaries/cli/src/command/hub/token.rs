@@ -36,8 +36,12 @@ impl Executable for Token {
                 }
             }
             None => {
+                let tokens_url = format!(
+                    "{}/account/tokens",
+                    registry::registry_url().trim_end_matches('/')
+                );
                 println!("no saved token at {}", path.display());
-                println!("run `dora hub login` to create one");
+                println!("run `dora hub login` to save a token from {tokens_url}");
             }
         }
         Ok(())

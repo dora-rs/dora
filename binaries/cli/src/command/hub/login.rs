@@ -1,85 +1,70 @@
-//! `dora hub login` — sign in to the HTTP registry and store a publish token.
+//! `dora hub login` — save a registry API token created on the Hub website.
+//!
+//! This follows `cargo login` rather than an in-CLI username/password sign-in:
+//! you create a scoped token at <https://dora.pub/account/tokens>, paste it at
+//! the prompt (or pass it as an argument), and the CLI stores it. The token is
+//! written to `~/.config/dora/hub-token` (0600, shared with the standalone
+//! `dora-hub` client).
 //!
 //! The registry defaults to <https://dora.pub>; `DORA_HUB_REGISTRY_URL`
-//! overrides it (local tests, mirrors). The token is written to
-//! `~/.config/dora/hub-token` (0600, shared with the standalone `dora-hub`
-//! client) unless `--no-save` is given.
+//! overrides it (local tests, mirrors). It selects which website the prompt
+//! points at; the token file itself is registry-independent, exactly as before.
 
-use dora_hub_client::registry::{self, RegistryClient};
-use eyre::Context;
+use std::io::{self, BufRead, IsTerminal};
+
+use dora_hub_client::registry;
+use eyre::{Context, bail};
 
 use crate::command::Executable;
 
 #[derive(Debug, clap::Args)]
-/// Sign in to a registry and create a publish token.
+/// Save a registry API token created on the Hub website.
 pub struct Login {
     /// Registry base URL. Defaults to DORA_HUB_REGISTRY_URL or https://dora.pub.
     #[clap(long, env = "DORA_HUB_REGISTRY_URL", value_name = "URL")]
     registry: Option<String>,
-    /// Account email.
-    #[clap(long, env = "DORA_HUB_EMAIL", value_name = "EMAIL")]
-    email: Option<String>,
-    /// Password; prompted for if omitted.
-    #[clap(
-        long,
-        env = "DORA_HUB_PASSWORD",
-        value_name = "PASSWORD",
-        hide_env_values = true
-    )]
-    password: Option<String>,
-    /// Name recorded for the created token.
-    #[clap(long, default_value = "cli", value_name = "NAME")]
-    token_name: String,
-    /// Comma-separated scopes for the token.
-    #[clap(
-        long,
-        value_delimiter = ',',
-        default_value = "publish-new,publish-update",
-        value_name = "SCOPE"
-    )]
-    scopes: Vec<String>,
-    /// Print the token instead of saving it to the token file.
-    #[clap(long, action)]
-    no_save: bool,
+    /// API token created on the Hub website (default:
+    /// https://dora.pub/account/tokens). Omit to paste it at the prompt, which
+    /// keeps it out of shell history.
+    #[clap(value_name = "TOKEN")]
+    token: Option<String>,
 }
 
 impl Executable for Login {
     fn execute(self) -> eyre::Result<()> {
         let registry_url = self.registry.unwrap_or_else(registry::registry_url);
-        let email = match self.email {
-            Some(email) if !email.trim().is_empty() => email,
-            _ => inquire::Text::new("Email")
-                .prompt()
-                .context("login cancelled")?,
-        };
-        let password = match self.password {
-            Some(password) if !password.is_empty() => password,
-            _ => inquire::Password::new("Password")
-                .without_confirmation()
-                .prompt()
-                .context("password prompt failed")?,
-        };
+        let tokens_url = format!("{}/account/tokens", registry_url.trim_end_matches('/'));
 
-        let client = RegistryClient::with_url(&registry_url, false)
-            .context("invalid registry configuration")?;
-        let session = client
-            .login(email.trim(), &password)
-            .with_context(|| format!("sign-in to {registry_url} failed"))?;
-        let token = client
-            .create_token(&session, &self.token_name, &self.scopes)
-            .context("failed to create a publish token")?;
-
-        if self.no_save {
-            println!("{token}");
-        } else {
-            let path = registry::save_token(&token).context("failed to save the publish token")?;
-            println!(
-                "signed in to {registry_url}\ntoken `{}` saved to {} (scope: {})",
-                self.token_name,
-                path.display(),
-                self.scopes.join(", ")
-            );
+        let token = match self.token {
+            Some(token) => token,
+            None => prompt_for_token(&tokens_url)?,
+        };
+        let token = token.trim();
+        if token.is_empty() {
+            bail!("the token must not be empty\n  create one at {tokens_url}");
         }
+
+        let path = registry::save_token(token).context("failed to save the token")?;
+        println!("token saved to {}", path.display());
         Ok(())
     }
+}
+
+/// Ask for the token on a terminal (hidden input), or read one line from stdin
+/// so `echo "$DORA_TOKEN" | dora hub login` works from scripts.
+fn prompt_for_token(tokens_url: &str) -> eyre::Result<String> {
+    println!("please paste the token found on {tokens_url} below");
+    if io::stdin().is_terminal() {
+        return inquire::Password::new("Token")
+            .without_confirmation()
+            .prompt()
+            .context("token prompt failed");
+    }
+
+    let mut line = String::new();
+    io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .context("failed to read the token from stdin")?;
+    Ok(line)
 }

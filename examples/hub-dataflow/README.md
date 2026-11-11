@@ -31,7 +31,7 @@ clones that commit, runs the node's `build:`, and writes the pin to
 dora hub search detection            # find nodes by name/keyword/category
 dora hub info dora-yolo              # typed inputs/outputs + example snippet
 dora hub list dataflow.yml           # hub packages pinned in the lockfile
-dora hub login                       # create/save a registry publish token
+dora hub login                       # save a publish token created on dora.pub
 dora hub fetch dataflow.yml --target-dir ./hub-cache   # warm cache + mirror sources
 ```
 
