@@ -206,7 +206,7 @@ impl PoolState {
                 // `cross_pool_shmem_name`; the sender node never runs on
                 // this host, so the node-exit reclaim never fires —
                 // `PeerMessage::Free` drops the entry explicitly, and a
-                // failed mirror creation rolls it back (#4100).
+                // failed mirror creation rolls it back.
                 //
                 // Mirror allocation cap: `size` comes from a remote daemon
                 // (untrusted cross-machine input). Without a cap, a buggy or
@@ -216,7 +216,7 @@ impl PoolState {
                 // error flows back through `PeerMessage::RegisterAck`.
                 // Checked before the descriptor store: receivers trust the
                 // stored `size`, so an over-cap one must never reach the
-                // table (#4100).
+                // table.
                 let size_error = (size > MIRROR_SIZE_CAP).then(|| {
                     format!("cross-machine pool size {size} exceeds the 1 GiB mirror cap")
                 });
@@ -353,7 +353,7 @@ impl PoolState {
                     // stored above: receivers would resolve a pool whose
                     // segment does not exist, and the origin records no
                     // cross-machine entry after `ok: false`, so it never
-                    // sends the `Free` that would drop it (#4100). This task
+                    // sends the `Free` that would drop it. This task
                     // cannot reach the extension table, so post a local
                     // `Free` back to the event loop, where it runs after the
                     // store. Skipped while an earlier attempt for the same
@@ -1396,8 +1396,7 @@ mod mirror_register_tests {
     }
 
     /// An over-cap `size` is untrusted remote input that receivers would
-    /// trust as the pool size, so it must never reach the extension table
-    /// (#4100).
+    /// trust as the pool size, so it must never reach the extension table.
     // The guard only serializes the env var across tests; holding it over
     // the awaits is the point.
     #[allow(clippy::await_holding_lock)]
@@ -1455,7 +1454,7 @@ mod mirror_register_tests {
     /// A register whose mirror cannot be created must not leave its
     /// descriptor behind: the origin gets `ok: false`, records no
     /// cross-machine entry, and so never sends the `Free` that would drop
-    /// it (#4100).
+    /// it.
     #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     #[cfg(target_os = "linux")]
