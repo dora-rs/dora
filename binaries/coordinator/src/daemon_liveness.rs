@@ -396,10 +396,10 @@ pub(crate) async fn stop_orphaned_dataflow_on_daemon(
 /// - moves the results of daemons that already finished from
 ///   `dataflow_results` into `resent_finish_reports`. Every reader of
 ///   `dataflow_results` takes an entry for a dataflow that is not in
-///   `running_dataflows` to be finished, so leaving them there made `dora list`
-///   show the dataflow Finished and `dora stop` reply success without stopping
-///   anything, and let `cap_dataflow_results` evict them before a resent finish
-///   report needed them to settle the record (dora-rs/dora#4092). Parked, they
+///   `running_dataflows` to be finished, so leaving them there would make
+///   `dora list` show the dataflow Finished and `dora stop` reply success
+///   without stopping anything, and would let `cap_dataflow_results` evict them
+///   before a resent finish report needs them to settle the record. Parked, they
 ///   are merged back when a daemon re-establishes the dataflow, used by the
 ///   coverage check of a resent finish report, and dropped with the record on
 ///   the recovery timeout, like any other parked report.

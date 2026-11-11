@@ -7754,12 +7754,12 @@ async fn reestablishing_a_dataflow_keeps_parked_finish_reports() {
 }
 
 /// A multi-daemon dataflow where one daemon finished before the other dropped
-/// off (#4092). The orphan reclaim takes it out of `running_dataflows`, and the
-/// finished daemon's results used to stay in `dataflow_results`, which every
-/// reader takes for a finished dataflow: `dora list` showed it Finished, `dora
-/// stop` replied success without stopping the daemon still running it, and
+/// off. The orphan reclaim takes it out of `running_dataflows`. Left in
+/// `dataflow_results`, the finished daemon's results would read as a finished
+/// dataflow: `dora list` would show it Finished, `dora stop` would reply
+/// success without stopping the daemon still running it, and
 /// `cap_dataflow_results` could evict the results before the reconnecting
-/// daemon's resent report needed them to settle the record.
+/// daemon's resent report needs them to settle the record.
 #[tokio::test]
 async fn orphan_reclaim_keeps_earlier_finish_reports_out_of_dataflow_results() {
     let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
@@ -7871,7 +7871,7 @@ async fn orphan_reclaim_keeps_earlier_finish_reports_out_of_dataflow_results() {
 /// and its `Recovering` write can fail, leaving the record `Running`. A daemon
 /// re-reporting the dataflow then takes the `Running` reconcile path, which
 /// must merge the parked results back too, or the dataflow settles without
-/// them (review of #4093).
+/// them.
 #[tokio::test]
 async fn reestablishing_a_running_record_keeps_parked_finish_reports() {
     let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
