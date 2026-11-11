@@ -271,7 +271,7 @@ Nodes can publish an output straight to the nodes that consume it over Zenoh,
 so the payload does not pass through the daemon (the *direct path*):
 
 - Each node opens a Zenoh session with a shared-memory (SHM) pool: 8 MiB by default, set per node with `shared_memory_pool_size` in the dataflow YAML or globally with `DORA_NODE_SHM_POOL_SIZE`
-- Payloads of 4 KiB or more (`ZERO_COPY_THRESHOLD`, overridable with `DORA_ZERO_COPY_THRESHOLD`) are written into a Zenoh SHM buffer; smaller payloads use a heap-buffered `put`
+- Payloads of 4 KiB or more (`ZERO_COPY_THRESHOLD`, overridable with `DORA_ZERO_COPY_THRESHOLD` up to 32 KiB) are written into a Zenoh SHM buffer; smaller payloads use a heap-buffered `put`
 - Subscribers on the same machine map the SHM buffer as an Arrow buffer without copying it; subscribers on other machines receive the bytes over the network
 - A payload of 4 KiB or more that cannot get an SHM buffer (the pool is momentarily full, or no SHM provider could be created at startup) is sent on the daemon path instead of Zenoh, because a fragmented Zenoh publish could be dropped silently (dora-rs/dora#2366). The node does not wait for the pool to drain
 - After each direct publish the node sends a small `OutputSent` request to the daemon, which uses it for input deadlines and circuit-breaker recovery. The payload itself is not copied through the daemon
@@ -448,7 +448,7 @@ There is no separate release message: lifetime follows the Arrow `Buffer` that h
 
 | Parameter | Value |
 |-----------|-------|
-| `ZERO_COPY_THRESHOLD` | 4096 bytes (override with `DORA_ZERO_COPY_THRESHOLD`) |
+| `ZERO_COPY_THRESHOLD` | 4096 bytes (override with `DORA_ZERO_COPY_THRESHOLD`, capped at 32 KiB) |
 | Node SHM pool size | 8 MiB (`shared_memory_pool_size` or `DORA_NODE_SHM_POOL_SIZE`) |
 | `MAX_MESSAGE_BYTES` | 64 MiB, daemon (TCP) path only; the direct path is bounded by the node's SHM pool instead, and a payload that does not fit takes the daemon path |
 
