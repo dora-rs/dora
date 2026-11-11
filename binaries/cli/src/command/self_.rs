@@ -21,6 +21,10 @@ pub enum SelfSubCommand {
     },
 }
 
+/// Selects the CLI archive among a release's assets. The target triple alone
+/// also matches the C and C++ library archives.
+const CLI_ASSET_IDENTIFIER: &str = "dora-cli-";
+
 impl Executable for SelfSubCommand {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
@@ -41,6 +45,7 @@ impl Executable for SelfSubCommand {
                     .repo_name("dora")
                     .bin_path_in_archive(&bin_path_in_archive)
                     .bin_name("dora")
+                    .asset_identifier(CLI_ASSET_IDENTIFIER)
                     .show_download_progress(true)
                     .current_version(env!("CARGO_PKG_VERSION"))
                     .build()?;
@@ -157,10 +162,57 @@ impl Executable for SelfSubCommand {
 mod tests {
     use std::io::Write;
 
+    /// A release's asset names (v1.1.0), in the order the GitHub API lists
+    /// them; the library archives come before the CLI for every target.
+    const V1_1_0_ASSETS: &[&str] = &[
+        "dora-c-libraries-aarch64-apple-darwin.tar.gz",
+        "dora-c-libraries-aarch64-unknown-linux-gnu.tar.gz",
+        "dora-c-libraries-x86_64-pc-windows-msvc.zip",
+        "dora-c-libraries-x86_64-unknown-linux-gnu.tar.gz",
+        "dora-cli-aarch64-apple-darwin.tar.gz",
+        "dora-cli-aarch64-unknown-linux-gnu.tar.gz",
+        "dora-cli-installer.ps1",
+        "dora-cli-installer.sh",
+        "dora-cli-x86_64-pc-windows-msvc.zip",
+        "dora-cli-x86_64-unknown-linux-gnu.tar.gz",
+        "dora-cpp-libraries-aarch64-apple-darwin.tar.gz",
+        "dora-cpp-libraries-aarch64-unknown-linux-gnu.tar.gz",
+        "dora-cpp-libraries-x86_64-pc-windows-msvc.zip",
+        "dora-cpp-libraries-x86_64-unknown-linux-gnu.tar.gz",
+    ];
+
+    #[test]
+    fn self_update_picks_the_cli_archive() {
+        let release = self_update::update::Release::builder()
+            .name("v1.1.0")
+            .version("1.1.0")
+            .assets(V1_1_0_ASSETS.iter().map(|name| {
+                self_update::update::ReleaseAsset::new(*name, format!("https://host/{name}"))
+            }))
+            .build()
+            .unwrap();
+        for target in [
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "x86_64-unknown-linux-gnu",
+        ] {
+            let without = release.asset_for(target, None).unwrap();
+            assert!(without.name().starts_with("dora-c-libraries-"), "{target}");
+            let with = release
+                .asset_for(target, Some(super::CLI_ASSET_IDENTIFIER))
+                .unwrap();
+            assert!(
+                with.name().starts_with(&format!("dora-cli-{target}")),
+                "{target}"
+            );
+        }
+    }
+
     /// The Windows release asset is made with PowerShell `Compress-Archive`,
     /// which always writes Deflate entries. `self_update` only links a Deflate
     /// decoder when `compression-zip-deflate` is enabled, so without it every
-    /// Windows `dora self update` fails after the download (#4034).
+    /// Windows `dora self update` fails after the download.
     #[test]
     fn self_update_extracts_a_deflate_zip() {
         let dir = tempfile::tempdir().unwrap();
