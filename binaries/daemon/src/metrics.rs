@@ -270,6 +270,7 @@ pub(crate) fn descendants(
 /// after `root_start_time` (unless start time is 0/unknown), and must never include
 /// `own_pid`. Descendants below direct children are already protected by [`parent_edges`]
 /// because their parents are still alive in `processes`.
+#[cfg_attr(unix, allow(dead_code))]
 pub(crate) fn bounded_descendants_for_exited_root(
     processes: impl IntoIterator<Item = (sysinfo::Pid, Option<sysinfo::Pid>, u64)>,
     root: sysinfo::Pid,
