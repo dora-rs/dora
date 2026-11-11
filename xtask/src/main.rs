@@ -20,7 +20,7 @@ enum Commands {
         /// Cargo build target directory (e.g., target/release)
         target_dir: PathBuf,
 
-        /// Staging output directory (e.g., dora-c-libraries-x86_64-unknown-linux-gnu)
+        /// Staging output directory (e.g., dora-libraries-c-x86_64-unknown-linux-gnu)
         prefix: PathBuf,
 
         /// Cargo target triple this prefix is being staged for

@@ -269,7 +269,7 @@ jobs:
       # any of the 8 is absent, so a silently-dropped target cannot ship.
       - uses: actions/download-artifact@v8
         with:
-          pattern: dora-c*-libraries-*
+          pattern: dora-libraries-*
           merge-multiple: true
           path: release-assets/
       - name: Copy install scripts to release assets
