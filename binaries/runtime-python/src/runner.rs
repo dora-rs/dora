@@ -2,7 +2,7 @@
 
 use dora_core::{
     config::{NodeId, OperatorId},
-    descriptor::{Descriptor, PythonSource, source_is_url},
+    descriptor::{Descriptor, PythonSource, descriptor_for_display, source_is_url},
 };
 use dora_download::download_file;
 #[cfg(feature = "telemetry")]
@@ -101,9 +101,10 @@ pub fn run(
         let operator = py
             .eval(c_str!("Operator()"), None, Some(&locals))
             .map_err(traceback)?;
+        let dataflow_descriptor_display = descriptor_for_display(dataflow_descriptor)?;
         operator.setattr(
             "dataflow_descriptor",
-            pythonize::pythonize(py, dataflow_descriptor)?,
+            pythonize::pythonize(py, &dataflow_descriptor_display)?,
         )?;
 
         Result::<_, eyre::Report>::Ok(Py::from(operator))

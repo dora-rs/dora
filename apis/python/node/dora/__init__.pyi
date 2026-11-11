@@ -91,8 +91,10 @@ class Node:
         """Returns the full dataflow descriptor that this node is part of.
 
         This method returns the parsed dataflow YAML file. Its `$VAR`
-        references are already expanded, and a `$` in an `env` string is
-        written as `$$`, the form that parses back to the same value."""
+        references are already expanded, and an `env` string's `$` is
+        exactly what was in the YAML (or the expanded `$VAR` value) — not
+        the `$$` form dora uses internally when the same descriptor crosses
+        a dora-to-dora wire hop."""
 
     def dataflow_id(self) -> str:
         """Returns the dataflow id."""
