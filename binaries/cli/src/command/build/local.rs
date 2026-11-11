@@ -21,6 +21,9 @@ pub struct BuildLayout {
     /// `--offline`: do not probe the hosting source or fetch a registry
     /// archive fallback.
     pub offline: bool,
+    /// Pinned registry archive checksums for this build (kept out of the
+    /// frozen wire `HubProvenance`).
+    pub hub_archive_sha256: BTreeMap<NodeId, String>,
 }
 
 pub fn build_dataflow_locally(
@@ -55,6 +58,7 @@ async fn build_dataflow(
     node_working_dir_overrides: &BTreeMap<NodeId, PathBuf>,
 ) -> eyre::Result<BuildInfo> {
     let offline = layout.offline;
+    let hub_archive_sha256 = layout.hub_archive_sha256.clone();
     let builder = Builder {
         session_id: dataflow_session.session_id,
         base_working_dir: layout.working_dir,
@@ -89,7 +93,7 @@ async fn build_dataflow(
                 // The archive fallback executes the package's build script, so
                 // only use it when the archive hash was pinned at resolution
                 // time (lockfile). Legacy pins without a checksum fail closed.
-                if let Some(expected_archive_sha256) = hub.archive_sha256.clone() {
+                if let Some(expected_archive_sha256) = hub_archive_sha256.get(&node_id).cloned() {
                     let hub_name = hub.name.clone();
                     let hub_version = hub.version.clone();
                     let fallback = tokio::task::spawn_blocking(move || {
@@ -280,6 +284,7 @@ mod tests {
                     working_dir: tmp.path().to_owned(),
                     hub_cache_dir: tmp.path().join("hub-cache"),
                     offline: false,
+                    hub_archive_sha256: BTreeMap::new(),
                 },
                 false,
                 parallel,

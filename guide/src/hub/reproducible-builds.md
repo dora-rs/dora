@@ -19,11 +19,14 @@ alongside the dataflow.
 The lockfile stores, per node:
 
 - the resolved **git source** — repo, exact `commit_hash`, and `subdir`; plus
-  the hub **provenance** (package `name`, resolved `version`, a
-  `manifest_digest`, and the registry archive's `archive_sha256` when one was
-  published), or
+  the hub **provenance** (package `name`, resolved `version`, and
+  `manifest_digest`), or
 - the resolved **binary source** — `platform`, `url`, and `sha256` — for a node
   that shipped a prebuilt artifact.
+
+For registry-resolved hub nodes it also records a per-node
+`hub_archive_sha256` map, used to verify the registry archive fallback while
+keeping the frozen wire `HubProvenance` shape unchanged.
 
 It also records a `descriptor_fingerprint` of the dataflow's source graph, used
 to detect when the YAML changed out from under the lockfile.

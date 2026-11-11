@@ -361,6 +361,18 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         locked,
         &hub_override_dirs,
     )?;
+    // The archive checksum is deliberately CLI/lockfile state, not part of the
+    // frozen `HubProvenance` wire type. Under `--locked`, only the lockfile's
+    // pinned checksum may authorize a fallback; otherwise use the live-resolved
+    // registry entry.
+    let hub_archive_sha256 = if locked {
+        build_lockfile
+            .as_ref()
+            .map(|lockfile| lockfile.hub_archive_sha256.clone())
+            .unwrap_or_default()
+    } else {
+        hub_resolution.archive_sha256.clone()
+    };
     let hub_override_node_dirs = hub_resolution.override_dirs.clone();
     for note in &hub_resolution.notes {
         println!("  {note}");
@@ -473,6 +485,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
             &lockfile_path,
             &git_sources,
             &hub_resolution.binary_sources,
+            &hub_archive_sha256,
             &descriptor_fingerprint,
         )
         .with_context(|| {
@@ -549,6 +562,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
                     working_dir: local_working_dir,
                     hub_cache_dir: dora_core::build::default_hub_cache_dir(),
                     offline,
+                    hub_archive_sha256: hub_archive_sha256.clone(),
                 },
                 uv,
                 parallel,

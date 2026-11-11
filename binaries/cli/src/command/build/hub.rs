@@ -48,6 +48,10 @@ pub struct HubResolution {
     /// nodes that resolved to a `binary` artifact — written to the lockfile so
     /// `--locked` reproduces the exact artifact (spec §8.2).
     pub binary_sources: BTreeMap<NodeId, BinaryPin>,
+    /// Per-node SHA-256 of the registry source archive, kept out of the
+    /// frozen `HubProvenance` wire type. The local builder uses it to verify
+    /// an archive fallback; the lockfile persists it separately.
+    pub archive_sha256: BTreeMap<NodeId, String>,
     /// Per-node local working dir for `--hub-override` substitutions (UC11):
     /// the node builds and runs from this checkout instead of a cloned commit.
     /// Threaded into the local builder so build + spawn root there.
@@ -122,14 +126,12 @@ fn resolve_node_bytes(
     manifest: &dora_core::manifest::NodeManifest,
     reference: &PackageRef,
     version: &dora_hub_client::semver::Version,
-    archive_sha256: Option<&str>,
 ) -> eyre::Result<NodeBytes> {
     let provenance = || -> eyre::Result<HubProvenance> {
         Ok(HubProvenance {
             name: reference.key(),
             version: version.to_string(),
             manifest_digest: Some(manifest_digest(manifest)?),
-            archive_sha256: archive_sha256.map(str::to_string),
         })
     };
     let git_bytes = |git: &str, rev: &str, subdir: Option<String>| -> eyre::Result<NodeBytes> {
@@ -449,7 +451,6 @@ fn resolve_live(
         &resolved.entry.manifest,
         reference,
         &resolved.version,
-        resolved.entry.archive_sha256.as_deref(),
     )
     .with_context(|| {
         format!(
@@ -789,6 +790,12 @@ pub fn resolve_hub_nodes(
             resolve_live(&catalog, &reference, &node.id, &raw_reference)?
         };
 
+        if let Some(archive_sha256) = entry.archive_sha256.clone() {
+            resolution
+                .archive_sha256
+                .insert(node.id.clone(), archive_sha256);
+        }
+
         if let NodeBytes::Git(git) = &bytes
             && let Some(subdir) = &git.subdir
         {
@@ -893,7 +900,6 @@ pub fn resolve_hub_nodes(
                         name: reference.key(),
                         version: version.to_string(),
                         manifest_digest: Some(manifest_digest(manifest)?),
-                        archive_sha256: None,
                     },
                 };
                 node.path = Some(url);
@@ -980,7 +986,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            resolve_node_bytes(&covered, &manifest, &reference, &version, None).unwrap(),
+            resolve_node_bytes(&covered, &manifest, &reference, &version).unwrap(),
             NodeBytes::Binary { .. }
         ));
 
@@ -995,7 +1001,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            resolve_node_bytes(&fallback, &manifest, &reference, &version, None).unwrap(),
+            resolve_node_bytes(&fallback, &manifest, &reference, &version).unwrap(),
             NodeBytes::Git(_)
         ));
 
@@ -1004,7 +1010,7 @@ mod tests {
             binary: vec![art("nonexistent-arch")],
             ..Default::default()
         };
-        assert!(resolve_node_bytes(&uncovered, &manifest, &reference, &version, None).is_err());
+        assert!(resolve_node_bytes(&uncovered, &manifest, &reference, &version).is_err());
 
         // plain git source (no binary) -> git
         let git = SourceSpec {
@@ -1013,7 +1019,7 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(
-            resolve_node_bytes(&git, &manifest, &reference, &version, None).unwrap(),
+            resolve_node_bytes(&git, &manifest, &reference, &version).unwrap(),
             NodeBytes::Git(_)
         ));
     }
@@ -1037,7 +1043,6 @@ mod tests {
                 name: reference.key(),
                 version: "2.1.0".into(),
                 manifest_digest: None,
-                archive_sha256: None,
             },
         };
         let mut resolution = HubResolution::default();
@@ -1272,7 +1277,6 @@ mod tests {
             &resolved.entry.manifest,
             &reference,
             &resolved.version,
-            None,
         )
         .unwrap() else {
             panic!("expected the fallback-git source");
