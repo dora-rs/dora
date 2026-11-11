@@ -16,6 +16,7 @@ use dora_message::{
     coordinator_to_daemon::{StateCatchUpEntry, StateCatchUpOperation},
     daemon_to_node::{NodeConfig, NodeEvent},
     descriptor::{Descriptor, RestartPolicy},
+    id::OperatorId,
     metadata,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -4416,5 +4417,231 @@ fn reclaim_drops_owned_entries_and_notifies_readers() {
                 if namespace == "dora-tensor-pool" && key == "pool_owner_1"
         ),
         "reader must be notified exactly once: {events:?}"
+    );
+}
+
+// -- Reload delivery errors (PR #3215, reload-only scope) -------------------
+//
+// The `Reload` control request (sent by `dora start --hot-reload`'s file
+// watcher) used to report success whatever happened to the event: a full
+// per-node channel dropped it, a closed one was pruned, and a local node
+// without a subscription was skipped. The coordinator turns a
+// `ReloadResult(Err)` into a visible CLI failure, so these tests drive the
+// real `Daemon::send_reload` and pin the error text.
+
+/// A dataflow with one subscribed local node `node`, plus its event receiver.
+fn reload_dataflow_with_subscribed_node() -> (
+    RunningDataflow,
+    NodeId,
+    mpsc::Receiver<Timestamped<NodeEvent>>,
+) {
+    let mut dataflow = test_dataflow();
+    let node_id = NodeId::from("node".to_string());
+    let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    dataflow.subscribe_channels.insert(node_id.clone(), tx);
+    dataflow
+        .pending_messages
+        .insert(node_id.clone(), Arc::new(AtomicU64::new(0)));
+    dataflow
+        .running_nodes
+        .insert(node_id.clone(), test_running_node());
+    (dataflow, node_id, rx)
+}
+
+/// A live local subscription must still receive the `Reload` event, and the
+/// delivery must be counted as pending so the listener's decrement balances.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn reload_to_a_live_local_node_is_delivered_and_counted() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let (dataflow, node_id, mut rx) = reload_dataflow_with_subscribed_node();
+    let dataflow_id = dataflow.id;
+    daemon.running.insert(dataflow_id, dataflow);
+
+    let operator_id = Some(OperatorId::from("op".to_string()));
+    daemon
+        .send_reload(dataflow_id, node_id.clone(), operator_id.clone())
+        .await
+        .expect("a live local subscription must accept the reload");
+
+    let events = drain_events(&mut rx);
+    assert!(
+        matches!(
+            events.as_slice(),
+            [NodeEvent::Reload { operator_id: got }] if *got == operator_id
+        ),
+        "the node must receive exactly one Reload event: {events:?}"
+    );
+    let pending =
+        daemon.running[&dataflow_id].pending_messages[&node_id].load(atomic::Ordering::Relaxed);
+    assert_eq!(pending, 1, "a delivered reload must be counted as pending");
+}
+
+/// A full per-node channel drops the event. The caller must learn about it
+/// instead of getting a success reply for a reload the node never saw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn reload_to_a_full_local_channel_reports_an_error() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let (dataflow, node_id, mut rx) = reload_dataflow_with_subscribed_node();
+    let dataflow_id = dataflow.id;
+
+    // Fill the channel to capacity without draining it.
+    let filler = || Timestamped {
+        inner: NodeEvent::Stop,
+        timestamp: clock.new_timestamp(),
+    };
+    let mut queued = 0;
+    while dataflow.subscribe_channels[&node_id]
+        .try_send(filler())
+        .is_ok()
+    {
+        queued += 1;
+    }
+    assert_eq!(queued, NODE_EVENT_CHANNEL_CAPACITY);
+    daemon.running.insert(dataflow_id, dataflow);
+
+    let err = daemon
+        .send_reload(dataflow_id, node_id.clone(), None)
+        .await
+        .expect_err("a dropped reload must not be reported as success");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("full"),
+        "the error must say the channel was full: {message}"
+    );
+    assert!(
+        message.contains(&node_id.to_string()),
+        "the error must name the node: {message}"
+    );
+
+    // The subscription itself is still valid: only the event was dropped.
+    assert!(
+        daemon.running[&dataflow_id]
+            .subscribe_channels
+            .contains_key(&node_id),
+        "a full channel must not be pruned"
+    );
+    let pending =
+        daemon.running[&dataflow_id].pending_messages[&node_id].load(atomic::Ordering::Relaxed);
+    assert_eq!(
+        pending, 0,
+        "a dropped reload must not be counted as pending"
+    );
+    assert_eq!(
+        drain_events(&mut rx).len(),
+        queued,
+        "the dropped reload must not have been queued behind the fillers"
+    );
+}
+
+/// A closed channel (the node's event stream is gone) must be reported, and
+/// the dead entry must still be cleaned up so later sends do not retry it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn reload_to_a_closed_local_channel_reports_an_error_and_prunes_it() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let (dataflow, node_id, rx) = reload_dataflow_with_subscribed_node();
+    let dataflow_id = dataflow.id;
+    drop(rx);
+    daemon.running.insert(dataflow_id, dataflow);
+
+    let err = daemon
+        .send_reload(dataflow_id, node_id.clone(), None)
+        .await
+        .expect_err("a closed channel must not be reported as success");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("closed"),
+        "the error must say the channel was closed: {message}"
+    );
+    assert!(
+        message.contains(&node_id.to_string()),
+        "the error must name the node: {message}"
+    );
+    assert!(
+        !daemon.running[&dataflow_id]
+            .subscribe_channels
+            .contains_key(&node_id),
+        "the dead channel must still be pruned"
+    );
+}
+
+/// A node this daemon hosts but that has not subscribed yet (still starting
+/// up, or it dropped its event stream) cannot receive the reload.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn reload_to_a_local_node_without_a_subscription_explains_why() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let mut dataflow = test_dataflow();
+    let dataflow_id = dataflow.id;
+    let node_id = NodeId::from("node".to_string());
+    // Hosted here, but no `subscribe_channels` entry.
+    dataflow
+        .running_nodes
+        .insert(node_id.clone(), test_running_node());
+    daemon.running.insert(dataflow_id, dataflow);
+
+    let err = daemon
+        .send_reload(dataflow_id, node_id.clone(), None)
+        .await
+        .expect_err("an unsubscribed local node cannot receive the reload");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains(&node_id.to_string()),
+        "the error must name the node: {message}"
+    );
+    assert!(
+        message.contains("not connected") || message.contains("not subscribed"),
+        "the error must explain that the node has no subscription: {message}"
+    );
+}
+
+/// A node that runs on another daemon is not this daemon's to reload: the
+/// coordinator fans the request out, and the hosting daemon answers for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn reload_for_a_node_hosted_elsewhere_is_not_an_error() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let mut dataflow = test_dataflow();
+    let dataflow_id = dataflow.id;
+    let remote_node = NodeId::from("remote".to_string());
+    // The node exists in the graph (it feeds a local consumer) but is not in
+    // `running_nodes`: it is spawned by another daemon.
+    dataflow.add_mapping(
+        remote_node.clone(),
+        DataId::from("out".to_string()),
+        NodeId::from("local".to_string()),
+        DataId::from("in".to_string()),
+    );
+    daemon.running.insert(dataflow_id, dataflow);
+
+    daemon
+        .send_reload(dataflow_id, remote_node, None)
+        .await
+        .expect("a node hosted on another daemon is not this daemon's to reload");
+}
+
+/// An unknown dataflow is still an error, and the message keeps naming it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn reload_for_an_unknown_dataflow_still_errors() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+    let dataflow_id = Uuid::new_v4();
+
+    let err = daemon
+        .send_reload(dataflow_id, NodeId::from("node".to_string()), None)
+        .await
+        .expect_err("an unknown dataflow must be reported");
+    let message = format!("{err:#}");
+    assert!(
+        message.contains(&dataflow_id.to_string()),
+        "the error must name the dataflow: {message}"
     );
 }
