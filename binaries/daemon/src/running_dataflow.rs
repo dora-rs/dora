@@ -313,6 +313,20 @@ pub struct RunningDataflow {
     pub(crate) pending_nodes: PendingNodes,
     pub(crate) dataflow_started: bool,
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
+    /// Per node, the param keys queued to it as a `ParamUpdate` and not since
+    /// as a `ParamDeleted`. Reported to the coordinator on every connection so
+    /// it can delete, on the node, a key that was deleted while this daemon
+    /// could not be told (`DaemonEvent::DeliveredParamKeys`).
+    ///
+    /// Cleared when the node's process exits and when the node is removed or
+    /// replaced, because the next process starts without any of these params.
+    /// Not cleared when the node subscribes: one process may subscribe more
+    /// than once (it can initialize a node twice), and it still holds what it
+    /// received. A dynamic node's exit is not observed, so its keys stay until
+    /// it is removed; a key a later process never got only costs it a
+    /// redundant `ParamDeleted`. A node with no keys has no entry. Only
+    /// `deliver_param_event` adds to it.
+    pub(crate) delivered_params: BTreeMap<NodeId, BTreeSet<String>>,
     /// Per-node pending message counters (incremented on send, decremented on recv)
     pub(crate) pending_messages: HashMap<NodeId, Arc<AtomicU64>>,
     /// Per-node "the listener took something out of the subscribe channel"
@@ -499,6 +513,7 @@ impl RunningDataflow {
             pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
             dataflow_started: false,
             subscribe_channels: HashMap::new(),
+            delivered_params: BTreeMap::new(),
             pending_messages: HashMap::new(),
             drain_signals: HashMap::new(),
             remote_backpressured_outputs: BTreeSet::new(),
@@ -594,6 +609,7 @@ impl RunningDataflow {
         retain_other_nodes(&mut self.publishers, node_id);
         self.missing_channel_warned.retain(|(n, _)| n != node_id);
         self.dropped_event_streams.remove(node_id);
+        self.delivered_params.remove(node_id);
     }
 
     /// Record that a node deliberately dropped its daemon event stream on
@@ -649,6 +665,8 @@ impl RunningDataflow {
         // upstream deliveries surface the #3201 "failed to re-subscribe"
         // warning instead of being silenced as an intentional drop.
         self.dropped_event_streams.remove(node_id);
+        // The exited process took its params with it.
+        self.delivered_params.remove(node_id);
     }
 
     /// Whether a startup-barrier completion (reported as

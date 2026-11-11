@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub use crate::common::{
     DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
@@ -396,6 +396,23 @@ pub enum DaemonEvent {
         #[serde(default)]
         clean_stop: bool,
     },
+    /// The param keys this daemon has delivered to the nodes it runs, per
+    /// dataflow: every key whose last `ParamUpdate`/`ParamDeleted` queued to
+    /// the node's current process was an update. Sent after `StatusReport`
+    /// on every connection, and only when some dataflow has such keys.
+    ///
+    /// The coordinator deletes, on the node, each reported key that is no
+    /// longer persisted. A full param replay re-sends only the keys still
+    /// persisted, so without this report a delete the daemon missed while
+    /// disconnected would never reach the node.
+    ///
+    /// A coordinator that does not know this event fails to decode the frame,
+    /// logs that, and keeps the connection. Construct through
+    /// [`DaemonEvent::delivered_param_keys`].
+    #[non_exhaustive]
+    DeliveredParamKeys {
+        dataflows: BTreeMap<DataflowId, BTreeMap<NodeId, BTreeSet<String>>>,
+    },
 }
 
 /// Health status of a node
@@ -541,6 +558,14 @@ impl DaemonEvent {
             loopback_endpoint,
         }
     }
+
+    /// Report the param keys this daemon has delivered to its nodes; see
+    /// [`DaemonEvent::DeliveredParamKeys`].
+    pub fn delivered_param_keys(
+        dataflows: BTreeMap<DataflowId, BTreeMap<NodeId, BTreeSet<String>>>,
+    ) -> Self {
+        Self::DeliveredParamKeys { dataflows }
+    }
 }
 
 fn split_zenoh_listen_endpoint(endpoint: Option<String>) -> (Option<String>, Option<String>) {
@@ -667,5 +692,51 @@ mod zenoh_wire_compatibility_tests {
                 endpoint: ep, loopback_endpoint: None,
             } if ep.as_deref() == endpoint));
         }
+    }
+}
+
+#[cfg(test)]
+mod delivered_param_keys_wire_tests {
+    use super::*;
+
+    fn sample() -> BTreeMap<DataflowId, BTreeMap<NodeId, BTreeSet<String>>> {
+        let dataflow_id = uuid::Uuid::from_u128(0x4040);
+        BTreeMap::from([(
+            dataflow_id,
+            BTreeMap::from([(
+                NodeId::from("camera".to_string()),
+                BTreeSet::from(["fps".to_string(), "gain".to_string()]),
+            )]),
+        )])
+    }
+
+    #[test]
+    fn delivered_param_keys_round_trip_through_json() {
+        let event = DaemonEvent::delivered_param_keys(sample());
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"DeliveredParamKeys": {"dataflows": {
+                "00000000-0000-0000-0000-000000004040": {"camera": ["fps", "gain"]}
+            }}})
+        );
+        let decoded: DaemonEvent = serde_json::from_value(json).unwrap();
+        assert!(matches!(
+            decoded,
+            DaemonEvent::DeliveredParamKeys { dataflows } if dataflows == sample()
+        ));
+    }
+
+    /// The status report an older daemon sends is unchanged: it decodes, and a
+    /// new daemon's status report is the same frame, so neither side has to
+    /// know the other's version.
+    #[test]
+    fn status_report_frame_is_unchanged() {
+        let legacy = serde_json::json!({"StatusReport": {"running_dataflows": [{
+            "dataflow_id": "00000000-0000-0000-0000-000000004040",
+            "running_nodes": ["camera"],
+        }]}});
+        let decoded: DaemonEvent = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), legacy);
     }
 }

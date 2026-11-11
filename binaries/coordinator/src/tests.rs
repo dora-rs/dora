@@ -9660,3 +9660,489 @@ mod lifecycle_stall {
         );
     }
 }
+
+// -------------------------------------------------------------------
+// Param deletes a disconnected daemon missed
+// -------------------------------------------------------------------
+
+/// A daemon connection whose fake daemon answers every `SetParam` and
+/// `DeleteParam` with `Ok` and hands every coordinator command it receives
+/// to the returned channel.
+fn param_acking_daemon_connection() -> (
+    crate::state::DaemonConnection,
+    tokio::sync::mpsc::UnboundedReceiver<DaemonCoordinatorEvent>,
+) {
+    param_daemon_connection(|command| match command {
+        DaemonCoordinatorEvent::SetParam { .. } => {
+            Some(DaemonCoordinatorReply::SetParamResult(Ok(())))
+        }
+        DaemonCoordinatorEvent::DeleteParam { .. } => {
+            Some(DaemonCoordinatorReply::DeleteParamResult(Ok(())))
+        }
+        _ => None,
+    })
+}
+
+/// A daemon connection whose fake daemon answers each request with `reply`
+/// (no answer for `None`) and hands every coordinator command it receives to
+/// the returned channel.
+fn param_daemon_connection(
+    reply: fn(&DaemonCoordinatorEvent) -> Option<DaemonCoordinatorReply>,
+) -> (
+    crate::state::DaemonConnection,
+    tokio::sync::mpsc::UnboundedReceiver<DaemonCoordinatorEvent>,
+) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let connection =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    let (seen_tx, seen_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        #[derive(serde::Deserialize)]
+        struct Outbound {
+            id: String,
+            method: String,
+            params: serde_json::Value,
+        }
+        while let Some(outbound) = rx.recv().await {
+            let outbound: Outbound = serde_json::from_str(&outbound).unwrap();
+            // The register reply is not a `DaemonCoordinatorEvent`.
+            let Ok(command) =
+                serde_json::from_value::<Timestamped<DaemonCoordinatorEvent>>(outbound.params)
+            else {
+                continue;
+            };
+            if let Some(reply) = reply(&command.inner)
+                && outbound.method == "daemon_command"
+            {
+                let request_id = Uuid::parse_str(&outbound.id).unwrap();
+                if let Some(reply_tx) = pending_replies.lock().await.remove(&request_id) {
+                    let _ = reply_tx.send(serde_json::to_string(&reply).unwrap());
+                }
+            }
+            // Keep answering when nobody watches what this daemon receives.
+            let _ = seen_tx.send(command.inner);
+        }
+    });
+    (connection, seen_rx)
+}
+
+fn mark_spawned(df: &mut RunningDataflow) {
+    let uuid = df.uuid;
+    df.spawn_result
+        .set_result(Ok(ControlRequestReply::DataflowSpawned { uuid }));
+}
+
+/// Register a daemon through the coordinator's `Register` handler, as a
+/// (re)connecting daemon does, and return the id it was given.
+async fn register_daemon(
+    coordinator: &mut Coordinator,
+    machine_id: &str,
+    connection: crate::state::DaemonConnection,
+) -> DaemonId {
+    let (daemon_id_tx, daemon_id_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_daemon_request(DaemonRequest::Register {
+            version_check_result: Ok(()),
+            machine_id: Some(machine_id.to_string()),
+            labels: BTreeMap::new(),
+            connection,
+            daemon_id_tx,
+        })
+        .await
+        .unwrap();
+    daemon_id_rx.await.expect("registration succeeds")
+}
+
+/// Wait until the fake daemon has received `DeleteParam` for `node_id`/`key`,
+/// returning everything it received before it.
+async fn expect_delete_param(
+    seen: &mut tokio::sync::mpsc::UnboundedReceiver<DaemonCoordinatorEvent>,
+    node_id: &NodeId,
+    key: &str,
+) -> Vec<DaemonCoordinatorEvent> {
+    let mut before = Vec::new();
+    let found = timeout(TokioDuration::from_secs(5), async {
+        while let Some(command) = seen.recv().await {
+            if let DaemonCoordinatorEvent::DeleteParam {
+                node_id: n, key: k, ..
+            } = &command
+                && n == node_id
+                && k == key
+            {
+                return true;
+            }
+            before.push(command);
+        }
+        false
+    })
+    .await;
+    assert!(
+        matches!(found, Ok(true)),
+        "the reconnected daemon must be told to delete `{node_id}/{key}`; it got {before:#?}"
+    );
+    before
+}
+
+/// Commands the fake daemon received within `window`, once nothing new
+/// arrives.
+async fn drain_commands(
+    seen: &mut tokio::sync::mpsc::UnboundedReceiver<DaemonCoordinatorEvent>,
+    window: TokioDuration,
+) -> Vec<DaemonCoordinatorEvent> {
+    let mut commands = Vec::new();
+    while let Ok(Some(command)) = timeout(window, seen.recv()).await {
+        commands.push(command);
+    }
+    commands
+}
+
+fn delivered(
+    dataflow_id: DataflowId,
+    node_id: &NodeId,
+    keys: &[&str],
+) -> BTreeMap<DataflowId, BTreeMap<NodeId, BTreeSet<String>>> {
+    BTreeMap::from([(
+        dataflow_id,
+        BTreeMap::from([(
+            node_id.clone(),
+            keys.iter().map(|k| k.to_string()).collect(),
+        )]),
+    )])
+}
+
+/// Two daemons; `sender` runs on `a`, `receiver` on `b`. The barrier has
+/// released and the dataflow is persisted as `Running`.
+async fn two_daemon_coordinator() -> (
+    Coordinator,
+    DataflowId,
+    (DaemonId, Uuid),
+    tokio::sync::mpsc::UnboundedReceiver<DaemonCoordinatorEvent>,
+) {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let mut coordinator = coordinator_with_store(store.clone());
+    let (conn_a, seen_a) = param_acking_daemon_connection();
+    let conn_a_id = conn_a.connection_id;
+    let a = register_daemon(&mut coordinator, "a", conn_a).await;
+    let (conn_b, _seen_b) = param_acking_daemon_connection();
+    let b = register_daemon(&mut coordinator, "b", conn_b).await;
+
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let mut df = released_two_daemon_dataflow(dataflow_id, &a, &b);
+    mark_spawned(&mut df);
+    df.daemon_ack_sequence = BTreeMap::from([(a.clone(), 0), (b, 0)]);
+    store
+        .put_dataflow(&df.make_record(StoreDataflowStatus::Running).unwrap())
+        .unwrap();
+    coordinator.running_dataflows.insert(dataflow_id, df);
+    (coordinator, dataflow_id, (a, conn_a_id), seen_a)
+}
+
+async fn set_param(
+    coordinator: &mut Coordinator,
+    dataflow_id: DataflowId,
+    node_id: &NodeId,
+    key: &str,
+) -> eyre::Result<ControlRequestReply> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_set_param(
+            dataflow_id,
+            node_id.clone(),
+            key.to_string(),
+            serde_json::json!(1),
+            reply_tx,
+        )
+        .await
+        .unwrap();
+    reply_rx.await.unwrap()
+}
+
+async fn delete_param(
+    coordinator: &mut Coordinator,
+    dataflow_id: DataflowId,
+    node_id: &NodeId,
+    key: &str,
+) -> eyre::Result<ControlRequestReply> {
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_delete_param(dataflow_id, node_id.clone(), key.to_string(), reply_tx)
+        .await
+        .unwrap();
+    reply_rx.await.unwrap()
+}
+
+/// Re-register daemon `machine_id` under a new id and report `sender` of
+/// `dataflow_id` running on it, as a daemon does on reconnect. Its full param
+/// replay starts here.
+async fn reconnect_daemon(
+    coordinator: &mut Coordinator,
+    machine_id: &str,
+    old_id: &DaemonId,
+    dataflow_id: DataflowId,
+) -> (
+    DaemonId,
+    tokio::sync::mpsc::UnboundedReceiver<DaemonCoordinatorEvent>,
+) {
+    let (conn, seen) = param_acking_daemon_connection();
+    let daemon_id = register_daemon(coordinator, machine_id, conn).await;
+    assert_ne!(&daemon_id, old_id, "a daemon that reconnects gets a new id");
+    coordinator
+        .handle_daemon_status_report(
+            daemon_id.clone(),
+            vec![dora_message::daemon_to_coordinator::DataflowStatusEntry {
+                dataflow_id,
+                running_nodes: vec!["sender".to_string().into()],
+            }],
+        )
+        .await
+        .unwrap();
+    assert!(
+        coordinator.running_dataflows[&dataflow_id]
+            .daemons
+            .contains(&daemon_id),
+        "the status report links the daemon back into the dataflow"
+    );
+    (daemon_id, seen)
+}
+
+/// Daemon `a` disconnects while `sender` keeps running, `sender`'s param is
+/// deleted, and a change on daemon `b` prunes that delete from the state log.
+/// Returns once `a` has reconnected (see [`reconnect_daemon`]).
+async fn reconnect_after_a_delete_was_pruned() -> (
+    Coordinator,
+    DataflowId,
+    DaemonId,
+    tokio::sync::mpsc::UnboundedReceiver<DaemonCoordinatorEvent>,
+) {
+    let (mut coordinator, dataflow_id, (a, conn_a_id), _old_seen) = two_daemon_coordinator().await;
+    let sender: NodeId = "sender".to_string().into();
+    let receiver: NodeId = "receiver".to_string().into();
+    set_param(&mut coordinator, dataflow_id, &sender, "gain")
+        .await
+        .expect("applied while connected");
+    set_param(&mut coordinator, dataflow_id, &sender, "fps")
+        .await
+        .expect("applied while connected");
+
+    coordinator
+        .handle_daemon_exit(a.clone(), conn_a_id)
+        .await
+        .unwrap();
+    assert!(
+        !coordinator.running_dataflows[&dataflow_id]
+            .daemons
+            .contains(&a),
+        "the disconnect must take `a` out of the dataflow"
+    );
+    let forwarded = delete_param(&mut coordinator, dataflow_id, &sender, "gain").await;
+    assert!(
+        forwarded.is_err(),
+        "`a` is not connected, so the delete is only persisted"
+    );
+    assert_eq!(
+        coordinator
+            .store
+            .get_node_param(&dataflow_id, &sender, "gain")
+            .unwrap(),
+        None
+    );
+    set_param(&mut coordinator, dataflow_id, &receiver, "rate")
+        .await
+        .expect("applied on `b`");
+    let df = &coordinator.running_dataflows[&dataflow_id];
+    assert!(
+        !df.state_log
+            .iter()
+            .any(|e| matches!(&e.operation, StateCatchUpOperation::DeleteParam { .. })),
+        "precondition: `b`'s ack pruned the delete `a` never got: {:?}",
+        df.state_log
+    );
+
+    let (a2, seen) = reconnect_daemon(&mut coordinator, "a", &a, dataflow_id).await;
+    (coordinator, dataflow_id, a2, seen)
+}
+
+/// A delete aimed at a node whose daemon was disconnected is persisted, then
+/// pruned from the state log by another daemon's activity. On reconnect the
+/// daemon gets the full param replay, which only re-sends the params that are
+/// still set; the delete must reach the node as well.
+#[tokio::test]
+async fn reconnect_after_pruned_delete_deletes_the_param_on_the_node() {
+    let (mut coordinator, dataflow_id, a2, mut seen) = reconnect_after_a_delete_was_pruned().await;
+    let sender: NodeId = "sender".to_string().into();
+    coordinator.handle_delivered_param_keys(a2, delivered(dataflow_id, &sender, &["fps", "gain"]));
+    expect_delete_param(&mut seen, &sender, "gain").await;
+    let rest = drain_commands(&mut seen, TokioDuration::from_millis(300)).await;
+    assert!(
+        !rest.iter().any(|c| matches!(
+            c,
+            DaemonCoordinatorEvent::DeleteParam { key, .. } if key == "fps"
+        )),
+        "a key that is still set must not be deleted: {rest:#?}"
+    );
+}
+
+/// A daemon that does not report its keys (one built before the report
+/// existed) gets what it got before: the replay of the params still set, and
+/// no delete.
+#[tokio::test]
+async fn reconnect_without_a_key_report_only_replays_persisted_params() {
+    let (_coordinator, _, _, mut seen) = reconnect_after_a_delete_was_pruned().await;
+    let commands = drain_commands(&mut seen, TokioDuration::from_millis(500)).await;
+    assert!(
+        commands.iter().any(|c| matches!(
+            c,
+            DaemonCoordinatorEvent::SetParam { key, .. } if key == "fps"
+        )),
+        "the persisted param is replayed: {commands:#?}"
+    );
+    assert!(
+        !commands
+            .iter()
+            .any(|c| matches!(c, DaemonCoordinatorEvent::DeleteParam { .. })),
+        "{commands:#?}"
+    );
+}
+
+/// When every daemon of a dataflow disconnects, the dataflow and its state
+/// log are dropped (orphan reclaim) and a delete only reaches the store. The
+/// daemon that comes back must still get it.
+#[tokio::test]
+async fn reconnect_after_orphan_reclaim_deletes_the_param_on_the_node() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let mut coordinator = coordinator_with_store(store.clone());
+    let (conn, _old_seen) = param_acking_daemon_connection();
+    let conn_id = conn.connection_id;
+    let a = register_daemon(&mut coordinator, "a", conn).await;
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let sender: NodeId = "sender".to_string().into();
+    let mut df = test_running_dataflow(dataflow_id, a.clone(), sender.clone());
+    df.ready_barrier_released = true;
+    mark_spawned(&mut df);
+    store
+        .put_dataflow(&df.make_record(StoreDataflowStatus::Running).unwrap())
+        .unwrap();
+    coordinator.running_dataflows.insert(dataflow_id, df);
+    set_param(&mut coordinator, dataflow_id, &sender, "gain")
+        .await
+        .expect("applied while connected");
+
+    coordinator
+        .handle_daemon_exit(a.clone(), conn_id)
+        .await
+        .unwrap();
+    assert!(
+        !coordinator.running_dataflows.contains_key(&dataflow_id),
+        "precondition: the orphaned dataflow is reclaimed, state log and all"
+    );
+    delete_param(&mut coordinator, dataflow_id, &sender, "gain")
+        .await
+        .expect("a delete for a reclaimed dataflow is persisted only");
+
+    let (a2, mut seen) = reconnect_daemon(&mut coordinator, "a", &a, dataflow_id).await;
+    coordinator.handle_delivered_param_keys(a2, delivered(dataflow_id, &sender, &["gain"]));
+
+    expect_delete_param(&mut seen, &sender, "gain").await;
+}
+
+/// Only the reporting daemon's own nodes are reconciled: a key reported for
+/// a node that runs elsewhere, or that the dataflow does not have, is
+/// ignored.
+#[tokio::test]
+async fn reported_keys_of_nodes_on_other_daemons_are_ignored() {
+    let (coordinator, dataflow_id, (a, _), _seen) = two_daemon_coordinator().await;
+    let df = &coordinator.running_dataflows[&dataflow_id];
+    let reported = BTreeMap::from([
+        (
+            "sender".to_string().into(),
+            BTreeSet::from(["gain".to_string()]),
+        ),
+        (
+            "receiver".to_string().into(),
+            BTreeSet::from(["rate".to_string()]),
+        ),
+        (
+            "ghost".to_string().into(),
+            BTreeSet::from(["x".to_string()]),
+        ),
+    ]);
+    let items = crate::params::delivered_param_items_on_daemon(df, &a, reported);
+    let items: Vec<_> = items
+        .iter()
+        .map(|item| (item.node_id.to_string(), item.key.clone()))
+        .collect();
+    assert_eq!(items, vec![("sender".to_string(), "gain".to_string())]);
+}
+
+/// A `dora param set` of the key that lands while the reconcile waits for
+/// the connection's write lock wins: the reconcile re-reads the store under
+/// the lock and does not delete the value the set just forwarded.
+#[tokio::test]
+async fn reconcile_delete_does_not_clobber_a_concurrent_set() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("a".to_string()));
+    let node_id: NodeId = "sender".to_string().into();
+    let (connection, mut seen) = param_acking_daemon_connection();
+    let lock = connection.param_write_lock.clone();
+
+    let set_guard = lock.lock().await;
+    let reconcile = tokio::spawn(crate::params::delete_unpersisted_params_on_daemon(
+        dataflow_id,
+        daemon_id,
+        vec![crate::params::ParamReplayItem {
+            node_id: node_id.clone(),
+            key: "gain".to_string(),
+        }],
+        store.clone(),
+        connection,
+        Arc::new(HLC::default()),
+    ));
+    tokio::time::sleep(TokioDuration::from_millis(200)).await;
+    assert!(
+        !reconcile.is_finished(),
+        "the reconcile must wait for the set's lock"
+    );
+    // The `set` persists its value while it holds the lock.
+    let one = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &one)
+        .unwrap();
+    drop(set_guard);
+
+    let summary = timeout(TokioDuration::from_secs(10), reconcile)
+        .await
+        .expect("reconcile did not finish")
+        .unwrap();
+    assert_eq!((summary.attempted, summary.failed), (0, 0));
+    assert!(seen.try_recv().is_err(), "nothing must be sent");
+}
+
+/// A delete the daemon does not apply counts as a failure of the
+/// reconcile, like a failed param replay.
+#[tokio::test]
+async fn reconcile_counts_a_rejected_delete_as_failed() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let node_id: NodeId = "sender".to_string().into();
+    let (connection, _seen) = param_daemon_connection(|_| {
+        Some(DaemonCoordinatorReply::DeleteParamResult(Err(
+            "node `sender` not connected".to_string(),
+        )))
+    });
+
+    let summary = crate::params::delete_unpersisted_params_on_daemon(
+        dataflow_id,
+        DaemonId::new(Some("a".to_string())),
+        vec![crate::params::ParamReplayItem {
+            node_id,
+            key: "gain".to_string(),
+        }],
+        store,
+        connection,
+        Arc::new(HLC::default()),
+    )
+    .await;
+    assert_eq!((summary.attempted, summary.failed), (1, 1));
+}

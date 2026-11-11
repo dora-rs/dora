@@ -11,7 +11,7 @@ use dora_message::{
 };
 use eyre::WrapErr;
 use futures::Stream;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
@@ -80,6 +80,12 @@ pub enum Event {
         dataflow_id: DataflowId,
         ack_sequence: u64,
     },
+    /// The param keys a daemon reports having delivered to its nodes, per
+    /// dataflow (`DaemonEvent::DeliveredParamKeys`).
+    DaemonDeliveredParamKeys {
+        daemon_id: DaemonId,
+        dataflows: BTreeMap<DataflowId, BTreeMap<NodeId, BTreeSet<String>>>,
+    },
     /// Daemon reports that a node has stopped and will not be restarted.
     /// Triggers an immediate update of cached `node_metrics` so
     /// `dora node list` shows status `Stopped` (or `Failed` for a
@@ -131,6 +137,7 @@ impl Event {
             Event::TopicDebugData { .. } => "TopicDebugData",
             Event::DaemonStatusReport { .. } => "DaemonStatusReport",
             Event::DaemonStateCatchUpAck { .. } => "DaemonStateCatchUpAck",
+            Event::DaemonDeliveredParamKeys { .. } => "DaemonDeliveredParamKeys",
             Event::DaemonNodeStopped { .. } => "DaemonNodeStopped",
             Event::TopologyReply { .. } => "TopologyReply",
         }

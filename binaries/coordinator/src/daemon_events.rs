@@ -1,6 +1,7 @@
 //! Events that originate from a daemon connection: registration, heartbeats,
 //! exits, metrics and status reports, and the periodic heartbeat tick.
 
+use crate::params::spawn_delete_of_unpersisted_params;
 use crate::{
     Coordinator, DaemonRequest, apply_disconnect_actions, build_result_timeout,
     catch_up_daemon_behind_pruned_log, check_build_timeouts, check_spawn_timeouts,
@@ -836,6 +837,49 @@ impl Coordinator {
             }
         }
         Ok(())
+    }
+
+    /// Delete on a reconnected daemon's nodes the params they hold that are
+    /// no longer persisted (`DaemonEvent::DeliveredParamKeys`).
+    ///
+    /// Done for every report, whichever catch-up the daemon got: every
+    /// reconnect to a released dataflow gets the full param replay
+    /// (`replay_all_nodes_ready`), and that replay cannot express a delete.
+    /// When the state log still had the delete, the incremental catch-up sent
+    /// it too and the node sees it twice, which is harmless.
+    ///
+    /// The daemon sends this after its `StatusReport`, so a dataflow it runs
+    /// is back in `running_dataflows` with its nodes mapped to it by now. A
+    /// key of any other dataflow or node is not this daemon's to reconcile and
+    /// is ignored (`delivered_param_items_on_daemon`).
+    pub(crate) fn handle_delivered_param_keys(
+        &mut self,
+        daemon_id: DaemonId,
+        dataflows: BTreeMap<DataflowId, BTreeMap<NodeId, BTreeSet<String>>>,
+    ) {
+        for (dataflow_id, delivered) in dataflows {
+            let Some(dataflow) = self.running_dataflows.get(&dataflow_id) else {
+                tracing::debug!(
+                    "ignoring param keys daemon {daemon_id} reports for dataflow \
+                     {dataflow_id}: not running"
+                );
+                continue;
+            };
+            if !spawn_delete_of_unpersisted_params(
+                dataflow_id,
+                dataflow,
+                &daemon_id,
+                delivered,
+                &self.daemon_connections,
+                &self.store,
+                &self.clock,
+            ) {
+                tracing::warn!(
+                    "cannot reconcile params of dataflow {dataflow_id}: \
+                     daemon {daemon_id} is not connected"
+                );
+            }
+        }
     }
 
     pub(crate) async fn handle_daemon_node_stopped(

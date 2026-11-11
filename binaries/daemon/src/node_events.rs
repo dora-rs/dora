@@ -1131,6 +1131,7 @@ impl Daemon {
             dataflow.all_inputs_closed_at.remove(node_id);
             let clean_stop = exit_clean || (restarts_disabled && !finish_escalated);
             dataflow.running_nodes.remove(node_id);
+            dataflow.delivered_params.remove(node_id);
             // Check if all remaining nodes are dynamic (won't send SpawnedNodeResult)
             let should_finish = !dataflow.pending_nodes.local_nodes_pending()
                 && dataflow

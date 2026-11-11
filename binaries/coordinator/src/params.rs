@@ -1,14 +1,23 @@
-//! Dataflow parameters: forwarding `SetParam`/`DeleteParam` to daemons and
-//! replaying persisted parameters to a daemon that (re)joins a dataflow.
+//! Dataflow parameters: forwarding `SetParam`/`DeleteParam` to daemons,
+//! replaying persisted parameters to a daemon that (re)joins a dataflow, and
+//! deleting on a reconnected daemon the parameters it missed the delete of.
 
 use crate::nodes_on_daemon;
 use crate::state::{DaemonConnections, RunningDataflow};
-use dora_core::uhlc::HLC;
-use dora_message::{DataflowId, common::DaemonId, daemon_to_coordinator::DaemonCoordinatorReply};
+use dora_core::{config::NodeId, uhlc::HLC};
+use dora_message::{
+    DataflowId,
+    common::DaemonId,
+    coordinator_to_daemon::{DaemonCoordinatorEvent, Timestamped},
+    daemon_to_coordinator::DaemonCoordinatorReply,
+};
 use eyre::eyre;
 use serde::Serialize;
 use serde_json::value::RawValue;
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 pub(crate) struct ParamReplayItem {
     pub(crate) node_id: dora_core::config::NodeId,
@@ -254,6 +263,10 @@ pub(crate) fn spawn_param_replay_to_daemon(
 ///
 /// The lock is released before waiting for the daemon's reply, so a slow
 /// daemon delays neither the event loop nor writes to other daemons.
+///
+/// Only the params still in the store are sent. One the daemon's nodes hold
+/// but that was deleted while it could not be told is removed by
+/// [`delete_unpersisted_params_on_daemon`], from the keys the daemon reports.
 pub(crate) async fn replay_persisted_params_for_daemon(
     dataflow_id: DataflowId,
     daemon_id: DaemonId,
@@ -280,95 +293,228 @@ pub(crate) async fn replay_persisted_params_for_daemon(
     );
 
     for item in replay_items {
-        let write_guard = connection.param_write_lock.lock().await;
-        let value_json = match store.get_node_param(&dataflow_id, &item.node_id, &item.key) {
-            Ok(Some(value_json)) => value_json,
-            Ok(None) => {
-                tracing::debug!(
-                    "not replaying param {dataflow_id}/{}/{}: deleted since replay started",
-                    item.node_id,
-                    item.key
-                );
-                continue;
-            }
-            Err(err) => {
-                tracing::warn!(
-                    "failed to load persisted param {dataflow_id}/{}/{}: {err}",
-                    item.node_id,
-                    item.key
-                );
-                summary.attempted += 1;
-                summary.failed += 1;
-                continue;
-            }
-        };
-        summary.attempted += 1;
-        let message = match build_set_param_message_from_raw_json(
-            dataflow_id,
+        let outcome = queue_param_command(
+            &connection,
             &item.node_id,
-            &item.key,
-            &value_json,
-            clock.new_timestamp(),
-        ) {
-            Ok(msg) => msg,
-            Err(err) => {
-                tracing::warn!(
-                    "skipping corrupt persisted param {dataflow_id}/{}/{}: {err}",
-                    item.node_id,
-                    item.key
-                );
-                summary.failed += 1;
-                continue;
-            }
-        };
-
-        let sent = connection.send_request(&message).await;
-        drop(write_guard);
-        let reply = match sent {
-            Ok(pending) => pending.wait().await,
-            Err(err) => Err(err),
-        };
-        let reply_raw = match reply {
-            Ok(reply) => reply,
-            Err(err) => {
-                tracing::warn!(
-                    "failed to replay param {dataflow_id}/{}/{} to daemon {daemon_id}: {err}",
-                    item.node_id,
-                    item.key
-                );
-                summary.failed += 1;
-                continue;
-            }
-        };
-
-        match serde_json::from_slice(&reply_raw) {
-            Ok(DaemonCoordinatorReply::SetParamResult(Ok(()))) => {}
-            Ok(DaemonCoordinatorReply::SetParamResult(Err(err))) => {
-                tracing::warn!(
-                    "daemon rejected replayed param {dataflow_id}/{}/{}: {err}",
-                    item.node_id,
-                    item.key
-                );
-                summary.failed += 1;
-            }
-            Ok(other) => {
-                tracing::warn!(
-                    "unexpected daemon reply while replaying param {dataflow_id}/{}/{}: {other:?}",
-                    item.node_id,
-                    item.key
-                );
-                summary.failed += 1;
-            }
-            Err(err) => {
-                tracing::warn!(
-                    "failed to deserialize daemon reply while replaying param {dataflow_id}/{}/{}: {err}",
-                    item.node_id,
-                    item.key
-                );
-                summary.failed += 1;
-            }
-        }
+            || match store.get_node_param(&dataflow_id, &item.node_id, &item.key) {
+                Ok(Some(value_json)) => build_set_param_message_from_raw_json(
+                    dataflow_id,
+                    &item.node_id,
+                    &item.key,
+                    &value_json,
+                    clock.new_timestamp(),
+                )
+                .map(Some)
+                .map_err(|err| eyre!("corrupt persisted param: {err}")),
+                Ok(None) => {
+                    tracing::debug!(
+                        "not replaying param {dataflow_id}/{}/{}: deleted since replay started",
+                        item.node_id,
+                        item.key
+                    );
+                    Ok(None)
+                }
+                Err(err) => Err(eyre!("failed to load persisted param: {err}")),
+            },
+            ensure_set_param_forward_applied,
+        )
+        .await;
+        summary.record(outcome, || {
+            format!(
+                "failed to replay param {dataflow_id}/{}/{} to daemon {daemon_id}",
+                item.node_id, item.key
+            )
+        });
     }
 
     summary
+}
+
+/// The reported keys of the nodes `daemon_id` runs in `dataflow`, as replay
+/// items. A key reported for a node that runs on another daemon, or that the
+/// dataflow does not have, is not this daemon's to reconcile and is left out.
+pub(crate) fn delivered_param_items_on_daemon(
+    dataflow: &RunningDataflow,
+    daemon_id: &DaemonId,
+    delivered: BTreeMap<NodeId, BTreeSet<String>>,
+) -> Vec<ParamReplayItem> {
+    let mut items = Vec::new();
+    for (node_id, keys) in delivered {
+        if dataflow.node_to_daemon.get(&node_id) != Some(daemon_id) {
+            tracing::debug!(
+                "ignoring reported param keys of node `{node_id}` in dataflow {}: \
+                 it does not run on daemon {daemon_id}",
+                dataflow.uuid
+            );
+            continue;
+        }
+        items.extend(keys.into_iter().map(|key| ParamReplayItem {
+            node_id: node_id.clone(),
+            key,
+        }));
+    }
+    items
+}
+
+/// Delete, on the daemon, every reported param that is not in the store.
+///
+/// The daemon reports the keys it has delivered to its nodes on every
+/// connection (`DaemonEvent::DeliveredParamKeys`). A key among them that the
+/// store no longer has was deleted while the daemon could not be told: the
+/// forward failed and the state log entry that would have caught it up was
+/// pruned, or dropped with the dataflow when every daemon disconnected. The
+/// full param replay cannot express that, since it sends what the store has.
+///
+/// Runs alongside the replay and `dora param set`/`delete`, with the same
+/// ordering rule as [`replay_persisted_params_for_daemon`]: each key is
+/// re-read from the store and its `DeleteParam` queued while holding the
+/// connection's `param_write_lock`. A key set again in the meantime is in the
+/// store by then and is left alone; the replay or the set's own forward sends
+/// its value.
+pub(crate) async fn delete_unpersisted_params_on_daemon(
+    dataflow_id: DataflowId,
+    daemon_id: DaemonId,
+    items: Vec<ParamReplayItem>,
+    store: Arc<dyn dora_coordinator_store::CoordinatorStore>,
+    connection: crate::state::DaemonConnection,
+    clock: Arc<HLC>,
+) -> ParamReplaySummary {
+    let mut summary = ParamReplaySummary::default();
+    for item in items {
+        let outcome = queue_param_command(
+            &connection,
+            &item.node_id,
+            || match store.get_node_param(&dataflow_id, &item.node_id, &item.key) {
+                // Still set: the node keeps it.
+                Ok(Some(_)) => Ok(None),
+                Ok(None) => serde_json::to_vec(&Timestamped {
+                    inner: DaemonCoordinatorEvent::DeleteParam {
+                        dataflow_id,
+                        node_id: item.node_id.clone(),
+                        key: item.key.clone(),
+                    },
+                    timestamp: clock.new_timestamp(),
+                })
+                .map(Some)
+                .map_err(|err| eyre!("failed to serialize DeleteParam: {err}")),
+                Err(err) => Err(eyre!("failed to load persisted param: {err}")),
+            },
+            ensure_delete_param_forward_applied,
+        )
+        .await;
+        if matches!(outcome, ParamCommandOutcome::Applied) {
+            tracing::info!(
+                "deleted param {dataflow_id}/{}/{} on daemon {daemon_id}: \
+                 it was deleted while the daemon was disconnected",
+                item.node_id,
+                item.key
+            );
+        }
+        summary.record(outcome, || {
+            format!(
+                "failed to delete param {dataflow_id}/{}/{} on daemon {daemon_id}",
+                item.node_id, item.key
+            )
+        });
+    }
+    summary
+}
+
+/// Start [`delete_unpersisted_params_on_daemon`] for the keys `daemon_id`
+/// reports for its nodes in `dataflow`, in a spawned task. Returns `false`,
+/// without starting one, when the daemon is not connected.
+pub(crate) fn spawn_delete_of_unpersisted_params(
+    dataflow_id: DataflowId,
+    dataflow: &RunningDataflow,
+    daemon_id: &DaemonId,
+    delivered: BTreeMap<NodeId, BTreeSet<String>>,
+    daemon_connections: &DaemonConnections,
+    store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
+    clock: &Arc<HLC>,
+) -> bool {
+    let Some(connection) = daemon_connections.get(daemon_id).cloned() else {
+        return false;
+    };
+    let items = delivered_param_items_on_daemon(dataflow, daemon_id, delivered);
+    if items.is_empty() {
+        return true;
+    }
+    let daemon_id = daemon_id.clone();
+    let store = store.clone();
+    let clock = clock.clone();
+    tokio::spawn(async move {
+        let reported = items.len();
+        let summary = delete_unpersisted_params_on_daemon(
+            dataflow_id,
+            daemon_id.clone(),
+            items,
+            store,
+            connection,
+            clock,
+        )
+        .await;
+        if summary.failed > 0 {
+            tracing::warn!(
+                "{} of {reported} reported param key(s) of dataflow {dataflow_id} could not be \
+                 reconciled on daemon {daemon_id}; its nodes may keep deleted params until it \
+                 reconnects",
+                summary.failed
+            );
+        }
+    });
+    true
+}
+
+/// What happened to one param command of a replay or reconcile.
+enum ParamCommandOutcome {
+    /// Nothing to send for it once the store was re-read.
+    Skipped,
+    /// Queued, and the daemon applied it.
+    Applied,
+    /// Not sent, not delivered, or not applied.
+    Failed(eyre::Report),
+}
+
+impl ParamReplaySummary {
+    fn record(&mut self, outcome: ParamCommandOutcome, context: impl FnOnce() -> String) {
+        match outcome {
+            ParamCommandOutcome::Skipped => {}
+            ParamCommandOutcome::Applied => self.attempted += 1,
+            ParamCommandOutcome::Failed(err) => {
+                tracing::warn!("{}: {err:#}", context());
+                self.attempted += 1;
+                self.failed += 1;
+            }
+        }
+    }
+}
+
+/// Queue one param command to the daemon in `param_write_lock` order, then
+/// wait for its reply with the lock released.
+///
+/// `prepare` runs under the lock, so the store contents it reads cannot
+/// change before the command it builds from them is queued. It returns
+/// `None` when there is nothing to send. `confirm` checks the daemon's reply.
+async fn queue_param_command(
+    connection: &crate::state::DaemonConnection,
+    node_id: &NodeId,
+    prepare: impl FnOnce() -> eyre::Result<Option<Vec<u8>>>,
+    confirm: fn(&[u8], &NodeId) -> eyre::Result<()>,
+) -> ParamCommandOutcome {
+    let write_guard = connection.param_write_lock.lock().await;
+    let message = match prepare() {
+        Ok(Some(message)) => message,
+        Ok(None) => return ParamCommandOutcome::Skipped,
+        Err(err) => return ParamCommandOutcome::Failed(err),
+    };
+    let sent = connection.send_request(&message).await;
+    drop(write_guard);
+    let reply = match sent {
+        Ok(pending) => pending.wait().await,
+        Err(err) => Err(err),
+    };
+    match reply.and_then(|reply_raw| confirm(&reply_raw, node_id)) {
+        Ok(()) => ParamCommandOutcome::Applied,
+        Err(err) => ParamCommandOutcome::Failed(err),
+    }
 }

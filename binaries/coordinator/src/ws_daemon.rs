@@ -611,6 +611,12 @@ fn translate_daemon_event(
             dataflow_id,
             ack_sequence,
         }),
+        DaemonEvent::DeliveredParamKeys { dataflows, .. } => {
+            Some(Event::DaemonDeliveredParamKeys {
+                daemon_id,
+                dataflows,
+            })
+        }
         DaemonEvent::NodeStopped {
             dataflow_id,
             node_id,

@@ -33,70 +33,100 @@ use std::{
 use tokio::{fs::File, io::AsyncReadExt, sync::oneshot::Sender};
 use tracing::error;
 
+/// A param change on its way to a node.
+enum ParamEvent {
+    Update { key: String, value_json: Vec<u8> },
+    Delete { key: String },
+}
+
+/// Queue a param change to a node and record which keys the node now holds
+/// (`RunningDataflow::delivered_params`). Every param delivery goes through
+/// here, so the recorded keys match what was queued. The error says why the
+/// event was not queued.
+fn deliver_param_event(
+    dataflow: &mut RunningDataflow,
+    node_id: &NodeId,
+    event: ParamEvent,
+    clock: &HLC,
+) -> Result<(), &'static str> {
+    let channel = dataflow
+        .subscribe_channels
+        .get(node_id)
+        .ok_or("not connected")?;
+    let (node_event, key, delivered) = match event {
+        ParamEvent::Update { key, value_json } => (
+            NodeEvent::ParamUpdate {
+                key: key.clone(),
+                value_json,
+            },
+            key,
+            true,
+        ),
+        ParamEvent::Delete { key } => (NodeEvent::ParamDeleted { key: key.clone() }, key, false),
+    };
+    match send_with_timestamp(channel, node_event, clock) {
+        Ok(true) => {}
+        Ok(false) => return Err("channel full"),
+        Err(_) => return Err("channel closed"),
+    }
+    dataflow.inc_pending(node_id);
+    if delivered {
+        dataflow
+            .delivered_params
+            .entry(node_id.clone())
+            .or_default()
+            .insert(key);
+    } else if let Some(keys) = dataflow.delivered_params.get_mut(node_id) {
+        keys.remove(&key);
+        if keys.is_empty() {
+            dataflow.delivered_params.remove(node_id);
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn deliver_param_update_strict(
-    dataflow: &RunningDataflow,
+    dataflow: &mut RunningDataflow,
     node_id: &NodeId,
     key: String,
     value: serde_json::Value,
     clock: &HLC,
 ) -> eyre::Result<()> {
-    let channel = dataflow
-        .subscribe_channels
-        .get(node_id)
-        .ok_or_else(|| eyre!("node `{node_id}` not connected"))?;
     let value_json = serde_json::to_vec(&value)
         .map_err(|e| eyre!("failed to serialize param value for node `{node_id}`: {e}"))?;
-    match send_with_timestamp(channel, NodeEvent::ParamUpdate { key, value_json }, clock) {
-        Ok(true) => {
-            dataflow.inc_pending(node_id);
-            Ok(())
-        }
-        Ok(false) => Err(eyre!("node `{node_id}` channel full")),
-        Err(_) => Err(eyre!("node `{node_id}` channel closed")),
-    }
+    deliver_param_event(
+        dataflow,
+        node_id,
+        ParamEvent::Update { key, value_json },
+        clock,
+    )
+    .map_err(|err| eyre!("node `{node_id}` {err}"))
 }
 
 pub(crate) fn deliver_param_delete_strict(
-    dataflow: &RunningDataflow,
+    dataflow: &mut RunningDataflow,
     node_id: &NodeId,
     key: String,
     clock: &HLC,
 ) -> eyre::Result<()> {
-    let channel = dataflow
-        .subscribe_channels
-        .get(node_id)
-        .ok_or_else(|| eyre!("node `{node_id}` not connected"))?;
-    match send_with_timestamp(channel, NodeEvent::ParamDeleted { key }, clock) {
-        Ok(true) => {
-            dataflow.inc_pending(node_id);
-            Ok(())
-        }
-        Ok(false) => Err(eyre!("node `{node_id}` channel full")),
-        Err(_) => Err(eyre!("node `{node_id}` channel closed")),
-    }
+    deliver_param_event(dataflow, node_id, ParamEvent::Delete { key }, clock)
+        .map_err(|err| eyre!("node `{node_id}` {err}"))
 }
 
 pub(crate) fn apply_state_catch_up_entries(
-    dataflow: &RunningDataflow,
+    dataflow: &mut RunningDataflow,
     entries: &[StateCatchUpEntry],
     clock: &HLC,
 ) -> u64 {
     let mut applied_through = 0;
 
     for entry in entries {
-        let delivered = match &entry.operation {
+        let (node_id, event) = match &entry.operation {
             StateCatchUpOperation::SetParam {
                 node_id,
                 key,
                 value,
             } => {
-                let Some(channel) = dataflow.subscribe_channels.get(node_id) else {
-                    tracing::warn!(
-                        "catch-up: node `{node_id}` not connected; stopping replay at seq {}",
-                        entry.sequence
-                    );
-                    break;
-                };
                 let value_json = match serde_json::to_vec(value) {
                     Ok(bytes) => bytes,
                     Err(err) => {
@@ -107,66 +137,26 @@ pub(crate) fn apply_state_catch_up_entries(
                         break;
                     }
                 };
-                match send_with_timestamp(
-                    channel,
-                    NodeEvent::ParamUpdate {
+                (
+                    node_id,
+                    ParamEvent::Update {
                         key: key.clone(),
                         value_json,
                     },
-                    clock,
-                ) {
-                    Ok(true) => {
-                        dataflow.inc_pending(node_id);
-                        true
-                    }
-                    Ok(false) => {
-                        tracing::warn!(
-                            "catch-up: node `{node_id}` channel full; stopping replay at seq {}",
-                            entry.sequence
-                        );
-                        false
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            "catch-up: node `{node_id}` channel closed; stopping replay at seq {}",
-                            entry.sequence
-                        );
-                        false
-                    }
-                }
+                )
             }
             StateCatchUpOperation::DeleteParam { node_id, key } => {
-                let Some(channel) = dataflow.subscribe_channels.get(node_id) else {
-                    tracing::warn!(
-                        "catch-up: node `{node_id}` not connected; stopping replay at seq {}",
-                        entry.sequence
-                    );
-                    break;
-                };
-                match send_with_timestamp(
-                    channel,
-                    NodeEvent::ParamDeleted { key: key.clone() },
-                    clock,
-                ) {
-                    Ok(true) => {
-                        dataflow.inc_pending(node_id);
-                        true
-                    }
-                    Ok(false) => {
-                        tracing::warn!(
-                            "catch-up: node `{node_id}` channel full; stopping replay at seq {}",
-                            entry.sequence
-                        );
-                        false
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            "catch-up: node `{node_id}` channel closed; stopping replay at seq {}",
-                            entry.sequence
-                        );
-                        false
-                    }
-                }
+                (node_id, ParamEvent::Delete { key: key.clone() })
+            }
+        };
+        let delivered = match deliver_param_event(dataflow, node_id, event, clock) {
+            Ok(()) => true,
+            Err(err) => {
+                tracing::warn!(
+                    "catch-up: node `{node_id}` {err}; stopping replay at seq {}",
+                    entry.sequence
+                );
+                false
             }
         };
 
@@ -511,7 +501,7 @@ impl Daemon {
                 key,
                 value,
             } => {
-                let result = match self.running.get(&dataflow_id) {
+                let result = match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
                         deliver_param_update_strict(dataflow, &node_id, key, value, &self.clock)
                     }
@@ -530,7 +520,7 @@ impl Daemon {
                 node_id,
                 key,
             } => {
-                let result = match self.running.get(&dataflow_id) {
+                let result = match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
                         deliver_param_delete_strict(dataflow, &node_id, key, &self.clock)
                     }
@@ -1520,7 +1510,7 @@ impl Daemon {
                     "state catch-up: applying {} entry(ies) (up to seq {max_seq})",
                     entries.len(),
                 );
-                let applied_through = match self.running.get(&dataflow_id) {
+                let applied_through = match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => apply_state_catch_up_entries(dataflow, &entries, &self.clock),
                     None => {
                         tracing::warn!(

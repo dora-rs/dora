@@ -4166,12 +4166,12 @@ fn param_update_fails_on_closed_channel() {
 
 #[test]
 fn strict_param_update_fails_when_node_not_connected() {
-    let df = test_dataflow();
+    let mut df = test_dataflow();
     let clock = test_clock();
     let node_id: NodeId = "node_missing".to_string().into();
 
     let err = deliver_param_update_strict(
-        &df,
+        &mut df,
         &node_id,
         "threshold".into(),
         serde_json::json!(1),
@@ -4234,7 +4234,7 @@ fn state_catch_up_stops_at_first_full_channel_and_returns_applied_prefix() {
     dataflow.subscribe_channels.insert(node_b.clone(), tx_b);
 
     let applied_through = apply_state_catch_up_entries(
-        &dataflow,
+        &mut dataflow,
         &[
             StateCatchUpEntry {
                 sequence: 1,
@@ -4272,11 +4272,11 @@ fn state_catch_up_stops_at_first_full_channel_and_returns_applied_prefix() {
 #[test]
 fn state_catch_up_returns_zero_when_first_entry_cannot_be_delivered() {
     let clock = test_clock();
-    let dataflow = test_dataflow();
+    let mut dataflow = test_dataflow();
     let node_id: NodeId = "node_a".to_string().into();
 
     let applied_through = apply_state_catch_up_entries(
-        &dataflow,
+        &mut dataflow,
         &[StateCatchUpEntry {
             sequence: 7,
             operation: StateCatchUpOperation::SetParam {
@@ -4312,9 +4312,250 @@ fn strict_param_delete_fails_when_channel_full() {
         assert!(sent);
     }
 
-    let err = deliver_param_delete_strict(&df, &node_id, "threshold".into(), &clock)
+    let err = deliver_param_delete_strict(&mut df, &node_id, "threshold".into(), &clock)
         .expect_err("strict delivery should fail when node channel is full");
     assert!(err.to_string().contains("channel full"));
+}
+
+/// A node with an installed event stream, as `subscribe` leaves it.
+fn subscribed_node(
+    df: &mut RunningDataflow,
+    name: &str,
+) -> (NodeId, mpsc::Receiver<Timestamped<NodeEvent>>) {
+    let node_id: NodeId = name.to_string().into();
+    let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    df.subscribe_channels.insert(node_id.clone(), tx);
+    (node_id, rx)
+}
+
+fn keys(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|k| k.to_string()).collect()
+}
+
+/// The daemon reports which param keys its nodes hold, so the coordinator can
+/// delete one the node missed. Every queued update adds its key and every
+/// queued delete removes it.
+#[test]
+fn delivered_param_keys_follow_queued_sets_and_deletes() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let (node, _rx) = subscribed_node(&mut df, "camera");
+
+    deliver_param_update_strict(&mut df, &node, "fps".into(), serde_json::json!(30), &clock)
+        .unwrap();
+    deliver_param_update_strict(&mut df, &node, "gain".into(), serde_json::json!(2), &clock)
+        .unwrap();
+    deliver_param_update_strict(&mut df, &node, "gain".into(), serde_json::json!(3), &clock)
+        .unwrap();
+    assert_eq!(df.delivered_params[&node], keys(&["fps", "gain"]));
+
+    deliver_param_delete_strict(&mut df, &node, "fps".into(), &clock).unwrap();
+    assert_eq!(df.delivered_params[&node], keys(&["gain"]));
+    deliver_param_delete_strict(&mut df, &node, "gain".into(), &clock).unwrap();
+    assert!(
+        !df.delivered_params.contains_key(&node),
+        "a node without keys has no entry: {:?}",
+        df.delivered_params
+    );
+}
+
+/// Only what reached the node's queue counts: a set that was not queued did
+/// not give the node the key, and a delete that was not queued did not take
+/// it away.
+#[test]
+fn param_changes_that_were_not_queued_leave_the_delivered_keys_alone() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let missing: NodeId = "missing".to_string().into();
+    let not_connected = deliver_param_update_strict(
+        &mut df,
+        &missing,
+        "fps".into(),
+        serde_json::json!(30),
+        &clock,
+    );
+    assert!(not_connected.is_err());
+    assert!(df.delivered_params.is_empty());
+
+    let (node, _rx) = subscribed_node(&mut df, "camera");
+    deliver_param_update_strict(&mut df, &node, "fps".into(), serde_json::json!(30), &clock)
+        .unwrap();
+    let tx = df.subscribe_channels[&node].clone();
+    while send_with_timestamp(&tx, NodeEvent::Stop, &clock).unwrap() {}
+    let full = deliver_param_delete_strict(&mut df, &node, "fps".into(), &clock);
+    assert!(full.is_err());
+    let full =
+        deliver_param_update_strict(&mut df, &node, "gain".into(), serde_json::json!(2), &clock);
+    assert!(full.is_err());
+    assert_eq!(df.delivered_params[&node], keys(&["fps"]));
+}
+
+/// State catch-up queues params through the same bookkeeping as a forwarded
+/// `dora param set`/`delete`, up to the first entry it cannot deliver.
+#[test]
+fn state_catch_up_tracks_delivered_param_keys() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let (node, _rx) = subscribed_node(&mut df, "camera");
+    let missing: NodeId = "missing".to_string().into();
+    let set = |sequence, node_id: &NodeId, key: &str| StateCatchUpEntry {
+        sequence,
+        operation: StateCatchUpOperation::SetParam {
+            node_id: node_id.clone(),
+            key: key.into(),
+            value: serde_json::json!(1),
+        },
+    };
+
+    let applied_through = apply_state_catch_up_entries(
+        &mut df,
+        &[
+            set(1, &node, "fps"),
+            set(2, &node, "gain"),
+            StateCatchUpEntry {
+                sequence: 3,
+                operation: StateCatchUpOperation::DeleteParam {
+                    node_id: node.clone(),
+                    key: "fps".into(),
+                },
+            },
+            set(4, &missing, "fps"),
+            set(5, &node, "never-reached"),
+        ],
+        &clock,
+    );
+
+    assert_eq!(applied_through, 3);
+    assert_eq!(df.delivered_params[&node], keys(&["gain"]));
+    assert!(!df.delivered_params.contains_key(&missing));
+}
+
+/// When the node's process goes away, so do the params it held: the next
+/// process of the node starts without them, and nothing re-sends them. A new
+/// subscription alone does not drop them, since the same process may
+/// subscribe again and still holds what it received.
+#[tokio::test]
+async fn delivered_param_keys_are_forgotten_with_the_nodes_process() {
+    let clock = test_clock();
+    let mut df = test_dataflow();
+    let (node, _rx) = subscribed_node(&mut df, "camera");
+    let (other, _other_rx) = subscribed_node(&mut df, "other");
+    let deliver_both = |df: &mut RunningDataflow| {
+        for node_id in [&node, &other] {
+            deliver_param_update_strict(df, node_id, "fps".into(), serde_json::json!(1), &clock)
+                .unwrap();
+        }
+    };
+
+    // Exit of the process, restarted or not.
+    deliver_both(&mut df);
+    df.reset_incarnation_state(&node, 0);
+    assert!(!df.delivered_params.contains_key(&node));
+    assert_eq!(df.delivered_params[&other], keys(&["fps"]));
+
+    // `RemoveNode` / `ReplaceNode`.
+    deliver_both(&mut df);
+    df.forget_node_bookkeeping(&node);
+    assert!(!df.delivered_params.contains_key(&node));
+    assert_eq!(df.delivered_params[&other], keys(&["fps"]));
+
+    // Subscribing again keeps them.
+    deliver_both(&mut df);
+    let (tx, _new_rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    Daemon::subscribe(&mut df, node.clone(), tx, &clock).await;
+    assert_eq!(df.delivered_params[&node], keys(&["fps"]));
+    assert_eq!(df.delivered_params[&other], keys(&["fps"]));
+}
+
+/// Every message the daemon has queued for the coordinator so far.
+fn sent_messages(coordinator_rx: &mut mpsc::Receiver<String>) -> Vec<String> {
+    let mut sent = Vec::new();
+    while let Ok(message) = coordinator_rx.try_recv() {
+        sent.push(message);
+    }
+    sent
+}
+
+/// The keys go to the coordinator right after the status report (sent at the
+/// start of every connection), in one event for every dataflow that has any,
+/// for the nodes that are still subscribed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn delivered_param_keys_are_reported_after_the_status_report() {
+    let (coordinator_sender, mut coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+    let clock = daemon.clock.clone();
+
+    let (with_keys, without_keys) = (Uuid::new_v4(), Uuid::new_v4());
+    let mut df = test_dataflow();
+    let (node, _rx) = subscribed_node(&mut df, "camera");
+    deliver_param_update_strict(&mut df, &node, "fps".into(), serde_json::json!(30), &clock)
+        .unwrap();
+    // A node whose event stream is gone cannot be sent a delete.
+    let (gone, _gone_rx) = subscribed_node(&mut df, "gone");
+    deliver_param_update_strict(&mut df, &gone, "fps".into(), serde_json::json!(30), &clock)
+        .unwrap();
+    df.mark_event_stream_dropped(&gone);
+    let (crashed, crashed_rx) = subscribed_node(&mut df, "crashed");
+    deliver_param_update_strict(
+        &mut df,
+        &crashed,
+        "fps".into(),
+        serde_json::json!(30),
+        &clock,
+    )
+    .unwrap();
+    drop(crashed_rx);
+    daemon.running.insert(with_keys, df);
+    daemon.running.insert(without_keys, test_dataflow());
+
+    daemon.send_status_report().await;
+
+    let sent = sent_messages(&mut coordinator_rx);
+    let status = sent
+        .iter()
+        .position(|m| m.contains("StatusReport"))
+        .unwrap_or_else(|| panic!("the connection starts with a status report: {sent:#?}"));
+    let reports: Vec<_> = sent
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.contains("DeliveredParamKeys"))
+        .collect();
+    let [(position, report)] = reports[..] else {
+        panic!("expected one key report: {sent:#?}");
+    };
+    assert!(status < position, "{sent:#?}");
+
+    let envelope: serde_json::Value = serde_json::from_str(report).unwrap();
+    let report: Timestamped<CoordinatorRequest> =
+        serde_json::from_value(envelope["params"].clone()).unwrap();
+    let CoordinatorRequest::Event {
+        event: DaemonEvent::DeliveredParamKeys { dataflows, .. },
+        ..
+    } = report.inner
+    else {
+        panic!("unexpected report {report:?}");
+    };
+    assert_eq!(
+        dataflows,
+        BTreeMap::from([(with_keys, BTreeMap::from([(node, keys(&["fps"]))]))])
+    );
+}
+
+/// No dataflow with keys, no report: an older coordinator logs every frame
+/// it cannot decode, so the event is not sent when it says nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn no_key_report_without_delivered_params() {
+    let (coordinator_sender, mut coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+    daemon.running.insert(Uuid::new_v4(), test_dataflow());
+    daemon.send_status_report().await;
+
+    let sent = sent_messages(&mut coordinator_rx);
+    assert!(sent.iter().any(|m| m.contains("StatusReport")), "{sent:#?}");
+    assert!(
+        !sent.iter().any(|m| m.contains("DeliveredParamKeys")),
+        "{sent:#?}"
+    );
 }
 
 #[test]

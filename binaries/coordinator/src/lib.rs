@@ -603,6 +603,10 @@ async fn start_inner(
                     .handle_state_catch_up_ack(daemon_id, dataflow_id, ack_sequence)
                     .await?
             }
+            Event::DaemonDeliveredParamKeys {
+                daemon_id,
+                dataflows,
+            } => coordinator.handle_delivered_param_keys(daemon_id, dataflows),
             Event::DaemonNodeStopped {
                 daemon_id,
                 dataflow_id,

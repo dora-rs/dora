@@ -1432,6 +1432,72 @@ impl Daemon {
         Ok((daemon, dora_events_rx))
     }
 
+    /// Report the dataflows this daemon runs, so the coordinator can
+    /// reconcile them, followed by the param keys their nodes hold.
+    ///
+    /// The key report comes second because the coordinator acts on it only
+    /// for a dataflow the status report re-established. It is left out when
+    /// no subscribed node holds a key.
+    pub(crate) async fn send_status_report(&self) {
+        let Some(sender) = &self.coordinator_sender else {
+            return;
+        };
+        let running_dataflows = self
+            .running
+            .iter()
+            .map(
+                |(id, df)| dora_message::daemon_to_coordinator::DataflowStatusEntry {
+                    dataflow_id: *id,
+                    running_nodes: df.running_nodes.keys().cloned().collect(),
+                },
+            )
+            .collect();
+        // Only nodes that can still be sent a delete: a node whose event
+        // stream is gone or closed is reported again once it subscribes.
+        let delivered_params: BTreeMap<_, _> = self
+            .running
+            .iter()
+            .map(|(id, df)| {
+                let keys: BTreeMap<_, _> = df
+                    .delivered_params
+                    .iter()
+                    .filter(|(node_id, _)| {
+                        df.subscribe_channels
+                            .get(*node_id)
+                            .is_some_and(|channel| !channel.is_closed())
+                    })
+                    .map(|(node_id, keys)| (node_id.clone(), keys.clone()))
+                    .collect();
+                (*id, keys)
+            })
+            .filter(|(_, keys)| !keys.is_empty())
+            .collect();
+        let mut events = vec![(
+            DaemonEvent::StatusReport { running_dataflows },
+            "status report",
+        )];
+        if !delivered_params.is_empty() {
+            events.push((
+                DaemonEvent::delivered_param_keys(delivered_params),
+                "delivered param keys",
+            ));
+        }
+        for (event, what) in events {
+            let stamped = Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event,
+                },
+                timestamp: self.clock.new_timestamp(),
+            };
+            if let Ok(bytes) = serde_json::to_vec(&stamped)
+                && let Err(err) = sender.send_event(&bytes).await
+            {
+                tracing::warn!("failed to send {what} to coordinator: {err}");
+            }
+        }
+    }
+
     /// Sends the finish reports that may not have reached the coordinator:
     /// those that failed to send, and those sent on a connection that has
     /// since been replaced. Called at the start of every coordinator
@@ -1586,31 +1652,8 @@ impl Daemon {
         if let Err(err) = self.report_pending_finished_dataflows().await {
             tracing::warn!("failed to retry pending dataflow finish reports: {err:#}");
         }
+        self.send_status_report().await;
         if let Some(sender) = &self.coordinator_sender {
-            let running_dataflows: Vec<_> = self
-                .running
-                .iter()
-                .map(
-                    |(id, df)| dora_message::daemon_to_coordinator::DataflowStatusEntry {
-                        dataflow_id: *id,
-                        running_nodes: df.running_nodes.keys().cloned().collect(),
-                    },
-                )
-                .collect();
-            let event = DaemonEvent::StatusReport { running_dataflows };
-            let stamped = Timestamped {
-                inner: CoordinatorRequest::Event {
-                    daemon_id: self.daemon_id.clone(),
-                    event,
-                },
-                timestamp: self.clock.new_timestamp(),
-            };
-            if let Ok(bytes) = serde_json::to_vec(&stamped)
-                && let Err(err) = sender.send_event(&bytes).await
-            {
-                tracing::warn!("failed to send status report to coordinator: {err}");
-            }
-
             // Confirm — or withdraw — the endpoint advertised at registration,
             // now that the session is open and the listener has been checked
             // against `info().locators()`.
