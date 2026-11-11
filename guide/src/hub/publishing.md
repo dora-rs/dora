@@ -27,8 +27,11 @@ registry's fallback when the host is unreachable.
    dora hub token                 # inspect the saved token
    ```
 
-   The token is cached at `~/.config/dora/hub-token` (mode `0600`). For a
-   one-off command, pass `--token` or set `DORA_HUB_TOKEN` instead.
+   The token is cached at `~/.config/dora/hub-token` (mode `0600`) for the
+   official registry. A custom `--registry`/`DORA_HUB_REGISTRY_URL` gets a
+   registry-keyed file, so an official token is not sent to a mirror. For a
+   one-off command, pass `--token` or set `DORA_HUB_TOKEN`; never export that
+   variable while building untrusted packages (build scripts can read it).
 3. A git repository so `publish` can package the committed tree (a dirty
    working tree is intentionally ignored).
 4. Your `namespace` is owned by your account (the registry enforces this).
@@ -63,18 +66,27 @@ or version bump is an error, not a silently-published entry. Commit first.
 
 ## Publishing to the official registry
 
-The default registry is <https://dora.pub> (not live yet). Until it launches,
-point the CLI at a local/test registry:
+The default registry is <https://dora.pub>. It is public: publishing uploads
+the committed source tree for anyone to download, so run `--dry-run` first.
+The CLI prints the destination and asks for confirmation; non-interactive runs
+must pass `--yes`:
 
 ```bash
+dora hub publish --dry-run
+dora hub publish                  # prompt before uploading to dora.pub
+dora hub publish --yes            # CI, after reviewing the dry run
+
+# local/test registry (keyed token file; separate from the official token)
 export DORA_HUB_REGISTRY_URL=http://127.0.0.1:8080
-dora hub publish                  # uploads the committed source archive
+dora hub publish
 ```
 
 `dora hub publish` validates the manifest at the pinned commit, packages the
 committed subtree, and uploads it with the token. The registry returns the
 version, archive checksum and source pin; it is immediately available to
-`hub:` resolution and to `dora hub search/info`.
+`hub:` resolution and to `dora hub search/info`. The archive checksum is pinned
+in the consumer's lockfile; an automatic archive fallback is refused if that
+checksum is missing or does not match.
 
 For a namespace explicitly bound to a **local path index** in `hub.toml`, the
 command appends the legacy index entry instead (atomic, append-only). A

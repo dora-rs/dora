@@ -19,8 +19,9 @@ alongside the dataflow.
 The lockfile stores, per node:
 
 - the resolved **git source** — repo, exact `commit_hash`, and `subdir`; plus
-  the hub **provenance** (package `name`, resolved `version`, and a
-  `manifest_digest`), or
+  the hub **provenance** (package `name`, resolved `version`, a
+  `manifest_digest`, and the registry archive's `archive_sha256` when one was
+  published), or
 - the resolved **binary source** — `platform`, `url`, and `sha256` — for a node
   that shipped a prebuilt artifact.
 
@@ -44,8 +45,12 @@ what you tested.
 - a binary node's artifact is re-verified against its `sha256`;
 - if a published index entry's manifest was rewritten since you locked
   (its `manifest_digest` no longer matches), `--locked` **fails** — the
-  contract you locked against changed. (A rewritten *source pin* warns and uses
-  the lockfile pin.)
+  contract you locked against changed. A rewritten *source pin* also fails in
+  strict `--locked` mode instead of silently building a different repository;
+  `--locked` must be reproducible, so re-run `--write-lockfile` after an
+  intentional index/source change.
+- the registry archive fallback is used only when its bytes match the pinned
+  `archive_sha256`; a missing checksum disables the fallback (fail closed).
 
 > `dora validate` is **best-effort**, not strict: when a lockfile exists it uses
 > its pins, but a missing or stale pin falls back to live resolution with a note
@@ -99,7 +104,10 @@ Two independent mechanisms for working with limited or no network:
 - **`--offline`** (on `dora build`, `dora validate`, and `dora hub
   search`/`info`/`outdated`/`update`) skips the network index refresh and uses
   the local cache, failing loudly on a cache miss instead of silently going
-  stale.
+  stale. For `hub:` builds it also skips the hosting-source probe and the
+  registry archive fallback; the build uses the existing source checkout or
+  fails. Registry search has no offline index, so `dora hub search --offline`
+  errors instead of silently contacting the network.
 
 - **`dora hub fetch`** mirrors the pinned *sources* into a directory — a
   verifiable local copy of each pinned commit, for inspection, auditing, CI

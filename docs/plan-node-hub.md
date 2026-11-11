@@ -19,6 +19,12 @@
 > namespace bindings. The guide (`guide/src/hub/`) is the up-to-date user
 > documentation; the git-catalog sections below describe that compatibility
 > path.
+>
+> **Security hardening (2026-11):** registry archive fallbacks are accepted only
+> when their SHA-256 matches the checksum pinned in the lockfile; `--offline`
+> skips the hosting-source probe and the fallback; lockfile sources are
+> revalidated before git; publishing to the public registry requires
+> confirmation (`--yes` non-interactively). See `guide/src/hub/`.
 
 Dora Hub is dora's node packaging, discovery, and distribution system: node
 authors publish typed, versioned nodes once; dataflow authors find and use

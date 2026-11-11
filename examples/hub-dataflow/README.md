@@ -3,8 +3,8 @@
 Demonstrates using a node published to the [Dora Hub](../../docs/plan-node-hub.md)
 with the `hub:` field — no `path:`, no `git:`, no manual `build:`.
 
-By default `dora` resolves from <https://dora.pub>; until that site launches,
-point it at a local registry:
+By default `dora` resolves from <https://dora.pub>. For a mirror or local test
+registry, override it:
 
 ```bash
 export DORA_HUB_REGISTRY_URL=http://127.0.0.1:8080
@@ -51,7 +51,7 @@ dora build dataflow.yml --locked --offline # robot: build from the cache, fail o
 ## Notes
 
 - `hub:` is an unstable feature; its behavior may change.
-- The example references `dora-yolo`, which becomes available once the official
-  registry is populated. Until then, set `DORA_HUB_REGISTRY_URL` to a local
-  registry (see the hub-registry project) or point `~/.config/dora/hub.toml` at
-  a local fixture index — see `tests/hub-smoke.rs` for a self-contained setup.
+- The example references `dora-yolo`; if it is not present in the registry you
+  use, set `DORA_HUB_REGISTRY_URL` to a mirror (see the hub-registry project)
+  or point `~/.config/dora/hub.toml` at a local fixture index — see
+  `tests/hub-smoke.rs` for a self-contained setup.

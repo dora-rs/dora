@@ -30,11 +30,13 @@ The Hub is a **package manager for dora nodes**, deliberately cargo-style:
   to the YAML and `dora build` resolves it. (`dora hub install` exists only to
   point you at this.)
 - **An HTTP registry by default.** `dora` resolves `hub:` from the registry at
-  <https://dora.pub> (the public site is not live yet); `DORA_HUB_REGISTRY_URL`
+  <https://dora.pub>; `DORA_HUB_REGISTRY_URL`
   points it at a local test server or a mirror. `hub.toml` can still bind a
   namespace to a git/path catalog for enterprise and hermetic setups. Publishing
   uploads the committed source archive and metadata; the registry exposes a
-  sparse index and pins the version to an immutable source commit.
+  sparse index and pins the version to an immutable source commit. The
+  archive SHA-256 is pinned in the lockfile; the registry archive fallback is
+  used only after that checksum verifies.
 - **Source-distributed by default.** A resolved node is cloned at its pinned
   commit and built on the machine that runs it. A node may *optionally* ship a
   prebuilt binary for a platform (see [Custom & Enterprise
@@ -51,7 +53,7 @@ The Hub is a **package manager for dora nodes**, deliberately cargo-style:
 The CLI uses the official registry by default:
 
 ```bash
-# official (default; not launched yet)
+# official (default)
 dora build dataflow.yml
 
 # local registry or enterprise mirror

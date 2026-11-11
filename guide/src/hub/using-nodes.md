@@ -130,9 +130,12 @@ source **from the publisher's hosting repository** at the published commit and
 runs its `build` command (e.g. `pip install .`, `cargo build --release`) on the
 machine that builds it. The registry is expected to serve metadata/index only;
 its archive endpoint is a fallback, not the primary source. If the hosting
-repository is unreachable, local `dora build/run` automatically materializes
-the registry archive and continues; distributed builds currently still require
-the hosting source. For a node that
+repository is unreachable, local `dora build/run` materializes the registry
+archive **only when the lockfile pins its SHA-256**, verifies it, and then
+builds from that copy. Without a pinned checksum the fallback is refused rather
+than trusting the network; distributed builds currently still require the
+hosting source. `--offline` skips both the hosting-source probe and the
+fallback. For a node that
 ships a prebuilt binary, the resolver downloads and sha256-verifies that
 artifact instead of cloning — see [Binary
 distribution](indexes.md#binary-distribution).
