@@ -60,7 +60,6 @@ async fn call<Req: Serialize, Res: DeserializeOwned>(
     call_on(node, NODE, service, type_name, request).await
 }
 
-/// Calls `<node_name>/<service>`.
 /// Declare a client for `node_name`'s `rcl_interfaces` service `service`.
 async fn declare_client(
     node: &Node,
@@ -88,6 +87,7 @@ async fn declare_client(
         .unwrap()
 }
 
+/// Calls `<node_name>/<service>`.
 async fn call_on<Req: Serialize, Res: DeserializeOwned>(
     node: &Node,
     node_name: &str,
@@ -671,9 +671,9 @@ async fn a_set_is_answered_during_a_get_burst() {
     })
     .unwrap();
     // Declared before the burst: declaring a client takes time, and doing it
-    // after the gets were spawned let a slow runner answer hundreds of them
-    // before the set was even sent (571 of 900 on windows-latest), which says
-    // nothing about the services taking turns.
+    // after the gets were spawned would let a slow runner answer hundreds of
+    // them before the set is even sent, which says nothing about the services
+    // taking turns.
     let set_client = declare_client(&node, "/robot/turns", "set_parameters", "SetParameters").await;
     let answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let gets: Vec<_> = (0..900)
