@@ -1788,8 +1788,7 @@ struct ZenohCancelState {
     /// Keys of the executing goals a cancel request moved to canceling.
     canceling: HashSet<String>,
     /// The last [`MAX_CONCURRENT_GOALS`] goals the server finished, so a cancel
-    /// naming one is answered `ERROR_GOAL_TERMINATED` like `rcl_action` does,
-    /// rather than `ERROR_UNKNOWN_GOAL_ID` (#3996).
+    /// naming one is answered `ERROR_GOAL_TERMINATED` like `rcl_action` does.
     finished: VecDeque<ZenohServerGoal>,
 }
 
@@ -2150,6 +2149,9 @@ impl Ros2ActionServer {
                 break;
             };
             self.executing.remove(&oldest);
+            ZenohCancelState::lock(&self.zenoh_cancel)
+                .canceling
+                .remove(&oldest);
         }
         self.executing.insert(goal_id.clone(), executing)?;
         publish_python_zenoh_status(py, &self.server, &self.executing, &self.zenoh_cancel)?;
@@ -2466,7 +2468,7 @@ mod zenoh_cancel_tests {
     }
 
     /// A goal the server finished is still known: naming it is
-    /// `ERROR_GOAL_TERMINATED`, as in rcl, not `ERROR_UNKNOWN_GOAL_ID` (#3996).
+    /// `ERROR_GOAL_TERMINATED`, as in rcl.
     #[test]
     fn cancelling_a_finished_goal_reports_goal_terminated() {
         let mut executing = [goal(GoalStatusEnum::Executing)];
@@ -2483,7 +2485,7 @@ mod zenoh_cancel_tests {
     }
 
     /// A second cancel of the same goal finds it canceling: rcl answers
-    /// `ERROR_GOAL_TERMINATED` and does not list it again (#3996). The
+    /// `ERROR_GOAL_TERMINATED` and does not list it again. The
     /// canceling state survives between requests in `ZenohCancelState`.
     #[test]
     fn a_canceling_goal_is_not_canceled_again() {

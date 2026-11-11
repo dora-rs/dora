@@ -2637,7 +2637,7 @@ mod zenoh_cancel_tests {
     }
 
     /// rcl: a canceling goal is no longer cancelable, so naming it is
-    /// `ERROR_GOAL_TERMINATED` (was `ERROR_REJECTED`, #3996).
+    /// `ERROR_GOAL_TERMINATED`.
     #[test]
     fn a_goal_that_is_already_canceling_is_not_canceled_again() {
         let mut goals = [
@@ -2665,7 +2665,7 @@ mod zenoh_cancel_tests {
     }
 
     /// rcl answers a cancel-all with `ERROR_NONE` and an empty list when no
-    /// goal is running (was `ERROR_UNKNOWN_GOAL_ID`, #3996).
+    /// goal is running.
     #[test]
     fn cancel_all_with_nothing_running_is_accepted() {
         let mut goals = [goal(GoalStatusEnum::Succeeded)];
@@ -2677,8 +2677,7 @@ mod zenoh_cancel_tests {
         assert_eq!(code, CancelGoalResponseEnum::None);
     }
 
-    /// A non-zero stamp selects the goals accepted at or before it (the
-    /// stamp used to be ignored, #3996).
+    /// A non-zero stamp selects the goals accepted at or before it.
     #[test]
     fn cancel_by_stamp_takes_goals_accepted_at_or_before_it() {
         let mut goals = [
