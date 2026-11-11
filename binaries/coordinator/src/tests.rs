@@ -447,8 +447,18 @@ impl CoordinatorStore for FailingReadStore {
         &self,
         dataflow_id: &Uuid,
         node_id: &NodeId,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<(String, Uuid)>> {
         self.inner.list_node_param_tombstones(dataflow_id, node_id)
+    }
+    fn clear_node_param_tombstone(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        token: Uuid,
+    ) -> Result<()> {
+        self.inner
+            .clear_node_param_tombstone(dataflow_id, node_id, key, token)
     }
 }
 
@@ -2534,6 +2544,7 @@ async fn replay_replays_persisted_param_to_daemon_connection() {
 
 /// Fake daemon for replay tests: answers every `SetParam` with `Ok`, after
 /// running `on_request` on it, and returns the `(key, value)` pairs it saw.
+/// A `DeleteParam` is answered with `Ok` and not recorded.
 fn spawn_set_param_acking_daemon(
     mut rx: tokio::sync::mpsc::Receiver<String>,
     pending_replies: Arc<tokio::sync::Mutex<HashMap<Uuid, tokio::sync::oneshot::Sender<String>>>>,
@@ -2548,15 +2559,19 @@ fn spawn_set_param_acking_daemon(
         let mut seen = Vec::new();
         while let Some(outbound) = rx.recv().await {
             let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
-            let DaemonCoordinatorEvent::SetParam { key, value, .. } = outbound_raw.params.inner
-            else {
-                panic!("unexpected replay event");
+            let reply = match outbound_raw.params.inner {
+                DaemonCoordinatorEvent::SetParam { key, value, .. } => {
+                    on_request(&key);
+                    seen.push((key, value));
+                    DaemonCoordinatorReply::SetParamResult(Ok(()))
+                }
+                DaemonCoordinatorEvent::DeleteParam { .. } => {
+                    DaemonCoordinatorReply::DeleteParamResult(Ok(()))
+                }
+                other => panic!("unexpected replay event: {other:?}"),
             };
-            on_request(&key);
-            seen.push((key, value));
             let request_id = Uuid::parse_str(&outbound_raw.id).expect("valid request id");
-            let reply =
-                serde_json::to_string(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+            let reply = serde_json::to_string(&reply).unwrap();
             let reply_tx = pending_replies
                 .lock()
                 .await
@@ -2612,7 +2627,8 @@ async fn replay_sends_current_value_of_param_changed_after_snapshot() {
         Arc::new(HLC::default()),
     )
     .await;
-    assert_eq!(summary.attempted, 2);
+    // `a` and `b` are set, then the delete of `c` is replayed.
+    assert_eq!(summary.attempted, 3);
     assert_eq!(summary.failed, 0);
 
     let seen = tokio::time::timeout(Duration::from_secs(10), daemon_task)
@@ -2746,7 +2762,6 @@ fn param_daemon_connection(
         #[derive(serde::Deserialize)]
         struct Outbound {
             id: String,
-            method: String,
             params: serde_json::Value,
         }
         while let Some(outbound) = rx.recv().await {
@@ -2757,9 +2772,7 @@ fn param_daemon_connection(
             else {
                 continue;
             };
-            if let Some(reply) = reply(&command.inner)
-                && outbound.method == "daemon_command"
-            {
+            if let Some(reply) = reply(&command.inner) {
                 let request_id = Uuid::parse_str(&outbound.id).unwrap();
                 if let Some(reply_tx) = pending_replies.lock().await.remove(&request_id) {
                     let _ = reply_tx.send(serde_json::to_string(&reply).unwrap());
@@ -2853,12 +2866,14 @@ async fn delete_param(
 
 /// Re-register daemon `machine_id` under a new id and report `sender` of
 /// `dataflow_id` running on it, as a daemon does on reconnect, then return
-/// the param commands its full param replay sent it.
+/// the param commands its full param replay sent it: the first `expected`
+/// ones, waited for under a long deadline, and any that follow shortly after.
 async fn reconnect_daemon_and_collect_param_commands(
     coordinator: &mut Coordinator,
     machine_id: &str,
     old_id: &DaemonId,
     dataflow_id: DataflowId,
+    expected: usize,
 ) -> Vec<DaemonCoordinatorEvent> {
     let (conn, mut seen) = param_acking_daemon_connection();
     let daemon_id = register_daemon(coordinator, machine_id, conn).await;
@@ -2879,12 +2894,25 @@ async fn reconnect_daemon_and_collect_param_commands(
             .contains(&daemon_id),
         "the status report links the daemon back into the dataflow"
     );
-    let mut commands = Vec::new();
-    while let Ok(Some(command)) = timeout(TokioDuration::from_millis(500), seen.recv()).await {
-        if matches!(
+    let is_param_command = |command: &DaemonCoordinatorEvent| {
+        matches!(
             command,
             DaemonCoordinatorEvent::SetParam { .. } | DaemonCoordinatorEvent::DeleteParam { .. }
-        ) {
+        )
+    };
+    let mut commands = Vec::new();
+    timeout(TokioDuration::from_secs(10), async {
+        while commands.len() < expected {
+            let command = seen.recv().await.expect("connection closed");
+            if is_param_command(&command) {
+                commands.push(command);
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("expected {expected} param commands, got {commands:#?}"));
+    while let Ok(Some(command)) = timeout(TokioDuration::from_millis(300), seen.recv()).await {
+        if is_param_command(&command) {
             commands.push(command);
         }
     }
@@ -2951,7 +2979,8 @@ async fn reconnect_after_pruned_delete_deletes_the_param_on_the_node() {
     );
 
     let commands =
-        reconnect_daemon_and_collect_param_commands(&mut coordinator, "a", &a, dataflow_id).await;
+        reconnect_daemon_and_collect_param_commands(&mut coordinator, "a", &a, dataflow_id, 2)
+            .await;
     assert_eq!(deleted_keys(&commands), vec!["gain"], "{commands:#?}");
     assert!(
         commands.iter().any(|c| matches!(
@@ -3003,15 +3032,13 @@ async fn reconnect_after_orphan_reclaim_deletes_the_param_on_the_node() {
         .expect("a delete for a reclaimed dataflow is persisted only");
 
     let commands =
-        reconnect_daemon_and_collect_param_commands(&mut coordinator, "a", &a, dataflow_id).await;
+        reconnect_daemon_and_collect_param_commands(&mut coordinator, "a", &a, dataflow_id, 2)
+            .await;
     assert_eq!(deleted_keys(&commands), vec!["gain"], "{commands:#?}");
 }
 
-/// A `dora param set` of a deleted key that lands while the replay waits for
-/// the connection's write lock wins: the replay re-checks the store under the
-/// lock and does not delete the value the set just forwarded.
-#[tokio::test]
-async fn replay_does_not_delete_a_param_set_again_while_it_waits_for_the_lock() {
+/// A store in which param `gain` of node `sender` was set and then deleted.
+fn store_with_deleted_param() -> (Arc<dyn CoordinatorStore>, DataflowId, NodeId) {
     let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
     let dataflow_id = DataflowId::from(Uuid::new_v4());
     let node_id: NodeId = "sender".to_string().into();
@@ -3022,21 +3049,46 @@ async fn replay_does_not_delete_a_param_set_again_while_it_waits_for_the_lock() 
     store
         .delete_node_param(&dataflow_id, &node_id, "gain")
         .unwrap();
-    let (connection, mut seen) = param_acking_daemon_connection();
-    let lock = connection.param_write_lock.clone();
+    (store, dataflow_id, node_id)
+}
 
-    let set_guard = lock.lock().await;
-    let replay = tokio::spawn(replay_persisted_params_for_daemon(
+/// Run the full param replay of `node_id` over `connection`.
+async fn replay_node_params(
+    store: &Arc<dyn CoordinatorStore>,
+    dataflow_id: DataflowId,
+    node_id: &NodeId,
+    connection: crate::state::DaemonConnection,
+) -> crate::params::ParamReplaySummary {
+    replay_persisted_params_for_daemon(
         dataflow_id,
         DaemonId::new(Some("a".to_string())),
         vec![node_id.clone()],
         store.clone(),
         connection,
         Arc::new(HLC::default()),
-    ));
+    )
+    .await
+}
+
+/// A `dora param set` of a deleted key that lands while the replay waits for
+/// the connection's write lock wins: the replay re-checks the store under the
+/// lock and does not delete the value the set just forwarded.
+#[tokio::test]
+async fn replay_does_not_delete_a_param_set_again_while_it_waits_for_the_lock() {
+    let (store, dataflow_id, node_id) = store_with_deleted_param();
+    let (connection, mut seen) = param_acking_daemon_connection();
+    let lock = connection.param_write_lock.clone();
+
+    let set_guard = lock.lock().await;
+    let replay = tokio::spawn({
+        let store = store.clone();
+        let node_id = node_id.clone();
+        async move { replay_node_params(&store, dataflow_id, &node_id, connection).await }
+    });
     tokio::time::sleep(TokioDuration::from_millis(200)).await;
     assert!(!replay.is_finished(), "replay must wait for the set's lock");
     // The `set` persists its value while it holds the lock.
+    let one = serde_json::to_vec(&serde_json::json!(1)).unwrap();
     store
         .put_node_param(&dataflow_id, &node_id, "gain", &one)
         .unwrap();
@@ -3053,19 +3105,11 @@ async fn replay_does_not_delete_a_param_set_again_while_it_waits_for_the_lock() 
     );
 }
 
-/// A delete the daemon rejects counts as a failed replay item.
+/// A delete the daemon rejects counts as a failed replay item and keeps its
+/// tombstone.
 #[tokio::test]
 async fn replay_counts_a_rejected_delete_as_failed() {
-    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
-    let dataflow_id = DataflowId::from(Uuid::new_v4());
-    let node_id: NodeId = "sender".to_string().into();
-    let one = serde_json::to_vec(&serde_json::json!(1)).unwrap();
-    store
-        .put_node_param(&dataflow_id, &node_id, "gain", &one)
-        .unwrap();
-    store
-        .delete_node_param(&dataflow_id, &node_id, "gain")
-        .unwrap();
+    let (store, dataflow_id, node_id) = store_with_deleted_param();
     let (connection, _seen) = param_daemon_connection(|command| match command {
         DaemonCoordinatorEvent::DeleteParam { .. } => Some(
             DaemonCoordinatorReply::DeleteParamResult(Err("node `sender` not connected".into())),
@@ -3075,18 +3119,42 @@ async fn replay_counts_a_rejected_delete_as_failed() {
 
     let summary = timeout(
         TokioDuration::from_secs(10),
-        replay_persisted_params_for_daemon(
-            dataflow_id,
-            DaemonId::new(Some("a".to_string())),
-            vec![node_id],
-            store,
-            connection,
-            Arc::new(HLC::default()),
-        ),
+        replay_node_params(&store, dataflow_id, &node_id, connection),
     )
     .await
     .expect("replay did not finish");
     assert_eq!((summary.attempted, summary.failed), (1, 1));
+    assert_eq!(
+        store
+            .list_node_param_tombstones(&dataflow_id, &node_id)
+            .unwrap()
+            .len(),
+        1,
+        "an undelivered delete keeps its tombstone"
+    );
+}
+
+/// Once a replay has delivered a delete, its tombstone is gone and the next
+/// replay sends nothing for the key.
+#[tokio::test]
+async fn replay_drops_the_tombstone_of_a_delivered_delete() {
+    let (store, dataflow_id, node_id) = store_with_deleted_param();
+    for expected_deletes in [1, 0] {
+        let (connection, _seen) = param_acking_daemon_connection();
+        let summary = timeout(
+            TokioDuration::from_secs(10),
+            replay_node_params(&store, dataflow_id, &node_id, connection),
+        )
+        .await
+        .expect("replay did not finish");
+        assert_eq!((summary.attempted, summary.failed), (expected_deletes, 0));
+        assert!(
+            store
+                .list_node_param_tombstones(&dataflow_id, &node_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
 
 /// Ask a coordinator whose default daemon connected over `daemon` whether a

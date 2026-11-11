@@ -246,7 +246,7 @@ pub(crate) fn spawn_param_replay_to_daemon(
 }
 
 /// Send every persisted param of the daemon's nodes to it, one `SetParam` at
-/// a time, after a `DeleteParam` for each deleted one (see
+/// a time, then a `DeleteParam` for each deleted one (see
 /// [`replay_param_deletes`]).
 ///
 /// This runs in a spawned task, concurrently with `dora param set`/`delete`
@@ -274,26 +274,14 @@ pub(crate) async fn replay_persisted_params_for_daemon(
         attempted: load_failures,
         failed: load_failures,
     };
-    replay_param_deletes(
-        dataflow_id,
-        &daemon_id,
-        &node_ids_on_daemon,
-        store.as_ref(),
-        &connection,
-        &clock,
-        &mut summary,
-    )
-    .await;
-    if replay_items.is_empty() {
-        return summary;
+    if !replay_items.is_empty() {
+        tracing::debug!(
+            "replaying {} persisted params for dataflow {} on daemon {}",
+            replay_items.len(),
+            dataflow_id,
+            daemon_id
+        );
     }
-
-    tracing::debug!(
-        "replaying {} persisted params for dataflow {} on daemon {}",
-        replay_items.len(),
-        dataflow_id,
-        daemon_id
-    );
 
     for item in replay_items {
         let write_guard = connection.param_write_lock.lock().await;
@@ -386,6 +374,16 @@ pub(crate) async fn replay_persisted_params_for_daemon(
         }
     }
 
+    replay_param_deletes(
+        dataflow_id,
+        &daemon_id,
+        &node_ids_on_daemon,
+        store.as_ref(),
+        &connection,
+        &clock,
+        &mut summary,
+    )
+    .await;
     summary
 }
 
@@ -397,6 +395,10 @@ pub(crate) async fn replay_persisted_params_for_daemon(
 /// `param_write_lock`, it re-checks that the key is still unset, so a key set
 /// again since the tombstones were listed is not deleted after the set's
 /// forward.
+///
+/// Once the daemon has applied a delete, its tombstone is dropped, unless
+/// the key was set or deleted again while the reply was awaited: the clear
+/// only matches the tombstone listed here.
 async fn replay_param_deletes(
     dataflow_id: DataflowId,
     daemon_id: &DaemonId,
@@ -416,7 +418,7 @@ async fn replay_param_deletes(
                 continue;
             }
         };
-        for key in keys {
+        for (key, token) in keys {
             let write_guard = connection.param_write_lock.lock().await;
             match store.get_node_param(&dataflow_id, node_id, &key) {
                 Ok(None) => {}
@@ -456,6 +458,13 @@ async fn replay_param_deletes(
                      to daemon {daemon_id}: {err}"
                 );
                 summary.failed += 1;
+            } else if let Err(err) =
+                store.clear_node_param_tombstone(&dataflow_id, node_id, &key, token)
+            {
+                tracing::warn!(
+                    "failed to drop the tombstone of delivered param delete \
+                     {dataflow_id}/{node_id}/{key}: {err}"
+                );
             }
         }
     }

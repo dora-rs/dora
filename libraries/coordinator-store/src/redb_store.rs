@@ -17,10 +17,14 @@ const BUILDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("builds");
 /// [`make_param_key`]), Value: the caller's opaque param bytes.
 const NODE_PARAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("node_params");
 /// Deleted node params (see `CoordinatorStore::delete_node_param`), keyed
-/// like [`NODE_PARAMS`]. `open` creates the table in a store that predates it,
-/// and a binary that does not know it leaves it alone, so adding it needs no
-/// [`SCHEMA_VERSION`] bump.
-const NODE_PARAM_TOMBSTONES: TableDefinition<&str, ()> =
+/// like [`NODE_PARAMS`], Value: the tombstone's token. `open` creates the
+/// table in a store that predates it, and a binary that does not know it
+/// leaves it alone, so adding it needs no [`SCHEMA_VERSION`] bump. Such a
+/// binary neither clears a tombstone on `put_node_param` nor cascades it on
+/// `delete_dataflow`: the replay re-checks the param row before sending a
+/// delete, which keeps a stale tombstone harmless, and the rows of a deleted
+/// dataflow are never read again.
+const NODE_PARAM_TOMBSTONES: TableDefinition<&str, u128> =
     TableDefinition::new("node_param_tombstones");
 
 /// Bump this when the serialization format of any stored record changes.
@@ -432,7 +436,7 @@ impl CoordinatorStore for RedbStore {
             let mut table = txn.open_table(NODE_PARAMS)?;
             if table.remove(param_key.as_str())?.is_some() {
                 txn.open_table(NODE_PARAM_TOMBSTONES)?
-                    .insert(param_key.as_str(), ())?;
+                    .insert(param_key.as_str(), Uuid::now_v7().as_u128())?;
             }
         }
         txn.commit()?;
@@ -443,19 +447,43 @@ impl CoordinatorStore for RedbStore {
         &self,
         dataflow_id: &Uuid,
         node_id: &NodeId,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<(String, Uuid)>> {
         let prefix = make_param_prefix(dataflow_id, node_id)?;
         let txn = self.db.begin_read()?;
         let table = txn.open_table(NODE_PARAM_TOMBSTONES)?;
         let mut result = Vec::new();
         for entry in table.range(prefix.as_str()..)? {
-            let (key, _) = entry?;
+            let (key, token) = entry?;
             match key.value().strip_prefix(&prefix) {
-                Some(param_key) => result.push(param_key.to_string()),
+                Some(param_key) => {
+                    result.push((param_key.to_string(), Uuid::from_u128(token.value())))
+                }
                 None => break,
             }
         }
         Ok(result)
+    }
+
+    fn clear_node_param_tombstone(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        token: Uuid,
+    ) -> Result<()> {
+        let param_key = make_param_key(dataflow_id, node_id, key)?;
+        let txn = self.db.begin_write()?;
+        let matches = {
+            let mut table = txn.open_table(NODE_PARAM_TOMBSTONES)?;
+            let current = table.get(param_key.as_str())?.map(|t| t.value());
+            current == Some(token.as_u128()) && table.remove(param_key.as_str())?.is_some()
+        };
+        if matches {
+            txn.commit()?;
+        } else {
+            txn.abort()?;
+        }
+        Ok(())
     }
 }
 
@@ -847,37 +875,15 @@ mod tests {
         assert_eq!(store.list_node_params(&df, &node).unwrap().len(), 1);
     }
 
-    /// Deleting a set key tombstones it, deleting a key that was never set
-    /// does not, and setting the key again clears the tombstone.
+    /// A tombstone is cleared only with the token it was listed with.
+    #[test]
+    fn param_tombstone_clear_matches_only_its_token() {
+        crate::tombstone_tests::clear_matches_only_its_token(&temp_store().0);
+    }
+
     #[test]
     fn param_delete_records_a_tombstone_that_put_clears() {
-        let (store, _dir) = temp_store();
-        let df = Uuid::new_v4();
-        let node: NodeId = "sensor".to_string().into();
-        let other: NodeId = "sensor2".to_string().into();
-        store.put_node_param(&df, &node, "gain", b"1").unwrap();
-        store.put_node_param(&df, &other, "gain", b"1").unwrap();
-
-        store.delete_node_param(&df, &node, "gain").unwrap();
-        store.delete_node_param(&df, &node, "never_set").unwrap();
-        assert_eq!(
-            store.list_node_param_tombstones(&df, &node).unwrap(),
-            vec!["gain".to_string()]
-        );
-        assert!(
-            store
-                .list_node_param_tombstones(&df, &other)
-                .unwrap()
-                .is_empty()
-        );
-
-        store.put_node_param(&df, &node, "gain", b"2").unwrap();
-        assert!(
-            store
-                .list_node_param_tombstones(&df, &node)
-                .unwrap()
-                .is_empty()
-        );
+        crate::tombstone_tests::delete_records_a_tombstone_that_put_clears(&temp_store().0);
     }
 
     /// A tombstone outlives a coordinator restart, so the replay after it
@@ -895,7 +901,7 @@ mod tests {
         }
         let store = RedbStore::open(&path).unwrap();
         assert_eq!(
-            store.list_node_param_tombstones(&df, &node).unwrap(),
+            crate::tombstone_tests::tombstoned_keys(&store, &df, &node),
             vec!["gain".to_string()]
         );
     }
@@ -937,7 +943,7 @@ mod tests {
         );
         store.delete_node_param(&df, &node, "gain").unwrap();
         assert_eq!(
-            store.list_node_param_tombstones(&df, &node).unwrap(),
+            crate::tombstone_tests::tombstoned_keys(&store, &df, &node),
             vec!["gain".to_string()]
         );
     }
@@ -1313,14 +1319,11 @@ mod tests {
         store.delete_dataflow(&df_a).unwrap();
 
         assert!(
-            store
-                .list_node_param_tombstones(&df_a, &node)
-                .unwrap()
-                .is_empty(),
+            crate::tombstone_tests::tombstoned_keys(&store, &df_a, &node).is_empty(),
             "tombstones for cleaned dataflow must be removed"
         );
         assert_eq!(
-            store.list_node_param_tombstones(&df_b, &node).unwrap(),
+            crate::tombstone_tests::tombstoned_keys(&store, &df_b, &node),
             vec!["k2".to_string()]
         );
 

@@ -195,8 +195,19 @@ impl CoordinatorStore for FailingListStore {
         &self,
         dataflow_id: &Uuid,
         node_id: &NodeId,
-    ) -> eyre::Result<Vec<String>> {
+    ) -> eyre::Result<Vec<(String, Uuid)>> {
         self.inner.list_node_param_tombstones(dataflow_id, node_id)
+    }
+
+    fn clear_node_param_tombstone(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        token: Uuid,
+    ) -> eyre::Result<()> {
+        self.inner
+            .clear_node_param_tombstone(dataflow_id, node_id, key, token)
     }
 }
 

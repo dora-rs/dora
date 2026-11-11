@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::sync::RwLock;
 
 use dora_message::common::DaemonId;
@@ -21,9 +21,11 @@ pub struct InMemoryStore {
     dataflows: RwLock<BTreeMap<Uuid, DataflowRecord>>,
     builds: RwLock<BTreeMap<Uuid, BuildRecord>>,
     params: RwLock<BTreeMap<ParamKey, Vec<u8>>>,
-    /// Deleted param keys. Written only while holding the `params` write
-    /// lock, so a key is never both set and tombstoned.
-    tombstones: RwLock<BTreeSet<ParamKey>>,
+    /// Deleted param keys and their tokens. Added and cascaded only while
+    /// holding the `params` write lock, so a key is never both set and
+    /// tombstoned; `clear_node_param_tombstone` only removes, so it needs
+    /// no `params` lock.
+    tombstones: RwLock<BTreeMap<ParamKey, Uuid>>,
 }
 
 impl InMemoryStore {
@@ -33,7 +35,7 @@ impl InMemoryStore {
             dataflows: RwLock::new(BTreeMap::new()),
             builds: RwLock::new(BTreeMap::new()),
             params: RwLock::new(BTreeMap::new()),
-            tombstones: RwLock::new(BTreeSet::new()),
+            tombstones: RwLock::new(BTreeMap::new()),
         }
     }
 }
@@ -138,13 +140,10 @@ impl CoordinatorStore for InMemoryStore {
                 .write()
                 .map_err(|e| eyre!("lock poisoned: {e}"))?;
             params.retain(|(df, _, _), _| df != uuid);
-        }
-        {
-            let mut tombstones = self
-                .tombstones
+            self.tombstones
                 .write()
-                .map_err(|e| eyre!("lock poisoned: {e}"))?;
-            tombstones.retain(|(df, _, _)| df != uuid);
+                .map_err(|e| eyre!("lock poisoned: {e}"))?
+                .retain(|(df, _, _), _| df != uuid);
         }
         Ok(())
     }
@@ -252,7 +251,7 @@ impl CoordinatorStore for InMemoryStore {
             self.tombstones
                 .write()
                 .map_err(|e| eyre!("lock poisoned: {e}"))?
-                .insert(param_key);
+                .insert(param_key, Uuid::now_v7());
         }
         Ok(())
     }
@@ -261,7 +260,7 @@ impl CoordinatorStore for InMemoryStore {
         &self,
         dataflow_id: &Uuid,
         node_id: &NodeId,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<(String, Uuid)>> {
         let tombstones = self
             .tombstones
             .read()
@@ -269,9 +268,27 @@ impl CoordinatorStore for InMemoryStore {
         let start = (*dataflow_id, node_id.clone(), String::new());
         Ok(tombstones
             .range(start..)
-            .take_while(|(df, nid, _)| df == dataflow_id && nid == node_id)
-            .map(|(_, _, key)| key.clone())
+            .take_while(|((df, nid, _), _)| df == dataflow_id && nid == node_id)
+            .map(|((_, _, key), token)| (key.clone(), *token))
             .collect())
+    }
+
+    fn clear_node_param_tombstone(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        token: Uuid,
+    ) -> Result<()> {
+        let mut tombstones = self
+            .tombstones
+            .write()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        let param_key = (*dataflow_id, node_id.clone(), key.to_string());
+        if tombstones.get(&param_key) == Some(&token) {
+            tombstones.remove(&param_key);
+        }
+        Ok(())
     }
 }
 
@@ -378,37 +395,15 @@ mod tests {
         assert_eq!(store.list_node_params(&df, &node).unwrap().len(), 1);
     }
 
-    /// Deleting a set key tombstones it, deleting a key that was never set
-    /// does not, and setting the key again clears the tombstone.
+    /// A tombstone is cleared only with the token it was listed with.
+    #[test]
+    fn param_tombstone_clear_matches_only_its_token() {
+        crate::tombstone_tests::clear_matches_only_its_token(&InMemoryStore::new());
+    }
+
     #[test]
     fn param_delete_records_a_tombstone_that_put_clears() {
-        let store = InMemoryStore::new();
-        let df = Uuid::new_v4();
-        let node: NodeId = "sensor".to_string().into();
-        let other: NodeId = "sensor2".to_string().into();
-        store.put_node_param(&df, &node, "gain", b"1").unwrap();
-        store.put_node_param(&df, &other, "gain", b"1").unwrap();
-
-        store.delete_node_param(&df, &node, "gain").unwrap();
-        store.delete_node_param(&df, &node, "never_set").unwrap();
-        assert_eq!(
-            store.list_node_param_tombstones(&df, &node).unwrap(),
-            vec!["gain".to_string()]
-        );
-        assert!(
-            store
-                .list_node_param_tombstones(&df, &other)
-                .unwrap()
-                .is_empty()
-        );
-
-        store.put_node_param(&df, &node, "gain", b"2").unwrap();
-        assert!(
-            store
-                .list_node_param_tombstones(&df, &node)
-                .unwrap()
-                .is_empty()
-        );
+        crate::tombstone_tests::delete_records_a_tombstone_that_put_clears(&InMemoryStore::new());
     }
 
     /// A `\0`-containing param key must be rejected here just as the redb
@@ -442,14 +437,11 @@ mod tests {
         store.delete_dataflow(&df_a).unwrap();
 
         assert!(
-            store
-                .list_node_param_tombstones(&df_a, &node)
-                .unwrap()
-                .is_empty(),
+            crate::tombstone_tests::tombstoned_keys(&store, &df_a, &node).is_empty(),
             "tombstones for cleaned dataflow must be removed"
         );
         assert_eq!(
-            store.list_node_param_tombstones(&df_b, &node).unwrap(),
+            crate::tombstone_tests::tombstoned_keys(&store, &df_b, &node),
             vec!["k2".to_string()]
         );
 
