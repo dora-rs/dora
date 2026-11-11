@@ -42,7 +42,7 @@ fn machine_key_chunk(machine_id: &str) -> String {
 ///
 /// Shared by [`publish_pool_message`] and the mirror's local rollback, which
 /// posts a message back to its own event loop through the
-/// [`PeerMessageSink`] instead of publishing it (#4100).
+/// [`PeerMessageSink`] instead of publishing it.
 pub(crate) fn pool_event(
     clock: &HLC,
     dataflow_id: &Uuid,
