@@ -55,6 +55,9 @@ pub(crate) struct DestroyWait {
     /// also its group's id — which is what lets the group outlive the pid
     /// and still be recognized as ours (#3004 review).
     confirmed: std::collections::HashSet<u32>,
+    /// Observed start times of confirmed leaders, used on Windows to bound
+    /// descendant walks so stale parent links are not treated as children.
+    confirmed_start_times: std::collections::HashMap<u32, u64>,
     system: System,
     own_pid: u32,
 }
@@ -78,6 +81,7 @@ impl DestroyWait {
             killed: false,
             killed_pids: Vec::new(),
             confirmed: std::collections::HashSet::new(),
+            confirmed_start_times: std::collections::HashMap::new(),
             system: System::new(),
             own_pid: std::process::id(),
         }
@@ -101,7 +105,8 @@ impl DestroyWait {
         }
 
         for pid in &alive {
-            if kill_process_group(*pid) {
+            let start_time = self.confirmed_start_times.get(pid).copied().unwrap_or(0);
+            if kill_process_group(*pid, start_time, self.own_pid) {
                 self.killed_pids.push(*pid);
             }
         }
@@ -144,8 +149,6 @@ impl DestroyWait {
 
         #[cfg(not(unix))]
         let mut refreshed_all = false;
-        #[cfg(not(unix))]
-        let mut children_map = None;
 
         let mut alive = Vec::new();
         for pid in pids.iter().copied() {
@@ -153,7 +156,9 @@ impl DestroyWait {
             let leader_alive = process.is_some_and(|process| is_live_child(process, self.own_pid));
             let recycled = pid_recycled_into_stranger(pid, process, self.own_pid);
             if leader_alive {
+                let start_time = process.map(|p| p.start_time()).unwrap_or(0);
                 self.confirmed.insert(pid);
+                self.confirmed_start_times.insert(pid, start_time);
                 alive.push(pid);
             } else if self.confirmed.contains(&pid) && !recycled {
                 #[cfg(unix)]
@@ -171,11 +176,20 @@ impl DestroyWait {
                             ProcessRefreshKind::nothing(),
                         );
                         refreshed_all = true;
-                        children_map = Some(crate::metrics::child_process_map(&self.system));
                     }
-                    if children_map.as_ref().is_some_and(|map| {
-                        !crate::metrics::descendants(map, Pid::from_u32(pid)).is_empty()
-                    }) {
+                    let start_time = self.confirmed_start_times.get(&pid).copied().unwrap_or(0);
+                    let triples = self
+                        .system
+                        .processes()
+                        .iter()
+                        .map(|(p, proc)| (*p, proc.parent(), proc.start_time()));
+                    let descendants = crate::metrics::bounded_descendants_for_exited_root(
+                        triples,
+                        Pid::from_u32(pid),
+                        start_time,
+                        Pid::from_u32(self.own_pid),
+                    );
+                    if !descendants.is_empty() {
                         alive.push(pid);
                     }
                 }
@@ -203,9 +217,14 @@ fn process_group_has_members(pid: u32) -> bool {
 /// frequently a wrapper — `uv run python script.py`, `sh -c ...` — so
 /// signalling it alone would leave the real node behind: the same orphan, one
 /// level down.
-fn kill_process_group(pid: u32) -> bool {
+fn kill_process_group(
+    pid: u32,
+    #[allow(unused)] start_time: u64,
+    #[allow(unused)] own_pid: u32,
+) -> bool {
     #[cfg(unix)]
     {
+        let _ = (start_time, own_pid);
         // SAFETY: `killpg`/`kill` on a pid this process spawned as a group
         // leader. A pid the OS recycled is excluded upstream in
         // `live_children` — by the parentage check on the leader path and by
@@ -222,21 +241,33 @@ fn kill_process_group(pid: u32) -> bool {
     #[cfg(not(unix))]
     {
         // Windows has no process groups, so terminate the process and all of
-        // its living descendants in the process tree.
+        // its living descendants in the process tree, bounded by start time to
+        // avoid killing stale parent links.
         let mut system = System::new();
         system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
             ProcessRefreshKind::nothing(),
         );
-        let children_map = crate::metrics::child_process_map(&system);
+        let triples = system
+            .processes()
+            .iter()
+            .map(|(p, proc)| (*p, proc.parent(), proc.start_time()));
+        let descendants = crate::metrics::bounded_descendants_for_exited_root(
+            triples,
+            Pid::from_u32(pid),
+            start_time,
+            Pid::from_u32(own_pid),
+        );
         let mut killed_any = false;
-        for child_pid in crate::metrics::descendants(&children_map, Pid::from_u32(pid)) {
+        for child_pid in descendants {
             if let Some(child) = system.process(child_pid) {
                 killed_any |= child.kill();
             }
         }
-        if let Some(process) = system.process(Pid::from_u32(pid)) {
+        if let Some(process) = system.process(Pid::from_u32(pid))
+            && is_live_child(process, own_pid)
+        {
             killed_any |= process.kill();
         }
         killed_any
@@ -291,25 +322,26 @@ fn pid_recycled_into_stranger(pid: u32, process: Option<&sysinfo::Process>, own_
     if process.parent() == Some(Pid::from_u32(own_pid)) {
         return false;
     }
-    leads_own_group(pid)
-}
-
-/// Whether the process at `pid` is the leader of the group with that id.
-fn leads_own_group(pid: u32) -> bool {
     #[cfg(unix)]
     {
-        // SAFETY: `getpgid` only reads scheduling metadata and cannot affect
-        // the target. `-1` (ESRCH — the process vanished under us) is not a
-        // match, so a disappearing stranger is not treated as a leader.
-        unsafe { libc::getpgid(pid as i32) == pid as i32 }
+        leads_own_group(pid)
     }
     #[cfg(not(unix))]
     {
-        // On Windows there are no Unix process groups. A running process at `pid`
-        // that is not our child is an OS stranger that has recycled `pid`.
-        let _ = pid;
+        // On Windows there are no Unix process groups. A live process occupying
+        // `pid` that is not our child is an OS stranger that has recycled `pid`.
+        let _ = (pid, process);
         true
     }
+}
+
+/// Whether the process at `pid` is the leader of the group with that id.
+#[cfg(unix)]
+fn leads_own_group(pid: u32) -> bool {
+    // SAFETY: `getpgid` only reads scheduling metadata and cannot affect
+    // the target. `-1` (ESRCH — the process vanished under us) is not a
+    // match, so a disappearing stranger is not treated as a leader.
+    unsafe { libc::getpgid(pid as i32) == pid as i32 }
 }
 
 /// A zombie has already exited (its supervision task just has not reaped it

@@ -259,6 +259,59 @@ pub(crate) fn descendants(
     found
 }
 
+/// Every descendant of an exited `root` process, bounded by the leader's recorded start time.
+///
+/// On Windows, child processes retain their parent PID even after the parent exits,
+/// and the OS does not re-parent them. If an unrelated process originally had `root`
+/// as its PID before this node was spawned, that stale child still lists `root` as
+/// its parent.
+///
+/// To filter out stale children, direct children of `root` must have started at or
+/// after `root_start_time` (unless start time is 0/unknown), and must never include
+/// `own_pid`. Descendants below direct children are already protected by [`parent_edges`]
+/// because their parents are still alive in `processes`.
+pub(crate) fn bounded_descendants_for_exited_root(
+    processes: impl IntoIterator<Item = (sysinfo::Pid, Option<sysinfo::Pid>, u64)>,
+    root: sysinfo::Pid,
+    root_start_time: u64,
+    own_pid: sysinfo::Pid,
+) -> Vec<sysinfo::Pid> {
+    let processes: Vec<_> = processes.into_iter().collect();
+    let start_times: HashMap<_, _> = processes.iter().map(|&(pid, _, t)| (pid, t)).collect();
+    let children_map = parent_edges(processes);
+
+    let mut visited = HashSet::from([root, own_pid]);
+    let mut found = Vec::new();
+    let mut stack = Vec::new();
+
+    // Direct children of `root` must start at or after `root_start_time` and not be `own_pid`.
+    for &child in children_map.get(&root).into_iter().flatten() {
+        if child == own_pid {
+            continue;
+        }
+        let child_start = start_times.get(&child).copied().unwrap_or(0);
+        if child_start != 0 && root_start_time != 0 && child_start < root_start_time {
+            continue;
+        }
+        if visited.insert(child) {
+            found.push(child);
+            stack.push(child);
+        }
+    }
+
+    // Traverse deeper descendants (their edges were already checked by parent_edges).
+    while let Some(parent) = stack.pop() {
+        for &child in children_map.get(&parent).into_iter().flatten() {
+            if visited.insert(child) {
+                found.push(child);
+                stack.push(child);
+            }
+        }
+    }
+
+    found
+}
+
 /// Collect and send metrics in the background. Errors are returned to the
 /// caller (the spawned task logs them).
 pub(crate) async fn collect_and_send_metrics_bg(
@@ -794,6 +847,40 @@ mod disk_rate_tests {
         assert!(!has_disk_baseline(&HashMap::new(), pid, start_time));
         // Having now been recorded, the *next* refresh's delta is a real one.
         assert!(has_disk_baseline(&snapshot, pid, start_time));
+    }
+
+    #[test]
+    fn bounded_descendants_drops_stale_parent_links() {
+        let root = sysinfo::Pid::from_u32(100);
+        let daemon = sysinfo::Pid::from_u32(1);
+        let root_start = 1000;
+
+        let processes = [
+            // Stale orphan that started before root existed (e.g. daemon launched by old dora up)
+            (daemon, Some(root), 500),
+            // Child of the stale orphan
+            (sysinfo::Pid::from_u32(2), Some(daemon), 550),
+            // Real direct child of root
+            (sysinfo::Pid::from_u32(200), Some(root), 1005),
+            // Grandchild through real child
+            (
+                sysinfo::Pid::from_u32(201),
+                Some(sysinfo::Pid::from_u32(200)),
+                1010,
+            ),
+            // Another stale orphan directly naming root
+            (sysinfo::Pid::from_u32(300), Some(root), 800),
+        ];
+
+        let found = bounded_descendants_for_exited_root(processes, root, root_start, daemon);
+        let mut found_pids: Vec<u32> = found.into_iter().map(|p| p.as_u32()).collect();
+        found_pids.sort_unstable();
+
+        assert_eq!(
+            found_pids,
+            vec![200, 201],
+            "must only return descendants that started at or after root and never own_pid"
+        );
     }
 }
 
