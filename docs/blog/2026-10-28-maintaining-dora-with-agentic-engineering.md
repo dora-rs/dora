@@ -349,35 +349,39 @@ To make sure that no agent breaks this promise by accident, every stable surface
 
 If an agent renames a flag or removes a field, the build fails and says what broke. Whether the break is intended, and has to wait for 2.0, is a human decision.
 
+These automated changes are very useful to us, but they are only best-effort. Not every breaking change is detected by them, so human review is still needed here.
+
 ### Breaking changes before 1.0
 
-The last chance to fix design mistakes is before the promise starts, so the release candidates broke a few things on purpose:
+We decided to deliberately do a few breaking changes before releasing 1.0:
 
-- **We replaced the message encoding.** The old library was unmaintained and had no written specification of its format.
+- **We changed the message encoding.** The old library that we used was unmaintained and had no written specification of its format.
 - **We made message types extensible**, so they can get new fields in 1.x without a 2.0.
 - **We took the Apache Arrow version out of the promise**, so dora can upgrade Arrow during 1.x. Users pick the Arrow version through a feature flag.
 
-We made sure that each of those breaks produces a clear error message instead of silently wrong data:
-
-- Mixed old and new components are rejected when they connect.
-- Old databases and recordings are refused up front.
-- A program reading dora's messages directly would have gotten wrong numbers without any error, so we added a version check that turns this into an error.
+We made sure that each of those breaks produces a clear error message instead of silently wrong data.
 
 ### How we decided 1.0 was ready
 
-- dora 1.0 shipped after 11 nightly CI runs in a row with all jobs green.
-- There were five release candidates and no open critical bugs.
-- New message fields are optional with a default, so old and new 1.x versions can talk to each other, and where that isn't possible, components compare versions when they connect.
-- A benchmark against 0.5 showed 7–39% lower median latency at every message size.
-- There is a [migration guide](../migration-from-0.x.md) for users of 0.x.
+A project like dora will never be perfect, bug-free, or finished. So we made the decision that Dora is ready for 1.0 based on the following:
 
-1.0 doesn't mean that dora is finished. Development continues at the same pace as before.
+- We published five release candidates and no open critical bugs were known.
+- 11 nightly CI runs in a row with all jobs green (and many more with only flaky test failures before)
+- We did a lot of preparation work for ensuring backwards and forwards compatiblity.
+- A benchmark against 0.5 showed 7–39% lower median latency at every message size.
+- We created a [migration guide](../migration-from-0.x.md) for users of 0.x.
+
+Based on this, we made the 1.0 release on September 2.
+
+**1.0 doesn't mean that dora is finished or feature-complete.** It just means that we provide stability guarantees from now on. Development continues at the same pace as before.
 
 ### And then 1.0.1, the next day
 
-Every check for 1.0.0 was green, and the prebuilt binaries worked. But building from source with `cargo install dora-cli` failed. One package read a file from a neighboring folder in the repository. In the repository, that folder exists, so every build and test passed. A published package only contains its own files, so the published version couldn't find it ([#3400](https://github.com/dora-rs/dora/issues/3400)).
+And of course we directly discovered a bug the next day that we didn't catch before: [building from source with `cargo install dora-cli` failed](https://github.com/dora-rs/dora/issues/3400). Building from source through our GitHub repo still worked and the pre-built binaries worked as well, so the issue was not affecting many people fortunately.
 
-We released 1.0.1 the next day, together with a new check on every pull request: a package may only use files inside its own folder ([#3401](https://github.com/dora-rs/dora/pull/3401)). Every bug that gets through all the layers should become a new check.
+The problem was that one of Dora's packages read a file from a neighboring folder in the repository. In the repository, that folder exists, so every build and test passed. However, a published package on `crates.io` only contains its own files, so the published version couldn't find it.
+
+We quickly [fixed this](https://github.com/dora-rs/dora/pull/3401) and released 1.0.1. Of course, we added an automated check so that this type of bug cannot happen again.
 
 ## What the human does
 
@@ -386,19 +390,7 @@ With this setup, the maintainer's work is different from before, but there is st
 - Deciding what to build, and in which order.
 - Writing and reviewing the plans for big features before any code is written.
 - Reading high-risk changes carefully, like anything that touches the message format or a public API, and skimming low-risk ones.
-- Checking the approach. Agents don't always pick the right one: a fix can be hacky, more complicated than it needs to be, or make a symptom go away instead of fixing the cause, and still pass every check. One example: to stop a flood of errors on a shared channel, an agent skipped every message that had an attachment, because only one kind of message happened to have one. It worked, but the real fix was a separate channel for each kind of message.
-- Deciding when not to fix something.
+- Checking the approach. Agents don't always pick the right one: a fix can be hacky, more complicated than it needs to be, or make a symptom go away instead of fixing the cause, and still pass every check.
+- Deciding when not to fix something (some 'bugs' can never happen in practice).
 
-Every merge is a human decision.
-
-## Takeaways
-
-1. **Pick a strict programming language and write modular code.** Every bug the compiler catches is one nobody has to review, and clear boundaries let an agent work on one part without understanding everything.
-2. **Build an extensive, high-quality test suite, and check that your tests can fail.** A regression test must fail on main without the fix.
-3. **Use AI to review and to find problems.** Let it review every change, look for problems on a schedule, and stay quiet when it has nothing new to say.
-4. **Check stability promises automatically**, so an accidental break fails the build instead of reaching a release.
-5. **A human is still needed.** AI doesn't always take the right approach, so review large or high-risk changes yourself.
-
-None of these techniques are new. We apply all of them to every change, whether a human or an agent wrote it.
-
-dora is open source under the Apache-2.0 license. You can learn more at [dora-rs.ai](https://dora-rs.ai) and [github.com/dora-rs/dora](https://github.com/dora-rs/dora), and contributions are welcome.
+Every merge in Dora is still a human decision.
