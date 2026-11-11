@@ -98,8 +98,8 @@ enum Wake<T> {
 /// A snapshot, not flume's `try_iter`: that keeps calling `try_recv` until the
 /// channel is empty, and the reader refills it while `send_output` runs. Once
 /// frames arrive faster than they are forwarded (a flooding `udpin` peer, a
-/// high-rate SITL, daemon backpressure) such a pass never ended, so `Stop` and
-/// `*_cmd` inputs went unread. Ending the pass returns control to the event
+/// high-rate SITL, daemon backpressure) such a pass would never end, leaving
+/// `Stop` and `*_cmd` inputs unread. Ending the pass returns control to the event
 /// wait, whose `select` polls the event stream before the frame channel.
 fn frames_for_pass<T>(woken: Option<T>, rx: &flume::Receiver<T>) -> impl Iterator<Item = T> + '_ {
     woken.into_iter().chain(rx.drain())
