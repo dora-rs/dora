@@ -1138,8 +1138,9 @@ impl EventStream {
 
     /// Post-process an event just produced by `recv_async` / `poll_next`: run
     /// the one-shot, first-message input type check and update the
-    /// stop-tracking flag and `failed_servers`. Shared by both receive paths so they cannot drift —
-    /// the two paths must stay in lockstep (dora-rs/adora#172, #174).
+    /// stop-tracking flag and `failed_servers`. Shared by both receive paths
+    /// so they cannot drift — the two paths must stay in lockstep
+    /// (dora-rs/adora#172, #174).
     fn note_produced_event(&mut self, event: &Event) {
         // First-message type validation: check once per input, then remove.
         // `contains_key` short-circuits cheaply once the check is consumed, so
@@ -3999,9 +4000,8 @@ mod tests {
 
     /// A wait must end as soon as the expected server is reported failed: the
     /// daemon sends `NodeFailed` only for a node it will not restart, so no
-    /// reply can follow. Before the fix the event was buffered as unrelated
-    /// and the wait ran on until its timeout — forever with `Duration::MAX`
-    /// while any other input kept the stream open.
+    /// reply can follow. Waiting on for the timeout instead would never end
+    /// with `Duration::MAX` while any other input keeps the stream open.
     #[test]
     fn recv_service_response_ends_when_expected_server_fails() {
         let (_node, mut events) = test_event_stream();
@@ -4031,7 +4031,7 @@ mod tests {
         ));
     }
 
-    /// Regression (review of #4097): a reply the server sent just before it
+    /// A reply the server sent just before it
     /// failed is queued behind the `NodeFailed`, which the scheduler serves
     /// first. The wait must still return that reply — now, and on a later
     /// call — rather than report the failure.
@@ -4077,7 +4077,7 @@ mod tests {
         assert!(matches!(events.recv(), Some(Event::NodeFailed { .. })));
     }
 
-    /// Review of #4097: draining the queue after a server failure must keep
+    /// Draining the queue after a server failure must keep
     /// the post-`Stop` contract — one `Stop`, then only already-queued inputs,
     /// never a second `Stop` or other control events.
     #[test]
