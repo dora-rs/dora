@@ -189,7 +189,7 @@ mod tests {
 
     /// The updater `dora self update` builds selects the CLI archive: without
     /// the identifier, `self_update` takes the first asset matching the
-    /// target, which is a C library archive.
+    /// target, which can be one of the library archives.
     #[test]
     fn the_cli_updater_selects_the_cli_archive() {
         use self_update::UpdateConfig;
