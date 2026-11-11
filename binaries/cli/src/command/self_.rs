@@ -25,6 +25,27 @@ pub enum SelfSubCommand {
 /// also matches the C and C++ library archives.
 const CLI_ASSET_IDENTIFIER: &str = "dora-cli-";
 
+/// The updater `dora self update` runs: the CLI archive of the latest
+/// `dora-rs/dora` release for this target.
+fn cli_updater() -> eyre::Result<self_update::backends::github::Update> {
+    #[cfg(target_os = "linux")]
+    let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
+    #[cfg(target_os = "macos")]
+    let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
+    #[cfg(target_os = "windows")]
+    let bin_path_in_archive = String::from("dora.exe");
+
+    Ok(self_update::backends::github::Update::configure()
+        .repo_owner("dora-rs")
+        .repo_name("dora")
+        .bin_path_in_archive(&bin_path_in_archive)
+        .bin_name("dora")
+        .asset_identifier(CLI_ASSET_IDENTIFIER)
+        .show_download_progress(true)
+        .current_version(env!("CARGO_PKG_VERSION"))
+        .build()?)
+}
+
 impl Executable for SelfSubCommand {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
@@ -33,22 +54,7 @@ impl Executable for SelfSubCommand {
             SelfSubCommand::Update { check_only } => {
                 println!("Checking for updates...");
 
-                #[cfg(target_os = "linux")]
-                let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
-                #[cfg(target_os = "macos")]
-                let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
-                #[cfg(target_os = "windows")]
-                let bin_path_in_archive = String::from("dora.exe");
-
-                let status = self_update::backends::github::Update::configure()
-                    .repo_owner("dora-rs")
-                    .repo_name("dora")
-                    .bin_path_in_archive(&bin_path_in_archive)
-                    .bin_name("dora")
-                    .asset_identifier(CLI_ASSET_IDENTIFIER)
-                    .show_download_progress(true)
-                    .current_version(env!("CARGO_PKG_VERSION"))
-                    .build()?;
+                let status = cli_updater()?;
 
                 if check_only {
                     // Only check if an update is available
@@ -180,6 +186,19 @@ mod tests {
         "dora-cpp-libraries-x86_64-pc-windows-msvc.zip",
         "dora-cpp-libraries-x86_64-unknown-linux-gnu.tar.gz",
     ];
+
+    /// The updater `dora self update` builds selects the CLI archive: without
+    /// the identifier, `self_update` takes the first asset matching the
+    /// target, which is a C library archive.
+    #[test]
+    fn the_cli_updater_selects_the_cli_archive() {
+        use self_update::UpdateConfig;
+        let updater = super::cli_updater().unwrap();
+        assert_eq!(
+            updater.asset_identifier(),
+            Some(super::CLI_ASSET_IDENTIFIER)
+        );
+    }
 
     #[test]
     fn self_update_picks_the_cli_archive() {
