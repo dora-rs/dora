@@ -845,6 +845,12 @@ impl Coordinator {
         node_id: NodeId,
         clean_stop: bool,
     ) -> eyre::Result<()> {
+        if self
+            .topology
+            .park_node_stop(&dataflow_id, &daemon_id, &node_id, clean_stop)
+        {
+            return Ok(());
+        }
         // Daemon reports a node has stopped and will not be
         // restarted. Mark the cached metrics so `dora node list`
         // shows `Stopped` (clean exit) or `Failed` (final-failure

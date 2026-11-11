@@ -66,6 +66,10 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
       - name: Publish in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -221,6 +225,10 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
       - name: Install cross-compilation tools (aarch64-linux)
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
