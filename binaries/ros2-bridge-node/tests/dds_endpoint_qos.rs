@@ -16,7 +16,7 @@ use std::{
 };
 
 use dora_message::descriptor::{Ros2BridgeConfig, Ros2Role};
-use dora_ros2_bridge::rustdds::{policy, DomainParticipant};
+use dora_ros2_bridge::rustdds::{DomainParticipant, policy};
 
 /// Isolated DDS domain so the test never sees a real ROS 2 graph.
 const DOMAIN_ID: &str = "181";
@@ -152,7 +152,10 @@ fn service_endpoints(name: &str) -> Vec<Expected> {
 fn action_endpoints(name: &str) -> Vec<Expected> {
     let mut endpoints = Vec::new();
     for service in ["send_goal", "get_result", "cancel_goal"] {
-        endpoints.push(endpoint(format!("rq/{name}/_action/{service}Request"), false));
+        endpoints.push(endpoint(
+            format!("rq/{name}/_action/{service}Request"),
+            false,
+        ));
         endpoints.push(endpoint(format!("rr/{name}/_action/{service}Reply"), true));
     }
     endpoints.push(endpoint(format!("rt/{name}/_action/feedback"), true));
@@ -204,7 +207,11 @@ fn assert_role(label: &str, config: &Ros2BridgeConfig, expected: &[Expected]) {
 
         missing.clear();
         for endpoint in expected {
-            let direction = if endpoint.published { "writer" } else { "reader" };
+            let direction = if endpoint.published {
+                "writer"
+            } else {
+                "reader"
+            };
             let qos = if endpoint.published {
                 writers
                     .iter()
@@ -227,7 +234,10 @@ fn assert_role(label: &str, config: &Ros2BridgeConfig, expected: &[Expected]) {
                 policy::Durability::Volatile
             };
             assert!(
-                matches!(qos.reliability(), Some(policy::Reliability::Reliable { .. })),
+                matches!(
+                    qos.reliability(),
+                    Some(policy::Reliability::Reliable { .. })
+                ),
                 "{label}: {direction} {} must be reliable, got {:?}",
                 endpoint.topic,
                 qos.reliability()
