@@ -240,6 +240,7 @@ dora-cli = { workspace = true }
 dora-coordinator = { workspace = true }
 dora-core = { workspace = true }
 dora-daemon = { workspace = true }
+dora-hub-client = { workspace = true }
 dora-message = { workspace = true }
 dora-tracing = { workspace = true }
 dunce = "1.0.5"

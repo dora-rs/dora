@@ -2296,6 +2296,7 @@ dependencies = [
  "dora-coordinator",
  "dora-core",
  "dora-daemon",
+ "dora-hub-client",
  "dora-message",
  "dora-operator-api-types",
  "dora-tracing",
