@@ -93,43 +93,43 @@ jobs:
       - name: Stage C libraries
         shell: bash
         run: |
-          PREFIX="dora-c-libraries-${{ matrix.target }}"
+          PREFIX="dora-libraries-c-${{ matrix.target }}"
           cargo run -p xtask -- stage dora-node-api-c "target/${{ matrix.target }}/release" "$PREFIX" --target "${{ matrix.target }}"
           cargo run -p xtask -- stage dora-operator-api-c "target/${{ matrix.target }}/release" "$PREFIX" --target "${{ matrix.target }}"
 
       - name: Stage C++ libraries
         shell: bash
         run: |
-          PREFIX="dora-cpp-libraries-${{ matrix.target }}"
+          PREFIX="dora-libraries-cpp-${{ matrix.target }}"
           cargo run -p xtask -- stage dora-node-api-cxx "target/${{ matrix.target }}/release" "$PREFIX" --target "${{ matrix.target }}"
           cargo run -p xtask -- stage dora-operator-api-cxx "target/${{ matrix.target }}/release" "$PREFIX" --target "${{ matrix.target }}"
 
       - name: Archive C libraries (Unix)
         if: runner.os != 'Windows'
-        run: tar czf "dora-c-libraries-${{ matrix.target }}.tar.gz" "dora-c-libraries-${{ matrix.target }}"
+        run: tar czf "dora-libraries-c-${{ matrix.target }}.tar.gz" "dora-libraries-c-${{ matrix.target }}"
 
       - name: Archive C++ libraries (Unix)
         if: runner.os != 'Windows'
-        run: tar czf "dora-cpp-libraries-${{ matrix.target }}.tar.gz" "dora-cpp-libraries-${{ matrix.target }}"
+        run: tar czf "dora-libraries-cpp-${{ matrix.target }}.tar.gz" "dora-libraries-cpp-${{ matrix.target }}"
 
       - name: Archive C libraries (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path "dora-c-libraries-${{ matrix.target }}" -DestinationPath "dora-c-libraries-${{ matrix.target }}.zip"
+        run: Compress-Archive -Path "dora-libraries-c-${{ matrix.target }}" -DestinationPath "dora-libraries-c-${{ matrix.target }}.zip"
 
       - name: Archive C++ libraries (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path "dora-cpp-libraries-${{ matrix.target }}" -DestinationPath "dora-cpp-libraries-${{ matrix.target }}.zip"
+        run: Compress-Archive -Path "dora-libraries-cpp-${{ matrix.target }}" -DestinationPath "dora-libraries-cpp-${{ matrix.target }}.zip"
 
       - name: Upload C libraries artifact
         uses: actions/upload-artifact@v7
         with:
-          name: dora-c-libraries-${{ matrix.target }}
-          path: dora-c-libraries-${{ matrix.target }}.*
+          name: dora-libraries-c-${{ matrix.target }}
+          path: dora-libraries-c-${{ matrix.target }}.*
 
       - name: Upload C++ libraries artifact
         uses: actions/upload-artifact@v7
         with:
-          name: dora-cpp-libraries-${{ matrix.target }}
-          path: dora-cpp-libraries-${{ matrix.target }}.*
+          name: dora-libraries-cpp-${{ matrix.target }}
+          path: dora-libraries-cpp-${{ matrix.target }}.*
