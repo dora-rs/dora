@@ -1,14 +1,17 @@
-//! Rewrite a dora recording (`.drec`) as an MCAP (`.mcap`) file, remuxing the
-//! recorded payload bytes without decoding or re-encoding them.
+//! Rewrite a dora recording (`.drec`) as an MCAP (`.mcap`) file. With the
+//! default `--format arrow`, the recorded payload bytes are remuxed without
+//! decoding or re-encoding them; `--format foxglove` re-encodes image outputs
+//! as JSON Foxglove images (see the `foxglove` module).
 //!
 //! Each recorded `Output` entry becomes one MCAP message on an `arrow-ipc`
-//! channel named `{node_id}/{output_id}`:
+//! channel (or a JSON one for a Foxglove image) named `{node_id}/{output_id}`:
 //! - `log_time`     = the recording wall clock:
 //!   `header.start_nanos + entry.timestamp_offset_nanos`,
 //! - `publish_time` = the producer HLC stamp (`metadata.timestamp()`), the same
 //!   source `dora topic hz` reports for that topic,
 //! - `sequence`     = per-channel monotonic 1-based counter,
-//! - `data`         = the recorded Arrow IPC payload bytes verbatim.
+//! - `data`         = the recorded Arrow IPC payload bytes verbatim (the JSON
+//!   message on a Foxglove image channel).
 //!
 //! # Limits
 //!
@@ -35,6 +38,8 @@ use mcap::Writer;
 use mcap::records::{MessageHeader, Metadata};
 use same_file::is_same_file;
 
+mod foxglove;
+
 #[derive(Debug, clap::Args)]
 pub struct Export {
     /// Path to the `.drec` recording to convert
@@ -50,6 +55,19 @@ pub struct Export {
     /// Defaults to all topics.
     #[clap(long, value_name = "TOPIC", value_delimiter = ',')]
     topics: Vec<String>,
+
+    /// How to encode messages. `arrow` (the default) copies every payload
+    /// byte for byte. `foxglove` re-encodes recognised image outputs as
+    /// Foxglove's `RawImage` / `CompressedImage` (JSON) so Foxglove can
+    /// display them; other outputs stay `arrow`.
+    #[clap(long, value_enum, default_value_t = ExportFormat::Arrow)]
+    format: ExportFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum ExportFormat {
+    Arrow,
+    Foxglove,
 }
 
 impl crate::command::Executable for Export {
@@ -115,13 +133,14 @@ fn run_export(args: Export) -> eyre::Result<()> {
     let tmp_path = temp_output_path(&output)?;
     let out_file = File::create(&tmp_path)
         .wrap_err_with(|| eyre!("failed to create `{}`", tmp_path.display()))?;
-    let message_count = match write_mcap(&mut reader, &filter, BufWriter::new(out_file)) {
-        Ok(count) => count,
-        Err(err) => {
-            let _ = fs::remove_file(&tmp_path);
-            return Err(err);
-        }
-    };
+    let message_count =
+        match write_mcap(&mut reader, &filter, args.format, BufWriter::new(out_file)) {
+            Ok(count) => count,
+            Err(err) => {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(err);
+            }
+        };
     fs::rename(&tmp_path, &output).wrap_err_with(|| {
         eyre!(
             "failed to move the finished export into `{output}` (left as `{}`)",
@@ -157,6 +176,7 @@ fn temp_output_path(output: &str) -> eyre::Result<PathBuf> {
 fn write_mcap<W: Write + Seek>(
     reader: &mut RecordingReader<File>,
     filter: &[(String, String)],
+    format: ExportFormat,
     out: W,
 ) -> eyre::Result<u64> {
     let (start_nanos, dataflow_id, descriptor_yaml) = {
@@ -168,6 +188,17 @@ fn write_mcap<W: Write + Seek>(
         )
     };
 
+    // A descriptor that does not parse declares nothing: export still works,
+    // converting only undeclared compressed frames.
+    let foxglove = (format == ExportFormat::Foxglove).then(|| {
+        foxglove::Mapper::from_descriptor_yaml(&descriptor_yaml).unwrap_or_else(|err| {
+            eprintln!(
+                "warning: could not read the image types declared in the recorded descriptor \
+                 ({err}); only undeclared compressed frames will be converted"
+            );
+            foxglove::Mapper::default()
+        })
+    });
     let mut writer = Writer::new(out).wrap_err("failed to initialise MCAP writer")?;
     writer
         .write_metadata(&Metadata {
@@ -182,10 +213,14 @@ fn write_mcap<W: Write + Seek>(
     // Constant, so encode it once rather than per empty message.
     let empty_ipc = encode_empty_ipc()?;
 
+    let mut foxglove_schemas: HashMap<foxglove::Kind, u16> = HashMap::new();
+    // Per topic: how many image messages were dropped, and why the first was.
+    let mut dropped: BTreeMap<String, (u64, String)> = BTreeMap::new();
+
     // One lookup per topic: the channel it was added as, and its next
     // per-channel sequence. `write_to_known_channel` then skips rebuilding an
     // `Arc<Channel>` and re-cloning the topic for every message.
-    let mut channels: HashMap<String, (u16, u32)> = HashMap::new();
+    let mut channels: HashMap<String, TopicChannel> = HashMap::new();
     let mut matched: HashSet<usize> = HashSet::new();
     let mut message_count: u64 = 0;
     let mut skipped: u64 = 0;
@@ -222,28 +257,98 @@ fn write_mcap<W: Write + Seek>(
                 continue;
             }
         };
-        let (publish_time, publish_data) = match timestamped.inner {
-            InterDaemonEvent::Output { metadata, data, .. } => (
-                metadata.timestamp().get_time().to_duration().as_nanos() as u64,
-                data,
-            ),
+        let (metadata, publish_data) = match timestamped.inner {
+            InterDaemonEvent::Output { metadata, data, .. } => (metadata, data),
             _ => continue,
         };
+        let publish_time = metadata.timestamp().get_time().to_duration().as_nanos() as u64;
 
         let topic = format!("{}/{}", entry.node_id, entry.output_id);
+
+        // With `--format foxglove`, a topic's first message decides whether it
+        // is an image topic (JSON channel) or stays Arrow. On an image topic,
+        // a message that cannot be converted is dropped and reported: it
+        // cannot go on a JSON channel as Arrow.
+        let existing = channels.get(&topic).map(|channel| channel.foxglove);
+        let converted = match (&foxglove, existing) {
+            (Some(mapper), None | Some(Some(_))) => mapper.convert(
+                &entry.node_id,
+                &entry.output_id,
+                &metadata,
+                publish_data.as_deref(),
+            ),
+            _ => foxglove::Recognition::NotRecognised,
+        };
+        let json = match converted {
+            foxglove::Recognition::Converted(kind, json) => match existing {
+                Some(Some(channel_kind)) if channel_kind != kind => {
+                    let reason = format!(
+                        "message is a {}, not a {}",
+                        kind.schema_name(),
+                        channel_kind.schema_name()
+                    );
+                    drop_message(&mut dropped, &topic, reason);
+                    continue;
+                }
+                _ => Some((kind, json)),
+            },
+            foxglove::Recognition::Failed(kind, reason) => {
+                let reason = format!("{}: {reason}", kind.schema_name());
+                drop_message(&mut dropped, &topic, reason);
+                continue;
+            }
+            foxglove::Recognition::NotRecognised => match existing {
+                Some(Some(channel_kind)) => {
+                    let reason = format!("message is not a {}", channel_kind.schema_name());
+                    drop_message(&mut dropped, &topic, reason);
+                    continue;
+                }
+                _ => None,
+            },
+        };
+
         let (channel_id, sequence) = match channels.get_mut(&topic) {
-            Some(state) => {
-                state.1 = state.1.checked_add(1).ok_or_else(|| {
+            Some(channel) => {
+                channel.sequence = channel.sequence.checked_add(1).ok_or_else(|| {
                     eyre!("recording has more than 2^32 messages on one topic `{topic}`")
                 })?;
-                *state
+                (channel.id, channel.sequence)
             }
             None => {
-                let channel_id = writer
-                    .add_channel(0, &topic, "arrow-ipc", &BTreeMap::new())
+                let (schema_id, encoding, kind) = match &json {
+                    Some((kind, _)) => {
+                        let schema_id = match foxglove_schemas.get(kind) {
+                            Some(id) => *id,
+                            None => {
+                                let id = writer
+                                    .add_schema(
+                                        kind.schema_name(),
+                                        "jsonschema",
+                                        kind.json_schema().as_bytes(),
+                                    )
+                                    .wrap_err_with(|| {
+                                        eyre!("failed to add MCAP schema `{}`", kind.schema_name())
+                                    })?;
+                                foxglove_schemas.insert(*kind, id);
+                                id
+                            }
+                        };
+                        (schema_id, "json", Some(*kind))
+                    }
+                    None => (0, "arrow-ipc", None),
+                };
+                let id = writer
+                    .add_channel(schema_id, &topic, encoding, &BTreeMap::new())
                     .wrap_err_with(|| eyre!("failed to add MCAP channel `{topic}`"))?;
-                channels.insert(topic.clone(), (channel_id, 1));
-                (channel_id, 1)
+                channels.insert(
+                    topic.clone(),
+                    TopicChannel {
+                        id,
+                        sequence: 1,
+                        foxglove: kind,
+                    },
+                );
+                (id, 1)
             }
         };
 
@@ -251,9 +356,10 @@ fn write_mcap<W: Write + Seek>(
         // zero-length `NullArray`, so it has to be written as that IPC stream:
         // a zero-byte message is not a decodable Arrow stream, and would fail
         // every reader on the channel.
-        let data = match publish_data.as_deref() {
-            Some(data) => data,
-            None => empty_ipc.as_slice(),
+        let data = match (&json, publish_data.as_deref()) {
+            (Some((_, json)), _) => json.as_slice(),
+            (None, Some(data)) => data,
+            (None, None) => empty_ipc.as_slice(),
         };
 
         writer
@@ -280,6 +386,12 @@ fn write_mcap<W: Write + Seek>(
     // `a_flush_that_fails_fails_the_export` pins that.
     writer.finish().wrap_err("failed to finish MCAP file")?;
 
+    for (topic, (count, reason)) in &dropped {
+        eprintln!(
+            "warning: dropped {count} message(s) on `{topic}` that could not be converted (first: {reason})"
+        );
+    }
+
     for (node, output_id) in unmatched_topics(filter, &matched) {
         eprintln!(
             "warning: --topics entry `{node}/{output_id}` matched no messages in the recording"
@@ -301,6 +413,22 @@ fn write_mcap<W: Write + Seek>(
     }
 
     Ok(message_count)
+}
+
+/// An MCAP channel added for a recorded topic.
+struct TopicChannel {
+    id: u16,
+    /// The last sequence number written on the channel.
+    sequence: u32,
+    /// The Foxglove schema of the channel's messages; `None` for an Arrow channel.
+    foxglove: Option<foxglove::Kind>,
+}
+
+fn drop_message(dropped: &mut BTreeMap<String, (u64, String)>, topic: &str, reason: String) {
+    dropped
+        .entry(topic.to_owned())
+        .and_modify(|(count, _)| *count += 1)
+        .or_insert((1, reason));
 }
 
 /// The `--topics` entries that never matched a recorded message: a typo, or a
@@ -368,7 +496,9 @@ mod tests {
         io::{BufWriter, Seek, Write},
     };
 
-    use super::{Export, default_output_path, run_export, unmatched_topics, write_mcap};
+    use super::{
+        Export, ExportFormat, default_output_path, run_export, unmatched_topics, write_mcap,
+    };
     use aligned_vec::AVec;
     use dora_message::{
         common::Timestamped,
@@ -500,6 +630,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec![],
+            format: ExportFormat::Arrow,
         };
         run_export(args).expect("run export");
 
@@ -580,6 +711,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec!["camera/image".to_string()],
+            format: ExportFormat::Arrow,
         };
         run_export(args).expect("run export");
 
@@ -666,6 +798,7 @@ mod tests {
             input: path.to_string_lossy().into(),
             output: Some(path.to_string_lossy().into()),
             topics: vec![],
+            format: ExportFormat::Arrow,
         });
         assert!(
             err.contains("refusing to truncate"),
@@ -687,6 +820,7 @@ mod tests {
             input: path.to_string_lossy().into(),
             output: Some(alias.to_string_lossy().into()),
             topics: vec![],
+            format: ExportFormat::Arrow,
         });
         assert!(
             err.contains("refusing to truncate"),
@@ -708,6 +842,7 @@ mod tests {
             input: path.to_string_lossy().into(),
             output: Some(alias.to_string_lossy().into()),
             topics: vec![],
+            format: ExportFormat::Arrow,
         });
         assert!(
             err.contains("refusing to truncate"),
@@ -726,6 +861,7 @@ mod tests {
             input: path.to_string_lossy().into(),
             output: Some(out.to_string_lossy().into()),
             topics: vec![],
+            format: ExportFormat::Arrow,
         };
         run_export(args).expect("fresh output must succeed");
         assert!(!fs::read(&out).expect("read mcap").is_empty());
@@ -756,6 +892,7 @@ mod tests {
             input: "sample.drec".to_string(),
             output: Some("sample.drec".to_string()),
             topics: vec![],
+            format: ExportFormat::Arrow,
         })
         .expect_err("must refuse output = input")
         .to_string();
@@ -778,6 +915,7 @@ mod tests {
             input: "sample.drec".to_string(),
             output: Some("fresh.mcap".to_string()),
             topics: vec![],
+            format: ExportFormat::Arrow,
         });
 
         result.expect("fresh bare-relative output must succeed");
@@ -839,6 +977,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec![],
+            format: ExportFormat::Arrow,
         })
         .expect("run export");
 
@@ -888,6 +1027,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: None,
             topics: vec![],
+            format: ExportFormat::Arrow,
         })
         .expect("run export");
 
@@ -937,6 +1077,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec![],
+            format: ExportFormat::Arrow,
         })
         .expect("one bad record must not fail the whole export");
 
@@ -987,6 +1128,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec![],
+            format: ExportFormat::Arrow,
         })
         .expect_err("an export that emitted nothing must not report success");
 
@@ -1050,6 +1192,7 @@ mod tests {
             input: recording_path.to_string_lossy().into(),
             output: Some(mcap_path.to_string_lossy().into()),
             topics: vec![],
+            format: ExportFormat::Arrow,
         })
         .expect_err("an unreadable record must fail the export");
 
@@ -1131,6 +1274,7 @@ mod tests {
         let err = write_mcap(
             &mut reader,
             &[],
+            ExportFormat::Arrow,
             FailsOnFlush(std::io::Cursor::new(Vec::new())),
         )
         .expect_err("a flush that fails must fail the export");
@@ -1154,5 +1298,674 @@ mod tests {
             unmatched_topics(&filter, &matched),
             vec![&("typo".to_string(), "nope".to_string())]
         );
+    }
+
+    /// The flag is `--format` (`arrow` by default); `--schema` is not
+    /// accepted: in MCAP a schema is the per-channel schema record.
+    #[test]
+    fn the_flag_is_format_not_schema() {
+        use clap::Parser;
+
+        let parse = |args: &[&str]| {
+            crate::Args::try_parse_from(
+                [&["dora", "recording", "export", "rec.drec"], args].concat(),
+            )
+        };
+        let format = |args: &[&str]| match parse(args).expect("parses").command {
+            crate::command::Command::Recording(super::super::Recording::Export(export)) => {
+                export.format
+            }
+            _ => panic!("not `dora recording export`"),
+        };
+        assert_eq!(format(&[]), ExportFormat::Arrow);
+        assert_eq!(format(&["--format", "arrow"]), ExportFormat::Arrow);
+        assert_eq!(format(&["--format", "foxglove"]), ExportFormat::Foxglove);
+        let err = parse(&["--schema", "foxglove"]).expect_err("--schema is gone");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    // ---- `--format foxglove` ----
+
+    use arrow::array::{ArrayRef, Float32Array, LargeBinaryArray, UInt8Array, UInt16Array};
+    use dora_message::metadata::Parameter;
+    use std::sync::Arc;
+
+    /// What [`export_messages`] returns per message: topic, message encoding,
+    /// schema name (`None` for Arrow) and data.
+    type Exported = (String, String, Option<String>, Vec<u8>);
+
+    /// An Arrow IPC stream holding `array` as its single column, the way dora
+    /// sends an output.
+    fn ipc_bytes(array: ArrayRef) -> Vec<u8> {
+        use arrow::ipc::writer::StreamWriter;
+        use arrow::record_batch::RecordBatch;
+        use arrow_schema::{Field, Schema};
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            array.data_type().clone(),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(schema.clone(), vec![array]).expect("batch");
+        let mut buf = Vec::new();
+        let mut writer = StreamWriter::try_new(&mut buf, &schema).expect("ipc writer");
+        writer.write(&batch).expect("write batch");
+        writer.finish().expect("finish ipc");
+        drop(writer);
+        buf
+    }
+
+    fn uint8s(bytes: &[u8]) -> Vec<u8> {
+        ipc_bytes(Arc::new(UInt8Array::from(bytes.to_vec())))
+    }
+
+    fn binary(bytes: &[u8]) -> Vec<u8> {
+        ipc_bytes(Arc::new(LargeBinaryArray::from(vec![bytes])))
+    }
+
+    fn output_event_bytes_with_params(
+        node_id: &str,
+        output_id: &str,
+        payload: &[u8],
+        params: &[(&str, Parameter)],
+    ) -> Vec<u8> {
+        let mut metadata = Metadata::new(sample_timestamp());
+        for (key, value) in params {
+            metadata.parameters.insert(key.to_string(), value.clone());
+        }
+        let event = InterDaemonEvent::Output {
+            dataflow_id: Uuid::nil(),
+            node_id: NodeId::from(node_id.to_string()),
+            output_id: DataId::from(output_id.to_string()),
+            metadata,
+            data: Some(AVec::<u8, aligned_vec::ConstAlign<128>>::from_slice(
+                128, payload,
+            )),
+        };
+        Timestamped {
+            inner: event,
+            timestamp: sample_timestamp(),
+        }
+        .serialize()
+        .expect("serialize output event")
+    }
+
+    /// One recorded output message, for [`export_messages`].
+    fn event<'a>(
+        node_id: &'a str,
+        output_id: &'a str,
+        payload: &[u8],
+        params: &[(&str, Parameter)],
+    ) -> (&'a str, &'a str, Vec<u8>) {
+        (
+            node_id,
+            output_id,
+            output_event_bytes_with_params(node_id, output_id, payload, params),
+        )
+    }
+
+    /// Records `events` (node, output, event bytes) under a dataflow
+    /// `descriptor`, exports them with `--format foxglove` and returns the
+    /// MCAP bytes.
+    fn export_foxglove(descriptor: &str, events: Vec<(&str, &str, Vec<u8>)>) -> Vec<u8> {
+        let dir = tempdir().expect("tempdir");
+        let recording_path = dir.path().join("input.drec");
+        let mcap_path = dir.path().join("output.mcap");
+        let header = RecordingHeader {
+            descriptor_yaml: descriptor.as_bytes().to_vec(),
+            ..header()
+        };
+        {
+            let file = fs::File::create(&recording_path).expect("create recording");
+            let mut writer =
+                RecordingWriter::new(BufWriter::new(file), &header).expect("init writer");
+            for (offset, (node_id, output_id, event_bytes)) in events.into_iter().enumerate() {
+                writer
+                    .write_entry(&RecordEntry {
+                        node_id: node_id.to_string(),
+                        output_id: output_id.to_string(),
+                        timestamp_offset_nanos: offset as u64,
+                        event_bytes,
+                    })
+                    .expect("write entry");
+            }
+            writer.finish().expect("finish recording");
+        }
+        run_export(Export {
+            input: recording_path.to_string_lossy().into(),
+            output: Some(mcap_path.to_string_lossy().into()),
+            topics: vec![],
+            format: ExportFormat::Foxglove,
+        })
+        .expect("run export");
+        fs::read(&mcap_path).expect("read mcap")
+    }
+
+    fn export_messages(descriptor: &str, events: Vec<(&str, &str, Vec<u8>)>) -> Vec<Exported> {
+        let mcap_bytes = export_foxglove(descriptor, events);
+        MessageStream::new(&mcap_bytes)
+            .expect("open mcap")
+            .map(|m| {
+                let m = m.expect("message");
+                (
+                    m.channel.topic.clone(),
+                    m.channel.message_encoding.clone(),
+                    m.channel.schema.as_ref().map(|s| s.name.clone()),
+                    m.data.to_vec(),
+                )
+            })
+            .collect()
+    }
+
+    fn find<'a>(messages: &'a [Exported], topic: &str) -> &'a Exported {
+        messages
+            .iter()
+            .find(|message| message.0 == topic)
+            .unwrap_or_else(|| panic!("{topic} was dropped"))
+    }
+
+    fn json_of(message: &Exported) -> serde_json::Value {
+        serde_json::from_slice(&message.3).expect("message is JSON")
+    }
+
+    fn camera_params(width: i64, height: i64, encoding: &str) -> Vec<(&'static str, Parameter)> {
+        vec![
+            ("width", Parameter::Integer(width)),
+            ("height", Parameter::Integer(height)),
+            ("encoding", Parameter::String(encoding.into())),
+        ]
+    }
+
+    fn jpeg_bytes() -> Vec<u8> {
+        let mut jpeg = vec![0xFFu8, 0xD8, 0xFF, 0xE0];
+        jpeg.extend([7u8; 60]);
+        jpeg
+    }
+
+    fn png_bytes() -> Vec<u8> {
+        let mut png = vec![0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+        png.extend([7u8; 60]);
+        png
+    }
+
+    /// dora's `std/media/v1/Image` struct.
+    fn image_struct(width: u32, height: u32, encoding: &str, data: &[u8]) -> ArrayRef {
+        use arrow::array::{StringArray, StructArray, UInt32Array};
+        use arrow_schema::{DataType, Field};
+        Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new("width", DataType::UInt32, false)),
+                Arc::new(UInt32Array::from(vec![width])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("height", DataType::UInt32, false)),
+                Arc::new(UInt32Array::from(vec![height])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("encoding", DataType::Utf8, false)),
+                Arc::new(StringArray::from(vec![encoding])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("data", DataType::LargeBinary, false)),
+                Arc::new(LargeBinaryArray::from(vec![data])) as ArrayRef,
+            ),
+        ]))
+    }
+
+    const CAMERA_DESCRIPTOR: &str = "nodes:
+  - id: camera
+    outputs: [image, jpeg]
+    output_types:
+      image: std/media/v1/Image
+      jpeg: std/media/v1/CompressedImage[format=jpeg]
+";
+
+    #[test]
+    fn foxglove_exports_a_declared_image_as_raw_image() {
+        use base64::Engine as _;
+        let pixels: Vec<u8> = (0..12).collect();
+        let mcap_bytes = export_foxglove(
+            CAMERA_DESCRIPTOR,
+            vec![event(
+                "camera",
+                "image",
+                &ipc_bytes(image_struct(2, 2, "rgb8", &pixels)),
+                &[("frame_id", Parameter::String("camera_optical".into()))],
+            )],
+        );
+        let messages: Vec<_> = MessageStream::new(&mcap_bytes)
+            .expect("open mcap")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read messages");
+        assert_eq!(messages.len(), 1);
+        let channel = &messages[0].channel;
+        assert_eq!(channel.topic, "camera/image");
+        assert_eq!(channel.message_encoding, "json");
+        let schema = channel.schema.as_ref().expect("json channel has a schema");
+        assert_eq!(schema.name, "foxglove.RawImage");
+        assert_eq!(schema.encoding, "jsonschema");
+
+        let json: serde_json::Value =
+            serde_json::from_slice(&messages[0].data).expect("message is JSON");
+        let publish = sample_timestamp().get_time().to_duration();
+        assert_eq!(json["timestamp"]["sec"], publish.as_secs());
+        assert_eq!(json["timestamp"]["nsec"], publish.subsec_nanos());
+        assert_eq!(json["frame_id"], "camera_optical");
+        assert_eq!(json["width"], 2);
+        assert_eq!(json["height"], 2);
+        assert_eq!(json["encoding"], "rgb8");
+        assert_eq!(json["step"], 6);
+        assert_eq!(
+            json["data"],
+            base64::engine::general_purpose::STANDARD.encode(&pixels)
+        );
+    }
+
+    /// The README and examples/hub-dataflow declare `std/media/v1/Image` for a
+    /// camera that sends a flat array with width/height/encoding metadata.
+    /// `uint16` depth (`dora-pyrealsense`) is `mono16`, and an encoding on the declared type wins over the metadata.
+    #[test]
+    fn foxglove_declared_camera_frames_convert() {
+        let descriptor = "nodes:
+  - id: cam
+    output_types:
+      bgr: std/media/v1/Image
+      depth: std/media/v1/Image
+      rgb: std/media/v1/Image[encoding=rgb8]
+";
+        let depth = ipc_bytes(Arc::new(UInt16Array::from(vec![1000u16; 4])));
+        let messages = export_messages(
+            descriptor,
+            vec![
+                event(
+                    "cam",
+                    "bgr",
+                    &uint8s(&[1; 24]),
+                    &camera_params(4, 2, "bgr8"),
+                ),
+                event("cam", "depth", &depth, &camera_params(2, 2, "mono16")),
+                event(
+                    "cam",
+                    "rgb",
+                    &uint8s(&[1; 12]),
+                    &camera_params(2, 2, "bgr8"),
+                ),
+            ],
+        );
+        for (topic, encoding, step) in [
+            ("cam/bgr", "bgr8", 12),
+            ("cam/depth", "mono16", 4),
+            ("cam/rgb", "rgb8", 6),
+        ] {
+            let message = find(&messages, topic);
+            assert_eq!(message.2.as_deref(), Some("foxglove.RawImage"), "{topic}");
+            let json = json_of(message);
+            assert_eq!(json["encoding"], encoding, "{topic}");
+            assert_eq!(json["step"], step, "{topic}");
+        }
+    }
+
+    /// A declared compressed image's format is the one on the type, which
+    /// the data must match, or else its file signature. `Image` with a
+    /// compressed encoding (on the type, in the struct, or in the metadata)
+    /// is a compressed image too, and forwarded raw metadata doesn't change
+    /// that.
+    #[test]
+    fn foxglove_compressed_format_from_the_declaration_or_the_signature() {
+        let descriptor = "nodes:
+  - id: cam
+    output_types:
+      a: std/media/v1/CompressedImage
+      b: std/media/v1/CompressedImage[format=JPG]
+      c: std/media/v1/CompressedImage
+      d: std/media/v1/CompressedImage
+      e: std/media/v1/CompressedImage[format=jpeg]
+      f: std/media/v1/Image[encoding=jpeg]
+      g: std/media/v1/Image
+      h: std/media/v1/Image
+";
+        let webp = b"RIFF\0\0\0\0WEBPVP8 ";
+        let bgr = camera_params(640, 480, "bgr8");
+        let messages = export_messages(
+            descriptor,
+            vec![
+                event("cam", "a", &binary(webp), &bgr),
+                // Only `jpeg`, `png` and `webp` name a format.
+                event("cam", "b", &binary(&jpeg_bytes()), &[]),
+                event("cam", "c", &binary(&png_bytes()), &[]),
+                // No declared format and no known signature.
+                event("cam", "d", &binary(&[1, 2, 3, 4]), &[]),
+                // Declared JPEG, but the data is a PNG.
+                event("cam", "e", &binary(&png_bytes()), &[]),
+                event("cam", "f", &uint8s(&jpeg_bytes()), &bgr),
+                event(
+                    "cam",
+                    "g",
+                    &ipc_bytes(image_struct(640, 480, "png", &png_bytes())),
+                    &[],
+                ),
+                // `dora-pyorbbecksdk`: only `encoding`, no size.
+                event(
+                    "cam",
+                    "h",
+                    &uint8s(&jpeg_bytes()),
+                    &[("encoding", Parameter::String("jpeg".into()))],
+                ),
+            ],
+        );
+        let formats: Vec<_> = messages
+            .iter()
+            .map(|m| {
+                assert_eq!(m.2.as_deref(), Some("foxglove.CompressedImage"), "{}", m.0);
+                (m.0.as_str(), json_of(m)["format"].clone())
+            })
+            .collect();
+        assert_eq!(
+            formats,
+            [
+                ("cam/a", "webp"),
+                ("cam/c", "png"),
+                ("cam/f", "jpeg"),
+                ("cam/g", "png"),
+                ("cam/h", "jpeg"),
+            ]
+            .map(|(topic, format)| (topic, serde_json::json!(format))),
+            "cam/b, cam/d and cam/e are dropped"
+        );
+    }
+
+    /// Undeclared, only a compressed frame is an image. Python nodes forward
+    /// their input's metadata (`node.send_output(id, arr, event["metadata"])`),
+    /// so camera metadata alone proves nothing: raw pixels, a float32 map
+    /// behind `rgb8` metadata, data behind `jpeg` metadata that isn't a JPEG,
+    /// and anything without image metadata all stay Arrow, byte for byte. A
+    /// real JPEG (`opencv-video-capture` with `ENCODING=jpeg`) converts, and
+    /// its signature, not a forwarded name, decides the format.
+    #[test]
+    fn foxglove_undeclared_outputs_stay_arrow_unless_compressed() {
+        let floats = ipc_bytes(Arc::new(Float32Array::from(vec![0.5f32; 32])));
+        let temperature = ipc_bytes(Arc::new(arrow::array::Float64Array::from(vec![21.5])));
+        let kept = [
+            ("rgb", uint8s(&[7; 12]), camera_params(2, 2, "rgb8")),
+            ("map", floats.clone(), camera_params(8, 4, "rgb8")),
+            ("scores", floats, camera_params(640, 480, "jpeg")),
+            (
+                "labels",
+                uint8s(&[1, 2, 3, 4]),
+                camera_params(640, 480, "jpeg"),
+            ),
+            ("temperature", temperature, vec![]),
+        ];
+        let converted = [
+            ("jpeg", jpeg_bytes(), "jpeg"),
+            ("forwarded", png_bytes(), "png"),
+        ];
+        let mut events = Vec::new();
+        for (output, payload, params) in &kept {
+            events.push(event("node", output, payload, params));
+        }
+        for (output, data, _) in &converted {
+            let params = camera_params(640, 480, "jpeg");
+            events.push(event("node", output, &uint8s(data), &params));
+        }
+        let messages = export_messages("nodes: []", events);
+        assert_eq!(messages.len(), kept.len() + converted.len());
+        for (output, payload, _) in &kept {
+            let message = find(&messages, &format!("node/{output}"));
+            assert_eq!(message.1, "arrow-ipc", "{output}");
+            assert_eq!(&message.3, payload, "{output} must be exported unchanged");
+        }
+        for (output, _, format) in &converted {
+            let message = find(&messages, &format!("node/{output}"));
+            assert_eq!(
+                message.2.as_deref(),
+                Some("foxglove.CompressedImage"),
+                "{output}"
+            );
+            assert_eq!(json_of(message)["format"], *format, "{output}");
+        }
+    }
+
+    #[test]
+    fn foxglove_drops_an_image_it_cannot_convert_and_keeps_going() {
+        let good = ipc_bytes(image_struct(2, 2, "rgb8", &[0; 12]));
+        // 7 bytes cannot be 2 equal rows.
+        let bad = ipc_bytes(image_struct(2, 2, "rgb8", &[0; 7]));
+        let mcap_bytes = export_foxglove(
+            CAMERA_DESCRIPTOR,
+            vec![
+                event("camera", "image", &good, &[]),
+                event("camera", "image", &bad, &[]),
+                event("camera", "image", &good, &[]),
+            ],
+        );
+        let messages: Vec<_> = MessageStream::new(&mcap_bytes)
+            .expect("open mcap")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read messages");
+        assert_eq!(messages.len(), 2, "the unconvertible frame is dropped");
+        assert!(
+            messages
+                .iter()
+                .all(|m| m.channel.message_encoding == "json")
+        );
+        assert_eq!(messages[1].sequence, 2, "sequence counts written messages");
+    }
+
+    /// A declared image whose data doesn't fit is dropped and reported, never
+    /// exported as a garbage image: pixels of the wrong element type (float32
+    /// as `rgb8`, signed `int16` as `mono16`), rows too short or longer than
+    /// `width` (padding, or stale dimensions forwarded onto a bigger frame), a
+    /// zero size, an encoding this export doesn't support, and compressed
+    /// data that isn't the format the metadata or type names.
+    #[test]
+    fn foxglove_declared_images_that_dont_fit_are_dropped() {
+        let floats = ipc_bytes(Arc::new(Float32Array::from(vec![0.5f32; 12])));
+        let signed = ipc_bytes(Arc::new(arrow::array::Int16Array::from(vec![-1i16; 4])));
+        let messages = export_messages(
+            CAMERA_DESCRIPTOR,
+            vec![
+                event("camera", "image", &floats, &camera_params(4, 1, "rgb8")),
+                event("camera", "image", &signed, &camera_params(2, 2, "mono16")),
+                event(
+                    "camera",
+                    "image",
+                    &uint8s(&[0; 16]),
+                    &camera_params(2, 2, "rgb8"),
+                ),
+                event(
+                    "camera",
+                    "image",
+                    &uint8s(&[0; 24]),
+                    &camera_params(2, 1, "rgb8"),
+                ),
+                event(
+                    "camera",
+                    "image",
+                    &uint8s(&[0; 8]),
+                    &camera_params(4, 2, "rgb8"),
+                ),
+                event(
+                    "camera",
+                    "image",
+                    &uint8s(&[0; 12]),
+                    &camera_params(0, 2, "rgb8"),
+                ),
+                event(
+                    "camera",
+                    "image",
+                    &uint8s(&[0; 12]),
+                    &camera_params(4, 2, "nv12"),
+                ),
+                event(
+                    "camera",
+                    "image",
+                    &uint8s(&[0; 12]),
+                    &camera_params(2, 2, "png"),
+                ),
+                event("camera", "jpeg", &binary(&[0; 12]), &[]),
+            ],
+        );
+        assert!(messages.is_empty(), "exported {messages:?}");
+    }
+
+    /// Any other declared type, even a malformed or non-string one (which
+    /// dora reads as a malformed type), declares the output as not an image:
+    /// it stays Arrow even with JPEG bytes and `jpeg` metadata. dora reads a
+    /// YAML number as an id, so a declaration under one counts too.
+    #[test]
+    fn foxglove_any_other_declared_type_is_never_an_image() {
+        let jpeg = uint8s(&jpeg_bytes());
+        let params = camera_params(640, 480, "jpeg");
+        for value in [
+            "std/core/v1/UInt8",
+            "std/core/v1/UInt8[",
+            "",
+            "~",
+            "5",
+            "true",
+        ] {
+            let descriptor =
+                format!("nodes:\n  - id: n\n    output_types:\n      scores: {value}\n");
+            let messages = export_messages(&descriptor, vec![event("n", "scores", &jpeg, &params)]);
+            assert_eq!(messages.len(), 1, "`scores: {value}`");
+            assert_eq!(messages[0].1, "arrow-ipc", "`scores: {value}`");
+        }
+        // Numeric-looking ids keep their text: `0x10` is not output `16`.
+        let numeric = "nodes:
+  - id: 7
+    outputs: [3, 0x10, '16']
+    output_types:
+      3: std/core/v1/UInt8
+      0x10: std/media/v1/Image
+";
+        let frame = uint8s(&[1; 4]);
+        let mono = camera_params(2, 2, "mono8");
+        let messages = export_messages(
+            numeric,
+            vec![
+                event("7", "3", &jpeg, &params),
+                event("7", "16", &frame, &mono),
+                event("7", "0x10", &frame, &mono),
+            ],
+        );
+        assert_eq!(find(&messages, "7/3").1, "arrow-ipc");
+        assert_eq!(find(&messages, "7/16").1, "arrow-ipc");
+        assert_eq!(
+            find(&messages, "7/0x10").2.as_deref(),
+            Some("foxglove.RawImage")
+        );
+    }
+
+    /// Outputs of `operators:` are recorded as `<operator>/<output>`; a single
+    /// `operator:` node's outputs under the bare output id, by `dora record`
+    /// and by `--proxy` alike, whatever the operator's id. dora reads
+    /// `operators: null` as no operators.
+    #[test]
+    fn foxglove_reads_operator_output_types() {
+        let descriptor = "nodes:
+  - id: runtime
+    operators:
+      - id: cam
+        output_types:
+          image: std/media/v1/Image
+  - id: node
+    operator:
+      python: cam.py
+      outputs: [image]
+      output_types:
+        image: std/media/v1/Image
+  - id: named
+    operator:
+      id: cam
+      python: cam.py
+      outputs: [image]
+      output_types:
+        image: std/media/v1/Image
+  - id: plain
+    path: cam.py
+    operators: null
+    outputs: [image]
+    output_types:
+      image: std/media/v1/Image
+";
+        let image = ipc_bytes(image_struct(2, 2, "rgb8", &[0; 12]));
+        let messages = export_messages(
+            descriptor,
+            vec![
+                event("runtime", "cam/image", &image, &[]),
+                event("node", "image", &image, &[]),
+                event("named", "image", &image, &[]),
+                event("plain", "image", &image, &[]),
+            ],
+        );
+        assert_eq!(messages.len(), 4);
+        for message in &messages {
+            assert_eq!(
+                message.2.as_deref(),
+                Some("foxglove.RawImage"),
+                "{}",
+                message.0
+            );
+        }
+    }
+
+    /// Once an undeclared topic's first frame converted, the channel is a
+    /// Foxglove image channel, so a later frame that doesn't convert can't go
+    /// on it as Arrow: it is dropped (and reported), not written.
+    #[test]
+    fn foxglove_drops_a_later_bad_frame_on_an_undeclared_image_topic() {
+        let jpeg = uint8s(&jpeg_bytes());
+        let messages = export_messages(
+            "nodes: []",
+            vec![
+                event("camera", "image", &jpeg, &camera_params(640, 480, "jpeg")),
+                event("camera", "image", &jpeg, &[]),
+            ],
+        );
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].2.as_deref(), Some("foxglove.CompressedImage"));
+    }
+
+    /// `payload` with the record batch's `bodyLength` corrupted (sign bit
+    /// flipped), as one bad bit on disk would do: recordings have no checksum.
+    fn corrupt_body_length(payload: &[u8]) -> Vec<u8> {
+        let mut out = payload.to_vec();
+        let mut offset = 0;
+        while offset + 8 <= out.len() {
+            let len = i32::from_le_bytes(out[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            let start = offset + 8;
+            let message = arrow::ipc::root_as_message(&out[start..start + len]).unwrap();
+            let body = message.bodyLength();
+            if message.header_type() == arrow::ipc::MessageHeader::RecordBatch {
+                let needle = body.to_le_bytes();
+                let at = out[start..start + len]
+                    .windows(8)
+                    .position(|window| window == needle)
+                    .expect("bodyLength in the message");
+                let corrupt = (body ^ i64::MIN).to_le_bytes();
+                out[start + at..start + at + 8].copy_from_slice(&corrupt);
+                return out;
+            }
+            offset = start + len + body as usize;
+        }
+        panic!("no record batch in the payload");
+    }
+
+    /// A corrupt payload must not crash the export (`--format arrow` copies it
+    /// fine): undeclared it stays Arrow unchanged, declared it is dropped and
+    /// reported.
+    #[test]
+    fn foxglove_survives_a_corrupt_payload() {
+        let bad = corrupt_body_length(&uint8s(&jpeg_bytes()));
+        let params = camera_params(640, 480, "jpeg");
+        let undeclared = export_messages("nodes: []", vec![event("cam", "image", &bad, &params)]);
+        assert_eq!(undeclared.len(), 1);
+        assert_eq!(undeclared[0].1, "arrow-ipc");
+        assert_eq!(undeclared[0].3, bad);
+        let declared = export_messages(
+            CAMERA_DESCRIPTOR,
+            vec![event("camera", "image", &bad, &params)],
+        );
+        assert!(declared.is_empty());
     }
 }

@@ -82,8 +82,8 @@ pub(crate) fn send_control_request(
     session: &WsSession,
     request: &ControlRequest,
 ) -> eyre::Result<ControlRequestReply> {
-    let request_bytes =
-        serde_json::to_vec(request).wrap_err("failed to serialize control request")?;
+    let request_bytes = serde_json::to_vec(&request.to_wire_value()?)
+        .wrap_err("failed to serialize control request")?;
     let reply_raw = session
         .request(&request_bytes)
         .wrap_err("failed to send control request")?;
@@ -338,6 +338,41 @@ pub(crate) fn write_events_to() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// A loopback address whose connections are refused, for tests of the
+/// "coordinator not running" path. Keep the returned guard alive for the
+/// whole test: it holds the port so no other test in the binary can bind it.
+///
+/// The port is the local end of an established loopback connection. No
+/// socket listens on it, so a connect gets a RST, i.e. a refusal, on every
+/// OS. Two simpler ways to get such a port fail (#4026):
+/// - binding a `TcpListener` and dropping it frees the port, and a test
+///   running in parallel can take it before the connect, turning the
+///   refusal into a reset or a reply;
+/// - a bound but non-listening socket holds the port, but macOS drops the
+///   SYN to it silently, so the connect times out after ~75 s instead.
+#[cfg(test)]
+pub(crate) fn refused_port() -> (RefusedPortGuard, std::net::SocketAddr) {
+    use std::net::{TcpListener, TcpStream};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (server, _) = listener.accept().unwrap();
+    let addr = client.local_addr().unwrap();
+    (
+        RefusedPortGuard {
+            _client: client,
+            _server: server,
+        },
+        addr,
+    )
+}
+
+/// Holds the port returned by [`refused_port`]; see there.
+#[cfg(test)]
+pub(crate) struct RefusedPortGuard {
+    _client: std::net::TcpStream,
+    _server: std::net::TcpStream,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,12 +543,44 @@ mod coordinator_rejected_tests {
         );
     }
 
+    /// The hint must point at the file the token is really in. The config
+    /// copy goes to the platform's config directory, which is `~/.config`
+    /// only on Linux, so a hardcoded `~/.config/dora/.dora-token` sent macOS
+    /// and Windows users to a file that does not exist.
+    #[test]
+    fn auth_failure_names_the_real_token_locations() {
+        let (addr, _) = unauthorized_server();
+        let err = connect_to_coordinator(addr)
+            .err()
+            .expect("401 must fail the connection");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("DORA_AUTH_TOKEN"), "{msg}");
+        assert!(
+            msg.contains(".dora-token in the current directory"),
+            "{msg}"
+        );
+        if let Some(config) = dora_message::auth::config_token_path() {
+            assert!(msg.contains(&config.display().to_string()), "{msg}");
+        }
+        assert!(!msg.contains("~/.config/dora/.dora-token"), "{msg}");
+    }
+
+    /// The helper's whole contract: a prompt refusal, not a reset or a
+    /// timeout. The callers' assertions can pass on a timeout too, which is
+    /// how a macOS-only timeout stayed hidden in all but one of them (#4026).
+    #[test]
+    fn refused_port_refuses_promptly() {
+        let (_port, addr) = super::refused_port();
+        let start = Instant::now();
+        let err = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(10))
+            .expect_err("nothing listens on the port");
+        assert_eq!(err.kind(), std::io::ErrorKind::ConnectionRefused, "{err}");
+        assert!(start.elapsed() < Duration::from_secs(10));
+    }
+
     #[test]
     fn refused_connection_is_not_a_rejection() {
-        let addr = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        let (_port, addr) = super::refused_port();
         let err = connect_to_coordinator(addr)
             .err()
             .expect("closed port must fail the connection");

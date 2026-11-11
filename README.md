@@ -62,7 +62,7 @@
 
 - **10-17x faster than ROS2 Python** -- 100% Rust internals with zero-copy shared memory IPC for messages >4KB, flat latency from 4KB to 4MB payloads
 - **Zenoh SHM data plane** -- nodes publish directly via [Zenoh](https://zenoh.io/) shared memory, bypassing the daemon for 35% lower latency and 3-10x higher throughput on large payloads; automatic network fallback for cross-machine
-- **Apache Arrow native** -- columnar memory format end-to-end with zero serialization overhead; optional [Arrow IPC framing](docs/yaml-spec.md) for self-describing wire format; shared across all language bindings
+- **Apache Arrow native** -- columnar memory format end-to-end with zero serialization overhead; payloads are [Arrow IPC-encoded](docs/yaml-spec.md#arrow-ipc-framing), so receivers always know the schema; shared across all language bindings
 - **Non-blocking event loop** -- Zenoh publishes offloaded to a dedicated drain task; control commands respond in <500ms even under high data throughput
 
 ### Developer experience

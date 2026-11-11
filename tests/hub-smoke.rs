@@ -390,6 +390,43 @@ fn hub_rejects_invalid_shipped_type() {
     );
 }
 
+/// `path_fallback` is internal, so a dataflow file that sets it, here on a
+/// `hub:` node, is rejected when it is read, with or without an override.
+#[test]
+fn hub_rejects_path_fallback() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub path_fallback test");
+        return;
+    }
+    let fixture = build_fixture();
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n    path_fallback: hello\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let checkout = fixture.root.join("source/node-hub/hello");
+    let override_arg = format!("test/hub-smoke-hello={}", checkout.display());
+    for extra in [&[][..], &["--hub-override", override_arg.as_str()][..]] {
+        let out = dora(&fixture)
+            .args(["build", flow.to_str().unwrap()])
+            .args(extra)
+            .output()
+            .unwrap();
+        assert!(
+            !out.status.success(),
+            "build must reject `path_fallback` on a hub node ({extra:?})"
+        );
+        assert!(
+            stderr(&out).contains(
+                "node `hello` sets `path_fallback`, which is internal \
+                 (module expansion sets it); remove it"
+            ),
+            "expected the internal-field error ({extra:?}), got: {}",
+            stderr(&out)
+        );
+    }
+}
+
 /// `dora build --hub-override <pkg>=<path>` substitutes a local checkout for a
 /// hub package (UC11): the manifest is read from the checkout, contracts are
 /// validated, and the node builds from local source — no index resolution, no
@@ -763,6 +800,65 @@ fn hub_publish_dry_run_previews_entry() {
             .join("index/test/hub-smoke-hello/0.2.0.yml")
             .exists(),
         "dry-run must not write entries"
+    );
+}
+
+/// An inherited `GIT_DIR` (git exports it to hooks; CI steps sometimes set it)
+/// must not redirect `dora hub publish` to another repository: the preview has
+/// to pin the node repository's own commit and subdir, not the other one's.
+#[test]
+fn hub_publish_dry_run_ignores_an_inherited_git_dir() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub publish GIT_DIR test");
+        return;
+    }
+    let fixture = build_fixture();
+    let src = fixture.root.join("source");
+    let checkout = src.join("node-hub/hello");
+    let node_commit = String::from_utf8(
+        Command::new("git")
+            .current_dir(&src)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    // Another repository, with a different HEAD, that `GIT_DIR` points at.
+    let other = fixture.root.join("other");
+    write(&other.join("README"), "not the node repo\n");
+    git(&other, &["init", "--quiet", "-b", "main"]);
+    git(&other, &["add", "."]);
+    git(&other, &["commit", "--quiet", "-m", "other"]);
+
+    let out = dora(&fixture)
+        .env("GIT_DIR", other.join(".git"))
+        .args([
+            "hub",
+            "publish",
+            checkout.to_str().unwrap(),
+            "--dry-run",
+            "--repo",
+            &format!("file://{}", src.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "publish --dry-run failed with GIT_DIR set: {}",
+        stderr(&out)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(&format!("rev: {node_commit}")),
+        "expected the node repo's commit {node_commit} in the preview:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("subdir: node-hub/hello"),
+        "expected the node repo's subdir in the preview:\n{stdout}"
     );
 }
 

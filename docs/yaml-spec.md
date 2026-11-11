@@ -185,10 +185,10 @@ daemons to a full receiver is dropped; and a receiver that frees no room at all
 for 60 seconds (wedged, or blocked on its own producer in a backpressure cycle)
 stops holding the producer, which then loses that message, and every further
 message to that receiver's full channel is dropped the same way, without
-another 60-second hold, until the receiver takes an event again. The routing applies
-to the producer's entire output, so every consumer of
-that output leaves the zero-copy path, and the daemon path carries the 64 MiB
-per-message limit. A producer learns its routing when it starts, so
+another 60-second hold, until the receiver has drained its channel to at least
+half empty. The routing applies to the producer's entire output, so every
+consumer of that output leaves the zero-copy path, and the daemon path carries
+the 64 MiB per-message limit. A producer learns its routing when it starts, so
 `dora node add` and `dora node replace` refuse a `backpressure` input whose
 producer is already running with that output on the direct path. `dora replay`
 sets `backpressure` on every input without a policy, so replay dataflows run
@@ -300,7 +300,7 @@ env:
     __dora_env: HOST_VAR   # read from host environment at runtime
 ```
 
-Environment variables apply to both `build` commands and node execution. Values support `$VAR` expansion syntax.
+Environment variables apply to both `build` commands and node execution. Values support `$VAR` / `${VAR}` / `${VAR:-default}` expansion syntax. Expansion happens once, against the environment of the `dora` CLI that reads the file. Write `$$` for a literal `$` (`PASSWORD: p$$ssw0rd`). A value whose expansion contains `$` (say `HOST_VAR='a$b'`) reaches the node unchanged. The coordinator and daemon do not expand it again. Coordinators from dora releases before this change still expand it one more time, against their own environment.
 
 Some names are reserved and are dropped (with a warning in the daemon log) when set on a node:
 
@@ -377,7 +377,9 @@ Example with exponential backoff:
 
 ### Arrow IPC Framing
 
-By default, outputs use a raw Arrow buffer layout (zero-copy, no schema overhead). For self-describing wire format with full schema metadata, enable Arrow IPC framing per output:
+Every output is encoded as Arrow IPC, and dora nodes always decode it with its schema. There is nothing to enable. (Small messages on the node-to-node zenoh path may carry only the record batch, with the schema published once on a separate `@schema` subtopic, so a raw zenoh subscriber cannot assume each payload is a self-contained IPC stream.)
+
+The `output_framing` key is still accepted, so 1.x dataflows that set it keep loading, but it has no effect:
 
 ```yaml
 - id: sensor
@@ -388,9 +390,7 @@ By default, outputs use a raw Arrow buffer layout (zero-copy, no schema overhead
     image: arrow-ipc
 ```
 
-When `arrow-ipc` framing is set, data is serialized as Arrow IPC stream format (schema + record batches). Receivers automatically detect the framing mode via a `_framing` metadata key and decode accordingly. This is useful when consumers need schema introspection or when interoperating with external Arrow tools.
-
-Values: `raw` (default) or `arrow-ipc`.
+Values: `raw` or `arrow-ipc`; both behave identically.
 
 ### CPU Affinity
 
@@ -467,7 +467,7 @@ A runtime node holds exactly one operator: the operator runtime refuses to start
 - id: preprocess
   operators:
     - id: preprocessor
-      shared-library: ../../target/debug/libpreprocess
+      shared-library: ../../target/debug/preprocess
       inputs:
         raw: sensor/data
       outputs:
@@ -475,7 +475,7 @@ A runtime node holds exactly one operator: the operator runtime refuses to start
 - id: analyze
   operators:
     - id: analyzer
-      shared-library: ../../target/debug/libanalyze
+      shared-library: ../../target/debug/analyze
       inputs:
         data: preprocess/preprocessor/processed
       outputs:
@@ -487,7 +487,7 @@ A runtime node holds exactly one operator: the operator runtime refuses to start
 | Field | Description |
 |-------|-------------|
 | `python` | Python script path, or `{source: "script.py", conda_env: "myenv"}` |
-| `shared-library` | Path to a shared library (`.so`/`.dylib`/`.dll`) |
+| `shared-library` | Path to a shared library, without the `lib` prefix or the `.so`/`.dylib`/`.dll` extension (the runtime adds them for the current platform) |
 
 Operators also support `inputs`, `outputs`, `build`, `send_stdout_as`, `send_logs_as`, `min_log_level`, `max_log_size`, and `max_rotated_files` with the same semantics as node-level fields.
 

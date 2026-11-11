@@ -439,29 +439,7 @@ pub(crate) async fn check_spawn_timeouts(
             succeeded_daemons.len(),
         );
 
-        // Fire the spawn_result error and persist Failed before the teardown
-        // below removes the entry from `running_dataflows`.
-        if let Some(df) = running_dataflows.get_mut(&uuid) {
-            df.spawn_result.set_result(Err(eyre!(err_msg.clone())));
-            if let Err(e) = df
-                .make_record(StoreDataflowStatus::Failed {
-                    error: err_msg.clone(),
-                    // Watchdog verdict is terminal: even across coordinator
-                    // restarts, a wedged daemon that eventually reports the
-                    // dataflow as running must NOT resurrect this record to
-                    // Running via the reconcile path (round-8 Finding 1).
-                    terminal: true,
-                })
-                .and_then(|r| store.put_dataflow(&r))
-            {
-                tracing::warn!(
-                    dataflow = %uuid,
-                    "failed to persist spawn timeout: {e}",
-                );
-            }
-        }
-
-        teardown_failed_spawn(
+        fail_pending_spawn(
             uuid,
             &err_msg,
             &succeeded_daemons,
@@ -471,9 +449,72 @@ pub(crate) async fn check_spawn_timeouts(
             daemon_connections,
             pending_restarts,
             clock,
+            store,
         )
         .await;
     }
+}
+
+/// Fail a dataflow whose spawn is still pending, on the coordinator's own
+/// verdict rather than a daemon's spawn error: resolve `spawn_result` with
+/// `err_msg`, persist a terminal `Failed` record, then roll back
+/// `rollback_daemons` and tear the dataflow down via [`teardown_failed_spawn`].
+///
+/// Shared by the spawn-timeout watchdog ([`check_spawn_timeouts`]) and the
+/// daemon-disconnect path, which fails a pending spawn as soon as one of its
+/// daemons disconnects (#3736).
+///
+/// The teardown removes the dataflow from `running_dataflows`, so whichever of
+/// the two paths fails a spawn first, the other no longer sees it. A no-op if
+/// `uuid` is not running or its spawn already resolved.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn fail_pending_spawn(
+    uuid: DataflowId,
+    err_msg: &str,
+    rollback_daemons: &BTreeSet<DaemonId>,
+    running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
+    dataflow_results: &mut IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    daemon_connections: &mut DaemonConnections,
+    pending_restarts: &mut HashMap<DataflowId, PendingRestart>,
+    clock: &HLC,
+    store: &dyn CoordinatorStore,
+) {
+    let Some(df) = running_dataflows.get_mut(&uuid) else {
+        return;
+    };
+    if !df.spawn_result.is_pending() {
+        return;
+    }
+    // Fire the spawn_result error and persist Failed before the teardown
+    // below removes the entry from `running_dataflows`.
+    df.spawn_result.set_result(Err(eyre!(err_msg.to_owned())));
+    if let Err(e) = df
+        .make_record(StoreDataflowStatus::Failed {
+            error: err_msg.to_owned(),
+            // The verdict is terminal: even across coordinator restarts, a
+            // wedged daemon that eventually reports the dataflow as running
+            // must NOT resurrect this record to Running via the reconcile
+            // path (round-8 Finding 1).
+            terminal: true,
+        })
+        .and_then(|r| store.put_dataflow(&r))
+    {
+        tracing::warn!(dataflow = %uuid, "failed to persist failed spawn: {e}");
+    }
+
+    teardown_failed_spawn(
+        uuid,
+        err_msg,
+        rollback_daemons,
+        running_dataflows,
+        archived_dataflows,
+        dataflow_results,
+        daemon_connections,
+        pending_restarts,
+        clock,
+    )
+    .await;
 }
 
 /// Roll back the daemons that already started nodes for a dataflow whose spawn
@@ -484,10 +525,11 @@ pub(crate) async fn check_spawn_timeouts(
 /// that follows, so the dataflow is terminal from every other handler's point
 /// of view (Check, List, reconcile, Clean, ...).
 ///
-/// Shared by the spawn-timeout watchdog ([`check_spawn_timeouts`]) and the
-/// asynchronous partial-failure path in the `Event::DataflowSpawnResult`
-/// handler, where one daemon reports a spawn error after another has already
-/// reported success ([#3134](https://github.com/dora-rs/dora/issues/3134)).
+/// Shared by [`fail_pending_spawn`] (the spawn-timeout watchdog and the
+/// daemon-disconnect path) and the asynchronous partial-failure path in the
+/// `Event::DataflowSpawnResult` handler, where one daemon reports a spawn error
+/// after another has already reported success
+/// ([#3134](https://github.com/dora-rs/dora/issues/3134)).
 ///
 /// The rollback is fire-and-forget: it enqueues `StopDataflow{force: true}`
 /// on each daemon in `rollback_daemons` WITHOUT awaiting a reply, which

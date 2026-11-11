@@ -13,14 +13,18 @@ use std::{
     path::PathBuf,
 };
 
-/// Wire framing mode for an output.
+/// Wire framing requested for an output via `output_framing`.
+///
+/// Accepted for dora 1.x schema compatibility only: neither value changes
+/// anything. Every output is encoded as Arrow IPC regardless of this
+/// setting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum OutputFraming {
-    /// Raw Arrow buffer layout (default, current behavior).
+    /// The default.
     #[default]
     Raw,
-    /// Arrow IPC stream format — self-describing, schema + record batches.
+    /// Arrow IPC stream format.
     ArrowIpc,
 }
 
@@ -191,7 +195,36 @@ pub struct Descriptor {
     pub env: Option<BTreeMap<String, EnvValue>>,
 }
 
+// Wire descriptors must remain readable by peers whose strict `Node` schema
+// predates `path_fallback`. Control requests carry it separately; daemon spawn
+// requests already carry it in the permissive resolved `CustomNode`.
+pub(crate) fn serialize_without_path_fallback<S>(
+    descriptor: &Descriptor,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    let mut descriptor = descriptor.clone();
+    for node in &mut descriptor.nodes {
+        node.path_fallback = None;
+    }
+    descriptor.serialize(serializer)
+}
+
 impl Descriptor {
+    /// Fallback commands keyed by expanded node id, for the control protocol.
+    pub fn path_fallbacks(&self) -> BTreeMap<NodeId, String> {
+        self.nodes
+            .iter()
+            .filter_map(|node| {
+                node.path_fallback
+                    .as_ref()
+                    .map(|name| (node.id.clone(), name.clone()))
+            })
+            .collect()
+    }
+
     /// A dataflow of `nodes` with every dataflow-level option left at its
     /// default (the state a YAML file with only a `nodes:` key deserializes
     /// to).
@@ -566,10 +599,9 @@ pub struct Node {
     #[schemars(with = "Option<BTreeMap<DataId, String>>")]
     pub output_types: BTreeMap<DataId, String>,
 
-    /// Per-output framing overrides (default: Raw for all).
-    ///
-    /// Maps output identifiers to their wire framing mode.
-    /// Outputs not listed here use the default `Raw` framing.
+    /// Per-output framing overrides. Accepted for 1.x schema compatibility
+    /// but ignored: every output is encoded as Arrow IPC whatever its entry
+    /// here says (see [`OutputFraming`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     // An empty key is YAML `null`, which deserializes to the default.
     #[schemars(with = "Option<BTreeMap<DataId, OutputFraming>>")]
@@ -1033,6 +1065,19 @@ pub struct Node {
     /// Evaluated on each `health_check_interval` tick (default 5s).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_timeout: Option<f64>,
+
+    /// What to run when nothing exists at `path`, looked up like a top-level
+    /// `path` (working directory, uv environment, then `$PATH`; variables
+    /// are not expanded). Internal: module expansion sets it when a module
+    /// node's `path` is a single name without an extension, such as
+    /// `dora-echo`: `path` points next to the module file, and this keeps
+    /// the name as written. One written in a dataflow, module or node file is
+    /// rejected, so it is not part of the YAML schema.
+    // Appended last so existing fields keep their wire-format order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(skip)]
+    #[doc(hidden)]
+    pub path_fallback: Option<String>,
 }
 
 impl Node {
@@ -1095,6 +1140,7 @@ impl Node {
             cpu_affinity: None,
             deploy: None,
             startup_timeout: None,
+            path_fallback: None,
         }
     }
 }
@@ -1264,7 +1310,8 @@ pub struct OperatorConfig {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_types: BTreeMap<DataId, String>,
 
-    /// Per-output framing overrides (default: Raw for all).
+    /// Per-output framing overrides. Ignored: every output is encoded as
+    /// Arrow IPC (see [`OutputFraming`]).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub output_framing: BTreeMap<DataId, OutputFraming>,
 
@@ -1488,6 +1535,11 @@ pub struct CustomNode {
     // Appended last so existing fields keep their wire-format order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_timeout: Option<f64>,
+    /// What to run when nothing exists at `path`, resolved like a top-level
+    /// `path` (the name a module node's `path:` was written as).
+    // Appended last so existing fields keep their wire-format order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_fallback: Option<String>,
 }
 
 impl CustomNode {
@@ -1519,6 +1571,7 @@ impl CustomNode {
             finish_grace_secs: None,
             run_config: NodeRunConfig::default(),
             startup_timeout: None,
+            path_fallback: None,
         }
     }
 
@@ -1572,6 +1625,7 @@ impl CustomNode {
                 shared_memory_pool_size: node.shared_memory_pool_size.take(),
             },
             startup_timeout: node.startup_timeout.take(),
+            path_fallback: node.path_fallback.take(),
         }
     }
 }
@@ -1617,6 +1671,25 @@ pub enum GitRepoRev {
 // become `Integer(8080)`, as in every 1.x release, but `"1.10"`, `"007"`
 // and `"1e3"` stay strings instead of reaching the node as `1.1`, `7` and
 // `1000`.
+//
+// The expansion happens on every decode, and the descriptor is decoded
+// once per hop (CLI -> coordinator -> daemon -> node, the coordinator's
+// persisted store, the CLI's hub session file, and any future one). So a
+// string is serialized with each `$` written as `$$`, which the next decode
+// turns back into `$`: the value the CLI expanded reaches the node verbatim
+// instead of being expanded again against the receiving host's environment
+// (#3947). Released 1.x peers decode that the same way.
+//
+// Escaping here, unconditionally, rather than only at the specific places
+// that happen to send a `Descriptor` across a hop today, is deliberate:
+// every encode is then safe by construction, and a new hop added later does
+// not need to remember to opt in. The cost is that the three places that
+// serialize an already-decoded `Descriptor` straight to user code and never
+// decode it back — the Python node's `dataflow_descriptor()`, a Python
+// operator's `self.dataflow_descriptor`, the C++ `dataflow_descriptor_json`
+// — see the escaped form too. Each of those undoes it with
+// `descriptor_for_display` below rather than this type gaining an unescaped
+// mode (#4067).
 #[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
@@ -1624,7 +1697,72 @@ pub enum EnvValue {
     Bool(bool),
     Integer(i64),
     Float(f64),
+    #[serde(serialize_with = "serialize_escaping_dollars")]
     String(String),
+}
+
+/// `s` with each `$` written as `$$`, which is what `$` expands from, so the
+/// next decode restores `s`.
+fn serialize_escaping_dollars<S: serde::Serializer>(
+    s: &str,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    if s.contains('$') {
+        serializer.serialize_str(&s.replace('$', "$$"))
+    } else {
+        serializer.serialize_str(s)
+    }
+}
+
+/// `descriptor` as the three introspection points hand it to user code:
+/// `Node.dataflow_descriptor()` (Python), a Python operator's
+/// `self.dataflow_descriptor`, and the C++ `dataflow_descriptor_json`.
+///
+/// Serializing a `Descriptor` directly always escapes `$` as `$$` in every
+/// `env` string (see the comment on `EnvValue`), because the same
+/// `Serialize` impl is also how a `Descriptor` crosses a dora-to-dora wire
+/// hop. These three callers serialize the same, already-decoded
+/// `Descriptor` with no decode step after to undo that, so without this
+/// they would show the wire form instead of the real value (#4067). This
+/// walks only the two places `env` actually appears — `descriptor.env` and
+/// each node's `env` — rather than unescaping the whole serialized tree,
+/// so an unrelated string that happens to contain `$$` (a `build:` command,
+/// a description, ...) is left alone.
+///
+/// Returns the serialize error rather than unwrapping it: these callers run
+/// at an FFI boundary (the C++ `dataflow_descriptor_json`, pyo3), where a
+/// panic is undefined behaviour, and the originals already returned a
+/// fallible result here.
+pub fn descriptor_for_display(
+    descriptor: &Descriptor,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut value = serde_json::to_value(descriptor)?;
+    if let Some(env) = value.get_mut("env") {
+        unescape_json_env_map(env);
+    }
+    if let Some(nodes) = value
+        .get_mut("nodes")
+        .and_then(|nodes| nodes.as_array_mut())
+    {
+        for node in nodes {
+            if let Some(env) = node.get_mut("env") {
+                unescape_json_env_map(env);
+            }
+        }
+    }
+    Ok(value)
+}
+
+/// Undoes [`serialize_escaping_dollars`] on every string value of a JSON
+/// object already known to be one `env:` map, in place.
+fn unescape_json_env_map(env: &mut serde_json::Value) {
+    if let Some(map) = env.as_object_mut() {
+        for value in map.values_mut() {
+            if let serde_json::Value::String(s) = value {
+                *s = s.replace("$$", "$");
+            }
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for EnvValue {
@@ -2086,6 +2224,96 @@ mod tests {
             EnvValue::String("v2".into())
         );
         assert!(serde_yaml::from_str::<EnvValue>("\"$DORA_TEST_ENV_VALUE_UNSET_VAR\"").is_err());
+    }
+
+    /// A string whose expansion contains `$` must not be expanded again by
+    /// the next decode, which runs in the coordinator, the daemon and the
+    /// node against *their* environments (#3947). `$${...}` is how a value
+    /// containing `${...}` gets into memory without a CLI-side variable;
+    /// `DORA_TEST_ENV_VALUE_UNSET_VAR` is unset, so a second expansion would
+    /// fail the decode instead of passing by accident.
+    #[test]
+    fn env_value_is_not_expanded_again_after_a_round_trip() {
+        let yaml = "env:\n  X: $${DORA_TEST_ENV_VALUE_UNSET_VAR}\n  \
+                    PW: p$$ssw0rd\n  TAIL: cost$$\nnodes: []\n";
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let expected = BTreeMap::from([
+            (
+                "X".to_string(),
+                EnvValue::String("${DORA_TEST_ENV_VALUE_UNSET_VAR}".into()),
+            ),
+            ("PW".to_string(), EnvValue::String("p$ssw0rd".into())),
+            ("TAIL".to_string(), EnvValue::String("cost$".into())),
+        ]);
+        assert_eq!(descriptor.env.as_ref(), Some(&expected));
+
+        // Every hop: CLI -> coordinator -> daemon -> node over JSON.
+        let mut current = descriptor;
+        for hop in 0..3 {
+            let json = serde_json::to_string(&current).unwrap();
+            current = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("JSON hop {hop} failed: {e}\n{json}"));
+            assert_eq!(current.env.as_ref(), Some(&expected), "JSON hop {hop}");
+        }
+        // The YAML session file the CLI writes and rereads for `hub:` dataflows.
+        let yaml = serde_yaml::to_string(&current).unwrap();
+        let reread: Descriptor = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(reread.env.as_ref(), Some(&expected), "YAML\n{yaml}");
+    }
+
+    /// Strings without `$` and typed values keep the plain encoding, so the
+    /// common case stays byte-identical to what 1.x peers send.
+    #[test]
+    fn env_value_serializes_without_dollar_unchanged() {
+        let json = |v: EnvValue| serde_json::to_string(&v).unwrap();
+        assert_eq!(json(EnvValue::String("hello".into())), "\"hello\"");
+        assert_eq!(json(EnvValue::String("1.10".into())), "\"1.10\"");
+        assert_eq!(json(EnvValue::Integer(8080)), "8080");
+        assert_eq!(json(EnvValue::Float(1.5)), "1.5");
+        assert_eq!(json(EnvValue::Bool(true)), "true");
+        assert_eq!(json(EnvValue::String("a$b".into())), "\"a$$b\"");
+    }
+
+    /// `Node.dataflow_descriptor()` (Python), a Python operator's
+    /// `self.dataflow_descriptor`, and the C++ `dataflow_descriptor_json`
+    /// all serialize an already-decoded `Descriptor` directly, with no
+    /// further decode step to undo the wire escape — `descriptor_for_display`
+    /// is what each of them must go through instead of a bare
+    /// `serde_json::to_value`/`pythonize` call (#4067).
+    #[test]
+    fn descriptor_for_display_shows_the_raw_value() {
+        let mut node = Node::new("n".parse().unwrap());
+        node.env = Some(BTreeMap::from([(
+            "K".to_string(),
+            EnvValue::String("a$b".into()),
+        )]));
+        let mut descriptor = Descriptor::new(vec![node]);
+        descriptor.env = Some(BTreeMap::from([(
+            "PRICE".to_string(),
+            EnvValue::String("50$ off".into()),
+        )]));
+
+        // A bare serialize still shows the wire-escaped form.
+        let wire = serde_json::to_value(&descriptor).unwrap();
+        assert_eq!(wire["env"]["PRICE"], "50$$ off");
+        assert_eq!(wire["nodes"][0]["env"]["K"], "a$$b");
+
+        // `descriptor_for_display` undoes it, at both `env` locations.
+        let display = descriptor_for_display(&descriptor).unwrap();
+        assert_eq!(display["env"]["PRICE"], "50$ off");
+        assert_eq!(display["nodes"][0]["env"]["K"], "a$b");
+    }
+
+    /// `descriptor_for_display` targets only `env`/`nodes[].env`, so a `$$`
+    /// elsewhere in the descriptor (a path, a description, ...) that has
+    /// nothing to do with the escape must survive unchanged.
+    #[test]
+    fn descriptor_for_display_leaves_unrelated_dollar_signs_alone() {
+        let mut node = Node::new("n".parse().unwrap());
+        node.path = Some("echo $$ not an env escape".into());
+        let descriptor = Descriptor::new(vec![node]);
+        let display = descriptor_for_display(&descriptor).unwrap();
+        assert_eq!(display["nodes"][0]["path"], "echo $$ not an env escape");
     }
 
     /// Assert that `constructed` serializes to exactly what `yaml`

@@ -168,25 +168,6 @@
         }
       ]
     },
-    "Duration": {
-      "type": "object",
-      "properties": {
-        "nanos": {
-          "type": "integer",
-          "format": "uint32",
-          "minimum": 0
-        },
-        "secs": {
-          "type": "integer",
-          "format": "uint64",
-          "minimum": 0
-        }
-      },
-      "required": [
-        "secs",
-        "nanos"
-      ]
-    },
     "EnvValue": {
       "anyOf": [
         {
@@ -250,86 +231,9 @@
       ]
     },
     "InputMapping": {
-      "description": "The source an [`Input`] subscribes to.\n\nThe wire form is a `/`-separated string; [`FromStr`] parses it and\n[`fmt::Display`] renders it back, so the two round-trip:\n\n```\nuse dora_message::config::InputMapping;\n\nlet mapping: InputMapping = \"camera/image\".parse().unwrap();\nassert!(matches!(mapping, InputMapping::User(_)));\nassert_eq!(mapping.to_string(), \"camera/image\");\n\n// Built-in timer source.\nlet timer: InputMapping = \"dora/timer/millis/100\".parse().unwrap();\nassert_eq!(timer.to_string(), \"dora/timer/millis/100\");\n\n// A mapping without a `/` separator is rejected.\nassert!(\"no-slash\".parse::<InputMapping>().is_err());\n```",
-      "oneOf": [
-        {
-          "description": "`<source>/<output>` for another node's output, `dora/timer/{unit}/{value}` for a built-in timer, or `dora/logs[/{level}[/{node_id}]]` for node logs.",
-          "type": "string",
-          "pattern": "/"
-        },
-        {
-          "description": "A built-in timer that fires at a fixed `interval`.\n\nSyntax: `dora/timer/{unit}/{value}`, e.g. `dora/timer/millis/100`.",
-          "type": "object",
-          "properties": {
-            "Timer": {
-              "type": "object",
-              "properties": {
-                "interval": {
-                  "description": "How often the timer fires.",
-                  "$ref": "#/$defs/Duration"
-                }
-              },
-              "required": [
-                "interval"
-              ]
-            }
-          },
-          "additionalProperties": true,
-          "required": [
-            "Timer"
-          ]
-        },
-        {
-          "description": "Subscribe to log messages from all (or filtered) nodes in the dataflow.\n\nSyntax: `dora/logs`, `dora/logs/{level}`, `dora/logs/{level}/{node_id}`",
-          "type": "object",
-          "properties": {
-            "Logs": {
-              "$ref": "#/$defs/LogSubscriptionFilter"
-            }
-          },
-          "additionalProperties": true,
-          "required": [
-            "Logs"
-          ]
-        },
-        {
-          "description": "Subscribe to another node's output — the common case.",
-          "type": "object",
-          "properties": {
-            "User": {
-              "$ref": "#/$defs/UserInputMapping"
-            }
-          },
-          "additionalProperties": true,
-          "required": [
-            "User"
-          ]
-        }
-      ]
-    },
-    "LogSubscriptionFilter": {
-      "description": "Filter for the `dora/logs` virtual input.\n\nThe wire form parsed by [`FromStr`] / rendered by [`Display`](fmt::Display)\nis `dora/logs/{level}/{node}`, so a `node_filter` can only be expressed\ntogether with a `min_level`. Parsing therefore never produces a filter with\n`node_filter: Some(_)` while `min_level` is `None`. That combination is still\nconstructible directly (both fields are public); when it is rendered, the\n`stdout` level is emitted to keep the node restriction — see the\n[`Display`](fmt::Display) impl of [`InputMapping`]. A `Stdout` minimum is the\nmost permissive level filter ([`LogLevelOrStdout::passes`](crate::common::LogLevelOrStdout::passes)\nlets every message through it), so it delivers the same messages as `None`\n(all levels, including stdout); such a value round-trips to\n`{ min_level: Some(stdout), node_filter }`, which is behaviorally equivalent\nto the original rather than exactly equal to it.",
-      "type": "object",
-      "properties": {
-        "min_level": {
-          "description": "Minimum log level to receive. `None` means all levels (including stdout).",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "node_filter": {
-          "description": "Only receive logs from this specific node. `None` means all nodes.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/NodeId"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        }
-      }
+      "description": "The source an [`Input`] subscribes to: `<source>/<output>` for another node's output, `dora/timer/{unit}/{value}` for a built-in timer, or `dora/logs[/{level}[/{node_id}]]` for node logs.",
+      "type": "string",
+      "pattern": "/"
     },
     "Node": {
       "title": "Dora Node Configuration",
@@ -528,7 +432,7 @@
           ]
         },
         "output_framing": {
-          "description": "Per-output framing overrides (default: Raw for all).\n\nMaps output identifiers to their wire framing mode.\nOutputs not listed here use the default `Raw` framing.",
+          "description": "Per-output framing overrides. Accepted for 1.x schema compatibility\nbut ignored: every output is encoded as Arrow IPC whatever its entry\nhere says (see [`OutputFraming`]).",
           "type": [
             "object",
             "null"
@@ -760,7 +664,7 @@
           ]
         },
         "output_framing": {
-          "description": "Per-output framing overrides (default: Raw for all).",
+          "description": "Per-output framing overrides. Ignored: every output is encoded as\nArrow IPC (see [`OutputFraming`]).",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/OutputFraming"
@@ -847,15 +751,15 @@
       "type": "string"
     },
     "OutputFraming": {
-      "description": "Wire framing mode for an output.",
+      "description": "Wire framing requested for an output via `output_framing`.\n\nAccepted for dora 1.x schema compatibility only: neither value changes\nanything. Every output is encoded as Arrow IPC regardless of this\nsetting.",
       "oneOf": [
         {
-          "description": "Raw Arrow buffer layout (default, current behavior).",
+          "description": "The default.",
           "type": "string",
           "const": "raw"
         },
         {
-          "description": "Arrow IPC stream format — self-describing, schema + record batches.",
+          "description": "Arrow IPC stream format.",
           "type": "string",
           "const": "arrow-ipc"
         }
@@ -1305,7 +1209,7 @@
           ]
         },
         "output_framing": {
-          "description": "Per-output framing overrides (default: Raw for all).",
+          "description": "Per-output framing overrides. Ignored: every output is encoded as\nArrow IPC (see [`OutputFraming`]).",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/OutputFraming"
@@ -1401,24 +1305,6 @@
       "required": [
         "from",
         "to"
-      ]
-    },
-    "UserInputMapping": {
-      "description": "A subscription to another node's output, written as `source/output` in YAML.",
-      "type": "object",
-      "properties": {
-        "output": {
-          "description": "The id of that node's output to subscribe to.",
-          "$ref": "#/$defs/DataId"
-        },
-        "source": {
-          "description": "The id of the node that produces the output.",
-          "$ref": "#/$defs/NodeId"
-        }
-      },
-      "required": [
-        "source",
-        "output"
       ]
     }
   }

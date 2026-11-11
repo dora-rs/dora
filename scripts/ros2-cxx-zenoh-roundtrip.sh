@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Builds the generated C++ ROS 2 bindings (dora-node-api-cxx) against a small
-# fixture package, then runs a C++ service client/server round trip over
-# native Zenoh for both identity profiles. CI has no ROS install, so without
-# this the generated cxx code is never compiled. Needs clang++, not ROS.
+# Builds the generated C++ ROS 2 bindings (dora-node-api-cxx) against small
+# fixture packages, then runs C++ service and action client/server round trips
+# and a topic publish/subscribe over native Zenoh for both identity profiles.
+# CI has no ROS install, so without this the generated cxx code is never
+# compiled. Needs clang++, not ROS.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -10,6 +11,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/scripts/cargo-target-dir.sh"
 TARGET_DIR="$(cargo_target_dir "$ROOT")"
 FIXTURE="$ROOT/tests/ros2-cxx-zenoh"
+TYPE_DESCRIPTIONS="$ROOT/libraries/extensions/ros2-bridge/msg-gen/test_type_descriptions"
 
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
@@ -19,7 +21,15 @@ trap 'rm -rf "$OUT"' EXIT
 # pointing there isn't left with the fixture's bindings. (The static library
 # is rebuilt for the fixture too; the next build with the real
 # AMENT_PREFIX_PATH regenerates it, as build.rs reruns when that changes.)
-export AMENT_PREFIX_PATH="$FIXTURE/ament"
+# Use the same ROS type descriptions as the Rust tests.
+cp -R "$FIXTURE/ament" "$OUT/ament"
+cp "$TYPE_DESCRIPTIONS/action_msgs__srv__CancelGoal.json" \
+  "$OUT/ament/share/action_msgs/srv/CancelGoal.json"
+cp "$TYPE_DESCRIPTIONS/action_msgs__msg__GoalStatusArray.json" \
+  "$OUT/ament/share/action_msgs/msg/GoalStatusArray.json"
+cp "$TYPE_DESCRIPTIONS/example_interfaces__action__Fibonacci.json" \
+  "$OUT/ament/share/example_interfaces/action/Fibonacci.json"
+export AMENT_PREFIX_PATH="$OUT/ament"
 export DORA_NODE_API_CXX_INSTALL="$OUT/install"
 cargo build --manifest-path "$ROOT/Cargo.toml" -p dora-node-api-cxx --features ros2-bridge
 
@@ -38,7 +48,7 @@ esac
 clang++ -std=c++17 \
   "$FIXTURE/roundtrip.cc" \
   "$BRIDGE/dora-node-api.cc" \
-  "$BRIDGE/ros2-bridge/msg/example_interfaces.cc" \
+  "$BRIDGE"/ros2-bridge/msg/*.cc \
   "$BRIDGE/ros2-bridge/impl.cc" \
   -I "$BRIDGE" -L "$TARGET_DIR/debug" -l dora_node_api_cxx "${SYSTEM_LIBS[@]}" \
   -o "$OUT/roundtrip"

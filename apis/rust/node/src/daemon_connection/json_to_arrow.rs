@@ -28,7 +28,10 @@ fn read_from_json_with_schema(
     data: impl BufRead,
     schema: arrow_schema::Schema,
 ) -> eyre::Result<ArrayData> {
+    // `infer_json_schema` widens conflicting scalar types (e.g. `[1, "a"]`)
+    // to `Utf8`, so the reader has to coerce the non-string values to match.
     let mut reader = arrow_json::reader::ReaderBuilder::new(Arc::new(schema))
+        .with_coerce_primitive(true)
         .build(data)
         .context("failed to build JSON reader")?;
     let batch = reader
@@ -56,11 +59,17 @@ fn json_quote(data: &[u8]) -> String {
 }
 
 /// convert the given JSON object to the closed arrow representation
+///
+/// Set `coerce_primitive` when `schema` was inferred from `data`: inference
+/// widens conflicting scalar types (e.g. `[1, "a"]`) to `Utf8`, so the
+/// non-string values have to be coerced to match.
 pub fn read_json_value_as_arrow(
     data: &[serde_json::Value],
     schema: Arc<arrow_schema::Schema>,
+    coerce_primitive: bool,
 ) -> eyre::Result<ArrayData> {
     let mut decoder = arrow_json::reader::ReaderBuilder::new(schema)
+        .with_coerce_primitive(coerce_primitive)
         .build_decoder()
         .context("failed to build JSON decoder")?;
     decoder
@@ -98,7 +107,7 @@ mod tests {
         // batch; `column(0)` would otherwise index out of bounds and panic.
         let schema = Arc::new(Schema::empty());
         let values = [serde_json::json!({})];
-        let result = read_json_value_as_arrow(&values, schema);
+        let result = read_json_value_as_arrow(&values, schema, false);
         assert!(result.is_err());
     }
 
@@ -132,5 +141,64 @@ mod tests {
             array.as_any().downcast_ref::<StringArray>().is_none(),
             "bare JSON number should not be parsed as a string"
         );
+    }
+
+    /// The strings in the first element of a `List<Utf8>` array.
+    fn first_list_strings(array: &dyn Array) -> Vec<String> {
+        let list = array
+            .as_any()
+            .downcast_ref::<arrow::array::ListArray>()
+            .expect("expected a list array");
+        let values = list.value(0);
+        let strings = values
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("expected a string list");
+        strings.iter().map(|s| s.unwrap().to_owned()).collect()
+    }
+
+    #[test]
+    fn mixed_type_arrays_are_coerced_to_strings() {
+        // Schema inference widens conflicting scalar types to `Utf8`; the
+        // reader must then coerce the non-string values instead of failing
+        // with "expected string got 1" (#4022).
+        let array = make_array(read_json_bytes_as_arrow(br#"[1, "a"]"#).unwrap());
+        assert_eq!(first_list_strings(&array), ["1", "a"]);
+
+        let array = make_array(read_json_bytes_as_arrow(b"[true, 1]").unwrap());
+        assert_eq!(first_list_strings(&array), ["true", "1"]);
+
+        let array = make_array(read_json_bytes_as_arrow(br#"{"a":[1,"x"]}"#).unwrap());
+        let fields = array
+            .as_any()
+            .downcast_ref::<arrow::array::StructArray>()
+            .expect("expected a struct array");
+        assert_eq!(
+            first_list_strings(fields.column_by_name("a").unwrap()),
+            ["1", "x"]
+        );
+
+        let array = make_array(read_json_bytes_as_arrow(br#"[[1],["a"]]"#).unwrap());
+        let outer = array
+            .as_any()
+            .downcast_ref::<arrow::array::ListArray>()
+            .expect("expected a list array");
+        let inner = outer.value(0);
+        let inner = inner
+            .as_any()
+            .downcast_ref::<arrow::array::ListArray>()
+            .expect("expected a nested list array");
+        assert_eq!(first_list_strings(inner), ["1"]);
+        assert_eq!(make_array(inner.value(1).to_data()).len(), 1);
+    }
+
+    #[test]
+    fn same_type_number_arrays_stay_numeric() {
+        use arrow::array::ListArray;
+
+        let data = read_json_bytes_as_arrow(b"[1, 2.5]").unwrap();
+        let array = make_array(data);
+        let list = array.as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(list.value_type(), arrow_schema::DataType::Float64);
     }
 }

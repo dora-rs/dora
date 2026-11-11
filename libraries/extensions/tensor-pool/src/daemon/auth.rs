@@ -70,8 +70,9 @@ pub(crate) async fn auth_handshake_send(
 }
 
 /// Receive-side handshake: validates the peer's token. Bounded by
-/// [`CROSS_DATA_READ_TIMEOUT`] so a connection that never sends the
-/// handshake cannot pin a task (or an fd) forever.
+/// [`CROSS_DATA_AUTH_TIMEOUT`] (in [`cross_data_auth_gate`]) so a
+/// connection that never sends the handshake cannot pin a task (or an fd)
+/// for long.
 pub(crate) async fn auth_handshake_verify(
     stream: &mut tokio::net::TcpStream,
 ) -> Result<(), String> {
@@ -139,7 +140,16 @@ pub(crate) async fn cross_data_auth_gate(stream: &mut tokio::net::TcpStream) -> 
     if cross_data_auth_token().is_none() {
         return Ok(());
     }
-    match tokio::time::timeout(CROSS_DATA_READ_TIMEOUT, auth_handshake_verify(stream)).await {
+    auth_gate_within(stream, CROSS_DATA_AUTH_TIMEOUT).await
+}
+
+/// [`cross_data_auth_gate`] with an explicit bound, so tests can check the
+/// timeout path without waiting out the real one.
+pub(crate) async fn auth_gate_within(
+    stream: &mut tokio::net::TcpStream,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    match tokio::time::timeout(timeout, auth_handshake_verify(stream)).await {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => Err(format!("auth handshake rejected: {e}")),
         Err(_) => Err("auth handshake timed out".to_string()),

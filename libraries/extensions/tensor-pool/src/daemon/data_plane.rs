@@ -85,6 +85,104 @@ pub(crate) const CROSS_DATA_PORT_DEFAULT: u16 = 7410;
 /// collide with a sibling daemon.
 pub(crate) const CROSS_DATA_BIND_ENV: &str = "DORA_MEMORY_POOL_DATA_BIND";
 pub(crate) const CROSS_DATA_BIND_DEFAULT: &str = "0.0.0.0";
+/// Maximum number of concurrent connections the direct-TCP data listener
+/// serves. Every connection holds a daemon fd, shared with node sockets,
+/// zenoh and shared-memory opens, so without a cap a peer that can reach the
+/// port could open connections until the daemon hits `EMFILE` (#4033). An
+/// origin keeps one pooled connection per mirror endpoint, plus one per
+/// concurrent write in flight, so the default leaves plenty of headroom for
+/// legitimate peers while staying well below a default `ulimit -n` of 1024.
+/// A connection over the cap is closed at once. That does not reliably reach
+/// the origin as an error: with an auth token, the origin's handshake reads
+/// the close and the write falls back to the zenoh relay, but without a
+/// token the origin's frame can fit in its send buffer and report success
+/// before the close arrives, so that write is lost and fails on its ack
+/// timeout. Direct writes therefore fail rather than degrade while the cap
+/// is exhausted. Making the origin detect a refusal in the token-less
+/// configuration needs an admission reply on every fresh connection, which
+/// is a wire change left to a follow-up.
+pub(crate) const CROSS_DATA_MAX_CONNECTIONS_ENV: &str = "DORA_MEMORY_POOL_MAX_DATA_CONNECTIONS";
+pub(crate) const CROSS_DATA_MAX_CONNECTIONS_DEFAULT: usize = 256;
+
+/// The connection cap from [`CROSS_DATA_MAX_CONNECTIONS_ENV`], or the
+/// default when it is unset, unparsable or zero.
+pub(crate) fn cross_data_max_connections() -> usize {
+    std::env::var(CROSS_DATA_MAX_CONNECTIONS_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(CROSS_DATA_MAX_CONNECTIONS_DEFAULT)
+}
+
+/// Accept loop of the direct-TCP data listener: serves each connection with
+/// `serve` on its own task, with at most `max_connections` served at once.
+///
+/// A permit is taken before the task is spawned and held until `serve`
+/// returns, so the cap bounds both fds and tasks. A connection accepted while
+/// no permit is free is closed at once (#4033). The refusal is logged once
+/// per run of refusals, so a peer flooding the port cannot flood the log too.
+pub(crate) async fn accept_cross_data_connections<F, Fut>(
+    listener: tokio::net::TcpListener,
+    max_connections: usize,
+    serve: F,
+) where
+    F: Fn(tokio::net::TcpStream, std::net::SocketAddr) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let permits = Arc::new(tokio::sync::Semaphore::new(max_connections));
+    let mut refusing = false;
+    loop {
+        let Ok((stream, peer)) = listener.accept().await else {
+            // Transient errors (ECONNABORTED) are fine to retry
+            // immediately, but a persistent one (e.g. EMFILE/ENFILE
+            // fd exhaustion) would otherwise spin at 100% CPU —
+            // bound the retry with a short sleep.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            continue;
+        };
+        let Ok(permit) = permits.clone().try_acquire_owned() else {
+            if !refusing {
+                tracing::warn!(
+                    "memory pool: refusing direct-TCP data connections (first from {peer}): \
+                     {max_connections} already open; raise {CROSS_DATA_MAX_CONNECTIONS_ENV} \
+                     if this is expected"
+                );
+                refusing = true;
+            }
+            // Dropping `stream` closes the connection.
+            continue;
+        };
+        refusing = false;
+        tracing::debug!("memory pool: direct-TCP data connection from {peer}");
+        let served = serve(stream, peer);
+        tokio::spawn(async move {
+            served.await;
+            drop(permit);
+        });
+    }
+}
+
+/// Admit a freshly accepted data connection before any frame is served:
+/// `Ok(true)` once its first frame has started, `Ok(false)` when the peer
+/// closed it or sent nothing within `first_frame_timeout`, and `Err` when the
+/// auth handshake rejected it or the socket failed.
+///
+/// Auth handshake first, once per connection: a peer without the shared
+/// token is dropped before any frame can touch a mirror segment. Only when
+/// the daemon itself has a token configured (a token-less daemon accepts
+/// token-less peers — the handshake is a configured-deployment option, both
+/// ends set it or neither does).
+///
+/// The first-frame wait is bounded with or without a token, so a peer that
+/// connects and sends nothing cannot hold a listener slot for the full
+/// [`CROSS_DATA_IDLE_TIMEOUT`] (#4033).
+pub(crate) async fn admit_fresh_cross_data_conn(
+    stream: &mut tokio::net::TcpStream,
+    first_frame_timeout: std::time::Duration,
+) -> Result<bool, String> {
+    cross_data_auth_gate(stream).await?;
+    await_next_frame(stream, first_frame_timeout).await
+}
 
 /// Wait for the next frame on a data connection without consuming it:
 /// `Ok(true)` once its first byte has arrived, `Ok(false)` when the origin

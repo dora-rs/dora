@@ -1,13 +1,13 @@
 use std::{
     collections::{BTreeMap, HashMap},
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Instant, SystemTime},
 };
 
 use base64::prelude::{BASE64_STANDARD, Engine as _};
 use clap::Args;
-use dora_core::descriptor::{Descriptor, Node};
+use dora_core::descriptor::{Descriptor, DescriptorExt, Node};
 use dora_message::{
     common::Timestamped,
     coordinator_to_cli::DataflowIdAndName,
@@ -154,6 +154,35 @@ fn parse_ws_topics(topics: &[(String, String)]) -> eyre::Result<Vec<(NodeId, Dat
             ))
         })
         .collect()
+}
+
+/// The dataflow in `yaml_bytes` with its `module:` nodes expanded, or `None`
+/// when it has none.
+///
+/// A module node declares no `outputs` of its own: its nodes, and their ids
+/// (`<module>.<inner>`), exist only after expansion, which is also what the
+/// daemon runs. Discovering outputs on the raw YAML would silently leave every
+/// module's traffic out of the recording.
+fn expand_modules_for_record(
+    file: &Path,
+    descriptor: &serde_yaml::Value,
+    yaml_bytes: &[u8],
+) -> eyre::Result<Option<Descriptor>> {
+    let has_modules = descriptor
+        .get("nodes")
+        .and_then(|v| v.as_sequence())
+        .is_some_and(|nodes| {
+            nodes
+                .iter()
+                .any(|n| n.get("module").is_some_and(|m| !m.is_null()))
+        });
+    if !has_modules {
+        return Ok(None);
+    }
+    Descriptor::parse(yaml_bytes.to_vec())?
+        .expand(crate::common::working_dir_or_parent(None, file))
+        .context("failed to expand modules")
+        .map(Some)
 }
 
 /// Discover all `(node_id, output_id)` pairs from a parsed descriptor YAML.
@@ -414,7 +443,10 @@ fn run_record(args: Record) -> eyre::Result<()> {
     let descriptor: serde_yaml::Value =
         serde_yaml::from_slice(&yaml_bytes).wrap_err("failed to parse descriptor YAML")?;
 
-    let all_outputs = discover_descriptor_outputs(&descriptor)?;
+    let expanded = expand_modules_for_record(Path::new(&args.file), &descriptor, &yaml_bytes)?
+        .map(|d| serde_yaml::to_value(&d).context("failed to serialize expanded dataflow"))
+        .transpose()?;
+    let all_outputs = discover_descriptor_outputs(expanded.as_ref().unwrap_or(&descriptor))?;
     let mut all_topics: BTreeMap<String, String> = BTreeMap::new();
     for (node_id, output_id) in &all_outputs {
         let topic = format!("{node_id}/{output_id}");
@@ -567,6 +599,20 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     // `--proxy` needs to work, and a descriptor that fails the typed parse
     // should still record -- just without the translation.
     let typed_descriptor: Option<Descriptor> = serde_yaml::from_slice(&yaml_bytes).ok();
+
+    // The nodes that actually run, with any modules expanded, so module
+    // outputs are both subscribed to and translated. Non-fatal like the typed
+    // parse: without the module files at hand, still record the plain nodes.
+    let expanded = expand_modules_for_record(Path::new(&args.file), &descriptor, &yaml_bytes)
+        .and_then(|d| d.map(|d| Ok((serde_yaml::to_value(&d)?, d))).transpose());
+    let (descriptor, typed_descriptor) = match expanded {
+        Ok(Some((yaml, typed))) => (yaml, Some(typed)),
+        Ok(None) => (descriptor, typed_descriptor),
+        Err(e) => {
+            tracing::warn!("recording without module outputs: {e:#}");
+            (descriptor, typed_descriptor)
+        }
+    };
 
     let all_topics = discover_descriptor_outputs(&descriptor)?;
 
@@ -728,9 +774,10 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
 
     let mut msg_count: u64 = 0;
     // Whether the stream ended on its own rather than because we asked it to.
-    // The coordinator evicts a subscriber that has timed out 100 consecutive
-    // times, and the CLI sees that as a bare `Disconnected` — indistinguishable
-    // from a clean finish unless we keep track (#3282).
+    // The coordinator closes a subscriber that takes no frame for 10 s
+    // (`MAX_TOPIC_SUBSCRIBER_STALL`), and the CLI sees that as a bare
+    // `Disconnected` — indistinguishable from a clean finish unless we keep
+    // track (#3282).
     let mut ended_unexpectedly = false;
     loop {
         // Check for Ctrl-C
@@ -808,7 +855,8 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         eprintln!(
             "Recording ended: the data stream closed before the recording was stopped. \
              Messages may be missing — the coordinator drops frames for a subscriber it \
-             cannot keep up with, and evicts it after 100 consecutive timeouts."
+             cannot keep up with as soon as its queue is full, and closes it after 10 \
+             seconds without accepting any frame."
         );
     }
     eprintln!(
@@ -978,6 +1026,50 @@ mod tests {
             .into_iter()
             .map(|(node, output)| format!("{node}/{output}"))
             .collect()
+    }
+
+    /// A `module:` node declares no outputs; its nodes exist only after
+    /// expansion. `dora record` must discover those, under the ids the daemon
+    /// runs them as, next to the plain nodes'.
+    #[test]
+    fn module_outputs_are_discovered_after_expansion() {
+        let dir = tempfile::tempdir().unwrap();
+        let modules = dir.path().join("modules");
+        std::fs::create_dir(&modules).unwrap();
+        std::fs::write(
+            modules.join("m.yml"),
+            "module:\n  name: m\n  outputs: [out]\nnodes:\n  \
+             - id: inner\n    path: inner.py\n    outputs:\n      - out\n",
+        )
+        .unwrap();
+        let dataflow = dir.path().join("dataflow.yml");
+        let yaml = "nodes:\n  - id: src\n    path: src.py\n    outputs:\n      - value\n  \
+                    - id: pipe\n    module: modules/m.yml\n";
+        std::fs::write(&dataflow, yaml).unwrap();
+        let raw: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+
+        let expanded = expand_modules_for_record(&dataflow, &raw, yaml.as_bytes())
+            .unwrap()
+            .expect("a dataflow with a module node is expanded");
+        let mut topics: Vec<String> =
+            discover_descriptor_outputs(&serde_yaml::to_value(&expanded).unwrap())
+                .unwrap()
+                .into_iter()
+                .map(|(node, output)| format!("{node}/{output}"))
+                .collect();
+        topics.sort();
+        assert_eq!(topics, ["pipe.inner/out", "src/value"]);
+    }
+
+    #[test]
+    fn a_dataflow_without_modules_is_not_expanded() {
+        let yaml = "nodes:\n  - id: src\n    path: src.py\n    module: ~\n";
+        let raw: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        assert!(
+            expand_modules_for_record(Path::new("does-not-exist.yml"), &raw, yaml.as_bytes())
+                .unwrap()
+                .is_none()
+        );
     }
 
     /// Parse `descriptor_env`'s entries the way the daemon does, `$VAR`

@@ -1,6 +1,8 @@
 use quote::{ToTokens, format_ident, quote};
 use syn::Ident;
 
+use std::collections::BTreeSet;
+
 use super::{ConstantType, MemberType};
 
 pub fn dds_name(package: &str, name: &str) -> String {
@@ -100,6 +102,25 @@ pub struct Message {
 }
 
 impl Message {
+    /// Returns the names of all messages in the same package that this message directly references.
+    pub fn internal_dependencies(&self) -> BTreeSet<String> {
+        let mut deps = BTreeSet::new();
+        for member in &self.members {
+            match member.r#type.nestable_type() {
+                super::primitives::NestableType::NamedType(named) => {
+                    deps.insert(named.0.clone());
+                }
+                super::primitives::NestableType::NamespacedType(ns)
+                    if ns.package == self.package && ns.namespace == "msg" =>
+                {
+                    deps.insert(ns.name.clone());
+                }
+                _ => {}
+            }
+        }
+        deps
+    }
+
     pub fn struct_token_stream(
         &self,
         package_name: &str,
@@ -238,36 +259,32 @@ impl Message {
             _ => quote! {},
         };
 
-        let def = if self.members.is_empty() {
+        let fields = if self.members.is_empty() {
             quote! {
-                #[allow(non_camel_case_types)]
-                #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-                #attributes
-                pub struct #struct_raw_name {
-                    // ROS's `structure_needs_at_least_one_member`: a message
-                    // with no fields is still one byte on the wire.
-                    pub(super) _dummy: u8,
-                }
-
-                #cxx_consts
+                // ROS's `structure_needs_at_least_one_member`: a message
+                // with no fields is still one byte on the wire.
+                pub(super) _dummy: u8,
             }
         } else {
             quote! {
-                #[allow(non_camel_case_types)]
-                #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-                #attributes
-                pub struct #struct_raw_name {
-                    #(#rust_type_def_inner)*
-                }
-
-                #[allow(non_camel_case_types)]
-                #[allow(dead_code)]
-                pub struct #struct_raw_vec_name {
-                    data: Vec<#struct_raw_name>
-                }
-
-                #cxx_consts
+                #(#rust_type_def_inner)*
             }
+        };
+        let def = quote! {
+            #[allow(non_camel_case_types)]
+            #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+            #attributes
+            pub struct #struct_raw_name {
+                #fields
+            }
+
+            #[allow(non_camel_case_types)]
+            #[allow(dead_code)]
+            pub struct #struct_raw_vec_name {
+                data: Vec<#struct_raw_name>
+            }
+
+            #cxx_consts
         };
         let default = if self.members.is_empty() {
             quote! {
@@ -391,14 +408,14 @@ impl Message {
                 let topic = match &node.node {
                     GeneratedNode::Dds(node) => #topic_name::Dds(node.create_topic(&name, type_name, &qos.into())?),
                     #[cfg(feature = "rmw-zenoh")]
-                    GeneratedNode::Zenoh { compatibility, .. } => {
+                    GeneratedNode::Zenoh { node, compatibility } => {
                         let identity = dora_ros2_bridge::transport::zenoh::compatibility::resolve_message(
                             *compatibility,
                             #package_name,
                             #self_name,
                             &dora_ros2_bridge::transport::zenoh::compatibility::TypeDescriptionResolver::from_ament_prefix_path(),
                         )?;
-                        #topic_name::Zenoh { name: name.to_string(), identity }
+                        #topic_name::Zenoh { name: zenoh_full_name(node, name.to_string()), identity }
                     }
                 };
                 Ok(Box::new(topic))
@@ -637,5 +654,25 @@ mod codegen_tests {
                 "expected the default through `super::ffi` in:\n{generated}"
             );
         }
+    }
+
+    // cxx implements `Vec<T>` for a shared struct only in the bridge that
+    // defines it, and only if `Vec<T>` appears there. Without the `_Vec_`
+    // helper, an `std_msgs/Empty[]` field in another package did not compile.
+    #[test]
+    fn an_empty_message_has_the_vec_helper_struct() {
+        let message = Message {
+            package: "test_pkg".to_string(),
+            name: "Empty".to_string(),
+            members: vec![],
+            constants: vec![],
+        };
+        let (def, _impls) = message.struct_token_stream("test_pkg", true);
+        let generated = format_valid_rust(def);
+        assert!(
+            generated
+                .contains("pub struct test_pkg_Vec_Empty {\n    data: Vec<test_pkg__Empty>,\n}"),
+            "expected the `test_pkg_Vec_Empty` helper struct in:\n{generated}"
+        );
     }
 }

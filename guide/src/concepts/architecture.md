@@ -7,7 +7,7 @@ Comprehensive architecture reference for Dora (AI-Dora, Agentic Dataflow-Oriente
 Dora is built on four core principles:
 
 1. **Dataflow-oriented**: Applications are directed graphs of nodes connected by typed data channels. Nodes declare inputs and outputs; the framework handles routing, scheduling, and lifecycle.
-2. **Zero-copy performance**: Messages above 4 KiB use shared memory with 128-byte aligned buffers and atomic coordination, achieving 10-17x lower latency than ROS2.
+2. **Zero-copy performance**: Messages of 4 KiB or more are published through Zenoh shared memory, so subscribers on the same machine read them without a copy, achieving 10-17x lower latency than ROS2.
 3. **Multi-language**: First-class support for Rust, Python (PyO3), C, and C++ nodes — all sharing the same Apache Arrow data format.
 4. **Four-layer stack**: Message protocol, core libraries, daemon/runtime execution, and CLI/coordinator orchestration.
 
@@ -36,7 +36,7 @@ All crates share the workspace version.
 |------|-------|------|
 | `binaries/cli` | dora-cli | CLI binary (`dora` command) — build, run, stop dataflows |
 | `binaries/coordinator` | dora-coordinator | Orchestrates distributed multi-daemon deployments; WebSocket server |
-| `binaries/daemon` | dora-daemon | Spawns nodes, manages shared-memory/TCP communication per machine |
+| `binaries/daemon` | dora-daemon | Spawns nodes, serves their TCP connections, and forwards daemon-path outputs to other daemons, per machine |
 | `binaries/runtime-api` | dora-runtime-api | Language-neutral operator runtime SDK (event loop + `OperatorRunner` backend trait) |
 | `binaries/runtime-shared-lib` | dora-runtime-shared-lib | Shared-library operator backend (C/C++/Rust via dlopen); shipped in the `dora` CLI |
 | `binaries/runtime-python` | dora-runtime-python | Python operator backend (PyO3); shipped in the Python wheel |
@@ -132,8 +132,8 @@ The daemon runs one per machine and manages the lifecycle of all nodes on that m
 │  │ Event    │  │ Spawner   │  │ Node Comm        │  │
 │  │ Loop     │──│ (nodes)   │  │ ┌──────────────┐ │  │
 │  │          │  └───────────┘  │ │ TCP listener │ │  │
-│  │ Sources: │  ┌───────────┐  │ │ Shmem server │ │  │
-│  │ • Coord  │  │ Fault     │  │ │ Unix socket  │ │  │
+│  │ Sources: │  ┌───────────┐  │ │ per node     │ │  │
+│  │ • Coord  │  │ Fault     │  │ │ (127.0.0.1)  │ │  │
 │  │ • Nodes  │──│ Tolerance │  │ └──────────────┘ │  │
 │  │ • Zenoh  │  └───────────┘  └──────────────────┘  │
 │  │ • Timers │                                        │
@@ -141,22 +141,22 @@ The daemon runs one per machine and manages the lifecycle of all nodes on that m
 │                                                      │
 │  ┌──────────────────────────────────────────────┐    │
 │  │ Running Dataflows                            │    │
-│  │  ├─ Node A (process) ◄──► TCP/Shmem          │    │
-│  │  ├─ Node B (process) ◄──► TCP/Shmem          │    │
-│  │  └─ Runtime (operators) ◄──► TCP/Shmem       │    │
+│  │  ├─ Node A (process) ◄──► TCP                │    │
+│  │  ├─ Node B (process) ◄──► TCP                │    │
+│  │  └─ Runtime (operators) ◄──► TCP             │    │
 │  └──────────────────────────────────────────────┘    │
 └──────────────────────────────────────────────────────┘
 ```
 
 **Event loop** (`Daemon::run_inner()`): Async Tokio event loop merging:
 - Coordinator commands (WebSocket)
-- Node events (TCP/shared memory)
+- Node events (TCP)
 - Inter-daemon events (Zenoh)
 - Heartbeat (5s interval), metrics collection (2s), health checks (5s default)
 
 **Node spawning:**
 1. Create working directory for the node
-2. Set up communication channel (TCP or shmem)
+2. Bind a per-node TCP listener on `127.0.0.1` (ephemeral port)
 3. Serialize `NodeConfig` to environment variable
 4. Spawn process with sanitized environment (blocks `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, etc.)
 5. Monitor via `ProcessHandle`
@@ -198,8 +198,8 @@ Nodes are standalone processes that communicate with the daemon.
 1. Node starts, reads `NodeConfig` from environment
 2. Registers with daemon via `DaemonRequest::Register`
 3. Subscribes to events via `DaemonRequest::Subscribe`
-4. Processes events in a loop (`NextEvent` → handle → `SendMessage`)
-5. Reports drop tokens for shared memory cleanup
+4. Processes events in a loop (`NextEvent` → handle → send outputs)
+5. Sends each output either as `SendMessage` (daemon path) or by publishing on Zenoh and reporting `OutputSent` (direct path)
 6. Signals completion via `OutputsDone`
 
 ## Communication Protocols
@@ -246,25 +246,42 @@ Nodes are standalone processes that communicate with the daemon.
 
 **Coordinator commands (coordinator → daemon):** `Build`, `Spawn`, `AllNodesReady`, `StopDataflow`, `ReloadDataflow`, `Logs`, `Destroy`, `Heartbeat`.
 
+### Node to Node (Zenoh Data Plane)
+
+Nodes can publish an output straight to the nodes that consume it over Zenoh,
+so the payload does not pass through the daemon (the *direct path*):
+
+- Each node opens a Zenoh session with a shared-memory (SHM) pool: 8 MiB by default, set per node with `shared_memory_pool_size` in the dataflow YAML or globally with `DORA_NODE_SHM_POOL_SIZE`
+- Payloads of 4 KiB or more (`ZERO_COPY_THRESHOLD`, overridable with `DORA_ZERO_COPY_THRESHOLD`) are written into a Zenoh SHM buffer; smaller payloads use a heap-buffered `put`
+- Subscribers on the same machine map the SHM buffer as an Arrow buffer without copying it; subscribers on other machines receive the bytes over the network
+- A payload of 4 KiB or more that cannot get an SHM buffer (the pool is momentarily full, or no SHM provider could be created at startup) is sent on the daemon path instead of Zenoh, because a fragmented Zenoh publish could be dropped silently (dora-rs/dora#2366). The node does not wait for the pool to drain
+- After each direct publish the node sends a small `OutputSent` request to the daemon, which uses it for input deadlines and circuit-breaker recovery. The payload itself is not copied through the daemon
+
+**Direct path or daemon path.** Before the dataflow starts, each node publishes startup markers on its outputs and its required consumers acknowledge them (the startup handshake, bounded by `ZENOH_STARTUP_GRACE`, 500 ms). An output uses the direct path only once its routes are proven this way, and the choice is then fixed for the node's lifetime. Otherwise the output uses the daemon path (node → daemon → receivers over TCP, payload carried in `DataMessage::Vec`, limited to `MAX_MESSAGE_BYTES`). The daemon pins an output to the daemon path when it spawns the dataflow (`binaries/daemon/src/output_routing.rs`) if:
+
+- a consumer declares `queue_policy: backpressure`
+- a consumer runs under another daemon and is dynamic, declares `input_timeout`, or the producer has no endpoint that consumer's machine can dial
+
+The node also keeps an output on the daemon path when:
+
+- the startup handshake does not complete within its window
+- the node has no Zenoh session (interactive or testing mode)
+
 ### Daemon to Node (Local)
 
-Three transport options, configured via `LocalCommunicationConfig`:
+Nodes talk to their daemon over TCP; it is the only daemon-to-node transport. The daemon binds one listener per node on `127.0.0.1:0` (ephemeral port) and gives the node its address in `NodeConfig` (`DaemonCommunication::Tcp { socket_addr }`).
 
-**TCP** (default):
-- Binds `127.0.0.1:0` (ephemeral port), `TCP_NODELAY` enabled
+- Each node opens several connections to its listener (control channel, event stream, event-close channel). Each starts with `DaemonRequest::Register`
+- `TCP_NODELAY` is enabled
 - Frame format: `[8-byte u64 LE length][postcard payload]`
-- Max message: 64 MiB, read timeout: 30s
+- Max message: 64 MiB (`MAX_MESSAGE_BYTES`). A frame body that stalls for more than 30 s (`TCP_READ_TIMEOUT`) closes the connection; idle connections between requests are not timed out
+- A dynamic node (started outside the daemon) first asks the daemon's dynamic-node listener for its `NodeConfig`: port 53291 by default (`DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT`), overridable with `DORA_DAEMON_LOCAL_LISTEN_PORT`. That listener answers only `NodeConfig` requests, with a JSON `DynamicNodeConfigReply`; the node's `NodeConfig` includes its `daemon_communication`, and the connection described above follows
 
-**Shared Memory** (zero-copy):
-- Four 4 KiB regions per node: control, events, drop tokens, events-close
-- Used for messages >= 4096 bytes (`ZERO_COPY_THRESHOLD`)
-- Atomic synchronization with acquire/release ordering
+**Node → Daemon requests:** `Register`, `Subscribe`, `SendMessage`, `OutputSent`, `CloseOutputs`, `OutputsDone`, `NextEvent`, `EventStreamDropped`, `NodeConfig`, `ExtensionStore`, `ExtensionLoad`, `ExtensionDrop`, `ExtensionRequest`.
 
-**Node → Daemon requests:** `Register`, `Subscribe`, `SendMessage`, `CloseOutputs`, `OutputsDone`, `NextEvent`, `ReportDropTokens`, `SubscribeDrop`, `NodeConfig`.
+**Daemon → Node replies:** `Result`, `NextEvents`, `NodeConfig`, `ExtensionValue`, `ExtensionReply`, `Empty`.
 
-**Daemon → Node replies:** `Result`, `PreparedMessage`, `NextEvents`, `NextDropEvents`, `NodeConfig`, `Empty`.
-
-**Node events:** `Stop`, `Reload`, `Input`, `InputClosed`, `InputRecovered`, `NodeRestarted`, `AllInputsClosed`.
+**Node events:** `Stop`, `Reload`, `Input`, `InputClosed`, `InputRecovered`, `NodeRestarted`, `AllInputsClosed`, `ParamUpdate`, `ParamDeleted`, `NodeFailed`, `ExtensionDropped`.
 
 ### Daemon to Daemon (Zenoh)
 
@@ -276,12 +293,12 @@ Three transport options, configured via `LocalCommunicationConfig`:
 | Routing | linkstate |
 | Serialization | postcard |
 
-**Topic pattern:**
+**Topic pattern** (frames published by daemons):
 ```
-dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}
+dora/{network_id}/{dataflow_id}/control/{node_id}/{output_id}
 ```
 
-Default `network_id` is `"default"`.
+Default `network_id` is `"default"`. Raw node outputs published directly over Zenoh use the `output` topic instead (see Zenoh Topic Naming).
 
 **InterDaemonEvent:**
 - `Output { dataflow_id, node_id, output_id, metadata, data }` — data message
@@ -302,16 +319,11 @@ pub struct Timestamped<T> {
 
 ### DataMessage
 
-Transport abstraction for payloads:
+Payload of a message sent over the daemon (TCP) path. Outputs published directly over Zenoh do not use it: the payload travels as raw Zenoh bytes with the metadata as an attachment (see Node to Node).
 
 ```rust
 pub enum DataMessage {
     Vec(AVec<u8, ConstAlign<128>>),    // inline, 128-byte aligned
-    SharedMemory {
-        shared_memory_id: String,
-        len: usize,
-        drop_token: DropToken,          // UUIDv7, tracks lifetime
-    },
 }
 ```
 
@@ -405,65 +417,24 @@ pub enum Parameter {
 
 ## Zero-Copy Shared Memory
 
-### Architecture
+Zero-copy transfer between co-located nodes uses Zenoh shared memory. Dora has no shared-memory channel of its own between daemon and node: that connection is TCP only.
 
-```
-┌────────────────────────────────────────────────────┐
-│              Shared Memory Region                  │
-│                                                    │
-│  ┌──────────┐ ┌──────────┐ ┌──────┐ ┌────┐ ┌────┐│
-│  │ Server   │ │ Client   │ │Discon│ │Len │ │Data││
-│  │ Event    │ │ Event    │ │(bool)│ │(u64)│ │    ││
-│  └──────────┘ └──────────┘ └──────┘ └────┘ └────┘│
-│  (raw_sync_2)  (raw_sync_2) AtomicBool AtomicU64  │
-└────────────────────────────────────────────────────┘
-```
+### How it works
 
-### ShmemChannel
+1. At startup each node creates a Zenoh SHM provider (default pool 8 MiB)
+2. For an output of at least `ZERO_COPY_THRESHOLD`, the node allocates a buffer from the provider and writes the Arrow IPC payload into it. The allocation does not block: it reclaims freed buffers, and if the pool is still full the payload takes the daemon path instead
+3. The node publishes the buffer on Zenoh with the metadata as an attachment
+4. A subscriber on the same machine receives a reference to the same SHM mapping. The receiving node wraps it in an Arrow `Buffer` that owns the Zenoh buffer, so the mapping stays valid for as long as that Arrow buffer is alive and the payload is not copied
 
-```rust
-pub struct ShmemChannel {
-    memory: Shmem,
-    server_event: Box<dyn EventImpl>,
-    client_event: Box<dyn EventImpl>,
-    disconnect_offset: usize,
-    len_offset: usize,
-    data_offset: usize,
-    server: bool,
-}
-```
-
-### Synchronization Protocol
-
-**Send** (write → release store length → signal event → check disconnect):
-1. Copy data to shared memory buffer
-2. Store message length with `Release` ordering (publishes data)
-3. Signal event to wake receiver
-4. Check disconnect flag with `Acquire` ordering
-
-**Receive** (wait event → check disconnect → acquire load length → read data):
-1. Wait for event signal
-2. Check disconnect flag with `Acquire` ordering
-3. Load message length with `Acquire` ordering (ensures all writes visible)
-4. Read and deserialize data from buffer
+There is no separate release message: lifetime follows the Arrow `Buffer` that holds the Zenoh buffer.
 
 ### Thresholds and Limits
 
 | Parameter | Value |
 |-----------|-------|
-| `ZERO_COPY_THRESHOLD` | 4096 bytes |
-| Control region size | 4 KiB per node |
-| Events region size | 4 KiB per node |
-| Drop region size | 4 KiB per node |
-| Max cache count | 20 regions |
-| Max cache bytes | 256 MiB |
-
-### DropToken Lifecycle
-
-1. Sender allocates shared memory, generates `DropToken` (UUIDv7)
-2. Sender transmits `DataMessage::SharedMemory { shared_memory_id, len, drop_token }`
-3. Receiver processes data, returns `drop_token` via `ReportDropTokens`
-4. Sender receives confirmed token, returns memory to cache for reuse
+| `ZERO_COPY_THRESHOLD` | 4096 bytes (override with `DORA_ZERO_COPY_THRESHOLD`) |
+| Node SHM pool size | 8 MiB (`shared_memory_pool_size` or `DORA_NODE_SHM_POOL_SIZE`) |
+| `MAX_MESSAGE_BYTES` | 64 MiB, daemon (TCP) path only; the direct path is bounded by the node's SHM pool instead, and a payload that does not fit takes the daemon path |
 
 ## Dataflow Specification
 
@@ -499,7 +470,7 @@ nodes:
   - id: pipeline
     operators:
       - id: stage1
-        shared-library: target/release/libstage1.so
+        shared-library: target/release/stage1
         inputs:
           data: source/output
         outputs:
@@ -776,9 +747,9 @@ File download utility for fetching operator/node binaries from HTTP URLs. Saniti
 | Constant | Value | Location |
 |----------|-------|----------|
 | `DORA_COORDINATOR_PORT_WS_DEFAULT` | 6013 | Coordinator WebSocket port |
-| `DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT` | 53291 | Daemon TCP listener port |
-| `ZERO_COPY_THRESHOLD` | 4096 bytes | Shared memory activation |
-| `MAX_MESSAGE_BYTES` | 64 MiB | Max TCP/postcard message |
+| `DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT` | 53291 | Dynamic-node listener port (`NodeConfig` lookups only) |
+| `ZERO_COPY_THRESHOLD` | 4096 bytes | Zenoh SHM publish threshold |
+| `MAX_MESSAGE_BYTES` | 64 MiB | Max daemon↔node TCP/postcard message |
 | `MAX_CONTROL_MESSAGE_BYTES` | 1 MiB | Max control plane JSON message |
 | `TCP_READ_TIMEOUT` | 30 seconds | Socket read timeout |
 | `MAX_WS_CONNECTIONS` | 256 | Concurrent WebSocket limit |
@@ -807,7 +778,6 @@ File download utility for fetching operator/node binaries from HTTP URLs. Saniti
 | `NodeId` | `String` | Validated: `[a-zA-Z0-9_.-]`, non-empty, no leading `.`, not the reserved id `dora` |
 | `DataId` | `String` | Same validation as `NodeId` |
 | `OperatorId` | `String` | No validation |
-| `DropToken` | `Uuid` (v7) | Per shared-memory message |
 
 ### Authentication
 
@@ -838,6 +808,6 @@ pub enum NodeStatus {
 | CLI ↔ Coordinator | JSON text frames | Preserves u128 for HLC timestamps |
 | Coordinator ↔ Daemon | JSON text frames | Direct string serialization |
 | Daemon ↔ Node (TCP) | postcard over length-prefixed frames | 8-byte LE length prefix |
-| Daemon ↔ Node (shmem) | postcard via shared memory | Atomic synchronization |
+| Node ↔ Node (Zenoh) | Arrow IPC payload bytes (small outputs send the schema separately) + metadata attachment | Direct path; see Node to Node |
 | Daemon ↔ Daemon | postcard over Zenoh | Apache Arrow data format |
 | Recording | postcard entries in .drec | Custom binary container |

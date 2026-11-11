@@ -53,5 +53,7 @@ dora build dataflow.yml --locked --offline # robot: build from the cache, fail o
 - `hub:` is an unstable feature; its behavior may change.
 - The example references `dora-yolo`; if it is not present in the registry you
   use, set `DORA_HUB_REGISTRY_URL` to a mirror (see the hub-registry project)
-  or point `~/.config/dora/hub.toml` at a local fixture index — see
-  `tests/hub-smoke.rs` for a self-contained setup.
+  or point `hub.toml` (`~/.config/dora/hub.toml` on Linux,
+  `~/Library/Application Support/dora/hub.toml` on macOS, or any file via
+  `DORA_HUB_CONFIG`) at a local fixture index — see `tests/hub-smoke.rs` for a
+  fully self-contained setup.

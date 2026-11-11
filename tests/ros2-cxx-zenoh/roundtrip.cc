@@ -1,14 +1,141 @@
-// Generated C++ service client + server talking over native Zenoh in one
-// process (no ROS install, no dora daemon). Run by
-// scripts/ros2-cxx-zenoh-roundtrip.sh with `humble` or `rep2016`.
+// Generated C++ service and action clients + servers, and a topic publisher +
+// subscriber, talking over native Zenoh in one process (no ROS install, no dora
+// daemon). Run by scripts/ros2-cxx-zenoh-roundtrip.sh with `humble` or `rep2016`.
 #include "dora-node-api.h"
 #include "ros2-bridge/impl.h"
 #include "ros2-bridge/msg/example_interfaces.h"
+#include "ros2-bridge/msg/std_msgs.h"
 
 #include <cstring>
 #include <exception>
 #include <iostream>
+#include <optional>
+#include <stdexcept>
+#include <string>
 #include <vector>
+
+static rust::Vec<int32_t> fibonacci(int32_t order)
+{
+    rust::Vec<int32_t> sequence;
+    sequence.push_back(0);
+    sequence.push_back(1);
+    for (int32_t i = 1; i < order; i++)
+    {
+        sequence.push_back(sequence[i] + sequence[i - 1]);
+    }
+    return sequence;
+}
+
+static void check(bool condition, const std::string &message)
+{
+    if (!condition)
+    {
+        throw std::runtime_error(message);
+    }
+}
+
+// Two goals in flight, finished as Succeeded and Aborted, each with one
+// feedback message; then a goal canceled by the client. Feedback, results
+// and status must reach the client under the right goal id.
+static void actions(rust::Box<Ros2Node> &node, CombinedEvents &events, Ros2QosPolicies qos)
+{
+    auto server = example_interfaces::create_Fibonacci_action_server(*node, "/", "fibonacci", qos, events);
+    auto client = example_interfaces::create_Fibonacci_action_client(*node, "/", "fibonacci", actionqos_default(), events);
+    client->wait_for_action(node);
+
+    example_interfaces::Fibonacci_Goal goal{};
+    goal.order = 5;
+    auto succeeded = client->send_goal(goal);
+    goal.order = 7;
+    auto aborted = client->send_goal(goal);
+    client->request_result(succeeded);
+    client->request_result(aborted);
+
+    int feedback = 0;
+    int results = 0;
+    while (feedback < 2 || results < 2)
+    {
+        auto event = events.next();
+        if (server->matches(event))
+        {
+            auto goal_event = server->downcast(std::move(event));
+            auto id = goal_event->get_goal_id();
+            int32_t order = goal_event->get_goal().order;
+            example_interfaces::Fibonacci_Feedback progress{};
+            progress.sequence = fibonacci(1);
+            server->publish_feedback(id, std::move(progress));
+            example_interfaces::Fibonacci_Result result{};
+            result.sequence = fibonacci(order);
+            server->send_result(id, order == 5 ? ActionStatusEnum::Succeeded : ActionStatusEnum::Aborted, std::move(result));
+        }
+        else if (client->matches_feedback(event))
+        {
+            auto progress = client->downcast_feedback(std::move(event));
+            check(progress->matches_goal(succeeded) || progress->matches_goal(aborted), "feedback for an unknown goal");
+            check(progress->get_feedback().sequence.size() == 2, "wrong feedback");
+            feedback++;
+        }
+        else if (client->matches_result(event))
+        {
+            auto result = client->downcast_result(std::move(event));
+            bool first = result->matches_goal(succeeded);
+            check(first || result->matches_goal(aborted), "result for an unknown goal");
+            check(result->get_status() == (first ? ActionStatusEnum::Succeeded : ActionStatusEnum::Aborted), "wrong result status");
+            check(result->get_result().sequence.size() == (first ? 6u : 8u), "wrong result");
+            results++;
+        }
+        else if (client->matches_status(event))
+        {
+            client->downcast_status(std::move(event));
+        }
+        else
+        {
+            throw std::runtime_error("unexpected event");
+        }
+    }
+
+    goal.order = 3;
+    auto canceled = client->send_goal(goal);
+    bool executing = false;
+    bool canceling = false;
+    bool finished = false;
+    std::optional<rust::Box<ActionGoalId>> server_id;
+    while (!finished)
+    {
+        auto event = events.next();
+        if (server->matches(event))
+        {
+            auto goal_event = server->downcast(std::move(event));
+            if (goal_event->get_goal().order == 3 && !executing)
+            {
+                server_id.emplace(goal_event->get_goal_id());
+                executing = true;
+                client->cancel_goal(canceled);
+            }
+        }
+        else if (client->matches_status(event))
+        {
+            auto status = client->downcast_status(std::move(event));
+            if (executing && !canceling && status->matches_goal(canceled) && status->get_status() == ActionStatusEnum::Canceling)
+            {
+                canceling = true;
+                server->send_result(*server_id, ActionStatusEnum::Canceled, example_interfaces::Fibonacci_Result{});
+                client->request_result(canceled);
+            }
+        }
+        else if (client->matches_result(event))
+        {
+            auto result = client->downcast_result(std::move(event));
+            check(canceling && result->matches_goal(canceled), "unexpected result");
+            check(result->get_status() == ActionStatusEnum::Canceled, "canceled goal not reported as canceled");
+            finished = true;
+        }
+        else if (!client->matches_feedback(event))
+        {
+            throw std::runtime_error("unexpected event");
+        }
+    }
+}
 
 // A relative name is under the node's namespace, as on DDS: one call between a
 // server and a client on a node in `node_namespace`, one of them named
@@ -45,6 +172,185 @@ int call_across_namespaces(Ros2Context &context, const char *node_namespace,
     }
     std::cout << "relative and absolute names meet under " << node_namespace << std::endl;
     return 0;
+}
+
+// The same for a topic: one message from a publisher to a subscriber on a node
+// in `node_namespace`, one of them named relative to it and the other absolute.
+int publish_across_namespaces(Ros2Context &context, const char *node_namespace,
+                              const char *publisher_namespace, const char *subscriber_namespace)
+{
+    auto events = empty_combined_events();
+    auto qos = qos_default();
+    qos.reliable = true;
+    auto node = context.new_node(node_namespace, "cxx_zenoh_topic_namespaced");
+    auto subscriber_topic = create_topic_std_msgs_String(*node, subscriber_namespace, "chatter", qos);
+    auto subscription = create_subscription(*node, subscriber_topic, qos, events);
+    auto publisher_topic = create_topic_std_msgs_String(*node, publisher_namespace, "chatter", qos);
+    auto publisher = create_publisher(*node, publisher_topic, qos);
+    std_msgs::String message{};
+    message.data = "hello";
+    publisher->publish(message);
+    auto event = events.next();
+    if (!subscription->matches(event) || subscription->downcast(std::move(event)).data != "hello")
+    {
+        std::cerr << node_namespace << ": wrong or missing message" << std::endl;
+        return 1;
+    }
+    std::cout << "relative and absolute topic names meet under " << node_namespace << std::endl;
+    return 0;
+}
+
+// Two robots in different namespaces that both use the relative `chatter`
+// must not get each other's messages. The `/robot1` message is published
+// first, so with cross-talk it would be the first one the `/robot2`
+// subscriber gets.
+int keep_namespaces_apart(Ros2Context &context)
+{
+    auto events = empty_combined_events();
+    auto qos = qos_default();
+    qos.reliable = true;
+    auto robot1 = context.new_node("/robot1", "cxx_zenoh_topic_robot1");
+    auto robot2 = context.new_node("/robot2", "cxx_zenoh_topic_robot2");
+    auto subscriber_topic = create_topic_std_msgs_String(*robot2, "", "chatter", qos);
+    auto subscription = create_subscription(*robot2, subscriber_topic, qos, events);
+    auto robot1_topic = create_topic_std_msgs_String(*robot1, "", "chatter", qos);
+    auto robot1_publisher = create_publisher(*robot1, robot1_topic, qos);
+    auto robot2_topic = create_topic_std_msgs_String(*robot2, "", "chatter", qos);
+    auto robot2_publisher = create_publisher(*robot2, robot2_topic, qos);
+    std_msgs::String message{};
+    message.data = "robot1";
+    robot1_publisher->publish(message);
+    message.data = "robot2";
+    robot2_publisher->publish(message);
+    auto event = events.next();
+    if (!subscription->matches(event))
+    {
+        std::cerr << "unexpected event on /robot2" << std::endl;
+        return 1;
+    }
+    auto received = subscription->downcast(std::move(event)).data;
+    if (received != "robot2")
+    {
+        std::cerr << "/robot2 got the message from " << std::string(received) << std::endl;
+        return 1;
+    }
+    std::cout << "relative topic names in /robot1 and /robot2 stay apart" << std::endl;
+    return 0;
+}
+
+// The same for an action: one goal between a server and a client on a node in
+// `node_namespace`, one named relative to it and the other absolute.
+static void goal_across_namespaces(Ros2Context &context, const char *node_namespace,
+                                   const char *server_namespace, const char *client_namespace)
+{
+    auto events = empty_combined_events();
+    auto qos = qos_default();
+    qos.reliable = true;
+    auto node = context.new_node(node_namespace, "cxx_zenoh_namespaced_action");
+    auto server = example_interfaces::create_Fibonacci_action_server(*node, server_namespace, "fibonacci", qos, events);
+    auto client = example_interfaces::create_Fibonacci_action_client(*node, client_namespace, "fibonacci", actionqos_default(), events);
+    client->wait_for_action(node);
+    example_interfaces::Fibonacci_Goal goal{};
+    goal.order = 2;
+    auto id = client->send_goal(goal);
+    client->request_result(id);
+    while (true)
+    {
+        auto event = events.next();
+        if (server->matches(event))
+        {
+            auto goal_event = server->downcast(std::move(event));
+            example_interfaces::Fibonacci_Result result{};
+            result.sequence = fibonacci(goal_event->get_goal().order);
+            server->send_result(goal_event->get_goal_id(), ActionStatusEnum::Succeeded, std::move(result));
+        }
+        else if (client->matches_result(event))
+        {
+            auto result = client->downcast_result(std::move(event));
+            check(result->matches_goal(id) && result->get_status() == ActionStatusEnum::Succeeded,
+                  std::string(node_namespace) + ": wrong action result");
+            break;
+        }
+        else if (client->matches_status(event))
+        {
+            client->downcast_status(std::move(event));
+        }
+        else if (!client->matches_feedback(event))
+        {
+            throw std::runtime_error(std::string(node_namespace) + ": unexpected event");
+        }
+    }
+    std::cout << "relative and absolute action names meet under " << node_namespace << std::endl;
+}
+
+// A caller that requests results without reading the events must hit a limit
+// instead of piling up waiting results: after 64 `request_result` throws.
+// Then all the answers can be read.
+static void result_requests_are_bounded(Ros2Context &context)
+{
+    auto events = empty_combined_events();
+    auto qos = qos_default();
+    qos.reliable = true;
+    auto node = context.new_node("/", "cxx_zenoh_bounded_results");
+    auto server = example_interfaces::create_Fibonacci_action_server(*node, "/", "fibonacci_bounded", qos, events);
+    auto client = example_interfaces::create_Fibonacci_action_client(*node, "/", "fibonacci_bounded", actionqos_default(), events);
+    client->wait_for_action(node);
+    example_interfaces::Fibonacci_Goal goal{};
+    goal.order = 3;
+    auto id = client->send_goal(goal);
+    while (true)
+    {
+        auto event = events.next();
+        if (server->matches(event))
+        {
+            auto goal_event = server->downcast(std::move(event));
+            example_interfaces::Fibonacci_Result result{};
+            result.sequence = fibonacci(goal_event->get_goal().order);
+            server->send_result(goal_event->get_goal_id(), ActionStatusEnum::Succeeded, std::move(result));
+            break;
+        }
+    }
+    int requested = 0;
+    bool refused = false;
+    for (; requested < 70; requested++)
+    {
+        try
+        {
+            client->request_result(id);
+        }
+        catch (const std::exception &)
+        {
+            refused = true;
+            break;
+        }
+    }
+    check(refused && requested == 64,
+          "request_result was not limited at 64: " + std::to_string(requested) + " requests accepted");
+    for (int answered = 0; answered < requested;)
+    {
+        auto event = events.next();
+        if (client->matches_result(event))
+        {
+            auto result = client->downcast_result(std::move(event));
+            check(result->matches_goal(id) && result->get_status() == ActionStatusEnum::Succeeded, "wrong result");
+            answered++;
+        }
+    }
+    // Every answer is read, so all 64 slots are free again at once.
+    for (int again = 0; again < 64; again++)
+    {
+        client->request_result(id);
+    }
+    for (int answered = 0; answered < 64;)
+    {
+        auto event = events.next();
+        if (client->matches_result(event))
+        {
+            client->downcast_result(std::move(event));
+            answered++;
+        }
+    }
+    std::cout << "result requests limited at " << requested << " unread answers" << std::endl;
 }
 
 int run(int argc, char **argv);
@@ -200,10 +506,28 @@ int run(int argc, char **argv)
     }
     std::cout << argv[1] << ": " << in_flight + extra << " requests past the in-flight limit answered" << std::endl;
 
+    try
+    {
+        actions(node, events, qos);
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << argv[1] << ": action round trip failed: " << e.what() << std::endl;
+        return 1;
+    }
+    std::cout << argv[1] << ": action goals, feedback, results and cancel ok" << std::endl;
+
     if (call_across_namespaces(*context, "/robot1", "/robot1", "") != 0 ||
-        call_across_namespaces(*context, "/robot2", "", "/robot2") != 0)
+        call_across_namespaces(*context, "/robot2", "", "/robot2") != 0 ||
+        publish_across_namespaces(*context, "/", "", "/") != 0 ||
+        publish_across_namespaces(*context, "/robot1", "", "/robot1") != 0 ||
+        publish_across_namespaces(*context, "/robot2", "/robot2", "") != 0 ||
+        keep_namespaces_apart(*context) != 0)
     {
         return 1;
     }
+    goal_across_namespaces(*context, "/robot3", "/robot3", "");
+    goal_across_namespaces(*context, "/robot4", "", "/robot4");
+    result_requests_are_bounded(*context);
     return 0;
 }

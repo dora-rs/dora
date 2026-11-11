@@ -125,10 +125,10 @@ mod spawn_build;
 mod state;
 #[cfg(test)]
 mod tests;
-mod timeout_streak;
 mod topic_debug;
 mod topic_subscriber;
 mod topology;
+mod topology_lane;
 mod traces;
 mod ws_control;
 mod ws_daemon;
@@ -150,7 +150,7 @@ pub(crate) use ready_barrier::{
 };
 pub(crate) use spawn_build::{
     MAX_BUFFERED_LOG_MESSAGES, buffer_log_message, cap_dataflow_results, check_build_timeouts,
-    check_spawn_timeouts, finalize_build, handle_dataflow_spawn_result,
+    check_spawn_timeouts, fail_pending_spawn, finalize_build, handle_dataflow_spawn_result,
 };
 pub(crate) use topic_debug::{
     close_topic_subscribers_on_finish, live_topic_subscriptions,
@@ -186,7 +186,8 @@ pub async fn start(
 /// Like [`start`] but allows enabling token authentication.
 ///
 /// When `auth` is `true`, the coordinator generates a random token on startup,
-/// writes it to `~/.config/dora/.dora-token`, and requires all clients to
+/// writes it to `.dora-token` in the working directory and in the user config
+/// directory (see [`dora_message::auth::write_token`]), and requires all clients to
 /// present it via the `Authorization: Bearer <token>` header.
 pub async fn start_with_auth(
     bind: SocketAddr,
@@ -360,9 +361,22 @@ pub(crate) struct Coordinator {
     pub(crate) finished_builds: IndexMap<BuildId, CachedResult>,
     pub(crate) running_dataflows: HashMap<DataflowId, RunningDataflow>,
     pub(crate) pending_restarts: HashMap<DataflowId, PendingRestart>,
+    /// Launch contexts of dataflows removed from `running_dataflows` by an
+    /// orphan reclaim, restored when a daemon reconnects and re-reports them
+    /// (see [`state::ReclaimedLaunches`]).
+    pub(crate) reclaimed_launches: state::ReclaimedLaunches,
     pub(crate) dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    /// Finish reports from daemons that reconnected for a dataflow the orphan
+    /// reclaim left `Recovering`. Parked here rather than in `dataflow_results`
+    /// until they cover every node the record assigns: readers treat any
+    /// `dataflow_results` entry as a finished dataflow, so a partial report
+    /// there would make `dora list` / `stop` / `clean` act on a dataflow that is
+    /// still recovering. See `Coordinator::record_resent_finish_report`.
+    pub(crate) resent_finish_reports: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     pub(crate) archived_dataflows: IndexMap<DataflowId, ArchivedDataflow>,
     pub(crate) daemon_connections: DaemonConnections,
+    /// Node-lifecycle changes in flight or waiting, per dataflow.
+    pub(crate) topology: topology_lane::TopologyLanes,
     pub(crate) clock: Arc<HLC>,
     pub(crate) store: Arc<dyn CoordinatorStore>,
     pub(crate) span_store: SpanStore,
@@ -402,9 +416,21 @@ async fn start_inner(
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
             .map(|_| Event::DaemonHeartbeatInterval);
 
+    // Answers to topology changes, reported by the tasks that wait for the
+    // daemons so this loop does not (see `topology_lane`). The event
+    // dispatch below is mirrored by `serial_loop` in
+    // `tests::lifecycle_stall`; keep the two in step.
+    let (topology_tx, topology_rx) = tokio::sync::mpsc::channel::<Event>(64);
+
     // events that should be aborted on `dora down`
-    let (abortable_events, abort_handle) =
-        futures::stream::abortable((events, daemon_heartbeat_interval).merge());
+    let (abortable_events, abort_handle) = futures::stream::abortable(
+        (
+            events,
+            daemon_heartbeat_interval,
+            ReceiverStream::new(topology_rx),
+        )
+            .merge(),
+    );
 
     let mut events = abortable_events;
 
@@ -466,9 +492,12 @@ async fn start_inner(
         finished_builds: IndexMap::new(),
         running_dataflows: HashMap::new(),
         pending_restarts: HashMap::new(),
+        reclaimed_launches: HashMap::new(),
         dataflow_results: IndexMap::new(),
+        resent_finish_reports: HashMap::new(),
         archived_dataflows: IndexMap::new(),
         daemon_connections: DaemonConnections::default(),
+        topology: topology_lane::TopologyLanes::new(topology_tx),
         clock,
         store,
         span_store,
@@ -531,11 +560,12 @@ async fn start_inner(
             }
             Event::NodeMetrics {
                 dataflow_id,
+                daemon_id,
                 metrics,
                 network,
             } => {
                 coordinator
-                    .handle_node_metrics(dataflow_id, metrics, network)
+                    .handle_node_metrics(dataflow_id, daemon_id, metrics, network)
                     .await?
             }
             Event::DataflowBuildResult {
@@ -583,7 +613,21 @@ async fn start_inner(
                     .handle_daemon_node_stopped(daemon_id, dataflow_id, node_id, clean_stop)
                     .await?
             }
+            Event::TopologyReply {
+                dataflow_id,
+                change_id,
+                result,
+            } => {
+                coordinator
+                    .handle_topology_reply(dataflow_id, change_id, result)
+                    .await?
+            }
         }
+
+        // Whatever event just ran may have removed a daemon (exit, watchdog,
+        // re-registration): a topology change waiting on it will not be
+        // answered, so fail it now instead of at its timeout.
+        coordinator.fail_topology_changes_of_gone_daemons().await;
 
         // warn if event handling took too long -> the main loop should never be blocked for too long
         let elapsed = start.elapsed();

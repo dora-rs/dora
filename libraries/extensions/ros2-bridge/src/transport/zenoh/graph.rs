@@ -224,6 +224,11 @@ impl GraphCache {
             if state.generation != generation {
                 return Ok(state.generation);
             }
+            // A caller that gave up (a discovery timeout drops this future)
+            // leaves its sender behind, and only a graph change or shutdown
+            // drains the list. Drop those before adding one, so retries on a
+            // stable graph keep it bounded by the callers still waiting.
+            state.waiters.retain(|waiter| !waiter.is_canceled());
             let (sender, receiver) = oneshot::channel();
             state.waiters.push(sender);
             receiver
@@ -349,5 +354,46 @@ mod tests {
         wait_until(&context.graph, |snapshot| snapshot.entities.len() == 1).await;
         drop(node);
         wait_until(&context.graph, |snapshot| snapshot.entities.is_empty()).await;
+    }
+
+    #[test]
+    fn canceled_graph_waiters_do_not_accumulate() {
+        use futures::FutureExt;
+
+        // A discovery wait that times out drops its future, but its sender
+        // stayed in `waiters` until the graph changed. On a stable graph that
+        // list grew by one per retry.
+        let cache = GraphCache::new(0);
+        let generation = cache.snapshot().generation;
+        for attempt in 1..=128 {
+            assert!(cache.wait_for_change(generation).now_or_never().is_none());
+            let retained = cache.state.lock().unwrap().waiters.len();
+            assert!(
+                retained <= 1,
+                "retained {retained} canceled graph waiters after {attempt} retries"
+            );
+        }
+    }
+
+    #[test]
+    fn canceling_other_graph_waiters_keeps_active_ones_notified() {
+        use futures::{FutureExt, pin_mut};
+
+        let cache = GraphCache::new(0);
+        let generation = cache.snapshot().generation;
+        let first = cache.wait_for_change(generation);
+        let second = cache.wait_for_change(generation);
+        pin_mut!(first, second);
+        assert!(first.as_mut().now_or_never().is_none());
+        assert!(second.as_mut().now_or_never().is_none());
+
+        // Other callers register and give up while the two above still wait.
+        for _ in 0..8 {
+            assert!(cache.wait_for_change(generation).now_or_never().is_none());
+        }
+
+        cache.finish_initialization();
+        assert_eq!(first.now_or_never().unwrap().unwrap(), generation + 1);
+        assert_eq!(second.now_or_never().unwrap().unwrap(), generation + 1);
     }
 }

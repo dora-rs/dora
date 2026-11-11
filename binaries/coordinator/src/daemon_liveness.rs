@@ -3,9 +3,13 @@
 //! still-running dataflow when the daemon comes back.
 
 use crate::{
-    broadcast_all_nodes_ready, close_topic_subscribers_on_finish, finalize_build,
+    broadcast_all_nodes_ready, close_topic_subscribers_on_finish, fail_pending_spawn,
+    finalize_build,
     handlers::{send_heartbeat_message, send_status_log_message},
-    state::{CachedResult, DaemonConnections, PendingRestart, RunningBuild, RunningDataflow},
+    state::{
+        ArchivedDataflow, CachedResult, DaemonConnections, PendingRestart, RunningBuild,
+        RunningDataflow,
+    },
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
 use dora_core::{descriptor::DescriptorExt, uhlc::HLC};
@@ -14,11 +18,12 @@ use dora_message::{
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, DataflowResult, LogLevel, LogMessage},
     coordinator_to_daemon::{DaemonCoordinatorEvent, Timestamped},
+    daemon_to_coordinator::DataflowDaemonResult,
 };
 use eyre::{Result, WrapErr, eyre};
 use indexmap::IndexMap;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::Arc,
     time::Duration,
 };
@@ -129,19 +134,25 @@ pub(crate) async fn send_heartbeat_with_timeout(
     (machine_id, disconnect)
 }
 
-/// Remove disconnected daemon ids from all in-memory dataflow membership sets.
-///
-/// This intentionally does not resolve `spawn_result`: the spawn timeout
-/// watchdog remains the single path that releases spawn waiters for
-/// disconnect-mid-spawn cases.
 /// Action the daemon-disconnect cleanup asks the (async) caller to perform for
-/// a dataflow that was already past spawn when a daemon it depended on vanished.
-/// See #2028.
+/// a dataflow when a daemon it depended on vanished. See #2028.
 pub(crate) enum DisconnectAction {
+    /// The spawn was still pending when one of the dataflow's daemons
+    /// disconnected. The dataflow cannot start as described any more, so fail
+    /// the spawn now and stop the surviving daemons, the same rollback the
+    /// spawn-timeout watchdog does. Waiting for the watchdog instead either
+    /// hangs (the survivors' later spawn results resolve it `Ok` with the ready
+    /// barrier never released, #3736) or lets the survivors' nodes run until
+    /// the watchdog force-stops them.
+    FailPendingSpawn {
+        uuid: DataflowId,
+        /// The dataflow's daemons that disconnected.
+        daemons: BTreeSet<DaemonId>,
+    },
     /// The last daemon we were awaiting `ReadyOnDaemon` from disconnected, but
     /// survivors remain — release the start barrier so they don't block forever.
     ReleaseReadyBarrier(DataflowId),
-    /// Every daemon running the dataflow disconnected — begin a reclaim window
+    /// Every daemon running a spawned dataflow disconnected — begin a reclaim window
     /// rather than failing terminally. The daemon may have only transiently lost
     /// the coordinator (a heartbeat blip, a coordinator restart) while its node
     /// processes keep running (dora-rs/dora#2029); marking the dataflow
@@ -166,6 +177,12 @@ pub(crate) fn cancel_pending_restart(
     }
 }
 
+/// Remove disconnected daemon ids from all in-memory dataflow membership sets,
+/// and return what the caller must do about the dataflows that lost a daemon.
+///
+/// This does not resolve `spawn_result` itself: a dataflow whose spawn is
+/// still pending gets a [`DisconnectAction::FailPendingSpawn`], which
+/// [`apply_disconnect_actions`] carries out.
 pub(crate) fn cleanup_disconnected_daemons_from_running_dataflows(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     disconnected: &BTreeSet<DaemonId>,
@@ -176,8 +193,14 @@ pub(crate) fn cleanup_disconnected_daemons_from_running_dataflows(
     for df in running_dataflows.values_mut() {
         let pending_was_nonempty = !df.pending_daemons.is_empty();
         let mut affected = false;
+        let mut lost_daemons = BTreeSet::new();
         for daemon_id in disconnected {
-            affected |= df.daemons.remove(daemon_id);
+            if df.daemons.remove(daemon_id) {
+                df.departed_daemons
+                    .insert(daemon_id.clone(), std::time::Instant::now());
+                lost_daemons.insert(daemon_id.clone());
+                affected = true;
+            }
             affected |= df.pending_daemons.remove(daemon_id);
             affected |= df.pending_spawn_results.remove(daemon_id);
         }
@@ -185,10 +208,18 @@ pub(crate) fn cleanup_disconnected_daemons_from_running_dataflows(
             continue;
         }
         affected_uuids.push(df.uuid);
-        // Only act on dataflows that already spawned successfully. While
-        // `spawn_result` is still pending, the spawn-timeout watchdog
-        // (`check_spawn_timeouts`) owns the disconnect-mid-spawn case, so we
-        // must not race it here.
+        if df.spawn_result.is_pending() {
+            // Fail fast: a daemon the spawn depends on is gone (#3736).
+            if !lost_daemons.is_empty() {
+                actions.push(DisconnectAction::FailPendingSpawn {
+                    uuid: df.uuid,
+                    daemons: lost_daemons,
+                });
+            }
+            continue;
+        }
+        // Only act on dataflows that already spawned successfully; one whose
+        // spawn already failed was torn down by whatever failed it.
         let spawned_ok = df.spawn_result.is_cached_ok();
         if df.daemons.is_empty() {
             tracing::warn!(
@@ -232,6 +263,7 @@ pub(crate) fn cleanup_disconnected_daemons_from_running_dataflows(
 #[must_use]
 pub(crate) fn reestablish_running_dataflow(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    reclaimed_launches: &mut crate::state::ReclaimedLaunches,
     record: &dora_coordinator_store::DataflowRecord,
     daemon_id: &DaemonId,
     reported_nodes: &[dora_core::config::NodeId],
@@ -271,10 +303,14 @@ pub(crate) fn reestablish_running_dataflow(
             return false;
         }
     };
-    running_dataflows.insert(
-        record.uuid,
-        RunningDataflow::recovered(record, descriptor, nodes, daemon_id.clone(), reported_nodes),
-    );
+    let mut dataflow =
+        RunningDataflow::recovered(record, descriptor, nodes, daemon_id.clone(), reported_nodes);
+    // Kept across an orphan reclaim, so `dora restart` still relaunches the
+    // dataflow the way it was started. Absent after a coordinator restart.
+    if let Some(launch) = reclaimed_launches.remove(&record.uuid) {
+        dataflow.launch = launch;
+    }
+    running_dataflows.insert(record.uuid, dataflow);
     tracing::info!(
         "re-established running dataflow {} in live coordinator state after daemon {daemon_id} reconnect",
         record.uuid
@@ -366,12 +402,14 @@ pub(crate) async fn stop_orphaned_dataflow_on_daemon(
 pub(crate) async fn begin_orphaned_dataflow_reclaim(
     uuid: DataflowId,
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    reclaimed_launches: &mut crate::state::ReclaimedLaunches,
     clock: &HLC,
     store: &dyn dora_coordinator_store::CoordinatorStore,
 ) {
     let Some(mut df) = running_dataflows.remove(&uuid) else {
         return;
     };
+    reclaimed_launches.insert(uuid, df.launch.clone());
     let msg = "all daemons running this dataflow disconnected; \
                waiting for daemon reconnect (Recovering)"
         .to_string();
@@ -417,27 +455,80 @@ pub(crate) async fn begin_orphaned_dataflow_reclaim(
 }
 
 /// Execute the [`DisconnectAction`]s produced by
-/// [`cleanup_disconnected_daemons_from_running_dataflows`]: release the start
-/// barrier for dataflows whose last pending daemon vanished, and begin the
-/// reclaim window for dataflows that lost every daemon. Runs at the (async)
-/// caller after the synchronous set-pruning. See #2028 / #2029.
+/// [`cleanup_disconnected_daemons_from_running_dataflows`]: fail the spawn of
+/// dataflows that lost a daemon mid-spawn, release the start barrier for
+/// dataflows whose last pending daemon vanished, and begin the reclaim window
+/// for dataflows that lost every daemon. Runs at the (async) caller after the
+/// synchronous set-pruning. See #2028 / #2029 / #3736.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_disconnect_actions(
     actions: Vec<DisconnectAction>,
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    reclaimed_launches: &mut crate::state::ReclaimedLaunches,
     daemon_connections: &mut DaemonConnections,
+    archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
+    dataflow_results: &mut IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    pending_restarts: &mut HashMap<DataflowId, PendingRestart>,
     store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
     clock: &Arc<HLC>,
 ) -> eyre::Result<()> {
     for action in actions {
         match action {
+            DisconnectAction::FailPendingSpawn { uuid, daemons } => {
+                let Some(df) = running_dataflows.get(&uuid) else {
+                    continue;
+                };
+                // Every survivor, including one still owing its spawn result:
+                // it may already have started nodes (it can report ready
+                // before its spawn result, #3736). A survivor that has not
+                // created the dataflow yet answers the stop with an error,
+                // and its later `Ok` is stopped by the archived-dataflow arm
+                // of `handle_dataflow_spawn_result`.
+                let survivors = df.daemons.clone();
+                let noun = if daemons.len() == 1 {
+                    "daemon"
+                } else {
+                    "daemons"
+                };
+                let names = daemons
+                    .iter()
+                    .map(|d| format!("`{d}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let err_msg = format!(
+                    "spawn failed: {noun} {names} disconnected during spawn; \
+                     stopped {} surviving daemon(s)",
+                    survivors.len()
+                );
+                tracing::warn!(dataflow = %uuid, "{err_msg}");
+                fail_pending_spawn(
+                    uuid,
+                    &err_msg,
+                    &survivors,
+                    running_dataflows,
+                    archived_dataflows,
+                    dataflow_results,
+                    daemon_connections,
+                    pending_restarts,
+                    clock,
+                    store.as_ref(),
+                )
+                .await;
+            }
             DisconnectAction::ReleaseReadyBarrier(uuid) => {
                 if let Some(df) = running_dataflows.get_mut(&uuid) {
                     broadcast_all_nodes_ready(uuid, df, daemon_connections, store, clock).await?;
                 }
             }
             DisconnectAction::ReclaimOrphaned(uuid) => {
-                begin_orphaned_dataflow_reclaim(uuid, running_dataflows, clock, store.as_ref())
-                    .await;
+                begin_orphaned_dataflow_reclaim(
+                    uuid,
+                    running_dataflows,
+                    reclaimed_launches,
+                    clock,
+                    store.as_ref(),
+                )
+                .await;
             }
         }
     }

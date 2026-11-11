@@ -317,6 +317,8 @@ pub struct RecordingReader<R: Read> {
     record_buf: Vec<u8>,
     /// See [`last_timestamp_offset_nanos`](Self::last_timestamp_offset_nanos).
     last_timestamp_offset_nanos: u64,
+    /// See [`reached_footer`](Self::reached_footer).
+    reached_footer: bool,
 }
 
 impl<R: Read> RecordingReader<R> {
@@ -329,6 +331,7 @@ impl<R: Read> RecordingReader<R> {
             header,
             record_buf: Vec::new(),
             last_timestamp_offset_nanos: 0,
+            reached_footer: false,
         })
     }
 
@@ -345,6 +348,16 @@ impl<R: Read> RecordingReader<R> {
     /// node of a `--loop` replay must agree on to stay aligned.
     pub fn last_timestamp_offset_nanos(&self) -> u64 {
         self.last_timestamp_offset_nanos
+    }
+
+    /// Whether reading stopped at a whole footer, as
+    /// [`RecordingWriter::finish`] writes it. A `next_*` call also returns
+    /// `None` at the end of a recording that was never finished (a crash, or
+    /// a second Ctrl-C), at a torn last record, and at a torn footer or bytes
+    /// that only start like one; this stays `false` then, so a caller can tell
+    /// a complete recording from one that may be missing its last messages.
+    pub fn reached_footer(&self) -> bool {
+        self.reached_footer
     }
 
     /// Read the next entry. Returns `None` at EOF or footer.
@@ -434,10 +447,14 @@ impl<R: Read> RecordingReader<R> {
         // ≈ 1.09 GB), far above MAX_RECORD_BYTES, so such a length is never
         // written. The moment the 4-byte length prefix equals the footer prefix
         // we're therefore at the footer (or trailing garbage) — either way,
-        // stop reading. (The trailing "END\0" bytes are not re-validated: both
-        // outcomes of that check already meant "stop", so reading them was dead
-        // work.)
+        // stop reading. Only the rest of the magic and the two totals make it
+        // the footer `finish` wrote, which is what `reached_footer` reports.
+        // Nothing past them is read: on a pipe whose writer stays open, a
+        // check for the end of the stream would block.
         if len_buf == FOOTER_MAGIC[..4] {
+            let mut rest = [0u8; FOOTER_MAGIC.len() - 4 + 16];
+            self.reached_footer =
+                self.reader.read_exact(&mut rest).is_ok() && rest[..4] == FOOTER_MAGIC[4..];
             return Ok(false);
         }
 
@@ -707,7 +724,9 @@ mod tests {
             let actual = reader.next_entry().unwrap().unwrap();
             assert_eq!(expected, &actual);
         }
+        assert!(!reader.reached_footer());
         assert!(reader.next_entry().unwrap().is_none());
+        assert!(reader.reached_footer());
     }
 
     #[test]
@@ -729,6 +748,7 @@ mod tests {
         assert_eq!(entry, read_entry);
         // Should gracefully return None at EOF
         assert!(reader.next_entry().unwrap().is_none());
+        assert!(!reader.reached_footer());
     }
 
     /// A crash can flush a record's length prefix but only part of its body.
@@ -755,6 +775,38 @@ mod tests {
         assert_eq!(entry, reader.next_entry().unwrap().unwrap());
         // The torn trailing record is discarded gracefully (no error).
         assert!(reader.next_entry().unwrap().is_none());
+        assert!(!reader.reached_footer());
+    }
+
+    /// Only a whole footer counts as reached: not a torn one, and not bytes
+    /// that merely start with the footer magic.
+    #[test]
+    fn only_a_whole_footer_is_reached() {
+        let header = sample_header();
+        let mut finished = Vec::new();
+        let mut writer = RecordingWriter::new(&mut finished, &header).unwrap();
+        writer
+            .write_entry(&sample_entry("node1", "out1", 10, b"data"))
+            .unwrap();
+        writer.finish().unwrap();
+        let footer_start = finished.len() - FOOTER_MAGIC.len() - 16;
+
+        let reached = |bytes: &[u8]| {
+            let mut reader = RecordingReader::open(std::io::Cursor::new(bytes)).unwrap();
+            assert!(reader.next_entry().unwrap().is_some());
+            assert!(reader.next_entry().unwrap().is_none());
+            reader.reached_footer()
+        };
+        assert!(reached(&finished));
+        // Torn after the first 4 bytes of the magic, and after the magic.
+        assert!(!reached(&finished[..footer_start + 4]));
+        assert!(!reached(&finished[..footer_start + FOOTER_MAGIC.len()]));
+        // Starts like the footer, but the rest of the magic is wrong.
+        let mut garbage = finished.clone();
+        garbage[footer_start + 4] = b'X';
+        assert!(!reached(&garbage));
+        // Torn inside the totals.
+        assert!(!reached(&finished[..finished.len() - 1]));
     }
 
     /// A crafted `node_id_len` larger than the record buffer must return `Err`,

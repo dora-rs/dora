@@ -730,6 +730,6 @@ dora record dataflow.yml --proxy -o remote-capture.drec
 ## See Also
 
 - [CLI Reference](cli.md) -- complete command reference
-- [WebSocket Control Plane](websocket-control-plane.md) -- how CLI communicates with coordinator
-- [WebSocket Topic Data Channel](websocket-topic-data-channel.md) -- how topic data is proxied
-- [Testing Guide](testing-guide.md) -- running smoke tests
+- [WebSocket Control Plane](../advanced/ws-control.md) -- how CLI communicates with coordinator
+- [WebSocket Topic Data Channel](../advanced/ws-topic.md) -- how topic data is proxied
+- [Testing Guide](../development/testing.md) -- running smoke tests

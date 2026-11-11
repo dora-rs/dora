@@ -33,6 +33,7 @@ cargo fmt --all
 3. **Review**: Run `cargo clippy` and `cargo fmt` before submitting
 4. **Commit**: Use conventional commit format: `type(scope): description`
    - Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`
+5. **Changelog**: If users can notice the change, add an entry under `## Unreleased` in [`Changelog.md`](Changelog.md) in the same PR (`### Fixed`, `### Added`, `### Breaking`, …). Start with a bold one-line summary and links to the PR and issue, then say what changed and anything users have to do. Tests, refactors and other internal changes don't need one.
 
 See [docs/testing-guide.md](docs/testing-guide.md) for detailed testing patterns.
 
@@ -75,7 +76,7 @@ Releases are automated via GitHub Actions. Only maintainers should cut releases.
 ### Prerequisites (one-time)
 
 ```bash
-cargo install cargo-release git-cliff
+cargo install cargo-release
 ```
 
 ### Cutting a release
@@ -84,9 +85,9 @@ cargo install cargo-release git-cliff
 # 1. Ensure main is green and up to date
 git checkout main && git pull
 
-# 2. Generate/update changelog
-git cliff --tag v0.5.0 --output CHANGELOG.md
-git add CHANGELOG.md && git commit -m "docs: update changelog for v0.5.0"
+# 2. Finish the changelog: in Changelog.md, rename `## Unreleased` to
+#    `## vX.Y.Z (YYYY-MM-DD)` and add entries for user-visible PRs that
+#    didn't write one, in the same PR as the version bump.
 
 # 3. Bump version, commit, tag, and push (dry-run first)
 cargo release minor              # dry-run: review what will happen
@@ -116,7 +117,7 @@ make qa-verify-release VERSION=1.0.0-rc.5
 | File | Purpose |
 |------|---------|
 | `release.toml` | cargo-release settings (version bump, tagging) |
-| `cliff.toml` | git-cliff changelog generation |
+| `cliff.toml` | git-cliff: the commit list `release.yml` puts in the GitHub Release body (`Changelog.md` is written by hand, see above) |
 | `.github/workflows/release.yml` | Tag-triggered publish pipeline; calls the two workflows below |
 | `.github/workflows/pip-release.yml` | Python wheels + sdists; also the merge-queue build check |
 | `.github/workflows/publish-c-cpp-libraries.yml` | C/C++ library archives |

@@ -168,7 +168,11 @@ impl Coordinator {
             apply_disconnect_actions(
                 disconnect_actions,
                 &mut self.running_dataflows,
+                &mut self.reclaimed_launches,
                 &mut self.daemon_connections,
+                &mut self.archived_dataflows,
+                &mut self.dataflow_results,
+                &mut self.pending_restarts,
                 &self.store,
                 &self.clock,
             )
@@ -189,12 +193,10 @@ impl Coordinator {
         // stuck waiting for one or more `spawn_result` reports and
         // release `wait_for_spawn` waiters with a clear error rather
         // than letting them hang on the client-side RPC deadline.
-        // Triggers on either failure mode:
-        //   1. A daemon accepted the spawn RPC but its internal flow
-        //      is hung (still heartbeating, never reports back).
-        //   2. Pending daemons all disconnected; the disconnect path
-        //      above cleared their entries from `pending_spawn_results`
-        //      but does not itself fire `spawn_result`.
+        // Triggers when a daemon accepted the spawn RPC but its internal
+        // flow is hung (still heartbeating, never reports back). A daemon
+        // that disconnects mid-spawn is handled by the disconnect path
+        // above, which fails the spawn right away (#3736).
         // Rescue of #1593 (issue #1592).
         //
         // SAFETY net only: 60 s is well above realistic per-daemon
@@ -230,6 +232,13 @@ impl Coordinator {
         let now_ms = state::now_millis();
         match self.store.list_dataflows() {
             Ok(records) => {
+                // A launch context is only worth keeping while a daemon may
+                // still reclaim its dataflow.
+                self.reclaimed_launches.retain(|uuid, _| {
+                    records
+                        .iter()
+                        .any(|r| r.uuid == *uuid && r.status == StoreDataflowStatus::Recovering)
+                });
                 for mut record in records {
                     if record.status == StoreDataflowStatus::Recovering {
                         let age_ms = now_ms.saturating_sub(record.updated_at);
@@ -251,6 +260,11 @@ impl Coordinator {
                             };
                             record.generation += 1;
                             record.updated_at = now_ms;
+                            // Parked partial resent reports are for a dataflow
+                            // the coordinator has now terminally given up on;
+                            // nothing can settle it, so drop them rather than
+                            // let them accumulate.
+                            self.resent_finish_reports.remove(&record.uuid);
                             if let Err(e) = self.store.put_dataflow(&record) {
                                 tracing::warn!("failed to mark dataflow as Failed: {e}");
                             }
@@ -337,7 +351,11 @@ impl Coordinator {
             apply_disconnect_actions(
                 disconnect_actions,
                 &mut self.running_dataflows,
+                &mut self.reclaimed_launches,
                 &mut self.daemon_connections,
+                &mut self.archived_dataflows,
+                &mut self.dataflow_results,
+                &mut self.pending_restarts,
                 &self.store,
                 &self.clock,
             )
@@ -372,6 +390,7 @@ impl Coordinator {
     pub(crate) async fn handle_node_metrics(
         &mut self,
         dataflow_id: Uuid,
+        daemon_id: DaemonId,
         metrics: BTreeMap<NodeId, NodeMetrics>,
         network: Option<NetworkMetrics>,
     ) -> eyre::Result<()> {
@@ -398,7 +417,7 @@ impl Coordinator {
                     .insert(node_id.clone(), node_metrics.clone());
             }
             if let Some(net) = network {
-                dataflow.network_metrics = Some(net);
+                dataflow.network_metrics.insert(daemon_id, net);
             }
 
             #[cfg(feature = "metrics")]
@@ -459,6 +478,9 @@ impl Coordinator {
         // Dataflows whose persisted params are already being replayed to this
         // daemon, along with the ready barrier it missed.
         let mut params_replay_started = BTreeSet::new();
+        if let Some(connection) = self.daemon_connections.get_mut(&daemon_id) {
+            connection.status_reported = true;
+        }
         // Reconcile: if daemon reports a dataflow as running and it exists in
         // the store as Pending/Failed/Recovering, update it to Running.
         //
@@ -523,12 +545,24 @@ impl Coordinator {
                         // surviving nodes are visible + manageable again
                         // (#2029 P1) — store status alone doesn't drive
                         // `dora list` / `stop` / `logs`.
-                        if reestablish_running_dataflow(
+                        let barrier_released = reestablish_running_dataflow(
                             &mut self.running_dataflows,
+                            &mut self.reclaimed_launches,
                             &record,
                             &daemon_id,
                             &entry.running_nodes,
-                        ) && let Some(df) = self.running_dataflows.get(&record.uuid)
+                        );
+                        if self.running_dataflows.contains_key(&record.uuid) {
+                            // A daemon that finished before the reclaim may
+                            // have parked its resent finish report here
+                            // (`record_resent_finish_report`). The dataflow is
+                            // running again, so fold those results into
+                            // `dataflow_results`; otherwise the eventual finish
+                            // would settle without them.
+                            self.merge_resent_finish_reports(record.uuid);
+                        }
+                        if barrier_released
+                            && let Some(df) = self.running_dataflows.get(&record.uuid)
                         {
                             // Barrier released while this daemon was
                             // gone; nothing else will tell it (#2998).
@@ -566,6 +600,7 @@ impl Coordinator {
                         // but not the in-memory entry). Idempotent.
                         if reestablish_running_dataflow(
                             &mut self.running_dataflows,
+                            &mut self.reclaimed_launches,
                             &record,
                             &daemon_id,
                             &entry.running_nodes,
@@ -689,6 +724,11 @@ impl Coordinator {
                 continue;
             }
             df.last_recovery_attempt.insert(daemon_id.clone(), now);
+            // These nodes run again, so they constrain `dora node add`
+            // placement again (#3672).
+            for node in &spawn_nodes {
+                df.exited_nodes.remove(node);
+            }
             tracing::info!(
                 "auto-recovery: re-spawning {} node(s) for dataflow {uuid} on daemon {daemon_id}",
                 spawn_nodes.len()
@@ -805,6 +845,12 @@ impl Coordinator {
         node_id: NodeId,
         clean_stop: bool,
     ) -> eyre::Result<()> {
+        if self
+            .topology
+            .park_node_stop(&dataflow_id, &daemon_id, &node_id, clean_stop)
+        {
+            return Ok(());
+        }
         // Daemon reports a node has stopped and will not be
         // restarted. Mark the cached metrics so `dora node list`
         // shows `Stopped` (clean exit) or `Failed` (final-failure
@@ -869,6 +915,7 @@ impl Coordinator {
             // in-flight metrics pushes overwriting the row, for
             // BOTH Stopped and Failed.
             dataflow.node_finalized.insert(node_id.clone());
+            dataflow.exited_nodes.insert(node_id.clone());
             // Only arm the auto-expire side-band for clean Stopped
             // rows. Failed rows must stay visible until the dataflow
             // is stopped/destroyed — otherwise a crashed node would

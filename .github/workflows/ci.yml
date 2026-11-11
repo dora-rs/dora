@@ -134,6 +134,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Shared dev-profile cache, written only by `test` (the fullest
           # builder). clippy/check/contract-tests restore it but never
           # save, so the race can't cache a check-only (.rmeta) subset.
@@ -186,6 +189,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Restore the shared dev-profile cache; only `test` writes it.
           shared-key: workspace
           save-if: false
@@ -268,6 +274,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # `test` is the SOLE writer of the shared dev-profile cache: it
           # runs the full `cargo build`/`test`, so its cache captures the
           # dependency codegen (.rlib) that a check/clippy cache omits.
@@ -298,6 +307,13 @@ jobs:
       # changes. `dora-runtime-python` is one of them: it links pyo3 like the
       # rest, and only its own targets are skipped — the lib still builds
       # above, as a dependency of dora-cli-api-python.
+      #
+      # `dora-tensor-pool-python` is the newest exclusion and the one that
+      # most needs it: its tests start an embedded interpreter
+      # (`Python::initialize`) and spawn a `python3 -m unittest` subprocess,
+      # so they hard-fail on a runner with no interpreter (and on
+      # windows-latest, where `python3` may not be on PATH). Like the rest,
+      # its lib still builds above and its tests run in `contract-tests`.
       - name: Test
         run: >
           cargo test --all
@@ -307,6 +323,7 @@ jobs:
           --exclude dora-runtime-python
           --exclude dora-cli-api-python
           --exclude dora-examples
+          --exclude dora-tensor-pool-python
 
       # The tensor-pool transport is opt-in (see docs/extensions.md), so the
       # workspace run above builds the extension's node half only — its daemon
@@ -427,6 +444,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Save only on `main`; PRs/merge-queue restore-only (see clippy job note).
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Now that this job runs in parallel with `test` (#2524) it no longer
@@ -578,6 +598,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Restore the shared dev-profile cache; only `test` writes it.
           shared-key: workspace
           save-if: false
@@ -624,7 +647,7 @@ jobs:
         # implementation detail (LD_LIBRARY_PATH only adds a search path).
         env:
           LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
-      - uses: astral-sh/setup-uv@v10.3.2
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -697,6 +720,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Save only on `main`; PRs/merge-queue restore-only (see clippy job note).
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Runs in parallel with `test` (#2524); compiles the criterion
@@ -864,6 +890,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Its own key: rustdoc JSON for two revisions is a different artifact
           # set from the dev-profile `workspace` cache, and mixing them would
           # evict what the compile jobs restore from.
@@ -908,6 +937,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           # Save only on `main`; PRs restore-only (see clippy job note).
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo install cargo-lichking
