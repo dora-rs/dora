@@ -353,12 +353,16 @@ where
         std::process::id(),
         COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
+    // The guard removes the temp file on every exit except a successful
+    // rename, including the future being dropped mid-download (task aborted,
+    // runtime shut down on Ctrl-C). The file is created synchronously so the
+    // guard cannot race tokio's blocking-pool `File::create`.
+    let file = std::fs::File::create(&tmp_path).wrap_err("failed to create target file")?;
+    let mut tmp_guard = RemoveOnDrop(Some(tmp_path.clone()));
     let mut hasher = Sha256::new();
     let mut response = response;
     let stream_to_tmp = async {
-        let mut file = tokio::fs::File::create(&tmp_path)
-            .await
-            .wrap_err("failed to create target file")?;
+        let mut file = tokio::fs::File::from_std(file);
         while let Some(chunk) = response
             .chunk()
             .await
@@ -372,10 +376,7 @@ where
         file.sync_all().await.wrap_err("failed to `sync_all`")?;
         Ok::<(), eyre::ErrReport>(())
     };
-    if let Err(err) = stream_to_tmp.await {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(err);
-    }
+    stream_to_tmp.await?;
 
     // Verify integrity if a digest was provided.
     // Without a digest, the download is vulnerable to MITM or CDN compromise
@@ -389,7 +390,6 @@ where
         // `actual_hash` is lowercase hex; a digest from an index/lockfile may be
         // uppercase, so compare case-insensitively rather than rejecting it.
         if !expected.eq_ignore_ascii_case(&actual_hash) {
-            let _ = tokio::fs::remove_file(&tmp_path).await;
             eyre::bail!("SHA-256 mismatch for `{url}`: expected {expected}, got {actual_hash}");
         }
     } else {
@@ -402,19 +402,30 @@ where
     }
 
     #[cfg(unix)]
-    if let Err(err) =
-        tokio::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o700)).await
-    {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(err).wrap_err("failed to make downloaded file executable");
-    }
+    tokio::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o700))
+        .await
+        .wrap_err("failed to make downloaded file executable")?;
 
-    if let Err(err) = tokio::fs::rename(&tmp_path, &path).await {
-        let _ = tokio::fs::remove_file(&tmp_path).await;
-        return Err(err).wrap_err("failed to move downloaded file into place");
-    }
+    tokio::fs::rename(&tmp_path, &path)
+        .await
+        .wrap_err("failed to move downloaded file into place")?;
+    // Renamed into place: nothing left to clean up.
+    tmp_guard.0 = None;
 
     Ok(path.to_path_buf())
+}
+
+/// Deletes the file at the held path when dropped, unless the path was taken
+/// out first. A synchronous `remove_file` is used because `Drop` cannot await;
+/// it is a single unlink, and failure (already gone) is ignored.
+struct RemoveOnDrop(Option<PathBuf>);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -910,6 +921,95 @@ mod tests {
         assert!(
             leftovers.is_empty(),
             "stalled download left files behind: {leftovers:?}"
+        );
+
+        server.abort();
+        let _ = tokio::fs::remove_dir_all(&target_dir).await;
+    }
+
+    /// A download whose future is dropped part-way (a spawn task aborted, the
+    /// runtime shut down on Ctrl-C) must not leave its
+    /// `.dora-download-*.partial` behind.
+    #[tokio::test]
+    async fn cancelled_download_removes_its_partial_file() {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // Headers plus a few body bytes, then a stall: the client has created
+        // the temp file and is waiting for more of the body.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (body_sent_tx, body_sent_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\n\
+                      Content-Length: 1048576\r\n\
+                      \r\n\
+                      partial",
+                )
+                .await
+                .unwrap();
+            socket.flush().await.unwrap();
+            let _ = body_sent_tx.send(());
+            std::future::pending::<()>().await;
+        });
+
+        let target_dir = std::env::temp_dir().join(format!(
+            "dora-download-cancel-{}-{}",
+            std::process::id(),
+            addr.port()
+        ));
+        // No read timeout: only dropping the future can end this download.
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = format!("http://{addr}/model.bin");
+
+        // Boxed rather than `tokio::pin!`ed so `drop` below drops the future
+        // itself, not just a pinned reference to it.
+        let mut download = Box::pin(super::download_with(
+            &client,
+            url.as_str(),
+            &target_dir,
+            None,
+        ));
+        let partials = |dir: &std::path::Path| -> Vec<String> {
+            std::fs::read_dir(dir)
+                .map(|entries| {
+                    entries
+                        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        // Drive the download until the server has sent the first body bytes
+        // and the client has created its temp file (polled, not a fixed
+        // sleep, so a slow runner cannot make this flaky).
+        tokio::select! {
+            result = &mut download => panic!("download finished early: {result:?}"),
+            _ = async {
+                body_sent_rx.await.unwrap();
+                while partials(&target_dir).is_empty() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            } => {}
+        }
+        assert_eq!(
+            partials(&target_dir).len(),
+            1,
+            "expected exactly the in-progress temp file before cancelling"
+        );
+
+        // Cancel by dropping the in-flight future.
+        drop(download);
+
+        assert!(
+            partials(&target_dir).is_empty(),
+            "a cancelled download left files behind: {:?}",
+            partials(&target_dir)
         );
 
         server.abort();
