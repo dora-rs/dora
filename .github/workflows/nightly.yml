@@ -1579,17 +1579,37 @@ jobs:
       - name: C++ Extension Seam example
         timeout-minutes: 15
         run: cargo run --example cxx-extension-seam
+      # A stalled Ubuntu mirror makes apt wait out its default timeout on
+      # every package before falling back, which alone can run past the step
+      # budget. So apt drops a silent connection after 15s and retries, and
+      # each `update` and download pass is capped at 5 minutes and tried up
+      # to three times; packages fetched by an earlier pass stay in apt's
+      # cache. Only network work is capped: the install that runs dpkg is
+      # not, so a timeout never leaves dpkg half-done or holding its lock.
       - name: Install Arrow C++ Library
-        timeout-minutes: 10
+        timeout-minutes: 20
         shell: bash
         run: |
           if [ "$RUNNER_OS" == "Linux" ]; then
-            sudo apt-get update
-            sudo apt-get install -y -V ca-certificates lsb-release wget
-            wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
-            sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
-            sudo apt-get update
-            sudo apt-get install -y -V libarrow-dev libarrow-glib-dev
+            APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+            apt_retry() {
+              for attempt in 1 2 3; do
+                if sudo timeout 300 apt-get $APT_OPTS "$@"; then return 0; fi
+                echo "apt-get $* failed (attempt $attempt/3)" >&2
+                sleep 10
+              done
+              return 1
+            }
+            apt_install() {
+              apt_retry install --download-only -y "$@"
+              sudo apt-get $APT_OPTS install -y -V "$@"
+            }
+            apt_retry update
+            apt_install ca-certificates lsb-release wget
+            wget --tries=3 --timeout=30 https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+            apt_install ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+            apt_retry update
+            apt_install libarrow-dev libarrow-glib-dev
           elif [ "$RUNNER_OS" == "macOS" ]; then
             brew update
             brew install apache-arrow
