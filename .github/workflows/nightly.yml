@@ -95,6 +95,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - uses: actions/setup-python@v7
         with:
@@ -142,6 +145,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Run hub smoke suite
         # --test-threads=1: the run sub-tests share coordinator ports.
@@ -163,6 +169,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
           # Without a shared-key this keys on the job name, which nothing ever
           # writes, so the restore is a guaranteed miss and the job rebuilds the
@@ -211,6 +220,66 @@ jobs:
 
   # Build the dora CLI once and upload as artifact for downstream jobs.
   # Saves ~15 min × 4 downstream jobs = ~60 runner-minutes per nightly run.
+  # Backwards compatibility of `dora self update`: installs a CLI from an
+  # older release, updates it, and checks that it reports the latest release.
+  # The older CLIs select the release asset their own way (the first one
+  # matching their target), so this covers what the current CLI's unit tests
+  # can't. Skipped when there is nothing newer to update to.
+  self-update-legacy:
+    name: Self update from ${{ matrix.from }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            from: 1.0.0
+            asset: dora-cli-x86_64-unknown-linux-gnu.tar.gz
+          - os: windows-latest
+            from: 1.2.0
+            asset: dora-cli-x86_64-pc-windows-msvc.zip
+    steps:
+      - name: Update the legacy CLI and check the result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FROM: ${{ matrix.from }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          latest=$(gh release view --repo "$REPO" --json tagName --jq .tagName)
+          latest=${latest#v}
+          # Self update only works to releases from 1.2 on.
+          if [ "$(printf '%s\n%s\n' 1.2.0 "$latest" | sort -V | head -n1)" != 1.2.0 ]; then
+            echo "::notice::latest release v$latest predates the self update fix; nothing to test"
+            exit 0
+          fi
+          if ! gh release view "v$FROM" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::notice::v$FROM is not released yet; nothing to test"
+            exit 0
+          fi
+          if [ "$(printf '%s\n%s\n' "$FROM" "$latest" | sort -V | tail -n1)" = "$FROM" ]; then
+            echo "::notice::v$FROM is the latest release; nothing to update to"
+            exit 0
+          fi
+          work=$(mktemp -d)
+          gh release download "v$FROM" --repo "$REPO" --pattern "$ASSET" --dir "$work"
+          case "$ASSET" in
+            *.zip) unzip -q "$work/$ASSET" -d "$work/out"; bin=$(find "$work/out" -name dora.exe | head -n1) ;;
+            *) mkdir -p "$work/out"; tar -xzf "$work/$ASSET" -C "$work/out"; bin=$(find "$work/out" -name dora -type f | head -n1) ;;
+          esac
+          "$bin" --version
+          # Released CLIs ask for confirmation before replacing themselves.
+          echo y | "$bin" self update
+          after=$("$bin" --version)
+          echo "$after"
+          case "$after" in
+            *"$latest"*) ;;
+            *) echo "::error::expected $latest after self update from $FROM, got: $after"; exit 1 ;;
+          esac
+
   build-cli:
     name: Build dora CLI (shared)
     runs-on: ubuntu-latest
@@ -222,6 +291,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Install dora CLI to ./dist
         run: cargo install --path binaries/cli --locked --root ./dist
@@ -244,6 +316,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - uses: actions/setup-python@v7
         with:
@@ -290,6 +365,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
@@ -361,6 +439,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
@@ -432,6 +513,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
@@ -522,6 +606,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Install openssh-server
         # ubuntu-latest typically has sshd preinstalled but it's not started.
@@ -564,6 +651,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Install openssh-server
         # ubuntu-latest typically has sshd preinstalled but it's not started.
@@ -613,6 +703,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - uses: actions/setup-python@v7
         with:
@@ -847,6 +940,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
@@ -901,6 +997,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
@@ -1000,6 +1099,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
@@ -1089,6 +1191,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Run multi-daemon late-subscriber E2E
         run: cargo test -p dora-examples --test multi-daemon-e2e -- --test-threads=1
@@ -1112,6 +1217,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Run repeated start/stop routing E2E
         run: cargo test -p dora-examples --test start-stop-cycle-routing-e2e -- --test-threads=1
@@ -1139,6 +1247,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
@@ -1222,6 +1333,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Install Kani
         run: |
@@ -1249,6 +1363,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
           shared-key: workspace-test
       - name: Check
@@ -1386,6 +1503,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
@@ -1514,6 +1634,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
@@ -1671,6 +1794,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
@@ -1877,6 +2003,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Benchmark example
         timeout-minutes: 45
@@ -1939,6 +2068,9 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Install cross-compilation toolchain
         if: matrix.gcc
@@ -1986,6 +2118,9 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
@@ -2109,6 +2244,9 @@ jobs:
           python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           save-if: false
       - uses: taiki-e/install-action@v2
         with:
@@ -2123,6 +2261,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build-cli
+      - self-update-legacy
       - wheel-smoke
       - smoke-suite
       - hub-smoke
@@ -2695,6 +2834,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build-cli
+      - self-update-legacy
       - wheel-smoke
       - smoke-suite
       - hub-smoke

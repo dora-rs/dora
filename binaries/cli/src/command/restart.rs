@@ -1,7 +1,7 @@
 use super::{Executable, default_tracing};
 use crate::common::parse_duration;
 use crate::common::{
-    CoordinatorOptions, expect_reply, query_running_dataflows, send_control_request,
+    CoordinatorOptions, DataflowTarget, expect_reply, query_running_dataflows, send_control_request,
 };
 use crate::ws_client::WsSession;
 use dora_message::cli_to_coordinator::ControlRequest;
@@ -42,13 +42,16 @@ impl Executable for Restart {
         default_tracing()?;
         let session = self.coordinator.connect()?;
 
-        let ident = self.identifier.or(self.name);
-        match ident {
-            Some(s) => match Uuid::parse_str(&s) {
-                Ok(uuid) => restart_dataflow(uuid, self.grace_duration, self.force, &session),
-                Err(_) => restart_dataflow_by_name(s, self.grace_duration, self.force, &session),
-            },
-            None => restart_dataflow_interactive(self.grace_duration, self.force, &session),
+        match DataflowTarget::from_args(self.identifier, self.name) {
+            DataflowTarget::Uuid(uuid) => {
+                restart_dataflow(uuid, self.grace_duration, self.force, &session)
+            }
+            DataflowTarget::Name(name) => {
+                restart_dataflow_by_name(name, self.grace_duration, self.force, &session)
+            }
+            DataflowTarget::Interactive => {
+                restart_dataflow_interactive(self.grace_duration, self.force, &session)
+            }
         }
     }
 }

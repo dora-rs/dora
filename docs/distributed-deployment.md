@@ -361,6 +361,8 @@ Operators can raise this timeout without writing a JSON5 overlay file by setting
 DORA_ZENOH_OPEN_TIMEOUT_MS=3000
 ```
 
+The value must be a positive whole number of milliseconds. `0` or a value that does not parse is ignored with a warning, and the 1000 ms default applies.
+
 Or by specifying `transport.unicast.open_timeout` in a `--zenoh-config-overlay` JSON5 file.
 
 ## Cluster Commands Reference

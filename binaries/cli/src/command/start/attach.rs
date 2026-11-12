@@ -136,8 +136,36 @@ pub fn attach_dataflow(
             ControlRequestReply::DataflowReloaded { uuid } => {
                 info!("dataflow {uuid} reloaded")
             }
+            ControlRequestReply::Error(err) => {
+                error!("{}", reply_error_message(&control_request, &err))
+            }
             other => error!("Received unexpected Coordinator Reply: {:#?}", other),
         };
+    }
+}
+
+/// The log line for a coordinator [`ControlRequestReply::Error`] answering
+/// `request`.
+///
+/// A failed `Reload` is reported as a reload failure, so the operator can tell
+/// it apart from a failed `Check` or `Stop`; every other request keeps the
+/// generic wording. The coordinator's reason is included either way.
+fn reply_error_message(request: &ControlRequest, reason: &str) -> String {
+    match request {
+        ControlRequest::Reload {
+            dataflow_id,
+            node_id,
+            operator_id,
+        } => match operator_id {
+            Some(operator_id) => format!(
+                "failed to reload operator `{operator_id}` of node `{node_id}` in dataflow \
+                 {dataflow_id}: {reason}"
+            ),
+            None => {
+                format!("failed to reload node `{node_id}` in dataflow {dataflow_id}: {reason}")
+            }
+        },
+        other => format!("coordinator rejected {other:?}: {reason}"),
     }
 }
 
@@ -308,6 +336,69 @@ fn hot_reload_watch_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A failed `Reload` is reported as a reload failure carrying the
+    /// coordinator's reason, not as an unexpected reply.
+    #[test]
+    fn reload_failure_is_reported_as_a_reload_failure() {
+        let dataflow_id = Uuid::new_v4();
+        let node_id = NodeId::from("node".to_string());
+        let operator_id = OperatorId::from("op".to_string());
+
+        let line = reply_error_message(
+            &ControlRequest::Reload {
+                dataflow_id,
+                node_id: node_id.clone(),
+                operator_id: Some(operator_id.clone()),
+            },
+            "no such operator",
+        );
+        assert_eq!(
+            line,
+            format!(
+                "failed to reload operator `{operator_id}` of node `{node_id}` in dataflow \
+                 {dataflow_id}: no such operator"
+            ),
+        );
+
+        let line = reply_error_message(
+            &ControlRequest::Reload {
+                dataflow_id,
+                node_id: node_id.clone(),
+                operator_id: None,
+            },
+            "no such node",
+        );
+        assert_eq!(
+            line,
+            format!("failed to reload node `{node_id}` in dataflow {dataflow_id}: no such node"),
+        );
+    }
+
+    /// A failed `Check` or `Stop` is not a reload, so it must not be reported
+    /// as a reload failure.
+    #[test]
+    fn check_and_stop_errors_are_not_reload_failures() {
+        let dataflow_uuid = Uuid::new_v4();
+        for request in [
+            ControlRequest::Check { dataflow_uuid },
+            ControlRequest::Stop {
+                dataflow_uuid,
+                grace_duration: None,
+                force: false,
+            },
+        ] {
+            let line = reply_error_message(&request, "unknown dataflow");
+            assert!(
+                !line.contains("reload"),
+                "a {request:?} error must not be labeled a reload failure: {line}"
+            );
+            assert!(
+                line.contains("unknown dataflow"),
+                "the coordinator's reason must still be reported: {line}"
+            );
+        }
+    }
 
     /// A URL operator source or a file that is not on this machine must not
     /// stop the CLI from attaching; only the local file is watched.

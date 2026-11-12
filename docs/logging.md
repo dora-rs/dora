@@ -481,6 +481,8 @@ nodes:
 | `"1GB"` or `"1G"` | 1,073,741,824 |
 | `"1000"` | 1,000 (plain number = bytes) |
 
+Rotation happens once the active file reaches `max_log_size`, so a size smaller than one log line (including `"0"`) rotates after every line. Each rotation renames up to `max_rotated_files` files, and only the last `max_rotated_files` lines stay on disk. To turn rotation off, leave `max_log_size` out.
+
 When the active log file exceeds the configured size, the daemon:
 
 1. Flushes and closes the current file

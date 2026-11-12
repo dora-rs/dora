@@ -16,6 +16,16 @@ const BUILDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("builds");
 /// Node params table. Key: `"{uuid}\0{node_id}\0{param_key}"` (see
 /// [`make_param_key`]), Value: the caller's opaque param bytes.
 const NODE_PARAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("node_params");
+/// Deleted node params (see `CoordinatorStore::delete_node_param`), keyed
+/// like [`NODE_PARAMS`], Value: the tombstone's token. `open` creates the
+/// table in a store that predates it, and a binary that does not know it
+/// leaves it alone, so adding it needs no [`SCHEMA_VERSION`] bump. Such a
+/// binary neither clears a tombstone on `put_node_param` nor cascades it on
+/// `delete_dataflow`: the replay re-checks the param row before sending a
+/// delete, which keeps a stale tombstone harmless, and the rows of a deleted
+/// dataflow are never read again.
+const NODE_PARAM_TOMBSTONES: TableDefinition<&str, u128> =
+    TableDefinition::new("node_param_tombstones");
 
 /// Bump this when the serialization format of any stored record changes.
 ///
@@ -132,6 +142,8 @@ impl RedbStore {
             .wrap_err("failed to create builds table")?;
         txn.open_table(NODE_PARAMS)
             .wrap_err("failed to create node_params table")?;
+        txn.open_table(NODE_PARAM_TOMBSTONES)
+            .wrap_err("failed to create node_param_tombstones table")?;
         txn.commit().wrap_err("failed to commit table creation")?;
 
         Ok(Self { db })
@@ -384,6 +396,8 @@ impl CoordinatorStore for RedbStore {
             // Bounded range: an open-ended `start..` would make `retain_in`
             // visit every row of every dataflow sorted after this one.
             params.retain_in(param_start.as_str()..param_end.as_str(), |_, _| false)?;
+            let mut tombstones = txn.open_table(NODE_PARAM_TOMBSTONES)?;
+            tombstones.retain_in(param_start.as_str()..param_end.as_str(), |_, _| false)?;
         }
         txn.commit()?;
         Ok(())
@@ -456,6 +470,8 @@ impl CoordinatorStore for RedbStore {
         {
             let mut table = txn.open_table(NODE_PARAMS)?;
             table.insert(param_key.as_str(), value)?;
+            txn.open_table(NODE_PARAM_TOMBSTONES)?
+                .remove(param_key.as_str())?;
         }
         txn.commit()?;
         Ok(())
@@ -505,9 +521,55 @@ impl CoordinatorStore for RedbStore {
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(NODE_PARAMS)?;
-            table.remove(param_key.as_str())?;
+            if table.remove(param_key.as_str())?.is_some() {
+                txn.open_table(NODE_PARAM_TOMBSTONES)?
+                    .insert(param_key.as_str(), Uuid::now_v7().as_u128())?;
+            }
         }
         txn.commit()?;
+        Ok(())
+    }
+
+    fn list_node_param_tombstones(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> Result<Vec<(String, Uuid)>> {
+        let prefix = make_param_prefix(dataflow_id, node_id)?;
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(NODE_PARAM_TOMBSTONES)?;
+        let mut result = Vec::new();
+        for entry in table.range(prefix.as_str()..)? {
+            let (key, token) = entry?;
+            match key.value().strip_prefix(&prefix) {
+                Some(param_key) => {
+                    result.push((param_key.to_string(), Uuid::from_u128(token.value())))
+                }
+                None => break,
+            }
+        }
+        Ok(result)
+    }
+
+    fn clear_node_param_tombstone(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        token: Uuid,
+    ) -> Result<()> {
+        let param_key = make_param_key(dataflow_id, node_id, key)?;
+        let txn = self.db.begin_write()?;
+        let matches = {
+            let mut table = txn.open_table(NODE_PARAM_TOMBSTONES)?;
+            let current = table.get(param_key.as_str())?.map(|t| t.value());
+            current == Some(token.as_u128()) && table.remove(param_key.as_str())?.is_some()
+        };
+        if matches {
+            txn.commit()?;
+        } else {
+            txn.abort()?;
+        }
         Ok(())
     }
 }
@@ -898,6 +960,79 @@ mod tests {
         store.delete_node_param(&df, &node, "fps").unwrap();
         assert!(store.get_node_param(&df, &node, "fps").unwrap().is_none());
         assert_eq!(store.list_node_params(&df, &node).unwrap().len(), 1);
+    }
+
+    /// A tombstone is cleared only with the token it was listed with.
+    #[test]
+    fn param_tombstone_clear_matches_only_its_token() {
+        crate::tombstone_tests::clear_matches_only_its_token(&temp_store().0);
+    }
+
+    #[test]
+    fn param_delete_records_a_tombstone_that_put_clears() {
+        crate::tombstone_tests::delete_records_a_tombstone_that_put_clears(&temp_store().0);
+    }
+
+    /// A tombstone outlives a coordinator restart, so the replay after it
+    /// still deletes the key.
+    #[test]
+    fn param_tombstone_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tombstone.redb");
+        let df = Uuid::new_v4();
+        let node: NodeId = "sensor".to_string().into();
+        {
+            let store = RedbStore::open(&path).unwrap();
+            store.put_node_param(&df, &node, "gain", b"1").unwrap();
+            store.delete_node_param(&df, &node, "gain").unwrap();
+        }
+        let store = RedbStore::open(&path).unwrap();
+        assert_eq!(
+            crate::tombstone_tests::tombstoned_keys(&store, &df, &node),
+            vec!["gain".to_string()]
+        );
+    }
+
+    /// A store written before the tombstone table existed opens without a
+    /// schema bump, keeps its params, and records tombstones from then on.
+    #[test]
+    fn store_without_tombstone_table_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pre-tombstone.redb");
+        let df = Uuid::new_v4();
+        let node: NodeId = "sensor".to_string().into();
+        {
+            let db = Database::create(&path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                txn.open_table(META)
+                    .unwrap()
+                    .insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION)
+                    .unwrap();
+                txn.open_table(DAEMONS).unwrap();
+                txn.open_table(DATAFLOWS).unwrap();
+                txn.open_table(BUILDS).unwrap();
+                txn.open_table(NODE_PARAMS)
+                    .unwrap()
+                    .insert(
+                        make_param_key(&df, &node, "gain").unwrap().as_str(),
+                        b"1".as_slice(),
+                    )
+                    .unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        let store = RedbStore::open(&path).unwrap();
+        assert_eq!(
+            store.get_node_param(&df, &node, "gain").unwrap(),
+            Some(b"1".to_vec())
+        );
+        store.delete_node_param(&df, &node, "gain").unwrap();
+        assert_eq!(
+            crate::tombstone_tests::tombstoned_keys(&store, &df, &node),
+            vec!["gain".to_string()]
+        );
     }
 
     #[test]
@@ -1516,8 +1651,20 @@ mod tests {
         store.put_node_param(&df_a, &node, "k1", b"a1").unwrap();
         store.put_node_param(&df_a, &node, "k2", b"a2").unwrap();
         store.put_node_param(&df_b, &node, "k1", b"b1").unwrap();
+        store.delete_node_param(&df_a, &node, "k2").unwrap();
+        store.put_node_param(&df_b, &node, "k2", b"b2").unwrap();
+        store.delete_node_param(&df_b, &node, "k2").unwrap();
 
         store.delete_dataflow(&df_a).unwrap();
+
+        assert!(
+            crate::tombstone_tests::tombstoned_keys(&store, &df_a, &node).is_empty(),
+            "tombstones for cleaned dataflow must be removed"
+        );
+        assert_eq!(
+            crate::tombstone_tests::tombstoned_keys(&store, &df_b, &node),
+            vec!["k2".to_string()]
+        );
 
         assert!(
             store.list_node_params(&df_a, &node).unwrap().is_empty(),
