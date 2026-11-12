@@ -45,7 +45,7 @@ pub enum EventItem {
     /// aliases the zenoh buffer (the decoder wraps it via
     /// `Buffer::from_custom_allocation`), so this stays zero-copy
     /// (dora-rs/adora#132). The input's arrival bound may release the payload
-    /// while the message waits in the channel (see `arrival_bound`).
+    /// while the message waits in the node (see `arrival_bound`).
     ZenohInput {
         id: dora_core::config::DataId,
         metadata: std::sync::Arc<dora_message::metadata::Metadata>,
@@ -56,8 +56,8 @@ pub enum EventItem {
 }
 
 impl EventItem {
-    /// Takes the event off the ingress channel. Returns `None` for a zenoh
-    /// input whose payload was released while it waited.
+    /// Takes the event for delivery or eviction. Returns `None` for a zenoh
+    /// input whose payload was already released.
     pub(crate) fn settle(self) -> Option<Self> {
         match self {
             EventItem::ZenohInput { id, metadata, data } => data
@@ -176,11 +176,9 @@ fn event_stream_loop(
                 continue;
             }
 
-            // Before sending, so that zenoh inputs that land behind `Stop`
+            // Before sending, so that zenoh inputs that land behind it
             // release nothing (see `ArrivalBound`).
-            if matches!(inner, NodeEvent::Stop) {
-                stop_enqueued.store(true, Ordering::SeqCst);
-            }
+            note_stream_end(&inner, &stop_enqueued);
 
             if let Some(tx) = tx.as_ref() {
                 // `blocking_send` is used because this function runs on a
@@ -217,5 +215,13 @@ fn event_stream_loop(
             _ => unreachable!(),
         };
         tracing::error!("failed to report fatal EventStream error: {err:?}");
+    }
+}
+
+/// Sets `stop_enqueued` if `event` ends the stream: `Stop`, or
+/// `AllInputsClosed`, which the node receives as a `Stop` too.
+pub(super) fn note_stream_end(event: &NodeEvent, stop_enqueued: &AtomicBool) {
+    if matches!(event, NodeEvent::Stop | NodeEvent::AllInputsClosed) {
+        stop_enqueued.store(true, Ordering::SeqCst);
     }
 }
