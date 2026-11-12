@@ -292,7 +292,7 @@ For each Arrow goal input:
 
 The action bridge sends feedback and results on separate outputs:
 
-- **`feedback`**: Streamed as each feedback message arrives from the action server. Contains the action's feedback message as Arrow (e.g., `{partial_sequence: int32[]}` for Fibonacci)
+- **`feedback`**: Streamed as each feedback message arrives from the action server. Contains the action's feedback message as Arrow (e.g., `{sequence: int32[]}` for Fibonacci)
 - **`result`**: Sent once when the action completes. Contains the action's result message as Arrow (e.g., `{sequence: int32[]}` for Fibonacci)
 
 ### Concurrent Goals
@@ -479,10 +479,12 @@ transports (see [Action status channel](#action-status-channel)).
 
 The bridge reads `ROS_DOMAIN_ID` from the environment. The DDS transport accepts
 domains `0` to `232` only, because DDS derives its well-known ports from the
-domain id; a missing value defaults to `0`, while a malformed or out-of-range
-value logs a warning and falls back to `0`. The Zenoh transport has no such
-limit: it preserves any non-negative domain id that fits in a platform-sized
-unsigned integer (`usize`), and falls back to `0` for values that do not.
+domain id. Surrounding whitespace is ignored, and an unset or empty value
+selects domain `0`. A malformed value, or one above `232`, is an error: the
+bridge fails at startup with a message naming `ROS_DOMAIN_ID` instead of
+silently bridging on domain `0`. The Zenoh transport has no such limit: it
+preserves any non-negative domain id that fits in a platform-sized unsigned
+integer (`usize`), and falls back to `0` for values that do not.
 
 ### Per-Topic QoS Override
 
@@ -630,14 +632,14 @@ fn read_response(data: &dyn arrow::array::Array) -> i64 {
 | Bounded sequence (`int32[<=10]`) | `List` (length validated) | `ListArray` |
 | Fixed-size array (`int32[3]`) | `FixedSizeList` | `FixedSizeListArray` |
 
-Example: reading a `ListArray` from Fibonacci feedback (`{partial_sequence: int32[]}`):
+Example: reading a `ListArray` from Fibonacci feedback (`{sequence: int32[]}`):
 
 ```rust
 use arrow::array::{Int32Array, ListArray, StructArray};
 
 let struct_array = data.as_any().downcast_ref::<StructArray>().unwrap();
 let list = struct_array
-    .column_by_name("partial_sequence")
+    .column_by_name("sequence")
     .unwrap()
     .as_any()
     .downcast_ref::<ListArray>()
@@ -922,7 +924,7 @@ Prerequisites: start the action server **before** the dataflow:
 ros2 run examples_rclcpp_action_server fibonacci_action_server
 ```
 
-The goal node sends `{order: int32}`, receives streamed `{partial_sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result.
+The goal node sends `{order: int32}`, receives streamed `{sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result.
 
 ### 7. Action Server: Expose an Dora Handler as ROS2 Action
 
@@ -948,7 +950,7 @@ nodes:
       - result
 ```
 
-The handler receives `{order: int32}` goals with a `goal_id` in metadata, sends `{partial_sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result -- all with the same `goal_id` in metadata. External ROS2 clients can send goals:
+The handler receives `{order: int32}` goals with a `goal_id` in metadata, sends `{sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result -- all with the same `goal_id` in metadata. External ROS2 clients can send goals:
 ```bash
 ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10}"
 ```

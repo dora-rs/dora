@@ -1185,7 +1185,7 @@ fn run_topic_mode(
 ) -> eyre::Result<()> {
     let topics = resolve_topics(&config)?;
 
-    let (mut ros_node, _ros_context, _pool) = create_ros_node(&config)?;
+    let (mut ros_node, _pool) = create_ros_node(&config)?;
 
     let mut subscribers: Vec<(String, SubscriptionStream)> = Vec::new();
     let mut publishers: Vec<(
@@ -1288,7 +1288,7 @@ fn run_service_mode(
         messages: messages.clone(),
     };
 
-    let (mut ros_node, _ros_context, _pool) = create_ros_node(&config)?;
+    let (mut ros_node, _pool) = create_ros_node(&config)?;
 
     let service_qos = bridge_endpoint_qos(&config);
 
@@ -1531,7 +1531,7 @@ fn run_action_mode(
     let result_type_info = make_type_info("Result");
     let feedback_type_info = make_type_info("Feedback");
 
-    let (mut ros_node, _ros_context, _pool) = create_ros_node(&config)?;
+    let (mut ros_node, _pool) = create_ros_node(&config)?;
     let qos = bridge_endpoint_qos(&config);
     let status_qos = action_status_qos(&config.qos);
     let action_ros2_name = absolute_ros2_name(action_name)?;
@@ -2252,12 +2252,8 @@ struct SubscriptionStream {
 
 fn create_ros_node(
     config: &Ros2BridgeConfig,
-) -> eyre::Result<(
-    ros2_client::Node,
-    ros2_client::Context,
-    futures::executor::ThreadPool,
-)> {
-    let domain_id = parse_dds_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
+) -> eyre::Result<(ros2_client::Node, futures::executor::ThreadPool)> {
+    let domain_id = parse_dds_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref())?;
     let ros_context =
         create_ros_context(domain_id).map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
     let node_name = config
@@ -2284,7 +2280,7 @@ fn create_ros_node(
     })
     .context("failed to spawn ros2 spinner")?;
 
-    Ok((ros_node, ros_context, pool))
+    Ok((ros_node, pool))
 }
 
 fn create_ros_context(domain_id: u16) -> rustdds::dds::CreateResult<ros2_client::Context> {
@@ -2301,19 +2297,26 @@ fn parse_ros_domain_id(value: Option<&str>) -> usize {
 
 /// Parse `ROS_DOMAIN_ID` for the DDS transport.
 ///
-/// DDS derives its well-known ports from the domain id and overflows above 232,
-/// so out-of-range and malformed values warn and fall back to domain 0. A
-/// missing value silently defaults to 0.
-fn parse_dds_ros_domain_id(value: Option<&str>) -> u16 {
+/// DDS derives its well-known ports from the domain id, so only domains `0` to
+/// `232` are usable. A missing, empty or whitespace-only value means "unset"
+/// and selects domain 0; anything else that is not a domain id in that range is
+/// an error, because silently bridging on domain 0 would hide the mistake.
+fn parse_dds_ros_domain_id(value: Option<&str>) -> eyre::Result<u16> {
     let Some(value) = value else {
-        return 0;
+        return Ok(0);
     };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(0);
+    }
     match value.parse::<u16>() {
-        Ok(domain_id) if domain_id <= 232 => domain_id,
-        _ => {
-            tracing::warn!("invalid ROS_DOMAIN_ID `{value}`; defaulting to DDS domain 0");
-            0
-        }
+        Ok(domain_id) if domain_id <= 232 => Ok(domain_id),
+        Ok(domain_id) => Err(eyre!(
+            "invalid ROS_DOMAIN_ID `{value}`: DDS domains are 0 to 232, got {domain_id}"
+        )),
+        Err(_) => Err(eyre!(
+            "invalid ROS_DOMAIN_ID `{value}`: expected a DDS domain id between 0 and 232"
+        )),
     }
 }
 
@@ -3087,23 +3090,19 @@ mod subscriber_thread_tests {
     }
 }
 
-/// Regression tests for the narrowed PR2878 scope.
+/// Unit tests for the domain id parsers and the service/action endpoint QoS.
 ///
-/// The Zenoh parser must preserve every valid `usize` domain id, while the DDS
-/// parser caps at 232 because DDS derives its well-known ports from the domain
-/// id. The real-node tests exercise `create_ros_node` in a child process so the
-/// `ROS_DOMAIN_ID` environment variable is never mutated process-wide.
+/// The Zenoh parser preserves every valid `usize` domain id, while the DDS
+/// parser accepts only the domains DDS can address (`0` to `232`) and reports
+/// anything else as an error instead of silently bridging on domain 0.
 #[cfg(test)]
-mod narrowed_regression_tests {
+mod domain_and_qos_tests {
     use super::{
-        Ros2BridgeConfig, Ros2QosConfig, action_status_qos, bridge_endpoint_qos, create_ros_node,
+        Ros2BridgeConfig, Ros2QosConfig, action_status_qos, bridge_endpoint_qos,
         parse_dds_ros_domain_id, parse_ros_domain_id, service_or_action_qos,
     };
     use dora_ros2_bridge::transport::dds::from_rustdds_qos;
     use dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
-
-    /// Env var marking a self-spawned child process.
-    const CHILD_MARKER_ENV: &str = "PR2878_TEST_CHILD";
 
     // ---- domain id parsing -------------------------------------------------
 
@@ -3145,113 +3144,62 @@ mod narrowed_regression_tests {
 
     #[test]
     fn dds_domain_id_parser_keeps_values_within_the_dds_cap() {
-        assert_eq!(parse_dds_ros_domain_id(Some("0")), 0);
-        assert_eq!(parse_dds_ros_domain_id(Some("181")), 181);
-        assert_eq!(parse_dds_ros_domain_id(Some("232")), 232);
+        assert_eq!(parse_dds_ros_domain_id(Some("0")).unwrap(), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("181")).unwrap(), 181);
+        assert_eq!(parse_dds_ros_domain_id(Some("232")).unwrap(), 232);
     }
 
     /// A value padded with whitespace is still a valid domain id: the parser
-    /// must trim before parsing instead of falling back to domain 0.
+    /// trims before parsing instead of rejecting it.
     #[test]
     fn dds_domain_id_parser_accepts_whitespace_padded_values() {
-        assert_eq!(parse_dds_ros_domain_id(Some(" 232 ")), 232);
-        assert_eq!(parse_dds_ros_domain_id(Some(" 181 ")), 181);
-        assert_eq!(parse_dds_ros_domain_id(Some("\t232\n")), 232);
-        assert_eq!(parse_dds_ros_domain_id(Some(" 0 ")), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some(" 232 ")).unwrap(), 232);
+        assert_eq!(parse_dds_ros_domain_id(Some(" 181 ")).unwrap(), 181);
+        assert_eq!(parse_dds_ros_domain_id(Some("\t232\n")).unwrap(), 232);
+        assert_eq!(parse_dds_ros_domain_id(Some(" 0 ")).unwrap(), 0);
     }
 
-    /// Whitespace-only input carries no domain id, so it is treated like an
-    /// empty value and falls back to domain 0.
+    /// An unset, empty or whitespace-only value means "no domain configured"
+    /// and selects domain 0.
     #[test]
-    fn dds_domain_id_parser_treats_whitespace_only_input_as_empty() {
-        assert_eq!(parse_dds_ros_domain_id(Some("   ")), 0);
-        assert_eq!(parse_dds_ros_domain_id(Some("\t")), 0);
-        assert_eq!(parse_dds_ros_domain_id(Some("\n")), 0);
+    fn dds_domain_id_parser_defaults_to_zero_when_unset_or_empty() {
+        assert_eq!(parse_dds_ros_domain_id(None).unwrap(), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("")).unwrap(), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("   ")).unwrap(), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("\t")).unwrap(), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("\n")).unwrap(), 0);
     }
 
+    /// A malformed value is an error, not a silent fallback to domain 0.
     #[test]
-    fn dds_domain_id_parser_caps_above_232() {
-        assert_eq!(parse_dds_ros_domain_id(Some("233")), 0);
-        assert_eq!(parse_dds_ros_domain_id(Some("300")), 0);
-        assert_eq!(parse_dds_ros_domain_id(Some("65535")), 0);
-        assert_eq!(parse_dds_ros_domain_id(Some("65536")), 0);
-    }
-
-    #[test]
-    fn dds_domain_id_parser_falls_back_to_zero_for_missing_or_malformed_input() {
-        assert_eq!(parse_dds_ros_domain_id(None), 0);
-        assert_eq!(parse_dds_ros_domain_id(Some("")), 0);
-        assert_eq!(parse_dds_ros_domain_id(Some("not-a-number")), 0);
-        assert_eq!(parse_dds_ros_domain_id(Some("-1")), 0);
-    }
-
-    // ---- real node domain id (subprocess, child-only env) ------------------
-
-    /// Runs `create_ros_node` in a child process with `ROS_DOMAIN_ID` set only
-    /// in that child, and returns the domain id the created node reports.
-    ///
-    /// The child is this same test binary re-invoked with `--exact` on the
-    /// child-only test below, so no process-global env mutation happens in the
-    /// parent and parallel tests cannot race on `ROS_DOMAIN_ID`.
-    fn node_domain_id_in_child(domain: &str) -> i32 {
-        let exe = std::env::current_exe().expect("current test executable");
-        let output = std::process::Command::new(exe)
-            .args([
-                "--exact",
-                "narrowed_regression_tests::child_reports_created_node_domain_id",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env("ROS_DOMAIN_ID", domain)
-            .env(CHILD_MARKER_ENV, "1")
-            .output()
-            .expect("spawn child test process");
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            output.status.success(),
-            "child process failed for ROS_DOMAIN_ID={domain}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-        );
-
-        let marker = "PR2878_CHILD_NODE_DOMAIN_ID=";
-        let line = stdout
-            .lines()
-            .find(|line| line.contains(marker))
-            .unwrap_or_else(|| {
-                panic!(
-                    "child did not report a node domain id for ROS_DOMAIN_ID={domain}\n\
-                     stdout:\n{stdout}\nstderr:\n{stderr}"
-                )
-            });
-        line.split_once(marker)
-            .expect("marker split")
-            .1
-            .trim()
-            .parse()
-            .expect("child domain id is an integer")
-    }
-
-    /// Child half of `node_domain_id_in_child`. Does nothing unless the marker
-    /// env var is present, so a normal test run treats it as a no-op.
-    #[test]
-    fn child_reports_created_node_domain_id() {
-        if std::env::var_os(CHILD_MARKER_ENV).is_none() {
-            return;
+    fn dds_domain_id_parser_rejects_malformed_values() {
+        for value in [
+            "not-a-number",
+            "-1",
+            "1.5",
+            "0x10",
+            "232abc",
+            "9999999999999999999999999999999999999999",
+        ] {
+            let error = parse_dds_ros_domain_id(Some(value)).unwrap_err();
+            assert!(
+                error.to_string().contains("ROS_DOMAIN_ID"),
+                "error for `{value}` must name ROS_DOMAIN_ID: {error}"
+            );
         }
-        let config = Ros2BridgeConfig::default();
-        let node = create_ros_node(&config).expect("create ROS2 node").0;
-        println!("PR2878_CHILD_NODE_DOMAIN_ID={}", node.domain_id());
     }
 
+    /// DDS cannot address domains above 232, so they are an error rather than
+    /// a fallback to domain 0.
     #[test]
-    fn created_node_uses_requested_domain_id() {
-        assert_eq!(node_domain_id_in_child("181"), 181);
-    }
-
-    #[test]
-    fn created_node_falls_back_to_domain_zero_above_the_dds_cap() {
-        assert_eq!(node_domain_id_in_child("233"), 0);
+    fn dds_domain_id_parser_rejects_values_above_the_dds_cap() {
+        for value in ["233", "300", "65535", "65536", "4294967296"] {
+            let error = parse_dds_ros_domain_id(Some(value)).unwrap_err();
+            assert!(
+                error.to_string().contains("ROS_DOMAIN_ID"),
+                "error for `{value}` must name ROS_DOMAIN_ID: {error}"
+            );
+        }
     }
 
     // ---- service / action endpoint QoS -------------------------------------

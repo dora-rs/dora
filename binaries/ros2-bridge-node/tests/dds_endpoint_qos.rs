@@ -7,6 +7,10 @@
 //! the advertised policies from a separate DDS participant. No ROS install is
 //! needed: `AMENT_PREFIX_PATH` is empty and the only input event is a delayed
 //! `Stop`, so nothing is serialized.
+//!
+//! The observer joins the same non-zero domain the child is given through
+//! `ROS_DOMAIN_ID`, so discovering the child's endpoints also proves that the
+//! variable reaches the node the bridge actually creates.
 
 use std::{
     fs::File,
