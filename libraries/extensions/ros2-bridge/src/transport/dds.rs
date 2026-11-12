@@ -1,8 +1,73 @@
 //! Adapter for the existing `ros2-client`/RustDDS implementation.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{Durability, History, Liveliness, Reliability, Ros2Qos, TransportError};
+
+pub struct PendingDdsRequests<T> {
+    entries: Vec<(T, Instant)>,
+    max_len: usize,
+    timeout: Option<Duration>,
+}
+
+impl<T> PendingDdsRequests<T> {
+    pub fn new(max_len: usize, timeout: Option<Duration>) -> Self {
+        Self {
+            entries: Vec::new(),
+            max_len,
+            timeout,
+        }
+    }
+
+    pub fn push(&mut self, request_id: T) {
+        self.evict_expired();
+        if self.entries.len() >= self.max_len {
+            self.entries.remove(0);
+        }
+        self.entries.push((request_id, Instant::now()));
+    }
+
+    pub fn take_matching(&mut self, mut predicate: impl FnMut(&T) -> bool) -> Option<T> {
+        self.evict_expired();
+        self.entries
+            .iter()
+            .position(|(request_id, _)| predicate(request_id))
+            .map(|index| self.entries.remove(index).0)
+    }
+
+    fn evict_expired(&mut self) {
+        let Some(timeout) = self.timeout else {
+            return;
+        };
+        let now = Instant::now();
+        self.entries
+            .retain(|(_, inserted_at)| now.duration_since(*inserted_at) < timeout);
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+#[cfg(test)]
+mod pending_request_tests {
+    use super::PendingDdsRequests;
+    use std::thread;
+
+    #[test]
+    fn evicts_unreplied_requests_after_timeout() {
+        let mut pending = PendingDdsRequests::new(8, Some(std::time::Duration::from_millis(10)));
+
+        pending.push(1);
+        thread::sleep(std::time::Duration::from_millis(20));
+        pending.push(2);
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.take_matching(|id| *id == 1), None);
+        assert_eq!(pending.take_matching(|id| *id == 2), Some(2));
+    }
+}
 
 /// Pick the DDS service mapping matching the user's ROS2 middleware.
 ///
