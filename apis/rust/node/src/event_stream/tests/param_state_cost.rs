@@ -12,6 +12,10 @@
 //! Every test body runs on its own thread. A watcher fails the test as soon as
 //! a phase overruns its bound, so a slow or hung phase never blocks the run.
 
+use super::param_state::{
+    Change, End, Seen, Wait, assert_seq, calc, del, distinct_mixed, events_of, harness, key,
+    read_ready, reload, seen, set,
+};
 use super::*;
 
 use std::collections::HashMap;
@@ -35,12 +39,8 @@ const WAIT_TIMEOUT: Duration = BOUND;
 /// comparing results) must finish within this time.
 const UNTIMED_LIMIT: Duration = Duration::from_secs(120);
 
-fn non_input_drop_key() -> DataId {
-    DataId::from("dora.non_input_event".to_string())
-}
-
 // ---------------------------------------------------------------------------
-// Harness: timed phases on a watched thread
+// Timed phases on a watched thread
 // ---------------------------------------------------------------------------
 
 enum Mark {
@@ -103,264 +103,74 @@ fn run_phased(name: &str, body: impl FnOnce(&Phases) + Send + 'static) {
     }
 }
 
-struct Harness {
-    _node: crate::DoraNode,
-    events: EventStream,
-    tx: tokio::sync::mpsc::Sender<EventItem>,
-}
-
-fn harness(capacity: usize) -> Harness {
-    let (node, mut events) = test_event_stream();
-    let (tx, rx) = tokio::sync::mpsc::channel(capacity);
-    events.receiver = rx;
-    events.use_scheduler = true;
-    Harness {
-        _node: node,
-        events,
-        tx,
-    }
-}
-
-impl Harness {
-    fn send(&self, events: impl IntoIterator<Item = NodeEvent>) {
-        for event in events {
-            self.tx
-                .try_send(EventItem::NodeEvent { event })
-                .expect("the ingress channel has room for the test events");
-        }
-    }
-
-    fn non_input_drops(&mut self) -> u64 {
-        self.events
-            .drain_drop_counts()
-            .get(&non_input_drop_key())
-            .copied()
-            .unwrap_or(0)
-    }
-
-    fn wait_for_reply(&mut self) -> Result<Event, PatternError> {
-        futures::executor::block_on(self.events.recv_service_response(
-            "req-1",
-            &calc(),
-            WAIT_TIMEOUT,
-        ))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Events as the application sees them
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq)]
-enum Seen {
-    Update(String, serde_json::Value),
-    Deleted(String),
-    NodeFailed(String),
-    Reload,
-    Other(String),
-}
-
-fn seen(event: Event) -> Seen {
-    match event {
-        Event::ParamUpdate { key, value } => Seen::Update(key, value),
-        Event::ParamDeleted { key } => Seen::Deleted(key),
-        Event::NodeFailed { source_node_id, .. } => Seen::NodeFailed(source_node_id.to_string()),
-        Event::Reload { .. } => Seen::Reload,
-        other => Seen::Other(format!("{other:?}")),
-    }
+fn wait_for_reply(events: &mut EventStream) -> Result<Event, PatternError> {
+    futures::executor::block_on(events.recv_service_response("req-1", &calc(), WAIT_TIMEOUT))
 }
 
 /// Read with `try_recv` until nothing more is ready. The stream must stay open.
-fn read_ready(events: &mut EventStream) -> Vec<Seen> {
-    let mut got = Vec::new();
-    loop {
-        match events.try_recv() {
-            Ok(event) => got.push(seen(event)),
-            Err(TryRecvError::Empty) => return got,
-            Err(TryRecvError::Closed) => panic!(
-                "the stream closed after {} events; it must stay open",
-                got.len()
-            ),
-        }
-        assert!(
-            got.len() <= 4 * KEYS,
-            "try_recv kept returning events; read {} so far",
-            got.len()
-        );
-    }
+fn read_open(events: &mut EventStream) -> Vec<Seen> {
+    let (got, end) = read_ready(events);
+    assert_eq!(end, End::Empty, "the stream must stay open");
+    got
 }
 
-fn assert_seq(context: &str, got: &[Seen], expected: &[Seen]) {
-    if got == expected {
-        return;
-    }
-    let at = got
-        .iter()
-        .zip(expected)
-        .position(|(g, e)| g != e)
-        .unwrap_or(got.len().min(expected.len()));
-    let window =
-        |seq: &[Seen]| format!("{:?}", &seq[at.saturating_sub(2)..(at + 3).min(seq.len())]);
-    panic!(
-        "{context}: received {} events, expected {}; first difference at index {at}: got {} \
-         expected {}",
-        got.len(),
-        expected.len(),
-        window(got),
-        window(expected),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Parameter changes
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-struct Change {
-    key: String,
-    value: Option<serde_json::Value>,
-}
-
-impl Change {
-    fn event(&self) -> NodeEvent {
-        match &self.value {
-            Some(value) => NodeEvent::ParamUpdate {
-                key: self.key.clone(),
-                value_json: serde_json::to_vec(value).unwrap(),
-            },
-            None => NodeEvent::ParamDeleted {
-                key: self.key.clone(),
-            },
-        }
-    }
-
-    fn seen(&self) -> Seen {
-        match &self.value {
-            Some(value) => Seen::Update(self.key.clone(), value.clone()),
-            None => Seen::Deleted(self.key.clone()),
-        }
-    }
-}
-
-fn key(i: usize) -> String {
-    format!("p{i:06}")
-}
-
-/// `KEYS` distinct keys: updates (even index) and deletions (odd index).
-fn distinct_backlog() -> Vec<Change> {
-    (0..KEYS)
-        .map(|i| Change {
-            key: key(i),
-            value: (i % 2 == 0).then(|| serde_json::Value::from(i)),
-        })
-        .collect()
-}
-
-/// A second change of every key of `distinct_backlog`, with a new value; keys
-/// deleted before are set, keys set before are deleted, every third key gets
-/// a new value instead.
+/// A second change of every key of the distinct-key backlog, with a new value;
+/// keys deleted before are set, keys set before are deleted, every third key
+/// gets a new value instead.
 fn second_changes() -> Vec<Change> {
     (0..KEYS)
-        .map(|i| Change {
-            key: key(i),
-            value: (i % 2 == 1 || i % 3 == 0).then(|| serde_json::Value::from(5_000_000 + i)),
+        .map(|i| {
+            if i % 2 == 1 || i % 3 == 0 {
+                set(key("p", i), 5_000_000 + i)
+            } else {
+                del(key("p", i))
+            }
         })
         .collect()
-}
-
-fn events_of(changes: &[Change]) -> Vec<NodeEvent> {
-    changes.iter().map(Change::event).collect()
 }
 
 fn seen_of(changes: &[Change]) -> Vec<Seen> {
     changes.iter().map(Change::seen).collect()
 }
 
-fn calc() -> NodeId {
-    NodeId::from("calc".to_string())
-}
-
-fn reply() -> NodeEvent {
-    NodeEvent::Input {
-        id: "response".into(),
-        metadata: Arc::new(make_metadata(request_id_params("req-1"))),
-        data: None,
-    }
-}
-
-fn reload() -> NodeEvent {
-    NodeEvent::Reload { operator_id: None }
-}
-
-fn assert_reply(outcome: &Result<Event, PatternError>) {
-    assert!(
-        matches!(outcome, Ok(Event::Input { id, metadata, .. })
-            if id.as_str() == "response"
-                && dora_message::metadata::get_string_param(&metadata.parameters, REQUEST_ID)
-                    == Some("req-1")),
-        "expected the queued reply, got {outcome:?}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // S9 — linear cost
 // ---------------------------------------------------------------------------
 
-/// The reply is queued behind `KEYS` distinct-key changes; the server is
-/// alive. The wait returns the reply within its timeout, and the application
-/// then reads every key, both within the time bound.
+/// The reply is queued behind `KEYS` distinct-key changes, alone or followed by
+/// the expected server's `NodeFailed` (failed-server path). The wait returns
+/// the reply within its timeout; the application then reads every key (and the
+/// `NodeFailed`), within the time bound.
 #[test]
 fn s9_wait_over_large_backlog_returns_reply_in_time_then_every_key() {
-    run_phased("s9_wait_loop", |phases| {
-        let backlog = distinct_backlog();
-        let mut h = harness(KEYS + 16);
-        h.send(events_of(&backlog));
-        h.send([reply()]);
+    for (name, failed_server) in [("server alive", false), ("server failed", true)] {
+        run_phased(name, move |phases| {
+            let backlog = distinct_mixed("p", KEYS);
+            let mut h = harness(KEYS + 16);
+            h.send(events_of(&backlog));
+            h.send([Wait::Service.reply()]);
+            if failed_server {
+                h.send([calc_failed()]);
+            }
 
-        let outcome = phases.timed("wait over the backlog", || h.wait_for_reply());
-        assert_reply(&outcome);
+            let outcome = phases.timed("wait over the backlog", || wait_for_reply(&mut h.events));
+            Wait::Service.assert_reply(name, &outcome);
 
-        let got = phases.timed("reading the backlog after the wait", || {
-            read_ready(&mut h.events)
+            let got = phases.timed("reading the backlog after the wait", || {
+                read_open(&mut h.events)
+            });
+            let mut expected = seen_of(&backlog);
+            if failed_server {
+                expected.push(Seen::NodeFailed("calc".to_string()));
+            }
+            assert_seq(name, &got, &expected);
+            assert_eq!(
+                h.non_input_drops(),
+                0,
+                "{name}: no control-event drop may be counted"
+            );
         });
-        assert_seq("after the wait", &got, &seen_of(&backlog));
-        assert_eq!(
-            h.non_input_drops(),
-            0,
-            "no control-event drop may be counted"
-        );
-    });
-}
-
-/// The reply and then the expected server's `NodeFailed` are queued behind
-/// `KEYS` distinct-key changes (failed-server path). The wait returns the
-/// reply within its timeout; the application then reads every key and the
-/// `NodeFailed`, within the time bound.
-#[test]
-fn s9_wait_over_large_backlog_on_failed_server_path_returns_reply_in_time() {
-    run_phased("s9_wait_failed_server", |phases| {
-        let backlog = distinct_backlog();
-        let mut h = harness(KEYS + 16);
-        h.send(events_of(&backlog));
-        h.send([reply(), calc_failed()]);
-
-        let outcome = phases.timed("wait over the backlog (server failed)", || {
-            h.wait_for_reply()
-        });
-        assert_reply(&outcome);
-
-        let got = phases.timed("reading the backlog after the wait", || {
-            read_ready(&mut h.events)
-        });
-        let mut expected = seen_of(&backlog);
-        expected.push(Seen::NodeFailed("calc".to_string()));
-        assert_seq("after the wait", &got, &expected);
-        assert_eq!(
-            h.non_input_drops(),
-            0,
-            "no control-event drop may be counted"
-        );
-    });
+    }
 }
 
 /// `KEYS` distinct-key changes interleaved with `KEYS / KEYS_PER_RELOAD`
@@ -376,7 +186,7 @@ fn s9_large_backlog_beside_control_overflow_is_absorbed_in_time() {
         assert!(reloads > 10 * NON_INPUT_EVENT_QUEUE_SIZE);
         let evicted = reloads - NON_INPUT_EVENT_QUEUE_SIZE;
 
-        let backlog = distinct_backlog();
+        let backlog = distinct_mixed("p", KEYS);
         let mut sent = Vec::with_capacity(KEYS + reloads);
         let mut expected = Vec::with_capacity(KEYS + NON_INPUT_EVENT_QUEUE_SIZE);
         let mut reloads_sent = 0;
@@ -401,7 +211,7 @@ fn s9_large_backlog_beside_control_overflow_is_absorbed_in_time() {
         });
         let first = first.expect("an event is ready");
         let rest = phases.timed("reading the rest of the backlog", || {
-            read_ready(&mut h.events)
+            read_open(&mut h.events)
         });
 
         let mut got = Vec::with_capacity(rest.len() + 1);
@@ -428,18 +238,18 @@ fn s9_large_backlog_beside_control_overflow_is_absorbed_in_time() {
 #[test]
 fn s9_new_changes_of_keys_buffered_by_a_wait_are_read_in_time() {
     run_phased("s9_changes_after_wait", |phases| {
-        let backlog = distinct_backlog();
+        let backlog = distinct_mixed("p", KEYS);
         let mut h = harness(2 * KEYS + 16);
         h.send(events_of(&backlog));
-        h.send([reply()]);
+        h.send([Wait::Service.reply()]);
 
-        let outcome = phases.timed("wait over the backlog", || h.wait_for_reply());
-        assert_reply(&outcome);
+        let outcome = phases.timed("wait over the backlog", || wait_for_reply(&mut h.events));
+        Wait::Service.assert_reply("wait over the backlog", &outcome);
 
         let again = second_changes();
         h.send(events_of(&again));
 
-        let got = phases.timed("reading the changed backlog", || read_ready(&mut h.events));
+        let got = phases.timed("reading the changed backlog", || read_open(&mut h.events));
         let newest: HashMap<&str, &Change> = again.iter().map(|c| (c.key.as_str(), c)).collect();
         let expected: Vec<Seen> = backlog
             .iter()

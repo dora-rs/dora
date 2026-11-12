@@ -3,18 +3,18 @@
 //!
 //! Each test fills the ingress channel of a scheduled event stream directly,
 //! keeps the ingress sender open, and reads the stream only through its public
-//! receive API. Expected sequences follow the specification: one event per
-//! changed key with its newest change, at the position of the first change of
-//! that key that arrived while no change of the key was pending; parameter
-//! entries and other control events in position order, ahead of inputs; after
-//! `Stop`, only the inputs that were already queued.
+//! receive API. Expected sequences: one event per changed key with its newest
+//! change, at the position of the first change of that key that arrived while
+//! no change of the key was pending; parameter entries and other control
+//! events in position order, ahead of inputs; after `Stop`, only the inputs
+//! that were already queued.
 //!
 //! Every test body runs on its own thread with a wall-clock limit, so a read
 //! or a wait that hangs fails the test instead of blocking the run.
 
 use super::*;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 /// More pending parameter changes than the 1,000-event control queue holds.
@@ -30,11 +30,6 @@ const PROMPT: Duration = Duration::from_secs(3);
 
 /// A test body that has not finished after this time has hung.
 const BODY_LIMIT: Duration = Duration::from_secs(60);
-
-/// The key under which control-event drops are counted.
-fn non_input_drop_key() -> DataId {
-    DataId::from("dora.non_input_event".to_string())
-}
 
 // ---------------------------------------------------------------------------
 // Harness
@@ -66,14 +61,14 @@ fn run_bounded(name: &str, body: impl FnOnce() + Send + 'static) {
 }
 
 /// A scheduled event stream whose ingress channel the test fills.
-struct Harness {
+pub(super) struct Harness {
     _node: crate::DoraNode,
-    events: EventStream,
+    pub(super) events: EventStream,
     tx: tokio::sync::mpsc::Sender<EventItem>,
     capacity: usize,
 }
 
-fn harness(capacity: usize) -> Harness {
+pub(super) fn harness(capacity: usize) -> Harness {
     let (node, mut events) = test_event_stream();
     let (tx, rx) = tokio::sync::mpsc::channel(capacity);
     events.receiver = rx;
@@ -87,7 +82,7 @@ fn harness(capacity: usize) -> Harness {
 }
 
 impl Harness {
-    fn send(&self, events: impl IntoIterator<Item = NodeEvent>) {
+    pub(super) fn send(&self, events: impl IntoIterator<Item = NodeEvent>) {
         for event in events {
             self.tx
                 .try_send(EventItem::NodeEvent { event })
@@ -95,12 +90,30 @@ impl Harness {
         }
     }
 
-    fn non_input_drops(&mut self) -> u64 {
+    /// The number of `dora.non_input_event` drops counted so far.
+    pub(super) fn non_input_drops(&mut self) -> u64 {
+        let key = DataId::from("dora.non_input_event".to_string());
         self.events
             .drain_drop_counts()
-            .get(&non_input_drop_key())
+            .get(&key)
             .copied()
             .unwrap_or(0)
+    }
+
+    /// Read with `try_recv` until nothing more is ready, and check what was
+    /// received and how the reads ended.
+    fn expect(&mut self, context: &str, expected: &[Seen], end: End) {
+        let (got, actual_end) = read_ready(&mut self.events);
+        assert_seq(context, &got, expected);
+        assert_eq!(actual_end, end, "{context}: how the reads ended");
+    }
+
+    fn assert_drops(&mut self, context: &str, expected: u64) {
+        assert_eq!(
+            self.non_input_drops(),
+            expected,
+            "{context}: `dora.non_input_event` drops counted"
+        );
     }
 }
 
@@ -109,14 +122,14 @@ impl Harness {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Cause {
+pub(super) enum Cause {
     Manual,
     AllInputsClosed,
 }
 
 /// One event as the application reads it.
 #[derive(Debug, Clone, PartialEq)]
-enum Seen {
+pub(super) enum Seen {
     Update(String, serde_json::Value),
     Deleted(String),
     Stop(Cause),
@@ -136,7 +149,7 @@ impl Seen {
     }
 }
 
-fn seen(event: Event) -> Seen {
+pub(super) fn seen(event: Event) -> Seen {
     match event {
         Event::ParamUpdate { key, value } => Seen::Update(key, value),
         Event::ParamDeleted { key } => Seen::Deleted(key),
@@ -152,7 +165,7 @@ fn seen(event: Event) -> Seen {
 
 /// How a read loop ended.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum End {
+pub(super) enum End {
     /// `try_recv` reported `Empty`: nothing more is ready, the stream is open.
     Empty,
     /// The stream is closed (the read after `Stop` and its queued inputs).
@@ -160,7 +173,7 @@ enum End {
 }
 
 /// Read with `try_recv` until nothing more is ready or the stream closes.
-fn read_ready(events: &mut EventStream) -> (Vec<Seen>, End) {
+pub(super) fn read_ready(events: &mut EventStream) -> (Vec<Seen>, End) {
     let mut got = Vec::new();
     for _ in 0..1_000_000 {
         match events.try_recv() {
@@ -178,7 +191,7 @@ fn describe(seq: &[Seen], at: usize) -> String {
     format!("{:?}", &seq[from..to])
 }
 
-fn assert_seq(context: &str, got: &[Seen], expected: &[Seen]) {
+pub(super) fn assert_seq(context: &str, got: &[Seen], expected: &[Seen]) {
     if got == expected {
         return;
     }
@@ -200,29 +213,25 @@ fn assert_seq(context: &str, got: &[Seen], expected: &[Seen]) {
     );
 }
 
-fn assert_end(context: &str, got: End, expected: End) {
-    assert_eq!(got, expected, "{context}: how the reads ended");
-}
-
 // ---------------------------------------------------------------------------
 // Parameter changes and the specification model
 // ---------------------------------------------------------------------------
 
 /// One parameter change: an update (`Some(value)`) or a deletion (`None`).
 #[derive(Debug, Clone)]
-struct Change {
-    key: String,
-    value: Option<serde_json::Value>,
+pub(super) struct Change {
+    pub(super) key: String,
+    pub(super) value: Option<serde_json::Value>,
 }
 
-fn set(key: impl Into<String>, value: impl Into<serde_json::Value>) -> Change {
+pub(super) fn set(key: impl Into<String>, value: impl Into<serde_json::Value>) -> Change {
     Change {
         key: key.into(),
         value: Some(value.into()),
     }
 }
 
-fn del(key: impl Into<String>) -> Change {
+pub(super) fn del(key: impl Into<String>) -> Change {
     Change {
         key: key.into(),
         value: None,
@@ -230,7 +239,7 @@ fn del(key: impl Into<String>) -> Change {
 }
 
 impl Change {
-    fn event(&self) -> NodeEvent {
+    pub(super) fn event(&self) -> NodeEvent {
         match &self.value {
             Some(value) => NodeEvent::ParamUpdate {
                 key: self.key.clone(),
@@ -242,7 +251,7 @@ impl Change {
         }
     }
 
-    fn seen(&self) -> Seen {
+    pub(super) fn seen(&self) -> Seen {
         match &self.value {
             Some(value) => Seen::Update(self.key.clone(), value.clone()),
             None => Seen::Deleted(self.key.clone()),
@@ -250,12 +259,12 @@ impl Change {
     }
 }
 
-fn events_of(changes: &[Change]) -> Vec<NodeEvent> {
+pub(super) fn events_of(changes: &[Change]) -> Vec<NodeEvent> {
     changes.iter().map(Change::event).collect()
 }
 
-/// S2 + S3 for changes that are all pending at the same time: one event per
-/// key, at the position of the key's first change, carrying its last change.
+/// For changes that are all pending at the same time: one event per key, at
+/// the position of the key's first change, carrying its last change.
 fn coalesce(changes: &[Change]) -> Vec<Seen> {
     let mut order: Vec<String> = Vec::new();
     let mut last: HashMap<String, &Change> = HashMap::new();
@@ -267,12 +276,12 @@ fn coalesce(changes: &[Change]) -> Vec<Seen> {
     order.iter().map(|key| last[key].seen()).collect()
 }
 
-fn key(prefix: &str, i: usize) -> String {
+pub(super) fn key(prefix: &str, i: usize) -> String {
     format!("{prefix}{i:06}")
 }
 
 /// `count` distinct keys, updates (even index) and deletions (odd index).
-fn distinct_mixed(prefix: &str, count: usize) -> Vec<Change> {
+pub(super) fn distinct_mixed(prefix: &str, count: usize) -> Vec<Change> {
     (0..count)
         .map(|i| {
             if i % 2 == 0 {
@@ -320,11 +329,11 @@ fn restarted(node: &str) -> NodeEvent {
     }
 }
 
-fn reload() -> NodeEvent {
+pub(super) fn reload() -> NodeEvent {
     NodeEvent::Reload { operator_id: None }
 }
 
-fn calc() -> NodeId {
+pub(super) fn calc() -> NodeId {
     NodeId::from("calc".to_string())
 }
 
@@ -332,15 +341,42 @@ fn calc_failed_seen() -> Seen {
     Seen::NodeFailed("calc".to_string())
 }
 
+/// One small scenario: the events sent, then the sequence and end of the reads.
+struct Case {
+    name: &'static str,
+    sent: Vec<NodeEvent>,
+    expected: Vec<Seen>,
+    end: End,
+}
+
+fn case(name: &'static str, sent: Vec<NodeEvent>, expected: Vec<Seen>, end: End) -> Case {
+    Case {
+        name,
+        sent,
+        expected,
+        end,
+    }
+}
+
+/// Run every case on a fresh stream; a failure names the case.
+fn check_cases(test: &'static str, build: impl FnOnce() -> Vec<Case> + Send + 'static) {
+    run_bounded(test, move || {
+        for case in build() {
+            let mut h = harness(case.sent.len() + 16);
+            h.send(case.sent);
+            h.expect(case.name, &case.expected, case.end);
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // S1 — no loss
 // ---------------------------------------------------------------------------
 
-/// Formal-model scenario (a): `NON_INPUT_EVENT_QUEUE_SIZE + 1000` distinct keys,
-/// updates and deletions mixed (some keys changed again while pending), then a
-/// live `watermark` parameter. Every backlog key arrives before the watermark,
-/// the application view of every key is its last change, and no control-event
-/// drop is counted.
+/// `NON_INPUT_EVENT_QUEUE_SIZE + 1000` distinct keys, updates and deletions
+/// mixed (some keys changed again while pending), then a live `watermark`
+/// parameter. Every backlog key arrives before the watermark, the application
+/// view of every key is its last change, and no control-event drop is counted.
 #[test]
 fn s1_backlog_beyond_control_queue_then_watermark_delivers_every_key_first() {
     run_bounded("s1_watermark", || {
@@ -362,10 +398,7 @@ fn s1_backlog_beyond_control_queue_then_watermark_delivers_every_key_first() {
         }
         assert!(watermark_seen, "the watermark was never received");
 
-        let expected_view: HashMap<String, Seen> = backlog
-            .iter()
-            .map(|change| (change.key.clone(), change.seen()))
-            .collect();
+        // The application view of a key is the last parameter event received.
         let mut view: HashMap<String, Seen> = HashMap::new();
         for event in &before_watermark {
             let key = event
@@ -373,43 +406,27 @@ fn s1_backlog_beyond_control_queue_then_watermark_delivers_every_key_first() {
                 .unwrap_or_else(|| panic!("unexpected non-parameter event {event:?}"));
             view.insert(key.to_string(), event.clone());
         }
-        let missing: Vec<&String> = expected_view
-            .keys()
-            .filter(|key| !view.contains_key(*key))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "{} of {count} backlog keys were not received before the watermark \
-             (received {} parameter events), e.g. {:?}",
-            missing.len(),
-            before_watermark.len(),
-            missing.iter().take(3).collect::<Vec<_>>()
-        );
-        let wrong: Vec<(&String, &Seen, &Seen)> = expected_view
+        let last: HashMap<&String, Seen> = backlog.iter().map(|c| (&c.key, c.seen())).collect();
+        let wrong: Vec<_> = last
             .iter()
-            .filter(|(key, want)| view.get(*key) != Some(want))
-            .map(|(key, want)| (key, want, &view[key]))
+            .filter(|(key, want)| view.get(**key) != Some(*want))
+            .map(|(key, want)| (key, want, view.get(*key)))
             .collect();
         assert!(
             wrong.is_empty(),
-            "{} keys end with a view other than their last change, e.g. {:?}",
+            "{} of {count} backlog keys were not received before the watermark or end with a \
+             view other than their last change, e.g. {:?}",
             wrong.len(),
             wrong.iter().take(3).collect::<Vec<_>>()
         );
 
-        let (rest, end) = read_ready(&mut h.events);
-        assert_seq("after the watermark", &rest, &[]);
-        assert_end("after the watermark", end, End::Empty);
-        assert_eq!(
-            h.non_input_drops(),
-            0,
-            "parameter changes must not cause a `dora.non_input_event` drop"
-        );
+        h.expect("after the watermark", &[], End::Empty);
+        h.assert_drops("after the watermark", 0);
     });
 }
 
-/// S1 + S3: an input is queued ahead of a parameter backlog larger than the
-/// control queue. Every parameter event comes first, then the input.
+/// An input is queued ahead of a parameter backlog larger than the control
+/// queue. Every parameter event comes first, then the input.
 #[test]
 fn s1_s3_parameter_backlog_keeps_priority_over_queued_input() {
     run_bounded("s1_s3_priority", || {
@@ -418,16 +435,14 @@ fn s1_s3_parameter_backlog_keeps_priority_over_queued_input() {
         h.send([tick()]);
         h.send(events_of(&backlog));
 
-        let (got, end) = read_ready(&mut h.events);
         let mut expected = coalesce(&backlog);
         expected.push(tick_seen());
-        assert_seq("parameter backlog ahead of the input", &got, &expected);
-        assert_end("parameter backlog ahead of the input", end, End::Empty);
-        assert_eq!(
-            h.non_input_drops(),
-            0,
-            "no control-event drop may be counted"
+        h.expect(
+            "parameter backlog ahead of the input",
+            &expected,
+            End::Empty,
         );
+        h.assert_drops("parameter backlog ahead of the input", 0);
     });
 }
 
@@ -435,93 +450,55 @@ fn s1_s3_parameter_backlog_keeps_priority_over_queued_input() {
 // S2 — one event per key
 // ---------------------------------------------------------------------------
 
-fn check_pending_together(name: &'static str, changes: Vec<Change>, expected: Vec<Seen>) {
-    run_bounded(name, move || {
-        let mut h = harness(changes.len() + 16);
-        h.send(events_of(&changes));
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq(name, &got, &expected);
-        assert_end(name, end, End::Empty);
+#[test]
+fn s2_pending_changes_of_one_key_are_one_event_with_newest_change() {
+    check_cases("s2_coalesce", || {
+        let updates: Vec<Change> = (0..100_000).map(|i| set("k", i)).collect();
+        vec![
+            case(
+                "k=1, k=2, k=3",
+                events_of(&[set("k", 1), set("k", 2), set("k", 3)]),
+                vec![set("k", 3).seen()],
+                End::Empty,
+            ),
+            case(
+                "k=1, delete k",
+                events_of(&[set("k", 1), del("k")]),
+                vec![del("k").seen()],
+                End::Empty,
+            ),
+            case(
+                "delete k, k=5",
+                events_of(&[del("k"), set("k", 5)]),
+                vec![set("k", 5).seen()],
+                End::Empty,
+            ),
+            case(
+                "100,000 updates of k",
+                events_of(&updates),
+                vec![set("k", 99_999).seen()],
+                End::Empty,
+            ),
+        ]
     });
 }
 
-/// `k=1, k=2, k=3` pending ⇒ one `ParamUpdate { k, 3 }`.
-#[test]
-fn s2_three_updates_of_one_key_are_one_event_with_newest_value() {
-    check_pending_together(
-        "s2_three_updates",
-        vec![set("k", 1), set("k", 2), set("k", 3)],
-        vec![set("k", 3).seen()],
-    );
-}
-
-/// Formal-model scenario (b): `k=1, delete k` pending ⇒ one `ParamDeleted { k }`.
-#[test]
-fn s2_update_then_delete_is_one_deleted_event() {
-    check_pending_together(
-        "s2_update_then_delete",
-        vec![set("k", 1), del("k")],
-        vec![del("k").seen()],
-    );
-}
-
-/// `delete k, k=5` pending ⇒ one `ParamUpdate { k, 5 }`.
-#[test]
-fn s2_delete_then_update_is_one_update_event() {
-    check_pending_together(
-        "s2_delete_then_update",
-        vec![del("k"), set("k", 5)],
-        vec![set("k", 5).seen()],
-    );
-}
-
-/// 100,000 updates of one key pending ⇒ one event with the last value.
-#[test]
-fn s2_hundred_thousand_updates_of_one_key_are_one_event() {
-    let changes: Vec<Change> = (0..100_000).map(|i| set("k", i)).collect();
-    check_pending_together(
-        "s2_hundred_thousand_updates",
-        changes,
-        vec![set("k", 99_999).seen()],
-    );
-}
-
-/// Changes pending together are one event; a change that arrives after the
-/// application received the key is a new event; a received change is never
-/// delivered again.
+/// A change that arrives after the application received the key is a new
+/// event; a received change is never delivered again.
 #[test]
 fn s2_change_after_delivery_is_new_event_and_received_change_never_repeats() {
     run_bounded("s2_after_delivery", || {
         let mut h = harness(64);
         h.send([set("k", 1).event(), set("k", 2).event()]);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq("k=1, k=2 pending", &got, &[set("k", 2).seen()]);
-        assert_end("k=1, k=2 pending", end, End::Empty);
+        h.expect("k=1, k=2 pending", &[set("k", 2).seen()], End::Empty);
 
         h.send([set("k", 3).event()]);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq("k=3 after k=2 was received", &got, &[set("k", 3).seen()]);
-        assert_end("k=3 after k=2 was received", end, End::Empty);
-    });
-}
-
-/// Guard (unchanged behaviour): one change per read is delivered each time,
-/// and a received change is not delivered again.
-#[test]
-fn guard_s2_change_after_delivery_is_delivered_again() {
-    run_bounded("guard_s2_after_delivery", || {
-        let mut h = harness(64);
-        h.send([set("k", 1).event()]);
-        assert_eq!(seen(h.events.recv().unwrap()), set("k", 1).seen());
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq("after k=1 was received", &got, &[]);
-        assert_end("after k=1 was received", end, End::Empty);
-
-        h.send([set("k", 2).event()]);
-        assert_eq!(seen(h.events.recv().unwrap()), set("k", 2).seen());
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq("after k=2 was received", &got, &[]);
-        assert_end("after k=2 was received", end, End::Empty);
+        h.expect(
+            "k=3 after k=2 was received",
+            &[set("k", 3).seen()],
+            End::Empty,
+        );
+        h.expect("nothing new", &[], End::Empty);
     });
 }
 
@@ -529,89 +506,65 @@ fn guard_s2_change_after_delivery_is_delivered_again() {
 // S3 — order
 // ---------------------------------------------------------------------------
 
-/// Formal-model scenario (e): `a=1, b=1, a=2` pending ⇒ `a=2`, then `b=1`.
-#[test]
-fn s3_key_keeps_position_of_its_first_pending_change() {
-    check_pending_together(
-        "s3_first_position",
-        vec![set("a", 1), set("b", 1), set("a", 2)],
-        vec![set("a", 2).seen(), set("b", 1).seen()],
-    );
-}
-
-/// `a=1, NodeRestarted x, b=1, a=2` pending ⇒ `a=2`, `NodeRestarted x`, `b=1`.
 #[test]
 fn s3_parameter_entries_and_control_events_follow_positions() {
-    run_bounded("s3_positions_with_control", || {
-        let mut h = harness(64);
-        h.send([
-            set("a", 1).event(),
-            restarted("x"),
-            set("b", 1).event(),
-            set("a", 2).event(),
-        ]);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq(
-            "a=1, NodeRestarted x, b=1, a=2",
-            &got,
-            &[
-                set("a", 2).seen(),
-                Seen::NodeRestarted("x".into()),
-                set("b", 1).seen(),
-            ],
-        );
-        assert_end("a=1, NodeRestarted x, b=1, a=2", end, End::Empty);
+    check_cases("s3_positions", || {
+        vec![
+            case(
+                "a=1, b=1, a=2",
+                events_of(&[set("a", 1), set("b", 1), set("a", 2)]),
+                vec![set("a", 2).seen(), set("b", 1).seen()],
+                End::Empty,
+            ),
+            case(
+                "a=1, NodeRestarted x, b=1",
+                vec![set("a", 1).event(), restarted("x"), set("b", 1).event()],
+                vec![
+                    set("a", 1).seen(),
+                    Seen::NodeRestarted("x".into()),
+                    set("b", 1).seen(),
+                ],
+                End::Empty,
+            ),
+            case(
+                "a=1, NodeRestarted x, b=1, a=2",
+                vec![
+                    set("a", 1).event(),
+                    restarted("x"),
+                    set("b", 1).event(),
+                    set("a", 2).event(),
+                ],
+                vec![
+                    set("a", 2).seen(),
+                    Seen::NodeRestarted("x".into()),
+                    set("b", 1).seen(),
+                ],
+                End::Empty,
+            ),
+            case(
+                "tick, a=1",
+                vec![tick(), set("a", 1).event()],
+                vec![set("a", 1).seen(), tick_seen()],
+                End::Empty,
+            ),
+        ]
     });
 }
 
-/// Guard: `a=1, NodeRestarted x, b=1` pending ⇒ that order.
-#[test]
-fn guard_s3_parameters_and_control_events_in_arrival_order() {
-    run_bounded("guard_s3_arrival_order", || {
-        let mut h = harness(64);
-        h.send([set("a", 1).event(), restarted("x"), set("b", 1).event()]);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq(
-            "a=1, NodeRestarted x, b=1",
-            &got,
-            &[
-                set("a", 1).seen(),
-                Seen::NodeRestarted("x".into()),
-                set("b", 1).seen(),
-            ],
-        );
-        assert_end("a=1, NodeRestarted x, b=1", end, End::Empty);
-    });
-}
-
-/// Guard: a key received earlier takes a new position with its next change.
+/// A key received earlier takes a new position with its next change.
 /// `a=1, b=1` pending, `a=1` read, then `a=2` arrives ⇒ `b=1`, then `a=2`.
 #[test]
-fn guard_s3_key_received_earlier_takes_new_position() {
-    run_bounded("guard_s3_new_position", || {
+fn s3_key_received_earlier_takes_new_position() {
+    run_bounded("s3_new_position", || {
         let mut h = harness(64);
         h.send([set("a", 1).event(), set("b", 1).event()]);
         assert_eq!(seen(h.events.recv().unwrap()), set("a", 1).seen());
         h.send([set("a", 2).event()]);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq(
+        h.expect(
             "a=2 after a=1 was read",
-            &got,
             &[set("b", 1).seen(), set("a", 2).seen()],
+            End::Empty,
         );
-        assert_end("a=2 after a=1 was read", end, End::Empty);
-    });
-}
-
-/// Guard: a parameter change is served before an input queued ahead of it.
-#[test]
-fn guard_s3_parameter_served_before_queued_input() {
-    run_bounded("guard_s3_priority", || {
-        let mut h = harness(64);
-        h.send([tick(), set("a", 1).event()]);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq("tick, a=1", &got, &[set("a", 1).seen(), tick_seen()]);
-        assert_end("tick, a=1", end, End::Empty);
     });
 }
 
@@ -619,60 +572,58 @@ fn guard_s3_parameter_served_before_queued_input() {
 // S4 — Stop
 // ---------------------------------------------------------------------------
 
-/// Formal-model scenario (c): `k=1, Stop, k=2` pending ⇒ `k=2`, then `Stop`,
-/// then the stream ends.
 #[test]
-fn s4_key_pending_at_stop_is_delivered_before_stop_with_newest_value() {
-    run_bounded("s4_newest_before_stop", || {
-        let mut h = harness(64);
-        h.send([set("k", 1).event(), NodeEvent::Stop, set("k", 2).event()]);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq(
-            "k=1, Stop, k=2",
-            &got,
-            &[set("k", 2).seen(), Seen::Stop(Cause::Manual)],
-        );
-        assert_end("k=1, Stop, k=2", end, End::Closed);
-    });
-}
-
-/// `a=1, b=1, Stop, a=2, c=1` pending ⇒ `a=2`, `b=1`, `Stop`; `c` is never
-/// delivered.
-#[test]
-fn s4_only_keys_pending_at_stop_precede_it() {
-    run_bounded("s4_only_pending_keys", || {
-        let mut h = harness(64);
-        h.send([
-            set("a", 1).event(),
-            set("b", 1).event(),
-            NodeEvent::Stop,
-            set("a", 2).event(),
-            set("c", 1).event(),
-        ]);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq(
-            "a=1, b=1, Stop, a=2, c=1",
-            &got,
-            &[
-                set("a", 2).seen(),
-                set("b", 1).seen(),
-                Seen::Stop(Cause::Manual),
-            ],
-        );
-        assert_end("a=1, b=1, Stop, a=2, c=1", end, End::Closed);
-    });
-}
-
-/// Formal-model scenario (d), guard: `Stop, k=1` pending ⇒ `Stop`, and no `k`
-/// event ever follows.
-#[test]
-fn guard_s4_change_arriving_after_stop_is_never_delivered() {
-    run_bounded("guard_s4_after_stop", || {
-        let mut h = harness(64);
-        h.send([NodeEvent::Stop, set("k", 1).event()]);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq("Stop, k=1", &got, &[Seen::Stop(Cause::Manual)]);
-        assert_end("Stop, k=1", end, End::Closed);
+fn s4_stop_delivers_pending_keys_with_newest_value_and_only_queued_inputs() {
+    check_cases("s4_stop_cases", || {
+        let stop = Seen::Stop(Cause::Manual);
+        vec![
+            case(
+                "k=1, Stop, k=2",
+                vec![set("k", 1).event(), NodeEvent::Stop, set("k", 2).event()],
+                vec![set("k", 2).seen(), stop.clone()],
+                End::Closed,
+            ),
+            case(
+                "a=1, b=1, Stop, a=2, c=1",
+                vec![
+                    set("a", 1).event(),
+                    set("b", 1).event(),
+                    NodeEvent::Stop,
+                    set("a", 2).event(),
+                    set("c", 1).event(),
+                ],
+                vec![set("a", 2).seen(), set("b", 1).seen(), stop.clone()],
+                End::Closed,
+            ),
+            case(
+                "Stop, k=1",
+                vec![NodeEvent::Stop, set("k", 1).event()],
+                vec![stop.clone()],
+                End::Closed,
+            ),
+            case(
+                "tick, Stop, k=1, Reload",
+                vec![tick(), NodeEvent::Stop, set("k", 1).event(), reload()],
+                vec![stop, tick_seen()],
+                End::Closed,
+            ),
+            case(
+                "tick, tick, a=1, AllInputsClosed",
+                vec![
+                    tick(),
+                    tick(),
+                    set("a", 1).event(),
+                    NodeEvent::AllInputsClosed,
+                ],
+                vec![
+                    set("a", 1).seen(),
+                    tick_seen(),
+                    tick_seen(),
+                    Seen::Stop(Cause::AllInputsClosed),
+                ],
+                End::Closed,
+            ),
+        ]
     });
 }
 
@@ -685,16 +636,10 @@ fn s4_stop_behind_parameter_backlog_comes_after_every_key() {
         let mut h = harness(backlog.len() + 16);
         h.send(events_of(&backlog));
         h.send([NodeEvent::Stop]);
-        let (got, end) = read_ready(&mut h.events);
         let mut expected = coalesce(&backlog);
         expected.push(Seen::Stop(Cause::Manual));
-        assert_seq("backlog, Stop", &got, &expected);
-        assert_end("backlog, Stop", end, End::Closed);
-        assert_eq!(
-            h.non_input_drops(),
-            0,
-            "no control-event drop may be counted"
-        );
+        h.expect("backlog, Stop", &expected, End::Closed);
+        h.assert_drops("backlog, Stop", 0);
     });
 }
 
@@ -707,26 +652,56 @@ fn s4_stop_then_parameter_flood_delivers_stop_alone_without_drops() {
         let mut h = harness(flood.len() + 16);
         h.send([NodeEvent::Stop]);
         h.send(events_of(&flood));
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq("Stop, flood", &got, &[Seen::Stop(Cause::Manual)]);
-        assert_end("Stop, flood", end, End::Closed);
-        assert_eq!(
-            h.non_input_drops(),
-            0,
-            "parameter changes must not cause a `dora.non_input_event` drop"
+        h.expect("Stop, flood", &[Seen::Stop(Cause::Manual)], End::Closed);
+        h.assert_drops("Stop, flood", 0);
+    });
+}
+
+/// Three inputs, then a parameter backlog larger than the control queue, then
+/// `AllInputsClosed` ⇒ every key, the three inputs, then the `Stop`.
+#[test]
+fn s4_all_inputs_closed_stop_after_inputs_and_parameter_backlog() {
+    run_bounded("s4_all_inputs_closed_backlog", || {
+        let backlog = backlog_with_repeats("p", NON_INPUT_EVENT_QUEUE_SIZE + 50);
+        let mut h = harness(backlog.len() + 16);
+        h.send([tick(), tick(), tick()]);
+        h.send(events_of(&backlog));
+        h.send([NodeEvent::AllInputsClosed]);
+        let mut expected = coalesce(&backlog);
+        expected.extend([tick_seen(), tick_seen(), tick_seen()]);
+        expected.push(Seen::Stop(Cause::AllInputsClosed));
+        h.expect("inputs, backlog, AllInputsClosed", &expected, End::Closed);
+    });
+}
+
+/// `Stop` survives a control-queue overflow, which is still counted.
+#[test]
+fn s4_stop_survives_control_queue_overflow() {
+    run_bounded("s4_stop_survives", || {
+        let reloads = NON_INPUT_EVENT_QUEUE_SIZE + 200;
+        let mut h = harness(reloads + 16);
+        h.send([NodeEvent::Stop]);
+        h.send((0..reloads).map(|_| reload()));
+        h.expect(
+            "Stop, Reload flood",
+            &[Seen::Stop(Cause::Manual)],
+            End::Closed,
+        );
+        h.assert_drops(
+            "Stop, Reload flood",
+            (reloads + 1 - NON_INPUT_EVENT_QUEUE_SIZE) as u64,
         );
     });
 }
 
-/// Guard: a key pending at `Stop` and a continuous stream of parameter changes
-/// after `Stop` (to that key and to new keys). `Stop` is still delivered,
-/// after exactly one event for the pending key and no event for a new key, and
-/// the stream then ends.
+/// A key pending at `Stop` and a continuous stream of parameter changes after
+/// `Stop` (to that key and to new keys). `Stop` is still delivered, after
+/// exactly one event for the pending key and no event for a new key, and the
+/// stream then ends.
 #[test]
-fn guard_s4_stop_is_not_postponed_by_parameter_stream_after_it() {
-    run_bounded("guard_s4_stream_after_stop", || {
-        let capacity = 4096;
-        let mut h = harness(capacity);
+fn s4_stop_is_not_postponed_by_parameter_stream_after_it() {
+    run_bounded("s4_stream_after_stop", || {
+        let mut h = harness(4096);
         h.send([set("k", 0).event(), NodeEvent::Stop]);
 
         let stop_flag = Arc::new(AtomicBool::new(false));
@@ -743,23 +718,18 @@ fn guard_s4_stop_is_not_postponed_by_parameter_stream_after_it() {
                     } else {
                         set(format!("n{i}"), i)
                     };
-                    let mut item = EventItem::NodeEvent {
+                    let item = EventItem::NodeEvent {
                         event: change.event(),
                     };
-                    loop {
-                        if stop_flag.load(Ordering::SeqCst) {
-                            return;
+                    match tx.try_send(item) {
+                        Ok(()) => {
+                            sent.fetch_add(1, Ordering::SeqCst);
                         }
-                        match tx.try_send(item) {
-                            Ok(()) => break,
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(back)) => {
-                                item = back;
-                                std::thread::yield_now();
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            std::thread::yield_now();
                         }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
                     }
-                    sent.fetch_add(1, Ordering::SeqCst);
                     i += 1;
                     std::thread::sleep(Duration::from_micros(10));
                 }
@@ -807,93 +777,12 @@ fn guard_s4_stop_is_not_postponed_by_parameter_stream_after_it() {
     });
 }
 
-/// Guard: after `Stop` only the inputs already queued are delivered; control
-/// events and parameter changes behind it are not.
-#[test]
-fn guard_s4_after_stop_only_queued_inputs_follow() {
-    run_bounded("guard_s4_inputs_after_stop", || {
-        let mut h = harness(64);
-        h.send([tick(), NodeEvent::Stop, set("k", 1).event(), reload()]);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq(
-            "tick, Stop, k=1, Reload",
-            &got,
-            &[Seen::Stop(Cause::Manual), tick_seen()],
-        );
-        assert_end("tick, Stop, k=1, Reload", end, End::Closed);
-    });
-}
-
-/// Guard: the `AllInputsClosed` `Stop` waits for the queued inputs.
-#[test]
-fn guard_s4_all_inputs_closed_stop_waits_for_queued_inputs() {
-    run_bounded("guard_s4_all_inputs_closed", || {
-        let mut h = harness(64);
-        h.send([
-            tick(),
-            tick(),
-            set("a", 1).event(),
-            NodeEvent::AllInputsClosed,
-        ]);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq(
-            "tick, tick, a=1, AllInputsClosed",
-            &got,
-            &[
-                set("a", 1).seen(),
-                tick_seen(),
-                tick_seen(),
-                Seen::Stop(Cause::AllInputsClosed),
-            ],
-        );
-        assert_end("tick, tick, a=1, AllInputsClosed", end, End::Closed);
-    });
-}
-
-/// Three inputs, then a parameter backlog larger than the control queue, then
-/// `AllInputsClosed` ⇒ every key, the three inputs, then the `Stop`.
-#[test]
-fn s4_all_inputs_closed_stop_after_inputs_and_parameter_backlog() {
-    run_bounded("s4_all_inputs_closed_backlog", || {
-        let backlog = backlog_with_repeats("p", NON_INPUT_EVENT_QUEUE_SIZE + 50);
-        let mut h = harness(backlog.len() + 16);
-        h.send([tick(), tick(), tick()]);
-        h.send(events_of(&backlog));
-        h.send([NodeEvent::AllInputsClosed]);
-        let (got, end) = read_ready(&mut h.events);
-        let mut expected = coalesce(&backlog);
-        expected.extend([tick_seen(), tick_seen(), tick_seen()]);
-        expected.push(Seen::Stop(Cause::AllInputsClosed));
-        assert_seq("inputs, backlog, AllInputsClosed", &got, &expected);
-        assert_end("inputs, backlog, AllInputsClosed", end, End::Closed);
-    });
-}
-
-/// Guard: `Stop` survives a control-queue overflow, which is still counted.
-#[test]
-fn guard_s4_stop_survives_control_queue_overflow() {
-    run_bounded("guard_s4_stop_survives", || {
-        let reloads = NON_INPUT_EVENT_QUEUE_SIZE + 200;
-        let mut h = harness(reloads + 16);
-        h.send([NodeEvent::Stop]);
-        h.send((0..reloads).map(|_| reload()));
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq("Stop, Reload flood", &got, &[Seen::Stop(Cause::Manual)]);
-        assert_end("Stop, Reload flood", end, End::Closed);
-        assert_eq!(
-            h.non_input_drops(),
-            (reloads + 1 - NON_INPUT_EVENT_QUEUE_SIZE) as u64,
-            "the control-queue overflow must be counted"
-        );
-    });
-}
-
 // ---------------------------------------------------------------------------
 // S5 — bounds and isolation
 // ---------------------------------------------------------------------------
 
-/// Formal-model scenario (g): 999 `NodeRestarted` events interleaved with
-/// 2,000 distinct-key changes ⇒ all of them, in position order, no drop.
+/// 999 `NodeRestarted` events interleaved with 2,000 distinct-key changes ⇒
+/// all of them, in position order, no drop.
 #[test]
 fn s5_parameters_do_not_evict_other_control_events() {
     run_bounded("s5_isolation", || {
@@ -920,14 +809,8 @@ fn s5_parameters_do_not_evict_other_control_events() {
 
         let mut h = harness(sent.len() + 16);
         h.send(sent);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq("999 NodeRestarted + 2,000 keys", &got, &expected);
-        assert_end("999 NodeRestarted + 2,000 keys", end, End::Empty);
-        assert_eq!(
-            h.non_input_drops(),
-            0,
-            "no control-event drop may be counted"
-        );
+        h.expect("999 NodeRestarted + 2,000 keys", &expected, End::Empty);
+        h.assert_drops("999 NodeRestarted + 2,000 keys", 0);
     });
 }
 
@@ -941,35 +824,10 @@ fn s5_other_control_events_keep_bound_beside_parameter_backlog() {
         let mut h = harness(reloads + backlog.len() + 16);
         h.send((0..reloads).map(|_| reload()));
         h.send(events_of(&backlog));
-        let (got, end) = read_ready(&mut h.events);
         let mut expected = vec![Seen::Reload; NON_INPUT_EVENT_QUEUE_SIZE];
         expected.extend(coalesce(&backlog));
-        assert_seq("1,025 Reload, backlog", &got, &expected);
-        assert_end("1,025 Reload, backlog", end, End::Empty);
-        assert_eq!(
-            h.non_input_drops(),
-            25,
-            "only the Reload overflow may be counted"
-        );
-    });
-}
-
-/// Guard: more than 1,000 ordinary control events still evict the oldest, and
-/// the drops are counted.
-#[test]
-fn guard_s5_control_queue_overflow_is_counted() {
-    run_bounded("guard_s5_overflow", || {
-        let reloads = NON_INPUT_EVENT_QUEUE_SIZE + 200;
-        let mut h = harness(reloads + 16);
-        h.send((0..reloads).map(|_| reload()));
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq(
-            "Reload flood",
-            &got,
-            &vec![Seen::Reload; NON_INPUT_EVENT_QUEUE_SIZE],
-        );
-        assert_end("Reload flood", end, End::Empty);
-        assert_eq!(h.non_input_drops(), 200);
+        h.expect("1,025 Reload, backlog", &expected, End::Empty);
+        h.assert_drops("1,025 Reload, backlog", 25);
     });
 }
 
@@ -977,11 +835,11 @@ fn guard_s5_control_queue_overflow_is_counted() {
 // S6 — ingress is never stalled
 // ---------------------------------------------------------------------------
 
-/// Guard: one `recv()` or `try_recv()` takes every waiting event out of the
-/// ingress channel, whatever the number of pending parameter changes.
+/// One `recv()` or `try_recv()` takes every waiting event out of the ingress
+/// channel, whatever the number of pending parameter changes.
 #[test]
-fn guard_s6_one_read_empties_the_ingress_channel() {
-    run_bounded("guard_s6_ingress", || {
+fn s6_one_read_empties_the_ingress_channel() {
+    run_bounded("s6_ingress", || {
         let first = distinct_mixed("p", 3 * NON_INPUT_EVENT_QUEUE_SIZE);
         let mut h = harness(first.len() + 16);
         h.send(events_of(&first));
@@ -1011,13 +869,13 @@ fn guard_s6_one_read_empties_the_ingress_channel() {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
-enum Wait {
+pub(super) enum Wait {
     Service,
     Action,
 }
 
 impl Wait {
-    fn reply(self) -> NodeEvent {
+    pub(super) fn reply(self) -> NodeEvent {
         let parameters = match self {
             Wait::Service => request_id_params("req-1"),
             Wait::Action => goal_params("goal-1", Some(GOAL_STATUS_SUCCEEDED)),
@@ -1051,7 +909,7 @@ impl Wait {
         outcome
     }
 
-    fn assert_reply(self, outcome: &Result<Event, PatternError>) {
+    pub(super) fn assert_reply(self, context: &str, outcome: &Result<Event, PatternError>) {
         let (param, value) = match self {
             Wait::Service => (REQUEST_ID, "req-1"),
             Wait::Action => (GOAL_ID, "goal-1"),
@@ -1061,15 +919,15 @@ impl Wait {
                 if id.as_str() == "response"
                     && dora_message::metadata::get_string_param(&metadata.parameters, param)
                         == Some(value)),
-            "{self:?} wait: expected the queued reply, got {outcome:?}"
+            "{context}: expected the queued reply, got {outcome:?}"
         );
     }
 }
 
-fn assert_calc_failed(wait: Wait, outcome: &Result<Event, PatternError>) {
+fn assert_calc_failed(context: &str, outcome: &Result<Event, PatternError>) {
     assert!(
         matches!(outcome, Err(PatternError::StreamError(msg)) if msg.contains("`calc` failed")),
-        "{wait:?} wait: expected StreamError for the failed server, got {outcome:?}"
+        "{context}: expected StreamError for the failed server, got {outcome:?}"
     );
 }
 
@@ -1084,189 +942,60 @@ fn read_calc_failure_first(h: &mut Harness) {
     );
 }
 
-/// The reply is queued behind a parameter backlog larger than the control
-/// queue; the server is alive. The wait returns the reply; afterwards the
-/// application receives exactly one event per key, in position order.
-fn check_reply_behind_backlog(wait: Wait) {
-    let mut h = harness(4 * BACKLOG);
-    let backlog = backlog_with_repeats("p", BACKLOG);
-    h.send(events_of(&backlog));
-    h.send([wait.reply()]);
+/// Scenarios for a wait that passes over a parameter backlog larger than the
+/// control queue: (name, the application already read the server's
+/// `NodeFailed`, a reply is queued after the backlog, the server's
+/// `NodeFailed` is queued after the backlog).
+const S7_SCENARIOS: [(&str, bool, bool, bool); 5] = [
+    ("reply behind backlog", false, true, false),
+    ("reply then failure behind backlog", false, true, true),
+    (
+        "reply behind backlog, failure already read",
+        true,
+        true,
+        false,
+    ),
+    ("failure already read, no reply", true, false, false),
+    ("failure behind backlog, no reply", false, false, true),
+];
 
-    let outcome = wait.run(&mut h.events);
-    wait.assert_reply(&outcome);
-
-    let (got, end) = read_ready(&mut h.events);
-    assert_seq("after the wait", &got, &coalesce(&backlog));
-    assert_end("after the wait", end, End::Empty);
-    assert_eq!(
-        h.non_input_drops(),
-        0,
-        "no control-event drop may be counted"
-    );
-}
-
+/// With a reply queued, the wait returns it. Without one, the server failure
+/// is known or queued, and the wait gives `StreamError` promptly. Afterwards
+/// the application receives exactly one event per key in position order, then
+/// the queued `NodeFailed` once. No drop is counted.
 #[test]
-fn s7_service_reply_behind_parameter_backlog_is_found() {
-    run_bounded("s7_service_loop", || {
-        check_reply_behind_backlog(Wait::Service)
-    });
-}
+fn s7_waits_pass_over_parameter_backlog_for_service_and_action() {
+    run_bounded("s7_backlog_scenarios", || {
+        for wait in [Wait::Service, Wait::Action] {
+            for (name, failure_read, reply_queued, failure_queued) in S7_SCENARIOS {
+                let context = format!("{wait:?} wait, {name}");
+                let mut h = harness(4 * BACKLOG);
+                if failure_read {
+                    read_calc_failure_first(&mut h);
+                }
+                let backlog = backlog_with_repeats("p", BACKLOG);
+                h.send(events_of(&backlog));
+                if reply_queued {
+                    h.send([wait.reply()]);
+                }
+                if failure_queued {
+                    h.send([calc_failed()]);
+                }
 
-#[test]
-fn s7_action_result_behind_parameter_backlog_is_found() {
-    run_bounded("s7_action_loop", || {
-        check_reply_behind_backlog(Wait::Action)
-    });
-}
+                if reply_queued {
+                    wait.assert_reply(&context, &wait.run(&mut h.events));
+                } else {
+                    assert_calc_failed(&context, &wait.run_prompt(&mut h.events));
+                }
 
-/// Formal-model scenario (f): the reply and then the server's `NodeFailed` are
-/// queued behind a parameter backlog larger than the control queue. The wait
-/// returns the reply; afterwards the application receives one event per key,
-/// then the `NodeFailed` once.
-fn check_reply_then_failure_behind_backlog(wait: Wait) {
-    let mut h = harness(4 * BACKLOG);
-    let backlog = backlog_with_repeats("p", BACKLOG);
-    h.send(events_of(&backlog));
-    h.send([wait.reply(), calc_failed()]);
-
-    let outcome = wait.run(&mut h.events);
-    wait.assert_reply(&outcome);
-
-    let (got, end) = read_ready(&mut h.events);
-    let mut expected = coalesce(&backlog);
-    expected.push(calc_failed_seen());
-    assert_seq("after the wait", &got, &expected);
-    assert_end("after the wait", end, End::Empty);
-    assert_eq!(
-        h.non_input_drops(),
-        0,
-        "no control-event drop may be counted"
-    );
-}
-
-#[test]
-fn s7_service_reply_then_server_failure_behind_backlog_is_found() {
-    run_bounded("s7_service_failure_queued", || {
-        check_reply_then_failure_behind_backlog(Wait::Service)
-    });
-}
-
-#[test]
-fn s7_action_result_then_server_failure_behind_backlog_is_found() {
-    run_bounded("s7_action_failure_queued", || {
-        check_reply_then_failure_behind_backlog(Wait::Action)
-    });
-}
-
-/// The application already read the server's `NodeFailed`. The reply is queued
-/// behind a parameter backlog. The wait returns it; afterwards one event per
-/// key.
-fn check_reply_behind_backlog_after_failure_was_seen(wait: Wait) {
-    let mut h = harness(4 * BACKLOG);
-    read_calc_failure_first(&mut h);
-    let backlog = backlog_with_repeats("p", BACKLOG);
-    h.send(events_of(&backlog));
-    h.send([wait.reply()]);
-
-    let outcome = wait.run(&mut h.events);
-    wait.assert_reply(&outcome);
-
-    let (got, end) = read_ready(&mut h.events);
-    assert_seq("after the wait", &got, &coalesce(&backlog));
-    assert_end("after the wait", end, End::Empty);
-    assert_eq!(
-        h.non_input_drops(),
-        0,
-        "no control-event drop may be counted"
-    );
-}
-
-#[test]
-fn s7_service_reply_behind_backlog_found_after_failure_was_seen() {
-    run_bounded("s7_service_failure_seen", || {
-        check_reply_behind_backlog_after_failure_was_seen(Wait::Service)
-    });
-}
-
-#[test]
-fn s7_action_result_behind_backlog_found_after_failure_was_seen() {
-    run_bounded("s7_action_failure_seen", || {
-        check_reply_behind_backlog_after_failure_was_seen(Wait::Action)
-    });
-}
-
-/// The application already read the server's `NodeFailed`; a parameter backlog
-/// follows and no reply. The wait gives `StreamError` promptly; afterwards one
-/// event per key.
-fn check_known_failure_without_reply(wait: Wait) {
-    let mut h = harness(4 * BACKLOG);
-    read_calc_failure_first(&mut h);
-    let backlog = backlog_with_repeats("p", BACKLOG);
-    h.send(events_of(&backlog));
-
-    let outcome = wait.run_prompt(&mut h.events);
-    assert_calc_failed(wait, &outcome);
-
-    let (got, end) = read_ready(&mut h.events);
-    assert_seq("after the wait", &got, &coalesce(&backlog));
-    assert_end("after the wait", end, End::Empty);
-    assert_eq!(
-        h.non_input_drops(),
-        0,
-        "no control-event drop may be counted"
-    );
-}
-
-#[test]
-fn s7_service_known_failure_without_reply_is_prompt_and_keeps_backlog() {
-    run_bounded("s7_service_known_failure", || {
-        check_known_failure_without_reply(Wait::Service)
-    });
-}
-
-#[test]
-fn s7_action_known_failure_without_result_is_prompt_and_keeps_backlog() {
-    run_bounded("s7_action_known_failure", || {
-        check_known_failure_without_reply(Wait::Action)
-    });
-}
-
-/// The server's `NodeFailed` is queued behind a parameter backlog, with no
-/// reply. The wait gives `StreamError` promptly; afterwards one event per key,
-/// then the `NodeFailed` once.
-fn check_failure_behind_backlog_without_reply(wait: Wait) {
-    let mut h = harness(4 * BACKLOG);
-    let backlog = backlog_with_repeats("p", BACKLOG);
-    h.send(events_of(&backlog));
-    h.send([calc_failed()]);
-
-    let outcome = wait.run_prompt(&mut h.events);
-    assert_calc_failed(wait, &outcome);
-
-    let (got, end) = read_ready(&mut h.events);
-    let mut expected = coalesce(&backlog);
-    expected.push(calc_failed_seen());
-    assert_seq("after the wait", &got, &expected);
-    assert_end("after the wait", end, End::Empty);
-    assert_eq!(
-        h.non_input_drops(),
-        0,
-        "no control-event drop may be counted"
-    );
-}
-
-#[test]
-fn s7_service_failure_behind_backlog_without_reply_is_prompt() {
-    run_bounded("s7_service_failure_no_reply", || {
-        check_failure_behind_backlog_without_reply(Wait::Service)
-    });
-}
-
-#[test]
-fn s7_action_failure_behind_backlog_without_result_is_prompt() {
-    run_bounded("s7_action_failure_no_reply", || {
-        check_failure_behind_backlog_without_reply(Wait::Action)
+                let mut expected = coalesce(&backlog);
+                if failure_queued {
+                    expected.push(calc_failed_seen());
+                }
+                h.expect(&format!("{context}: after the wait"), &expected, End::Empty);
+                h.assert_drops(&context, 0);
+            }
+        }
     });
 }
 
@@ -1279,8 +1008,7 @@ fn s7_key_changed_again_after_wait_is_delivered_once_with_newest_value() {
         let backlog = backlog_with_repeats("p", BACKLOG);
         h.send(events_of(&backlog));
         h.send([Wait::Service.reply()]);
-        let outcome = Wait::Service.run(&mut h.events);
-        Wait::Service.assert_reply(&outcome);
+        Wait::Service.assert_reply("wait", &Wait::Service.run(&mut h.events));
 
         let again: Vec<Change> = (0..BACKLOG)
             .step_by(3)
@@ -1288,10 +1016,8 @@ fn s7_key_changed_again_after_wait_is_delivered_once_with_newest_value() {
             .collect();
         h.send(events_of(&again));
 
-        let (got, end) = read_ready(&mut h.events);
         let all: Vec<Change> = backlog.iter().chain(&again).cloned().collect();
-        assert_seq("changes after the wait", &got, &coalesce(&all));
-        assert_end("changes after the wait", end, End::Empty);
+        h.expect("changes after the wait", &coalesce(&all), End::Empty);
     });
 }
 
@@ -1304,14 +1030,11 @@ fn s7_reply_behind_parameter_backlog_and_stop_is_found() {
         let backlog = backlog_with_repeats("p", BACKLOG);
         h.send(events_of(&backlog));
         h.send([NodeEvent::Stop, Wait::Service.reply()]);
-        let outcome = Wait::Service.run(&mut h.events);
-        Wait::Service.assert_reply(&outcome);
+        Wait::Service.assert_reply("wait", &Wait::Service.run(&mut h.events));
 
-        let (got, end) = read_ready(&mut h.events);
         let mut expected = coalesce(&backlog);
         expected.push(Seen::Stop(Cause::Manual));
-        assert_seq("after the wait", &got, &expected);
-        assert_end("after the wait", end, End::Closed);
+        h.expect("after the wait", &expected, End::Closed);
     });
 }
 
@@ -1327,55 +1050,52 @@ fn s7_passthrough_keeps_control_bound_beside_parameter_backlog() {
         h.send((0..reloads).map(|_| reload()));
         h.send(events_of(&backlog));
         h.send([Wait::Service.reply()]);
-        let outcome = Wait::Service.run(&mut h.events);
-        Wait::Service.assert_reply(&outcome);
+        Wait::Service.assert_reply("wait", &Wait::Service.run(&mut h.events));
 
-        let (got, end) = read_ready(&mut h.events);
         let mut expected = vec![Seen::Reload; NON_INPUT_EVENT_QUEUE_SIZE];
         expected.extend(coalesce(&backlog));
-        assert_seq("after the wait", &got, &expected);
-        assert_end("after the wait", end, End::Empty);
-        assert_eq!(
-            h.non_input_drops(),
-            100,
-            "only the Reload overflow may be counted"
+        h.expect("after the wait", &expected, End::Empty);
+        h.assert_drops("after the wait", 100);
+    });
+}
+
+/// `Stop` is never evicted from the events a wait passes over, and the
+/// control-event overflow is counted.
+#[test]
+fn s7_passthrough_never_evicts_stop() {
+    run_bounded("s7_stop_kept", || {
+        let reloads = NON_INPUT_EVENT_QUEUE_SIZE + 200;
+        let mut h = harness(reloads + 16);
+        h.send((0..reloads).map(|_| reload()));
+        h.send([NodeEvent::Stop, Wait::Service.reply()]);
+        Wait::Service.assert_reply("wait", &Wait::Service.run(&mut h.events));
+
+        let mut expected = vec![Seen::Reload; NON_INPUT_EVENT_QUEUE_SIZE - 1];
+        expected.push(Seen::Stop(Cause::Manual));
+        h.expect("after the wait", &expected, End::Closed);
+        h.assert_drops(
+            "after the wait",
+            (reloads + 1 - NON_INPUT_EVENT_QUEUE_SIZE) as u64,
         );
     });
 }
 
-/// Guard: a reply queued behind `Stop` is still found; `Stop` then reaches the
+/// A reply queued ahead of `Stop` is found; `Stop` then reaches the
 /// application, and the stream ends.
 #[test]
-fn guard_s7_reply_queued_behind_stop_is_found() {
-    run_bounded("guard_s7_reply_behind_stop", || {
+fn s7_reply_queued_ahead_of_stop_is_found() {
+    run_bounded("s7_reply_then_stop", || {
         let mut h = harness(64);
         h.send([Wait::Service.reply(), NodeEvent::Stop]);
-        let outcome = Wait::Service.run(&mut h.events);
-        Wait::Service.assert_reply(&outcome);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq("after the wait", &got, &[Seen::Stop(Cause::Manual)]);
-        assert_end("after the wait", end, End::Closed);
+        Wait::Service.assert_reply("wait", &Wait::Service.run(&mut h.events));
+        h.expect("after the wait", &[Seen::Stop(Cause::Manual)], End::Closed);
     });
 }
 
-/// Guard: a failed server without a queued reply gives `StreamError` promptly.
+/// A wait after `Stop` without a reply gives `StreamEnded`.
 #[test]
-fn guard_s7_failed_server_without_reply_is_prompt_stream_error() {
-    run_bounded("guard_s7_prompt_error", || {
-        let mut h = harness(64);
-        h.send([calc_failed()]);
-        let outcome = Wait::Service.run_prompt(&mut h.events);
-        assert_calc_failed(Wait::Service, &outcome);
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq("after the wait", &got, &[calc_failed_seen()]);
-        assert_end("after the wait", end, End::Empty);
-    });
-}
-
-/// Guard: a wait after `Stop` without a reply gives `StreamEnded`.
-#[test]
-fn guard_s7_wait_after_stop_without_reply_is_stream_ended() {
-    run_bounded("guard_s7_stream_ended", || {
+fn s7_wait_after_stop_without_reply_is_stream_ended() {
+    run_bounded("s7_stream_ended", || {
         let mut h = harness(64);
         h.send([NodeEvent::Stop]);
         assert_eq!(h.events.recv().map(seen), Some(Seen::Stop(Cause::Manual)));
@@ -1384,33 +1104,7 @@ fn guard_s7_wait_after_stop_without_reply_is_stream_ended() {
             matches!(outcome, Err(PatternError::StreamEnded)),
             "expected StreamEnded, got {outcome:?}"
         );
-        let (got, end) = read_ready(&mut h.events);
-        assert_seq("after the wait", &got, &[]);
-        assert_end("after the wait", end, End::Closed);
-    });
-}
-
-/// Guard: `Stop` is never evicted from the events a wait passes over, and the
-/// control-event overflow is counted.
-#[test]
-fn guard_s7_passthrough_never_evicts_stop() {
-    run_bounded("guard_s7_stop_kept", || {
-        let reloads = NON_INPUT_EVENT_QUEUE_SIZE + 200;
-        let mut h = harness(reloads + 16);
-        h.send((0..reloads).map(|_| reload()));
-        h.send([NodeEvent::Stop, Wait::Service.reply()]);
-        let outcome = Wait::Service.run(&mut h.events);
-        Wait::Service.assert_reply(&outcome);
-
-        let (got, end) = read_ready(&mut h.events);
-        let mut expected = vec![Seen::Reload; NON_INPUT_EVENT_QUEUE_SIZE - 1];
-        expected.push(Seen::Stop(Cause::Manual));
-        assert_seq("after the wait", &got, &expected);
-        assert_end("after the wait", end, End::Closed);
-        assert_eq!(
-            h.non_input_drops(),
-            (reloads + 1 - NON_INPUT_EVENT_QUEUE_SIZE) as u64
-        );
+        h.expect("after the wait", &[], End::Closed);
     });
 }
 
@@ -1457,7 +1151,6 @@ enum ReadPath {
 /// more is ready, for the non-blocking paths).
 fn read_with(path: ReadPath, events: &mut EventStream, limit: usize) -> Vec<Seen> {
     let mut got = Vec::new();
-    let done = |got: &Vec<Seen>| got.last() == Some(&tick_seen());
     match path {
         ReadPath::Recv | ReadPath::RecvTimeout | ReadPath::RecvAsync => {
             for _ in 0..limit {
@@ -1467,14 +1160,14 @@ fn read_with(path: ReadPath, events: &mut EventStream, limit: usize) -> Vec<Seen
                     _ => futures::executor::block_on(events.recv_async()),
                 };
                 got.push(seen(event.expect("stream open")));
-                if done(&got) || matches!(got.last(), Some(Seen::Other(_))) {
+                if got.last() == Some(&tick_seen()) || matches!(got.last(), Some(Seen::Other(_))) {
                     break;
                 }
             }
         }
         ReadPath::TryRecv => {
             let (all, end) = read_ready(events);
-            assert_end("try_recv", end, End::Empty);
+            assert_eq!(end, End::Empty, "try_recv: how the reads ended");
             got = all;
         }
         ReadPath::Drain => {
@@ -1495,78 +1188,28 @@ fn read_with(path: ReadPath, events: &mut EventStream, limit: usize) -> Vec<Seen
     got
 }
 
-fn check_read_path(path: ReadPath) {
-    let (sent, expected) = s8_scenario();
-    let mut h = harness(sent.len() + 16);
-    h.send(sent);
-    let got = read_with(path, &mut h.events, expected.len() + 16);
-    assert_seq(&format!("{path:?}"), &got, &expected);
-    let (rest, end) = read_ready(&mut h.events);
-    assert_seq(&format!("{path:?}: after the final input"), &rest, &[]);
-    assert_end(&format!("{path:?}: after the final input"), end, End::Empty);
-    assert_eq!(
-        h.non_input_drops(),
-        0,
-        "no control-event drop may be counted"
-    );
-}
-
 #[test]
-fn s8_recv_gives_specified_parameter_sequence() {
-    run_bounded("s8_recv", || check_read_path(ReadPath::Recv));
-}
-
-#[test]
-fn s8_recv_timeout_gives_specified_parameter_sequence() {
-    run_bounded("s8_recv_timeout", || check_read_path(ReadPath::RecvTimeout));
-}
-
-#[test]
-fn s8_try_recv_gives_specified_parameter_sequence() {
-    run_bounded("s8_try_recv", || check_read_path(ReadPath::TryRecv));
-}
-
-#[test]
-fn s8_drain_gives_specified_parameter_sequence() {
-    run_bounded("s8_drain", || check_read_path(ReadPath::Drain));
-}
-
-#[test]
-fn s8_recv_async_gives_specified_parameter_sequence() {
-    run_bounded("s8_recv_async", || check_read_path(ReadPath::RecvAsync));
-}
-
-/// Guard, S8: every read path gives the same sequence for the same pending
-/// events.
-#[test]
-fn guard_s8_all_read_paths_agree() {
-    run_bounded("guard_s8_agree", || {
-        let paths = [
+fn s8_every_read_path_gives_the_specified_parameter_sequence() {
+    run_bounded("s8_read_paths", || {
+        for path in [
             ReadPath::Recv,
             ReadPath::RecvTimeout,
             ReadPath::TryRecv,
             ReadPath::Drain,
             ReadPath::RecvAsync,
-        ];
-        let mut results: Vec<(ReadPath, Vec<Seen>)> = Vec::new();
-        for path in paths {
+        ] {
+            let context = format!("{path:?}");
             let (sent, expected) = s8_scenario();
             let mut h = harness(sent.len() + 16);
             h.send(sent);
-            results.push((path, read_with(path, &mut h.events, expected.len() + 16)));
-        }
-        let (first_path, first) = &results[0];
-        for (path, got) in &results[1..] {
-            assert_seq(&format!("{path:?} against {first_path:?}"), got, first);
-        }
-        // The sets of keys must agree too (a stricter message when they do not).
-        let keys = |seq: &[Seen]| -> HashSet<String> {
-            seq.iter()
-                .filter_map(|s| s.param_key().map(str::to_string))
-                .collect()
-        };
-        for (path, got) in &results[1..] {
-            assert_eq!(keys(got), keys(first), "{path:?}: parameter keys differ");
+            let got = read_with(path, &mut h.events, expected.len() + 16);
+            assert_seq(&context, &got, &expected);
+            h.expect(
+                &format!("{context}: after the final input"),
+                &[],
+                End::Empty,
+            );
+            h.assert_drops(&context, 0);
         }
     });
 }
