@@ -139,7 +139,7 @@ fn run_hz_oneshot(
     window: usize,
     outputs: BTreeSet<TopicIdentifier>,
     descriptor: &Descriptor,
-    data_rx: std::sync::mpsc::Receiver<eyre::Result<Vec<u8>>>,
+    data_rx: crate::ws_client::TopicReceiver,
     seconds: u64,
 ) -> eyre::Result<()> {
     let mut stats: Vec<(HzLabel<'_>, Arc<HzStats>)> = Vec::with_capacity(outputs.len() + 1);
@@ -383,7 +383,7 @@ fn run_hz(
     window: usize,
     outputs: BTreeSet<TopicIdentifier>,
     descriptor: &Descriptor,
-    data_rx: std::sync::mpsc::Receiver<eyre::Result<Vec<u8>>>,
+    data_rx: crate::ws_client::TopicReceiver,
 ) -> eyre::Result<()> {
     // Build stats vec: index 0 is the aggregate, rest are per-topic
     let mut stats: Vec<(HzLabel<'_>, Arc<HzStats>)> = Vec::with_capacity(outputs.len() + 1);
@@ -907,7 +907,7 @@ mod tests {
         use std::collections::BTreeSet;
 
         let descriptor = Descriptor::parse(b"nodes: []".to_vec()).unwrap();
-        let (tx, rx) = std::sync::mpsc::channel::<eyre::Result<Vec<u8>>>();
+        let (tx, rx) = crate::ws_client::topic_channel();
         drop(tx); // disconnect so the sampler breaks out immediately
 
         // 10^19 s is a valid u64 but overflows `Instant + Duration`.
