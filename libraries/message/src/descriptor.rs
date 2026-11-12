@@ -1673,11 +1673,23 @@ pub enum GitRepoRev {
 // `1000`.
 //
 // The expansion happens on every decode, and the descriptor is decoded
-// once per hop (CLI -> coordinator -> daemon -> node). So a string is
-// serialized with each `$` written as `$$`, which the next decode turns
-// back into `$`: the value the CLI expanded reaches the node verbatim
-// instead of being expanded again against the receiving host's
-// environment (#3947). Released 1.x peers decode that the same way.
+// once per hop (CLI -> coordinator -> daemon -> node, the coordinator's
+// persisted store, the CLI's hub session file, and any future one). So a
+// string is serialized with each `$` written as `$$`, which the next decode
+// turns back into `$`: the value the CLI expanded reaches the node verbatim
+// instead of being expanded again against the receiving host's environment
+// (#3947). Released 1.x peers decode that the same way.
+//
+// Escaping here, unconditionally, rather than only at the specific places
+// that happen to send a `Descriptor` across a hop today, is deliberate:
+// every encode is then safe by construction, and a new hop added later does
+// not need to remember to opt in. The cost is that the three places that
+// serialize an already-decoded `Descriptor` straight to user code and never
+// decode it back — the Python node's `dataflow_descriptor()`, a Python
+// operator's `self.dataflow_descriptor`, the C++ `dataflow_descriptor_json`
+// — see the escaped form too. Each of those undoes it with
+// `descriptor_for_display` below rather than this type gaining an unescaped
+// mode (#4067).
 #[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
@@ -1699,6 +1711,57 @@ fn serialize_escaping_dollars<S: serde::Serializer>(
         serializer.serialize_str(&s.replace('$', "$$"))
     } else {
         serializer.serialize_str(s)
+    }
+}
+
+/// `descriptor` as the three introspection points hand it to user code:
+/// `Node.dataflow_descriptor()` (Python), a Python operator's
+/// `self.dataflow_descriptor`, and the C++ `dataflow_descriptor_json`.
+///
+/// Serializing a `Descriptor` directly always escapes `$` as `$$` in every
+/// `env` string (see the comment on `EnvValue`), because the same
+/// `Serialize` impl is also how a `Descriptor` crosses a dora-to-dora wire
+/// hop. These three callers serialize the same, already-decoded
+/// `Descriptor` with no decode step after to undo that, so without this
+/// they would show the wire form instead of the real value (#4067). This
+/// walks only the two places `env` actually appears — `descriptor.env` and
+/// each node's `env` — rather than unescaping the whole serialized tree,
+/// so an unrelated string that happens to contain `$$` (a `build:` command,
+/// a description, ...) is left alone.
+///
+/// Returns the serialize error rather than unwrapping it: these callers run
+/// at an FFI boundary (the C++ `dataflow_descriptor_json`, pyo3), where a
+/// panic is undefined behaviour, and the originals already returned a
+/// fallible result here.
+pub fn descriptor_for_display(
+    descriptor: &Descriptor,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut value = serde_json::to_value(descriptor)?;
+    if let Some(env) = value.get_mut("env") {
+        unescape_json_env_map(env);
+    }
+    if let Some(nodes) = value
+        .get_mut("nodes")
+        .and_then(|nodes| nodes.as_array_mut())
+    {
+        for node in nodes {
+            if let Some(env) = node.get_mut("env") {
+                unescape_json_env_map(env);
+            }
+        }
+    }
+    Ok(value)
+}
+
+/// Undoes [`serialize_escaping_dollars`] on every string value of a JSON
+/// object already known to be one `env:` map, in place.
+fn unescape_json_env_map(env: &mut serde_json::Value) {
+    if let Some(map) = env.as_object_mut() {
+        for value in map.values_mut() {
+            if let serde_json::Value::String(s) = value {
+                *s = s.replace("$$", "$");
+            }
+        }
     }
 }
 
@@ -2209,6 +2272,48 @@ mod tests {
         assert_eq!(json(EnvValue::Float(1.5)), "1.5");
         assert_eq!(json(EnvValue::Bool(true)), "true");
         assert_eq!(json(EnvValue::String("a$b".into())), "\"a$$b\"");
+    }
+
+    /// `Node.dataflow_descriptor()` (Python), a Python operator's
+    /// `self.dataflow_descriptor`, and the C++ `dataflow_descriptor_json`
+    /// all serialize an already-decoded `Descriptor` directly, with no
+    /// further decode step to undo the wire escape — `descriptor_for_display`
+    /// is what each of them must go through instead of a bare
+    /// `serde_json::to_value`/`pythonize` call (#4067).
+    #[test]
+    fn descriptor_for_display_shows_the_raw_value() {
+        let mut node = Node::new("n".parse().unwrap());
+        node.env = Some(BTreeMap::from([(
+            "K".to_string(),
+            EnvValue::String("a$b".into()),
+        )]));
+        let mut descriptor = Descriptor::new(vec![node]);
+        descriptor.env = Some(BTreeMap::from([(
+            "PRICE".to_string(),
+            EnvValue::String("50$ off".into()),
+        )]));
+
+        // A bare serialize still shows the wire-escaped form.
+        let wire = serde_json::to_value(&descriptor).unwrap();
+        assert_eq!(wire["env"]["PRICE"], "50$$ off");
+        assert_eq!(wire["nodes"][0]["env"]["K"], "a$$b");
+
+        // `descriptor_for_display` undoes it, at both `env` locations.
+        let display = descriptor_for_display(&descriptor).unwrap();
+        assert_eq!(display["env"]["PRICE"], "50$ off");
+        assert_eq!(display["nodes"][0]["env"]["K"], "a$b");
+    }
+
+    /// `descriptor_for_display` targets only `env`/`nodes[].env`, so a `$$`
+    /// elsewhere in the descriptor (a path, a description, ...) that has
+    /// nothing to do with the escape must survive unchanged.
+    #[test]
+    fn descriptor_for_display_leaves_unrelated_dollar_signs_alone() {
+        let mut node = Node::new("n".parse().unwrap());
+        node.path = Some("echo $$ not an env escape".into());
+        let descriptor = Descriptor::new(vec![node]);
+        let display = descriptor_for_display(&descriptor).unwrap();
+        assert_eq!(display["nodes"][0]["path"], "echo $$ not an env escape");
     }
 
     /// Assert that `constructed` serializes to exactly what `yaml`

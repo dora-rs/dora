@@ -91,8 +91,10 @@ class Node:
         """Returns the full dataflow descriptor that this node is part of.
 
         This method returns the parsed dataflow YAML file. Its `$VAR`
-        references are already expanded, and a `$` in an `env` string is
-        written as `$$`, the form that parses back to the same value."""
+        references are already expanded, and an `env` string's `$` is
+        exactly what was in the YAML (or the expanded `$VAR` value) — not
+        the `$$` form dora uses internally when the same descriptor crosses
+        a dora-to-dora wire hop."""
 
     def dataflow_id(self) -> str:
         """Returns the dataflow id."""
@@ -842,7 +844,8 @@ class Ros2ActionServer:
 
         Returns the list of goal_id strings the client asked to cancel that this
         server still tracks (respond to each with `send_result(status="canceled")`),
-        or `None` on timeout."""
+        or `None` on timeout. On native Zenoh, a goal that an earlier request
+        already moved to canceling is not returned again."""
 
     def __repr__(self) -> str:
         """Return repr(self)."""

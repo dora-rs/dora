@@ -1,8 +1,8 @@
 use super::{Executable, default_tracing};
 use crate::common::parse_duration;
 use crate::common::{
-    CoordinatorOptions, expect_reply, handle_dataflow_result, query_running_dataflows,
-    send_control_request,
+    CoordinatorOptions, DataflowTarget, expect_reply, handle_dataflow_result,
+    query_running_dataflows, send_control_request,
 };
 use crate::ws_client::WsSession;
 use dora_message::cli_to_coordinator::ControlRequest;
@@ -56,16 +56,16 @@ impl Executable for Stop {
             return stop_all(self.grace_duration, self.force, &session);
         }
 
-        let ident = self.identifier.or(self.name);
-        match ident {
-            // Identifier parses as UUID -> dispatch by UUID. Otherwise treat
-            // as a dataflow name. Users who want strict name-only lookup can
-            // still use `-n/--name` (which takes the explicit-name path).
-            Some(s) => match Uuid::parse_str(&s) {
-                Ok(uuid) => stop_dataflow(uuid, self.grace_duration, self.force, &session),
-                Err(_) => stop_dataflow_by_name(s, self.grace_duration, self.force, &session),
-            },
-            None => stop_dataflow_interactive(self.grace_duration, self.force, &session),
+        match DataflowTarget::from_args(self.identifier, self.name) {
+            DataflowTarget::Uuid(uuid) => {
+                stop_dataflow(uuid, self.grace_duration, self.force, &session)
+            }
+            DataflowTarget::Name(name) => {
+                stop_dataflow_by_name(name, self.grace_duration, self.force, &session)
+            }
+            DataflowTarget::Interactive => {
+                stop_dataflow_interactive(self.grace_duration, self.force, &session)
+            }
         }
     }
 }

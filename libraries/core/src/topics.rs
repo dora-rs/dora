@@ -226,11 +226,14 @@ pub const DEFAULT_ZENOH_UNICAST_OPEN_TIMEOUT_MS: u64 = 1000;
 
 /// Parse the unicast open timeout in milliseconds, falling back to [`DEFAULT_ZENOH_UNICAST_OPEN_TIMEOUT_MS`]
 /// if absent or invalid.
+///
+/// Zero counts as invalid: zenoh wraps every dial in `tokio::time::timeout`, so a
+/// zero deadline fails any connection that is not established on its first poll.
 #[cfg(feature = "zenoh")]
 pub(crate) fn parse_zenoh_open_timeout(raw: Option<&str>) -> u64 {
     match raw {
-        Some(val) => match val.trim().parse::<u64>() {
-            Ok(parsed) => parsed,
+        Some(val) => match val.trim().parse::<std::num::NonZeroU64>() {
+            Ok(parsed) => parsed.get(),
             Err(err) => {
                 warn!(
                     "invalid {DORA_ZENOH_OPEN_TIMEOUT_MS_ENV}={val:?} ({err}); \
@@ -1454,6 +1457,7 @@ mod tests {
             "tcp/[::1]",
             "tcp/[::ffff:127.0.0.1]:5456",
             "tcp/localhost:5456",
+            "tcp/LOCALHOST:5456",
             "udp/127.1.2.3:1",
         ] {
             assert!(zenoh_endpoint_is_loopback(endpoint), "{endpoint}");
@@ -1832,6 +1836,13 @@ mod tests {
             parse_zenoh_open_timeout(Some("not-a-number")),
             DEFAULT_ZENOH_UNICAST_OPEN_TIMEOUT_MS
         );
+        // A zero deadline would fail every dial that is not ready on its
+        // first poll, so it is rejected like an unparseable value.
+        assert_eq!(
+            parse_zenoh_open_timeout(Some("0")),
+            DEFAULT_ZENOH_UNICAST_OPEN_TIMEOUT_MS
+        );
+        assert_eq!(parse_zenoh_open_timeout(Some("1")), 1);
     }
 
     #[cfg(feature = "zenoh")]

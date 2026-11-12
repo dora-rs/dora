@@ -4,7 +4,12 @@
 use crate::nodes_on_daemon;
 use crate::state::{DaemonConnections, RunningDataflow};
 use dora_core::uhlc::HLC;
-use dora_message::{DataflowId, common::DaemonId, daemon_to_coordinator::DaemonCoordinatorReply};
+use dora_message::{
+    DataflowId,
+    common::DaemonId,
+    coordinator_to_daemon::{DaemonCoordinatorEvent, Timestamped},
+    daemon_to_coordinator::DaemonCoordinatorReply,
+};
 use eyre::eyre;
 use serde::Serialize;
 use serde_json::value::RawValue;
@@ -241,7 +246,8 @@ pub(crate) fn spawn_param_replay_to_daemon(
 }
 
 /// Send every persisted param of the daemon's nodes to it, one `SetParam` at
-/// a time.
+/// a time, then a `DeleteParam` for each deleted one (see
+/// [`replay_param_deletes`]).
 ///
 /// This runs in a spawned task, concurrently with `dora param set`/`delete`
 /// on the event loop. Each item is therefore read from the store and queued
@@ -268,16 +274,14 @@ pub(crate) async fn replay_persisted_params_for_daemon(
         attempted: load_failures,
         failed: load_failures,
     };
-    if replay_items.is_empty() {
-        return summary;
+    if !replay_items.is_empty() {
+        tracing::debug!(
+            "replaying {} persisted params for dataflow {} on daemon {}",
+            replay_items.len(),
+            dataflow_id,
+            daemon_id
+        );
     }
-
-    tracing::debug!(
-        "replaying {} persisted params for dataflow {} on daemon {}",
-        replay_items.len(),
-        dataflow_id,
-        daemon_id
-    );
 
     for item in replay_items {
         let write_guard = connection.param_write_lock.lock().await;
@@ -370,5 +374,98 @@ pub(crate) async fn replay_persisted_params_for_daemon(
         }
     }
 
+    replay_param_deletes(
+        dataflow_id,
+        &daemon_id,
+        &node_ids_on_daemon,
+        store.as_ref(),
+        &connection,
+        &clock,
+        &mut summary,
+    )
+    .await;
     summary
+}
+
+/// The delete half of [`replay_persisted_params_for_daemon`]: send a
+/// `DeleteParam` for every tombstoned param of the daemon's nodes, so a
+/// delete the daemon missed while it was disconnected still reaches the node.
+///
+/// Follows the same ordering rule as the set replay. Under the connection's
+/// `param_write_lock`, it re-checks that the key is still unset, so a key set
+/// again since the tombstones were listed is not deleted after the set's
+/// forward.
+///
+/// Once the daemon has applied a delete, its tombstone is dropped, unless
+/// the key was set or deleted again while the reply was awaited: the clear
+/// only matches the tombstone listed here.
+async fn replay_param_deletes(
+    dataflow_id: DataflowId,
+    daemon_id: &DaemonId,
+    node_ids_on_daemon: &[dora_core::config::NodeId],
+    store: &dyn dora_coordinator_store::CoordinatorStore,
+    connection: &crate::state::DaemonConnection,
+    clock: &HLC,
+    summary: &mut ParamReplaySummary,
+) {
+    for node_id in node_ids_on_daemon {
+        let keys = match store.list_node_param_tombstones(&dataflow_id, node_id) {
+            Ok(keys) => keys,
+            Err(err) => {
+                tracing::warn!("failed to load deleted params for {dataflow_id}/{node_id}: {err}");
+                summary.attempted += 1;
+                summary.failed += 1;
+                continue;
+            }
+        };
+        for (key, token) in keys {
+            let write_guard = connection.param_write_lock.lock().await;
+            match store.get_node_param(&dataflow_id, node_id, &key) {
+                Ok(None) => {}
+                Ok(Some(_)) => continue,
+                Err(err) => {
+                    tracing::warn!(
+                        "failed to load persisted param {dataflow_id}/{node_id}/{key}: {err}"
+                    );
+                    summary.attempted += 1;
+                    summary.failed += 1;
+                    continue;
+                }
+            }
+            summary.attempted += 1;
+            let message = serde_json::to_vec(&Timestamped {
+                inner: DaemonCoordinatorEvent::DeleteParam {
+                    dataflow_id,
+                    node_id: node_id.clone(),
+                    key: key.clone(),
+                },
+                timestamp: clock.new_timestamp(),
+            });
+            let sent = match message {
+                Ok(message) => connection.send_request(&message).await,
+                Err(err) => Err(err.into()),
+            };
+            drop(write_guard);
+            let reply = match sent {
+                Ok(pending) => pending.wait().await,
+                Err(err) => Err(err),
+            };
+            if let Err(err) =
+                reply.and_then(|reply| ensure_delete_param_forward_applied(&reply, node_id))
+            {
+                tracing::warn!(
+                    "failed to replay delete of param {dataflow_id}/{node_id}/{key} \
+                     to daemon {daemon_id}: {err}"
+                );
+                summary.failed += 1;
+            } else if let Err(err) =
+                store.clear_node_param_tombstone(&dataflow_id, node_id, &key, token)
+            {
+                tracing::warn!(
+                    "failed to drop the tombstone of delivered param delete \
+                     {dataflow_id}/{node_id}/{key}: {err}"
+                );
+            }
+        }
+    }
 }

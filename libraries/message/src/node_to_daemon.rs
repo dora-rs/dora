@@ -17,7 +17,11 @@ use crate::{
 /// undecodable request always waits for one, and the daemon can answer it
 /// with an error while keeping the connection open. Only `SendMessage`,
 /// `OutputSent` and `NodeConfig` get no binary reply; they are part of the
-/// frozen 1.x wire format. See "Stability scope at 1.0" in `docs/api-rust.md`.
+/// frozen 1.x wire format and must always decode. A change to the metadata
+/// wire format they carry must bump [`Metadata::CURRENT_VERSION`].
+/// [`frame_expects_reply`](Self::frame_expects_reply) is the daemon's fallback
+/// if one still fails to decode. See "Stability scope at 1.0" in
+/// `docs/api-rust.md`.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
@@ -145,6 +149,35 @@ impl DaemonRequest {
             | DaemonRequest::ExtensionLoad { .. }
             | DaemonRequest::ExtensionDrop { .. } => false,
         }
+    }
+
+    /// Whether the sender of an encoded `Timestamped<DaemonRequest>` frame
+    /// waits for a reply, judged from the frame's leading variant tag alone.
+    ///
+    /// For a daemon that failed to [`decode`](crate::decode) the frame: it must
+    /// answer a request whose sender blocks on a reply, and must not answer one
+    /// whose sender reads nothing, or the unsolicited frame would shift every
+    /// later request/reply pair on the connection by one.
+    ///
+    /// This is defence in depth. The fire-and-forget requests are
+    /// expected to always decode: a payload change that breaks that, such as a
+    /// new [`Parameter`](crate::metadata::Parameter) kind, must bump
+    /// [`Metadata::CURRENT_VERSION`], which rejects the node at register time.
+    ///
+    /// Returns `false` only for `SendMessage` and `OutputSent` (neither a
+    /// binary nor a JSON reply). Every other tag, including one this crate does
+    /// not know and a frame too short to hold a tag, counts as expecting a
+    /// reply, per the rule on [`DaemonRequest`].
+    pub fn frame_expects_reply(frame: &[u8]) -> bool {
+        // `Timestamped` encodes `inner` first, and postcard writes an enum
+        // variant index as a varint `u32`. The indices are pinned by
+        // `reply_policy_tests::frame_tag_matches_the_reply_policy`.
+        const SEND_MESSAGE: u32 = 2;
+        const OUTPUT_SENT: u32 = 3;
+        !matches!(
+            postcard::take_from_bytes::<u32>(frame),
+            Ok((SEND_MESSAGE | OUTPUT_SENT, _))
+        )
     }
 }
 
@@ -339,5 +372,37 @@ mod reply_policy_tests {
                  expect a binary reply: {request:?}"
             );
         }
+    }
+    #[test]
+    fn frame_tag_matches_the_reply_policy() {
+        for request in one_of_each() {
+            let expects_reply =
+                request.expects_tcp_binary_reply() || request.expects_tcp_json_reply();
+            let frame = crate::encode(&crate::common::Timestamped {
+                inner: request.clone(),
+                timestamp: uhlc::HLC::default().new_timestamp(),
+            })
+            .unwrap();
+            assert_eq!(
+                DaemonRequest::frame_expects_reply(&frame),
+                expects_reply,
+                "the frame tag must classify {request:?} like the reply policy"
+            );
+            // A payload this crate cannot decode keeps the tag's verdict.
+            let mut truncated = frame.clone();
+            truncated.truncate(1);
+            assert_eq!(
+                DaemonRequest::frame_expects_reply(&truncated),
+                expects_reply
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_or_missing_tag_expects_a_reply() {
+        // A variant this crate predates (and a multi-byte varint index).
+        assert!(DaemonRequest::frame_expects_reply(&[200, 1]));
+        assert!(DaemonRequest::frame_expects_reply(&[0x7F]));
+        assert!(DaemonRequest::frame_expects_reply(&[]));
     }
 }

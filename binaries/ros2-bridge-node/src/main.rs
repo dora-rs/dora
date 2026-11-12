@@ -20,6 +20,7 @@ use dora_node_api::{
 };
 use dora_ros2_bridge::transport::action::zenoh::{
     ActionClient as ZenohActionClient, ActionKeys, ActionServer as ZenohActionServer, ActionTokens,
+    CancelableGoal, goal_accept_stamp, process_cancel_request,
 };
 use dora_ros2_bridge::transport::action::{ConcurrentGoalLimit, GoalSlots, MAX_CONCURRENT_GOALS};
 use dora_ros2_bridge::transport::zenoh::{
@@ -785,6 +786,9 @@ enum ZenohActionServerEvent {
 
 struct ZenohServerGoal {
     id: ros2_client::action::GoalId,
+    /// When the goal was accepted, as sent in the `SendGoal` response. A cancel
+    /// request with a non-zero stamp selects the goals accepted at or before it.
+    stamp: ros2_client::builtin_interfaces::Time,
     status: ros2_client::action::GoalStatusEnum,
     result: Option<Vec<u8>>,
     /// Get-result requests received before the result was produced, each waiting
@@ -837,50 +841,25 @@ fn zenoh_accept_goal(
     has_payload && goals.len() < MAX_CONCURRENT_GOALS
 }
 
-/// Picks the goals a Zenoh `CancelGoal` request moves to `Canceling` (a nil
-/// `requested` id means "all goals") and the matching response code.
-///
-/// Like `rcl_action`, only goals that are still executing can be canceled. A
-/// finished goal whose result the client has not polled yet keeps its terminal
-/// status: flipping it back to `Canceling` would exempt it from the eviction of
-/// finished goals, so it would hold one of the `MAX_CONCURRENT_GOALS` slots
-/// forever, and it would be reported as canceling although it already ended.
-/// A goal that is already `Canceling` is not reported as newly canceled.
-fn zenoh_cancel_targets<'a>(
-    goals: impl IntoIterator<Item = &'a ZenohServerGoal>,
-    requested: ros2_client::action::GoalId,
-) -> (
-    Vec<ros2_client::action::GoalId>,
-    ros2_client::action_msgs::CancelGoalResponseEnum,
-) {
-    use ros2_client::action_msgs::CancelGoalResponseEnum;
-
-    use ros2_client::action::GoalStatusEnum;
-
-    let mut targets = Vec::new();
-    // Status of the goal a by-id request names, when it is not cancelable.
-    let mut matched_status = None;
-    for goal in goals {
-        if !(requested.uuid.is_nil() || requested.uuid == goal.id.uuid) {
-            continue;
-        }
-        if matches!(
-            goal.status,
-            GoalStatusEnum::Accepted | GoalStatusEnum::Executing
-        ) {
-            targets.push(goal.id);
-        } else {
-            matched_status = Some(goal.status);
+/// Cancel requests are answered by the shared, rcl-conformant
+/// [`process_cancel_request`]. A goal only leaves `Accepted`/`Executing` for
+/// `Canceling`, so a finished goal whose result the client has not polled yet
+/// keeps its terminal status and stays evictable.
+impl CancelableGoal for ZenohServerGoal {
+    fn goal_info(&self) -> ros2_client::action::GoalInfo {
+        ros2_client::action::GoalInfo {
+            goal_id: self.id,
+            stamp: self.stamp,
         }
     }
-    let return_code = match matched_status {
-        _ if !targets.is_empty() => CancelGoalResponseEnum::None,
-        _ if requested.uuid.is_nil() => CancelGoalResponseEnum::UnknownGoal,
-        Some(status) if is_terminal_goal_status(status) => CancelGoalResponseEnum::GoalTerminated,
-        Some(_) => CancelGoalResponseEnum::Rejected,
-        None => CancelGoalResponseEnum::UnknownGoal,
-    };
-    (targets, return_code)
+
+    fn status(&self) -> ros2_client::action::GoalStatusEnum {
+        self.status
+    }
+
+    fn set_status(&mut self, status: ros2_client::action::GoalStatusEnum) {
+        self.status = status;
+    }
 }
 
 impl ZenohServerGoal {
@@ -933,8 +912,8 @@ fn run_zenoh_action_server(
     feedback_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
     use ros2_client::action::{
-        CancelGoalResponse, FeedbackMessage, GetResultRequest, GetResultResponse, GoalInfo,
-        GoalStatusEnum, SendGoalRequest, SendGoalResponse,
+        CancelGoalResponse, FeedbackMessage, GetResultRequest, GetResultResponse, GoalStatusEnum,
+        SendGoalRequest, SendGoalResponse,
     };
 
     let server = Arc::new(server);
@@ -993,10 +972,8 @@ fn run_zenoh_action_server(
                 };
                 let key = decoded.goal_id.uuid.to_string();
                 let accepted = zenoh_accept_goal(&mut goals, &key, decoded.goal.0.is_some());
-                let response = serialize_cdr(&SendGoalResponse {
-                    accepted,
-                    stamp: ros2_client::builtin_interfaces::Time::from_nanos(unix_timestamp_ns()),
-                })?;
+                let stamp = goal_accept_stamp();
+                let response = serialize_cdr(&SendGoalResponse { accepted, stamp })?;
                 if let Err(error) =
                     futures::executor::block_on(server.send_goal.reply(request.id, &response))
                 {
@@ -1008,6 +985,7 @@ fn run_zenoh_action_server(
                         key.clone(),
                         ZenohServerGoal {
                             id: decoded.goal_id,
+                            stamp,
                             status: GoalStatusEnum::Executing,
                             result: None,
                             result_requests: Vec::new(),
@@ -1083,23 +1061,13 @@ fn run_zenoh_action_server(
                     }
                     continue;
                 };
-                let (to_cancel, return_code) = zenoh_cancel_targets(
-                    goals.iter().map(|(_, goal)| goal),
-                    decoded.goal_info.goal_id,
+                let (goals_canceling, return_code) = process_cancel_request(
+                    goals.iter_mut().map(|(_, goal)| goal),
+                    &decoded.goal_info,
                 );
-                let mut canceling = Vec::with_capacity(to_cancel.len());
-                for goal_id in to_cancel {
-                    if let Some(goal) = goals.get_mut(&goal_id.uuid.to_string()) {
-                        goal.status = GoalStatusEnum::Canceling;
-                    }
-                    canceling.push(GoalInfo {
-                        goal_id,
-                        stamp: ros2_client::builtin_interfaces::Time::ZERO,
-                    });
-                }
                 let response = CancelGoalResponse {
                     return_code,
-                    goals_canceling: canceling,
+                    goals_canceling,
                 };
                 let payload = serialize_cdr(&response)?;
                 if let Err(error) =
@@ -1217,14 +1185,6 @@ fn publish_zenoh_status(
     };
     futures::executor::block_on(server.status.publish(&serialize_cdr(&status)?))?;
     Ok(())
-}
-
-fn unix_timestamp_ns() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_nanos()).ok())
-        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -2598,83 +2558,140 @@ mod peer_failure_tests {
 
 #[cfg(test)]
 mod zenoh_cancel_tests {
-    use super::ros2_client::action::{GoalId, GoalStatusEnum};
+    use super::ros2_client::action::{GoalId, GoalInfo, GoalStatusEnum};
     use super::ros2_client::action_msgs::CancelGoalResponseEnum;
-    use super::{ZenohServerGoal, zenoh_cancel_targets};
+    use super::ros2_client::builtin_interfaces::Time;
+    use super::{ZenohServerGoal, process_cancel_request};
 
     fn goal(status: GoalStatusEnum) -> ZenohServerGoal {
         ZenohServerGoal {
             id: GoalId::new_random(),
+            stamp: Time::from_nanos(10),
             status,
             result: None,
             result_requests: Vec::new(),
         }
     }
 
-    fn nil() -> GoalId {
-        let mut id = GoalId::new_random();
-        id.uuid = Default::default();
-        id
+    fn by_id(id: GoalId) -> GoalInfo {
+        GoalInfo {
+            goal_id: id,
+            stamp: Time::ZERO,
+        }
+    }
+
+    fn all() -> GoalInfo {
+        let mut goal_id = GoalId::new_random();
+        goal_id.uuid = Default::default();
+        by_id(goal_id)
+    }
+
+    fn cancel(
+        goals: &mut [ZenohServerGoal],
+        requested: GoalInfo,
+    ) -> (Vec<GoalInfo>, CancelGoalResponseEnum) {
+        process_cancel_request(goals.iter_mut(), &requested)
     }
 
     #[test]
     fn cancel_all_skips_finished_goals() {
-        let running = goal(GoalStatusEnum::Executing);
-        let finished = [
+        let mut goals = [
+            goal(GoalStatusEnum::Executing),
             goal(GoalStatusEnum::Succeeded),
             goal(GoalStatusEnum::Aborted),
             goal(GoalStatusEnum::Canceled),
         ];
-        let (targets, code) =
-            zenoh_cancel_targets(std::iter::once(&running).chain(&finished), nil());
+        let running = goals[0].id;
+        let (targets, code) = cancel(&mut goals, all());
         assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].uuid, running.id.uuid);
+        assert_eq!(targets[0].goal_id.uuid, running.uuid);
         assert_eq!(code, CancelGoalResponseEnum::None);
+        assert_eq!(goals[0].status, GoalStatusEnum::Canceling);
+        // A finished goal keeps its terminal status, so it stays evictable.
+        assert_eq!(goals[1].status, GoalStatusEnum::Succeeded);
     }
 
     #[test]
     fn cancelling_a_finished_goal_reports_goal_terminated() {
-        let finished = goal(GoalStatusEnum::Succeeded);
-        let (targets, code) = zenoh_cancel_targets([&finished], finished.id);
+        let mut goals = [goal(GoalStatusEnum::Succeeded)];
+        let id = goals[0].id;
+        let (targets, code) = cancel(&mut goals, by_id(id));
         assert!(targets.is_empty());
         assert_eq!(code, CancelGoalResponseEnum::GoalTerminated);
     }
 
     #[test]
     fn cancelling_a_running_goal_by_id() {
-        let running = goal(GoalStatusEnum::Executing);
-        let other = goal(GoalStatusEnum::Executing);
-        let (targets, code) = zenoh_cancel_targets([&running, &other], running.id);
+        let mut goals = [
+            goal(GoalStatusEnum::Executing),
+            goal(GoalStatusEnum::Executing),
+        ];
+        let id = goals[0].id;
+        let (targets, code) = cancel(&mut goals, by_id(id));
         assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].uuid, running.id.uuid);
+        assert_eq!(targets[0].goal_id.uuid, id.uuid);
+        // The reply carries the stamp the goal was accepted with.
+        assert_eq!(targets[0].stamp, goals[0].stamp);
         assert_eq!(code, CancelGoalResponseEnum::None);
+        assert_eq!(goals[1].status, GoalStatusEnum::Executing);
     }
 
+    /// rcl: a canceling goal is no longer cancelable, so naming it is
+    /// `ERROR_GOAL_TERMINATED`.
     #[test]
     fn a_goal_that_is_already_canceling_is_not_canceled_again() {
-        let canceling = goal(GoalStatusEnum::Canceling);
-        let running = goal(GoalStatusEnum::Executing);
-        let (targets, code) = zenoh_cancel_targets([&canceling, &running], nil());
+        let mut goals = [
+            goal(GoalStatusEnum::Canceling),
+            goal(GoalStatusEnum::Executing),
+        ];
+        let canceling = goals[0].id;
+        let running = goals[1].id;
+        let (targets, code) = cancel(&mut goals, all());
         assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].uuid, running.id.uuid);
+        assert_eq!(targets[0].goal_id.uuid, running.uuid);
         assert_eq!(code, CancelGoalResponseEnum::None);
 
-        let (targets, code) = zenoh_cancel_targets([&canceling], canceling.id);
+        let (targets, code) = cancel(&mut goals, by_id(canceling));
         assert!(targets.is_empty());
-        assert_eq!(code, CancelGoalResponseEnum::Rejected);
+        assert_eq!(code, CancelGoalResponseEnum::GoalTerminated);
     }
 
     #[test]
-    fn unknown_or_empty_cancel_reports_unknown_goal() {
-        let running = goal(GoalStatusEnum::Executing);
-        let (targets, code) = zenoh_cancel_targets([&running], GoalId::new_random());
+    fn cancelling_an_unknown_goal_reports_unknown_goal() {
+        let mut goals = [goal(GoalStatusEnum::Executing)];
+        let (targets, code) = cancel(&mut goals, by_id(GoalId::new_random()));
         assert!(targets.is_empty());
         assert_eq!(code, CancelGoalResponseEnum::UnknownGoal);
+    }
 
-        let finished = goal(GoalStatusEnum::Succeeded);
-        let (targets, code) = zenoh_cancel_targets([&finished], nil());
+    /// rcl answers a cancel-all with `ERROR_NONE` and an empty list when no
+    /// goal is running.
+    #[test]
+    fn cancel_all_with_nothing_running_is_accepted() {
+        let mut goals = [goal(GoalStatusEnum::Succeeded)];
+        let (targets, code) = cancel(&mut goals, all());
         assert!(targets.is_empty());
-        assert_eq!(code, CancelGoalResponseEnum::UnknownGoal);
+        assert_eq!(code, CancelGoalResponseEnum::None);
+        let (targets, code) = cancel(&mut [], all());
+        assert!(targets.is_empty());
+        assert_eq!(code, CancelGoalResponseEnum::None);
+    }
+
+    /// A non-zero stamp selects the goals accepted at or before it.
+    #[test]
+    fn cancel_by_stamp_takes_goals_accepted_at_or_before_it() {
+        let mut goals = [
+            goal(GoalStatusEnum::Executing),
+            goal(GoalStatusEnum::Executing),
+        ];
+        goals[1].stamp = Time::from_nanos(30);
+        let mut requested = all();
+        requested.stamp = Time::from_nanos(20);
+        let (targets, code) = cancel(&mut goals, requested);
+        assert_eq!(code, CancelGoalResponseEnum::None);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(goals[0].status, GoalStatusEnum::Canceling);
+        assert_eq!(goals[1].status, GoalStatusEnum::Executing);
     }
 }
 
@@ -2691,6 +2708,7 @@ mod zenoh_accept_goal_tests {
                 key.clone(),
                 ZenohServerGoal {
                     id,
+                    stamp: super::ros2_client::builtin_interfaces::Time::ZERO,
                     status,
                     result: Some(vec![1, 2, 3]),
                     result_requests: Vec::new(),
@@ -2817,6 +2835,7 @@ mod zenoh_goal_result_request_tests {
     fn goal() -> ZenohServerGoal {
         ZenohServerGoal {
             id: GoalId::new_random(),
+            stamp: super::ros2_client::builtin_interfaces::Time::ZERO,
             status: GoalStatusEnum::Executing,
             result: None,
             result_requests: Vec::new(),

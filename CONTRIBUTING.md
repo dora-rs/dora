@@ -33,7 +33,7 @@ cargo fmt --all
 3. **Review**: Run `cargo clippy` and `cargo fmt` before submitting
 4. **Commit**: Use conventional commit format: `type(scope): description`
    - Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`
-5. **Changelog**: If users can notice the change, add an entry under `## Unreleased` in [`Changelog.md`](Changelog.md) in the same PR (`### Fixed`, `### Added`, `### Breaking`, …). Start with a bold one-line summary and links to the PR and issue, then say what changed and anything users have to do. Tests, refactors and other internal changes don't need one.
+5. **Changelog**: Don't edit [`Changelog.md`](Changelog.md) in your PR; the maintainers write the entries when they prepare a release. If users can notice the change, say in the PR description what changed for them and anything they have to do, so the entry can be written from it.
 
 See [docs/testing-guide.md](docs/testing-guide.md) for detailed testing patterns.
 
@@ -85,9 +85,9 @@ cargo install cargo-release
 # 1. Ensure main is green and up to date
 git checkout main && git pull
 
-# 2. Finish the changelog: in Changelog.md, rename `## Unreleased` to
-#    `## vX.Y.Z (YYYY-MM-DD)` and add entries for user-visible PRs that
-#    didn't write one, in the same PR as the version bump.
+# 2. Write the changelog: in Changelog.md, rename `## Unreleased` to
+#    `## vX.Y.Z (YYYY-MM-DD)` and add entries for the user-visible PRs
+#    merged since the last release, in the same PR as the version bump.
 
 # 3. Bump version, commit, tag, and push (dry-run first)
 cargo release minor              # dry-run: review what will happen
