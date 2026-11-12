@@ -86,6 +86,9 @@ def get_tensor_info(tensor: torch.Tensor) -> dict:
 
     This is the canonical way to pass tensor metadata to tensor-pool
     operations such as ``register_tensor_pool`` and ``write_tensor_pool``.
+
+    The dict also holds the tensor that ``ptr`` points into, so the memory
+    stays valid for as long as the dict is alive.
     """
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()
@@ -95,6 +98,11 @@ def get_tensor_info(tensor: torch.Tensor) -> dict:
         "dtype": str(tensor.dtype),
         "shape": list(tensor.shape),
         "device": str(tensor.device),
+        # A non-contiguous input is copied above, and nothing else references
+        # that copy: without this entry it is freed on return and `ptr` points
+        # at memory the allocator hands to the next tensor. The Rust side reads
+        # only the keys above, so it ignores this one.
+        "tensor": tensor,
     }
 
 
