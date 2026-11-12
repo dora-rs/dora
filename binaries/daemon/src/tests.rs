@@ -21,7 +21,7 @@ use dora_message::{
 };
 use std::sync::atomic::{AtomicBool, AtomicU64};
 
-fn test_dataflow() -> RunningDataflow {
+pub(super) fn test_dataflow() -> RunningDataflow {
     let descriptor = Descriptor::new(vec![]);
     RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor)
 }
@@ -457,7 +457,7 @@ async fn daemon_reporting_to(
 
 /// Like [`daemon_reporting_to`], but also returns the receiver half of the
 /// daemon's internal event channel (`events_tx`), which `run_inner` drains.
-async fn daemon_and_events_rx(
+pub(super) async fn daemon_and_events_rx(
     coordinator_sender: coordinator::CoordinatorSender,
     clock: Arc<HLC>,
 ) -> (Daemon, mpsc::Receiver<Timestamped<Event>>) {
@@ -4166,12 +4166,12 @@ fn param_update_fails_on_closed_channel() {
 
 #[test]
 fn strict_param_update_fails_when_node_not_connected() {
-    let df = test_dataflow();
+    let mut df = test_dataflow();
     let clock = test_clock();
     let node_id: NodeId = "node_missing".to_string().into();
 
     let err = deliver_param_update_strict(
-        &df,
+        &mut df,
         &node_id,
         "threshold".into(),
         serde_json::json!(1),
@@ -4234,7 +4234,7 @@ fn state_catch_up_stops_at_first_full_channel_and_returns_applied_prefix() {
     dataflow.subscribe_channels.insert(node_b.clone(), tx_b);
 
     let applied_through = apply_state_catch_up_entries(
-        &dataflow,
+        &mut dataflow,
         &[
             StateCatchUpEntry {
                 sequence: 1,
@@ -4272,11 +4272,11 @@ fn state_catch_up_stops_at_first_full_channel_and_returns_applied_prefix() {
 #[test]
 fn state_catch_up_returns_zero_when_first_entry_cannot_be_delivered() {
     let clock = test_clock();
-    let dataflow = test_dataflow();
+    let mut dataflow = test_dataflow();
     let node_id: NodeId = "node_a".to_string().into();
 
     let applied_through = apply_state_catch_up_entries(
-        &dataflow,
+        &mut dataflow,
         &[StateCatchUpEntry {
             sequence: 7,
             operation: StateCatchUpOperation::SetParam {
@@ -4312,7 +4312,7 @@ fn strict_param_delete_fails_when_channel_full() {
         assert!(sent);
     }
 
-    let err = deliver_param_delete_strict(&df, &node_id, "threshold".into(), &clock)
+    let err = deliver_param_delete_strict(&mut df, &node_id, "threshold".into(), &clock)
         .expect_err("strict delivery should fail when node channel is full");
     assert!(err.to_string().contains("channel full"));
 }

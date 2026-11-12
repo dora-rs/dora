@@ -583,6 +583,7 @@ impl Daemon {
             let mut logger = logger.reborrow().for_node(node.id.clone());
             let local = spawn_nodes.contains(&node.id);
             if local {
+                dataflow.runtime_params.entry(node.id.clone()).or_default();
                 let dynamic_node = node.kind.dynamic();
                 if dynamic_node {
                     dataflow.dynamic_nodes.insert(node.id.clone());

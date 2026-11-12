@@ -313,6 +313,10 @@ pub struct RunningDataflow {
     pub(crate) pending_nodes: PendingNodes,
     pub(crate) dataflow_started: bool,
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
+    /// One entry per locally assigned node, from spawn/add through removal.
+    /// Delayed coordinator writes may update a slot, but cannot recreate it.
+    /// Restarts and replacements retain its latest persisted runtime values.
+    pub(crate) runtime_params: BTreeMap<NodeId, BTreeMap<String, Arc<[u8]>>>,
     /// Per-node pending message counters (incremented on send, decremented on recv)
     pub(crate) pending_messages: HashMap<NodeId, Arc<AtomicU64>>,
     /// Per-node "the listener took something out of the subscribe channel"
@@ -499,6 +503,7 @@ impl RunningDataflow {
             pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
             dataflow_started: false,
             subscribe_channels: HashMap::new(),
+            runtime_params: BTreeMap::new(),
             pending_messages: HashMap::new(),
             drain_signals: HashMap::new(),
             remote_backpressured_outputs: BTreeSet::new(),
