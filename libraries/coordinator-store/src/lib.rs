@@ -25,6 +25,15 @@ pub use in_memory::InMemoryStore;
 /// `tests/ws-cli-e2e.rs::e2e_up_reports_incompatible_coordinator_store`).
 pub const SCHEMA_MISMATCH_MARKER: &str = "redb schema version mismatch";
 
+/// Marker prefix of the error produced by `RedbStore::open` when the store
+/// file is damaged: redb's integrity check fails, the file is cut short, or
+/// it is not a redb database at all. Recovery is the same as for
+/// [`SCHEMA_MISMATCH_MARKER`] -- archive the file and start fresh -- so
+/// `dora up` matches this string too and suggests `--recreate-store`. Any
+/// rewording must update both sites together (covered end-to-end by
+/// `tests/ws-cli-e2e.rs::e2e_up_reports_corrupt_coordinator_store`).
+pub const STORE_CORRUPT_MARKER: &str = "redb store is corrupt";
+
 /// Maximum allowed length for a param key (bytes).
 pub const MAX_PARAM_KEY_BYTES: usize = 256;
 /// Maximum allowed size for a serialized param value (bytes).
