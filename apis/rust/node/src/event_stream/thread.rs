@@ -37,7 +37,7 @@ pub enum EventItem {
     /// aliases the zenoh buffer (the decoder wraps it via
     /// `Buffer::from_custom_allocation`), so this stays zero-copy
     /// (dora-rs/adora#132). The input's arrival bound may release the payload
-    /// while the message waits in the channel (see `arrival_bound`).
+    /// while the message waits in the node (see `arrival_bound`).
     ZenohInput {
         id: dora_core::config::DataId,
         metadata: std::sync::Arc<dora_message::metadata::Metadata>,
@@ -48,8 +48,8 @@ pub enum EventItem {
 }
 
 impl EventItem {
-    /// Takes the event off the ingress channel. Returns `None` for a zenoh
-    /// input whose payload was released while it waited.
+    /// Takes the event for delivery or eviction. Returns `None` for a zenoh
+    /// input whose payload was already released.
     pub(crate) fn settle(self) -> Option<Self> {
         match self {
             EventItem::ZenohInput { id, metadata, data } => data

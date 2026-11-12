@@ -166,11 +166,11 @@ inputs:
 | `queue_policy` | string | `drop_oldest` | `drop_oldest`: drops oldest message when full. `backpressure`: buffers up to 10x `queue_size` without dropping (drops with ERROR log at hard cap) |
 | `input_timeout` | float | -- | Circuit breaker timeout in seconds. If no message arrives within this period, the daemon closes the input and the node receives an `InputClosed` event for graceful degradation |
 
-On the direct zenoh path, `queue_size` also applies while messages wait in the
-receiver's ingress channel: when a `drop_oldest` input has more than
-`queue_size` messages waiting there, the oldest is discarded and counted as a
-drop. That releases its shared-memory buffer, so a receiver that falls behind
-cannot exhaust its producer's pool.
+On the direct zenoh path, `queue_size` applies from the moment a message
+arrives: when a `drop_oldest` input has more than `queue_size` messages waiting
+in the receiver, in its ingress channel or its input queue, the oldest is
+discarded and counted as a drop. That releases its shared-memory buffer, so a
+receiver that falls behind cannot exhaust its producer's pool.
 
 A `backpressure` input keeps its producer's output on the daemon path instead
 of the direct zenoh path. The direct path's callback drops at the receiver's

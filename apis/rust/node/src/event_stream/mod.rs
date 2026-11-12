@@ -1139,16 +1139,28 @@ impl EventStream {
             // previous "block until a retained event arrives" behavior while
             // checking `is_empty()` only twice in the common case instead of
             // once per drained event.
-            while self.scheduler.is_empty() {
-                match self.receiver.recv().await {
-                    Some(event) => self.add_event(event),
-                    None => break,
+            //
+            // The scheduler can also hold only messages whose payloads a newer
+            // arrival released after the drain. That arrival is still on its
+            // way through the channel, so go back to waiting for it.
+            let mut closed = false;
+            loop {
+                while !closed && self.scheduler.is_empty() {
+                    match self.receiver.recv().await {
+                        Some(event) => self.add_event(event),
+                        None => closed = true,
+                    }
+                }
+                while let Ok(event) = self.receiver.try_recv() {
+                    self.add_event(event);
+                }
+                if let Some(event) = self.next_settled() {
+                    break Some(Self::convert_event_item(event));
+                }
+                if closed {
+                    break None;
                 }
             }
-            while let Ok(event) = self.receiver.try_recv() {
-                self.add_event(event);
-            }
-            self.scheduler.next().map(Self::convert_event_item)
         };
 
         if let Some(ref event) = event {
@@ -1164,7 +1176,7 @@ impl EventStream {
         if !self.use_scheduler {
             return None;
         }
-        while let Some(item) = self.scheduler.next() {
+        while let Some(item) = self.next_settled() {
             if inputs_only
                 && !matches!(
                     &item,
@@ -1270,7 +1282,7 @@ impl EventStream {
     /// since the last call.
     /// Drops are reported per input across every loss site — the scheduler's
     /// per-input eviction, the arrival bound on zenoh inputs waiting in the
-    /// shared ingress channel, and that channel overflowing — so a caller does
+    /// node, and the shared ingress channel overflowing — so a caller does
     /// not have to know which transport a payload took to learn it was lost
     /// (#3282).
     ///
@@ -1291,18 +1303,10 @@ impl EventStream {
     }
 
     fn add_event(&mut self, event: EventItem) {
-        let flush = scheduler::flush_target(&event).cloned();
-        if let Some(id) = &flush {
+        self.record_or_poison(&event);
+        if let Some(id) = scheduler::flush_target(&event) {
             self.flush_passthrough(id);
         }
-        let Some(event) = event.settle() else {
-            // The payload was released, but the flush still applies.
-            if let Some(id) = &flush {
-                self.scheduler.flush(id);
-            }
-            return;
-        };
-        self.record_or_poison(&event);
         // A key has at most one pending change, in the scheduler or in
         // `pending_passthrough`. When the passthrough buffer holds the key,
         // the newer change replaces it there and keeps its position, as in
@@ -1317,6 +1321,16 @@ impl EventStream {
         }
         self.scheduler.add_event(event);
         self.scheduler_maybe_nonempty = true;
+    }
+
+    /// The next event in the scheduler, skipping zenoh inputs that their
+    /// arrival bound released while they were queued.
+    fn next_settled(&mut self) -> Option<EventItem> {
+        loop {
+            if let Some(item) = self.scheduler.next()?.settle() {
+                return Some(item);
+            }
+        }
     }
 
     /// The next event off the ingress channel, skipping zenoh inputs that
@@ -1347,11 +1361,10 @@ impl EventStream {
     }
 
     /// Record `event` to the optional `write_events_to` log. Every event taken
-    /// off `receiver` and not released on arrival (see `arrival_bound`) must
-    /// pass through here exactly once, whichever receive path takes it:
-    /// `add_event` for the scheduler paths, directly for the ones that bypass
-    /// the scheduler (`poll_next`, the non-scheduler branch of
-    /// `recv_from_stream`).
+    /// off `receiver` must pass through here exactly once, whichever receive
+    /// path takes it: `add_event` for the scheduler paths, directly for the
+    /// ones that bypass the scheduler (`poll_next`, the non-scheduler branch
+    /// of `recv_from_stream`).
     fn record_or_poison(&mut self, event: &EventItem) {
         // Event recording is observability-only (writes to the optional
         // `write_events_to` log). A write failure must not panic the event
@@ -1426,22 +1439,26 @@ impl EventStream {
                 // bypass the daemon, so neither this recorder nor the daemon
                 // would otherwise capture them — silently dropping inputs from
                 // the `write_events_to` recording. Record them here too.
-                EventItem::ZenohInput { id, metadata, data } => {
-                    let array = arrow::array::make_array(data.settled_data().clone());
-                    let mut event_json = convert_arrow_input_to_json(
-                        id,
-                        metadata,
-                        array,
-                        self.start_timestamp,
-                        false,
-                    )?;
-                    event_json.insert("type".into(), "Input".into());
-                    write_events_to.note_non_finite_params(insert_recorded_metadata(
-                        &mut event_json,
-                        &metadata.parameters,
-                    )?);
-                    Some(event_json.into())
-                }
+                // A released payload never reaches the node, so isn't recorded.
+                EventItem::ZenohInput { id, metadata, data } => match data.data() {
+                    None => None,
+                    Some(data) => {
+                        let array = arrow::array::make_array(data);
+                        let mut event_json = convert_arrow_input_to_json(
+                            id,
+                            metadata,
+                            array,
+                            self.start_timestamp,
+                            false,
+                        )?;
+                        event_json.insert("type".into(), "Input".into());
+                        write_events_to.note_non_finite_params(insert_recorded_metadata(
+                            &mut event_json,
+                            &metadata.parameters,
+                        )?);
+                        Some(event_json.into())
+                    }
+                },
                 _ => None,
             };
             if let Some(event_json) = event_json {
@@ -4948,6 +4965,61 @@ mod tests {
         let received = receive_with_recv(&mut events);
         assert_eq!(input_values(&received, &cam), [Some(1), Some(2)]);
         assert_eq!(events.drain_drop_counts().get(&cam), Some(&1));
+    }
+
+    /// The bound covers messages the node already moved into the scheduler:
+    /// newer arrivals release them there, every read path skips them, and each
+    /// counts as one drop, not a second one when the scheduler evicts it.
+    #[test]
+    fn inputs_released_while_queued_are_skipped_and_counted_once() {
+        for receive_all in [receive_with_recv, receive_with_stream] {
+            let cam = DataId::from("cam".to_string());
+            let (_node, mut events, tx, bound) = stream_with_arrival_bound(&cam, 2, 16);
+            arrive(&events, &tx, &bound, &cam, 1, MetadataParameters::new());
+            arrive(&events, &tx, &bound, &cam, 2, MetadataParameters::new());
+            events.absorb_ready_events();
+            arrive(&events, &tx, &bound, &cam, 3, MetadataParameters::new());
+            arrive(&events, &tx, &bound, &cam, 4, MetadataParameters::new());
+            drop(tx);
+
+            let received = receive_all(&mut events);
+            assert_eq!(input_values(&received, &cam), [Some(3), Some(4)]);
+            assert_eq!(events.drain_drop_counts().get(&cam), Some(&2));
+        }
+    }
+
+    /// A newer arrival can release the only queued message right after `recv`
+    /// drained the channel, so `recv` finds nothing to deliver. It waits for
+    /// that arrival rather than reporting the stream as closed.
+    #[test]
+    fn recv_waits_when_every_queued_message_was_released() {
+        use arrow::array::Array;
+        let cam = DataId::from("cam".to_string());
+        let (_node, mut events, tx, bound) = stream_with_arrival_bound(&cam, 1, 16);
+        arrive(&events, &tx, &bound, &cam, 1, MetadataParameters::new());
+        events.absorb_ready_events();
+
+        // Message 2 releases message 1 but reaches the channel only later, as
+        // when its callback runs between the drain and the pop.
+        let metadata = Metadata::new(uhlc::HLC::default().new_timestamp());
+        let (data, waiting) = bound.wrap(
+            arrow::array::Int32Array::from(vec![2]).into_data(),
+            &metadata,
+        );
+        bound.admit(waiting.unwrap());
+
+        let waited = events.recv_timeout(Duration::from_millis(100));
+        assert!(matches!(waited, Some(Event::Error(_))), "got {waited:?}");
+
+        tx.try_send(EventItem::ZenohInput {
+            id: cam.clone(),
+            metadata: Arc::new(metadata),
+            data,
+        })
+        .unwrap();
+        drop(tx);
+        let received = receive_with_recv(&mut events);
+        assert_eq!(input_values(&received, &cam), [Some(2)]);
     }
 
     /// A released `flush: true` chunk still flushes, on both read paths: the

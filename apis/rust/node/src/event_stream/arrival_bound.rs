@@ -3,11 +3,13 @@
 //! A zenoh payload points into its producer's shared memory, so every message
 //! waiting in a node that reads more slowly than its producer holds on to some
 //! of that memory, and enough of them use it all up. Each input therefore keeps
-//! a list of its messages waiting in the ingress channel. Once the list is
-//! longer than `queue_size`, the oldest message's payload is released. The
-//! message itself stays in the channel, so the order of everything else doesn't
-//! change, and the node skips it when it reads it
-//! ([`EventItem::settle`](super::thread::EventItem::settle)).
+//! a list of its waiting messages, in the ingress channel and then in the
+//! scheduler's queue. Once the list is longer than `queue_size`, the oldest
+//! message's payload is released. The message itself stays where it is, so the
+//! order of everything else doesn't change, and the node skips it when it gets
+//! to it ([`EventItem::settle`](super::thread::EventItem::settle)). A payload
+//! is counted as a drop by whichever side releases it: the list here or the
+//! scheduler's eviction.
 
 use std::{
     collections::VecDeque,
@@ -37,15 +39,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// The payload of a zenoh-delivered input.
 #[derive(Debug)]
 pub(crate) enum ZenohPayload {
-    /// Waiting in the channel. Its input's [`ArrivalBound`] may release it.
+    /// Waiting to be delivered. Its input's [`ArrivalBound`] may release it.
     Waiting(Arc<Slot>),
-    /// Taken off the channel, or never under a bound. Nothing can release it.
+    /// Taken for delivery, or never under a bound. Nothing can release it.
     Settled(ArrayData),
 }
 
 impl ZenohPayload {
-    /// Takes the payload off the channel, so the bound can no longer release
-    /// it. Returns `None` if the bound already did.
+    /// Takes the payload for delivery, so the bound can no longer release it.
+    /// Returns `None` if the bound already did.
     pub(crate) fn settle(self) -> Option<Self> {
         match self {
             Self::Waiting(slot) => lock(&slot).take().map(Self::Settled),
@@ -53,11 +55,11 @@ impl ZenohPayload {
         }
     }
 
-    /// The data of a [settled](Self::settle) payload.
-    pub(crate) fn settled_data(&self) -> &ArrayData {
+    /// The data, or `None` if the bound released it.
+    pub(crate) fn data(&self) -> Option<ArrayData> {
         match self {
-            Self::Settled(data) => data,
-            Self::Waiting(_) => unsettled(),
+            Self::Waiting(slot) => lock(slot).clone(),
+            Self::Settled(data) => Some(data.clone()),
         }
     }
 
@@ -65,24 +67,20 @@ impl ZenohPayload {
     pub(crate) fn into_settled_data(self) -> ArrayData {
         match self {
             Self::Settled(data) => data,
-            Self::Waiting(_) => unsettled(),
+            Self::Waiting(_) => panic!("a zenoh payload is settled before its data is read"),
         }
     }
-}
-
-fn unsettled() -> ! {
-    panic!("a zenoh payload is settled before its data is read")
 }
 
 /// Lets an [`ArrivalBound`] release a payload after its message is sent.
 pub(crate) struct Waiting(Weak<Slot>);
 
 /// Keeps at most `queue_size` payloads of one `drop_oldest` input waiting in
-/// the ingress channel.
+/// the node.
 pub(crate) struct ArrivalBound {
     input_id: DataId,
     cap: usize,
-    /// Payloads of this input's messages in the channel, oldest first.
+    /// Payloads of this input's waiting messages, oldest first.
     waiting: Mutex<VecDeque<Weak<Slot>>>,
     /// The input's ingress drop count, which `drain_drop_counts` reports.
     dropped: Arc<AtomicU64>,
@@ -131,7 +129,7 @@ impl ArrivalBound {
     pub(crate) fn admit(&self, sent: Waiting) {
         let released = {
             let mut waiting = lock(&self.waiting);
-            // Forget messages that have since left the channel.
+            // Forget messages that have since been delivered or discarded.
             waiting.retain(|slot| slot.strong_count() > 0);
             waiting.push_back(sent.0);
             // The list was within the cap before this message, so at most one
@@ -189,8 +187,8 @@ mod tests {
     }
 
     /// The oldest waiting payloads are released first and each is counted
-    /// once. A payload already taken off the channel doesn't count toward the
-    /// cap and is never released.
+    /// once. A payload already taken for delivery doesn't count toward the cap
+    /// and is never released.
     #[test]
     fn releases_the_oldest_waiting_payloads_beyond_queue_size() {
         let dropped = Arc::new(AtomicU64::new(0));
