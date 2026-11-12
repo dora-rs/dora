@@ -292,7 +292,7 @@ For each Arrow goal input:
 
 The action bridge sends feedback and results on separate outputs:
 
-- **`feedback`**: Streamed as each feedback message arrives from the action server. Contains the action's feedback message as Arrow (e.g., `{partial_sequence: int32[]}` for Fibonacci)
+- **`feedback`**: Streamed as each feedback message arrives from the action server. Contains the action's feedback message as Arrow (e.g., `{sequence: int32[]}` for Fibonacci)
 - **`result`**: Sent once when the action completes. Contains the action's result message as Arrow (e.g., `{sequence: int32[]}` for Fibonacci)
 
 ### Concurrent Goals
@@ -468,6 +468,24 @@ nodes:
 | `keep_last` | `1` |
 | `keep_all` | `false` |
 
+These are the defaults for topics and for ordinary Zenoh service/action
+channels. Two exceptions apply: DDS service and action endpoints always use
+reliable delivery and default to `keep_last: 10` (see
+[Service and action QoS](#service-and-action-qos-dds-only)), and the action
+status channel is always reliable with `transient_local` durability on both
+transports (see [Action status channel](#action-status-channel)).
+
+### Domain ID
+
+The bridge reads `ROS_DOMAIN_ID` from the environment. The DDS transport accepts
+domains `0` to `232` only, because DDS derives its well-known ports from the
+domain id. Surrounding whitespace is ignored, and an unset or empty value
+selects domain `0`. A malformed value, or one above `232`, is an error: the
+bridge fails at startup with a message naming `ROS_DOMAIN_ID` instead of
+silently bridging on domain `0`. The Zenoh transport has no such limit: it
+preserves any non-negative domain id that fits in a platform-sized unsigned
+integer (`usize`), and falls back to `0` for values that do not.
+
 ### Per-Topic QoS Override
 
 In multi-topic mode, each topic can override the bridge-level QoS:
@@ -509,6 +527,34 @@ Neither topic sets `output:`/`input:`, so both use the topic-derived ids (`fast_
 | `keep_all` | `true`, `false` (mutually exclusive intent with `keep_last`) |
 | `lease_duration` | Finite non-negative float (seconds) |
 | `max_blocking_time` | Finite non-negative float (seconds) |
+
+### Service and action QoS (DDS only)
+
+On the DDS transport, service and action endpoints do not use the configured
+topic QoS verbatim:
+
+- **Reliability is forced to reliable.** ROS 2 service and action endpoints
+  require reliable delivery, so a `reliable: false` config is ignored for these
+  channels.
+- **`keep_last` defaults to `10`** when the config does not set it. An explicit
+  `keep_last` or `keep_all` is still honoured.
+- **The action status channel is forced to `transient_local` durability**, on
+  both the client subscription and the server publisher, because ROS 2 action
+  clients subscribe to the status topic with transient-local durability.
+
+All other fields (`liveliness`, `lease_duration`, `max_blocking_time`) are
+passed through unchanged. The Zenoh transport is unaffected by this override:
+its ordinary service and action channels use the configured QoS as-is, apart
+from the status channel described below.
+
+### Action status channel
+
+The action status channel is special on both transports, because ROS 2 action
+clients subscribe to it with transient-local durability. It is always reliable
+and `transient_local`; the configured `reliable` and `durability` are ignored
+for this channel only. The history depth differs by transport: DDS uses the
+configured `keep_last` (default `10`), while Zenoh keeps the last `1` status
+sample.
 
 ---
 
@@ -586,14 +632,14 @@ fn read_response(data: &dyn arrow::array::Array) -> i64 {
 | Bounded sequence (`int32[<=10]`) | `List` (length validated) | `ListArray` |
 | Fixed-size array (`int32[3]`) | `FixedSizeList` | `FixedSizeListArray` |
 
-Example: reading a `ListArray` from Fibonacci feedback (`{partial_sequence: int32[]}`):
+Example: reading a `ListArray` from Fibonacci feedback (`{sequence: int32[]}`):
 
 ```rust
 use arrow::array::{Int32Array, ListArray, StructArray};
 
 let struct_array = data.as_any().downcast_ref::<StructArray>().unwrap();
 let list = struct_array
-    .column_by_name("partial_sequence")
+    .column_by_name("sequence")
     .unwrap()
     .as_any()
     .downcast_ref::<ListArray>()
@@ -878,7 +924,7 @@ Prerequisites: start the action server **before** the dataflow:
 ros2 run examples_rclcpp_action_server fibonacci_action_server
 ```
 
-The goal node sends `{order: int32}`, receives streamed `{partial_sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result.
+The goal node sends `{order: int32}`, receives streamed `{sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result.
 
 ### 7. Action Server: Expose an Dora Handler as ROS2 Action
 
@@ -904,7 +950,7 @@ nodes:
       - result
 ```
 
-The handler receives `{order: int32}` goals with a `goal_id` in metadata, sends `{partial_sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result -- all with the same `goal_id` in metadata. External ROS2 clients can send goals:
+The handler receives `{order: int32}` goals with a `goal_id` in metadata, sends `{sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result -- all with the same `goal_id` in metadata. External ROS2 clients can send goals:
 ```bash
 ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10}"
 ```
@@ -1105,7 +1151,7 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
 - **Native action server discovery (ros2-client#4)**: a Dora-hosted *action* server is not discoverable by a real `rcl`-based client; pair it with a Dora client. Service servers are unaffected.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
-- **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable.
+- **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable. On the DDS transport these channels additionally apply the override described in [Service and action QoS](#service-and-action-qos-dds-only); on the Zenoh transport ordinary service/action channels use the configured QoS as-is. On both transports the action status channel is always reliable and `transient_local` (see [Action status channel](#action-status-channel)).
 - **`AMENT_PREFIX_PATH` required**: The bridge fails at startup if no ROS2 message definitions are found.
 - **Max 64 topics**: Multi-topic mode supports at most 64 topics per bridge node.
 - **Max 8 concurrent action goals**: Additional goals receive `Aborted` status when the limit is reached.

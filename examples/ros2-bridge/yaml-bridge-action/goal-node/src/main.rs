@@ -36,21 +36,10 @@ fn main() -> eyre::Result<()> {
                         eprintln!("Warning: received empty feedback array");
                         continue;
                     }
-                    // Feedback contains {partial_sequence: int32[]}
-                    let list = struct_array
-                        .column_by_name("partial_sequence")
-                        .expect("missing 'partial_sequence' field")
-                        .as_any()
-                        .downcast_ref::<ListArray>()
-                        .expect("expected ListArray for 'partial_sequence'");
-                    let values = list
-                        .value(0)
-                        .as_any()
-                        .downcast_ref::<Int32Array>()
-                        .expect("expected Int32Array values")
-                        .values()
-                        .to_vec();
-                    println!("Feedback: partial_sequence={values:?}");
+                    // example_interfaces/action/Fibonacci feedback contains {sequence: int32[]}.
+                    let values = int32_list_values(struct_array, "sequence")
+                        .expect("invalid Fibonacci feedback array");
+                    println!("Feedback: sequence={values:?}");
                 }
                 "result" => {
                     let struct_array = data
@@ -62,20 +51,9 @@ fn main() -> eyre::Result<()> {
                         eprintln!("Warning: received empty result array");
                         continue;
                     }
-                    // Result contains {sequence: int32[]}
-                    let list = struct_array
-                        .column_by_name("sequence")
-                        .expect("missing 'sequence' field")
-                        .as_any()
-                        .downcast_ref::<ListArray>()
-                        .expect("expected ListArray for 'sequence'");
-                    let values = list
-                        .value(0)
-                        .as_any()
-                        .downcast_ref::<Int32Array>()
-                        .expect("expected Int32Array values")
-                        .values()
-                        .to_vec();
+                    // example_interfaces/action/Fibonacci result contains {sequence: int32[]}.
+                    let values =
+                        int32_list_values(struct_array, "sequence").expect("invalid result array");
                     println!("Result: sequence={values:?}");
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
@@ -89,6 +67,24 @@ fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+/// Read the `int32[]` field `field_name` from the first row of `struct_array`.
+fn int32_list_values(struct_array: &StructArray, field_name: &str) -> eyre::Result<Vec<i32>> {
+    let list = struct_array
+        .column_by_name(field_name)
+        .ok_or_else(|| eyre::eyre!("missing '{field_name}' field"))?
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .ok_or_else(|| eyre::eyre!("expected ListArray for '{field_name}'"))?;
+    let values = list
+        .value(0)
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .ok_or_else(|| eyre::eyre!("expected Int32Array values for '{field_name}'"))?
+        .values()
+        .to_vec();
+    Ok(values)
 }
 
 /// Create an Arrow StructArray matching `example_interfaces/Fibonacci_Goal`.
