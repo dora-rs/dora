@@ -3150,6 +3150,25 @@ mod narrowed_regression_tests {
         assert_eq!(parse_dds_ros_domain_id(Some("232")), 232);
     }
 
+    /// A value padded with whitespace is still a valid domain id: the parser
+    /// must trim before parsing instead of falling back to domain 0.
+    #[test]
+    fn dds_domain_id_parser_accepts_whitespace_padded_values() {
+        assert_eq!(parse_dds_ros_domain_id(Some(" 232 ")), 232);
+        assert_eq!(parse_dds_ros_domain_id(Some(" 181 ")), 181);
+        assert_eq!(parse_dds_ros_domain_id(Some("\t232\n")), 232);
+        assert_eq!(parse_dds_ros_domain_id(Some(" 0 ")), 0);
+    }
+
+    /// Whitespace-only input carries no domain id, so it is treated like an
+    /// empty value and falls back to domain 0.
+    #[test]
+    fn dds_domain_id_parser_treats_whitespace_only_input_as_empty() {
+        assert_eq!(parse_dds_ros_domain_id(Some("   ")), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("\t")), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("\n")), 0);
+    }
+
     #[test]
     fn dds_domain_id_parser_caps_above_232() {
         assert_eq!(parse_dds_ros_domain_id(Some("233")), 0);
