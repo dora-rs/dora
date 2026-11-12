@@ -341,7 +341,7 @@ mod lifecycle {
     }
     impl Drop for DeclaredGraphToken {
         fn drop(&mut self) {
-            let _ = self.graph.apply_delete(&self.key);
+            let _ = self.graph.apply_delete_local(&self.key);
         }
     }
 

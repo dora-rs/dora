@@ -21,6 +21,31 @@ pub enum SelfSubCommand {
     },
 }
 
+/// Selects the CLI archive among a release's assets. The target triple alone
+/// also matches the C and C++ library archives.
+const CLI_ASSET_IDENTIFIER: &str = "dora-cli-";
+
+/// The updater `dora self update` runs: the CLI archive of the latest
+/// `dora-rs/dora` release for this target.
+fn cli_updater() -> eyre::Result<self_update::backends::github::Update> {
+    #[cfg(target_os = "linux")]
+    let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
+    #[cfg(target_os = "macos")]
+    let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
+    #[cfg(target_os = "windows")]
+    let bin_path_in_archive = String::from("dora.exe");
+
+    Ok(self_update::backends::github::Update::configure()
+        .repo_owner("dora-rs")
+        .repo_name("dora")
+        .bin_path_in_archive(&bin_path_in_archive)
+        .bin_name("dora")
+        .asset_identifier(CLI_ASSET_IDENTIFIER)
+        .show_download_progress(true)
+        .current_version(env!("CARGO_PKG_VERSION"))
+        .build()?)
+}
+
 impl Executable for SelfSubCommand {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
@@ -29,21 +54,7 @@ impl Executable for SelfSubCommand {
             SelfSubCommand::Update { check_only } => {
                 println!("Checking for updates...");
 
-                #[cfg(target_os = "linux")]
-                let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
-                #[cfg(target_os = "macos")]
-                let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
-                #[cfg(target_os = "windows")]
-                let bin_path_in_archive = String::from("dora.exe");
-
-                let status = self_update::backends::github::Update::configure()
-                    .repo_owner("dora-rs")
-                    .repo_name("dora")
-                    .bin_path_in_archive(&bin_path_in_archive)
-                    .bin_name("dora")
-                    .show_download_progress(true)
-                    .current_version(env!("CARGO_PKG_VERSION"))
-                    .build()?;
+                let status = cli_updater()?;
 
                 if check_only {
                     // Only check if an update is available
@@ -150,5 +161,98 @@ impl Executable for SelfSubCommand {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    /// A release's asset names (v1.1.0), in the order the GitHub API lists
+    /// them; the library archives come before the CLI for every target.
+    const V1_1_0_ASSETS: &[&str] = &[
+        "dora-c-libraries-aarch64-apple-darwin.tar.gz",
+        "dora-c-libraries-aarch64-unknown-linux-gnu.tar.gz",
+        "dora-c-libraries-x86_64-pc-windows-msvc.zip",
+        "dora-c-libraries-x86_64-unknown-linux-gnu.tar.gz",
+        "dora-cli-aarch64-apple-darwin.tar.gz",
+        "dora-cli-aarch64-unknown-linux-gnu.tar.gz",
+        "dora-cli-installer.ps1",
+        "dora-cli-installer.sh",
+        "dora-cli-x86_64-pc-windows-msvc.zip",
+        "dora-cli-x86_64-unknown-linux-gnu.tar.gz",
+        "dora-cpp-libraries-aarch64-apple-darwin.tar.gz",
+        "dora-cpp-libraries-aarch64-unknown-linux-gnu.tar.gz",
+        "dora-cpp-libraries-x86_64-pc-windows-msvc.zip",
+        "dora-cpp-libraries-x86_64-unknown-linux-gnu.tar.gz",
+    ];
+
+    /// The updater `dora self update` builds selects the CLI archive: without
+    /// the identifier, `self_update` takes the first asset matching the
+    /// target, which can be one of the library archives.
+    #[test]
+    fn the_cli_updater_selects_the_cli_archive() {
+        use self_update::UpdateConfig;
+        let updater = super::cli_updater().unwrap();
+        assert_eq!(
+            updater.asset_identifier(),
+            Some(super::CLI_ASSET_IDENTIFIER)
+        );
+    }
+
+    #[test]
+    fn self_update_picks_the_cli_archive() {
+        let release = self_update::update::Release::builder()
+            .name("v1.1.0")
+            .version("1.1.0")
+            .assets(V1_1_0_ASSETS.iter().map(|name| {
+                self_update::update::ReleaseAsset::new(*name, format!("https://host/{name}"))
+            }))
+            .build()
+            .unwrap();
+        for target in [
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "x86_64-unknown-linux-gnu",
+        ] {
+            let without = release.asset_for(target, None).unwrap();
+            assert!(without.name().starts_with("dora-c-libraries-"), "{target}");
+            let with = release
+                .asset_for(target, Some(super::CLI_ASSET_IDENTIFIER))
+                .unwrap();
+            assert!(
+                with.name().starts_with(&format!("dora-cli-{target}")),
+                "{target}"
+            );
+        }
+    }
+
+    /// The Windows release asset is made with PowerShell `Compress-Archive`,
+    /// which always writes Deflate entries. `self_update` only links a Deflate
+    /// decoder when `compression-zip-deflate` is enabled, so without it every
+    /// Windows `dora self update` fails after the download.
+    #[test]
+    fn self_update_extracts_a_deflate_zip() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = dir.path().join("dora-cli-x86_64-pc-windows-msvc.zip");
+        let payload = b"MZ fake dora.exe payload ".repeat(64);
+
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer
+            .start_file("dora.exe", options)
+            .expect("Deflate support must be compiled into zip");
+        writer.write_all(&payload).unwrap();
+        writer.finish().unwrap();
+
+        let out = dir.path().join("out");
+        std::fs::create_dir(&out).unwrap();
+        self_update::Extract::from_source(&archive)
+            .archive(self_update::ArchiveKind::Zip)
+            .extract_file(&out, "dora.exe")
+            .expect("self_update must extract a Deflate zip entry");
+        assert_eq!(std::fs::read(out.join("dora.exe")).unwrap(), payload);
     }
 }

@@ -170,7 +170,9 @@ mod test_tracing;
 mod tests;
 mod zenoh_bind;
 
-pub(crate) use debug_topic::{DebugSchemaCache, prepare_debug_topic_frame, retain_debug_schema};
+pub(crate) use dora_core::debug_topic::{
+    DebugSchemaCache, prepare_debug_topic_frame, retain_published_schema,
+};
 pub(crate) use event_types::{
     CONTROL_EVENT_HEADROOM, DaemonNodeEvent, DoraEvent, Event, GAVE_UP_RECOVERY_ROOM,
     InterDaemonEvent, NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound,

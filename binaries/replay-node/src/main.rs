@@ -4,13 +4,15 @@ use std::{
 };
 
 use dora_message::{
+    aligned_vec::{AVec, ConstAlign},
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
     metadata::{MetadataParameters, strip_internal_parameters},
 };
 use dora_node_api::{
     DoraArray, DoraNode, Event, EventStream, IntoArrow, TryRecvError,
-    arrow_utils::decode_arrow_ipc, arrow_v59::array::NullArray,
+    arrow_utils::{IpcPayload, decode_arrow_ipc_zero_copy},
+    arrow_v59::array::NullArray,
 };
 use dora_recording::RecordingReader;
 use eyre::Context;
@@ -21,11 +23,15 @@ use eyre::Context;
 /// a metadata-only message (which replays as an empty null array). A decode
 /// failure is returned as an `Err` so the caller can skip that single record
 /// rather than aborting the whole replay.
-fn decode_recorded_payload(data: Option<&[u8]>) -> eyre::Result<DoraArray> {
+///
+/// The payload is taken by value and decoded in place: it is already a
+/// 128-byte-aligned buffer, so the decoded array aliases it instead of copying
+/// the whole (possibly multi-megabyte) payload again, as decoding a borrowed
+/// slice would.
+fn decode_recorded_payload(data: Option<AVec<u8, ConstAlign<128>>>) -> eyre::Result<DoraArray> {
     match data {
-        Some(bytes) => {
-            decode_arrow_ipc(bytes).wrap_err("failed to decode recorded Arrow IPC payload")
-        }
+        Some(bytes) => decode_arrow_ipc_zero_copy(IpcPayload::from_aligned_vec(bytes))
+            .wrap_err("failed to decode recorded Arrow IPC payload"),
         None => Ok(NullArray::new(0).into_arrow()),
     }
 }
@@ -216,7 +222,7 @@ fn main() -> eyre::Result<()> {
                     // stream (or absent for metadata-only messages). Decode it
                     // back to an array and re-send; `send_output` re-encodes it
                     // into a fresh IPC stream on the wire.
-                    let array = match decode_recorded_payload(data.as_deref()) {
+                    let array = match decode_recorded_payload(data) {
                         Ok(array) => array,
                         Err(e) => {
                             // A single corrupt-but-complete payload must not
@@ -325,6 +331,7 @@ mod tests {
         Replay, classify_event, decode_recorded_payload, end_of_pass, pacing_gap,
         replay_emitted_nothing_usable, replay_parameters,
     };
+    use dora_message::aligned_vec::{AVec, ConstAlign};
     use dora_node_api::DoraArray;
     use dora_node_api::arrow_utils::encode_arrow_ipc;
     use dora_node_api::arrow_v59::array::Int32Array;
@@ -483,6 +490,11 @@ mod tests {
         );
     }
 
+    /// The recording's payload representation: a 128-byte-aligned buffer.
+    fn aligned(bytes: &[u8]) -> AVec<u8, ConstAlign<128>> {
+        AVec::from_slice(128, bytes)
+    }
+
     #[test]
     fn metadata_only_payload_decodes_to_empty_null_array() {
         // A `None` payload (metadata-only message) replays as an empty array,
@@ -496,8 +508,25 @@ mod tests {
         // A well-formed recorded IPC stream decodes back to its data.
         let original = DoraArray::from_array(Int32Array::from(vec![1, 2, 3]));
         let bytes = encode_arrow_ipc(&original).expect("encode");
-        let decoded = decode_recorded_payload(Some(&bytes)).expect("valid IPC must decode");
+        let decoded =
+            decode_recorded_payload(Some(aligned(&bytes))).expect("valid IPC must decode");
         assert_eq!(decoded.len(), 3);
+        assert_eq!(decoded.as_array(), original.as_array());
+    }
+
+    #[test]
+    fn recorded_payload_decodes_without_copying_its_values() {
+        // The recorded buffer is already aligned, so the decoded values must
+        // alias it rather than live in a fresh copy.
+        let original = DoraArray::from_array(Int32Array::from((0..1024).collect::<Vec<i32>>()));
+        let payload = aligned(&encode_arrow_ipc(&original).expect("encode"));
+        let range = payload.as_ptr_range();
+        let decoded = decode_recorded_payload(Some(payload)).expect("valid IPC must decode");
+        let values = decoded.as_array().to_data().buffers()[0].as_ptr();
+        assert!(
+            range.contains(&values),
+            "decoded values were copied out of the recorded payload"
+        );
         assert_eq!(decoded.as_array(), original.as_array());
     }
 
@@ -519,7 +548,7 @@ mod tests {
         // that single record instead of aborting the whole replay. This is the
         // behavior the `main` loop relies on to stay resilient.
         let garbage = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03];
-        assert!(decode_recorded_payload(Some(&garbage)).is_err());
+        assert!(decode_recorded_payload(Some(aligned(&garbage))).is_err());
     }
 
     #[test]
@@ -532,6 +561,6 @@ mod tests {
             .step_by(2)
             .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
             .collect();
-        assert!(decode_recorded_payload(Some(&payload)).is_err());
+        assert!(decode_recorded_payload(Some(aligned(&payload))).is_err());
     }
 }

@@ -186,7 +186,12 @@ for 60 seconds (wedged, or blocked on its own producer in a backpressure cycle)
 stops holding the producer, which then loses that message, and every further
 message to that receiver's full channel is dropped the same way, without
 another 60-second hold, until the receiver has drained its channel to at least
-half empty. The routing applies to the producer's entire output, so every
+half empty. From the first such drop on, delivery to all of that receiver's
+`backpressure` inputs is best effort:
+a receiver that resumes but stays slower than its producer may never get its
+channel back to half empty, since the producer, no longer held, keeps it full,
+and then every message beyond the receiver's rate is dropped and counted for as
+long as both keep running. The routing applies to the producer's entire output, so every
 consumer of that output leaves the zero-copy path, and the daemon path carries
 the 64 MiB per-message limit. A producer learns its routing when it starts, so
 `dora node add` and `dora node replace` refuse a `backpressure` input whose

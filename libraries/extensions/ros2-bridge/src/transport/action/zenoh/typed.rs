@@ -482,7 +482,7 @@ impl Shared {
             admit(&goals, decoded.goal_id, self.options.max_goals)
         };
         let accepted = admission.is_some();
-        let stamp = Time::from_nanos(unix_timestamp_ns());
+        let stamp = goal_accept_stamp();
         let response = serialize_cdr(&SendGoalResponse { accepted, stamp })?;
         let replied = self.endpoints.send_goal.reply(request.id, &response).await;
         // Only change the goal table once the client was told: if the reply
@@ -656,60 +656,106 @@ fn admit(goals: &[ServerGoal], id: GoalId, max_goals: usize) -> Option<Option<us
         .map(Some)
 }
 
-/// Moves the goals a `CancelGoal` request selects to canceling, the way
-/// `rcl_action_process_cancel_request` (`rcl_action/src/rcl_action/action_server.c`)
-/// does when every cancel is accepted, as here. A non-zero id with a zero
-/// stamp names one goal: the reply is `UnknownGoal` if there is no such goal
-/// and `GoalTerminated` if it can't be canceled any more (already canceling or
-/// finished). Otherwise a zero id and stamp select every goal, and a non-zero
-/// stamp selects the goals accepted at or before it plus the named goal; the
-/// reply is `None` even when none of them could be canceled. Only accepted
-/// or executing goals can be canceled.
-fn cancel(
-    goals: &mut [ServerGoal],
+/// A server-side goal as [`process_cancel_request`] sees it.
+pub trait CancelableGoal {
+    /// The goal's id and the stamp it was accepted with.
+    fn goal_info(&self) -> GoalInfo;
+    fn status(&self) -> GoalStatusEnum;
+    /// Called with [`GoalStatusEnum::Canceling`] for each goal the request
+    /// starts canceling.
+    fn set_status(&mut self, status: GoalStatusEnum);
+}
+
+/// Answers a `CancelGoal` request the way `rcl_action_process_cancel_request`
+/// (`rcl_action/src/rcl_action/action_server.c`) does when every cancel is
+/// accepted, moving the goals it selects to canceling.
+///
+/// A non-zero id with a zero stamp names one goal: the reply is `UnknownGoal`
+/// if there is no such goal and `GoalTerminated` if it can't be canceled any
+/// more (already canceling or finished). Otherwise a zero id and stamp select
+/// every goal, and a non-zero stamp selects the goals accepted at or before it
+/// plus the named goal; the reply is `None` even when none of them could be
+/// canceled. Only accepted or executing goals can be canceled.
+///
+/// Every native-Zenoh action server (this module's [`TypedActionServer`], the
+/// YAML bridge and the Python bridge) answers through this function, so a ROS
+/// client gets the same answer whichever one hosts the server.
+pub fn process_cancel_request<'a, G: CancelableGoal + 'a>(
+    goals: impl IntoIterator<Item = &'a mut G>,
     requested: &GoalInfo,
 ) -> (Vec<GoalInfo>, CancelGoalResponseEnum) {
     let cancelable =
         |status| matches!(status, GoalStatusEnum::Accepted | GoalStatusEnum::Executing);
     let named = (!requested.goal_id.uuid.is_nil()).then_some(requested.goal_id);
+    let by_id = named.is_some() && requested.stamp == Time::ZERO;
     let mut canceling = Vec::new();
-    let mut start_canceling = |goal: &mut ServerGoal| {
-        goal.status = GoalStatusEnum::Canceling;
-        canceling.push(GoalInfo {
-            goal_id: goal.id,
-            stamp: goal.stamp,
-        });
-    };
-    if let Some(id) = named
-        && requested.stamp == Time::ZERO
-    {
-        let return_code = match goals.iter_mut().find(|goal| goal.id == id) {
-            None => CancelGoalResponseEnum::UnknownGoal,
-            Some(goal) if !cancelable(goal.status) => CancelGoalResponseEnum::GoalTerminated,
-            Some(goal) => {
-                start_canceling(goal);
-                CancelGoalResponseEnum::None
-            }
+    // Status of the goal a by-id request names, if it exists.
+    let mut named_status = None;
+    for goal in goals {
+        let info = goal.goal_info();
+        let selected = if by_id {
+            Some(info.goal_id) == named
+        } else {
+            requested.stamp == Time::ZERO
+                || info.stamp <= requested.stamp
+                || Some(info.goal_id) == named
         };
-        return (canceling, return_code);
-    }
-    for goal in goals.iter_mut() {
-        let selected = requested.stamp == Time::ZERO
-            || goal.stamp <= requested.stamp
-            || Some(goal.id) == named;
-        if selected && cancelable(goal.status) {
-            start_canceling(goal);
+        if !selected {
+            continue;
+        }
+        let status = goal.status();
+        if cancelable(status) {
+            goal.set_status(GoalStatusEnum::Canceling);
+            canceling.push(info);
+        }
+        if by_id {
+            named_status = Some(status);
+            break;
         }
     }
-    (canceling, CancelGoalResponseEnum::None)
+    let return_code = match named_status {
+        _ if !by_id => CancelGoalResponseEnum::None,
+        None => CancelGoalResponseEnum::UnknownGoal,
+        Some(status) if !cancelable(status) => CancelGoalResponseEnum::GoalTerminated,
+        Some(_) => CancelGoalResponseEnum::None,
+    };
+    (canceling, return_code)
 }
 
-fn unix_timestamp_ns() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_nanos()).ok())
-        .unwrap_or(0)
+impl CancelableGoal for ServerGoal {
+    fn goal_info(&self) -> GoalInfo {
+        GoalInfo {
+            goal_id: self.id,
+            stamp: self.stamp,
+        }
+    }
+
+    fn status(&self) -> GoalStatusEnum {
+        self.status
+    }
+
+    fn set_status(&mut self, status: GoalStatusEnum) {
+        self.status = status;
+    }
+}
+
+fn cancel(
+    goals: &mut [ServerGoal],
+    requested: &GoalInfo,
+) -> (Vec<GoalInfo>, CancelGoalResponseEnum) {
+    process_cancel_request(goals.iter_mut(), requested)
+}
+
+/// The current wall-clock time, as an action server stamps a goal it accepts
+/// (the `SendGoal` response, and what a by-stamp cancel request is compared to).
+pub fn goal_accept_stamp() -> Time {
+    Time::from_nanos(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_nanos()).ok())
+            .unwrap_or(0),
+    )
 }
 
 #[cfg(test)]
