@@ -86,12 +86,6 @@ impl Coordinator {
                 match version_check_result.map_err(|e| eyre!(e)).and(send_result) {
                     Ok(()) => {
                         let _ = daemon_id_tx.send(daemon_id.clone());
-                        if let Some(peer_addr) = connection.peer_addr {
-                            self.daemon_peer_addrs
-                                .write()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .insert(daemon_id.to_string(), peer_addr);
-                        }
                         self.daemon_connections.add(daemon_id.clone(), connection);
                         if let Err(e) =
                             self.store
