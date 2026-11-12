@@ -557,7 +557,20 @@ fn merge_env(
 /// them, naming the key and its location, so parse `buf` into it as a check.
 /// Struct fields already reject duplicates on their own, so this only adds
 /// errors for map-valued fields.
-pub(crate) fn reject_duplicate_keys(buf: &[u8]) -> eyre::Result<()> {
+///
+/// [`DescriptorExt::parse`] and module loading call this already; call it
+/// when deserializing other dataflow YAML (such as a single node) directly.
+///
+/// ```
+/// use dora_core::descriptor::reject_duplicate_keys;
+///
+/// let yaml = b"id: sink\npath: ./sink\ninputs:\n  image: cam/img\n  image: dora/timer/millis/20\n";
+/// let err = reject_duplicate_keys(yaml).unwrap_err();
+/// assert!(err.to_string().contains(r#"duplicate entry with key "image""#));
+///
+/// reject_duplicate_keys(b"id: sink\npath: ./sink\n").unwrap();
+/// ```
+pub fn reject_duplicate_keys(buf: &[u8]) -> eyre::Result<()> {
     serde_yaml::from_slice::<serde_yaml::Value>(buf)?;
     Ok(())
 }
