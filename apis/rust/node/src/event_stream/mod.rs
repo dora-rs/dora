@@ -246,6 +246,12 @@ pub struct EventStream {
     /// events, and per-input queue policy means the same thing whether or not a
     /// correlated receive touched the event (dora-rs/dora#3197).
     pending_passthrough: std::collections::VecDeque<Event>,
+    /// Nodes this stream has been told failed for good (`NodeFailed`, which the
+    /// daemon sends only for a node it will not restart), with their error, and
+    /// not restarted since (`NodeRestarted` removes the entry). Recorded as
+    /// events are produced, so a pattern-aware wait on a failed server ends at
+    /// once even when the caller's own loop already consumed the `NodeFailed`.
+    failed_servers: BTreeMap<NodeId, String>,
     /// Set to true after an `Event::Stop` has been delivered. Zenoh
     /// subscriber threads hold clones of the event channel sender, so
     /// the daemon thread's sender drop alone is not enough to close
@@ -900,6 +906,7 @@ impl EventStream {
             scheduler_maybe_nonempty: false,
             input_type_checks,
             pending_passthrough: std::collections::VecDeque::new(),
+            failed_servers: BTreeMap::new(),
             stop_received: false,
             testing_shutdown,
         })
@@ -1131,8 +1138,9 @@ impl EventStream {
 
     /// Post-process an event just produced by `recv_async` / `poll_next`: run
     /// the one-shot, first-message input type check and update the
-    /// stop-tracking flag. Shared by both receive paths so they cannot drift —
-    /// the two paths must stay in lockstep (dora-rs/adora#172, #174).
+    /// stop-tracking flag and `failed_servers`. Shared by both receive paths
+    /// so they cannot drift — the two paths must stay in lockstep
+    /// (dora-rs/adora#172, #174).
     fn note_produced_event(&mut self, event: &Event) {
         // First-message type validation: check once per input, then remove.
         // `contains_key` short-circuits cheaply once the check is consumed, so
@@ -1176,8 +1184,20 @@ impl EventStream {
             }
         }
 
-        if matches!(event, Event::Stop(_)) {
-            self.stop_received = true;
+        match event {
+            Event::Stop(_) => self.stop_received = true,
+            Event::NodeFailed {
+                source_node_id,
+                error,
+                ..
+            } => {
+                self.failed_servers
+                    .insert(source_node_id.clone(), error.clone());
+            }
+            Event::NodeRestarted { id } => {
+                self.failed_servers.remove(id);
+            }
+            _ => {}
         }
     }
 
@@ -1420,7 +1440,17 @@ impl EventStream {
     /// - `StreamEnded` — the event stream closed (dataflow stopping)
     ///   before a response arrived. The terminal `Stop` event is still
     ///   returned to the caller's next `recv()`.
-    /// - `StreamError` — an upstream error event surfaced during the wait.
+    /// - `StreamError` — an upstream error event surfaced during the wait,
+    ///   or the expected server node failed (exited with an error and will
+    ///   not be restarted), so no reply can arrive. The server's
+    ///   [`Event::NodeFailed`] is still returned to the caller's next
+    ///   `recv()`, and later waits on the same server fail the same way
+    ///   until it restarts. `NodeFailed` is delivered only by the
+    ///   client's own daemon, so this covers a server on the same machine; a
+    ///   remote server's failure still ends the wait only at `timeout`. A
+    ///   reply already queued when the failure is seen is still returned, but
+    ///   one still in flight on the zenoh data plane when the daemon's
+    ///   `NodeFailed` arrives reaches the caller's loop as a plain input.
     ///
     /// A response that was already queued when the dataflow began stopping is
     /// still returned as `Ok`. The wait may have read the `Stop` while looking
@@ -1700,6 +1730,16 @@ impl EventStream {
         {
             return Ok(event);
         }
+        // A server failure is permanent, and the stream delivers its
+        // `NodeFailed` only once — possibly to the caller's own loop or an
+        // earlier wait — so check what has already been seen. A reply the
+        // server sent before failing may still be queued, though.
+        if let Some(error) = self.failed_servers.get(expected_server) {
+            let message = server_failed_message(expected_server, error);
+            return self
+                .take_queued_match(|event| is_match(event, needle))
+                .ok_or(PatternError::StreamError(message));
+        }
 
         // Compute the wait deadline, clamping a `timeout` so large that the
         // addition would overflow the monotonic clock, so a caller passing e.g.
@@ -1733,6 +1773,15 @@ impl EventStream {
                     self.buffer_passthrough(event);
                     return Err(PatternError::ServerRestarted(expected_server.to_string()));
                 }
+                CorrelationOutcome::ServerFailed(message) => {
+                    self.buffer_passthrough(event);
+                    // The scheduler serves control events ahead of queued
+                    // inputs, so a reply the server sent just before failing
+                    // can still be waiting behind its `NodeFailed`.
+                    return self
+                        .take_queued_match(|event| is_match(event, needle))
+                        .ok_or(PatternError::StreamError(message));
+                }
                 CorrelationOutcome::StreamError => {
                     if let Event::Error(err) = event {
                         return Err(PatternError::StreamError(err));
@@ -1744,6 +1793,35 @@ impl EventStream {
                 }
             }
         }
+    }
+}
+
+impl EventStream {
+    /// Without blocking, read every event already queued for this node and
+    /// return the first one matching `is_match`; the others are buffered for
+    /// the caller's own loop, in order, as the wait loop does.
+    ///
+    /// Used when the expected server is known to have failed: no new reply can
+    /// arrive, but one sent before the failure may be queued behind the
+    /// `NodeFailed`, which the scheduler serves first. Only the scheduler path
+    /// reorders; without it events arrive in send order, so the reply would
+    /// already have been read.
+    fn take_queued_match(&mut self, is_match: impl Fn(&Event) -> bool) -> Option<Event> {
+        if !self.use_scheduler {
+            return None;
+        }
+        self.absorb_ready_events();
+        // Once a `Stop` has been read — before this call or by this drain —
+        // keep to the post-`Stop` contract: only already-queued inputs may
+        // follow it, so trailing control events are discarded, exactly as
+        // `recv_from_stream` does.
+        while let Some(event) = self.pop_scheduled(self.stop_received) {
+            if is_match(&event) {
+                return Some(event);
+            }
+            self.buffer_passthrough(event);
+        }
+        None
     }
 }
 
@@ -1809,6 +1887,10 @@ enum CorrelationOutcome {
     Match,
     /// `Event::NodeRestarted { id }` where `id == expected_server`.
     ServerRestarted,
+    /// `Event::NodeFailed { source_node_id }` where `source_node_id ==
+    /// expected_server`: the server exited with an error and the daemon will
+    /// not restart it, so the correlated reply can never arrive.
+    ServerFailed(String),
     /// `Event::Error(_)` — the stream surfaced an error.
     StreamError,
     /// Unrelated event, or a `Stop` (see `wait_for_correlation`) — buffer it
@@ -1829,9 +1911,22 @@ where
     }
     match event {
         Event::NodeRestarted { id } if id == expected_server => CorrelationOutcome::ServerRestarted,
+        Event::NodeFailed {
+            source_node_id,
+            error,
+            ..
+        } if source_node_id == expected_server => {
+            CorrelationOutcome::ServerFailed(server_failed_message(expected_server, error))
+        }
         Event::Error(_) => CorrelationOutcome::StreamError,
         _ => CorrelationOutcome::Passthrough,
     }
+}
+
+/// The [`PatternError::StreamError`] message for a wait whose expected server
+/// failed.
+fn server_failed_message(server: &NodeId, error: &str) -> String {
+    format!("server `{server}` failed: {error}")
 }
 
 /// Which bound a buffered passthrough event counts against.
@@ -2443,12 +2538,14 @@ impl EventStream {
     /// and force scheduler mode, to verify the post-Stop drain discards trailing
     /// control events instead of re-delivering a second `Stop` (dora-rs/dora#2027).
     fn push_scheduler_stop_for_testing(&mut self) {
+        self.push_scheduler_event_for_testing(dora_message::daemon_to_node::NodeEvent::Stop);
+    }
+
+    /// Test-only: queue an arbitrary daemon event on the scheduler path.
+    fn push_scheduler_event_for_testing(&mut self, event: dora_message::daemon_to_node::NodeEvent) {
         use crate::event_stream::thread::EventItem;
-        use dora_message::daemon_to_node::NodeEvent;
         self.use_scheduler = true;
-        self.add_event(EventItem::NodeEvent {
-            event: NodeEvent::Stop,
-        });
+        self.add_event(EventItem::NodeEvent { event });
     }
 }
 
@@ -2879,6 +2976,36 @@ mod tests {
         let server = NodeId::from("calc".to_string());
         let event = Event::NodeRestarted {
             id: NodeId::from("other".to_string()),
+        };
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_expected_server_failure_returns_server_failed() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::NodeFailed {
+            affected_input_ids: vec![DataId::from("response".to_string())],
+            error: "exited with code 1".to_string(),
+            source_node_id: server.clone(),
+        };
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::ServerFailed(
+                "server `calc` failed: exited with code 1".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn classify_unrelated_node_failure_is_passthrough() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::NodeFailed {
+            affected_input_ids: vec![DataId::from("sensor".to_string())],
+            error: "exited with code 1".to_string(),
+            source_node_id: NodeId::from("other".to_string()),
         };
         assert_eq!(
             classify_correlation_event(&event, &server, is_request_match("req-42")),
@@ -3869,6 +3996,170 @@ mod tests {
         assert!(matches!(events.recv(), Some(Event::Stop(_))));
         assert!(matches!(&events.recv(), Some(Event::Input { id, .. }) if id.as_str() == "sensor"));
         assert!(events.recv().is_none());
+    }
+
+    /// A wait must end as soon as the expected server is reported failed: the
+    /// daemon sends `NodeFailed` only for a node it will not restart, so no
+    /// reply can follow. Waiting on for the timeout instead would never end
+    /// with `Duration::MAX` while any other input keeps the stream open.
+    #[test]
+    fn recv_service_response_ends_when_expected_server_fails() {
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_event_for_testing(calc_failed());
+
+        let server = NodeId::from("calc".to_string());
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &server,
+            Duration::from_secs(5),
+        ));
+        match response {
+            Err(PatternError::StreamError(msg)) => {
+                assert!(msg.contains("`calc` failed"), "unexpected message: {msg}");
+                assert!(
+                    msg.contains("exited with code 1"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected StreamError for the failed server, got {other:?}"),
+        }
+
+        // The `NodeFailed` still reaches the caller's own loop.
+        assert!(matches!(
+            events.recv(),
+            Some(Event::NodeFailed { source_node_id, .. }) if source_node_id.as_ref() == "calc"
+        ));
+    }
+
+    /// A reply the server sent just before it
+    /// failed is queued behind the `NodeFailed`, which the scheduler serves
+    /// first. The wait must still return that reply — now, and on a later
+    /// call — rather than report the failure.
+    #[test]
+    fn recv_service_response_returns_a_reply_queued_before_the_failure() {
+        let calc = NodeId::from("calc".to_string());
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_input_with_params_for_testing("response", request_id_params("req-1"));
+        events.push_scheduler_input_with_params_for_testing("response", request_id_params("req-2"));
+        events.push_scheduler_event_for_testing(calc_failed());
+
+        let first = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&first, Ok(Event::Input { id, .. }) if id.as_str() == "response"),
+            "expected the reply queued before the failure, got {first:?}"
+        );
+        // `req-2`'s reply was buffered while looking; the server is known to
+        // have failed, but the buffered reply still wins.
+        let second = futures::executor::block_on(events.recv_service_response(
+            "req-2",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&second, Ok(Event::Input { .. })),
+            "expected the buffered req-2 reply, got {second:?}"
+        );
+        // With no reply left, the failure is reported.
+        let third = futures::executor::block_on(events.recv_service_response(
+            "req-3",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&third, Err(PatternError::StreamError(_))),
+            "expected StreamError once no reply is queued, got {third:?}"
+        );
+        // The `NodeFailed` itself still reaches the caller's loop.
+        assert!(matches!(events.recv(), Some(Event::NodeFailed { .. })));
+    }
+
+    /// Draining the queue after a server failure must keep
+    /// the post-`Stop` contract — one `Stop`, then only already-queued inputs,
+    /// never a second `Stop` or other control events.
+    #[test]
+    fn server_failure_drain_delivers_nothing_but_inputs_after_stop() {
+        use dora_message::daemon_to_node::NodeEvent;
+        let calc = NodeId::from("calc".to_string());
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_event_for_testing(calc_failed());
+        events.push_scheduler_event_for_testing(NodeEvent::Stop);
+        events.push_scheduler_event_for_testing(NodeEvent::Stop);
+
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&response, Err(PatternError::StreamError(_))),
+            "expected StreamError for the failed server, got {response:?}"
+        );
+
+        let mut rest = Vec::new();
+        while let Some(event) = events.recv() {
+            rest.push(event);
+        }
+        let stops = rest.iter().filter(|e| matches!(e, Event::Stop(_))).count();
+        assert_eq!(stops, 1, "exactly one Stop must be delivered, got {rest:?}");
+        let after_stop = rest
+            .iter()
+            .skip_while(|e| !matches!(e, Event::Stop(_)))
+            .skip(1)
+            .filter(|e| !matches!(e, Event::Input { .. }))
+            .count();
+        assert_eq!(after_stop, 0, "only inputs may follow Stop, got {rest:?}");
+    }
+
+    fn calc_failed() -> dora_message::daemon_to_node::NodeEvent {
+        dora_message::daemon_to_node::NodeEvent::NodeFailed {
+            affected_input_ids: vec![DataId::from("response".to_string())],
+            error: "exited with code 1".to_string(),
+            source_node_id: NodeId::from("calc".to_string()),
+        }
+    }
+
+    /// A server failure already seen — here consumed by the caller's own loop —
+    /// must still end a later wait on that server: the stream delivers the
+    /// `NodeFailed` only once. A later restart of the server clears it.
+    #[test]
+    fn recv_service_response_remembers_a_server_failure_seen_earlier() {
+        let calc = NodeId::from("calc".to_string());
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_event_for_testing(calc_failed());
+        assert!(matches!(events.recv(), Some(Event::NodeFailed { .. })));
+
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&response, Err(PatternError::StreamError(msg)) if msg.contains("`calc` failed")),
+            "expected StreamError for the already-failed server, got {response:?}"
+        );
+
+        // Fresh stream: the testing input's own `Stop` may follow the first
+        // wait, and nothing is read after `Stop`.
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_event_for_testing(calc_failed());
+        events.push_scheduler_event_for_testing(
+            dora_message::daemon_to_node::NodeEvent::NodeRestarted { id: calc.clone() },
+        );
+        assert!(matches!(events.recv(), Some(Event::NodeFailed { .. })));
+        assert!(matches!(events.recv(), Some(Event::NodeRestarted { .. })));
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &calc,
+            Duration::from_millis(200),
+        ));
+        assert!(
+            !matches!(&response, Err(PatternError::StreamError(_))),
+            "a restart after the failure must clear it, got {response:?}"
+        );
     }
 
     /// After a `Stop` event is delivered, subsequent `recv` calls must
