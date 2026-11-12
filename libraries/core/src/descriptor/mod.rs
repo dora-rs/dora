@@ -494,6 +494,7 @@ impl DescriptorExt for Descriptor {
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor> {
         let descriptor: Descriptor =
             serde_yaml::from_slice(&buf).context("failed to parse given descriptor")?;
+        reject_duplicate_keys(&buf).context("failed to parse given descriptor")?;
         // A dataflow file must not set the internal `path_fallback`. Checked
         // here, not in expansion: the daemon also expands a descriptor that
         // was expanded already (`dora build`'s session), which carries it.
@@ -545,6 +546,33 @@ fn merge_env(
     };
     // Normalize an empty result to `None` regardless of which side was empty.
     (!merged.is_empty()).then_some(merged)
+}
+
+/// Fail if any YAML mapping in `buf` repeats a key.
+///
+/// YAML forbids duplicate keys, but `serde_yaml`'s typed deserializer hands a
+/// repeated key to a map field (`inputs`, `env`, ...) as a second insert, so
+/// the last entry silently wins: a copy-pasted `image:` input line would drop
+/// the first subscription without any error. `serde_yaml::Value` does reject
+/// them, naming the key and its location, so parse `buf` into it as a check.
+/// Struct fields already reject duplicates on their own, so this only adds
+/// errors for map-valued fields.
+///
+/// [`DescriptorExt::parse`] and module loading call this already; call it
+/// when deserializing other dataflow YAML (such as a single node) directly.
+///
+/// ```
+/// use dora_core::descriptor::reject_duplicate_keys;
+///
+/// let yaml = b"id: sink\npath: ./sink\ninputs:\n  image: cam/img\n  image: dora/timer/millis/20\n";
+/// let err = reject_duplicate_keys(yaml).unwrap_err();
+/// assert!(err.to_string().contains(r#"duplicate entry with key "image""#));
+///
+/// reject_duplicate_keys(b"id: sink\npath: ./sink\n").unwrap();
+/// ```
+pub fn reject_duplicate_keys(buf: &[u8]) -> eyre::Result<()> {
+    serde_yaml::from_slice::<serde_yaml::Value>(buf)?;
+    Ok(())
 }
 
 /// Async counterpart of [`DescriptorExt::blocking_read`]: read a descriptor
@@ -1495,6 +1523,36 @@ nodes:
             );
         }
         Descriptor::parse(b"nodes:\n  - id: x\n    path: tool\n".to_vec()).unwrap();
+    }
+
+    /// A repeated key in a map-valued field (`inputs`, `env`) must be an
+    /// error. The typed deserializer would keep only the last entry, so a
+    /// copy-pasted input line silently dropped the first subscription.
+    #[test]
+    fn a_dataflow_file_cannot_repeat_a_map_key() {
+        for (yaml, key) in [
+            (
+                "nodes:\n  - id: x\n    path: tool\n    inputs:\n      image: cam/img\n      image: dora/timer/millis/20\n",
+                "image",
+            ),
+            (
+                "nodes:\n  - id: x\n    path: tool\n    env:\n      A: \"1\"\n      A: \"2\"\n",
+                "A",
+            ),
+        ] {
+            let err = Descriptor::parse(yaml.as_bytes().to_vec()).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains(&format!("duplicate entry with key \"{key}\"")),
+                "{yaml}: {msg}"
+            );
+        }
+        let ok = Descriptor::parse(
+            b"nodes:\n  - id: x\n    path: tool\n    inputs:\n      a: dora/timer/millis/20\n      b: dora/timer/millis/30\n"
+                .to_vec(),
+        )
+        .unwrap();
+        assert_eq!(ok.nodes[0].inputs.len(), 2);
     }
 
     #[test]
