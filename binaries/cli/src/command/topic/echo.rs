@@ -129,7 +129,11 @@ fn inspect(
         .map(|t| (t.node_id.clone(), t.data_id.clone()))
         .collect();
 
-    let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
+    let (_subscription_id, data_rx) = session.subscribe_topics(
+        dataflow_id,
+        ws_topics,
+        crate::ws_client::TopicBufferLimits::LIVE,
+    )?;
 
     // If no data arrives within this timeout, hint that debug mode may be needed.
     const HINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

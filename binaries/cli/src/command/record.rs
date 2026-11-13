@@ -706,7 +706,11 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
 
     // Subscribe to topics via WS
     let ws_topics = parse_ws_topics(&topics)?;
-    let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
+    let (_subscription_id, data_rx) = session.subscribe_topics(
+        dataflow_id,
+        ws_topics,
+        crate::ws_client::TopicBufferLimits::RECORD,
+    )?;
 
     // Set up recording writer. `duration_since(UNIX_EPOCH)` errors when the
     // wall clock is set before 1970; `epoch_nanos` falls back to a zero base

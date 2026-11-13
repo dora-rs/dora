@@ -86,11 +86,18 @@ impl Executable for Hz {
             .map(|t| (t.node_id.clone(), t.data_id.clone()))
             .collect();
 
-        let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
+        let (_subscription_id, data_rx) = session.subscribe_topics(
+            dataflow_id,
+            ws_topics,
+            crate::ws_client::TopicBufferLimits::LIVE,
+        )?;
+        let dropped = data_rx.dropped_frames();
 
         // Non-interactive path: collect for `--duration`, print final stats.
         if let Some(secs) = self.duration {
-            return run_hz_oneshot(self.window, topics, &descriptor, data_rx, secs);
+            let result = run_hz_oneshot(self.window, topics, &descriptor, data_rx, secs);
+            dropped.report();
+            return result;
         }
 
         if !io::stdout().is_terminal() {
@@ -103,6 +110,7 @@ impl Executable for Hz {
         let terminal = ratatui::init();
         let result = run_hz(terminal, self.window, topics, &descriptor, data_rx);
         ratatui::restore();
+        dropped.report();
         result
     }
 }
@@ -907,7 +915,7 @@ mod tests {
         use std::collections::BTreeSet;
 
         let descriptor = Descriptor::parse(b"nodes: []".to_vec()).unwrap();
-        let (tx, rx) = crate::ws_client::topic_channel();
+        let (tx, rx) = crate::ws_client::topic_channel(crate::ws_client::TopicBufferLimits::LIVE);
         drop(tx); // disconnect so the sampler breaks out immediately
 
         // 10^19 s is a valid u64 but overflows `Instant + Duration`.

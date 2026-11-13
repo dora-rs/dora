@@ -248,20 +248,21 @@ impl WsSession {
     /// a `(subscription_id, receiver)` pair. Binary WS frames with matching
     /// subscription UUID prefix are dispatched to the receiver.
     ///
-    /// The receiver's backlog is bounded; frames that arrive while it is full
-    /// are dropped and counted (see `dispatch_topic_frame` and
+    /// The receiver's backlog is bounded by `limits`; frames that arrive while
+    /// it is full are dropped and counted (see `dispatch_topic_frame` and
     /// [`TopicReceiver::dropped`]).
     pub fn subscribe_topics(
         &self,
         dataflow_id: Uuid,
         topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
+        limits: TopicBufferLimits,
     ) -> eyre::Result<(Uuid, TopicReceiver)> {
         let request = serde_json::to_vec(
             &dora_message::cli_to_coordinator::ControlRequest::topic_subscribe(dataflow_id, topics),
         )
         .map_err(|e| eyre!("failed to serialize TopicSubscribe: {e}"))?;
 
-        let (subscriber, data_rx) = topic_channel();
+        let (subscriber, data_rx) = topic_channel(limits);
         let (ack_tx, ack_rx) = oneshot::channel();
         self.cmd_tx
             .send(SessionCommand::SubscribeTopics {
@@ -319,16 +320,33 @@ type PendingSubscribes = HashMap<
 >;
 type PendingTopicSubscribes = HashMap<Uuid, (oneshot::Sender<eyre::Result<Uuid>>, TopicSubscriber)>;
 type TopicSubscribers = HashMap<Uuid, TopicSubscriber>;
-/// How many frames a topic subscription's backlog holds before newer frames
-/// are dropped. Generous, so a short stall in the consumer (a `dora record
-/// --proxy` flush, a slow terminal) does not lose small high-rate frames.
-const TOPIC_FRAME_BUFFER: usize = 1024;
+/// How much a topic subscription's backlog holds before newer frames are
+/// dropped: at most `frames` frames and `bytes` payload bytes. A frame for an
+/// empty backlog is always taken, whatever its size (the coordinator caps
+/// debug payloads at 64 MiB).
+#[derive(Debug, Clone, Copy)]
+pub struct TopicBufferLimits {
+    pub frames: usize,
+    pub bytes: usize,
+}
 
-/// How many payload bytes a topic subscription's backlog holds before newer
-/// frames are dropped, so a few large frames (camera images) cannot hold
-/// gigabytes. A frame for an empty backlog is always taken, whatever its size
-/// (the coordinator caps debug payloads at 64 MiB).
-const TOPIC_BUFFER_BYTES: usize = 64 * 1024 * 1024;
+impl TopicBufferLimits {
+    /// For live views (`topic echo`, `hz`, `info`): enough to ride out a short
+    /// consumer stall, small enough that a slow terminal can't hold more than
+    /// 64 MiB of camera frames.
+    pub const LIVE: Self = Self {
+        frames: 1024,
+        bytes: 64 * 1024 * 1024,
+    };
+
+    /// For `dora record --proxy`, where every lost frame is a gap in the
+    /// recording: a backlog that absorbs a disk stall of seconds even for
+    /// large frames (~170 1080p RGB frames), while still bounding memory.
+    pub const RECORD: Self = Self {
+        frames: 64 * 1024,
+        bytes: 1024 * 1024 * 1024,
+    };
+}
 
 /// State shared by the two ends of a topic subscription.
 #[derive(Default)]
@@ -342,7 +360,31 @@ struct TopicBacklog {
 /// The session's end of a topic subscription.
 pub(crate) struct TopicSubscriber {
     tx: std_mpsc::SyncSender<eyre::Result<Vec<u8>>>,
+    max_bytes: usize,
     backlog: Arc<TopicBacklog>,
+}
+
+/// A handle to a [`TopicReceiver`]'s drop count that outlives the receiver,
+/// e.g. after it was moved into a worker thread.
+#[derive(Clone)]
+pub struct DroppedFrames(Arc<TopicBacklog>);
+
+impl DroppedFrames {
+    /// How many frames were dropped so far because the receiver fell behind.
+    pub fn get(&self) -> u64 {
+        self.0.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Tell the user, on stderr, how many frames were dropped, if any.
+    pub fn report(&self) {
+        let dropped = self.get();
+        if dropped > 0 {
+            eprintln!(
+                "note: {dropped} messages were dropped because they arrived faster \
+                 than they could be processed; the figures above leave them out."
+            );
+        }
+    }
 }
 
 /// Receives the payloads of one topic subscription's frames
@@ -368,7 +410,12 @@ impl TopicReceiver {
 
     /// How many frames were dropped so far because this receiver fell behind.
     pub fn dropped(&self) -> u64 {
-        self.backlog.dropped.load(Ordering::Relaxed)
+        self.dropped_frames().get()
+    }
+
+    /// A handle to the drop count that can be kept after `self` is moved.
+    pub fn dropped_frames(&self) -> DroppedFrames {
+        DroppedFrames(self.backlog.clone())
     }
 
     fn taken(&self, frame: eyre::Result<Vec<u8>>) -> eyre::Result<Vec<u8>> {
@@ -381,11 +428,12 @@ impl TopicReceiver {
     }
 }
 
-pub(crate) fn topic_channel() -> (TopicSubscriber, TopicReceiver) {
-    let (tx, rx) = std_mpsc::sync_channel(TOPIC_FRAME_BUFFER);
+pub(crate) fn topic_channel(limits: TopicBufferLimits) -> (TopicSubscriber, TopicReceiver) {
+    let (tx, rx) = std_mpsc::sync_channel(limits.frames);
     let backlog = Arc::new(TopicBacklog::default());
     let subscriber = TopicSubscriber {
         tx,
+        max_bytes: limits.bytes,
         backlog: backlog.clone(),
     };
     (subscriber, TopicReceiver { rx, backlog })
@@ -412,7 +460,7 @@ fn dispatch_topic_frame(topic_subscribers: &mut TopicSubscribers, data: &[u8]) {
     };
     let backlog = &subscriber.backlog;
     let queued = backlog.bytes.load(Ordering::Relaxed);
-    let fits = queued == 0 || queued.saturating_add(payload.len()) <= TOPIC_BUFFER_BYTES;
+    let fits = queued == 0 || queued.saturating_add(payload.len()) <= subscriber.max_bytes;
     if fits {
         // Counted before the send, so the receiver never subtracts first.
         backlog.bytes.fetch_add(payload.len(), Ordering::Relaxed);
@@ -427,8 +475,10 @@ fn dispatch_topic_frame(topic_subscribers: &mut TopicSubscribers, data: &[u8]) {
             }
         }
     }
+    // Only `debug`: the CLI's console logger writes to stdout, which is the
+    // data stream of `topic echo`. Consumers report the count on stderr.
     if backlog.dropped.fetch_add(1, Ordering::Relaxed) == 0 {
-        tracing::warn!(
+        tracing::debug!(
             "topic data arrives faster than it is processed; \
              dropping frames for subscription {sub_id}"
         );
@@ -856,7 +906,7 @@ mod tests {
         let id = Uuid::new_v4();
         let sub_id = Uuid::new_v4();
         let (ack_tx, mut ack_rx) = oneshot::channel();
-        let (data_tx, _data_rx) = topic_channel();
+        let (data_tx, _data_rx) = topic_channel(TopicBufferLimits::LIVE);
         let mut pending = HashMap::new();
         let mut subscribes = HashMap::new();
         let mut subs = Vec::new();
@@ -892,7 +942,7 @@ mod tests {
         let id = Uuid::new_v4();
         let sub_id = Uuid::new_v4();
         let (ack_tx, mut ack_rx) = oneshot::channel();
-        let (data_tx, _data_rx) = topic_channel();
+        let (data_tx, _data_rx) = topic_channel(TopicBufferLimits::LIVE);
         let mut pending = HashMap::new();
         let mut subscribes = HashMap::new();
         let mut subs = Vec::new();
@@ -1001,7 +1051,7 @@ mod tests {
 
     fn one_subscriber() -> (Uuid, TopicSubscribers, TopicReceiver) {
         let sub_id = Uuid::new_v4();
-        let (subscriber, rx) = topic_channel();
+        let (subscriber, rx) = topic_channel(TopicBufferLimits::LIVE);
         (sub_id, HashMap::from([(sub_id, subscriber)]), rx)
     }
 
@@ -1019,7 +1069,7 @@ mod tests {
     fn topic_frames_beyond_the_frame_cap_are_dropped() {
         let (sub_id, mut subscribers, rx) = one_subscriber();
 
-        let total = TOPIC_FRAME_BUFFER as u64 * 3;
+        let total = TopicBufferLimits::LIVE.frames as u64 * 3;
         for i in 0..total {
             dispatch_topic_frame(&mut subscribers, &topic_frame(sub_id, &i.to_le_bytes()));
         }
@@ -1029,8 +1079,11 @@ mod tests {
             .into_iter()
             .map(|frame| u64::from_le_bytes(frame.try_into().unwrap()))
             .collect();
-        assert_eq!(received, (0..TOPIC_FRAME_BUFFER as u64).collect::<Vec<_>>());
-        assert_eq!(rx.dropped(), total - TOPIC_FRAME_BUFFER as u64);
+        assert_eq!(
+            received,
+            (0..TopicBufferLimits::LIVE.frames as u64).collect::<Vec<_>>()
+        );
+        assert_eq!(rx.dropped(), total - TopicBufferLimits::LIVE.frames as u64);
 
         // Once the consumer catches up, frames flow again.
         dispatch_topic_frame(&mut subscribers, &topic_frame(sub_id, b"next"));
@@ -1042,7 +1095,7 @@ mod tests {
     #[test]
     fn topic_frames_beyond_the_byte_cap_are_dropped() {
         let (sub_id, mut subscribers, rx) = one_subscriber();
-        let big = vec![0u8; TOPIC_BUFFER_BYTES / 4 + 1];
+        let big = vec![0u8; TopicBufferLimits::LIVE.bytes / 4 + 1];
 
         for _ in 0..10 {
             dispatch_topic_frame(&mut subscribers, &topic_frame(sub_id, &big));
@@ -1052,10 +1105,29 @@ mod tests {
 
         // Receiving frees the budget again, and an empty backlog takes a
         // frame of any size.
-        let huge = vec![0u8; TOPIC_BUFFER_BYTES + 1];
+        let huge = vec![0u8; TopicBufferLimits::LIVE.bytes + 1];
         dispatch_topic_frame(&mut subscribers, &topic_frame(sub_id, &huge));
         assert_eq!(drain(&rx).len(), 1);
         assert_eq!(rx.dropped(), 7);
+    }
+
+    /// A recording takes a much larger backlog than a live view: a short disk
+    /// stall must not lose large frames the live limit would drop.
+    #[test]
+    fn record_limits_absorb_what_live_limits_drop() {
+        let frame = vec![0u8; 6 * 1024 * 1024]; // a 1080p RGB image
+        for (limits, expected) in [
+            (TopicBufferLimits::LIVE, 10),
+            (TopicBufferLimits::RECORD, 100),
+        ] {
+            let sub_id = Uuid::new_v4();
+            let (subscriber, rx) = topic_channel(limits);
+            let mut subscribers: TopicSubscribers = HashMap::from([(sub_id, subscriber)]);
+            for _ in 0..100 {
+                dispatch_topic_frame(&mut subscribers, &topic_frame(sub_id, &frame));
+            }
+            assert_eq!(drain(&rx).len(), expected, "{limits:?}");
+        }
     }
 
     #[test]
