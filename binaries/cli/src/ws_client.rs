@@ -381,7 +381,7 @@ impl DroppedFrames {
         if dropped > 0 {
             eprintln!(
                 "note: {dropped} messages were dropped because they arrived faster \
-                 than they could be processed; the figures above leave them out."
+                 than they could be processed, and are not included above."
             );
         }
     }

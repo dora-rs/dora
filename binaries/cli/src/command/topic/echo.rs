@@ -306,6 +306,9 @@ fn inspect(
             _ => {}
         }
     }
+    // On stderr, so the printed data stays clean: frames dropped while the
+    // output was slower than the stream are missing from it.
+    data_rx.dropped_frames().report();
 
     Ok(())
 }
