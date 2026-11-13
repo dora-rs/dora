@@ -37,42 +37,50 @@ impl serde::Serialize for ArraySerializeWrapper<'_> {
         // serialize fine as `uint8[]` fail as `uint8[16]`. The row's *bytes* are
         // the array elements, so handle it here before the generic `List`
         // extraction below.
+        // `FixedSizeBinary(N)` is the Arrow type made for exactly this shape
+        // (e.g. `pa.binary(16)` for a `uint8[16]` UUID, #4149).
+        let value_type = &self.array_info.value_type;
+        let size = self.array_info.size;
         if let Some(binary) = self.column.as_binary_opt::<i32>() {
-            return serialize_binary_fixed_array(
+            return serialize_bytes_fixed_array(
                 serializer,
-                binary,
-                &self.array_info.value_type,
-                self.array_info.size,
+                binary.len(),
+                || binary.value(0),
+                value_type,
+                size,
             );
         } else if let Some(binary) = self.column.as_binary_opt::<i64>() {
-            return serialize_binary_fixed_array(
+            return serialize_bytes_fixed_array(
                 serializer,
-                binary,
-                &self.array_info.value_type,
-                self.array_info.size,
+                binary.len(),
+                || binary.value(0),
+                value_type,
+                size,
+            );
+        } else if let Some(binary) = self.column.as_fixed_size_binary_opt() {
+            return serialize_bytes_fixed_array(
+                serializer,
+                binary.len(),
+                || binary.value(0),
+                value_type,
+                size,
             );
         }
 
+        // `FixedSizeList<T, N>` is what `pa.list_(t, N)`, a 2-D numpy array or
+        // a Polars `Array` dtype produce for `T[N]` (#4149); its length is
+        // validated by `check_array_len` below like any other list.
         let entry = if let Some(list) = self.column.as_list_opt::<i32>() {
-            if list.len() != 1 {
-                return Err(error(format!(
-                    "expected single-element list, got length {}",
-                    list.len()
-                )));
-            }
+            single_row(list.len(), "list")?;
+            list.value(0)
+        } else if let Some(list) = self.column.as_list_opt::<i64>() {
+            single_row(list.len(), "large list")?;
+            list.value(0)
+        } else if let Some(list) = self.column.as_fixed_size_list_opt() {
+            single_row(list.len(), "fixed-size list")?;
             list.value(0)
         } else {
-            let list = self
-                .column
-                .as_list_opt::<i64>()
-                .ok_or_else(|| error("value is not compatible with expected array type"))?;
-            if list.len() != 1 {
-                return Err(error(format!(
-                    "expected single-element large list, got length {}",
-                    list.len()
-                )));
-            }
-            list.value(0)
+            return Err(error("value is not compatible with expected array type"));
         };
 
         match &self.array_info.value_type {
@@ -228,15 +236,26 @@ impl serde::Serialize for ArraySerializeWrapper<'_> {
 /// check (`check_array_len`, #2027) is applied to the byte count. Only byte
 /// element types can originate from a `Binary` column; any other element type
 /// is a genuine type mismatch and is rejected.
-fn serialize_binary_fixed_array<S, O>(
+fn single_row<E: serde::ser::Error>(len: usize, kind: &str) -> Result<(), E> {
+    if len != 1 {
+        return Err(error(format!(
+            "expected single-element {kind}, got length {len}"
+        )));
+    }
+    Ok(())
+}
+
+/// Serializes the single row of a byte column (`Binary`, `LargeBinary` or
+/// `FixedSizeBinary`) as a byte-typed fixed array.
+fn serialize_bytes_fixed_array<'a, S>(
     serializer: S,
-    binary: &arrow::array::GenericByteArray<datatypes::GenericBinaryType<O>>,
+    rows: usize,
+    row: impl FnOnce() -> &'a [u8],
     value_type: &NestableType,
     size: usize,
 ) -> Result<<S as serde::Serializer>::Ok, <S as serde::Serializer>::Error>
 where
     S: serde::Serializer,
-    O: OffsetSizeTrait,
 {
     match value_type {
         NestableType::BasicType(BasicType::U8 | BasicType::Char | BasicType::Byte) => {}
@@ -246,13 +265,8 @@ where
             )));
         }
     }
-    if binary.len() != 1 {
-        return Err(error(format!(
-            "expected single-element binary, got length {}",
-            binary.len()
-        )));
-    }
-    let bytes: &[u8] = binary.value(0);
+    single_row(rows, "binary")?;
+    let bytes = row();
     check_array_len(bytes.len(), size)?;
     let mut seq = serializer.serialize_tuple(size)?;
     for b in bytes {
@@ -363,8 +377,8 @@ mod tests {
 
     use arrow::{
         array::{
-            ArrayRef, BinaryArray, BooleanArray, Int32Array, ListArray, StringArray, StructArray,
-            UInt8Array,
+            ArrayRef, BinaryArray, BooleanArray, FixedSizeBinaryArray, FixedSizeListArray,
+            Float64Array, Int32Array, ListArray, StringArray, StructArray, UInt8Array,
         },
         buffer::{NullBuffer, OffsetBuffer},
         datatypes::{DataType, Field},
@@ -807,6 +821,122 @@ mod tests {
         assert!(
             serializes_ok(binary(None)),
             "a valid row must still serialize"
+        );
+    }
+    /// CDR bytes of a single-field `ArrMsg { names: <field_type>[3] }` whose
+    /// `names` column is `column`.
+    fn encode_fixed_array(field_type: NestableType, column: ArrayRef) -> Result<Vec<u8>, String> {
+        let value = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("names", column.data_type().clone(), true)),
+            column,
+        )])) as ArrayRef;
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed("ArrMsg"),
+            messages: fixed_array_message(field_type),
+        };
+        cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+            value: &value,
+            type_info: &type_info,
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    fn list_of(field: DataType, values: ArrayRef) -> ArrayRef {
+        let len = values.len();
+        Arc::new(ListArray::new(
+            Arc::new(Field::new("item", field, true)),
+            OffsetBuffer::from_lengths([len]),
+            values,
+            None,
+        ))
+    }
+
+    fn fixed_size_list_of(field: DataType, size: i32, values: ArrayRef) -> ArrayRef {
+        Arc::new(FixedSizeListArray::new(
+            Arc::new(Field::new("item", field, true)),
+            size,
+            values,
+            None,
+        ))
+    }
+
+    /// #4149: `FixedSizeList<T, N>` (e.g. `pa.list_(pa.float64(), 9)` for a
+    /// covariance) serializes into `T[N]` exactly like `List<T>`.
+    #[test]
+    fn fixed_size_list_matches_list() {
+        let f64_type = NestableType::BasicType(BasicType::F64);
+        let values = || Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])) as ArrayRef;
+        let expected = encode_fixed_array(f64_type.clone(), list_of(DataType::Float64, values()))
+            .expect("List<Float64> into float64[3]");
+        let actual = encode_fixed_array(
+            f64_type.clone(),
+            fixed_size_list_of(DataType::Float64, 3, values()),
+        )
+        .expect("FixedSizeList<Float64, 3> into float64[3]");
+        assert_eq!(actual, expected);
+
+        let u8_type = NestableType::BasicType(BasicType::U8);
+        let bytes = || Arc::new(UInt8Array::from(vec![7, 8, 9])) as ArrayRef;
+        assert_eq!(
+            encode_fixed_array(
+                u8_type.clone(),
+                fixed_size_list_of(DataType::UInt8, 3, bytes())
+            )
+            .expect("FixedSizeList<UInt8, 3> into uint8[3]"),
+            encode_fixed_array(u8_type, list_of(DataType::UInt8, bytes())).unwrap(),
+        );
+    }
+
+    /// The `T[N]` length check also applies to `FixedSizeList`.
+    #[test]
+    fn fixed_size_list_length_is_checked() {
+        let f64_type = NestableType::BasicType(BasicType::F64);
+        let two = Arc::new(Float64Array::from(vec![1.0, 2.0])) as ArrayRef;
+        assert!(
+            encode_fixed_array(
+                f64_type.clone(),
+                fixed_size_list_of(DataType::Float64, 2, two)
+            )
+            .is_err()
+        );
+        // A wider `N` is rejected as well.
+        let four = Arc::new(Float64Array::from(vec![0.0; 4])) as ArrayRef;
+        assert!(
+            encode_fixed_array(f64_type, fixed_size_list_of(DataType::Float64, 4, four)).is_err()
+        );
+    }
+
+    /// #4149: `FixedSizeBinary(N)` (e.g. `pa.binary(16)` for a UUID) serializes
+    /// into `uint8[N]` exactly like `List<UInt8>` and `Binary`.
+    #[test]
+    fn fixed_size_binary_matches_list() {
+        let u8_type = NestableType::BasicType(BasicType::U8);
+        let fsb = FixedSizeBinaryArray::try_from_iter(vec![vec![1u8, 2, 3]].into_iter()).unwrap();
+        let actual = encode_fixed_array(u8_type.clone(), Arc::new(fsb))
+            .expect("FixedSizeBinary(3) into uint8[3]");
+        let expected = encode_fixed_array(
+            u8_type,
+            list_of(DataType::UInt8, Arc::new(UInt8Array::from(vec![1, 2, 3]))),
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    /// `FixedSizeBinary` keeps the `Binary` rules: byte element types only, and
+    /// the length must match `N`.
+    #[test]
+    fn fixed_size_binary_is_checked() {
+        let fsb = |row: Vec<u8>| {
+            Arc::new(FixedSizeBinaryArray::try_from_iter(vec![row].into_iter()).unwrap())
+                as ArrayRef
+        };
+        assert!(
+            encode_fixed_array(NestableType::BasicType(BasicType::U8), fsb(vec![1, 2])).is_err()
+        );
+        assert!(
+            encode_fixed_array(NestableType::BasicType(BasicType::I32), fsb(vec![1, 2, 3]))
+                .is_err()
         );
     }
 }
