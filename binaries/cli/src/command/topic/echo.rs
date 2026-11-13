@@ -140,6 +140,9 @@ fn inspect(
     let mut hint_shown = false;
     let mut buf = Vec::with_capacity(1024);
     let mut emitted: u64 = 0;
+    // Most runs end with Ctrl+C, which skips the report after the loop, so
+    // warn as soon as frames start being dropped too.
+    let mut drop_warned = false;
     // Track the run window as a start instant plus `elapsed()` rather than an
     // absolute `Instant::now() + Duration::from_secs(seconds)`: `--duration` is
     // bounded only from below (`range(1..)`), so a large-but-valid `u64` would
@@ -177,6 +180,15 @@ fn inspect(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        if !drop_warned && data_rx.dropped() > 0 {
+            // On stderr, so the printed data stays clean.
+            eprintln!(
+                "{}: output is slower than the topic; messages are being dropped \
+                 (the total is printed on exit unless interrupted).",
+                "warning".yellow().bold(),
+            );
+            drop_warned = true;
+        }
         buf.clear();
         let payload = match result {
             Ok(p) => p,
