@@ -38,6 +38,29 @@ fn machine_key_chunk(machine_id: &str) -> String {
     chunk
 }
 
+/// Wrap a [`PeerMessage`] in the envelope dora routes between daemons.
+///
+/// Shared by [`publish_pool_message`] and the mirror's local rollback, which
+/// posts a message back to its own event loop through the
+/// [`PeerMessageSink`] instead of publishing it.
+pub(crate) fn pool_event(
+    clock: &HLC,
+    dataflow_id: &Uuid,
+    target_machine: Option<&str>,
+    message: &PeerMessage,
+) -> eyre::Result<Timestamped<InterDaemonEvent>> {
+    Ok(Timestamped {
+        inner: InterDaemonEvent::ExtensionMessage {
+            dataflow_id: *dataflow_id,
+            namespace: NAMESPACE.to_string(),
+            target_machine: target_machine.map(str::to_string),
+            payload: postcard::to_allocvec(message)
+                .map_err(|e| eyre!("memory pool: encoding peer message failed: {e}"))?,
+        },
+        timestamp: clock.new_timestamp(),
+    })
+}
+
 /// Publish one [`PeerMessage`] to the dataflow's extension topic, wrapped in
 /// dora's opaque [`InterDaemonEvent::ExtensionMessage`] envelope.
 ///
@@ -65,18 +88,7 @@ pub(crate) async fn publish_pool_message(
     shm_provider: Option<&ShmProvider<PosixShmProviderBackend>>,
 ) -> eyre::Result<()> {
     let is_bulk = matches!(message, PeerMessage::Write { .. });
-    let event = InterDaemonEvent::ExtensionMessage {
-        dataflow_id: *dataflow_id,
-        namespace: NAMESPACE.to_string(),
-        target_machine: target_machine.map(str::to_string),
-        payload: postcard::to_allocvec(message)
-            .map_err(|e| eyre!("memory pool: encoding peer message failed: {e}"))?,
-    };
-    let serialized = Timestamped {
-        inner: event,
-        timestamp: clock.new_timestamp(),
-    }
-    .serialize()?;
+    let serialized = pool_event(clock, dataflow_id, target_machine, message)?.serialize()?;
     let payload_len = serialized.len();
     let topic = pool_message_topic(dataflow_id, target_machine.filter(|_| is_bulk));
     // Zenoh errors are boxed trait objects — eyre's `From` conversion
