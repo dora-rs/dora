@@ -161,16 +161,50 @@ fn rewrite_built_target(prefix: &Path, crate_name: &str, triple: &str) -> anyhow
     Ok(())
 }
 
-fn stage_c_crate(crate_name: &str, target_dir: &Path, prefix: &Path) -> anyhow::Result<()> {
-    let staging = target_dir.join(crate_name);
+/// The directory holding a C crate's generated `lib/cmake/<crate>` and
+/// `include`.
+///
+/// The crate's `build.rs` writes them to its `OUT_DIR` and copies them to
+/// `<target_dir>/<crate>`. The copy only happens when the build script runs,
+/// and cargo doesn't rerun it for a change in one of the crate's
+/// dependencies. So with a restored CI cache that lacks the copy, the copy
+/// can be missing while the build script's `OUT_DIR`
+/// (`<target_dir>/build/<crate>-<hash>/out`) is still there: cargo keeps that
+/// directory whenever it skips the build script. Fall back to it, picking the
+/// most recently written one if older builds left several.
+fn c_crate_staging_dir(crate_name: &str, target_dir: &Path) -> anyhow::Result<PathBuf> {
+    let has_cmake = |dir: &Path| dir.join("lib/cmake").join(crate_name).is_dir();
 
-    if !staging.exists() {
-        bail!(
-            "Staging directory not found: {}\n\
-             Ensure {crate_name} has been built (cargo build -p {crate_name}).",
-            staging.display()
-        );
+    let staging = target_dir.join(crate_name);
+    if has_cmake(&staging) {
+        return Ok(staging);
     }
+
+    let prefix = format!("{crate_name}-");
+    let newest_out_dir = fs::read_dir(target_dir.join("build"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+        .map(|entry| entry.path().join("out"))
+        .filter(|out| has_cmake(out))
+        .max_by_key(|out| {
+            fs::metadata(out.join("lib/cmake").join(crate_name))
+                .and_then(|meta| meta.modified())
+                .ok()
+        });
+    newest_out_dir.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Staging directory not found: {} (and no build script output under {})\n\
+             Ensure {crate_name} has been built (cargo build -p {crate_name}).",
+            staging.display(),
+            target_dir.join("build").display()
+        )
+    })
+}
+
+fn stage_c_crate(crate_name: &str, target_dir: &Path, prefix: &Path) -> anyhow::Result<()> {
+    let staging = c_crate_staging_dir(crate_name, target_dir)?;
 
     let cmake_src = staging.join("lib/cmake").join(crate_name);
     let include_src = staging.join("include");
@@ -465,6 +499,73 @@ mod tests {
         stage_library("dora-node-api-c", &target_dir, &prefix, None)
             .expect("staging should succeed when lib is present");
         assert!(prefix.join("lib").join(lib_name).exists());
+    }
+
+    /// A restored CI cache can hold the build script's `OUT_DIR` but not the
+    /// copy it makes next to the library, because cargo doesn't rerun the
+    /// build script for a change in a dependency. Staging must then use the
+    /// `OUT_DIR`, the newest one if there are several.
+    #[test]
+    fn stage_c_crate_falls_back_to_the_build_script_out_dir() {
+        let tmp = tempdir();
+        let crate_name = "dora-node-api-c";
+        let target_dir = tmp.path().join("target");
+        let out_dir = |hash: &str, header: &str| {
+            let out = target_dir
+                .join("build")
+                .join(format!("{crate_name}-{hash}"))
+                .join("out");
+            fs::create_dir_all(out.join("lib/cmake").join(crate_name)).unwrap();
+            fs::create_dir_all(out.join("include")).unwrap();
+            fs::write(
+                out.join("lib/cmake")
+                    .join(crate_name)
+                    .join(format!("{crate_name}Config.cmake")),
+                "# placeholder\n",
+            )
+            .unwrap();
+            fs::write(out.join("include").join(header), "/* placeholder */\n").unwrap();
+        };
+        out_dir("0000000000000001", "old.h");
+        // Give the second one a later mtime.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        out_dir("0000000000000002", "new.h");
+        // An unrelated crate whose name starts the same must not match.
+        fs::create_dir_all(target_dir.join("build/dora-node-api-cxx-3/out/lib/cmake")).unwrap();
+        let lib_name = if cfg!(windows) {
+            "dora_node_api_c.lib"
+        } else {
+            "libdora_node_api_c.a"
+        };
+        fs::write(target_dir.join(lib_name), b"fake static lib\n").unwrap();
+        let prefix = tmp.path().join("prefix");
+
+        stage_library(crate_name, &target_dir, &prefix, None)
+            .expect("staging should fall back to the build script's OUT_DIR");
+        assert!(prefix.join("include/new.h").exists());
+        assert!(!prefix.join("include/old.h").exists());
+        assert!(
+            prefix
+                .join("lib/cmake")
+                .join(crate_name)
+                .join(format!("{crate_name}Config.cmake"))
+                .exists()
+        );
+    }
+
+    /// With neither the copy nor a build script output, the error still says
+    /// to build the crate.
+    #[test]
+    fn stage_c_crate_errors_without_any_staging_dir() {
+        let tmp = tempdir();
+        let target_dir = tmp.path().join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        let err = stage_library("dora-node-api-c", &target_dir, &tmp.path().join("p"), None)
+            .expect_err("nothing to stage");
+        assert!(
+            err.to_string().contains("Staging directory not found"),
+            "{err}"
+        );
     }
 
     /// Regression test for the cross-cxx target-encoding bug surfaced
