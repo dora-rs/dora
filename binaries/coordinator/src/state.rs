@@ -351,30 +351,67 @@ pub(crate) struct PendingDaemonReply {
 
 impl PendingDaemonReply {
     /// Wait for the daemon's reply, for at most `TCP_READ_TIMEOUT`.
-    pub(crate) async fn wait(self) -> eyre::Result<Vec<u8>> {
-        let response_json =
-            match tokio::time::timeout(dora_message::TCP_READ_TIMEOUT, self.reply_rx).await {
-                Ok(result) => result.map_err(|_| eyre!("daemon WS reply channel dropped"))?,
-                Err(_) => {
-                    self.pending_replies.lock().await.remove(&self.id);
-                    return Err(eyre!("timeout waiting for daemon WS reply"));
-                }
-            };
-
-        // A WS-level failure on the daemon side arrives as a `{"ws_error": ...}`
-        // envelope (see `handle_daemon_response` in `ws_daemon.rs`). It matches
-        // no `DaemonCoordinatorReply` variant, so returning it verbatim would
-        // make every caller fail with an opaque "failed to deserialize ... reply"
-        // and drop the daemon's real error text (it would survive only in a log
-        // line). Surface it as an `Err` carrying that text instead.
-        if let Ok(WsErrorEnvelope { ws_error }) =
-            serde_json::from_str::<WsErrorEnvelope>(&response_json)
+    pub(crate) async fn wait(mut self) -> eyre::Result<Vec<u8>> {
+        match tokio::time::timeout(
+            dora_message::TCP_READ_TIMEOUT,
+            std::future::poll_fn(|cx| self.poll_reply(cx)),
+        )
+        .await
         {
-            return Err(eyre!("daemon returned error: {ws_error}"));
+            Ok(result) => result,
+            Err(_) => {
+                self.forget().await;
+                Err(eyre!("timeout waiting for daemon WS reply"))
+            }
         }
-
-        Ok(response_json.into_bytes())
     }
+
+    /// Poll for the daemon's reply, with no timeout. Must not be called again
+    /// once it has returned `Ready`.
+    pub(crate) fn poll_reply(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<eyre::Result<Vec<u8>>> {
+        std::pin::Pin::new(&mut self.reply_rx)
+            .poll(cx)
+            .map(|received| decode_daemon_reply(received.ok()))
+    }
+
+    /// The daemon's reply if the WS layer has already delivered it (or
+    /// dropped its channel), without waiting. Must not be called once a poll
+    /// or an earlier call has returned the reply.
+    pub(crate) fn try_reply(&mut self) -> Option<eyre::Result<Vec<u8>>> {
+        match self.reply_rx.try_recv() {
+            Err(oneshot::error::TryRecvError::Empty) => None,
+            received => Some(decode_daemon_reply(received.ok())),
+        }
+    }
+
+    /// Stop expecting the reply: drop its entry from the connection's pending
+    /// replies, so it does not keep holding one of the slots.
+    pub(crate) async fn forget(&self) {
+        self.pending_replies.lock().await.remove(&self.id);
+    }
+}
+
+/// What the WS layer delivered for a request, as its result. `None` means the
+/// reply channel was dropped.
+fn decode_daemon_reply(received: Option<String>) -> eyre::Result<Vec<u8>> {
+    let response_json = received.ok_or_else(|| eyre!("daemon WS reply channel dropped"))?;
+
+    // A WS-level failure on the daemon side arrives as a `{"ws_error": ...}`
+    // envelope (see `handle_daemon_response` in `ws_daemon.rs`). It matches
+    // no `DaemonCoordinatorReply` variant, so returning it verbatim would
+    // make every caller fail with an opaque "failed to deserialize ... reply"
+    // and drop the daemon's real error text (it would survive only in a log
+    // line). Surface it as an `Err` carrying that text instead.
+    if let Ok(WsErrorEnvelope { ws_error }) =
+        serde_json::from_str::<WsErrorEnvelope>(&response_json)
+    {
+        return Err(eyre!("daemon returned error: {ws_error}"));
+    }
+
+    Ok(response_json.into_bytes())
 }
 
 /// The envelope `handle_daemon_response` (see `ws_daemon.rs`) produces when a
