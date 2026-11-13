@@ -11,9 +11,12 @@ mod info;
 mod init;
 mod install;
 mod list;
+mod login;
+mod logout;
 mod outdated;
 mod publish;
 mod search;
+mod token;
 mod update;
 mod yank;
 
@@ -21,6 +24,9 @@ mod yank;
 #[derive(Debug, clap::Subcommand)]
 pub enum Hub {
     Init(init::Init),
+    Login(login::Login),
+    Logout(logout::Logout),
+    Token(token::Token),
     Search(search::Search),
     Info(info::Info),
     List(list::List),
@@ -36,6 +42,9 @@ impl Executable for Hub {
     fn execute(self) -> eyre::Result<()> {
         match self {
             Hub::Init(cmd) => cmd.execute(),
+            Hub::Login(cmd) => cmd.execute(),
+            Hub::Logout(cmd) => cmd.execute(),
+            Hub::Token(cmd) => cmd.execute(),
             Hub::Search(cmd) => cmd.execute(),
             Hub::Info(cmd) => cmd.execute(),
             Hub::List(cmd) => cmd.execute(),

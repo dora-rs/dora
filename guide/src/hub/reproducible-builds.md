@@ -19,10 +19,14 @@ alongside the dataflow.
 The lockfile stores, per node:
 
 - the resolved **git source** — repo, exact `commit_hash`, and `subdir`; plus
-  the hub **provenance** (package `name`, resolved `version`, and a
+  the hub **provenance** (package `name`, resolved `version`, and
   `manifest_digest`), or
 - the resolved **binary source** — `platform`, `url`, and `sha256` — for a node
   that shipped a prebuilt artifact.
+
+For registry-resolved hub nodes it also records a per-node
+`hub_archive_sha256` map, used to verify the registry archive fallback while
+keeping the frozen wire `HubProvenance` shape unchanged.
 
 It also records a `descriptor_fingerprint` of the dataflow's source graph, used
 to detect when the YAML changed out from under the lockfile.
@@ -44,14 +48,30 @@ what you tested.
 - a binary node's artifact is re-verified against its `sha256`;
 - if a published index entry's manifest was rewritten since you locked
   (its `manifest_digest` no longer matches), `--locked` **fails** — the
-  contract you locked against changed. (A rewritten *source pin* warns and uses
-  the lockfile pin.)
+  contract you locked against changed. A rewritten *source pin* also fails in
+  strict `--locked` mode instead of silently building a different repository;
+  `--locked` must be reproducible, so re-run `--write-lockfile` after an
+  intentional index/source change.
+- the registry archive fallback is used only when its bytes match the pinned
+  `archive_sha256`; a missing checksum disables the fallback (fail closed).
 
 > `dora validate` is **best-effort**, not strict: when a lockfile exists it uses
 > its pins, but a missing or stale pin falls back to live resolution with a note
 > instead of failing — so validating a half-updated dataflow never fails harder
 > than building it without `--locked`. Reproducibility is enforced by
 > `build --locked`, not by `validate`.
+
+## Registry fallback limitations
+
+- The fallback archive is built from the published package subtree. A monorepo
+  package that relies on its parent Cargo workspace (`workspace = true`,
+  `../` path dependencies) builds from the hosting repository but may not
+  build from the fallback archive; the failure is explicit.
+- A warm project-keyed checkout is reused without a network probe. If the
+  hosting repository is unavailable but the checkout is present, the build
+  continues from that checkout instead of downloading the fallback archive.
+- The source probe checks that the pinned commit is still advertised by the
+  hosting repository; a force-pushed/deleted commit triggers the fallback.
 
 ## Inspecting and updating pins
 
@@ -99,7 +119,10 @@ Two independent mechanisms for working with limited or no network:
 - **`--offline`** (on `dora build`, `dora validate`, and `dora hub
   search`/`info`/`outdated`/`update`) skips the network index refresh and uses
   the local cache, failing loudly on a cache miss instead of silently going
-  stale.
+  stale. For `hub:` builds it also skips the hosting-source probe and the
+  registry archive fallback; the build uses the existing source checkout or
+  fails. Registry search has no offline index, so `dora hub search --offline`
+  errors instead of silently contacting the network.
 
 - **`dora hub fetch`** mirrors the pinned *sources* into a directory — a
   verifiable local copy of each pinned commit, for inspection, auditing, CI

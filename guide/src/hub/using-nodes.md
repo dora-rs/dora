@@ -28,6 +28,11 @@ nodes:
 You still write the node's `inputs`/`outputs` wiring as usual; the *types* of
 those ports come from the published manifest.
 
+By default resolution uses the configured git index. Set
+`DORA_HUB_REGISTRY_URL=https://dora.pub` (or a mirror) to opt into registry
+resolution for unbound namespaces. Namespaces explicitly bound in `hub.toml`
+keep using their configured index.
+
 ### The reference syntax
 
 ```
@@ -77,8 +82,12 @@ dora hub search lidar --platform linux-x86_64
 dora hub search                         # list everything
 ```
 
-Search spans every configured index and prints `namespace/name version —
-description (categories)`, using each package's latest version.
+With no `hub.toml` (or when `DORA_HUB_REGISTRY_URL` is set), search queries the
+HTTP registry. When custom indexes are configured, search spans those indexes
+instead. Results print `namespace/name version — description`.
+
+`--category`/`--platform` filters currently apply to configured indexes; the
+registry search endpoint reports a warning if they are used.
 
 ### Inspect a package
 
@@ -118,10 +127,20 @@ precedence over the manifest's.
 ## What gets built
 
 A `hub:` node desugars to a pinned `git:` node: the resolver clones the node's
-source at the exact published commit and runs its `build` command (e.g.
-`pip install .`, `cargo build --release`) on the machine that builds it. For a
-node that ships a prebuilt binary for your platform, the resolver downloads and
-sha256-verifies that artifact instead of cloning — see [Binary
+source **from the publisher's hosting repository** at the published commit and
+runs its `build` command (e.g. `pip install .`, `cargo build --release`) on the
+machine that builds it. The registry is expected to serve metadata/index only;
+its archive endpoint is a fallback, not the primary source. If the hosting
+repository is unreachable, local `dora build/run` materializes the registry
+archive **only when the lockfile pins its SHA-256**, verifies it, and then
+builds from that copy. Without a pinned checksum the fallback is refused rather
+than trusting the network; distributed builds currently still require the
+hosting source. `--offline` skips both the hosting-source probe and the
+fallback. The fallback archives only the published package subtree, so a
+monorepo package that depends on its parent workspace may need the hosting
+source; that case fails explicitly rather than using a different tree. For a
+node that ships a prebuilt binary, the resolver downloads and sha256-verifies that
+artifact instead of cloning — see [Binary
 distribution](indexes.md#binary-distribution).
 
 Heavy builds run wherever the node runs, so on constrained devices prefer
