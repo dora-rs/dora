@@ -111,4 +111,12 @@ mod test {
         // Regression guard for the already-correct basic-type branch.
         assert!(constant_def("uint8[3] NUMS=[1, 2]").is_err());
     }
+    #[test]
+    fn quoted_string_constant_keeps_surrounding_whitespace() {
+        // A quoted constant must keep its whitespace exactly (#4164).
+        let c = constant_def(r#"string SEP=" ""#).unwrap();
+        assert_eq!(c.value, vec![" ".to_string()]);
+        let c = constant_def(r#"string[2] XS=[" a", "b "]"#).unwrap();
+        assert_eq!(c.value, vec![" a".to_string(), "b ".to_string()]);
+    }
 }
