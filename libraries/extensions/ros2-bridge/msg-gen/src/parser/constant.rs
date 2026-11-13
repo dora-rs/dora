@@ -111,4 +111,13 @@ mod test {
         // Regression guard for the already-correct basic-type branch.
         assert!(constant_def("uint8[3] NUMS=[1, 2]").is_err());
     }
+    #[test]
+    fn out_of_range_float_constant_is_a_parse_error() {
+        // Must be a normal error, not a panic in proc-macro2 during codegen (#4162).
+        assert!(constant_def("float32 BIG=1e40").is_err());
+        assert!(constant_def("float64 BIG=1e400").is_err());
+        assert!(constant_def("float32[2] XS=[1.0, 1e40]").is_err());
+        let c = constant_def("float64 BIG=1e40").unwrap();
+        let _ = c.r#type.value_tokens(&c.value);
+    }
 }

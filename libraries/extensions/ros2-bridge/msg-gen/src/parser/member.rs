@@ -168,4 +168,11 @@ mod test {
         assert_eq!(result.default, Some(vec!["ok".into(), "hi".into()]));
         Ok(())
     }
+    #[test]
+    fn out_of_range_float_default_is_a_parse_error() {
+        // #4162: rejected while parsing instead of panicking during codegen.
+        assert!(member_def("float32 x 1e40").is_err());
+        assert!(member_def("float64 x 1e400").is_err());
+        assert!(member_def("float64[] xs [0.0, -1e400]").is_err());
+    }
 }

@@ -24,8 +24,26 @@ where
     map_res(integer_literal, |v| T::try_from(v).map(|v| v.to_string())).parse(s)
 }
 
-fn validate_floating_point_literal(s: &str) -> IResult<&str, String> {
-    map(recognize_float, |v: &str| v.to_string()).parse(s)
+// Reject values that overflow the target type (e.g. `float32 X=1e40`): they
+// would parse to infinity, which panics in codegen (`Literal::f32_suffixed`).
+fn validate_f32_literal(s: &str) -> IResult<&str, String> {
+    map(
+        verify(recognize_float, |v: &str| {
+            v.parse::<f32>().is_ok_and(f32::is_finite)
+        }),
+        |v: &str| v.to_string(),
+    )
+    .parse(s)
+}
+
+fn validate_f64_literal(s: &str) -> IResult<&str, String> {
+    map(
+        verify(recognize_float, |v: &str| {
+            v.parse::<f64>().is_ok_and(f64::is_finite)
+        }),
+        |v: &str| v.to_string(),
+    )
+    .parse(s)
 }
 
 fn validate_boolean_literal(s: &str) -> IResult<&str, String> {
@@ -42,7 +60,8 @@ pub fn get_basic_type_literal_parser(basic_type: BasicType) -> fn(&str) -> IResu
         BasicType::I16 => validate_integer_literal::<i16>,
         BasicType::I32 => validate_integer_literal::<i32>,
         BasicType::I64 => validate_integer_literal::<i64>,
-        BasicType::F32 | BasicType::F64 => validate_floating_point_literal,
+        BasicType::F32 => validate_f32_literal,
+        BasicType::F64 => validate_f64_literal,
         BasicType::Bool => validate_boolean_literal,
     }
 }
@@ -354,6 +373,22 @@ mod test {
             string_literal_sequence(r#"[ aaa , "bbb"  , 'ccc' ]"#)?.1,
             vec!["aaa", "bbb", "ccc"]
         );
+        Ok(())
+    }
+    #[test]
+    fn float_literals_must_be_finite_for_their_type() -> Result<()> {
+        // Out-of-range values parse to infinity and would panic in codegen (#4162).
+        assert!(validate_f32_literal("1e40").is_err());
+        assert!(validate_f32_literal("-1e40").is_err());
+        assert!(validate_f64_literal("1e400").is_err());
+        // In-range values, including ones only representable as f64, still parse.
+        assert_eq!(validate_f32_literal("3.4e38")?.1, "3.4e38");
+        assert_eq!(validate_f64_literal("1e40")?.1, "1e40");
+        assert_eq!(
+            basic_type_sequence(BasicType::F64, "[1.5, -2e300]")?.1,
+            vec!["1.5", "-2e300"]
+        );
+        assert!(basic_type_sequence(BasicType::F32, "[1.5, 1e39]").is_err());
         Ok(())
     }
 }
