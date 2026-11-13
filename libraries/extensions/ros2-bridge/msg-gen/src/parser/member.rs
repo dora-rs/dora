@@ -168,4 +168,27 @@ mod test {
         assert_eq!(result.default, Some(vec!["ok".into(), "hi".into()]));
         Ok(())
     }
+    #[test]
+    fn empty_sequence_default_is_accepted() -> Result<()> {
+        // `[]` is a valid default for `T[]` and `T[<=N]` (#4163).
+        for line in [
+            "int32[] x []",
+            "string[] y []",
+            "int32[<=3] z []",
+            "string<=4[<=2] w [ ]",
+        ] {
+            let result = member_def(line)?;
+            assert_eq!(result.default, Some(Vec::new()), "{line}");
+            // Codegen turns it into an empty `vec![]` without panicking.
+            let tokens = result.r#type.value_tokens(&[]);
+            assert_eq!(quote::quote!(#tokens).to_string(), "vec ! []", "{line}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn empty_default_is_rejected_for_fixed_size_arrays() {
+        assert!(member_def("int32[3] x []").is_err());
+        assert!(member_def("string[3] y []").is_err());
+    }
 }
