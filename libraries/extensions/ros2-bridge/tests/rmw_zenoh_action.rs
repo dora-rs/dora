@@ -455,7 +455,6 @@ mod typed {
             zenoh::{Context, ContextOptions, Node, keyexpr::TopicToken},
         },
     };
-    use futures::{StreamExt, stream::FuturesUnordered};
     use serde::{Deserialize, Serialize};
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -938,6 +937,101 @@ mod typed {
         }
     }
 
+    /// One client with more `GetResult` calls open on a goal than the goal
+    /// has slots must not lose them all, and must not lock the goal up:
+    /// one of its older requests is answered to make room, and every other
+    /// call it has open still gets the real result when the goal finishes
+    /// (#4066).
+    ///
+    /// The displaced request must get a *normal* reply carrying `Unknown`
+    /// and a default result — what `rcl_action` sends for a goal it does
+    /// not know — and not a `reject`. `reject` answers with `reply_err`,
+    /// which `rmw_zenoh_cpp` discards unread, so an rcl client's
+    /// `get_result` would never resolve. This client does surface error
+    /// replies, so asserting on an error would pass here while such a
+    /// client hung; asserting on the decoded payload pins what every client
+    /// sees.
+    ///
+    /// *Which* call is displaced depends on the order the requests reach
+    /// the server, which nothing here controls, so this asserts only what
+    /// that order cannot change: of `WAITERS + 1` calls exactly one is
+    /// answered early, and the other `WAITERS` stay pending until the goal
+    /// finishes. The unit tests on `record_waiter` cover which id is picked;
+    /// this is the same behavior through the real service and its
+    /// pending-request table, which those cannot reach.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_displaced_get_result_is_answered_and_the_others_still_get_the_result() {
+        // The per-goal waiter cap; one call more than this forces exactly
+        // one displacement.
+        const WAITERS: usize = 16;
+
+        // Its own domain, like every other test here: these tests run in
+        // parallel against the same action name, so a shared domain would
+        // let one test's observers reach another's server and be answered
+        // early with `Unknown` for a goal it never sent.
+        let Fixture {
+            client,
+            server,
+            _session,
+            ..
+        } = fixture(67, options(16)).await;
+        let client = std::sync::Arc::new(client);
+        let goal = client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
+        next_goal(&server).await;
+
+        let (answered, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        let calls: Vec<_> = (0..=WAITERS)
+            .map(|_| {
+                let client = client.clone();
+                let answered = answered.clone();
+                tokio::spawn(async move {
+                    let _ = answered.send(client.get_result(goal).await);
+                })
+            })
+            .collect();
+        drop(answered);
+
+        // One call is displaced to make room, and answered while the goal
+        // is still running.
+        let displaced = tokio::time::timeout(TIMEOUT, answers.recv())
+            .await
+            .expect("the displaced request must be answered, not left pending")
+            .expect("the senders outlive this receive");
+        let (status, result) = displaced.expect(
+            "the displaced request must get a normal reply every client can \
+             decode, not a reply_err that rmw_zenoh_cpp drops unread",
+        );
+        assert!(matches!(status, GoalStatusEnum::Unknown), "{status:?}");
+        assert_eq!(result, Sequence::default());
+
+        // Only that one: the rest are still waiting for the real result.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), answers.recv())
+                .await
+                .is_err(),
+            "only the displaced request may be answered before the goal finishes"
+        );
+
+        let finished = Sequence { sequence: vec![1] };
+        server
+            .finish(goal, GoalStatusEnum::Succeeded, &finished)
+            .await
+            .unwrap();
+        for _ in 0..WAITERS {
+            let answer = tokio::time::timeout(TIMEOUT, answers.recv())
+                .await
+                .expect("a call left waiting on the goal was never answered")
+                .expect("the senders outlive this receive");
+            assert_eq!(
+                answer.unwrap(),
+                (GoalStatusEnum::Succeeded, finished.clone())
+            );
+        }
+        for call in calls {
+            call.await.unwrap();
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn result_waiters_are_bounded_per_goal() {
         use dora_ros2_bridge::transport::zenoh::service::ServiceError;
@@ -950,69 +1044,92 @@ mod typed {
             server,
             _session,
             ..
-        } = fixture(63, options(16)).await;
-        let other = Client::declare(&node, &keys, tokens, &Ros2Qos::default(), 1024 * 1024)
-            .await
-            .unwrap();
-        let first_goal = client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
-        next_goal(&server).await;
-        let second_goal = other.send_goal(&Goal { order: 2 }, TIMEOUT).await.unwrap();
+        } = fixture(63, options(32)).await;
+        let goal = client.send_goal(&Goal { order: 1 }, TIMEOUT).await.unwrap();
         next_goal(&server).await;
 
-        // One client asks for a running goal's result as often as it may: 64
-        // requests, as many as the service's shared pending slots. Three wait,
-        // the rest are refused.
-        let mut waiters: FuturesUnordered<_> =
-            (0..64).map(|_| client.get_result(first_goal)).collect();
-        for _ in 0..61 {
-            let rejected = tokio::time::timeout(TIMEOUT, waiters.next())
-                .await
-                .expect("the excess requests should be refused while the goal runs")
-                .unwrap();
-            assert!(
-                matches!(&rejected, Err(ActionCallError::Service(ServiceError::Remote(error)))
-                    if error == "result waiter limit of 3 reached for this goal"),
-                "{rejected:?}"
-            );
+        // `WAITERS + 1` genuinely distinct clients, each waiting once on the
+        // same still-running goal, for `WAITERS` slots. Real `rcl_action`
+        // servers place no limit on how many such observers there can be
+        // (#4066), so the cap only ever turns away the one that finds every
+        // slot held by a different client's single request.
+        //
+        // Which one that is depends on the order the requests reach the
+        // server, and nothing here controls that, so this asserts what the
+        // order cannot change: exactly one is refused, while the goal runs,
+        // and the other `WAITERS` get the result once it finishes.
+        const WAITERS: usize = 16;
+        let (answered, mut answers) = tokio::sync::mpsc::unbounded_channel();
+        let mut calls = Vec::new();
+        for _ in 0..=WAITERS {
+            let observer = Client::declare(
+                &node,
+                &keys,
+                tokens.clone(),
+                &Ros2Qos::default(),
+                1024 * 1024,
+            )
+            .await
+            .unwrap();
+            let answered = answered.clone();
+            calls.push(tokio::spawn(async move {
+                let _ = answered.send(observer.get_result(goal).await);
+            }));
         }
+        drop(answered);
 
-        // Another client's request still gets through: with all 64 slots
-        // taken it would be dropped and never answered.
-        let second_result = Sequence { sequence: vec![2] };
-        let waiting = tokio::spawn(async move { other.get_result(second_goal).await });
-        server
-            .finish(second_goal, GoalStatusEnum::Succeeded, &second_result)
+        // The refusal is the only answer that can arrive before `finish`.
+        let rejected = tokio::time::timeout(TIMEOUT, answers.recv())
             .await
-            .unwrap();
-        assert_eq!(
-            tokio::time::timeout(TIMEOUT, waiting)
+            .expect("the observer that overflowed the goal should be refused while it runs")
+            .expect("the senders outlive this receive")
+            .unwrap_err();
+        assert!(
+            matches!(&rejected, ActionCallError::Service(ServiceError::Remote(error))
+                if error == "result waiter limit of 16 reached for this goal"),
+            "{rejected:?}"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), answers.recv())
                 .await
-                .expect("the other client's request was not answered")
-                .unwrap()
-                .unwrap(),
-            (GoalStatusEnum::Succeeded, second_result)
+                .is_err(),
+            "only the overflowing request may be answered before the goal finishes"
         );
 
-        let first_result = Sequence { sequence: vec![1] };
+        let result = Sequence { sequence: vec![1] };
         server
-            .finish(first_goal, GoalStatusEnum::Succeeded, &first_result)
+            .finish(goal, GoalStatusEnum::Succeeded, &result)
             .await
             .unwrap();
-        for _ in 0..3 {
-            assert_eq!(
-                tokio::time::timeout(TIMEOUT, waiters.next())
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .unwrap(),
-                (GoalStatusEnum::Succeeded, first_result.clone())
-            );
+        for _ in 0..WAITERS {
+            let answer = tokio::time::timeout(TIMEOUT, answers.recv())
+                .await
+                .expect("an observer waiting on the goal was never answered")
+                .expect("the senders outlive this receive");
+            assert_eq!(answer.unwrap(), (GoalStatusEnum::Succeeded, result.clone()));
+        }
+        for call in calls {
+            call.await.unwrap();
         }
     }
 
+    /// `MAX_RESULT_WAITERS_PER_GOAL` genuinely distinct clients can wait at
+    /// once on each of several simultaneous goals, and a cap-overflowing
+    /// client on any one of them is still refused — the shared pending-slot
+    /// pool (`RESULT_REQUEST_HEADROOM`, sized off the per-goal cap) scales
+    /// to cover every goal's full complement of waiters at once, the way
+    /// `result_waiters_are_bounded_per_goal` already checks for a single
+    /// goal. Fewer goals than `options()`'s old 32, now that the cap itself
+    /// is 16 rather than 3: `4 * 17` distinct clients is already as many
+    /// declarations as `result_waiters_are_bounded_per_goal` makes alone,
+    /// and this test's own point is "more than one goal", not "as many
+    /// goals as possible".
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn result_capacity_scales_with_the_server_goal_limit() {
         use dora_ros2_bridge::transport::zenoh::service::ServiceError;
+
+        const GOALS: i32 = 4;
+        const WAITERS_PER_GOAL: usize = 16;
 
         let Fixture {
             client,
@@ -1022,33 +1139,62 @@ mod typed {
             server,
             _session,
             ..
-        } = local_fixture(65, options(32)).await;
+        } = local_fixture(65, options(GOALS as usize)).await;
+        let mut goals = Vec::new();
+        let mut calls = Vec::new();
+        for order in 0..GOALS {
+            let goal = client.send_goal(&Goal { order }, TIMEOUT).await.unwrap();
+            next_goal(&server).await;
+
+            // One more distinct observer than the goal has slots. As in
+            // `result_waiters_are_bounded_per_goal`, which of them is
+            // refused depends on the order the requests land, so this waits
+            // for the one refusal rather than nominating a victim up front.
+            let (answered, answers) = tokio::sync::mpsc::unbounded_channel();
+            for _ in 0..=WAITERS_PER_GOAL {
+                let observer = Client::declare(
+                    &node,
+                    &keys,
+                    tokens.clone(),
+                    &Ros2Qos::default(),
+                    1024 * 1024,
+                )
+                .await
+                .unwrap();
+                let answered = answered.clone();
+                calls.push(tokio::spawn(async move {
+                    let _ = answered.send(observer.get_result(goal).await);
+                }));
+            }
+            drop(answered);
+            goals.push((goal, answers));
+        }
+
+        // Every goal refuses exactly one observer, and keeps the rest
+        // pending: the shared pending-slot pool covers all four goals'
+        // full complement at once.
+        for (order, (_, answers)) in goals.iter_mut().enumerate() {
+            let rejected = tokio::time::timeout(TIMEOUT, answers.recv())
+                .await
+                .expect("the per-goal rejection must leave every other waiter pending")
+                .expect("the senders outlive this receive")
+                .unwrap_err();
+            assert!(
+                matches!(&rejected, ActionCallError::Service(ServiceError::Remote(error))
+                    if error == "result waiter limit of 16 reached for this goal"),
+                "goal {order}: {rejected:?}"
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), answers.recv())
+                    .await
+                    .is_err(),
+                "goal {order}: only the overflowing request may be answered early"
+            );
+        }
+
         let other = Client::declare(&node, &keys, tokens, &Ros2Qos::default(), 1024 * 1024)
             .await
             .unwrap();
-        let mut goals = Vec::new();
-        let mut pending = FuturesUnordered::new();
-        for order in 0..32 {
-            let requester = if order < 16 { &client } else { &other };
-            let goal = requester.send_goal(&Goal { order }, TIMEOUT).await.unwrap();
-            next_goal(&server).await;
-            goals.push(goal);
-            let mut requests: FuturesUnordered<_> = (0..4)
-                .map(|_| Box::pin(requester.get_result(goal)))
-                .collect();
-            let rejected = tokio::time::timeout(TIMEOUT, requests.next())
-                .await
-                .expect("the per-goal rejection must leave three pending requests")
-                .unwrap();
-            assert!(
-                matches!(rejected, Err(ActionCallError::Service(ServiceError::Remote(ref error)))
-                    if error == "result waiter limit of 3 reached for this goal"),
-                "goal {order}: {rejected:?}"
-            );
-            pending.extend(requests);
-        }
-        assert_eq!(pending.len(), 96);
-
         let unknown = dora_ros2_bridge::ros2_client::action::GoalId::new_random();
         assert_eq!(
             tokio::time::timeout(TIMEOUT, other.get_result(unknown))
@@ -1057,10 +1203,10 @@ mod typed {
                 .unwrap(),
             (GoalStatusEnum::Unknown, Sequence::default())
         );
-        for (order, goal) in goals.into_iter().enumerate() {
+        for (order, (goal, _)) in goals.iter().enumerate() {
             server
                 .finish(
-                    goal,
+                    *goal,
                     GoalStatusEnum::Succeeded,
                     &Sequence {
                         sequence: vec![order as i32],
@@ -1069,16 +1215,26 @@ mod typed {
                 .await
                 .unwrap();
         }
-        let mut answers = [0; 32];
-        while let Some(answer) = tokio::time::timeout(TIMEOUT, pending.next())
-            .await
-            .expect("an accepted waiter lost its result")
-        {
-            let (status, result) = answer.unwrap();
-            assert_eq!(status, GoalStatusEnum::Succeeded);
-            answers[result.sequence[0] as usize] += 1;
+        for (order, (_, answers)) in goals.iter_mut().enumerate() {
+            for _ in 0..WAITERS_PER_GOAL {
+                let answer = tokio::time::timeout(TIMEOUT, answers.recv())
+                    .await
+                    .expect("an accepted waiter lost its result")
+                    .expect("the senders outlive this receive");
+                assert_eq!(
+                    answer.unwrap(),
+                    (
+                        GoalStatusEnum::Succeeded,
+                        Sequence {
+                            sequence: vec![order as i32]
+                        }
+                    )
+                );
+            }
         }
-        assert_eq!(answers, [3; 32]);
+        for call in calls {
+            call.await.unwrap();
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

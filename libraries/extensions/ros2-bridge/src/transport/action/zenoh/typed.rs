@@ -93,9 +93,15 @@ struct CancelGoalWire {
 /// C++ client's `MAX_PENDING_REQUESTS` so it can send every call it admits.
 const MAX_PENDING_CALLS: usize = 64;
 
-/// Result requests that can wait on one unfinished goal, from all clients
-/// together. The result service reserves this many slots for every goal.
-const MAX_RESULT_WAITERS_PER_GOAL: usize = 3;
+/// `GetResult` requests that can wait on one unfinished goal at once, from
+/// all clients together. The result service reserves this many slots for
+/// every goal.
+///
+/// `rcl_action` has no such limit. Reaching this one no longer turns a
+/// client away outright: a request that arrives with the goal full displaces
+/// an older one from a client that has more than one pending, so retries
+/// cannot lock out the other observers of a goal (see `record_waiter`).
+const MAX_RESULT_WAITERS_PER_GOAL: usize = 16;
 
 /// Extra result slots to receive new requests while all goals have waiters.
 const RESULT_REQUEST_HEADROOM: usize = 16;
@@ -293,6 +299,72 @@ struct ServerGoal {
     result: Option<Vec<u8>>,
     /// `GetResult` requests that came in before the goal finished.
     waiters: Vec<RequestId>,
+}
+
+/// What `record_waiter` did with an incoming `GetResult` request.
+#[derive(Debug, PartialEq, Eq)]
+enum WaiterAdmission {
+    /// There was room for the request; added.
+    Added,
+    /// The goal was full, so this request took the slot of an older one,
+    /// carried here for the caller to answer. Answering it is what frees
+    /// its entry in the result service's pending-request table: the goal
+    /// finishing only answers the ids still in `waiters`, and
+    /// `GET_RESULT_TIMEOUT` is effectively unbounded, so a displaced
+    /// request left unanswered would sit in that shared, goal-independent
+    /// table until it ran out of slots server-wide.
+    Replaced(RequestId),
+    /// The goal was full and every pending request belonged to a different
+    /// client, each with only that one, so there was nothing to displace
+    /// without cutting off a client that had made a single call.
+    Rejected,
+}
+
+/// Records `request_id` as waiting on `goal`'s result, or decides not to.
+///
+/// While the goal has room the request is simply added, so a client that
+/// has several `GetResult` calls open on one goal keeps getting an answer
+/// to each of them, as `rcl_action` does.
+///
+/// Once the goal is full, room is made rather than turning the request
+/// away: first from this client's own oldest pending request, otherwise
+/// from the oldest request of some client that has more than one pending.
+/// A client that drops and retries its call — a timeout, or polling —
+/// therefore cannot fill the goal with its own stale requests and lock out
+/// the other observers, including the one that actually sent the goal
+/// (#4066). A client holding a single pending request is never displaced,
+/// so the request is refused only when every slot is one such client's.
+fn record_waiter(goal: &mut ServerGoal, request_id: RequestId) -> WaiterAdmission {
+    if goal.waiters.len() < MAX_RESULT_WAITERS_PER_GOAL {
+        goal.waiters.push(request_id);
+        return WaiterAdmission::Added;
+    }
+    // `waiters` is in arrival order — new ones are pushed to the end and
+    // `remove` keeps the rest in order — so the first match is the oldest.
+    let has_another = |gid: &[u8; 16]| {
+        goal.waiters
+            .iter()
+            .filter(|id| &id.client_gid == gid)
+            .count()
+            > 1
+    };
+    let displaced = goal
+        .waiters
+        .iter()
+        .position(|id| id.client_gid == request_id.client_gid)
+        .or_else(|| {
+            goal.waiters
+                .iter()
+                .position(|id| has_another(&id.client_gid))
+        });
+    match displaced {
+        Some(index) => {
+            let displaced = goal.waiters.remove(index);
+            goal.waiters.push(request_id);
+            WaiterAdmission::Replaced(displaced)
+        }
+        None => WaiterAdmission::Rejected,
+    }
 }
 
 impl<G, R, F> TypedActionServer<G, R, F>
@@ -526,22 +598,31 @@ impl Shared {
         let response = match goals.iter_mut().find(|goal| goal.id == goal_id) {
             Some(goal) => match &goal.result {
                 Some(response) => response,
-                None if goal.waiters.len() >= MAX_RESULT_WAITERS_PER_GOAL => {
-                    self.endpoints
-                        .get_result
-                        .reject(
-                            request.id,
-                            &format!(
-                                "result waiter limit of {MAX_RESULT_WAITERS_PER_GOAL} reached for this goal"
-                            ),
-                        )
-                        .await?;
-                    return Ok(());
-                }
-                None => {
-                    goal.waiters.push(request.id);
-                    return Ok(());
-                }
+                None => match record_waiter(goal, request.id) {
+                    WaiterAdmission::Added => return Ok(()),
+                    WaiterAdmission::Replaced(displaced) => {
+                        // A normal reply, not `reject`: `rmw_zenoh_cpp` drops
+                        // error replies unread, which would leave this
+                        // client's call hanging rather than freeing it.
+                        self.endpoints
+                            .get_result
+                            .reply(displaced, &self.unknown_response)
+                            .await?;
+                        return Ok(());
+                    }
+                    WaiterAdmission::Rejected => {
+                        self.endpoints
+                            .get_result
+                            .reject(
+                                request.id,
+                                &format!(
+                                    "result waiter limit of {MAX_RESULT_WAITERS_PER_GOAL} reached for this goal"
+                                ),
+                            )
+                            .await?;
+                        return Ok(());
+                    }
+                },
             },
             None => &self.unknown_response,
         };
@@ -872,5 +953,131 @@ mod tests {
         // Full of running goals.
         let goals = vec![goal(1, 10, Executing), goal(2, 20, Canceling)];
         assert_eq!(admit(&goals, id(3), 2), None);
+    }
+
+    /// `RequestId` with the given client (`client_gid`'s first byte) and
+    /// sequence number, as a distinct retry of the same call carries.
+    fn request_id(client: u8, sequence_number: i64) -> RequestId {
+        RequestId {
+            sequence_number,
+            client_gid: [client; 16],
+        }
+    }
+
+    /// While the goal has room, a second call from the same client is
+    /// simply added. rclpy's `ActionClient` attaches a done callback to
+    /// every result future that removes the goal's feedback callback, on
+    /// the assumption that a finished result means a finished goal, so
+    /// answering one of its calls early — which displacing it would do —
+    /// would stop that node's feedback while the goal is still running.
+    #[test]
+    fn a_second_call_from_one_client_is_added_while_there_is_room() {
+        let mut goal = goal(1, 10, Executing);
+        assert_eq!(
+            record_waiter(&mut goal, request_id(1, 1)),
+            WaiterAdmission::Added
+        );
+        assert_eq!(
+            record_waiter(&mut goal, request_id(1, 2)),
+            WaiterAdmission::Added
+        );
+        assert_eq!(goal.waiters, vec![request_id(1, 1), request_id(1, 2)]);
+    }
+
+    /// A client that drops and retries its `GetResult` call every time it
+    /// times out must not grow its share without bound. Once the goal is
+    /// full, each further retry gives up that client's own oldest request,
+    /// so the total stays at the cap and no other slot is touched.
+    #[test]
+    fn a_retrying_client_cannot_exhaust_the_waiter_cap_alone() {
+        let mut goal = goal(1, 10, Executing);
+        let cap = MAX_RESULT_WAITERS_PER_GOAL as i64;
+        for sequence_number in 0..cap {
+            assert_eq!(
+                record_waiter(&mut goal, request_id(1, sequence_number)),
+                WaiterAdmission::Added
+            );
+        }
+        for retry in 0..(cap * 3) {
+            assert_eq!(
+                record_waiter(&mut goal, request_id(1, cap + retry)),
+                WaiterAdmission::Replaced(request_id(1, retry)),
+                "retry {retry} must displace this client's oldest request"
+            );
+            assert_eq!(goal.waiters.len(), MAX_RESULT_WAITERS_PER_GOAL);
+        }
+    }
+
+    /// The #4066 lockout itself: a client that has filled the goal with
+    /// its own requests still has to give way to another observer —
+    /// including the client that actually sent the goal.
+    #[test]
+    fn a_client_holding_every_slot_gives_way_to_another_observer() {
+        let mut goal = goal(1, 10, Executing);
+        for sequence_number in 0..MAX_RESULT_WAITERS_PER_GOAL as i64 {
+            record_waiter(&mut goal, request_id(1, sequence_number));
+        }
+        assert_eq!(
+            record_waiter(&mut goal, request_id(2, 0)),
+            WaiterAdmission::Replaced(request_id(1, 0)),
+            "the newcomer must displace the oldest request of the client holding several"
+        );
+        assert!(goal.waiters.contains(&request_id(2, 0)));
+    }
+
+    /// Room is made from a client that has more than one request pending,
+    /// never from one that has made a single call — and once every slot is
+    /// one such client's, there is nothing left to give.
+    #[test]
+    fn a_client_with_a_single_pending_request_is_never_displaced() {
+        let mut goal = goal(1, 10, Executing);
+        // Client 1 holds two; clients 2.. hold one each, filling the goal.
+        record_waiter(&mut goal, request_id(1, 0));
+        record_waiter(&mut goal, request_id(1, 1));
+        for client in 2..MAX_RESULT_WAITERS_PER_GOAL as u8 {
+            assert_eq!(
+                record_waiter(&mut goal, request_id(client, 0)),
+                WaiterAdmission::Added
+            );
+        }
+        assert_eq!(goal.waiters.len(), MAX_RESULT_WAITERS_PER_GOAL);
+
+        // The only client with a spare request is the one that pays.
+        assert_eq!(
+            record_waiter(&mut goal, request_id(100, 0)),
+            WaiterAdmission::Replaced(request_id(1, 0))
+        );
+        // Now every slot is a different client's only request.
+        assert_eq!(
+            record_waiter(&mut goal, request_id(101, 0)),
+            WaiterAdmission::Rejected
+        );
+        assert_eq!(goal.waiters.len(), MAX_RESULT_WAITERS_PER_GOAL);
+        // Rejection is not itself recorded, so a retry finds no more room.
+        assert_eq!(
+            record_waiter(&mut goal, request_id(101, 1)),
+            WaiterAdmission::Rejected
+        );
+    }
+
+    /// The `Replaced` arm of `handle_get_result` answers the id this
+    /// carries, so it must be the displaced request and never the new one:
+    /// answering the new one would resolve the caller's latest call with an
+    /// empty `Unknown` result and leak the slot it was meant to free.
+    #[test]
+    fn replaced_carries_the_displaced_id_not_the_new_one() {
+        let mut goal = goal(1, 10, Executing);
+        let cap = MAX_RESULT_WAITERS_PER_GOAL as i64;
+        for sequence_number in 0..cap {
+            record_waiter(&mut goal, request_id(1, sequence_number));
+        }
+        let new_request = request_id(1, cap);
+        let WaiterAdmission::Replaced(displaced) = record_waiter(&mut goal, new_request) else {
+            panic!("expected Replaced once the goal is full");
+        };
+        assert_eq!(displaced, request_id(1, 0));
+        assert_ne!(displaced, new_request);
+        assert!(goal.waiters.contains(&new_request));
+        assert!(!goal.waiters.contains(&displaced));
     }
 }
