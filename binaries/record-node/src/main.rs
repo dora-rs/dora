@@ -66,8 +66,10 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 /// wall-clock *time* bound. Both are enforced on the write path (in
 /// [`after_write`](Self::after_write)) so the time bound actually binds on an
 /// active stream — an idle-only timeout never fires while events keep arriving.
-/// [`on_idle`](Self::on_idle) additionally flushes the tail of a stream that has
-/// gone quiet without closing.
+/// The event loop also checks the time bound before every wait
+/// ([`flush_if_due`](Self::flush_if_due)), so events that write nothing cannot
+/// hold it off, and [`on_idle`](Self::on_idle) flushes the tail of a stream
+/// that has gone quiet without closing.
 ///
 /// (`flush()` reaches the OS page cache, not the platter, so this bounds loss on
 /// process death — SIGKILL/SIGINT — not on power loss, which would need
@@ -102,6 +104,34 @@ impl FlushPolicy {
             self.flush(writer)?;
         }
         Ok(())
+    }
+
+    /// Call before the event loop waits for its next event: flush buffered
+    /// records if `FLUSH_INTERVAL` has passed since the last flush, then return
+    /// how long the loop may wait before the time bound comes due — `None`
+    /// when nothing is buffered, so there is no deadline and the loop can block
+    /// indefinitely.
+    ///
+    /// The deadline is measured from the last flush, not from the last event,
+    /// and is checked whichever path the previous event took:
+    /// [`after_write`](Self::after_write) only runs when a record is actually
+    /// written, so an event that writes nothing (an oversized frame that gets
+    /// skipped, an unmapped input) would otherwise push the deadline back, and
+    /// a steady stream of them would keep a buffered tail unflushed
+    /// indefinitely.
+    fn flush_if_due<W: Write>(
+        &mut self,
+        writer: &mut RecordingWriter<W>,
+    ) -> eyre::Result<Option<Duration>> {
+        if !self.has_buffered() {
+            return Ok(None);
+        }
+        let remaining = FLUSH_INTERVAL.saturating_sub(self.last_flush.elapsed());
+        if remaining.is_zero() {
+            self.flush(writer)?;
+            return Ok(None);
+        }
+        Ok(Some(remaining))
     }
 
     /// Call on an idle tick (no event within `FLUSH_INTERVAL`): flush anything
@@ -470,16 +500,14 @@ fn main() -> eyre::Result<()> {
     eprintln!("dora-record-node: recording to {output_file}");
 
     loop {
-        // Only arm the idle-flush timer when records are buffered that a crash
-        // would lose; when everything is already flushed there is nothing to
-        // rescue on a timeout, so block on `recv()` and pay no per-event timer
-        // setup. `recv_timeout` returns `None` only on stream close and yields
-        // `Event::Error` on an idle timeout, which falls through to the `_` arm
-        // and drives a time-based flush of the buffered tail.
-        let event = if flush_policy.has_buffered() {
-            events.recv_timeout(FLUSH_INTERVAL)
-        } else {
-            events.recv()
+        // Enforce the time bound before every wait (see `flush_if_due`). With
+        // nothing buffered there is nothing to rescue on a timeout, so block on
+        // `recv()` and pay no per-event timer setup. `recv_timeout` returns
+        // `None` only on stream close and yields `Event::Error` on a timeout,
+        // which falls through to the `_` arm and flushes the buffered tail.
+        let event = match flush_policy.flush_if_due(&mut writer)? {
+            Some(remaining) => events.recv_timeout(remaining),
+            None => events.recv(),
         };
         let Some(event) = event else { break };
         match event {
@@ -1112,6 +1140,46 @@ mod tests {
             policy.records_since_flush, 0,
             "flush must reset the record counter"
         );
+    }
+
+    #[test]
+    fn time_bound_comes_due_without_a_write() {
+        // An event that writes nothing (an oversized frame, an unmapped input)
+        // never reaches `after_write`. The time bound must still fire for the
+        // records buffered before it: `flush_if_due`, run before every wait of
+        // the event loop, flushes them once `FLUSH_INTERVAL` has passed since
+        // the last flush, with no further write.
+        let (sink, mut writer) = test_writer();
+        let mut policy = FlushPolicy::new();
+        assert_eq!(
+            policy.flush_if_due(&mut writer).unwrap(),
+            None,
+            "no deadline while nothing is buffered"
+        );
+
+        writer.write_entry(&sample_entry()).unwrap();
+        policy.after_write(&mut writer).unwrap();
+
+        // Not yet due. Pin `last_flush` in the future so a stalled test runner
+        // cannot make the bound come due early: `elapsed()` saturates to zero.
+        policy.last_flush = Instant::now() + Duration::from_secs(3600);
+        assert_eq!(
+            policy.flush_if_due(&mut writer).unwrap(),
+            Some(FLUSH_INTERVAL),
+            "the wait runs until the bound comes due"
+        );
+        assert_eq!(sink.flushed_len(), 0, "must not flush before the bound");
+
+        // Overdue: flushed without another write, and no deadline remains.
+        policy.last_flush = Instant::now()
+            .checked_sub(FLUSH_INTERVAL + Duration::from_millis(50))
+            .expect("monotonic clock is younger than FLUSH_INTERVAL");
+        assert_eq!(policy.flush_if_due(&mut writer).unwrap(), None);
+        assert!(
+            sink.flushed_len() > 0,
+            "an overdue time bound must flush without another write"
+        );
+        assert!(!policy.has_buffered(), "flush empties the buffer");
     }
 
     #[test]
