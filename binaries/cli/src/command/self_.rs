@@ -25,6 +25,42 @@ pub enum SelfSubCommand {
 /// also matches the C and C++ library archives.
 const CLI_ASSET_IDENTIFIER: &str = "dora-cli-";
 
+/// Whether `release` ships a CLI archive built for `target`.
+///
+/// `self_update` falls back to the first asset that only contains the
+/// identifier, so on a target without a prebuilt CLI (e.g.
+/// `x86_64-apple-darwin` or a musl build) it would download another
+/// platform's archive and then fail with a misleading "path not found in
+/// archive" error. Checking up front lets us say what is actually wrong.
+fn has_prebuilt_cli(release: &self_update::update::Release, target: &str) -> bool {
+    release
+        .asset_for(target, Some(CLI_ASSET_IDENTIFIER))
+        .is_some_and(|asset| {
+            asset
+                .name()
+                .starts_with(&format!("{CLI_ASSET_IDENTIFIER}{target}."))
+        })
+}
+
+/// Whether `release_version` is newer than `current_version`. Semver
+/// comparison: a dev/pre-release build that is ahead of the latest published
+/// release must not be offered a downgrade.
+fn is_newer(current_version: &str, release_version: &str) -> bool {
+    self_update::version::bump_is_greater(current_version, release_version)
+        .unwrap_or(current_version != release_version)
+}
+
+/// Whether `dora self update` must refuse: `release` is newer than this build
+/// but has no CLI archive for `target`. When there is nothing newer, the
+/// updater reports "already at the latest version" on any target.
+fn lacks_prebuilt_update(
+    release: &self_update::update::Release,
+    current_version: &str,
+    target: &str,
+) -> bool {
+    is_newer(current_version, release.version()) && !has_prebuilt_cli(release, target)
+}
+
 /// The updater `dora self update` runs: the CLI archive of the latest
 /// `dora-rs/dora` release for this target.
 fn cli_updater() -> eyre::Result<self_update::backends::github::Update> {
@@ -65,15 +101,7 @@ impl Executable for SelfSubCommand {
                             };
                             let release_version = release.version();
                             let current_version = self_update::cargo_crate_version!();
-                            // Semver comparison — a dev/pre-release build that is
-                            // ahead of the latest published release must not be
-                            // offered a downgrade.
-                            let newer = self_update::version::bump_is_greater(
-                                current_version,
-                                release_version,
-                            )
-                            .unwrap_or(current_version != release_version);
-                            if newer {
+                            if is_newer(current_version, release_version) {
                                 println!(
                                     "An update is available: {release_version}. Run 'dora self update' to update"
                                 );
@@ -86,6 +114,27 @@ impl Executable for SelfSubCommand {
                         Err(e) => bail!("failed to check for updates: {e}"),
                     }
                 } else {
+                    // Refuse up front when the latest release has no CLI
+                    // archive for this target, instead of downloading another
+                    // platform's archive and failing inside it (#4151).
+                    let releases = status
+                        .get_latest_release()
+                        .map_err(|e| eyre::eyre!("failed to check for updates: {e}"))?;
+                    if let Some(release) = releases.latest()
+                        && lacks_prebuilt_update(
+                            release,
+                            self_update::cargo_crate_version!(),
+                            env!("TARGET"),
+                        )
+                    {
+                        bail!(
+                            "no prebuilt dora CLI for {} in release {}; install it with \
+                             `cargo install dora-cli --locked` instead",
+                            env!("TARGET"),
+                            release.version()
+                        );
+                    }
+
                     // Perform the actual update
                     match status.update() {
                         Ok(update_status) => {
@@ -200,16 +249,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn self_update_picks_the_cli_archive() {
-        let release = self_update::update::Release::builder()
+    fn v1_1_0_release() -> self_update::update::Release {
+        self_update::update::Release::builder()
             .name("v1.1.0")
             .version("1.1.0")
             .assets(V1_1_0_ASSETS.iter().map(|name| {
                 self_update::update::ReleaseAsset::new(*name, format!("https://host/{name}"))
             }))
             .build()
-            .unwrap();
+            .unwrap()
+    }
+
+    #[test]
+    fn self_update_picks_the_cli_archive() {
+        let release = v1_1_0_release();
         for target in [
             "aarch64-apple-darwin",
             "aarch64-unknown-linux-gnu",
@@ -226,6 +279,52 @@ mod tests {
                 "{target}"
             );
         }
+    }
+
+    /// Targets without a CLI archive in the release are refused instead of
+    /// falling back to another platform's archive (#4151).
+    #[test]
+    fn only_targets_with_a_cli_archive_have_a_prebuilt_cli() {
+        let release = v1_1_0_release();
+        for target in [
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "x86_64-unknown-linux-gnu",
+        ] {
+            assert!(super::has_prebuilt_cli(&release, target), "{target}");
+        }
+        for target in [
+            "x86_64-apple-darwin",
+            "aarch64-pc-windows-msvc",
+            "armv7-unknown-linux-gnueabihf",
+            "i686-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+        ] {
+            // `self_update` itself would still pick some `dora-cli-*` asset.
+            assert!(
+                release
+                    .asset_for(target, Some(super::CLI_ASSET_IDENTIFIER))
+                    .is_some(),
+                "{target}"
+            );
+            assert!(!super::has_prebuilt_cli(&release, target), "{target}");
+        }
+    }
+
+    /// An up-to-date (or newer dev) build on a target without a prebuilt CLI
+    /// is not refused: the updater reports "already at the latest version"
+    /// (#4169 review). Only an actual update to a release without an archive
+    /// for the target is refused.
+    #[test]
+    fn only_an_actual_update_needs_a_prebuilt_cli() {
+        let release = v1_1_0_release();
+        let musl = "x86_64-unknown-linux-musl";
+        assert!(super::lacks_prebuilt_update(&release, "1.0.0", musl));
+        assert!(!super::lacks_prebuilt_update(&release, "1.1.0", musl));
+        assert!(!super::lacks_prebuilt_update(&release, "1.2.0-dev", musl));
+        let gnu = "x86_64-unknown-linux-gnu";
+        assert!(!super::lacks_prebuilt_update(&release, "1.0.0", gnu));
     }
 
     /// The Windows release asset is made with PowerShell `Compress-Archive`,

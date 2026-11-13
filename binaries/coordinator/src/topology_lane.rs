@@ -31,7 +31,9 @@
 //! * The daemon confirms: the change is committed, then the CLI is answered.
 //! * The daemon rejects: nothing is committed; the CLI gets the daemon's error.
 //! * The dataflow is gone when the reply arrives: nothing is committed (there
-//!   is no state left to commit to); the CLI gets an error that says so.
+//!   is no state left to commit to); the CLI gets an error that says so. A
+//!   disconnect of the daemon itself does not get here: it commits a change
+//!   the daemon already answered before it tears the dataflow down (#4161).
 //! * No reply within `TCP_READ_TIMEOUT`, or the daemon's connection is gone:
 //!   nothing is committed and the CLI gets an error saying the outcome is
 //!   unknown. A reply that arrives after that is dropped by the WS layer (its
@@ -40,7 +42,11 @@
 //! * The CLI disconnects while its change is in flight: the change still
 //!   commits, the answer is discarded.
 
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{BTreeSet, HashMap, VecDeque},
+    sync::Arc,
+    task::Poll,
+};
 
 use dora_message::{
     DataflowId,
@@ -141,6 +147,74 @@ struct Queued {
     reply_sender: ReplySender,
 }
 
+/// The daemon's answer to the change in flight, shared by the waiter task and
+/// the loop.
+///
+/// The loop takes the answer from here rather than from the `TopologyReply`
+/// event, which only says it is ready. That event travels on its own stream,
+/// so the daemon's disconnect can be handled first, and the disconnect may
+/// take the dataflow out of `running_dataflows` (orphan reclaim). Because the
+/// WS layer delivers the reply before it reports the disconnect, the loop can
+/// still find the answer here and commit it beforehand (#4161).
+enum Answer {
+    /// Not taken from the WS layer yet (it may have arrived there).
+    Waiting(PendingDaemonReply),
+    /// Taken by the waiter.
+    Ready(eyre::Result<Vec<u8>>),
+    /// Taken by the loop.
+    Taken,
+}
+
+type AnswerSlot = Arc<std::sync::Mutex<Answer>>;
+
+fn lock_answer(slot: &AnswerSlot) -> std::sync::MutexGuard<'_, Answer> {
+    slot.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The answer, if the daemon's reply has arrived (or failed), without waiting.
+fn take_answer(slot: &AnswerSlot) -> Option<eyre::Result<Vec<u8>>> {
+    let mut answer = lock_answer(slot);
+    match std::mem::replace(&mut *answer, Answer::Taken) {
+        Answer::Waiting(mut reply) => {
+            let result = reply.try_reply();
+            if result.is_none() {
+                *answer = Answer::Waiting(reply);
+            }
+            result
+        }
+        Answer::Ready(result) => Some(result),
+        Answer::Taken => None,
+    }
+}
+
+/// Wait for the daemon's reply (for at most `TCP_READ_TIMEOUT`) and leave it
+/// in `slot`. Returns early if the loop takes the reply first.
+async fn wait_for_answer(slot: AnswerSlot) {
+    let answered = tokio::time::timeout(
+        dora_message::TCP_READ_TIMEOUT,
+        std::future::poll_fn(|cx| {
+            let mut answer = lock_answer(&slot);
+            let Answer::Waiting(reply) = &mut *answer else {
+                return Poll::Ready(());
+            };
+            let result = std::task::ready!(reply.poll_reply(cx));
+            *answer = Answer::Ready(result);
+            Poll::Ready(())
+        }),
+    )
+    .await;
+    if answered.is_err() {
+        let timed_out = std::mem::replace(
+            &mut *lock_answer(&slot),
+            Answer::Ready(Err(eyre!("timeout waiting for daemon WS reply"))),
+        );
+        if let Answer::Waiting(reply) = timed_out {
+            reply.forget().await;
+        }
+    }
+}
+
 /// The change currently waiting for its daemon.
 struct InFlight {
     change_id: Uuid,
@@ -149,6 +223,7 @@ struct InFlight {
     /// disconnected (or re-registered), its reply can no longer arrive.
     connection_id: Uuid,
     waiter: tokio::task::AbortHandle,
+    answer: AnswerSlot,
     commit: Commit,
     reply_sender: ReplySender,
     /// `NodeStopped` reports for the node this change starts, held back until
@@ -337,14 +412,15 @@ impl Coordinator {
 
             let change_id = Uuid::new_v4();
             let events = self.topology.events.clone();
+            let answer: AnswerSlot = Arc::new(std::sync::Mutex::new(Answer::Waiting(pending)));
+            let waiter_answer = answer.clone();
             let waiter = tokio::spawn(async move {
-                let result = pending.wait().await;
+                wait_for_answer(waiter_answer).await;
                 // The loop is gone when this fails (coordinator shutting down).
                 let _ = events
                     .send(Event::TopologyReply {
                         dataflow_id,
                         change_id,
-                        result,
                     })
                     .await;
             })
@@ -355,6 +431,7 @@ impl Coordinator {
                     daemon_id,
                     connection_id,
                     waiter,
+                    answer,
                     commit,
                     reply_sender,
                     parked_stops: Vec::new(),
@@ -543,7 +620,6 @@ impl Coordinator {
         &mut self,
         dataflow_id: DataflowId,
         change_id: Uuid,
-        result: eyre::Result<Vec<u8>>,
     ) -> eyre::Result<()> {
         let in_flight = self
             .topology
@@ -554,6 +630,58 @@ impl Coordinator {
             tracing::debug!(%dataflow_id, %change_id, "ignoring reply to a topology change that is no longer in flight");
             return Ok(());
         };
+        // The waiter reports only after leaving the answer in the slot.
+        let result = take_answer(&in_flight.answer)
+            .unwrap_or_else(|| Err(eyre!("the waiter reported without an answer")));
+        self.finish_topology_change(dataflow_id, in_flight, result)
+            .await
+    }
+
+    /// Commit the in-flight changes on `daemons` whose answer has already
+    /// arrived, while their dataflow is still in `running_dataflows`.
+    ///
+    /// Called when those daemons disconnect, before the disconnect is applied
+    /// to the dataflows: it can remove a dataflow whose last daemon left
+    /// (orphan reclaim), and the change's `TopologyReply`, which may be handled
+    /// after the disconnect, would then find no state to record a change the
+    /// daemon had confirmed. The reclaim persists the dataflow's record, so the
+    /// change must be in it by then (#4161).
+    pub(crate) async fn commit_answered_topology_changes(&mut self, daemons: &BTreeSet<DaemonId>) {
+        let mut answered = Vec::new();
+        for (dataflow_id, lane) in &mut self.topology.lanes {
+            let Some(in_flight) = lane.in_flight.as_ref() else {
+                continue;
+            };
+            if !daemons.contains(&in_flight.daemon_id) {
+                continue;
+            }
+            let Some(result) = take_answer(&in_flight.answer) else {
+                continue;
+            };
+            if let Some(in_flight) = lane.in_flight.take() {
+                in_flight.waiter.abort();
+                answered.push((*dataflow_id, in_flight, result));
+            }
+        }
+        for (dataflow_id, in_flight, result) in answered {
+            // Logged, not returned: the caller must still apply the disconnect.
+            if let Err(err) = self
+                .finish_topology_change(dataflow_id, in_flight, result)
+                .await
+            {
+                tracing::warn!(%dataflow_id, "failed to finish a topology change: {err:#}");
+            }
+        }
+    }
+
+    /// Finish a change taken out of its lane with the daemon's answer: commit
+    /// it, answer the CLI, replay held node exits and start the next change.
+    async fn finish_topology_change(
+        &mut self,
+        dataflow_id: DataflowId,
+        in_flight: InFlight,
+        result: eyre::Result<Vec<u8>>,
+    ) -> eyre::Result<()> {
         let InFlight {
             commit,
             reply_sender,

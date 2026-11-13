@@ -3271,13 +3271,12 @@ async fn settle_topology_change(
     let Some(Event::TopologyReply {
         dataflow_id,
         change_id,
-        result,
     }) = events.recv().await
     else {
         panic!("expected a topology reply");
     };
     coordinator
-        .handle_topology_reply(dataflow_id, change_id, result)
+        .handle_topology_reply(dataflow_id, change_id)
         .await
         .unwrap();
 }
@@ -9160,9 +9159,9 @@ async fn add_consumer(
     loop {
         tokio::select! {
             reply = &mut reply_rx => return reply.unwrap(),
-            Some(Event::TopologyReply { dataflow_id, change_id, result }) = topology_rx.recv() => {
+            Some(Event::TopologyReply { dataflow_id, change_id }) = topology_rx.recv() => {
                 coordinator
-                    .handle_topology_reply(dataflow_id, change_id, result)
+                    .handle_topology_reply(dataflow_id, change_id)
                     .await
                     .unwrap();
             }
@@ -9428,9 +9427,8 @@ mod lifecycle_stall {
                 Event::TopologyReply {
                     dataflow_id,
                     change_id,
-                    result,
                 } => c
-                    .handle_topology_reply(dataflow_id, change_id, result)
+                    .handle_topology_reply(dataflow_id, change_id)
                     .await
                     .unwrap(),
                 Event::DaemonNodeStopped {
@@ -10055,32 +10053,141 @@ mod lifecycle_stall {
         let Some(Event::TopologyReply {
             dataflow_id: id,
             change_id,
-            result,
         }) = topology_rx.recv().await
         else {
             panic!("expected the daemon's reply");
         };
-        // ... but the loop handles the daemon's exit first.
+        // ... but the loop handles the daemon's exit first. The exit commits
+        // the answered change before it tears the dataflow down (#4161).
+        coordinator
+            .handle_daemon_exit(a_id, a_connection_id)
+            .await
+            .unwrap();
+        coordinator.fail_topology_changes_of_gone_daemons().await;
+        assert!(coordinator.topology.is_idle());
+        let reply = reply_rx.await.unwrap();
+        assert!(
+            matches!(reply, Ok(ControlRequestReply::NodeRemoved { .. })),
+            "{}",
+            describe(&reply)
+        );
+        // The late `TopologyReply` finds nothing in flight and is ignored.
+        coordinator
+            .handle_topology_reply(id, change_id)
+            .await
+            .unwrap();
+        assert!(coordinator.topology.is_idle());
+    }
+
+    /// The only daemon of a running dataflow confirms a change and then
+    /// disconnects, and the loop handles the disconnect before the change's
+    /// `TopologyReply`. The disconnect parks the dataflow as `Recovering` (to
+    /// be rebuilt from its record when the daemon reconnects), so the record
+    /// must already contain the change the daemon confirmed (#4161).
+    async fn confirmed_change_is_in_the_recovering_record(
+        case: &str,
+    ) -> dora_coordinator_store::DataflowRecord {
+        let Fixture {
+            mut coordinator,
+            dataflow_id,
+            a_id,
+            a_connection_id,
+            mut topology_rx,
+            ..
+        } = fixture(ReplyPolicy::After(Duration::from_millis(10)));
+        // A dataflow that spawned successfully is reclaimed, not failed, when
+        // its last daemon leaves.
+        coordinator
+            .running_dataflows
+            .get_mut(&dataflow_id)
+            .unwrap()
+            .spawn_result
+            .set_result(Ok(ControlRequestReply::DataflowSpawned {
+                uuid: dataflow_id,
+            }));
+        let (reply_tx, reply_rx) = oneshot::channel();
+        coordinator
+            .handle_control_event(ControlEvent::IncomingRequest {
+                request: Box::new(request(case, dataflow_id)),
+                reply_sender: reply_tx,
+            })
+            .await
+            .unwrap();
+        // The daemon applies the change and answers; its exit is then handled
+        // before the `TopologyReply` the answer produced.
+        tokio::time::sleep(Duration::from_millis(50)).await;
         coordinator
             .handle_daemon_exit(a_id, a_connection_id)
             .await
             .unwrap();
         coordinator.fail_topology_changes_of_gone_daemons().await;
         assert!(
-            !coordinator.topology.is_idle(),
-            "the change must wait for its reply, not be failed"
+            !coordinator.running_dataflows.contains_key(&dataflow_id),
+            "the dataflow lost its only daemon and is reclaimed"
         );
+        // Then the `TopologyReply`, which finds nothing left to do.
+        let Some(Event::TopologyReply {
+            dataflow_id: id,
+            change_id,
+        }) = topology_rx.recv().await
+        else {
+            panic!("expected the waiter's report");
+        };
         coordinator
-            .handle_topology_reply(id, change_id, result)
+            .handle_topology_reply(id, change_id)
             .await
             .unwrap();
-        // The fixture's only daemon left, so the dataflow itself is gone and
-        // the commit has nothing to record into (#4047). What matters is that
-        // the daemon's confirmation was acted on, not reported as unknown.
-        let err = reply_rx.await.unwrap().unwrap_err().to_string();
-        assert!(err.contains("the daemon confirmed RemoveNode"), "{err}");
-        assert!(!err.contains("is unknown"), "{err}");
         assert!(coordinator.topology.is_idle());
+        let reply = reply_rx.await.unwrap();
+        assert!(reply.is_ok(), "{case}: {}", describe(&reply));
+
+        let record = coordinator
+            .store
+            .get_dataflow(&dataflow_id)
+            .unwrap()
+            .expect("the reclaimed dataflow is persisted");
+        assert!(
+            matches!(record.status, StoreDataflowStatus::Recovering),
+            "{:?}",
+            record.status
+        );
+        record
+    }
+
+    fn record_descriptor(record: &dora_coordinator_store::DataflowRecord) -> Descriptor {
+        serde_json::from_str(&record.descriptor_json).unwrap()
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn add_node_confirmed_before_a_disconnect_is_persisted() {
+        let record = confirmed_change_is_in_the_recovering_record("AddNode").await;
+        let added: dora_core::config::NodeId = "added".to_string().into();
+        assert!(
+            record_descriptor(&record)
+                .nodes
+                .iter()
+                .any(|n| n.id == added)
+        );
+        assert!(record.node_to_daemon.contains_key("added"));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn remove_node_confirmed_before_a_disconnect_is_persisted() {
+        let record = confirmed_change_is_in_the_recovering_record("RemoveNode").await;
+        assert!(record_descriptor(&record).nodes.is_empty());
+        assert!(!record.node_to_daemon.contains_key("sender"));
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn replace_node_confirmed_before_a_disconnect_is_persisted() {
+        let record = confirmed_change_is_in_the_recovering_record("ReplaceNode").await;
+        let descriptor = record_descriptor(&record);
+        let sender = descriptor
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "sender")
+            .expect("the replaced node stays in the descriptor");
+        assert_eq!(sender.path.as_deref(), Some("sender-v2"));
     }
 
     /// The owning daemon reported the node's exit (held back for the change)

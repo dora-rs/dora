@@ -216,7 +216,7 @@ Each scenario has the form: **Setup → Fault → Expected recovery → Invarian
 
 **Invariant**: redb's ACID guarantee holds in practice. Any transaction that returned `Ok(())` from `commit()` must be durable.
 
-**Status**: Not implemented. Easy once Option A scaffolding exists.
+**Status**: Implemented at the store level, for a killed process. `sigkill_during_param_writes_keeps_every_acked_write` in `libraries/coordinator-store/tests/sigkill_during_writes.rs` runs a writer process that sets, deletes and overwrites node params, SIGKILLs it at a different point in each of 40 rounds, and reopens the store. The params and tombstones must be exactly what the acknowledged writes produce, optionally plus the one write in flight at the kill. A SIGKILL leaves the OS page cache in place, so this covers atomicity and redb's recovery from an unclean shutdown, not durability against real power loss; the coordinator-level variant (kill `dora coordinator` during `dora param set`) is not implemented.
 
 ## 4. Implementation priority
 
@@ -224,7 +224,7 @@ If a contractor picks this up, work in this order (easiest first, biggest value 
 
 1. **3.3 Coordinator store corruption** — no scaffolding needed, pure file manipulation. Fastest proof of value.
 2. **Option A scaffolding** — the subprocess abstraction. ~100 lines. Unlocks scenarios 3.1, 3.2, 3.4, 3.6, 3.7, 3.8.
-3. **3.8 Power loss during store write** — once scaffolding exists, trivial to add.
+3. **3.8 Power loss during store write** — the store-level test is done (see §3.8); the coordinator-level variant still needs the scaffolding.
 4. **3.7 OOM kill** — similar difficulty.
 5. **3.1 Coordinator crash mid-transaction** — needs timing care.
 6. **3.2 Daemon crash mid-replay** — needs Option B hook for precise timing.
