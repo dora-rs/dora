@@ -111,4 +111,23 @@ mod test {
         // Regression guard for the already-correct basic-type branch.
         assert!(constant_def("uint8[3] NUMS=[1, 2]").is_err());
     }
+    #[test]
+    fn out_of_range_float_constant_becomes_infinity() {
+        // `1e40` overflows f32; codegen used to panic in proc-macro2. rosidl
+        // accepts it as infinity, and the parser stays as lenient (#4162).
+        let tokens = |line: &str| {
+            let c = constant_def(line).unwrap();
+            let tokens = c.r#type.value_tokens(&c.value);
+            quote::quote!(#tokens).to_string()
+        };
+        assert_eq!(tokens("float32 BIG=1e40"), "f32 :: INFINITY");
+        assert_eq!(tokens("float32 SMALL=-1e40"), "f32 :: NEG_INFINITY");
+        assert_eq!(tokens("float64 BIG=1e400"), "f64 :: INFINITY");
+        assert_eq!(
+            tokens("float32[2] XS=[1.5, 1e40]"),
+            "[1.5f32 , f32 :: INFINITY ,]"
+        );
+        // In-range values are unchanged.
+        assert_eq!(tokens("float64 OK=1.5e3"), "1500f64");
+    }
 }
