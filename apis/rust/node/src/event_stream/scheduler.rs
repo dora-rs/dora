@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     sync::LazyLock,
 };
 
@@ -134,11 +134,14 @@ enum Eviction {
 /// `is_correlated` for the metadata keys that mark an event as part of a
 /// pattern, and `is_shutdown` for why `Stop` and `AllInputsClosed` are
 /// eviction-immune.
-fn select_eviction(queue: &VecDeque<EventItem>, incoming: &EventItem) -> Eviction {
+fn select_eviction<'a>(
+    mut queue: impl Iterator<Item = &'a EventItem> + Clone,
+    incoming: &EventItem,
+) -> Eviction {
     // 1. Sacrifice the oldest ordinary event, never a correlation or a
     //    shutdown signal.
     if let Some(idx) = queue
-        .iter()
+        .clone()
         .position(|e| !is_correlated(e) && !is_shutdown(e))
     {
         return Eviction::RemoveAt(idx);
@@ -153,7 +156,7 @@ fn select_eviction(queue: &VecDeque<EventItem>, incoming: &EventItem) -> Evictio
     //    intact. If the queue somehow contains no correlated event (only
     //    shutdown signals, at most one of each), fall back to dropping the
     //    incoming event.
-    match queue.iter().position(|e| !is_shutdown(e)) {
+    match queue.position(|e| !is_shutdown(e)) {
         Some(idx) => Eviction::DropCorrelatedLoud(idx),
         None => Eviction::DropIncoming,
     }
@@ -220,6 +223,168 @@ pub(crate) const NON_INPUT_EVENT_QUEUE_SIZE: usize = 1_000;
 static NON_INPUT_EVENT_ID: LazyLock<DataId> =
     LazyLock::new(|| DataId::from(NON_INPUT_EVENT.to_string()));
 
+/// An event that can be a parameter change, which [`KeyedQueue`] keys by its
+/// parameter name.
+pub(crate) trait ParamKeyed {
+    /// The parameter key of a `ParamUpdate` or `ParamDeleted` event, or `None`
+    /// for every other event.
+    fn param_key(&self) -> Option<&str>;
+}
+
+impl ParamKeyed for EventItem {
+    fn param_key(&self) -> Option<&str> {
+        match self {
+            EventItem::NodeEvent {
+                event: NodeEvent::ParamUpdate { key, .. } | NodeEvent::ParamDeleted { key },
+            } => Some(key),
+            _ => None,
+        }
+    }
+}
+
+/// Pending events in the order of their positions, with parameter changes
+/// kept as state: at most one pending change per parameter key.
+///
+/// Each entry has a position, taken from a counter that only increases. A
+/// parameter change of a key with no pending change gets a new position. A
+/// change of a key with a pending change replaces that change and keeps its
+/// position. Entries leave in the order of their positions.
+///
+/// The other events are in a `VecDeque`, so bound checks, eviction and flush
+/// scans touch only them, never the parameter changes. The parameter changes
+/// are in a `BTreeMap` by position, with a `HashMap` from key to position, so
+/// adding, replacing or removing one costs O(log K) for K pending keys.
+#[derive(Debug)]
+pub(crate) struct KeyedQueue<E> {
+    next_position: u64,
+    /// The events that are not parameter changes, in position order.
+    events: VecDeque<(u64, E)>,
+    /// The pending parameter changes by position.
+    params: BTreeMap<u64, E>,
+    /// The position of the pending change of each key in `params`.
+    param_positions: HashMap<String, u64>,
+}
+
+impl<E> Default for KeyedQueue<E> {
+    fn default() -> Self {
+        Self {
+            next_position: 0,
+            events: VecDeque::new(),
+            params: BTreeMap::new(),
+            param_positions: HashMap::new(),
+        }
+    }
+}
+
+impl<E: ParamKeyed> KeyedQueue<E> {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.events.is_empty() && self.params.is_empty()
+    }
+
+    /// Add `event` at the back. A parameter change of a key with a pending
+    /// change replaces that change in place instead.
+    pub(crate) fn push(&mut self, event: E) {
+        let Some(key) = event.param_key() else {
+            let position = self.take_position();
+            self.events.push_back((position, event));
+            return;
+        };
+        if let Some(&position) = self.param_positions.get(key) {
+            self.params.insert(position, event);
+            return;
+        }
+        let key = key.to_owned();
+        let position = self.take_position();
+        self.param_positions.insert(key, position);
+        self.params.insert(position, event);
+    }
+
+    /// Returns `true` if a change of parameter `key` is pending.
+    pub(crate) fn has_param(&self, key: &str) -> bool {
+        self.param_positions.contains_key(key)
+    }
+
+    /// The events that are not parameter changes, in position order. Indices
+    /// into this sequence are the indices that [`Self::remove_event`] takes.
+    pub(crate) fn events(&self) -> impl ExactSizeIterator<Item = &E> + Clone {
+        self.events.iter().map(|(_, event)| event)
+    }
+
+    /// Remove the event at `index` of [`Self::events`].
+    pub(crate) fn remove_event(&mut self, index: usize) -> Option<E> {
+        self.events.remove(index).map(|(_, event)| event)
+    }
+
+    /// Keep only the events (not parameter changes) for which `keep` returns
+    /// `true`.
+    pub(crate) fn retain_events(&mut self, mut keep: impl FnMut(&E) -> bool) {
+        self.events.retain(|(_, event)| keep(event));
+    }
+
+    /// Remove and return the entry with the smallest position among the
+    /// pending parameter changes and the events for which `ready` returns
+    /// `true`.
+    pub(crate) fn pop_first_ready(&mut self, ready: impl Fn(&E) -> bool) -> Option<E> {
+        let first_event = self
+            .events
+            .iter()
+            .enumerate()
+            .find(|(_, (_, event))| ready(event))
+            .map(|(index, (position, _))| (index, *position));
+        let first_param = self.params.first_key_value().map(|(position, _)| *position);
+        match (first_event, first_param) {
+            (Some((index, event_position)), param_position)
+                if param_position.is_none_or(|param_position| event_position < param_position) =>
+            {
+                self.remove_event(index)
+            }
+            _ => self.pop_first_param(),
+        }
+    }
+
+    fn pop_first_param(&mut self) -> Option<E> {
+        let (_, event) = self.params.pop_first()?;
+        let Some(key) = event.param_key() else {
+            unreachable!("`params` holds only parameter changes");
+        };
+        self.param_positions.remove(key);
+        Some(event)
+    }
+
+    fn take_position(&mut self) -> u64 {
+        let position = self.next_position;
+        self.next_position += 1;
+        position
+    }
+}
+
+#[cfg(test)]
+impl<E> KeyedQueue<E> {
+    /// The number of entries, parameter changes included.
+    pub(crate) fn len(&self) -> usize {
+        self.events.len() + self.params.len()
+    }
+
+    /// All entries, parameter changes included, in position order.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &E> {
+        let mut events = self.events.iter().peekable();
+        let mut params = self.params.iter().peekable();
+        std::iter::from_fn(move || {
+            let event_first = match (events.peek(), params.peek()) {
+                (Some((event_position, _)), Some((param_position, _))) => {
+                    event_position < *param_position
+                }
+                (next_event, _) => next_event.is_some(),
+            };
+            if event_first {
+                events.next().map(|(_, event)| event)
+            } else {
+                params.next().map(|(_, event)| event)
+            }
+        })
+    }
+}
+
 /// This scheduler will make sure that there is fairness between inputs.
 ///
 /// The scheduler reorders events in the following way:
@@ -246,6 +411,28 @@ static NON_INPUT_EVENT_ID: LazyLock<DataId> =
 ///   ([`StopCause::AllInputsClosed`][super::StopCause::AllInputsClosed]): it is only yielded
 ///   once every queued input has been returned, so a node that stops reading at `Stop` does not
 ///   lose the inputs it had not caught up on yet.
+/// - **Pending parameter changes are coalesced per key**
+///
+///   The scheduler keeps pending [`ParamUpdate`][super::Event::ParamUpdate] and
+///   [`ParamDeleted`][super::Event::ParamDeleted] changes as state, with one entry per parameter
+///   key. A newer change of a key replaces the pending value or deletion of that key. Thus the
+///   node gets one event per changed key, with the newest change. The node does not see the
+///   intermediate values that it did not read.
+///
+///   A key's entry takes the position of the first change of that key that arrived while no
+///   change of that key was pending. Later changes of that key do not move the entry. Parameter
+///   entries and the other non-input events are yielded in the order of their positions, ahead
+///   of inputs. For example, for the pending changes `a=1, b=1, a=2`, the node receives `a=2`,
+///   then `b=1`.
+///
+///   Parameter changes are never dropped, and they do not count against the bound of the
+///   non-input queue. Their memory is bounded by the number of distinct keys.
+///
+///   At [`Stop`][super::Event::Stop]: each key that had a pending change when `Stop` arrived is
+///   yielded before `Stop`, with the newest value at the time it is yielded. That value can have
+///   arrived after `Stop`. A change of a key with no pending change when `Stop` arrived gets a
+///   position after `Stop`. After `Stop`, [`EventStream`][super::EventStream] delivers only the
+///   inputs that were already queued, so the node does not receive that change.
 /// - **Input events are grouped by ID** and yielded in a **least-recently used order (by ID)**.
 ///
 ///   The scheduler keeps a separate queue for each input ID, where the incoming input events are
@@ -306,13 +493,14 @@ pub struct Scheduler {
     queue_policies: HashMap<DataId, QueuePolicy>,
     /// Drop counters per input ID
     dropped: HashMap<DataId, u64>,
-    /// Control (non-input) events: `Stop`, `InputClosed`, `Reload`, ...
+    /// Control (non-input) events: `Stop`, `InputClosed`, `Reload`, ..., and
+    /// the pending parameter changes, one per key.
     ///
     /// Kept out of `event_queues` so that a user input whose id happens to be
     /// `NON_INPUT_EVENT` (a valid `DataId`) cannot alias this queue. With the
     /// two shared, that input's `queue_size` bounded control events and its
     /// data events were yielded ahead of every other input (dora-rs/dora#3632).
-    non_input: VecDeque<EventItem>,
+    non_input: KeyedQueue<EventItem>,
 }
 
 impl Scheduler {
@@ -326,7 +514,7 @@ impl Scheduler {
             event_queues,
             queue_policies,
             dropped: HashMap::new(),
-            non_input: VecDeque::new(),
+            non_input: KeyedQueue::default(),
         }
     }
 
@@ -456,7 +644,7 @@ impl Scheduler {
                     );
                 }
             }
-            match select_eviction(queue, &event) {
+            match select_eviction(queue.iter(), &event) {
                 Eviction::RemoveAt(idx) => {
                     queue.remove(idx);
                 }
@@ -475,45 +663,51 @@ impl Scheduler {
         queue.push_back(event);
     }
 
-    /// Append a control event to the dedicated non-input queue.
+    /// Add a control event to the dedicated non-input queue.
     ///
-    /// Bounded by [`NON_INPUT_EVENT_QUEUE_SIZE`] and evicted with the same rules
-    /// as an input queue (`select_eviction`), so a full control queue sacrifices
-    /// its oldest ordinary event rather than ever losing the `Stop` shutdown
-    /// signal (dora-rs/dora#2887).
+    /// A parameter change becomes the pending change of its key (see
+    /// [`KeyedQueue`]); it is never dropped. Other control events are
+    /// appended, bounded by [`NON_INPUT_EVENT_QUEUE_SIZE`] and evicted with the
+    /// same rules as an input queue (`select_eviction`), so a full control
+    /// queue sacrifices its oldest ordinary event rather than ever losing the
+    /// `Stop` shutdown signal (dora-rs/dora#2887).
     fn add_non_input_event(&mut self, event: EventItem) {
-        if self.non_input.len() >= NON_INPUT_EVENT_QUEUE_SIZE {
+        if event.param_key().is_none()
+            && self.non_input.events().len() >= NON_INPUT_EVENT_QUEUE_SIZE
+        {
             let drops = self.record_non_input_drop();
             if should_warn_drop(drops) {
                 tracing::warn!(drops, "Discarding non-input event due to queue size limit");
             }
-            match select_eviction(&self.non_input, &event) {
+            match select_eviction(self.non_input.events(), &event) {
                 Eviction::RemoveAt(idx) => {
-                    self.non_input.remove(idx);
+                    self.non_input.remove_event(idx);
                 }
                 Eviction::DropIncoming => return,
                 Eviction::DropCorrelatedLoud(idx) => {
-                    if let Some(dropped) = self.non_input.remove(idx) {
+                    if let Some(dropped) = self.non_input.remove_event(idx) {
                         log_correlation_drop(&NON_INPUT_EVENT_ID, &dropped);
                     }
                 }
             }
         }
-        self.non_input.push_back(event);
+        self.non_input.push(event);
     }
 
     pub(crate) fn next(&mut self) -> Option<EventItem> {
-        // Control events have priority over inputs, except `AllInputsClosed`:
-        // it waits until every queued input is delivered. Nodes see it as
-        // `Stop` and commonly break on it, which would otherwise discard the
-        // inputs the node had not caught up on yet. It is never the only thing
-        // left, so holding it back cannot stall the stream.
-        if let Some(index) = self
+        // Control events and parameter changes have priority over inputs and
+        // are yielded in the order of their positions, except
+        // `AllInputsClosed`: it waits until every queued input is delivered.
+        // Nodes see it as `Stop` and commonly break on it, which would
+        // otherwise discard the inputs the node had not caught up on yet. It is
+        // never the only thing left, so holding it back cannot stall the
+        // stream.
+        let event_queues = &self.event_queues;
+        if let Some(event) = self
             .non_input
-            .iter()
-            .position(|event| !is_all_inputs_closed(event) || !self.inputs_queued())
+            .pop_first_ready(|event| !is_all_inputs_closed(event) || !inputs_queued(event_queues))
         {
-            return self.non_input.remove(index);
+            return Some(event);
         }
 
         // Yield from the first non-empty input queue in least-recently-used
@@ -536,14 +730,14 @@ impl Scheduler {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.non_input.is_empty() && !self.inputs_queued()
+        self.non_input.is_empty() && !inputs_queued(&self.event_queues)
     }
+}
 
-    fn inputs_queued(&self) -> bool {
-        self.event_queues
-            .values()
-            .any(|(_size, queue)| !queue.is_empty())
-    }
+fn inputs_queued(event_queues: &HashMap<DataId, (usize, VecDeque<EventItem>)>) -> bool {
+    event_queues
+        .values()
+        .any(|(_size, queue)| !queue.is_empty())
 }
 
 #[cfg(test)]

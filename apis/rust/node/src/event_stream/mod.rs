@@ -21,7 +21,7 @@ use futures::{
     future::{Either, select},
 };
 use futures_timer::Delay;
-use scheduler::{NON_INPUT_EVENT_QUEUE_SIZE, Scheduler};
+use scheduler::{KeyedQueue, NON_INPUT_EVENT_QUEUE_SIZE, ParamKeyed, Scheduler};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
@@ -245,7 +245,11 @@ pub struct EventStream {
     /// retention cannot grow without limit for a node that never reads its
     /// events, and per-input queue policy means the same thing whether or not a
     /// correlated receive touched the event (dora-rs/dora#3197).
-    pending_passthrough: std::collections::VecDeque<Event>,
+    ///
+    /// Parameter changes are not bounded but keyed: the buffer holds at most
+    /// one change per key, and a key is never pending here and in the
+    /// scheduler at the same time (see `add_event`).
+    pending_passthrough: KeyedQueue<Event>,
     /// Nodes this stream has been told failed for good (`NodeFailed`, which the
     /// daemon sends only for a node it will not restart), with their error, and
     /// not restarted since (`NodeRestarted` removes the entry). Recorded as
@@ -905,7 +909,7 @@ impl EventStream {
             use_scheduler,
             scheduler_maybe_nonempty: false,
             input_type_checks,
-            pending_passthrough: std::collections::VecDeque::new(),
+            pending_passthrough: KeyedQueue::default(),
             failed_servers: BTreeMap::new(),
             stop_received: false,
             testing_shutdown,
@@ -924,6 +928,11 @@ impl EventStream {
     /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// Pending parameter changes are coalesced per key: this method returns one
+    /// [`Event::ParamUpdate`] or [`Event::ParamDeleted`] per changed key, with the newest change.
+    /// Each key that had a pending change when [`Event::Stop`] arrived is returned before `Stop`.
+    /// See the [`EventScheduler`] documentation for the order of these events.
     ///
     /// If you want to receive the events in their original chronological order, use the
     /// asynchronous [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
@@ -974,6 +983,11 @@ impl EventStream {
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
     ///
+    /// Pending parameter changes are coalesced per key: this method returns one
+    /// [`Event::ParamUpdate`] or [`Event::ParamDeleted`] per changed key, with the newest change.
+    /// Each key that had a pending change when [`Event::Stop`] arrived is returned before `Stop`.
+    /// See the [`EventScheduler`] documentation for the order of these events.
+    ///
     /// If you want to receive the events in their original chronological order, use the
     /// asynchronous [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
@@ -990,6 +1004,11 @@ impl EventStream {
     /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// Pending parameter changes are coalesced per key: this method returns one
+    /// [`Event::ParamUpdate`] or [`Event::ParamDeleted`] per changed key, with the newest change.
+    /// Each key that had a pending change when [`Event::Stop`] arrived is returned before `Stop`.
+    /// See the [`EventScheduler`] documentation for the order of these events.
     ///
     /// If you want to receive the events in their original chronological order, use the
     /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
@@ -1015,7 +1034,7 @@ impl EventStream {
         if !self.pending_passthrough.is_empty() {
             self.absorb_ready_events();
         }
-        self.pending_passthrough.pop_front()
+        self.pending_passthrough.pop_first_ready(|_| true)
     }
 
     /// Move the events already waiting in `receiver` into the scheduler without
@@ -1221,6 +1240,9 @@ impl EventStream {
     /// per-input eviction and the shared zenoh ingress channel — so a caller
     /// does not have to know which transport a payload took to learn it was
     /// lost (#3282).
+    ///
+    /// Parameter changes are never dropped: pending changes of one key are coalesced into one
+    /// event (see [`EventScheduler`]), and this is not counted as a drop.
     pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64> {
         let mut counts = self.scheduler.drain_drop_counts();
         for (id, dropped) in &self.ingress_drops {
@@ -1239,6 +1261,18 @@ impl EventStream {
         self.record_or_poison(&event);
         if let Some(id) = scheduler::flush_target(&event) {
             self.flush_passthrough(id);
+        }
+        // A key has at most one pending change, in the scheduler or in
+        // `pending_passthrough`. When the passthrough buffer holds the key,
+        // the newer change replaces it there and keeps its position, as in
+        // the scheduler (see `EventScheduler`).
+        if event
+            .param_key()
+            .is_some_and(|key| self.pending_passthrough.has_param(key))
+        {
+            self.pending_passthrough
+                .push(Self::convert_event_item(event));
+            return;
         }
         self.scheduler.add_event(event);
         self.scheduler_maybe_nonempty = true;
@@ -1362,6 +1396,11 @@ impl EventStream {
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
     ///
+    /// Pending parameter changes are coalesced per key: this method returns one
+    /// [`Event::ParamUpdate`] or [`Event::ParamDeleted`] per changed key, with the newest change.
+    /// Each key that had a pending change when [`Event::Stop`] arrived is returned before `Stop`.
+    /// See the [`EventScheduler`] documentation for the order of these events.
+    ///
     /// If you want to receive the events in their original chronological order, use the
     /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
@@ -1381,7 +1420,7 @@ impl EventStream {
     /// This method never blocks and is safe to use in asynchronous contexts.
     ///
     /// This method is equivalent to repeatedly calling [`try_recv`][Self::try_recv]. See its docs
-    /// for details on event reordering.
+    /// for details on event reordering and on parameter changes.
     pub fn drain(&mut self) -> Option<Vec<Event>> {
         let mut events = Vec::new();
         loop {
@@ -1412,6 +1451,11 @@ impl EventStream {
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
     ///
+    /// Pending parameter changes are coalesced per key: this method returns one
+    /// [`Event::ParamUpdate`] or [`Event::ParamDeleted`] per changed key, with the newest change.
+    /// Each key that had a pending change when [`Event::Stop`] arrived is returned before `Stop`.
+    /// See the [`EventScheduler`] documentation for the order of these events.
+    ///
     /// If you want to receive the events in their original chronological order, use the
     /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
@@ -1430,6 +1474,9 @@ impl EventStream {
     /// [`Event::Input`] as soon as it arrives. Non-matching events are
     /// buffered and replayed on the next call to `recv()` / `recv_async()`,
     /// so your main event loop does not lose intermediate events.
+    /// Buffered parameter changes stay coalesced per key, as described in the
+    /// [`EventScheduler`] documentation: a newer change of a buffered key
+    /// replaces the buffered change, and the buffer never drops them.
     ///
     /// Terminal conditions return a [`PatternError`]:
     ///
@@ -1568,7 +1615,16 @@ impl EventStream {
     /// a bound here (see [`enforce_passthrough_bound`](Self::enforce_passthrough_bound))
     /// so the retention stays bounded and per-input policy means the same thing
     /// whether or not a correlated receive touched the event.
+    ///
+    /// Parameter changes are keyed instead, as in the scheduler: a change of a
+    /// key that is already buffered replaces the buffered change in place, so
+    /// the buffer holds at most one change per key. They are never dropped and
+    /// do not count against the control-event bound.
     fn buffer_passthrough(&mut self, event: Event) {
+        if event.param_key().is_some() {
+            self.pending_passthrough.push(event);
+            return;
+        }
         let (bucket, cap) = match &event {
             Event::Input { id, .. } => {
                 let id = id.clone();
@@ -1576,11 +1632,11 @@ impl EventStream {
                 (PassthroughBucket::Input(id), cap)
             }
             // Control events (`Reload`, a non-expected-server `NodeRestarted`,
-            // `ParamUpdate`, …) share one cap, mirroring the scheduler's single
+            // …) share one cap, mirroring the scheduler's single
             // `NON_INPUT_EVENT` queue. `Stop` is exempt from eviction below.
             _ => (PassthroughBucket::NonInput, NON_INPUT_EVENT_QUEUE_SIZE),
         };
-        self.pending_passthrough.push_back(event);
+        self.pending_passthrough.push(event);
         self.enforce_passthrough_bound(&bucket, cap);
     }
 
@@ -1595,14 +1651,14 @@ impl EventStream {
     fn flush_passthrough(&mut self, id: &DataId) {
         use dora_message::metadata::carries_pattern_correlation;
 
-        let before = self.pending_passthrough.len();
-        self.pending_passthrough.retain(|event| match event {
+        let before = self.pending_passthrough.events().len();
+        self.pending_passthrough.retain_events(|event| match event {
             Event::Input {
                 id: eid, metadata, ..
             } => eid != id || carries_pattern_correlation(&metadata.parameters),
             _ => true,
         });
-        let drained = before - self.pending_passthrough.len();
+        let drained = before - self.pending_passthrough.events().len();
         if drained > 0 {
             tracing::debug!(
                 "Flushed {drained} buffered passthrough event(s) for input `{id}` (flush signal)"
@@ -1629,6 +1685,7 @@ impl EventStream {
             (PassthroughBucket::Input(_), _) => false,
             // Non-input bucket: every non-input event counts (no correlation
             // concept applies); `Stop` is handled as eviction-immune below.
+            // Parameter changes are not in `events()`, so they never count.
             (PassthroughBucket::NonInput, event) => !matches!(event, Event::Input { .. }),
         };
         let correlated = |event: &Event| {
@@ -1641,7 +1698,7 @@ impl EventStream {
 
         if self
             .pending_passthrough
-            .iter()
+            .events()
             .filter(|e| in_bucket(e))
             .count()
             <= cap
@@ -1655,11 +1712,11 @@ impl EventStream {
         // (`DropCorrelatedLoud`).
         let evict_at = self
             .pending_passthrough
-            .iter()
+            .events()
             .position(|e| droppable(e) && !correlated(e))
-            .or_else(|| self.pending_passthrough.iter().position(droppable));
-        let Some(evict_at) = evict_at else {
-            // Only a `Stop` in the bucket (at most one) — nothing to drop.
+            .or_else(|| self.pending_passthrough.events().position(droppable));
+        // `None`: only a `Stop` in the bucket (at most one) — nothing to drop.
+        let Some(evicted) = evict_at.and_then(|i| self.pending_passthrough.remove_event(i)) else {
             return;
         };
 
@@ -1667,16 +1724,15 @@ impl EventStream {
             PassthroughBucket::Input(id) => self.scheduler.record_drop(id),
             PassthroughBucket::NonInput => self.scheduler.record_non_input_drop(),
         };
-        // Log before removing; the immutable borrow ends with the `match`.
         // Ordinary drops log on the scheduler's power-of-two cadence.
-        match self.pending_passthrough.get(evict_at) {
-            Some(Event::Input { id, metadata, .. })
+        match &evicted {
+            Event::Input { id, metadata, .. }
                 if carries_pattern_correlation(&metadata.parameters) =>
             {
                 scheduler::log_correlation_drop_params(id, &metadata.parameters);
             }
             _ if !should_warn_drop(drops) => {}
-            Some(Event::Input { id, .. }) => {
+            Event::Input { id, .. } => {
                 tracing::warn!(
                     input = %id,
                     drops,
@@ -1690,7 +1746,6 @@ impl EventStream {
                 );
             }
         }
-        self.pending_passthrough.remove(evict_at);
     }
 
     /// Core loop for the pattern-aware helpers. Waits up to `timeout`
@@ -1722,11 +1777,12 @@ impl EventStream {
         // `recv_from_stream`, and a buffered `NodeRestarted` was reported to
         // the caller when it was first seen, so it is left for the caller's
         // own event loop rather than re-surfaced here.
-        if let Some(pos) = self
+        let buffered_match = self
             .pending_passthrough
-            .iter()
-            .position(|event| is_match(event, needle))
-            && let Some(event) = self.pending_passthrough.remove(pos)
+            .events()
+            .position(|event| is_match(event, needle));
+        if let Some(event) =
+            buffered_match.and_then(|pos| self.pending_passthrough.remove_event(pos))
         {
             return Ok(event);
         }
@@ -1933,10 +1989,19 @@ fn server_failed_message(server: &NodeId, error: &str) -> String {
 enum PassthroughBucket {
     /// An `Event::Input`, bounded by its input's effective `queue_size`.
     Input(DataId),
-    /// Any non-input control event, bounded — like the scheduler's single
-    /// `NON_INPUT_EVENT` queue — by
+    /// Any non-input control event other than a parameter change, bounded —
+    /// like the scheduler's single `NON_INPUT_EVENT` queue — by
     /// [`NON_INPUT_EVENT_QUEUE_SIZE`](scheduler::NON_INPUT_EVENT_QUEUE_SIZE).
     NonInput,
+}
+
+impl ParamKeyed for Event {
+    fn param_key(&self) -> Option<&str> {
+        match self {
+            Event::ParamUpdate { key, .. } | Event::ParamDeleted { key } => Some(key),
+            _ => None,
+        }
+    }
 }
 
 impl EventStream {
@@ -2502,7 +2567,7 @@ impl EventStream {
     /// verify that `is_empty`, `recv_async`, and `Stream::poll_next` all
     /// drain it correctly (dora-rs/adora#172).
     fn push_passthrough_for_testing(&mut self, event: Event) {
-        self.pending_passthrough.push_back(event);
+        self.pending_passthrough.push(event);
     }
 
     /// Test-only: buffer an empty input directly in the scheduler and force
@@ -2552,6 +2617,9 @@ impl EventStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod param_state;
+    mod param_state_cost;
 
     fn input_with_queue_size(queue_size: usize) -> Input {
         serde_yaml::from_str(&format!("source: a/out\nqueue_size: {queue_size}\n"))

@@ -169,6 +169,44 @@ mod test {
         Ok(())
     }
     #[test]
+    fn empty_sequence_default_is_accepted() -> Result<()> {
+        // `[]` is a valid default for `T[]` and `T[<=N]` (#4163).
+        for line in [
+            "int32[] x []",
+            "string[] y []",
+            "int32[<=3] z []",
+            "string<=4[<=2] w [ ]",
+        ] {
+            let result = member_def(line)?;
+            assert_eq!(result.default, Some(Vec::new()), "{line}");
+            // Codegen turns it into an empty `vec![]` without panicking.
+            let tokens = result.r#type.value_tokens(&[]);
+            assert_eq!(quote::quote!(#tokens).to_string(), "vec ! []", "{line}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn empty_default_is_rejected_for_fixed_size_arrays() {
+        assert!(member_def("int32[3] x []").is_err());
+        assert!(member_def("string[3] y []").is_err());
+    }
+
+    #[test]
+    fn out_of_range_float_default_becomes_infinity() {
+        // #4162: no panic in codegen, and the `.msg` still parses (the Python
+        // bridge parses every package at runtime and must not fail on it).
+        let m = member_def("float64 x -1e400").unwrap();
+        let tokens = m.r#type.value_tokens(m.default.as_ref().unwrap());
+        assert_eq!(quote::quote!(#tokens).to_string(), "f64 :: NEG_INFINITY");
+        let m = member_def("float32[] xs [0.0, 1e39]").unwrap();
+        let tokens = m.r#type.value_tokens(m.default.as_ref().unwrap());
+        assert_eq!(
+            quote::quote!(#tokens).to_string(),
+            "vec ! [0f32 , f32 :: INFINITY ,]"
+        );
+    }
+    #[test]
     fn quoted_string_default_keeps_surrounding_whitespace() -> Result<()> {
         // Quoting is the only way to keep leading/trailing whitespace in a
         // `.msg` value, so it must round-trip exactly (#4164).
@@ -192,20 +230,5 @@ mod test {
         let result = member_def(r#"string<=4 x " ab ""#)?;
         assert_eq!(result.default, Some(vec![" ab ".into()]));
         Ok(())
-    }
-
-    #[test]
-    fn out_of_range_float_default_becomes_infinity() {
-        // #4162: no panic in codegen, and the `.msg` still parses (the Python
-        // bridge parses every package at runtime and must not fail on it).
-        let m = member_def("float64 x -1e400").unwrap();
-        let tokens = m.r#type.value_tokens(m.default.as_ref().unwrap());
-        assert_eq!(quote::quote!(#tokens).to_string(), "f64 :: NEG_INFINITY");
-        let m = member_def("float32[] xs [0.0, 1e39]").unwrap();
-        let tokens = m.r#type.value_tokens(m.default.as_ref().unwrap());
-        assert_eq!(
-            quote::quote!(#tokens).to_string(),
-            "vec ! [0f32 , f32 :: INFINITY ,]"
-        );
     }
 }
