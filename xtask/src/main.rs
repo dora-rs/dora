@@ -317,10 +317,13 @@ fn stage_cxx_crate(crate_name: &str, target_dir: &Path, prefix: &Path) -> anyhow
     copy_dir_contents(&include_src, &include_dir)
         .with_context(|| format!("Failed to copy headers for {crate_name}"))?;
 
-    if src_src.exists() {
-        copy_dir_contents(&src_src, &src_dir)
-            .with_context(|| format!("Failed to copy cxxbridge source for {crate_name}"))?;
-    }
+    // Only the bridge source the cmake config references
+    // (`@CXX_BRIDGE_FILES@`). The directory also holds cxx-build's own
+    // `lib.rs.*` symlinks into OUT_DIR, which don't resolve on Windows with
+    // cargo 1.100.
+    let bridge_source = format!("{}.cc", crate_name.trim_end_matches("-cxx"));
+    fs::copy(src_src.join(&bridge_source), src_dir.join(&bridge_source))
+        .with_context(|| format!("Failed to copy {bridge_source} for {crate_name}"))?;
 
     copy_library(crate_name, target_dir, prefix)?;
 
