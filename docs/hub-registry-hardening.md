@@ -8,10 +8,14 @@ guide, and PR description stay aligned.
 
 - **Registry resolution is opt-in.** Without `DORA_HUB_REGISTRY_URL`, unbound
   namespaces keep using the configured/default git index. Setting the variable
-  (for example to `https://dora.pub`) opts into registry resolution. Changing
-  the project-wide default is a separate maintainer decision.
+  (for example to `https://dora.pub`) opts into registry resolution. The build
+  resolver and the discovery commands use the same predicate. Changing the
+  project-wide default is a separate maintainer decision.
 - **Registry publishing is opt-in.** `dora hub publish` keeps the legacy
   index-entry path unless `--registry` or `DORA_HUB_REGISTRY_URL` is used.
+  A namespace explicitly bound in `hub.toml`, or an explicit `official` index,
+  keeps the git/path path even when the env var is set; `--registry` is the
+  deliberate per-invocation override.
 - **Hub checkout caches are project-keyed.** Hub sources live under
   `<cache>/sources/<project-key>/...`, outside the dataflow directory to avoid
   Cargo workspace inference. Plain `git:` nodes keep their historical
@@ -42,8 +46,9 @@ guide, and PR description stay aligned.
   expanded size.
 - Registry cache refreshes are serialized per package and installed through a
   staging directory, so readers see a complete old or new view.
-- `source_available` verifies the pinned commit, not just `HEAD`, and warm
-  project-keyed checkouts skip the network probe.
+- `source_available` verifies the pinned commit with a temporary shallow fetch,
+  not `ls-remote` ref tips; quiet/null stdio avoids the pipe-buffer deadlock,
+  and warm project-keyed checkouts skip the network probe entirely.
 - Artifact entries without a `platforms` list are rejected instead of matching
   every host.
 

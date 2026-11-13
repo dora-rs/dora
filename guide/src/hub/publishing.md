@@ -57,7 +57,7 @@ Useful flags:
 | `--repo <url>` | the `origin` remote | the source repo URL recorded in the entry |
 | `--version <semver>` | the native manifest's version at the commit | override the published version |
 | `--index <alias>` | the index bound to your namespace | target a specific `hub.toml` index (legacy) |
-| `--registry <url>` | `DORA_HUB_REGISTRY_URL` | upload to a specific registry |
+| `--registry <url>` | — (explicit override) | upload to a specific registry; an env-only opt-in does not override a `hub.toml` binding |
 | `--token <token>` | saved token (or `DORA_HUB_TOKEN` for the official registry) | registry API token |
 | `--description`, `--license`, `--repository` | manifest / empty | registry metadata |
 | `--dry-run` | — | validate + preview, don't upload |
