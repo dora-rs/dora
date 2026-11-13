@@ -33,8 +33,10 @@ pub struct Yank {
     /// Restore a previously yanked version instead of yanking it.
     #[clap(long, action)]
     undo: bool,
-    /// Registry URL. Defaults to DORA_HUB_REGISTRY_URL or https://dora.pub.
-    #[clap(long, env = "DORA_HUB_REGISTRY_URL", value_name = "URL")]
+    /// Registry URL. Setting this forces the registry path. Without it,
+    /// `DORA_HUB_REGISTRY_URL` opts an *unbound* namespace into the registry;
+    /// an explicit `hub.toml` binding still wins.
+    #[clap(long, value_name = "URL")]
     registry: Option<String>,
     /// Registry API token (default: the saved token; `DORA_HUB_TOKEN` is
     /// honored for the official registry only).
@@ -70,7 +72,9 @@ impl Executable for Yank {
         let config = ResolvedConfig::load_default().context("failed to load hub configuration")?;
         let action = if self.undo { "restore" } else { "yank" };
         let via_registry = self.registry.is_some()
-            || (!config.is_bound(namespace) && std::env::var_os(REGISTRY_URL_ENV).is_some());
+            || (!config.is_bound(namespace)
+                && !config.official_explicit()
+                && std::env::var_os(REGISTRY_URL_ENV).is_some());
         if via_registry {
             if self.reason.is_some() {
                 eprintln!(

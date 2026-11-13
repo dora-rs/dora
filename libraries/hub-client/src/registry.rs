@@ -1095,43 +1095,55 @@ pub fn source_available(repo: &str, commit: &str) -> bool {
         let path = repo.strip_prefix("file://").unwrap_or(repo);
         let mut command = git_command(Some(Path::new(path)));
         command.args(["cat-file", "-e", &format!("{commit}^{{commit}}")]);
-        return git_output_with_timeout(command, Duration::from_secs(5))
-            .is_some_and(|output| output.status.success());
+        return git_status_with_timeout(command, Duration::from_secs(5));
     }
-    let mut command = git_command(None);
-    // HEAD alone is not enough: a publisher can delete or force-push the
-    // pinned commit while HEAD remains reachable. Enumerate refs and require
-    // the exact object id; a non-ref pinned commit falls back conservatively.
-    command.args(["ls-remote", "--quiet", "--", repo]);
-    // A registry-supplied source URL must not be able to hang the build. The
-    // child is killed on timeout; `spawn_blocking` cannot cancel a stuck
-    // `Command::output()` otherwise.
-    git_output_with_timeout(command, Duration::from_secs(15)).is_some_and(|output| {
-        output.status.success()
-            && String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .any(|line| line.split_whitespace().next() == Some(commit))
-    })
+
+    // `git ls-remote` only advertises ref tips, and piping its 200 KB+ output
+    // while polling `try_wait()` deadlocks once the pipe buffer fills. Probe
+    // the pinned object itself in a scratch repository instead: `--depth 1`
+    // fetches the commit without touching the caller's clone cache, and
+    // quiet/null stdio keeps large output out of the timeout path.
+    let Ok(temp) = tempfile::TempDir::new() else {
+        return false;
+    };
+    let mut init = git_command(Some(temp.path()));
+    init.args(["init", "--quiet"]);
+    if !git_status_with_timeout(init, Duration::from_secs(5)) {
+        return false;
+    }
+    let mut fetch = git_command(Some(temp.path()));
+    fetch.args([
+        "fetch",
+        "--depth",
+        "1",
+        "--no-tags",
+        "--quiet",
+        "--",
+        repo,
+        commit,
+    ]);
+    git_status_with_timeout(fetch, Duration::from_secs(20))
 }
 
-fn git_output_with_timeout(
-    mut command: std::process::Command,
-    timeout: Duration,
-) -> Option<std::process::Output> {
-    command.stdout(std::process::Stdio::piped());
+fn git_status_with_timeout(mut command: std::process::Command, timeout: Duration) -> bool {
+    // No pipes: the source probe only needs the exit status, and a pipe would
+    // deadlock if the child wrote more than the OS buffer before exiting.
+    command.stdout(std::process::Stdio::null());
     command.stderr(std::process::Stdio::null());
-    let mut child = command.spawn().ok()?;
+    let Ok(mut child) = command.spawn() else {
+        return false;
+    };
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(Some(status)) => return status.success(),
             Ok(None) => {}
-            Err(_) => return None,
+            Err(_) => return false,
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return None;
+            return false;
         }
         std::thread::sleep(Duration::from_millis(25));
     }

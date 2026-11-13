@@ -103,13 +103,15 @@ impl HubContext {
         // The HTTP registry is opt-in. Without an explicit env override,
         // unbound namespaces keep resolving through the configured/default
         // git index until maintainers decide to flip the default.
-        !self.config.is_bound(namespace) && std::env::var_os(REGISTRY_URL_ENV).is_some()
+        !self.config.is_bound(namespace)
+            && !self.config.official_explicit()
+            && std::env::var_os(REGISTRY_URL_ENV).is_some()
     }
 
     /// Search should use the registry unless the user explicitly configured
     /// local/git catalogs (those are still the source for hermetic setups).
     pub fn registry_search_enabled(&self) -> bool {
-        std::env::var_os(REGISTRY_URL_ENV).is_some()
+        std::env::var_os(REGISTRY_URL_ENV).is_some() && !self.config.official_explicit()
     }
 
     /// Materialize `namespace/name` from the registry and open its catalog.

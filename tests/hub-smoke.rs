@@ -1179,9 +1179,8 @@ fn hub_yank_rejects_symlink_escape() {
 #[test]
 fn hub_yank_git_index_prints_pr_instructions() {
     let fixture = build_fixture();
-    // An explicit `official` index keeps the legacy git-catalog path. Without
-    // it, unbound namespaces resolve through the HTTP registry (the new
-    // default), which is covered by the registry integration tests.
+    // An explicit `official` index keeps the legacy git-catalog path even when
+    // the registry opt-in env var is present.
     let config = fixture.root.join("official-hub.toml");
     write(
         &config,
@@ -1189,6 +1188,7 @@ fn hub_yank_git_index_prints_pr_instructions() {
     );
     let out = dora(&fixture)
         .env("DORA_HUB_CONFIG", &config)
+        .env("DORA_HUB_REGISTRY_URL", "https://example.com/registry")
         .args(["hub", "yank", "dora-rs/some-node@1.0.0"])
         .output()
         .unwrap();

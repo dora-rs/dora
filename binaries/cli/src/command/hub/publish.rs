@@ -64,9 +64,10 @@ pub struct Publish {
     /// bound to the manifest's namespace.
     #[clap(long, value_name = "ALIAS")]
     index: Option<String>,
-    /// HTTP registry URL. Defaults to `DORA_HUB_REGISTRY_URL` or
-    /// <https://dora.pub>; setting this forces a registry upload.
-    #[clap(long, env = "DORA_HUB_REGISTRY_URL", value_name = "URL")]
+    /// HTTP registry URL. Setting this forces a registry upload. Without it,
+    /// `DORA_HUB_REGISTRY_URL` opts an *unbound* namespace into the registry;
+    /// an explicit `hub.toml` binding still wins.
+    #[clap(long, value_name = "URL")]
     registry: Option<String>,
     /// Registry API token. Defaults to the saved token from `dora hub login`
     /// (or `DORA_HUB_TOKEN` for the official registry only).
@@ -178,9 +179,14 @@ impl Executable for Publish {
         // those, keep the legacy local/git index publish path; flipping the
         // default destination to the public registry is a separate decision.
         let config = ResolvedConfig::load_default().context("failed to load hub configuration")?;
+        // `--registry` is an explicit override and may target a bound namespace.
+        // The environment variable is only the opt-in for unbound namespaces;
+        // if clap consumed it into `registry`, a private `hub.toml` binding
+        // would be silently skipped.
         let registry_opt_in = self.registry.is_some()
             || (std::env::var_os(hub_registry::REGISTRY_URL_ENV).is_some()
-                && !config.is_bound(&namespace));
+                && !config.is_bound(&namespace)
+                && !config.official_explicit());
         let use_registry = self.index.is_none() && registry_opt_in;
         if use_registry {
             return publish_to_registry(

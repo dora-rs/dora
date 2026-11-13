@@ -209,8 +209,19 @@ impl ResolvedConfig {
     }
 
     /// Whether `namespace` has an explicit `[[index]]` binding.
+    ///
+    /// Namespace matching is ASCII-case-insensitive, matching #4159's
+    /// `index_for_namespace` behavior; otherwise a lockfile-derived `ACME/x`
+    /// would look unbound and could fall through to the registry.
     pub fn is_bound(&self, namespace: &str) -> bool {
-        self.bindings.contains_key(namespace)
+        self.binding_for(namespace).is_some()
+    }
+
+    fn binding_for(&self, namespace: &str) -> Option<usize> {
+        self.bindings
+            .iter()
+            .find(|(bound, _)| bound.eq_ignore_ascii_case(namespace))
+            .map(|(_, index)| *index)
     }
 
     /// Whether the config explicitly overrides the official index. If not,
@@ -226,8 +237,8 @@ impl ResolvedConfig {
 
     /// The index a namespace resolves against (spec §7.3).
     pub fn index_for_namespace(&self, namespace: &str) -> &IndexConfig {
-        match self.bindings.get(namespace) {
-            Some(&idx) => &self.indexes[idx],
+        match self.binding_for(namespace) {
+            Some(idx) => &self.indexes[idx],
             None => &self.indexes[self.default_index],
         }
     }
@@ -475,6 +486,8 @@ namespaces = ["test"]
     fn explicit_bindings_win_and_official_takes_the_rest() {
         let resolved = config(ACME).unwrap();
         assert_eq!(resolved.index_for_namespace("acme").alias, "acme");
+        assert_eq!(resolved.index_for_namespace("ACME").alias, "acme");
+        assert!(resolved.is_bound("ACME"));
         assert_eq!(resolved.index_for_namespace("test").alias, "fixtures");
         assert_eq!(resolved.index_for_namespace("dora-rs").alias, "official");
         assert_eq!(resolved.index_for_namespace("unbound").alias, "official");

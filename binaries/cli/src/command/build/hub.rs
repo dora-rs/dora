@@ -101,6 +101,16 @@ fn manifest_digest(manifest: &NodeManifest) -> eyre::Result<String> {
         .collect())
 }
 
+/// The single source of truth for "should this namespace use the HTTP
+/// registry?". It must stay in lock-step with `HubContext::registry_mode_for`.
+fn registry_resolution_enabled(
+    namespace: &str,
+    config: &dora_hub_client::config::ResolvedConfig,
+    registry_override: bool,
+) -> bool {
+    !config.is_bound(namespace) && !config.official_explicit() && registry_override
+}
+
 /// Resolve and desugar every `hub:` node in `dataflow`.
 ///
 /// With `pins` (from a lockfile, `--locked`), no index resolution happens:
@@ -582,11 +592,10 @@ pub fn resolve_hub_nodes(
 
     let config = ResolvedConfig::load_default().context("failed to load hub configuration")?;
     let mut fetcher = IndexFetcher::new(offline)?;
-    // The default source for unbound namespaces is the HTTP registry
-    // (`https://dora.pub`, overridable with DORA_HUB_REGISTRY_URL). Explicit
-    // `[[index]]` bindings (including a configured official mirror) keep
-    // using the legacy git/path transport, so existing hermetic tests and
-    // enterprise setups are unaffected.
+    // Registry resolution is opt-in: only `DORA_HUB_REGISTRY_URL` enables
+    // the HTTP transport for unbound namespaces. Without it the configured
+    // default git index remains the source, matching `registry_mode_for` in
+    // the discovery commands. Explicit `[[index]]` bindings always win.
     let registry_override = std::env::var_os(REGISTRY_URL_ENV).is_some();
     let mut registry_client: Option<RegistryClient> = None;
     let mut registry_noted = false;
@@ -711,8 +720,8 @@ pub fn resolve_hub_nodes(
             );
         }
 
-        let via_registry = !config.is_bound(&reference.namespace)
-            && (registry_override || !config.official_explicit());
+        let via_registry =
+            registry_resolution_enabled(&reference.namespace, &config, registry_override);
         let catalog_dir = if via_registry {
             if registry_client.is_none() {
                 registry_client = Some(RegistryClient::new(offline)?);
@@ -932,6 +941,19 @@ pub fn resolve_hub_nodes(
 #[cfg(test)]
 mod tests {
     use super::normalize_git_source_url;
+
+    #[test]
+    fn registry_resolution_requires_an_explicit_opt_in() {
+        use dora_hub_client::config::ResolvedConfig;
+        use tempfile::tempdir;
+
+        let tmp = tempdir().unwrap();
+        let config = ResolvedConfig::load_from(&tmp.path().join("hub.toml")).unwrap();
+        assert!(!super::registry_resolution_enabled(
+            "dora-rs", &config, false
+        ));
+        assert!(super::registry_resolution_enabled("dora-rs", &config, true));
+    }
 
     #[test]
     fn normalizes_scp_and_path_sources_to_parseable_urls() {
