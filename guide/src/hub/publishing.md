@@ -1,11 +1,11 @@
 # Publishing a Node
 
 Publishing makes your node installable with `hub: <namespace>/<name>@<version>`.
-By default `dora hub publish` uploads the committed source archive and metadata
-to the registry at <https://dora.pub> (override with `DORA_HUB_REGISTRY_URL`),
-which stores an append-only version and a pinned source commit. A `hub.toml`
-namespace **explicitly bound to a local/git index** keeps the legacy
-index-entry workflow.
+By default `dora hub publish` keeps the legacy index-entry workflow. Set
+`DORA_HUB_REGISTRY_URL` (for example `https://dora.pub`) or pass `--registry`
+to upload the committed source archive and metadata to a registry, which
+stores an append-only version and a pinned source commit. A `hub.toml`
+namespace **explicitly bound to a local/git index** keeps the legacy path.
 
 The registry never accepts a mutable branch/tag as a pin: the version records a
 full **hosting repository** (`origin`, or `--repo`) and commit. Consumers clone
@@ -30,8 +30,10 @@ registry's fallback when the host is unreachable.
    The token is cached at `~/.config/dora/hub-token` (mode `0600`) for the
    official registry. A custom `--registry`/`DORA_HUB_REGISTRY_URL` gets a
    registry-keyed file, so an official token is not sent to a mirror. For a
-   one-off command, pass `--token` or set `DORA_HUB_TOKEN`; never export that
-   variable while building untrusted packages (build scripts can read it).
+   one-off command, pass `--token` or set `DORA_HUB_TOKEN` for the official
+   registry only. Do not export that variable while building untrusted
+   packages; spawned nodes and build scripts do not inherit it, but the saved
+   token file is still readable by the same user.
 3. A git repository so `publish` can package the committed tree (a dirty
    working tree is intentionally ignored).
 4. Your `namespace` is owned by your account (the registry enforces this).
@@ -55,8 +57,8 @@ Useful flags:
 | `--repo <url>` | the `origin` remote | the source repo URL recorded in the entry |
 | `--version <semver>` | the native manifest's version at the commit | override the published version |
 | `--index <alias>` | the index bound to your namespace | target a specific `hub.toml` index (legacy) |
-| `--registry <url>` | `DORA_HUB_REGISTRY_URL` or <https://dora.pub> | upload to a specific registry |
-| `--token <token>` | `DORA_HUB_TOKEN` or saved token | registry API token |
+| `--registry <url>` | `DORA_HUB_REGISTRY_URL` | upload to a specific registry |
+| `--token <token>` | saved token (or `DORA_HUB_TOKEN` for the official registry) | registry API token |
 | `--description`, `--license`, `--repository` | manifest / empty | registry metadata |
 | `--dry-run` | — | validate + preview, don't upload |
 
@@ -64,16 +66,19 @@ The version, name, and manifest are all read **at the pinned commit** (via
 `git show <commit>:…`), not from your working tree — so an uncommitted manifest
 or version bump is an error, not a silently-published entry. Commit first.
 
-## Publishing to the official registry
+## Publishing to a registry
 
-The default registry is <https://dora.pub>. It is public: publishing uploads
-the committed source tree for anyone to download, so run `--dry-run` first.
-The CLI prints the destination and asks for confirmation; non-interactive runs
-must pass `--yes`:
+Registry publishing is opt-in. The official registry is public: publishing
+uploads the committed source tree for anyone to download, so run `--dry-run`
+first. The CLI prints the destination and asks for confirmation; non-interactive
+runs must pass `--yes`:
 
 ```bash
 dora hub publish --dry-run
-dora hub publish                  # prompt before uploading to dora.pub
+
+# opt in to the official registry
+export DORA_HUB_REGISTRY_URL=https://dora.pub
+dora hub publish                  # prompt before uploading
 dora hub publish --yes            # CI, after reviewing the dry run
 
 # local/test registry (keyed token file; separate from the official token)

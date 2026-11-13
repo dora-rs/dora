@@ -29,14 +29,15 @@ The Hub is a **package manager for dora nodes**, deliberately cargo-style:
   that mutates a machine. A node is a dependency of *a dataflow*; you add `hub:`
   to the YAML and `dora build` resolves it. (`dora hub install` exists only to
   point you at this.)
-- **An HTTP registry by default.** `dora` resolves `hub:` from the registry at
-  <https://dora.pub>; `DORA_HUB_REGISTRY_URL`
-  points it at a local test server or a mirror. `hub.toml` can still bind a
-  namespace to a git/path catalog for enterprise and hermetic setups. Publishing
-  uploads the committed source archive and metadata; the registry exposes a
-  sparse index and pins the version to an immutable source commit. The
-  archive SHA-256 is pinned in the lockfile; the registry archive fallback is
-  used only after that checksum verifies.
+- **An opt-in HTTP registry.** By default `hub:` keeps resolving through the
+  configured git index. Opting in with
+  `DORA_HUB_REGISTRY_URL=https://dora.pub` (or a mirror) makes unbound
+  namespaces resolve through the registry's sparse index; `hub.toml` can still
+  bind a namespace to a git/path catalog for enterprise and hermetic setups.
+  Publishing uploads the committed source archive and metadata; the registry
+  pins the version to an immutable source commit. The archive SHA-256 is pinned
+  in the lockfile; the registry archive fallback is used only after that
+  checksum verifies.
 - **Source-distributed by default.** A resolved node is cloned at its pinned
   commit and built on the machine that runs it. A node may *optionally* ship a
   prebuilt binary for a platform (see [Custom & Enterprise
@@ -50,11 +51,15 @@ The Hub is a **package manager for dora nodes**, deliberately cargo-style:
 
 ## Registry URL
 
-The CLI uses the official registry by default:
+Registry resolution is opt-in. Without `DORA_HUB_REGISTRY_URL`, unbound
+namespaces continue to use the configured/default git index:
 
 ```bash
-# official (default)
+# keep the existing git-index default
 dora build dataflow.yml
+
+# opt in to the official registry
+DORA_HUB_REGISTRY_URL=https://dora.pub dora build dataflow.yml
 
 # local registry or enterprise mirror
 DORA_HUB_REGISTRY_URL=http://127.0.0.1:8080 dora build dataflow.yml
@@ -64,7 +69,8 @@ DORA_HUB_REGISTRY_URL=http://127.0.0.1:8080 dora build dataflow.yml
 search/info`, `dora hub publish`, `dora hub login/token/logout` and `dora hub
 yank`. Explicit `[[index]]` bindings in `hub.toml` still win for their
 namespaces. Plain HTTP is accepted for loopback hosts (local tests); for a
-trusted LAN mirror, set `DORA_HUB_ALLOW_INSECURE_REGISTRY=1`.
+trusted LAN mirror, set `DORA_HUB_ALLOW_INSECURE_REGISTRY=1`. `DORA_HUB_TOKEN`
+is honored only for the official registry; use `--token` for a mirror.
 
 ## Hub source cache
 
@@ -81,12 +87,13 @@ Override the root with `DORA_HUB_CACHE_DIR`:
 DORA_HUB_CACHE_DIR=/var/cache/dora-hub dora build dataflow.yml
 ```
 
-Sources live under `<cache>/sources/<host>/<repo>/<rev>`. Keeping them outside
-the project is intentional: Cargo resolves workspaces by walking up ancestor
+Hub sources live under
+`<cache>/sources/<project-key>/<host>/<repo>/<rev>`. Keeping them outside the
+project is intentional: Cargo resolves workspaces by walking up ancestor
 directories, so checking a standalone package out below a project that has a
 `Cargo.toml` can make Cargo believe the package belongs to the project's
-workspace. A project-local `.dorahub/` directory would still sit below that
-`Cargo.toml` and would not fix the problem.
+workspace. The project key prevents two projects from renaming each other's
+checkouts. Plain `git:` nodes keep their historical `<dataflow>/git` location.
 
 `dora run` and distributed builds use the same cache on the machine that builds
 the node. For a remote daemon, set `DORA_HUB_CACHE_DIR` in the daemon's

@@ -5,10 +5,11 @@ index with the `hub:` field — no `path:`, no `git:`, no manual `build:`.
 The local `camera.py` node generates synthetic RGB frames at 10 Hz, so this
 example does not require a physical camera or camera drivers.
 
-By default `dora` resolves from <https://dora.pub>. For a mirror or local test
-registry, override it:
+Registry resolution is opt-in. Keep the git-index default, or opt in with:
 
 ```bash
+export DORA_HUB_REGISTRY_URL=https://dora.pub
+# or a local test registry:
 export DORA_HUB_REGISTRY_URL=http://127.0.0.1:8080
 ```
 

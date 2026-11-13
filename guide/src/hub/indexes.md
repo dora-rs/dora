@@ -1,10 +1,11 @@
 # Custom & Enterprise Indexes
 
-By default the Hub resolves unbound namespaces from the HTTP registry at
-<https://dora.pub> (override with `DORA_HUB_REGISTRY_URL`). A `hub.toml` can
-still add private or mirrored **git/path catalogs** and bind namespaces to
-them — for an internal node registry, an air-gapped mirror, or an enterprise
-fork. Explicit namespace bindings take precedence over the registry URL.
+By default unbound namespaces use the configured/default git index. Set
+`DORA_HUB_REGISTRY_URL` (for example `https://dora.pub`) to opt into the HTTP
+registry for unbound namespaces. A `hub.toml` can add private or mirrored
+**git/path catalogs** and bind namespaces to them — for an internal node
+registry, an air-gapped mirror, or an enterprise fork. Explicit namespace
+bindings take precedence over the registry URL.
 
 ## `hub.toml`
 
@@ -52,7 +53,8 @@ prevents dependency-confusion attacks:
 
 - A namespace listed under an index resolves **only** there.
 - Any namespace **not** bound to a custom index resolves from the HTTP
-  registry (`DORA_HUB_REGISTRY_URL`, default <https://dora.pub>).
+  registry only when `DORA_HUB_REGISTRY_URL` is set; otherwise it uses the
+  default git index.
 - Binding the same namespace to two indexes is a **config error**.
 - The official `dora-rs` namespace always resolves to the official registry (or an explicit `official` mirror); a
   custom index cannot claim it.

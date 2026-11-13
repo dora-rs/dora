@@ -61,6 +61,18 @@ what you tested.
 > than building it without `--locked`. Reproducibility is enforced by
 > `build --locked`, not by `validate`.
 
+## Registry fallback limitations
+
+- The fallback archive is built from the published package subtree. A monorepo
+  package that relies on its parent Cargo workspace (`workspace = true`,
+  `../` path dependencies) builds from the hosting repository but may not
+  build from the fallback archive; the failure is explicit.
+- A warm project-keyed checkout is reused without a network probe. If the
+  hosting repository is unavailable but the checkout is present, the build
+  continues from that checkout instead of downloading the fallback archive.
+- The source probe checks that the pinned commit is still advertised by the
+  hosting repository; a force-pushed/deleted commit triggers the fallback.
+
 ## Inspecting and updating pins
 
 ### What's pinned

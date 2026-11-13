@@ -28,9 +28,10 @@ nodes:
 You still write the node's `inputs`/`outputs` wiring as usual; the *types* of
 those ports come from the published manifest.
 
-Resolution uses the official registry at <https://dora.pub> unless
-`DORA_HUB_REGISTRY_URL` is set (local tests, mirrors). Namespaces explicitly
-bound in `hub.toml` keep using their configured index.
+By default resolution uses the configured git index. Set
+`DORA_HUB_REGISTRY_URL=https://dora.pub` (or a mirror) to opt into registry
+resolution for unbound namespaces. Namespaces explicitly bound in `hub.toml`
+keep using their configured index.
 
 ### The reference syntax
 
@@ -135,8 +136,10 @@ archive **only when the lockfile pins its SHA-256**, verifies it, and then
 builds from that copy. Without a pinned checksum the fallback is refused rather
 than trusting the network; distributed builds currently still require the
 hosting source. `--offline` skips both the hosting-source probe and the
-fallback. For a node that
-ships a prebuilt binary, the resolver downloads and sha256-verifies that
+fallback. The fallback archives only the published package subtree, so a
+monorepo package that depends on its parent workspace may need the hosting
+source; that case fails explicitly rather than using a different tree. For a
+node that ships a prebuilt binary, the resolver downloads and sha256-verifies that
 artifact instead of cloning — see [Binary
 distribution](indexes.md#binary-distribution).
 
