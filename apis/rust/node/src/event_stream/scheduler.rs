@@ -173,6 +173,40 @@ fn bump_drop_count(dropped: &mut HashMap<DataId, u64>, id: &DataId) -> u64 {
     *count
 }
 
+/// Count an input event discarded at `cap` as a drop, unless it is a zenoh
+/// input whose arrival bound released it first and counted it there.
+///
+/// A `drop_oldest` queue overflowing is the steady state of a consumer slower
+/// than its producer, so log on a power-of-two cadence rather than per dropped
+/// event; the count is exact.
+fn count_drop(
+    dropped: &mut HashMap<DataId, u64>,
+    policy: QueuePolicy,
+    cap: usize,
+    discarded: EventItem,
+) {
+    let Some(discarded) = discarded.settle() else {
+        return;
+    };
+    let Some(id) = input_id(&discarded) else {
+        return;
+    };
+    let drops = bump_drop_count(dropped, id);
+    if should_warn_drop(drops) {
+        if policy == QueuePolicy::Backpressure {
+            tracing::error!(
+                drops,
+                "Backpressure input `{id}` hit hard cap ({cap}), dropping oldest to prevent OOM"
+            );
+        } else {
+            tracing::warn!(
+                drops,
+                "Discarding event for input `{id}` due to queue size limit"
+            );
+        }
+    }
+}
+
 /// Emit a loud error when a correlated event has to be dropped because
 /// everything in the queue is also correlated. Identifies the correlation
 /// keys so operators can trace the affected request/goal.
@@ -626,38 +660,24 @@ impl Scheduler {
 
         let cap = policy.effective_cap(*size);
         if queue.len() >= cap {
-            // A `drop_oldest` queue overflowing is the steady state of a
-            // consumer slower than its producer, so log on a power-of-two
-            // cadence rather than per dropped event; the count is exact.
-            let drops = bump_drop_count(&mut self.dropped, event_id);
-            if should_warn_drop(drops) {
-                if policy == QueuePolicy::Backpressure {
-                    tracing::error!(
-                        drops,
-                        "Backpressure input `{event_id}` hit hard cap ({cap}), \
-                         dropping oldest to prevent OOM"
-                    );
-                } else {
-                    tracing::warn!(
-                        drops,
-                        "Discarding event for input `{event_id}` due to queue size limit"
-                    );
-                }
-            }
-            match select_eviction(queue.iter(), &event) {
-                Eviction::RemoveAt(idx) => {
-                    queue.remove(idx);
-                }
+            let discarded = match select_eviction(queue.iter(), &event) {
+                Eviction::RemoveAt(idx) => queue.remove(idx),
                 Eviction::DropIncoming => {
                     // Queue is entirely correlated; preserve correlations
                     // by dropping the incoming (non-correlated) event.
+                    count_drop(&mut self.dropped, policy, cap, event);
                     return;
                 }
                 Eviction::DropCorrelatedLoud(idx) => {
-                    if let Some(dropped) = queue.remove(idx) {
-                        log_correlation_drop(event_id, &dropped);
+                    let dropped = queue.remove(idx);
+                    if let Some(dropped) = &dropped {
+                        log_correlation_drop(event_id, dropped);
                     }
+                    dropped
                 }
+            };
+            if let Some(discarded) = discarded {
+                count_drop(&mut self.dropped, policy, cap, discarded);
             }
         }
         queue.push_back(event);
@@ -1338,7 +1358,9 @@ mod tests {
         EventItem::ZenohInput {
             id: DataId::from(id.to_string()),
             metadata: std::sync::Arc::new(metadata),
-            data: dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+            data: crate::event_stream::arrival_bound::ZenohPayload::Settled(
+                dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+            ),
         }
     }
 

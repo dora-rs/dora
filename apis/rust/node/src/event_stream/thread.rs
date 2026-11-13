@@ -8,6 +8,7 @@ use flume::RecvTimeoutError;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::mpsc;
 
+use super::arrival_bound::ZenohPayload;
 use crate::daemon_connection::DaemonChannel;
 
 pub fn init(
@@ -35,14 +36,28 @@ pub enum EventItem {
     /// scheduler reorders/drops events. For SHM payloads the decoded array still
     /// aliases the zenoh buffer (the decoder wraps it via
     /// `Buffer::from_custom_allocation`), so this stays zero-copy
-    /// (dora-rs/adora#132).
+    /// (dora-rs/adora#132). The input's arrival bound may release the payload
+    /// while the message waits in the node (see `arrival_bound`).
     ZenohInput {
         id: dora_core::config::DataId,
         metadata: std::sync::Arc<dora_message::metadata::Metadata>,
-        data: arrow::array::ArrayData,
+        data: ZenohPayload,
     },
     FatalError(eyre::Report),
     TimeoutError(eyre::Report),
+}
+
+impl EventItem {
+    /// Takes the event for delivery or eviction. Returns `None` for a zenoh
+    /// input whose payload was already released.
+    pub(crate) fn settle(self) -> Option<Self> {
+        match self {
+            EventItem::ZenohInput { id, metadata, data } => data
+                .settle()
+                .map(|data| EventItem::ZenohInput { id, metadata, data }),
+            other => Some(other),
+        }
+    }
 }
 
 pub struct EventStreamThreadHandle {
