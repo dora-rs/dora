@@ -35,13 +35,13 @@ if(DORA_ROOT_DIR)
             &&
             mkdir ${CMAKE_CURRENT_BINARY_DIR}/include/c -p
             &&
-            cp target/cxxbridge/dora-node-api-cxx/src/lib.rs.cc ${node_bridge}
+            cp target/cxxbridge/dora-node-api-cxx/src/dora-node-api.cc ${node_bridge}
             &&
-            cp target/cxxbridge/dora-node-api-cxx/src/lib.rs.h ${dora_cxx_include_dir}/dora-node-api.h
+            cp target/cxxbridge/dora-node-api-cxx/include/dora-node-api.h ${dora_cxx_include_dir}/dora-node-api.h
             &&
-            cp target/cxxbridge/dora-operator-api-cxx/src/lib.rs.cc ${operator_bridge}
+            cp target/cxxbridge/dora-operator-api-cxx/src/dora-operator-api.cc ${operator_bridge}
             &&
-            cp target/cxxbridge/dora-operator-api-cxx/src/lib.rs.h ${dora_cxx_include_dir}/dora-operator-api.h
+            cp target/cxxbridge/dora-operator-api-cxx/include/dora-operator-api.h ${dora_cxx_include_dir}/dora-operator-api.h
             &&
             cp apis/c/node ${CMAKE_CURRENT_BINARY_DIR}/include/c -r
             &&
@@ -87,13 +87,13 @@ else()
             &&
             mkdir ${dora_cxx_include_dir} -p
             &&
-            cp cxxbridge/dora-node-api-cxx/src/lib.rs.cc ${node_bridge}
+            cp cxxbridge/dora-node-api-cxx/src/dora-node-api.cc ${node_bridge}
             &&
-            cp cxxbridge/dora-node-api-cxx/src/lib.rs.h ${dora_cxx_include_dir}/dora-node-api.h
+            cp cxxbridge/dora-node-api-cxx/include/dora-node-api.h ${dora_cxx_include_dir}/dora-node-api.h
             &&
-            cp cxxbridge/dora-operator-api-cxx/src/lib.rs.cc ${operator_bridge}
+            cp cxxbridge/dora-operator-api-cxx/src/dora-operator-api.cc ${operator_bridge}
             &&
-            cp cxxbridge/dora-operator-api-cxx/src/lib.rs.h ${dora_cxx_include_dir}/dora-operator-api.h
+            cp cxxbridge/dora-operator-api-cxx/include/dora-operator-api.h ${dora_cxx_include_dir}/dora-operator-api.h
             &&
             cp ../apis/c/node ${CMAKE_CURRENT_BINARY_DIR}/include/c -r
             &&

@@ -16,16 +16,13 @@ fn main() -> eyre::Result<()> {
     let build_dir = Path::new("build");
 
     build_package("dora-node-api-cxx")?;
-    let node_cxxbridge = target
-        .join("cxxbridge")
-        .join("dora-node-api-cxx")
-        .join("src");
+    let node_cxxbridge = target.join("cxxbridge").join("dora-node-api-cxx");
     std::fs::copy(
-        node_cxxbridge.join("lib.rs.cc"),
+        node_cxxbridge.join("src/dora-node-api.cc"),
         build_dir.join("node-bridge.cc"),
     )?;
     std::fs::copy(
-        node_cxxbridge.join("lib.rs.h"),
+        node_cxxbridge.join("include/dora-node-api.h"),
         build_dir.join("dora-node-api.h"),
     )?;
     std::fs::write(
@@ -34,16 +31,13 @@ fn main() -> eyre::Result<()> {
     )?;
 
     build_package("dora-operator-api-cxx")?;
-    let operator_cxxbridge = target
-        .join("cxxbridge")
-        .join("dora-operator-api-cxx")
-        .join("src");
+    let operator_cxxbridge = target.join("cxxbridge").join("dora-operator-api-cxx");
     std::fs::copy(
-        operator_cxxbridge.join("lib.rs.cc"),
+        operator_cxxbridge.join("src/dora-operator-api.cc"),
         build_dir.join("operator-bridge.cc"),
     )?;
     std::fs::copy(
-        operator_cxxbridge.join("lib.rs.h"),
+        operator_cxxbridge.join("include/dora-operator-api.h"),
         build_dir.join("dora-operator-api.h"),
     )?;
 
