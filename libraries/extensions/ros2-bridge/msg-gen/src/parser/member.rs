@@ -169,10 +169,17 @@ mod test {
         Ok(())
     }
     #[test]
-    fn out_of_range_float_default_is_a_parse_error() {
-        // #4162: rejected while parsing instead of panicking during codegen.
-        assert!(member_def("float32 x 1e40").is_err());
-        assert!(member_def("float64 x 1e400").is_err());
-        assert!(member_def("float64[] xs [0.0, -1e400]").is_err());
+    fn out_of_range_float_default_becomes_infinity() {
+        // #4162: no panic in codegen, and the `.msg` still parses (the Python
+        // bridge parses every package at runtime and must not fail on it).
+        let m = member_def("float64 x -1e400").unwrap();
+        let tokens = m.r#type.value_tokens(m.default.as_ref().unwrap());
+        assert_eq!(quote::quote!(#tokens).to_string(), "f64 :: NEG_INFINITY");
+        let m = member_def("float32[] xs [0.0, 1e39]").unwrap();
+        let tokens = m.r#type.value_tokens(m.default.as_ref().unwrap());
+        assert_eq!(
+            quote::quote!(#tokens).to_string(),
+            "vec ! [0f32 , f32 :: INFINITY ,]"
+        );
     }
 }
