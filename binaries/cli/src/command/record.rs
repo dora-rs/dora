@@ -706,7 +706,11 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
 
     // Subscribe to topics via WS
     let ws_topics = parse_ws_topics(&topics)?;
-    let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
+    let (_subscription_id, data_rx) = session.subscribe_topics(
+        dataflow_id,
+        ws_topics,
+        crate::ws_client::TopicBufferLimits::RECORD,
+    )?;
 
     // Set up recording writer. `duration_since(UNIX_EPOCH)` errors when the
     // wall clock is set before 1970; `epoch_nanos` falls back to a zero base
@@ -847,16 +851,24 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     writer.flush()?;
 
     let footer = writer.finish()?;
-    // Proxy mode has no drop accounting of its own — the frames it can lose are
-    // discarded in the coordinator and the daemon, which never report a count
-    // back over the WebSocket. So say what happened rather than asserting a
-    // completeness this path cannot measure (#3282).
+    // Proxy mode cannot count every loss — frames are also discarded in the
+    // coordinator and the daemon, which never report a count back over the
+    // WebSocket. So say what happened rather than asserting a completeness this
+    // path cannot measure (#3282). The frames this CLI dropped itself, because
+    // writing fell behind the stream, are counted and reported below.
     if ended_unexpectedly {
         eprintln!(
             "Recording ended: the data stream closed before the recording was stopped. \
              Messages may be missing — the coordinator drops frames for a subscriber it \
              cannot keep up with as soon as its queue is full, and closes it after 10 \
              seconds without accepting any frame."
+        );
+    }
+    let dropped = data_rx.dropped();
+    if dropped > 0 {
+        eprintln!(
+            "Recording is missing {dropped} messages: they arrived faster than they \
+             could be written and were dropped."
         );
     }
     eprintln!(

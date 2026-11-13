@@ -164,7 +164,12 @@ fn info(
 
     // Subscribe via WS
     let ws_topics = vec![(topic.node_id.clone(), topic.data_id.clone())];
-    let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
+    let (_subscription_id, data_rx) = session.subscribe_topics(
+        dataflow_id,
+        ws_topics,
+        crate::ws_client::TopicBufferLimits::LIVE,
+    )?;
+    let dropped = data_rx.dropped_frames();
 
     let stats = Arc::new(TopicStats::default());
     let stats_clone = stats.clone();
@@ -271,6 +276,7 @@ fn info(
         Some(mbps) => println!("  Bandwidth: {:.2} Mbps", mbps),
         None => println!("  Bandwidth: <unknown>"),
     }
+    dropped.report();
 
     Ok(())
 }

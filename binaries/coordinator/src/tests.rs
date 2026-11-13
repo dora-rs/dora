@@ -2252,7 +2252,6 @@ async fn applied_param_changes_are_acked_and_pruned_from_the_state_log() {
         clock: Arc::new(HLC::default()),
         store: Arc::new(InMemoryStore::new()),
         span_store: SpanStore::default(),
-        daemon_peer_addrs: Default::default(),
         #[cfg(feature = "metrics")]
         otel_metrics: crate::otel_metrics::new_shared(),
         abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
@@ -2327,7 +2326,6 @@ async fn wait_for_spawn_after_a_failed_spawn_reports_the_failure() {
         clock: Arc::new(HLC::default()),
         store: Arc::new(InMemoryStore::new()),
         span_store: SpanStore::default(),
-        daemon_peer_addrs: Default::default(),
         #[cfg(feature = "metrics")]
         otel_metrics: crate::otel_metrics::new_shared(),
         abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
@@ -2391,7 +2389,6 @@ async fn wait_for_spawn_after_an_early_node_exit(
         clock: Arc::new(HLC::default()),
         store: Arc::new(InMemoryStore::new()),
         span_store: SpanStore::default(),
-        daemon_peer_addrs: Default::default(),
         #[cfg(feature = "metrics")]
         otel_metrics: crate::otel_metrics::new_shared(),
         abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
@@ -2931,6 +2928,58 @@ fn deleted_keys(commands: &[DaemonCoordinatorEvent]) -> Vec<&str> {
         .collect()
 }
 
+/// A daemon's peer address must go when its connection does: one that comes
+/// back registers under a fresh `DaemonId`, so an entry left behind is never
+/// overwritten and the map grows with every daemon restart.
+#[tokio::test]
+async fn a_gone_daemon_leaves_no_peer_address_behind() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let mut coordinator = coordinator_with_store(store);
+    let peer_addrs = coordinator.daemon_connections.peer_addrs();
+    let peer_addr = |id: &DaemonId| peer_addrs.read().unwrap().get(&id.to_string()).copied();
+    let addr: std::net::SocketAddr = "10.0.0.2:40001".parse().unwrap();
+
+    // Exit: the daemon's connection closes.
+    let (mut conn, _seen) = param_acking_daemon_connection();
+    conn.peer_addr = Some(addr);
+    let conn_id = conn.connection_id;
+    let a = register_daemon(&mut coordinator, "a", conn).await;
+    assert_eq!(peer_addr(&a), Some(addr), "precondition: recorded");
+    coordinator
+        .handle_daemon_exit(a.clone(), conn_id)
+        .await
+        .unwrap();
+    assert!(peer_addrs.read().unwrap().is_empty(), "removed on exit");
+
+    // Watchdog: the daemon stops sending heartbeats.
+    let (mut conn, _seen) = param_acking_daemon_connection();
+    conn.peer_addr = Some(addr);
+    conn.last_heartbeat = std::time::Instant::now() - std::time::Duration::from_secs(60);
+    let b = register_daemon(&mut coordinator, "b", conn).await;
+    assert_eq!(peer_addr(&b), Some(addr), "precondition: recorded");
+    coordinator.handle_heartbeat_interval().await.unwrap();
+    assert!(
+        peer_addrs.read().unwrap().is_empty(),
+        "removed on watchdog disconnect"
+    );
+
+    // A re-registration under the same id without an address must not keep
+    // pointing peers at the previous connection's address.
+    let (mut conn, _seen) = param_acking_daemon_connection();
+    conn.peer_addr = Some(addr);
+    let c = register_daemon(&mut coordinator, "c", conn).await;
+    let (conn, _seen) = param_acking_daemon_connection();
+    assert_eq!(register_daemon(&mut coordinator, "c", conn).await, c);
+    assert_eq!(peer_addr(&c), None, "replaced by the new connection's");
+
+    // Destroy: every connection is drained.
+    let (mut conn, _seen) = param_acking_daemon_connection();
+    conn.peer_addr = Some(addr);
+    register_daemon(&mut coordinator, "d", conn).await;
+    let _ = coordinator.daemon_connections.drain().count();
+    assert!(peer_addrs.read().unwrap().is_empty(), "cleared on drain");
+}
+
 /// A delete aimed at a node whose daemon is disconnected is persisted, then
 /// pruned from the state log by another daemon's activity. The daemon that
 /// reconnects falls back to the full param replay, which must delete the key
@@ -3300,7 +3349,6 @@ fn test_coordinator(
         clock: Arc::new(HLC::default()),
         store,
         span_store: SpanStore::default(),
-        daemon_peer_addrs: Default::default(),
         #[cfg(feature = "metrics")]
         otel_metrics: crate::otel_metrics::new_shared(),
         abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
@@ -7199,7 +7247,6 @@ async fn auto_recovery_respawns_with_the_original_launch_context() {
         clock: Arc::new(HLC::default()),
         store: Arc::new(InMemoryStore::new()),
         span_store: SpanStore::default(),
-        daemon_peer_addrs: Default::default(),
         #[cfg(feature = "metrics")]
         otel_metrics: crate::otel_metrics::new_shared(),
         abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,
@@ -7502,7 +7549,6 @@ async fn node_topology_changes_are_persisted() {
         clock: Arc::new(HLC::default()),
         store: store.clone(),
         span_store: SpanStore::default(),
-        daemon_peer_addrs: Default::default(),
         #[cfg(feature = "metrics")]
         otel_metrics: crate::otel_metrics::new_shared(),
         abort_handle: futures::stream::abortable(futures::stream::empty::<()>()).1,

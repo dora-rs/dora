@@ -169,6 +169,30 @@ mod test {
         Ok(())
     }
     #[test]
+    fn empty_sequence_default_is_accepted() -> Result<()> {
+        // `[]` is a valid default for `T[]` and `T[<=N]` (#4163).
+        for line in [
+            "int32[] x []",
+            "string[] y []",
+            "int32[<=3] z []",
+            "string<=4[<=2] w [ ]",
+        ] {
+            let result = member_def(line)?;
+            assert_eq!(result.default, Some(Vec::new()), "{line}");
+            // Codegen turns it into an empty `vec![]` without panicking.
+            let tokens = result.r#type.value_tokens(&[]);
+            assert_eq!(quote::quote!(#tokens).to_string(), "vec ! []", "{line}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn empty_default_is_rejected_for_fixed_size_arrays() {
+        assert!(member_def("int32[3] x []").is_err());
+        assert!(member_def("string[3] y []").is_err());
+    }
+
+    #[test]
     fn out_of_range_float_default_becomes_infinity() {
         // #4162: no panic in codegen, and the `.msg` still parses (the Python
         // bridge parses every package at runtime and must not fail on it).
@@ -181,5 +205,30 @@ mod test {
             quote::quote!(#tokens).to_string(),
             "vec ! [0f32 , f32 :: INFINITY ,]"
         );
+    }
+    #[test]
+    fn quoted_string_default_keeps_surrounding_whitespace() -> Result<()> {
+        // Quoting is the only way to keep leading/trailing whitespace in a
+        // `.msg` value, so it must round-trip exactly (#4164).
+        let result = member_def(r#"string x "  padded  ""#)?;
+        assert_eq!(result.default, Some(vec!["  padded  ".into()]));
+        let result = member_def("string x ' a '")?;
+        assert_eq!(result.default, Some(vec![" a ".into()]));
+        let result = member_def(r#"string[] xs [" a", 'b ', c ]"#)?;
+        assert_eq!(
+            result.default,
+            Some(vec![" a".into(), "b ".into(), "c".into()])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_string_default_counts_quoted_whitespace() -> Result<()> {
+        // `"  ab  "` is 6 bytes, so it must not fit a 4-byte bound (#4164).
+        assert!(member_def(r#"string<=4 x "  ab  ""#).is_err());
+        assert!(member_def(r#"string<=4[1] x ["  ab  "]"#).is_err());
+        let result = member_def(r#"string<=4 x " ab ""#)?;
+        assert_eq!(result.default, Some(vec![" ab ".into()]));
+        Ok(())
     }
 }

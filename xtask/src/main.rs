@@ -24,13 +24,12 @@ enum Commands {
         prefix: PathBuf,
 
         /// Cargo target triple this prefix is being staged for
-        /// (e.g., `aarch64-unknown-linux-gnu`). Required for cross-
-        /// compiled cxx archives: the cxxbridge `build.rs` may run on
-        /// the host (encoding `linux-x86_64` into the cmake config),
-        /// so xtask rewrites `DORA_BUILT_TARGET` at stage time to
-        /// match the actual archive triple. Without this, a consumer
-        /// on aarch64 hits the cmake `FATAL_ERROR` target-match check
-        /// even though the lib is correct for their platform.
+        /// (e.g., `aarch64-unknown-linux-gnu`); defaults to the host.
+        /// It becomes `DORA_BUILT_TARGET` in the cmake config, which a
+        /// consumer's cmake checks against its own platform. For cxx
+        /// crates, the cxxbridge `build.rs` may run on the host during a
+        /// cross build and encode `linux-x86_64`, so xtask rewrites the
+        /// value at stage time.
         #[arg(long)]
         target: Option<String>,
     },
@@ -65,13 +64,13 @@ fn stage_library(
 ) -> anyhow::Result<()> {
     if is_cxx_crate(crate_name) {
         stage_cxx_crate(crate_name, target_dir, prefix)?;
+        if let Some(triple) = target_triple {
+            rewrite_built_target(prefix, crate_name, triple).with_context(|| {
+                format!("Failed to rewrite DORA_BUILT_TARGET for {crate_name} ({triple})")
+            })?;
+        }
     } else {
-        stage_c_crate(crate_name, target_dir, prefix)?;
-    }
-    if let Some(triple) = target_triple {
-        rewrite_built_target(prefix, crate_name, triple).with_context(|| {
-            format!("Failed to rewrite DORA_BUILT_TARGET for {crate_name} ({triple})")
-        })?;
+        stage_c_crate(crate_name, target_dir, prefix, target_triple)?;
     }
     Ok(())
 }
@@ -161,48 +160,103 @@ fn rewrite_built_target(prefix: &Path, crate_name: &str, triple: &str) -> anyhow
     Ok(())
 }
 
-fn stage_c_crate(crate_name: &str, target_dir: &Path, prefix: &Path) -> anyhow::Result<()> {
-    let staging = target_dir.join(crate_name);
+/// The C API crates: their directory relative to the workspace root and the
+/// headers they ship.
+const C_CRATES: &[(&str, &str, &[&str])] = &[
+    ("dora-node-api-c", "apis/c/node", &["node_api.h"]),
+    (
+        "dora-operator-api-c",
+        "apis/c/operator",
+        &["operator_api.h", "operator_types.h"],
+    ),
+];
 
-    if !staging.exists() {
-        bail!(
-            "Staging directory not found: {}\n\
-             Ensure {crate_name} has been built (cargo build -p {crate_name}).",
-            staging.display()
-        );
-    }
-
-    let cmake_src = staging.join("lib/cmake").join(crate_name);
-    let include_src = staging.join("include");
-
-    if !cmake_src.exists() {
-        bail!("CMake config directory not found: {}", cmake_src.display());
-    }
-    if !include_src.exists() {
-        bail!("Include directory not found: {}", include_src.display());
-    }
+/// Stages a C crate: its cmake package config, generated from the crate's
+/// `cmake/*.cmake.in` templates, its headers, and its static library.
+///
+/// The config only needs the crate's name, version and target, so it's
+/// generated here rather than in a build script: cargo's build directory
+/// layout isn't a stable interface, and a build script that writes outside
+/// its `OUT_DIR` breaks when it changes.
+fn stage_c_crate(
+    crate_name: &str,
+    target_dir: &Path,
+    prefix: &Path,
+    target_triple: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(&(_, dir, headers)) = C_CRATES.iter().find(|(name, ..)| *name == crate_name) else {
+        bail!("unknown C crate {crate_name}");
+    };
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("xtask has no parent directory")?;
+    let crate_dir = workspace_root.join(dir);
+    let target = match target_triple {
+        Some(triple) => cargo_triple_to_cmake_target(triple)?,
+        None => format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+    };
+    let version = crate_version(crate_name)?;
+    let lib_base = crate_name.replace('-', "_");
+    let template = |name: &str| {
+        let path = crate_dir.join("cmake").join(name);
+        fs::read_to_string(&path).with_context(|| format!("Failed to read {}", path.display()))
+    };
+    let config = template("dora-api-config.cmake.in")?
+        .replace("@PACKAGE@", crate_name)
+        .replace("@TARGET@", &target)
+        .replace("@LIB_UNIX@", &format!("lib{lib_base}.a"))
+        .replace("@LIB_WIN@", &format!("{lib_base}.lib"))
+        .replace("@CXX_BRIDGE_FILES@", "");
+    let config_version = template("dora-api-version.cmake.in")?.replace("@VERSION@", &version);
 
     println!("Staging {crate_name} (C crate)...");
+    println!("  SOURCE:     {}", crate_dir.display());
     println!("  TARGET_DIR: {}", target_dir.display());
-    println!("  STAGING:    {}", staging.display());
     println!("  PREFIX:     {}", prefix.display());
 
-    let lib_cmake_dir = prefix.join("lib/cmake");
+    let cmake_dir = prefix.join("lib/cmake").join(crate_name);
     let include_dir = prefix.join("include");
-    fs::create_dir_all(&lib_cmake_dir)?;
+    fs::create_dir_all(&cmake_dir)?;
     fs::create_dir_all(&include_dir)?;
 
-    copy_dir_contents(&cmake_src, &lib_cmake_dir.join(crate_name))
-        .with_context(|| format!("Failed to copy cmake config for {crate_name}"))?;
-
-    copy_dir_contents(&include_src, &include_dir)
-        .with_context(|| format!("Failed to copy headers for {crate_name}"))?;
+    fs::write(cmake_dir.join(format!("{crate_name}Config.cmake")), config)?;
+    fs::write(
+        cmake_dir.join(format!("{crate_name}ConfigVersion.cmake")),
+        config_version,
+    )?;
+    for header in headers {
+        fs::copy(crate_dir.join(header), include_dir.join(header))
+            .with_context(|| format!("Failed to copy {header} for {crate_name}"))?;
+    }
 
     copy_library(crate_name, target_dir, prefix)?;
 
     print_staged_files(prefix, crate_name);
 
     Ok(())
+}
+
+/// The version of a workspace crate, from `cargo pkgid`, which prints
+/// `<source>#<name>@<version>` or `<source>#<version>`.
+fn crate_version(crate_name: &str) -> anyhow::Result<String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = std::process::Command::new(cargo)
+        .args(["pkgid", "-p", crate_name])
+        .output()
+        .context("Failed to run cargo pkgid")?;
+    if !output.status.success() {
+        bail!(
+            "cargo pkgid -p {crate_name} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let pkgid = String::from_utf8(output.stdout)?;
+    let spec = pkgid
+        .trim()
+        .rsplit_once('#')
+        .map_or(pkgid.trim(), |(_, s)| s);
+    let version = spec.rsplit_once('@').map_or(spec, |(_, v)| v);
+    Ok(version.to_owned())
 }
 
 fn stage_cxx_crate(crate_name: &str, target_dir: &Path, prefix: &Path) -> anyhow::Result<()> {
@@ -263,10 +317,13 @@ fn stage_cxx_crate(crate_name: &str, target_dir: &Path, prefix: &Path) -> anyhow
     copy_dir_contents(&include_src, &include_dir)
         .with_context(|| format!("Failed to copy headers for {crate_name}"))?;
 
-    if src_src.exists() {
-        copy_dir_contents(&src_src, &src_dir)
-            .with_context(|| format!("Failed to copy cxxbridge source for {crate_name}"))?;
-    }
+    // Only the bridge source the cmake config references
+    // (`@CXX_BRIDGE_FILES@`). The directory also holds cxx-build's own
+    // `lib.rs.*` symlinks into OUT_DIR, which don't resolve on Windows with
+    // cargo 1.100.
+    let bridge_source = format!("{}.cc", crate_name.trim_end_matches("-cxx"));
+    fs::copy(src_src.join(&bridge_source), src_dir.join(&bridge_source))
+        .with_context(|| format!("Failed to copy {bridge_source} for {crate_name}"))?;
 
     copy_library(crate_name, target_dir, prefix)?;
 
@@ -405,25 +462,13 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn fixture_staging_without_lib(tmp: &Path, crate_name: &str) -> PathBuf {
-        let target_dir = tmp.join("target");
-        let staging = target_dir.join(crate_name);
-        fs::create_dir_all(staging.join("lib/cmake").join(crate_name)).unwrap();
-        fs::create_dir_all(staging.join("include")).unwrap();
-        fs::write(
-            staging
-                .join("lib/cmake")
-                .join(crate_name)
-                .join(format!("{crate_name}Config.cmake")),
-            "# placeholder\n",
-        )
-        .unwrap();
-        fs::write(
-            staging.join("include").join("header.h"),
-            "/* placeholder */\n",
-        )
-        .unwrap();
-        target_dir
+    fn c_lib_name(crate_name: &str) -> String {
+        let base = crate_name.replace('-', "_");
+        if cfg!(windows) {
+            format!("{base}.lib")
+        } else {
+            format!("lib{base}.a")
+        }
     }
 
     /// The publish workflow archives whatever `xtask stage` leaves in
@@ -434,68 +479,75 @@ mod tests {
     #[test]
     fn stage_c_crate_errors_when_static_lib_missing() {
         let tmp = tempdir();
-        let target_dir = fixture_staging_without_lib(tmp.path(), "dora-node-api-c");
+        let target_dir = tmp.path().join("target");
+        fs::create_dir_all(&target_dir).unwrap();
         let prefix = tmp.path().join("prefix");
 
         let err = stage_library("dora-node-api-c", &target_dir, &prefix, None)
             .expect_err("missing static lib must fail staging, not warn");
         let msg = err.to_string();
         assert!(
-            msg.contains("libdora_node_api_c.a") || msg.contains("dora_node_api_c.lib"),
+            msg.contains(&c_lib_name("dora-node-api-c")),
             "error must name the missing library: {msg}"
         );
     }
 
-    /// Sanity: with the lib present at the expected location, staging
-    /// succeeds. This guards against regressions that would turn the
-    /// missing-lib check into a false positive.
+    /// Staging a C crate needs only its static library from the build:
+    /// the cmake config is generated from the crate's templates with every
+    /// placeholder filled, and the headers come from the crate directory.
     #[test]
-    fn stage_c_crate_succeeds_when_lib_present() {
-        let tmp = tempdir();
-        let target_dir = fixture_staging_without_lib(tmp.path(), "dora-node-api-c");
-        // Provide the lib at the path copy_library looks for first.
-        let lib_name = if cfg!(windows) {
-            "dora_node_api_c.lib"
-        } else {
-            "libdora_node_api_c.a"
-        };
-        fs::write(target_dir.join(lib_name), b"fake static lib\n").unwrap();
-        let prefix = tmp.path().join("prefix");
+    fn stage_c_crate_generates_config_and_copies_headers() {
+        for (crate_name, _, headers) in C_CRATES {
+            let tmp = tempdir();
+            let target_dir = tmp.path().join("target");
+            fs::create_dir_all(&target_dir).unwrap();
+            fs::write(
+                target_dir.join(c_lib_name(crate_name)),
+                b"fake static lib\n",
+            )
+            .unwrap();
+            let prefix = tmp.path().join("prefix");
 
-        stage_library("dora-node-api-c", &target_dir, &prefix, None)
-            .expect("staging should succeed when lib is present");
-        assert!(prefix.join("lib").join(lib_name).exists());
+            stage_library(crate_name, &target_dir, &prefix, None)
+                .expect("staging should succeed when lib is present");
+
+            assert!(prefix.join("lib").join(c_lib_name(crate_name)).exists());
+            for header in *headers {
+                assert!(prefix.join("include").join(header).exists(), "{header}");
+            }
+            let cmake_dir = prefix.join("lib/cmake").join(crate_name);
+            let config =
+                fs::read_to_string(cmake_dir.join(format!("{crate_name}Config.cmake"))).unwrap();
+            let config_version =
+                fs::read_to_string(cmake_dir.join(format!("{crate_name}ConfigVersion.cmake")))
+                    .unwrap();
+            for contents in [&config, &config_version] {
+                assert!(!contents.contains('@'), "unfilled placeholder: {contents}");
+            }
+            let host = format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH);
+            assert!(
+                config.contains(&format!("set(DORA_BUILT_TARGET \"{host}\")")),
+                "{config}"
+            );
+            assert!(config.contains(&format!("{crate_name}::{crate_name}")));
+            let version = crate_version(crate_name).unwrap();
+            assert!(
+                config_version.contains(&format!("\"{version}\"")),
+                "{config_version}"
+            );
+        }
     }
 
-    /// Regression test for the cross-cxx target-encoding bug surfaced
-    /// during /pr-review of #1875. When the cxxbridge `build.rs` runs
-    /// on the host during a cross build (e.g., the publish workflow's
-    /// `aarch64-unknown-linux-gnu` job), `DORA_BUILT_TARGET` ends up
-    /// encoded as `linux-x86_64` — and the consumer on aarch64 then
-    /// trips the cmake template's `target mismatch! built for
-    /// linux-x86_64, but current is linux-aarch64` FATAL_ERROR even
-    /// though the lib is correct for them. Passing `--target` to
-    /// `xtask stage` must rewrite the staged config to match the
-    /// archive's actual triple.
+    /// The cmake config of a cross-compiled archive must name the
+    /// archive's triple, not the host's: a consumer on aarch64 otherwise
+    /// trips the template's `target mismatch!` FATAL_ERROR even though
+    /// the lib is correct for them (#1875).
     #[test]
-    fn stage_rewrites_built_target_when_triple_supplied() {
+    fn stage_c_crate_uses_the_supplied_triple() {
         let tmp = tempdir();
-        let target_dir = fixture_staging_without_lib(tmp.path(), "dora-node-api-c");
-        let lib_name = if cfg!(windows) {
-            "dora_node_api_c.lib"
-        } else {
-            "libdora_node_api_c.a"
-        };
-        fs::write(target_dir.join(lib_name), b"fake\n").unwrap();
-        // Bake a wrong DORA_BUILT_TARGET into the staged config — the
-        // shape build.rs would have written on a host-x86_64 cross run.
-        let config_path = target_dir
-            .join("dora-node-api-c/lib/cmake/dora-node-api-c/dora-node-api-cConfig.cmake");
-        fs::write(
-            &config_path,
-            "set(DORA_BUILT_TARGET \"linux-x86_64\")\n# rest of template\n",
-        )
-        .unwrap();
+        let target_dir = tmp.path().join("target");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(target_dir.join(c_lib_name("dora-node-api-c")), b"fake\n").unwrap();
         let prefix = tmp.path().join("prefix");
 
         stage_library(
@@ -512,12 +564,34 @@ mod tests {
         .unwrap();
         assert!(
             staged.contains("set(DORA_BUILT_TARGET \"linux-aarch64\")"),
-            "DORA_BUILT_TARGET should be rewritten to match the archive triple: {staged}"
+            "DORA_BUILT_TARGET should match the archive triple: {staged}"
         );
+    }
+
+    /// The cxxbridge `build.rs` runs on the host during a cross build, so
+    /// its config says `linux-x86_64` for an aarch64 archive; staging with
+    /// `--target` rewrites it (#1875).
+    #[test]
+    fn rewrite_built_target_replaces_the_host_target() {
+        let tmp = tempdir();
+        let prefix = tmp.path();
+        let cmake_dir = prefix.join("lib/cmake/dora-node-api-cxx");
+        fs::create_dir_all(&cmake_dir).unwrap();
+        let config_path = cmake_dir.join("dora-node-api-cxxConfig.cmake");
+        fs::write(
+            &config_path,
+            "set(DORA_BUILT_TARGET \"linux-x86_64\")\n# rest of template\n",
+        )
+        .unwrap();
+
+        rewrite_built_target(prefix, "dora-node-api-cxx", "aarch64-unknown-linux-gnu").unwrap();
+
+        let staged = fs::read_to_string(&config_path).unwrap();
         assert!(
-            !staged.contains("linux-x86_64"),
-            "stale host-target should be gone: {staged}"
+            staged.contains("set(DORA_BUILT_TARGET \"linux-aarch64\")"),
+            "{staged}"
         );
+        assert!(!staged.contains("linux-x86_64"), "{staged}");
     }
 
     /// If the cmake template ever drops or renames `DORA_BUILT_TARGET`,
@@ -525,33 +599,23 @@ mod tests {
     /// config that skips the target-match check. Guards against the
     /// fix-degrading-into-noop failure mode.
     #[test]
-    fn stage_bails_when_built_target_line_missing() {
+    fn rewrite_built_target_bails_when_line_missing() {
         let tmp = tempdir();
-        let target_dir = fixture_staging_without_lib(tmp.path(), "dora-node-api-c");
-        let lib_name = if cfg!(windows) {
-            "dora_node_api_c.lib"
-        } else {
-            "libdora_node_api_c.a"
-        };
-        fs::write(target_dir.join(lib_name), b"fake\n").unwrap();
-        let config_path = target_dir
-            .join("dora-node-api-c/lib/cmake/dora-node-api-c/dora-node-api-cConfig.cmake");
-        // Template-shaped config but with the DORA_BUILT_TARGET line
-        // removed — simulates someone editing the .cmake.in template
-        // without updating the xtask rewrite.
-        fs::write(&config_path, "# placeholder config, no built target\n").unwrap();
-        let prefix = tmp.path().join("prefix");
-
-        let err = stage_library(
-            "dora-node-api-c",
-            &target_dir,
-            &prefix,
-            Some("aarch64-unknown-linux-gnu"),
+        let prefix = tmp.path();
+        let cmake_dir = prefix.join("lib/cmake/dora-node-api-cxx");
+        fs::create_dir_all(&cmake_dir).unwrap();
+        fs::write(
+            cmake_dir.join("dora-node-api-cxxConfig.cmake"),
+            "# placeholder config, no built target\n",
         )
-        .expect_err("missing DORA_BUILT_TARGET line must fail loudly, not produce silent-no-op");
+        .unwrap();
+
+        let err = rewrite_built_target(prefix, "dora-node-api-cxx", "aarch64-unknown-linux-gnu")
+            .expect_err(
+                "missing DORA_BUILT_TARGET line must fail loudly, not produce silent-no-op",
+            );
         assert!(
-            err.to_string().contains("DORA_BUILT_TARGET")
-                || format!("{err:#}").contains("DORA_BUILT_TARGET"),
+            format!("{err:#}").contains("DORA_BUILT_TARGET"),
             "error must name the missing field: {err:#}"
         );
     }

@@ -5,7 +5,7 @@ use nom::{
     branch::alt,
     bytes::complete::{is_not, tag, tag_no_case, take_while},
     character::complete::{anychar, char, digit1, hex_digit1, none_of, oct_digit1, one_of, space0},
-    combinator::{eof, map, map_res, opt, recognize, rest, value, verify},
+    combinator::{eof, map, map_res, opt, recognize, rest, success, value, verify},
     multi::{many0, separated_list1},
     number::complete::recognize_float,
     sequence::{delimited, pair},
@@ -50,10 +50,15 @@ pub fn get_basic_type_literal_parser(basic_type: BasicType) -> fn(&str) -> IResu
 pub fn basic_type_sequence(basic_type: BasicType, s: &str) -> IResult<&str, Vec<String>> {
     delimited(
         pair(char('['), space0),
-        separated_list1(
-            char(','),
-            delimited(space0, get_basic_type_literal_parser(basic_type), space0),
-        ),
+        // `[]` is a valid (empty) default for `T[]` / `T[<=N]`; the caller
+        // rejects it for fixed-size `T[N]` through its length check.
+        alt((
+            separated_list1(
+                char(','),
+                delimited(space0, get_basic_type_literal_parser(basic_type), space0),
+            ),
+            success(Vec::new()),
+        )),
         pair(space0, char(']')),
     )
     .parse(s)
@@ -141,7 +146,7 @@ fn string_literal(s: &str) -> IResult<&str, String> {
                     tag(r#"\"#),
                     recognize(is_not(r#"\""#)),
                 ))),
-                |v| v.join("").trim().to_string(),
+                |v| v.join(""),
             ),
             char('"'),
         ),
@@ -153,7 +158,7 @@ fn string_literal(s: &str) -> IResult<&str, String> {
                     tag(r#"\"#),
                     recognize(is_not(r#"\'"#)),
                 ))),
-                |v| v.join("").trim().to_string(),
+                |v| v.join(""),
             ),
             char('\''),
         ),
@@ -173,6 +178,13 @@ fn string_literal(s: &str) -> IResult<&str, String> {
 pub fn string_literal_sequence(s: &str) -> IResult<&str, Vec<String>> {
     verify(rest, |v: &str| v.starts_with('[') && v.ends_with(']')).parse(s)?;
 
+    // `[]` (optionally with inner whitespace) is a valid empty default for
+    // `string[]` / `string[<=N]`; fixed-size arrays reject it by length.
+    let empty: IResult<&str, _> = (char('['), space0, char(']'), eof).parse(s);
+    if let Ok((rest, _)) = empty {
+        return Ok((rest, Vec::new()));
+    }
+
     delimited(
         space0,
         separated_list1(
@@ -188,7 +200,7 @@ pub fn string_literal_sequence(s: &str) -> IResult<&str, Vec<String>> {
                                 tag(r#"\"#),
                                 recognize(is_not(r#"\""#)),
                             ))),
-                            |v| v.join("").trim().to_string(),
+                            |v| v.join(""),
                         ),
                         char('"'),
                     ),
@@ -200,7 +212,7 @@ pub fn string_literal_sequence(s: &str) -> IResult<&str, Vec<String>> {
                                 tag(r#"\"#),
                                 recognize(is_not(r#"\'"#)),
                             ))),
-                            |v| v.join("").trim().to_string(),
+                            |v| v.join(""),
                         ),
                         char('\''),
                     ),
@@ -354,6 +366,18 @@ mod test {
             string_literal_sequence(r#"[ aaa , "bbb"  , 'ccc' ]"#)?.1,
             vec!["aaa", "bbb", "ccc"]
         );
+        Ok(())
+    }
+    #[test]
+    fn parse_empty_sequences() -> Result<()> {
+        // An empty list is a valid default for unbounded/bounded sequences (#4163).
+        assert!(basic_type_sequence(BasicType::I32, "[]")?.1.is_empty());
+        assert!(basic_type_sequence(BasicType::I32, "[ ]")?.1.is_empty());
+        assert!(string_literal_sequence("[]")?.1.is_empty());
+        assert!(string_literal_sequence("[ ]")?.1.is_empty());
+        // A lone separator is still not a list.
+        assert!(basic_type_sequence(BasicType::I32, "[,]").is_err());
+        assert!(string_literal_sequence("[,]").is_err());
         Ok(())
     }
 }
