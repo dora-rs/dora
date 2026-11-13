@@ -218,8 +218,6 @@ jobs:
           python -c "import dora; print('dora', dora.__file__)"
           dora --version
 
-  # Build the dora CLI once and upload as artifact for downstream jobs.
-  # Saves ~15 min × 4 downstream jobs = ~60 runner-minutes per nightly run.
   # Backwards compatibility of `dora self update`: installs a CLI from an
   # older release, updates it, and checks that it reports the latest release.
   # The older CLIs select the release asset their own way (the first one
@@ -256,9 +254,20 @@ jobs:
             echo "::notice::latest release v$latest predates the self update fix; nothing to test"
             exit 0
           fi
-          if ! gh release view "v$FROM" --repo "$REPO" >/dev/null 2>&1; then
-            echo "::notice::v$FROM is not released yet; nothing to test"
-            exit 0
+          # Only a 404 means "not released yet". Any other failure (5xx, rate
+          # limit, auth, network) must fail the job: a green skip here would
+          # let `close-issue-on-success` close an open regression issue.
+          if ! err=$(gh api "repos/$REPO/releases/tags/v$FROM" --silent 2>&1); then
+            case "$err" in
+              *"HTTP 404"*)
+                echo "::notice::v$FROM is not released yet; nothing to test"
+                exit 0
+                ;;
+              *)
+                echo "::error::looking up release v$FROM failed: $err"
+                exit 1
+                ;;
+            esac
           fi
           if [ "$(printf '%s\n%s\n' "$FROM" "$latest" | sort -V | tail -n1)" = "$FROM" ]; then
             echo "::notice::v$FROM is the latest release; nothing to update to"
@@ -280,6 +289,8 @@ jobs:
             *) echo "::error::expected $latest after self update from $FROM, got: $after"; exit 1 ;;
           esac
 
+  # Build the dora CLI once and upload as artifact for downstream jobs.
+  # Saves ~15 min × 4 downstream jobs = ~60 runner-minutes per nightly run.
   build-cli:
     name: Build dora CLI (shared)
     runs-on: ubuntu-latest
