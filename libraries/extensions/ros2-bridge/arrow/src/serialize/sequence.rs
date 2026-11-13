@@ -84,6 +84,17 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
             }
             let seq_len = list.value(0).len();
             (Arc::new(list.slice(0, 1)) as ArrayRef, seq_len)
+        } else if let Some(list) = self.column.as_fixed_size_binary_opt() {
+            // e.g. `pa.binary(16)` into `uint8[]`; accepted by the fixed-array
+            // path too, so both take the same byte representations (#4149).
+            if list.len() != 1 {
+                return Err(error(format!(
+                    "expected single-element fixed-size binary, got length {}",
+                    list.len()
+                )));
+            }
+            let seq_len = list.value(0).len();
+            (Arc::new(list.slice(0, 1)) as ArrayRef, seq_len)
         } else {
             return Err(error(format!(
                 "value is not compatible with expected sequence type: {:?}",
@@ -299,6 +310,15 @@ impl serde::Serialize for ByteSequence<'_> {
             serialize_binary(serializer, binary)
         } else if let Some(binary) = self.value.as_binary_opt::<i64>() {
             serialize_binary(serializer, binary)
+        } else if let Some(binary) = self.value.as_fixed_size_binary_opt() {
+            // A 1-row array (sliced in `SequenceSerializeWrapper`): the row's
+            // bytes are the sequence, like `serialize_binary`.
+            let bytes: &[u8] = if binary.is_empty() {
+                &[]
+            } else {
+                binary.value(0)
+            };
+            serializer.serialize_bytes(bytes)
         } else if let Some(bytes) = self.value.as_primitive_opt::<UInt8Type>()
             && bytes.null_count() == 0
         {
@@ -375,8 +395,8 @@ mod tests {
 
     use arrow::{
         array::{
-            ArrayRef, BinaryArray, BooleanArray, FixedSizeListArray, Int32Array, ListArray,
-            StringArray, StructArray, UInt8Array,
+            ArrayRef, BinaryArray, BooleanArray, FixedSizeBinaryArray, FixedSizeListArray,
+            Int32Array, ListArray, StringArray, StructArray, UInt8Array,
         },
         buffer::{NullBuffer, OffsetBuffer},
         datatypes::{DataType, Field},
@@ -1021,5 +1041,71 @@ mod tests {
         })
         .unwrap();
         assert_eq!(fsl_bytes, list_bytes);
+    }
+    /// #4149 review: a `FixedSizeBinary(N)` column is a valid input for
+    /// `uint8[]` too, and CDR-encodes identically to `List<UInt8>`.
+    #[test]
+    fn byte_sequence_fixed_size_binary_matches_list() {
+        let data = vec![10u8, 20, 30];
+        let tail = 0x1234_5678_i32;
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed("ByteSeqMsg"),
+            messages: byte_seq_then_int32_message(),
+        };
+        let fsb = FixedSizeBinaryArray::try_from_iter(vec![data.clone()].into_iter()).unwrap();
+        let value = Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new(
+                    "data",
+                    DataType::FixedSizeBinary(data.len() as i32),
+                    false,
+                )),
+                Arc::new(fsb) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("tail", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![tail])) as ArrayRef,
+            ),
+        ])) as ArrayRef;
+        let fsb_bytes = cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+            value: &value,
+            type_info: &type_info,
+        })
+        .expect("serialize FixedSizeBinary byte sequence to CDR");
+        let list_bytes = cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+            value: &build_byte_value_list(&data, tail),
+            type_info: &type_info,
+        })
+        .unwrap();
+        assert_eq!(fsb_bytes, list_bytes);
+    }
+
+    /// The `uint8[<=N]` bound counts the bytes of a `FixedSizeBinary` row.
+    #[test]
+    fn bounded_byte_sequence_fixed_size_binary_enforces_max_size() {
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed("ByteSeqMsg"),
+            messages: bounded_byte_seq_then_int32_message(2),
+        };
+        let fsb = FixedSizeBinaryArray::try_from_iter(vec![vec![1u8, 2, 3]].into_iter()).unwrap();
+        let value = Arc::new(StructArray::from(vec![
+            (
+                Arc::new(Field::new("data", DataType::FixedSizeBinary(3), false)),
+                Arc::new(fsb) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("tail", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![0])) as ArrayRef,
+            ),
+        ])) as ArrayRef;
+        assert!(
+            cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+                value: &value,
+                type_info: &type_info,
+            })
+            .is_err()
+        );
     }
 }
