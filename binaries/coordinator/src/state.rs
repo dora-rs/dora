@@ -68,13 +68,47 @@ impl LaunchContext {
     }
 }
 
+/// `DaemonId` (as its `Display` string) -> the daemon's WS peer address.
+///
+/// Shared with the WS server, so a `ResolveMachine` reply can carry the target
+/// daemon's direct-TCP data listener address.
+pub(crate) type DaemonPeerAddrs = Arc<std::sync::RwLock<HashMap<String, SocketAddr>>>;
+
 #[derive(Default)]
 pub(crate) struct DaemonConnections {
     daemons: BTreeMap<DaemonId, DaemonConnection>,
+    /// Kept in step with `daemons` by `add`, `remove` and `drain`, so an entry
+    /// cannot outlive its connection: a daemon that comes back registers under
+    /// a fresh `DaemonId`, so a stale entry would never be overwritten or read
+    /// again — one leaked entry per daemon restart.
+    peer_addrs: DaemonPeerAddrs,
 }
 
 impl DaemonConnections {
+    pub(crate) fn with_peer_addrs(peer_addrs: DaemonPeerAddrs) -> Self {
+        Self {
+            daemons: BTreeMap::new(),
+            peer_addrs,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn peer_addrs(&self) -> DaemonPeerAddrs {
+        self.peer_addrs.clone()
+    }
+
+    fn peer_addrs_mut(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, SocketAddr>> {
+        self.peer_addrs.write().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub(crate) fn add(&mut self, daemon_id: DaemonId, connection: DaemonConnection) {
+        {
+            let mut peer_addrs = self.peer_addrs_mut();
+            match connection.peer_addr {
+                Some(addr) => peer_addrs.insert(daemon_id.to_string(), addr),
+                None => peer_addrs.remove(&daemon_id.to_string()),
+            };
+        }
         let previous = self.daemons.insert(daemon_id.clone(), connection);
         if previous.is_some() {
             tracing::info!("closing previous connection `{daemon_id}` on new register");
@@ -102,6 +136,7 @@ impl DaemonConnections {
     }
 
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = (DaemonId, DaemonConnection)> {
+        self.peer_addrs_mut().clear();
         std::mem::take(&mut self.daemons).into_iter()
     }
 
@@ -114,6 +149,7 @@ impl DaemonConnections {
     }
 
     pub(crate) fn remove(&mut self, daemon_id: &DaemonId) -> Option<DaemonConnection> {
+        self.peer_addrs_mut().remove(&daemon_id.to_string());
         self.daemons.remove(daemon_id)
     }
 

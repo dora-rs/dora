@@ -288,12 +288,7 @@ async fn start_with_events(
     #[cfg(feature = "metrics")]
     let otel_metrics = otel_metrics::new_shared();
 
-    // DaemonId -> WS peer address, shared with the WS server so the
-    // ResolveMachine reply can carry the target daemon's direct-TCP data
-    // listener address.
-    let daemon_peer_addrs: Arc<
-        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
-    > = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+    let daemon_peer_addrs = state::DaemonPeerAddrs::default();
     let (port, ws_shutdown, ws_future) = ws_server::serve(
         bind,
         ws_event_tx.clone(),
@@ -384,7 +379,6 @@ pub(crate) struct Coordinator {
     pub(crate) clock: Arc<HLC>,
     pub(crate) store: Arc<dyn CoordinatorStore>,
     pub(crate) span_store: SpanStore,
-    pub(crate) daemon_peer_addrs: Arc<std::sync::RwLock<HashMap<String, SocketAddr>>>,
     #[cfg(feature = "metrics")]
     pub(crate) otel_metrics: otel_metrics::SharedMetrics,
     /// Aborts the event stream on `dora down` / Ctrl-C.
@@ -411,9 +405,7 @@ async fn start_inner(
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
     span_store: SpanStore,
-    daemon_peer_addrs: Arc<
-        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
-    >,
+    daemon_peer_addrs: state::DaemonPeerAddrs,
     #[cfg(feature = "metrics")] otel_metrics: otel_metrics::SharedMetrics,
 ) -> eyre::Result<()> {
     let daemon_heartbeat_interval =
@@ -500,12 +492,11 @@ async fn start_inner(
         dataflow_results: IndexMap::new(),
         resent_finish_reports: HashMap::new(),
         archived_dataflows: IndexMap::new(),
-        daemon_connections: DaemonConnections::default(),
+        daemon_connections: DaemonConnections::with_peer_addrs(daemon_peer_addrs),
         topology: topology_lane::TopologyLanes::new(topology_tx),
         clock,
         store,
         span_store,
-        daemon_peer_addrs,
         #[cfg(feature = "metrics")]
         otel_metrics,
         abort_handle,
