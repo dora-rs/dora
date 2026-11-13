@@ -23,6 +23,7 @@ use futures::{
 use futures_timer::Delay;
 use scheduler::{KeyedQueue, NON_INPUT_EVENT_QUEUE_SIZE, ParamKeyed, Scheduler};
 
+use self::arrival_bound::ZenohPayload;
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
     DaemonCommunicationWrapper, PatternError,
@@ -41,6 +42,7 @@ use eyre::{Context, eyre};
 
 pub use scheduler::Scheduler as EventScheduler;
 
+mod arrival_bound;
 mod data_conversion;
 mod event;
 /// Drop notifications for the daemon's opaque extension table.
@@ -53,7 +55,7 @@ mod scheduler;
 mod thread;
 
 /// Hand one zenoh-delivered event to the shared ingress channel, counting it as
-/// a drop if the channel is full.
+/// a drop if the channel is full. Returns whether the event was sent.
 ///
 /// The callback runs on zenoh's tokio IO worker, where `blocking_send` would
 /// panic, so the send is a `try_send` and a full channel means the payload is
@@ -72,10 +74,10 @@ fn send_or_count_ingress_drop(
     item: EventItem,
     input_id: &DataId,
     dropped: &AtomicU64,
-) {
+) -> bool {
     use tokio::sync::mpsc::error::TrySendError;
     match tx.try_send(item) {
-        Ok(()) => {}
+        Ok(()) => true,
         Err(TrySendError::Full(_)) => {
             // Rate-limit the log, but not on `drain_drop_counts()`: a formatted
             // `warn!` with a subscriber attached measures ~1.6 us against ~1.7 ns
@@ -104,10 +106,38 @@ fn send_or_count_ingress_drop(
                      node's input queue_sizes."
                 );
             }
+            false
         }
         Err(TrySendError::Closed(_)) => {
             // Normal shutdown: the receiver is gone, nothing to report.
+            false
         }
+    }
+}
+
+/// Hand one zenoh-delivered input to the shared ingress channel and, if it was
+/// sent, add it to its input's arrival bound (see `arrival_bound`).
+fn deliver_zenoh_input(
+    tx: &tokio::sync::mpsc::Sender<EventItem>,
+    bound: Option<&arrival_bound::ArrivalBound>,
+    input_id: &DataId,
+    metadata: dora_message::metadata::Metadata,
+    data: arrow::array::ArrayData,
+    dropped: &AtomicU64,
+) {
+    let (data, waiting) = match bound {
+        Some(bound) => bound.wrap(data, &metadata),
+        None => (ZenohPayload::Settled(data), None),
+    };
+    let item = EventItem::ZenohInput {
+        id: input_id.clone(),
+        metadata: Arc::new(metadata),
+        data,
+    };
+    if send_or_count_ingress_drop(tx, item, input_id, dropped)
+        && let (Some(bound), Some(waiting)) = (bound, waiting)
+    {
+        bound.admit(waiting);
     }
 }
 
@@ -644,6 +674,11 @@ impl EventStream {
                     let input_id_cb = input_id.clone();
                     let ingress_drops_cb =
                         ingress_drops.entry(input_id.clone()).or_default().clone();
+                    let arrival_bound = arrival_bound::ArrivalBound::for_input(
+                        input_id.clone(),
+                        input,
+                        ingress_drops_cb.clone(),
+                    );
                     let decoder = decoder.clone();
                     let first_undecodable_cb = first_undecodable.clone();
                     let clock_cb = clock.clone();
@@ -820,14 +855,12 @@ impl EventStream {
                                             .lock()
                                             .unwrap_or_else(|p| p.into_inner()) = None;
                                     }
-                                    send_or_count_ingress_drop(
+                                    deliver_zenoh_input(
                                         &tx_cb,
-                                        EventItem::ZenohInput {
-                                            id: input_id_cb.clone(),
-                                            metadata: std::sync::Arc::new(metadata),
-                                            data,
-                                        },
+                                        arrival_bound.as_ref(),
                                         &input_id_cb,
+                                        metadata,
+                                        data,
                                         &ingress_drops_cb,
                                     );
                                 }));
@@ -1087,8 +1120,7 @@ impl EventStream {
             return self.pop_scheduled(true);
         }
         let event = if !self.use_scheduler {
-            self.receiver
-                .recv()
+            self.recv_settled()
                 .await
                 .inspect(|item| self.record_or_poison(item))
                 .map(Self::convert_event_item)
@@ -1236,10 +1268,11 @@ impl EventStream {
     /// `max(10 × queue_size, 100)`.
     /// This method returns a map from input ID to the number of messages dropped
     /// since the last call.
-    /// Drops are reported per input across both loss sites — the scheduler's
-    /// per-input eviction and the shared zenoh ingress channel — so a caller
-    /// does not have to know which transport a payload took to learn it was
-    /// lost (#3282).
+    /// Drops are reported per input across every loss site — the scheduler's
+    /// per-input eviction, the arrival bound on zenoh inputs waiting in the
+    /// shared ingress channel, and that channel overflowing — so a caller does
+    /// not have to know which transport a payload took to learn it was lost
+    /// (#3282).
     ///
     /// Parameter changes are never dropped: pending changes of one key are coalesced into one
     /// event (see [`EventScheduler`]), and this is not counted as a drop.
@@ -1258,10 +1291,18 @@ impl EventStream {
     }
 
     fn add_event(&mut self, event: EventItem) {
-        self.record_or_poison(&event);
-        if let Some(id) = scheduler::flush_target(&event) {
+        let flush = scheduler::flush_target(&event).cloned();
+        if let Some(id) = &flush {
             self.flush_passthrough(id);
         }
+        let Some(event) = event.settle() else {
+            // The payload was released, but the flush still applies.
+            if let Some(id) = &flush {
+                self.scheduler.flush(id);
+            }
+            return;
+        };
+        self.record_or_poison(&event);
         // A key has at most one pending change, in the scheduler or in
         // `pending_passthrough`. When the passthrough buffer holds the key,
         // the newer change replaces it there and keeps its position, as in
@@ -1278,11 +1319,39 @@ impl EventStream {
         self.scheduler_maybe_nonempty = true;
     }
 
+    /// The next event off the ingress channel, skipping zenoh inputs that
+    /// their arrival bound released. `None` once the channel is closed.
+    async fn recv_settled(&mut self) -> Option<EventItem> {
+        loop {
+            if let Some(item) = self.receiver.recv().await?.settle() {
+                return Some(item);
+            }
+        }
+    }
+
+    /// [`recv_settled`](Self::recv_settled) for the `Stream` path.
+    fn poll_recv_settled(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<EventItem>> {
+        loop {
+            match self.receiver.poll_recv(cx) {
+                std::task::Poll::Ready(Some(item)) => {
+                    if let Some(item) = item.settle() {
+                        return std::task::Poll::Ready(Some(item));
+                    }
+                }
+                other => return other,
+            }
+        }
+    }
+
     /// Record `event` to the optional `write_events_to` log. Every event taken
-    /// off `receiver` must pass through here exactly once, whichever receive
-    /// path takes it: `add_event` for the scheduler paths, directly for the
-    /// ones that bypass the scheduler (`poll_next`, the non-scheduler branch
-    /// of `recv_from_stream`).
+    /// off `receiver` and not released on arrival (see `arrival_bound`) must
+    /// pass through here exactly once, whichever receive path takes it:
+    /// `add_event` for the scheduler paths, directly for the ones that bypass
+    /// the scheduler (`poll_next`, the non-scheduler branch of
+    /// `recv_from_stream`).
     fn record_or_poison(&mut self, event: &EventItem) {
         // Event recording is observability-only (writes to the optional
         // `write_events_to` log). A write failure must not panic the event
@@ -1358,7 +1427,7 @@ impl EventStream {
                 // would otherwise capture them — silently dropping inputs from
                 // the `write_events_to` recording. Record them here too.
                 EventItem::ZenohInput { id, metadata, data } => {
-                    let array = arrow::array::make_array(data.clone());
+                    let array = arrow::array::make_array(data.settled_data().clone());
                     let mut event_json = convert_arrow_input_to_json(
                         id,
                         metadata,
@@ -2063,7 +2132,7 @@ impl EventStream {
                     id,
                     metadata,
                     // Already decoded in the subscriber callback (receipt order).
-                    data: dora_arrow_convert::internal::from_array_data(data),
+                    data: dora_arrow_convert::internal::from_array_data(data.into_settled_data()),
                 }
             }
 
@@ -2352,7 +2421,7 @@ impl Stream for EventStream {
             self.scheduler_maybe_nonempty = false;
         }
 
-        let poll = self.receiver.poll_recv(cx);
+        let poll = self.poll_recv_settled(cx);
         // This path bypasses `add_event`, so record the event here — otherwise
         // a node reading with `StreamExt::next()` writes an empty `events`
         // array that is still marked `clean`.
@@ -3465,10 +3534,10 @@ mod tests {
             EventItem::ZenohInput {
                 id: "zenoh".parse().unwrap(),
                 metadata,
-                data: {
+                data: ZenohPayload::Settled({
                     use arrow::array::Array;
                     arrow::array::Int32Array::from(vec![1]).into_data()
-                },
+                }),
             },
             EventItem::NodeEvent {
                 event: NodeEvent::Stop,
@@ -3704,10 +3773,10 @@ mod tests {
                 dora_core::uhlc::HLC::default().new_timestamp(),
                 params,
             )),
-            data: {
+            data: ZenohPayload::Settled({
                 use arrow::array::Array;
                 arrow::array::Int32Array::from(vec![3]).into_data()
-            },
+            }),
         })
         .unwrap();
         drop(tx);
@@ -4374,10 +4443,10 @@ mod tests {
             metadata: std::sync::Arc::new(Metadata::new(
                 dora_core::uhlc::HLC::default().new_timestamp(),
             )),
-            data: {
+            data: ZenohPayload::Settled({
                 use arrow::array::Array;
                 arrow::array::Int32Array::from(vec![1]).into_data()
-            },
+            }),
         });
 
         let drained = events.recv();
@@ -4592,10 +4661,10 @@ mod tests {
         let zenoh_item = EventItem::ZenohInput {
             id: DataId::from("in".to_string()),
             metadata: Arc::new(metadata.clone()),
-            data: {
+            data: ZenohPayload::Settled({
                 use arrow::array::Array;
                 arrow::array::Int32Array::from(vec![1]).into_data()
-            },
+            }),
         };
         let Event::Input {
             metadata: user_metadata,
@@ -4745,6 +4814,194 @@ mod tests {
         );
     }
 
+    // ---- arrival bound: zenoh inputs held to queue_size from arrival ----
+
+    /// An `EventStream` that reads a `capacity`-deep channel the test feeds
+    /// through `deliver_zenoh_input`, with `input` held to `queue_size` on
+    /// arrival and in the scheduler, as `init` configures both.
+    fn stream_with_arrival_bound(
+        input: &DataId,
+        queue_size: usize,
+        capacity: usize,
+    ) -> (
+        crate::DoraNode,
+        EventStream,
+        tokio::sync::mpsc::Sender<EventItem>,
+        arrival_bound::ArrivalBound,
+    ) {
+        let (node, mut events) = test_event_stream();
+        let _ = events.recv(); // drain the initial Stop
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        events.receiver = rx;
+        events.stop_received = false;
+        events.use_scheduler = true;
+        events.scheduler = Scheduler::with_policies(
+            HashMap::from([(input.clone(), (queue_size, VecDeque::new()))]),
+            HashMap::new(),
+        );
+        let dropped = events
+            .ingress_drops
+            .entry(input.clone())
+            .or_default()
+            .clone();
+        let bound = arrival_bound::ArrivalBound::for_input(
+            input.clone(),
+            &input_with_queue_size(queue_size),
+            dropped,
+        )
+        .unwrap();
+        (node, events, tx, bound)
+    }
+
+    fn arrive(
+        events: &EventStream,
+        tx: &tokio::sync::mpsc::Sender<EventItem>,
+        bound: &arrival_bound::ArrivalBound,
+        id: &DataId,
+        value: i32,
+        params: MetadataParameters,
+    ) {
+        use arrow::array::Array;
+        deliver_zenoh_input(
+            tx,
+            Some(bound),
+            id,
+            Metadata::from_parameters(uhlc::HLC::default().new_timestamp(), params),
+            arrow::array::Int32Array::from(vec![value]).into_data(),
+            &events.ingress_drops[id],
+        );
+    }
+
+    /// The `Int32` value of each event `received` on `input`, `None` for any
+    /// other payload.
+    fn input_values(received: &[Event], input: &DataId) -> Vec<Option<i32>> {
+        received
+            .iter()
+            .filter_map(|event| match event {
+                Event::Input { id, data, .. } if id == input => Some(i32::try_from(data).ok()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn receive_with_recv(events: &mut EventStream) -> Vec<Event> {
+        std::iter::from_fn(|| events.recv()).collect()
+    }
+
+    fn receive_with_stream(events: &mut EventStream) -> Vec<Event> {
+        std::iter::from_fn(|| futures::executor::block_on(futures::StreamExt::next(events)))
+            .collect()
+    }
+
+    /// A node that falls behind gets the newest `queue_size` messages of an
+    /// input; the older ones were released while they waited, are never
+    /// delivered on either read path, and count as drops. Other inputs are
+    /// untouched.
+    #[test]
+    fn inputs_released_on_arrival_are_skipped() {
+        for receive_all in [receive_with_recv, receive_with_stream] {
+            let cam = DataId::from("cam".to_string());
+            let (_node, mut events, tx, bound) = stream_with_arrival_bound(&cam, 2, 16);
+            let other = DataId::from("other".to_string());
+            events.ingress_drops.insert(other.clone(), Arc::default());
+            let unbounded = arrival_bound::ArrivalBound::for_input(
+                other.clone(),
+                &input_with_queue_size(10),
+                Arc::default(),
+            )
+            .unwrap();
+
+            for value in 1..=5 {
+                arrive(&events, &tx, &bound, &cam, value, MetadataParameters::new());
+                arrive(
+                    &events,
+                    &tx,
+                    &unbounded,
+                    &other,
+                    value,
+                    MetadataParameters::new(),
+                );
+            }
+            drop(tx);
+
+            let received = receive_all(&mut events);
+            assert_eq!(input_values(&received, &cam), [Some(4), Some(5)]);
+            assert_eq!(
+                input_values(&received, &other),
+                (1..=5).map(Some).collect::<Vec<_>>()
+            );
+            assert_eq!(events.drain_drop_counts().get(&cam), Some(&3));
+        }
+    }
+
+    /// A message the full channel turns away doesn't push out one that is
+    /// already waiting.
+    #[test]
+    fn an_arrival_dropped_at_a_full_channel_releases_nothing() {
+        let cam = DataId::from("cam".to_string());
+        let (_node, mut events, tx, bound) = stream_with_arrival_bound(&cam, 2, 2);
+        for value in 1..=3 {
+            arrive(&events, &tx, &bound, &cam, value, MetadataParameters::new());
+        }
+        drop(tx);
+
+        let received = receive_with_recv(&mut events);
+        assert_eq!(input_values(&received, &cam), [Some(1), Some(2)]);
+        assert_eq!(events.drain_drop_counts().get(&cam), Some(&1));
+    }
+
+    /// A released `flush: true` chunk still flushes, on both read paths: the
+    /// stale chunks that a pattern-aware wait buffered are discarded, not
+    /// delivered.
+    #[test]
+    fn a_released_flush_still_flushes() {
+        for receive_all in [receive_with_recv, receive_with_stream] {
+            let audio = DataId::from("audio".to_string());
+            let (_node, mut events, tx, bound) = stream_with_arrival_bound(&audio, 1, 16);
+            events.buffer_passthrough(passthrough_input(&audio, None));
+
+            let mut flush = MetadataParameters::new();
+            flush.insert(dora_message::metadata::FLUSH.into(), Parameter::Bool(true));
+            arrive(&events, &tx, &bound, &audio, 1, flush);
+            arrive(&events, &tx, &bound, &audio, 2, MetadataParameters::new());
+            drop(tx);
+
+            let received = receive_all(&mut events);
+            assert_eq!(
+                input_values(&received, &audio),
+                [Some(2)],
+                "got {received:?}"
+            );
+        }
+    }
+
+    /// A released `flush: true` chunk flushes the stale chunks queued in the
+    /// scheduler too, so they are discarded rather than counted as drops when
+    /// newer chunks evict them.
+    #[test]
+    fn a_released_flush_flushes_the_queue() {
+        let audio = DataId::from("audio".to_string());
+        let (_node, mut events, tx, bound) = stream_with_arrival_bound(&audio, 1, 16);
+        events.add_event(EventItem::ZenohInput {
+            id: audio.clone(),
+            metadata: Arc::new(Metadata::new(uhlc::HLC::default().new_timestamp())),
+            data: ZenohPayload::Settled({
+                use arrow::array::Array;
+                arrow::array::Int32Array::from(vec![0]).into_data()
+            }),
+        });
+
+        let mut flush = MetadataParameters::new();
+        flush.insert(dora_message::metadata::FLUSH.into(), Parameter::Bool(true));
+        arrive(&events, &tx, &bound, &audio, 1, flush);
+        arrive(&events, &tx, &bound, &audio, 2, MetadataParameters::new());
+        drop(tx);
+
+        let received = receive_with_recv(&mut events);
+        assert_eq!(input_values(&received, &audio), [Some(2)]);
+        assert_eq!(events.drain_drop_counts().get(&audio), Some(&1));
+    }
+
     // ---- #3282: zenoh-path ingress drops must reach drain_drop_counts() ----
 
     fn zenoh_item(id: &str) -> EventItem {
@@ -4753,7 +5010,9 @@ mod tests {
         EventItem::ZenohInput {
             id: DataId::from(id.to_string()),
             metadata: std::sync::Arc::new(Metadata::new(ts)),
-            data: dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+            data: ZenohPayload::Settled(
+                dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+            ),
         }
     }
 
