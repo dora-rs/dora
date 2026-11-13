@@ -25,6 +25,23 @@ pub enum SelfSubCommand {
 /// also matches the C and C++ library archives.
 const CLI_ASSET_IDENTIFIER: &str = "dora-cli-";
 
+/// Whether `release` ships a CLI archive built for `target`.
+///
+/// `self_update` falls back to the first asset that only contains the
+/// identifier, so on a target without a prebuilt CLI (e.g.
+/// `x86_64-apple-darwin` or a musl build) it would download another
+/// platform's archive and then fail with a misleading "path not found in
+/// archive" error. Checking up front lets us say what is actually wrong.
+fn has_prebuilt_cli(release: &self_update::update::Release, target: &str) -> bool {
+    release
+        .asset_for(target, Some(CLI_ASSET_IDENTIFIER))
+        .is_some_and(|asset| {
+            asset
+                .name()
+                .starts_with(&format!("{CLI_ASSET_IDENTIFIER}{target}."))
+        })
+}
+
 /// The updater `dora self update` runs: the CLI archive of the latest
 /// `dora-rs/dora` release for this target.
 fn cli_updater() -> eyre::Result<self_update::backends::github::Update> {
@@ -86,6 +103,23 @@ impl Executable for SelfSubCommand {
                         Err(e) => bail!("failed to check for updates: {e}"),
                     }
                 } else {
+                    // Refuse up front when the latest release has no CLI
+                    // archive for this target, instead of downloading another
+                    // platform's archive and failing inside it (#4151).
+                    let releases = status
+                        .get_latest_release()
+                        .map_err(|e| eyre::eyre!("failed to check for updates: {e}"))?;
+                    if let Some(release) = releases.latest()
+                        && !has_prebuilt_cli(release, env!("TARGET"))
+                    {
+                        bail!(
+                            "no prebuilt dora CLI for {} in release {}; install it with \
+                             `cargo install dora-cli --locked` instead",
+                            env!("TARGET"),
+                            release.version()
+                        );
+                    }
+
                     // Perform the actual update
                     match status.update() {
                         Ok(update_status) => {
@@ -200,16 +234,20 @@ mod tests {
         );
     }
 
-    #[test]
-    fn self_update_picks_the_cli_archive() {
-        let release = self_update::update::Release::builder()
+    fn v1_1_0_release() -> self_update::update::Release {
+        self_update::update::Release::builder()
             .name("v1.1.0")
             .version("1.1.0")
             .assets(V1_1_0_ASSETS.iter().map(|name| {
                 self_update::update::ReleaseAsset::new(*name, format!("https://host/{name}"))
             }))
             .build()
-            .unwrap();
+            .unwrap()
+    }
+
+    #[test]
+    fn self_update_picks_the_cli_archive() {
+        let release = v1_1_0_release();
         for target in [
             "aarch64-apple-darwin",
             "aarch64-unknown-linux-gnu",
@@ -225,6 +263,37 @@ mod tests {
                 with.name().starts_with(&format!("dora-cli-{target}")),
                 "{target}"
             );
+        }
+    }
+
+    /// Targets without a CLI archive in the release are refused instead of
+    /// falling back to another platform's archive (#4151).
+    #[test]
+    fn only_targets_with_a_cli_archive_have_a_prebuilt_cli() {
+        let release = v1_1_0_release();
+        for target in [
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "x86_64-unknown-linux-gnu",
+        ] {
+            assert!(super::has_prebuilt_cli(&release, target), "{target}");
+        }
+        for target in [
+            "x86_64-apple-darwin",
+            "aarch64-pc-windows-msvc",
+            "armv7-unknown-linux-gnueabihf",
+            "i686-unknown-linux-gnu",
+            "x86_64-unknown-linux-musl",
+        ] {
+            // `self_update` itself would still pick some `dora-cli-*` asset.
+            assert!(
+                release
+                    .asset_for(target, Some(super::CLI_ASSET_IDENTIFIER))
+                    .is_some(),
+                "{target}"
+            );
+            assert!(!super::has_prebuilt_cli(&release, target), "{target}");
         }
     }
 
