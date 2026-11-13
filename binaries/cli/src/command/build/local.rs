@@ -2,7 +2,10 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use colored::Colorize;
 use dora_core::{
-    build::{BuildInfo, BuildLogger, Builder, GitManager, LogLevelOrStdout, PrevGitSource},
+    build::{
+        BuildInfo, BuildLogger, Builder, GitManager, LogLevelOrStdout, PrevGitSource,
+        hub_cache_project_key,
+    },
     descriptor::{Descriptor, DescriptorExt},
 };
 use dora_hub_client::registry::{registry_fallback_source, source_available};
@@ -59,6 +62,10 @@ async fn build_dataflow(
 ) -> eyre::Result<BuildInfo> {
     let offline = layout.offline;
     let hub_archive_sha256 = layout.hub_archive_sha256.clone();
+    let hub_cache_root = layout
+        .hub_cache_dir
+        .join("sources")
+        .join(hub_cache_project_key(&layout.working_dir));
     let builder = Builder {
         session_id: dataflow_session.session_id,
         base_working_dir: layout.working_dir,
@@ -86,9 +93,14 @@ async fn build_dataflow(
         {
             let repo = source.repo.clone();
             let commit = source.commit_hash.clone();
-            let available = tokio::task::spawn_blocking(move || source_available(&repo, &commit))
-                .await
-                .unwrap_or(false);
+            // A warm clone already holds the pinned commit; do not pay for a
+            // network probe (and do not replace a reusable checkout just
+            // because the host is temporarily down).
+            let cached = GitManager::cached_clone_exists(&hub_cache_root, &repo, &commit);
+            let available = cached
+                || tokio::task::spawn_blocking(move || source_available(&repo, &commit))
+                    .await
+                    .unwrap_or(false);
             if !available {
                 // The archive fallback executes the package's build script, so
                 // only use it when the archive hash was pinned at resolution

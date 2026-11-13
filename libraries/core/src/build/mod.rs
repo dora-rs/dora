@@ -83,6 +83,22 @@ fn platform_cache_dir() -> PathBuf {
     std::env::temp_dir().join("dora-hub-cache")
 }
 
+/// Stable per-project key for the shared Hub cache.
+///
+/// Hub checkouts live outside the dataflow directory (Cargo workspace
+/// isolation), but they must not be shared across projects: GitManager's
+/// cross-run rename/fetch logic assumes one live consumer per clone directory.
+pub fn hub_cache_project_key(base_working_dir: &Path) -> String {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    for byte in base_working_dir.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
 #[derive(Clone)]
 pub struct Builder {
     pub session_id: SessionId,
@@ -110,13 +126,24 @@ impl Builder {
             repo,
             commit_hash,
             subdir,
-            hub: _,
+            hub,
         }) = git
         {
             if let Some(subdir) = &subdir {
                 validate_subdir(subdir)?;
             }
-            let target_dir = self.hub_cache_dir.join("sources");
+            // Only Hub sources get the out-of-project cache (the Cargo
+            // workspace-isolation fix). Plain `git:` nodes keep their
+            // historical `<dataflow>/git` location: moving them into a shared
+            // cache changes documented behavior and lets concurrent projects
+            // rename each other's checkouts.
+            let target_dir = if hub.is_some() {
+                self.hub_cache_dir
+                    .join("sources")
+                    .join(hub_cache_project_key(&self.base_working_dir))
+            } else {
+                self.base_working_dir.join("git")
+            };
             let git_folder = git_manager.choose_clone_dir(
                 self.session_id,
                 repo,
