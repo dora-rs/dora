@@ -68,9 +68,9 @@ pub struct Publish {
     /// <https://dora.pub>; setting this forces a registry upload.
     #[clap(long, env = "DORA_HUB_REGISTRY_URL", value_name = "URL")]
     registry: Option<String>,
-    /// Registry API token. Defaults to `$DORA_HUB_TOKEN` or the saved token
-    /// from `dora hub login` (~/.config/dora/hub-token).
-    #[clap(long, env = "DORA_HUB_TOKEN", value_name = "TOKEN")]
+    /// Registry API token. Defaults to the saved token from `dora hub login`
+    /// (or `DORA_HUB_TOKEN` for the official registry only).
+    #[clap(long, value_name = "TOKEN")]
     token: Option<String>,
     /// One-line description stored in the registry (defaults to the manifest).
     #[clap(long, value_name = "TEXT")]
@@ -173,14 +173,15 @@ impl Executable for Publish {
         let version = semver::Version::parse(version_str.trim())
             .with_context(|| format!("version `{version_str}` is not valid semver"))?;
 
-        // The default destination is the HTTP registry; an explicit
-        // `[[index]]` binding (or a configured official mirror) keeps the
-        // legacy git/path publish path. `--index`, `--registry` and
-        // DORA_HUB_REGISTRY_URL are explicit overrides.
+        // Registry publishing is opt-in: explicit `--registry`, or
+        // `DORA_HUB_REGISTRY_URL` for an unbound namespace. Without one of
+        // those, keep the legacy local/git index publish path; flipping the
+        // default destination to the public registry is a separate decision.
         let config = ResolvedConfig::load_default().context("failed to load hub configuration")?;
-        let use_registry = self.index.is_none()
-            && (self.registry.is_some()
-                || (!config.is_bound(&namespace) && !config.official_explicit()));
+        let registry_opt_in = self.registry.is_some()
+            || (std::env::var_os(hub_registry::REGISTRY_URL_ENV).is_some()
+                && !config.is_bound(&namespace));
+        let use_registry = self.index.is_none() && registry_opt_in;
         if use_registry {
             return publish_to_registry(
                 dir,
@@ -392,9 +393,12 @@ fn publish_to_registry(
 
     let token = match token_override {
         Some(token) if !token.trim().is_empty() => token.trim().to_string(),
-        _ => hub_registry::read_saved_token_for(&registry_url)?.context(
-            "no registry token: run `dora hub login`, pass `--token`, or set DORA_HUB_TOKEN",
-        )?,
+        _ => hub_registry::read_saved_token_for(&registry_url)?
+            .or_else(|| hub_registry::read_env_token_for(&registry_url))
+            .context(
+                "no registry token: run `dora hub login`, pass `--token`, or set \
+                 DORA_HUB_TOKEN for the official registry",
+            )?,
     };
     let response = client
         .publish(&token, &metadata, &archive)

@@ -33,7 +33,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 
 use crate::{
-    index::{BinaryArtifact, IndexEntry, SourceSpec, current_platform},
+    index::{BinaryArtifact, IndexEntry, SourceSpec},
     transport::git_command,
 };
 
@@ -46,6 +46,9 @@ pub const REGISTRY_URL_ENV: &str = "DORA_HUB_REGISTRY_URL";
 pub const ALLOW_INSECURE_REGISTRY_ENV: &str = "DORA_HUB_ALLOW_INSECURE_REGISTRY";
 /// Token file override (shared with the `dora-hub` client in hub-registry).
 pub const TOKEN_FILE_ENV: &str = "DORA_HUB_TOKEN_FILE";
+/// One-off token environment variable. Only honored for the official registry;
+/// a mirror must receive a `--token` or its own saved per-registry token.
+pub const TOKEN_ENV: &str = "DORA_HUB_TOKEN";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Upper bound for a sparse-index response.
@@ -168,6 +171,10 @@ impl RegistryClient {
         if self.fetched.contains(&key) {
             return Ok(());
         }
+        // Serialize refresh and offline reads per package. Without this, one
+        // process can see a removed package dir, a half-written version file,
+        // or a partial version set while another refreshes the cache.
+        let _cache_lock = lock_package_cache(&self.cache_root, namespace, name)?;
         let package_dir = self.cache_root.join("catalog").join(namespace).join(name);
         if self.offline {
             if !package_dir.is_dir() {
@@ -235,19 +242,57 @@ impl RegistryClient {
             bail!("package `{namespace}/{name}` has no versions in the registry");
         }
 
-        let package_dir = self.cache_root.join("catalog").join(namespace).join(name);
-        if package_dir.exists() {
-            fs::remove_dir_all(&package_dir)
-                .with_context(|| format!("failed to refresh `{}`", package_dir.display()))?;
+        let catalog_root = self.cache_root.join("catalog");
+        let package_dir = catalog_root.join(namespace).join(name);
+        fs::create_dir_all(&catalog_root)?;
+        // Build the new package view in a private staging directory, then swap
+        // it into place. The package lock in `ensure_package` makes concurrent
+        // readers/writers see a complete old or new view, never a partial one.
+        // Keep staging/locks outside `catalog/`: the index scanner treats every
+        // directory there as a namespace.
+        let staging = self
+            .cache_root
+            .join(format!(".{namespace}-{name}.{}.tmp", std::process::id()));
+        if staging.exists() {
+            fs::remove_dir_all(&staging)
+                .with_context(|| format!("failed to clear `{}`", staging.display()))?;
         }
-        fs::create_dir_all(&package_dir)
-            .with_context(|| format!("failed to create `{}`", package_dir.display()))?;
+        fs::create_dir_all(&staging)
+            .with_context(|| format!("failed to create `{}`", staging.display()))?;
         for (version, entry) in entries {
-            let path = package_dir.join(format!("{version}.yml"));
+            let path = staging.join(format!("{version}.yml"));
             let yaml = serde_yaml::to_string(&entry)
                 .with_context(|| format!("failed to serialize registry entry `{version}`"))?;
             fs::write(&path, yaml)
                 .with_context(|| format!("failed to cache `{}`", path.display()))?;
+        }
+        let backup = self
+            .cache_root
+            .join(format!(".{namespace}-{name}.{}.old", std::process::id()));
+        if backup.exists() {
+            fs::remove_dir_all(&backup)
+                .with_context(|| format!("failed to clear `{}`", backup.display()))?;
+        }
+        if let Some(parent) = package_dir.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create `{}`", parent.display()))?;
+        }
+        if package_dir.exists() {
+            fs::rename(&package_dir, &backup).with_context(|| {
+                format!("failed to stage refresh of `{}`", package_dir.display())
+            })?;
+        }
+        if let Err(error) = fs::rename(&staging, &package_dir) {
+            // Restore the previous complete view if the final swap fails.
+            if backup.exists() {
+                let _ = fs::rename(&backup, &package_dir);
+            }
+            return Err(error)
+                .with_context(|| format!("failed to install `{}`", package_dir.display()));
+        }
+        if backup.exists() {
+            fs::remove_dir_all(&backup)
+                .with_context(|| format!("failed to remove `{}`", backup.display()))?;
         }
         Ok(())
     }
@@ -481,14 +526,18 @@ fn source_spec(source: &Value) -> eyre::Result<SourceSpec> {
         .get("platforms")
         .or_else(|| source.get("platforms"))
         .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_string)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_else(|| vec![current_platform()]);
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "artifact source has no `platforms` list; refusing to use one binary on every host"
+            )
+        })?
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if platforms.is_empty() {
+        bail!("artifact source has an empty `platforms` list");
+    }
     let binary = platforms
         .into_iter()
         .map(|platform| BinaryArtifact {
@@ -537,42 +586,34 @@ fn default_cache_root(base: &str) -> eyre::Result<PathBuf> {
 }
 
 fn cache_key(base: &str) -> String {
-    let mut key = String::new();
-    for ch in base.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
-            key.push(ch);
-        } else if ch == ':' || ch == '/' {
-            key.push('_');
-        }
-    }
-    if key.is_empty() {
-        "registry".to_string()
-    } else {
-        key
-    }
+    // Hash the full URL. Sanitizing characters can collide
+    // (`https://dora.pub` vs `https://dorap.ub`); an offline cache hit from the
+    // wrong host would then feed manifests and git pins across trust domains.
+    let digest = sha256_hex(base.as_bytes());
+    format!("registry-{}", &digest[..32])
+}
+
+fn sanitize_registry_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(
+                    *c,
+                    '\u{061c}'
+                        | '\u{200b}'..='\u{200f}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2060}'..='\u{2069}'
+                )
+        })
+        .take(1000)
+        .collect()
 }
 
 fn registry_error_detail(body: &str) -> String {
     if let Ok(value) = serde_json::from_str::<Value>(body)
         && let Some(detail) = value["errors"][0]["detail"].as_str()
     {
-        // Registry responses are untrusted input that ends up in a terminal.
-        // Strip control/ANSI and bidi formatting before echoing a short detail.
-        let detail: String = detail
-            .chars()
-            .filter(|c| {
-                !c.is_control()
-                    && !matches!(
-                        *c,
-                        '\u{061c}'
-                            | '\u{200b}'..='\u{200f}'
-                            | '\u{202a}'..='\u{202e}'
-                            | '\u{2060}'..='\u{2069}'
-                    )
-            })
-            .take(300)
-            .collect();
-        return format!(": {detail}");
+        return format!(": {}", sanitize_registry_text(detail));
     }
     String::new()
 }
@@ -584,7 +625,12 @@ fn json_response(response: reqwest::blocking::Response) -> eyre::Result<Value> {
     if !status.is_success() {
         bail!("registry returned {status}{}", registry_error_detail(&body));
     }
-    serde_json::from_str(&body).with_context(|| format!("invalid registry JSON response: {body}"))
+    serde_json::from_str(&body).with_context(|| {
+        format!(
+            "invalid registry JSON response: {}",
+            sanitize_registry_text(&body)
+        )
+    })
 }
 
 /// Path to the saved publish token for the *official* registry.
@@ -632,6 +678,21 @@ pub fn read_saved_token_for(registry_url: &str) -> eyre::Result<Option<String>> 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).with_context(|| format!("failed to read `{}`", path.display())),
     }
+}
+
+/// Read `DORA_HUB_TOKEN`, but only for the official registry.
+///
+/// The environment is process-global: honoring it for an arbitrary mirror
+/// would send the official token to whatever `DORA_HUB_REGISTRY_URL` points at.
+pub fn read_env_token_for(registry_url: &str) -> Option<String> {
+    let base = registry_url.trim().trim_end_matches('/');
+    if !base.eq_ignore_ascii_case(DEFAULT_REGISTRY_URL) {
+        return None;
+    }
+    std::env::var(TOKEN_ENV)
+        .ok()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
 }
 
 pub fn save_token(token: &str) -> eyre::Result<PathBuf> {
@@ -799,7 +860,7 @@ impl RegistryClient {
         }
         if !status.is_success() {
             let detail = read_limited(response, MAX_ERROR_BYTES, "registry error body")
-                .map(|bytes| String::from_utf8_lossy(&bytes).trim().to_string())
+                .map(|bytes| sanitize_registry_text(String::from_utf8_lossy(&bytes).trim()))
                 .unwrap_or_default();
             bail!(
                 "registry archive returned {status} for `{namespace}/{name}@{version}`{}",
@@ -854,6 +915,27 @@ impl RegistryClient {
     }
 }
 
+fn lock_package_cache(
+    cache_root: &Path,
+    namespace: &str,
+    name: &str,
+) -> eyre::Result<std::fs::File> {
+    let lock_dir = cache_root.join(".locks");
+    fs::create_dir_all(&lock_dir)
+        .with_context(|| format!("failed to create `{}`", lock_dir.display()))?;
+    let path = lock_dir.join(format!("{namespace}--{name}.lock"));
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("failed to open cache lock `{}`", path.display()))?;
+    file.lock()
+        .with_context(|| format!("failed to lock `{}`", path.display()))?;
+    Ok(file)
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -890,7 +972,11 @@ fn file_url(path: &Path) -> eyre::Result<String> {
     let canonical = path
         .canonicalize()
         .with_context(|| format!("failed to canonicalize `{}`", path.display()))?;
-    Ok(format!("file://{}", canonical.display()))
+    // `format!("file://{}", ...)` breaks on Windows, where canonicalize
+    // returns a `\\?\C:\...` path. Let the URL crate build a valid file URL.
+    Url::from_file_path(&canonical)
+        .map(|url| url.to_string())
+        .map_err(|_| eyre::eyre!("failed to build a file URL for `{}`", canonical.display()))
 }
 
 fn git(dir: &Path, args: &[&str]) -> eyre::Result<String> {
@@ -946,11 +1032,15 @@ fn extract_archive(archive: &[u8], dest: &Path) -> eyre::Result<()> {
             .context("invalid registry archive path")?
             .into_owned();
         let relative = path.as_path();
-        if relative.is_absolute()
-            || relative
-                .components()
-                .any(|c| matches!(c, std::path::Component::ParentDir))
-        {
+        // Accept only relative normal/current-dir components. On Windows a
+        // rooted path without a drive prefix (e.g. `/Users/...`) is not
+        // `is_absolute()`, and joining it can escape the extraction root.
+        if relative.components().any(|component| {
+            !matches!(
+                component,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        }) {
             bail!("registry archive path escapes its root");
         }
         total = total.saturating_add(entry.header().size().unwrap_or(0));
@@ -975,10 +1065,11 @@ fn copy_tree(src: &Path, dst: &Path) -> eyre::Result<()> {
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let name = entry.file_name();
-        if matches!(
-            name.to_str(),
-            Some(".git" | "target" | "node_modules" | ".venv")
-        ) {
+        // The checksum covers the whole archive; do not silently drop
+        // directories (e.g. a tracked `src/target/`) after verification.
+        // `.git` is the one exception: a fallback checkout is created as a
+        // fresh repo and must not inherit archive metadata.
+        if name == ".git" {
             continue;
         }
         let from = entry.path();
@@ -1004,31 +1095,43 @@ pub fn source_available(repo: &str, commit: &str) -> bool {
         let path = repo.strip_prefix("file://").unwrap_or(repo);
         let mut command = git_command(Some(Path::new(path)));
         command.args(["cat-file", "-e", &format!("{commit}^{{commit}}")]);
-        return git_status_with_timeout(command, Duration::from_secs(5));
+        return git_output_with_timeout(command, Duration::from_secs(5))
+            .is_some_and(|output| output.status.success());
     }
     let mut command = git_command(None);
-    command.args(["ls-remote", "--quiet", "--", repo, "HEAD"]);
+    // HEAD alone is not enough: a publisher can delete or force-push the
+    // pinned commit while HEAD remains reachable. Enumerate refs and require
+    // the exact object id; a non-ref pinned commit falls back conservatively.
+    command.args(["ls-remote", "--quiet", "--", repo]);
     // A registry-supplied source URL must not be able to hang the build. The
     // child is killed on timeout; `spawn_blocking` cannot cancel a stuck
     // `Command::output()` otherwise.
-    git_status_with_timeout(command, Duration::from_secs(15))
+    git_output_with_timeout(command, Duration::from_secs(15)).is_some_and(|output| {
+        output.status.success()
+            && String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.split_whitespace().next() == Some(commit))
+    })
 }
 
-fn git_status_with_timeout(mut command: std::process::Command, timeout: Duration) -> bool {
-    let Ok(mut child) = command.spawn() else {
-        return false;
-    };
+fn git_output_with_timeout(
+    mut command: std::process::Command,
+    timeout: Duration,
+) -> Option<std::process::Output> {
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::null());
+    let mut child = command.spawn().ok()?;
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
+            Ok(Some(_)) => return child.wait_with_output().ok(),
             Ok(None) => {}
-            Err(_) => return false,
+            Err(_) => return None,
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            return false;
+            return None;
         }
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -1155,8 +1258,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let run = |args: &[&str]| {
             assert!(
-                std::process::Command::new("git")
-                    .current_dir(dir.path())
+                git_command(Some(dir.path()))
                     .args(args)
                     .status()
                     .unwrap()
@@ -1170,8 +1272,7 @@ mod tests {
         run(&["add", "-A"]);
         run(&["commit", "-q", "-m", "init"]);
         let rev = String::from_utf8(
-            std::process::Command::new("git")
-                .current_dir(dir.path())
+            git_command(Some(dir.path()))
                 .args(["rev-parse", "HEAD"])
                 .output()
                 .unwrap()
@@ -1183,6 +1284,7 @@ mod tests {
         let url = format!("file://{}", dir.path().display());
         assert!(source_available(&url, &rev));
         assert!(!source_available(&format!("{url}-missing"), &rev));
+        assert!(!source_available(&url, &"0".repeat(40)));
     }
 
     fn test_archive() -> Vec<u8> {
@@ -1316,6 +1418,27 @@ mod tests {
             format!("{err:#}").contains("no pinned archive checksum"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[test]
+    fn rejects_hosted_artifacts_without_platforms() {
+        let source = json!({
+            "kind": "hosted",
+            "artifact": {
+                "url": "https://example.com/node",
+                "sha256": "a".repeat(64)
+            }
+        });
+        let err = source_spec(&source).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("no `platforms` list"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn cache_keys_do_not_collide_on_punctuation() {
+        assert_ne!(cache_key("https://dora.pub"), cache_key("https://dorap.ub"));
     }
 
     #[test]

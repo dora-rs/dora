@@ -206,3 +206,24 @@ fn refuses_to_write_a_token_through_a_symlink() {
     assert!(stderr.contains("symlink"), "unexpected error: {stderr}");
     assert_eq!(fs::read_to_string(&target).unwrap(), "unchanged\n");
 }
+
+#[test]
+fn help_does_not_reveal_the_token_environment_value() {
+    for subcommand in ["publish", "yank"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_dora"))
+            .args(["hub", subcommand, "--help"])
+            .env("DORA_HUB_TOKEN", "dora_SECRET_should_not_appear")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "`hub {subcommand} --help` failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let help = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !help.contains("dora_SECRET_should_not_appear"),
+            "`hub {subcommand} --help` leaked the token: {help}"
+        );
+    }
+}

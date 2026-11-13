@@ -49,6 +49,10 @@ const ENV_DENYLIST: &[&str] = &[
     "DYLD_INSERT_LIBRARIES",
     "DORA_AUTH_TOKEN",
     "DORA_ALLOW_SHELL_NODES",
+    // Registry credentials must not reach package build scripts or spawned
+    // nodes; `dora hub publish` reads them, the dataflow does not.
+    "DORA_HUB_TOKEN",
+    "DORA_HUB_TOKEN_FILE",
 ];
 
 /// Library *search* paths. Refused from a descriptor like the hijack variables

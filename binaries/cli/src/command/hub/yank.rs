@@ -36,8 +36,9 @@ pub struct Yank {
     /// Registry URL. Defaults to DORA_HUB_REGISTRY_URL or https://dora.pub.
     #[clap(long, env = "DORA_HUB_REGISTRY_URL", value_name = "URL")]
     registry: Option<String>,
-    /// Registry API token (default: $DORA_HUB_TOKEN or the saved token).
-    #[clap(long, env = "DORA_HUB_TOKEN", value_name = "TOKEN")]
+    /// Registry API token (default: the saved token; `DORA_HUB_TOKEN` is
+    /// honored for the official registry only).
+    #[clap(long, value_name = "TOKEN")]
     token: Option<String>,
 }
 
@@ -69,17 +70,25 @@ impl Executable for Yank {
         let config = ResolvedConfig::load_default().context("failed to load hub configuration")?;
         let action = if self.undo { "restore" } else { "yank" };
         let via_registry = self.registry.is_some()
-            || (!config.is_bound(namespace)
-                && (std::env::var_os(REGISTRY_URL_ENV).is_some() || !config.official_explicit()));
+            || (!config.is_bound(namespace) && std::env::var_os(REGISTRY_URL_ENV).is_some());
         if via_registry {
+            if self.reason.is_some() {
+                eprintln!(
+                    "  warning: the registry yank API does not accept a reason; \
+                     `--reason` is only recorded for local/git indexes"
+                );
+            }
             let registry_url = self.registry.unwrap_or_else(registry_url);
             let client = RegistryClient::with_url(&registry_url, false)
                 .context("invalid registry configuration")?;
             let token = match self.token {
                 Some(token) if !token.trim().is_empty() => token,
-                _ => read_saved_token_for(&registry_url)?.context(
-                    "no registry token: run `dora hub login`, pass `--token`, or set DORA_HUB_TOKEN",
-                )?,
+                _ => read_saved_token_for(&registry_url)?
+                    .or_else(|| dora_hub_client::registry::read_env_token_for(&registry_url))
+                    .context(
+                        "no registry token: run `dora hub login`, pass `--token`, or set \
+                         DORA_HUB_TOKEN for the official registry",
+                    )?,
             };
             let response = client
                 .set_yanked(&token, namespace, name, &version.to_string(), !self.undo)
