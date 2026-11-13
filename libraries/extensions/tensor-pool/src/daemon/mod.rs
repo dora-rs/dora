@@ -34,6 +34,149 @@ mod handlers;
 mod mirror;
 mod services;
 mod state;
+#[cfg(test)]
+mod test_services {
+    //! An in-memory [`DaemonServices`] for driving the daemon half in tests.
+
+    use super::*;
+
+    /// Records what the extension stores and drops, and hands everything posted
+    /// through the [`PeerMessageSink`] to the test, which plays the event loop.
+    pub(crate) struct FakeServices {
+        pub machine_id: String,
+        pub session: zenoh::Session,
+        pub clock: Arc<HLC>,
+        pub table: HashMap<(Uuid, String), Vec<u8>>,
+        pub dropped: Vec<(Uuid, String)>,
+        /// What [`DaemonServices::resolve_machine`] answers for every machine.
+        pub resolved: Option<std::net::SocketAddr>,
+        pub sink_tx: tokio::sync::mpsc::UnboundedSender<Timestamped<InterDaemonEvent>>,
+    }
+
+    /// The receiving end of a [`FakeServices`] sink.
+    pub(crate) type SinkReceiver =
+        tokio::sync::mpsc::UnboundedReceiver<Timestamped<InterDaemonEvent>>;
+
+    impl FakeServices {
+        /// A daemon on `machine_id` that uses the given zenoh session. Returns
+        /// the receiving end of the sink.
+        pub fn with_session(machine_id: &str, session: zenoh::Session) -> (Self, SinkReceiver) {
+            let (sink_tx, sink_rx) = tokio::sync::mpsc::unbounded_channel();
+            let services = Self {
+                machine_id: machine_id.to_string(),
+                session,
+                clock: Arc::new(HLC::default()),
+                table: HashMap::new(),
+                dropped: Vec::new(),
+                resolved: None,
+                sink_tx,
+            };
+            (services, sink_rx)
+        }
+    }
+
+    impl DaemonServices for FakeServices {
+        fn machine_id(&self) -> Option<String> {
+            Some(self.machine_id.clone())
+        }
+
+        fn zenoh_session(&self) -> zenoh::Session {
+            self.session.clone()
+        }
+
+        fn clock(&self) -> Arc<HLC> {
+            self.clock.clone()
+        }
+
+        fn extension_store(
+            &mut self,
+            dataflow_id: Uuid,
+            namespace: &str,
+            key: &str,
+            value: Vec<u8>,
+            _owner: &str,
+        ) -> Result<(), String> {
+            assert_eq!(namespace, NAMESPACE);
+            self.table.insert((dataflow_id, key.to_string()), value);
+            Ok(())
+        }
+
+        fn extension_drop_notify(&mut self, dataflow_id: Uuid, namespace: &str, key: &str) {
+            assert_eq!(namespace, NAMESPACE);
+            self.table.remove(&(dataflow_id, key.to_string()));
+            self.dropped.push((dataflow_id, key.to_string()));
+        }
+
+        fn resolve_machine(&self, _machine_id: String) -> BoxFuture<Option<std::net::SocketAddr>> {
+            let resolved = self.resolved;
+            Box::pin(async move { resolved })
+        }
+
+        fn peer_message_sink(&self) -> PeerMessageSink {
+            let tx = self.sink_tx.clone();
+            Arc::new(move |event| {
+                let _ = tx.send(event);
+                Box::pin(async {}) as BoxFuture<()>
+            })
+        }
+    }
+
+    /// A zenoh session that never scouts, listens only on `listen` and dials
+    /// only `connect` (IPv4 loopback ports), so a test can neither reach nor be
+    /// reached by any other zenoh instance on the host.
+    pub(crate) async fn isolated_session(
+        listen: Option<u16>,
+        connect: Option<u16>,
+    ) -> zenoh::Session {
+        let endpoints = |port: Option<u16>| match port {
+            Some(port) => format!(r#"{{ peer: ["tcp/127.0.0.1:{port}"] }}"#),
+            None => "{ peer: [] }".to_string(),
+        };
+        let mut cfg = zenoh::Config::default();
+        for (key, value) in [
+            ("scouting/multicast/enabled", "false".to_string()),
+            ("scouting/gossip/enabled", "false".to_string()),
+            ("listen/endpoints", endpoints(listen)),
+            ("connect/endpoints", endpoints(connect)),
+        ] {
+            cfg.insert_json5(key, &value).unwrap();
+        }
+        zenoh::open(cfg).await.unwrap()
+    }
+
+    /// Two sessions linked over loopback TCP. Pool messages are published with
+    /// `Locality::Remote`, so a test that observes them needs a second session.
+    pub(crate) async fn linked_sessions() -> (zenoh::Session, zenoh::Session) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let listening = isolated_session(Some(port), None).await;
+        let dialing = isolated_session(None, Some(port)).await;
+        (listening, dialing)
+    }
+
+    /// Serializes tests that enable the cross-machine opt-in through the
+    /// process-wide environment.
+    static CROSS_MACHINE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Turn the cross-machine data plane on for the calling test. The data
+    /// listener binds an ephemeral loopback port so parallel tests never fight
+    /// over the default one. Held for the whole test.
+    pub(crate) fn enable_cross_machine() -> std::sync::MutexGuard<'static, ()> {
+        let guard = CROSS_MACHINE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY (env mutation in tests): every test that sets these holds
+        // `CROSS_MACHINE_ENV_LOCK`, and no other test depends on them
+        // being unset.
+        unsafe {
+            std::env::set_var(CROSS_MACHINE_ENV, "1");
+            std::env::set_var(CROSS_DATA_PORT_ENV, "0");
+            std::env::set_var(CROSS_DATA_BIND_ENV, "127.0.0.1");
+        }
+        guard
+    }
+}
 
 pub use services::{BoxFuture, DaemonServices, PeerMessageSink};
 pub use state::PoolState;
@@ -1613,5 +1756,335 @@ mod cross_pool_write_tests {
             .expect("a silent fresh connection must be released")
             .unwrap();
         assert_eq!(admitted, Ok(false));
+    }
+}
+
+#[cfg(test)]
+mod register_timeout_tests {
+    //! The origin side of a cross-machine register that never gets its ack.
+
+    use super::test_services::{FakeServices, enable_cross_machine, linked_sessions};
+    use super::*;
+
+    /// An origin that gives up on a register after the last ack timeout
+    /// must tell the mirror to drop whatever it created: the mirror may
+    /// have built the segment while only its ack was lost, and no later
+    /// free from the node would reach it (#4101).
+    // The guard only serializes the env var across tests; holding it over
+    // the awaits is the point.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn timed_out_register_frees_the_mirror() {
+        let _env = enable_cross_machine();
+        let (mirror_session, origin_session) = linked_sessions().await;
+        let (mut origin, _sink) = FakeServices::with_session("A", origin_session);
+        origin.resolved = Some("127.0.0.1:1".parse().unwrap());
+        let df = Uuid::new_v4();
+        let pool = "pool_sender_1";
+
+        // The mirror: records every pool message and never acks, as if
+        // each ack were lost on the way back.
+        let mirror = mirror_session
+            .declare_subscriber(pool_message_topic(&df, None))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+        let mut state = PoolState::new();
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let request = NodeRequest::RegisterCrossMachine {
+            shared_memory_id: pool.to_string(),
+            shmem_name: "dora_test_sender_segment".to_string(),
+            size: 4096,
+            dtype: "uint8".to_string(),
+            shape: vec![4096],
+            device: "cpu".to_string(),
+            machine_id: "B".to_string(),
+        };
+        state
+            .handle_extension_request(
+                &mut origin,
+                df,
+                "sender".parse().unwrap(),
+                NAMESPACE.to_string(),
+                postcard::to_allocvec(&request).unwrap(),
+                reply_tx,
+            )
+            .await
+            .unwrap();
+
+        let reply = tokio::time::timeout(CROSS_REGISTER_TIMEOUT * 4, reply_rx)
+            .await
+            .expect("the register must give up after its retries")
+            .unwrap();
+        let DaemonReply::ExtensionReply { payload } = reply else {
+            panic!("unexpected reply: {reply:?}")
+        };
+        let response = postcard::from_bytes(&payload).unwrap();
+        let NodeResponse::CrossMachineRegistered { result, .. } = response else {
+            panic!("unexpected response: {response:?}")
+        };
+        assert!(
+            result.unwrap_err().contains("timed out"),
+            "the register must fail on the ack timeout"
+        );
+
+        let mut registers = 0;
+        let mut freed = false;
+        while let Ok(Ok(sample)) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), mirror.recv_async()).await
+        {
+            let event = Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(
+                &sample.payload().to_bytes(),
+            )
+            .unwrap();
+            let InterDaemonEvent::ExtensionMessage {
+                target_machine,
+                payload,
+                ..
+            } = event.inner
+            else {
+                panic!("unexpected event: {:?}", event.inner)
+            };
+            assert_eq!(target_machine.as_deref(), Some("B"));
+            match postcard::from_bytes(&payload).unwrap() {
+                PeerMessage::Register { .. } => {
+                    assert!(!freed, "no register may follow the rollback free");
+                    registers += 1;
+                }
+                PeerMessage::Free { shared_memory_id } => {
+                    assert_eq!(shared_memory_id, pool);
+                    freed = true;
+                }
+                other => panic!("unexpected pool message: {other:?}"),
+            }
+        }
+        assert_eq!(registers, 3, "the origin retries the register twice");
+        assert!(freed, "the origin must free the mirror after giving up");
+    }
+
+    /// The rollback `Free` can be handled by a backlogged mirror right after
+    /// the last `Register`, before that register's creation task has made
+    /// anything. The task must then undo the mirror it creates, or the
+    /// segment leaks until dataflow finish after all (#4101).
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[cfg(target_os = "linux")]
+    async fn free_handled_before_the_mirror_exists_still_frees_it() {
+        use super::test_services::isolated_session;
+
+        let _env = enable_cross_machine();
+        let (mut mirror, _sink) =
+            FakeServices::with_session("B", isolated_session(None, None).await);
+        let mut state = PoolState::new();
+        let df = Uuid::new_v4();
+        let pool = "pool_sender_1";
+        state.subscribe_dataflow(&mut mirror, df);
+        let message = |message: &PeerMessage| postcard::to_allocvec(message).unwrap();
+
+        let register = PeerMessage::Register {
+            origin_machine_id: "A".to_string(),
+            shared_memory_id: pool.to_string(),
+            shmem_name: "dora_test_no_such_sender_segment".to_string(),
+            size: 4096,
+            dtype: "uint8".to_string(),
+            shape: vec![4096],
+            device: "cpu".to_string(),
+        };
+        let free = PeerMessage::Free {
+            shared_memory_id: pool.to_string(),
+        };
+        for payload in [message(&register), message(&free)] {
+            state
+                .handle_extension_message(
+                    &mut mirror,
+                    df,
+                    NAMESPACE.to_string(),
+                    Some("B".to_string()),
+                    payload,
+                )
+                .await
+                .unwrap();
+        }
+
+        let segment = format!(
+            "/dev/shm/{}",
+            TensorPoolManager::cross_pool_shmem_name("B", &df.to_string(), pool).unwrap()
+        );
+        // The creation task runs on its own; give it ample time.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let leaked = std::path::Path::new(&segment).exists();
+        let _ = std::fs::remove_file(&segment);
+        assert!(!leaked, "the freed pool's mirror segment survived");
+        assert!(
+            state
+                .tensor_pool
+                .cross_peer(&df.to_string(), pool)
+                .is_none(),
+            "the freed pool is still tracked"
+        );
+        assert!(
+            mirror.table.is_empty(),
+            "the freed pool's descriptor survived"
+        );
+        state.cleanup_dataflow(df).await;
+    }
+
+    /// A restarted node reuses its pool ids. When a backlogged mirror
+    /// handles an old `Register`, the origin's rollback `Free` and the new
+    /// node's `Register` back to back, the old creation task must neither
+    /// undo the new registration's mirror (they share names) nor nack the
+    /// origin, whose wait for the new register it could resolve, nor
+    /// replace the new mirror with one of its own size.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[cfg(target_os = "linux")]
+    async fn stale_creation_task_leaves_a_newer_registration_alone() {
+        let _env = enable_cross_machine();
+        let pool = "pool_sender_1";
+        const NEW_SIZE: usize = 1 << 20;
+        for _ in 0..20 {
+            let (mirror_session, origin_session) = linked_sessions().await;
+            let (mut mirror, _sink) = FakeServices::with_session("B", mirror_session);
+            let mut state = PoolState::new();
+            let df = Uuid::new_v4();
+            state.subscribe_dataflow(&mut mirror, df);
+            let origin = origin_session
+                .declare_subscriber(pool_message_topic(&df, None))
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+            let register = |size: usize| {
+                postcard::to_allocvec(&PeerMessage::Register {
+                    origin_machine_id: "A".to_string(),
+                    shared_memory_id: pool.to_string(),
+                    shmem_name: "dora_test_no_such_sender_segment".to_string(),
+                    size,
+                    dtype: "uint8".to_string(),
+                    shape: vec![size as i64],
+                    device: "cpu".to_string(),
+                })
+                .unwrap()
+            };
+            let free = postcard::to_allocvec(&PeerMessage::Free {
+                shared_memory_id: pool.to_string(),
+            })
+            .unwrap();
+            // The restarted node registers a different size.
+            for payload in [register(4096), free, register(NEW_SIZE)] {
+                state
+                    .handle_extension_message(
+                        &mut mirror,
+                        df,
+                        NAMESPACE.to_string(),
+                        Some("B".to_string()),
+                        payload,
+                    )
+                    .await
+                    .unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            let segment = format!(
+                "/dev/shm/{}",
+                TensorPoolManager::cross_pool_shmem_name("B", &df.to_string(), pool).unwrap()
+            );
+            let size = std::fs::metadata(&segment).map(|m| m.len() as usize);
+            let tracked = state
+                .tensor_pool
+                .cross_peer(&df.to_string(), pool)
+                .is_some();
+            let described = mirror.table.contains_key(&(df, pool.to_string()));
+            let mut nacked = false;
+            while let Ok(Some(sample)) = origin.try_recv() {
+                let event = Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(
+                    &sample.payload().to_bytes(),
+                )
+                .unwrap();
+                if let InterDaemonEvent::ExtensionMessage { payload, .. } = event.inner
+                    && let Ok(PeerMessage::RegisterAck { ok: false, .. }) =
+                        postcard::from_bytes(&payload)
+                {
+                    nacked = true;
+                }
+            }
+            state.cleanup_dataflow(df).await;
+            let _ = std::fs::remove_file(&segment);
+            let size = size.expect("the newer registration's segment was undone");
+            assert!(
+                size >= NEW_SIZE,
+                "the newer registration's segment was replaced by the old one ({size} bytes)"
+            );
+            assert!(tracked, "the newer registration is no longer tracked");
+            assert!(described, "the newer registration's descriptor is gone");
+            assert!(!nacked, "the origin got a nack for a live registration");
+        }
+    }
+
+    /// The register generations hold only pools that are registered: a
+    /// `Free` removes the pool's entry, and a `Free` that arrives after the
+    /// dataflow was cleaned up adds none, so the table does not grow with
+    /// the pools a long-running dataflow registers and frees.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[cfg(target_os = "linux")]
+    async fn register_generations_track_only_registered_pools() {
+        use super::test_services::isolated_session;
+
+        let _env = enable_cross_machine();
+        let (mut mirror, _sink) =
+            FakeServices::with_session("B", isolated_session(None, None).await);
+        let mut state = PoolState::new();
+        let df = Uuid::new_v4();
+        state.subscribe_dataflow(&mut mirror, df);
+        let entries = |state: &PoolState| {
+            let generations = state.mirror_generations.clone();
+            async move { generations.lock().await.current.len() }
+        };
+        let deliver = |message: PeerMessage| postcard::to_allocvec(&message).unwrap();
+
+        for round in 0..8 {
+            let pool = format!("pool_sender_{round}");
+            let register = deliver(PeerMessage::Register {
+                origin_machine_id: "A".to_string(),
+                shared_memory_id: pool.clone(),
+                shmem_name: "dora_test_no_such_sender_segment".to_string(),
+                size: 4096,
+                dtype: "uint8".to_string(),
+                shape: vec![4096],
+                device: "cpu".to_string(),
+            });
+            state
+                .handle_extension_message(&mut mirror, df, NAMESPACE.to_string(), None, register)
+                .await
+                .unwrap();
+            assert_eq!(entries(&state).await, 1, "a registered pool has its entry");
+            let free = deliver(PeerMessage::Free {
+                shared_memory_id: pool.clone(),
+            });
+            state
+                .handle_extension_message(&mut mirror, df, NAMESPACE.to_string(), None, free)
+                .await
+                .unwrap();
+            assert_eq!(entries(&state).await, 0, "a freed pool keeps an entry");
+            // Let the (now superseded) creation task finish.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let segment = format!(
+                "/dev/shm/{}",
+                TensorPoolManager::cross_pool_shmem_name("B", &df.to_string(), &pool).unwrap()
+            );
+            let _ = std::fs::remove_file(segment);
+        }
+
+        state.cleanup_dataflow(df).await;
+        let late_free = deliver(PeerMessage::Free {
+            shared_memory_id: "pool_sender_0".to_string(),
+        });
+        state
+            .handle_extension_message(&mut mirror, df, NAMESPACE.to_string(), None, late_free)
+            .await
+            .unwrap();
+        assert_eq!(entries(&state).await, 0, "a late free left an entry behind");
     }
 }

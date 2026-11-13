@@ -67,6 +67,10 @@ pub struct PoolState {
     /// port; absent pools fall back to the zenoh relay.
     pub(crate) cross_data_endpoints:
         Arc<std::sync::Mutex<HashMap<(Uuid, String), std::net::SocketAddr>>>,
+    /// Mirror side: the latest register generation of each registered pool,
+    /// so a mirror-creation task can tell whether its `Register` still
+    /// stands. See [`MirrorRegistrations`].
+    pub(crate) mirror_generations: Arc<MirrorGenerations>,
 }
 
 impl PoolState {
@@ -93,6 +97,7 @@ impl PoolState {
             cross_data_listener_port: None,
             cross_data_conns: Arc::new(std::sync::Mutex::new(HashMap::new())),
             cross_data_endpoints: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            mirror_generations: Arc::new(tokio::sync::Mutex::new(MirrorRegistrations::default())),
         }
     }
 

@@ -197,6 +197,9 @@ impl PoolState {
                 // Pool creation happens inside spawn (creation is millisecond-scale but publishing may Block)
                 let tensor_pool = self.tensor_pool.clone();
                 let shm_provider = self.shm_provider.clone();
+                let generations = self.mirror_generations.clone();
+                let generation =
+                    note_mirror_register(&generations, dataflow_id, &shared_memory_id).await;
                 // Replicate the pool descriptor into the local extension
                 // table before the mirror creation task runs, so a
                 // receiver's daemon query resolves it from the first
@@ -267,6 +270,30 @@ impl PoolState {
                         }
                     });
                 tokio::spawn(async move {
+                    // Only the latest `Register` for this pool may build its
+                    // mirror. A task that a later `Free` (an origin giving up
+                    // on a register it sent to a backlogged mirror, #4101) or
+                    // a later `Register` (a restarted node reuses its pool
+                    // ids) has superseded must not create, register or undo
+                    // anything: the mirror's names are shared, so it would
+                    // replace or unlink the newer registration's segment. It
+                    // sends no ack either — the origin waits for the first
+                    // ack of its pending register, and the newest attempt
+                    // answers that. The lock is held until the pool is
+                    // registered, so a `Free` or `Register` handled meanwhile
+                    // waits (millisecond-scale, without blocking the event loop
+                    // thread) and then finds the entry.
+                    let generation_guard = generations.lock().await;
+                    let current = generation_guard
+                        .current
+                        .get(&(dataflow_id, shared_memory_id.clone()))
+                        .copied();
+                    if current != Some(generation) {
+                        tracing::info!(
+                            "memory pool: skipping a superseded register of {shared_memory_id}"
+                        );
+                        return;
+                    }
                     // Mirror allocation cap: the `PeerMessage::Register` event's
                     // `size` comes from a remote daemon (untrusted
                     // cross-machine input). Without a cap, a buggy or
@@ -310,6 +337,9 @@ impl PoolState {
                             origin_machine_id.clone(),
                             mirror_shmem_name.clone(),
                         );
+                    }
+                    drop(generation_guard);
+                    if ok {
                         // The dataflow may have finished while this task
                         // ran; see [`MemoryPoolSubscriber`]. Registering
                         // behind the finish-time drain would strand the
@@ -363,6 +393,9 @@ impl PoolState {
                 Ok(())
             }
             PeerMessage::Free { shared_memory_id } => {
+                // A creation task for an earlier `Register` that has not
+                // built its mirror yet now skips it.
+                note_mirror_free(&self.mirror_generations, dataflow_id, &shared_memory_id).await;
                 self.tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id);
                 // The replicated mirror descriptor goes away with the
@@ -999,6 +1032,35 @@ impl PoolState {
                                         );
                                         continue;
                                     }
+                                    // Giving up. A timeout does not mean the
+                                    // mirror was never created — only that
+                                    // no ack arrived. This side records no
+                                    // cross-machine entry, so the node's
+                                    // later free would never reach the
+                                    // mirror and its segment (up to 1 GiB),
+                                    // tracking entry and descriptor would
+                                    // stay until dataflow finish (#4101).
+                                    // Roll back best effort: `Free` is
+                                    // idempotent on the mirror, and a late
+                                    // ack is ignored once the pending entry
+                                    // is gone.
+                                    if let Err(e) = publish_pool_message(
+                                        &session,
+                                        &clock,
+                                        &dataflow_id,
+                                        Some(&machine_id),
+                                        &PeerMessage::Free {
+                                            shared_memory_id: shared_memory_id.clone(),
+                                        },
+                                        shm_provider.as_deref(),
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(
+                                            "memory pool: failed to publish the rollback free \
+                                             of {shared_memory_id} to {machine_id}: {e}"
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1243,6 +1305,11 @@ impl PoolState {
         if let Some(subscriber) = self.subscribers.remove(&dataflow_id) {
             subscriber.shutdown();
         }
+        self.mirror_generations
+            .lock()
+            .await
+            .current
+            .retain(|(df, _), _| *df != dataflow_id);
 
         // Drain this dataflow's per-(dataflow, pool) cross-write state:
         // these maps are keyed by a fresh per-dataflow UUID and are never
