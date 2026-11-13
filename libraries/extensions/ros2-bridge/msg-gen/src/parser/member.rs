@@ -206,4 +206,29 @@ mod test {
             "vec ! [0f32 , f32 :: INFINITY ,]"
         );
     }
+    #[test]
+    fn quoted_string_default_keeps_surrounding_whitespace() -> Result<()> {
+        // Quoting is the only way to keep leading/trailing whitespace in a
+        // `.msg` value, so it must round-trip exactly (#4164).
+        let result = member_def(r#"string x "  padded  ""#)?;
+        assert_eq!(result.default, Some(vec!["  padded  ".into()]));
+        let result = member_def("string x ' a '")?;
+        assert_eq!(result.default, Some(vec![" a ".into()]));
+        let result = member_def(r#"string[] xs [" a", 'b ', c ]"#)?;
+        assert_eq!(
+            result.default,
+            Some(vec![" a".into(), "b ".into(), "c".into()])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_string_default_counts_quoted_whitespace() -> Result<()> {
+        // `"  ab  "` is 6 bytes, so it must not fit a 4-byte bound (#4164).
+        assert!(member_def(r#"string<=4 x "  ab  ""#).is_err());
+        assert!(member_def(r#"string<=4[1] x ["  ab  "]"#).is_err());
+        let result = member_def(r#"string<=4 x " ab ""#)?;
+        assert_eq!(result.default, Some(vec![" ab ".into()]));
+        Ok(())
+    }
 }
