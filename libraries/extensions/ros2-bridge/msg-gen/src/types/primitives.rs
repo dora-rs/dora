@@ -116,6 +116,25 @@ impl BasicType {
                 "false" => quote! { false },
                 _ => unreachable!(),
             },
+            // A value out of the type's range (`float32 X=1e40`) parses to
+            // infinity, which `Literal::f32_suffixed` panics on. rosidl accepts
+            // such values and gives them infinity, so do the same (#4162).
+            Self::F32 => match value.parse::<f32>().unwrap() {
+                f32::INFINITY => quote! { f32::INFINITY },
+                f32::NEG_INFINITY => quote! { f32::NEG_INFINITY },
+                v => {
+                    let value = Literal::f32_suffixed(v);
+                    quote! { #value }
+                }
+            },
+            Self::F64 => match value.parse::<f64>().unwrap() {
+                f64::INFINITY => quote! { f64::INFINITY },
+                f64::NEG_INFINITY => quote! { f64::NEG_INFINITY },
+                v => {
+                    let value = Literal::f64_suffixed(v);
+                    quote! { #value }
+                }
+            },
             _ => {
                 let value = self.value_literal(value).unwrap();
                 quote! { #value }

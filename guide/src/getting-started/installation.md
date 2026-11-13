@@ -7,6 +7,8 @@ cargo install dora-cli           # CLI (dora command)
 pip install dora-rs              # Python node/operator API
 ```
 
+The Python API needs CPython 3.11 or newer.
+
 ## From source
 
 ```bash
@@ -41,11 +43,11 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dora/relea
 |---------|-------------|---------|
 | `tracing` | OpenTelemetry tracing support | Yes |
 | `metrics` | OpenTelemetry metrics collection | Yes |
-| `python` | Python operator support (PyO3) | No |
 | `redb-backend` | Persistent coordinator state (redb) | Yes |
 
 ```bash
-cargo install dora-cli --features redb-backend
+# Without OpenTelemetry tracing and metrics
+cargo install dora-cli --no-default-features --features redb-backend
 ```
 
 ## Verify

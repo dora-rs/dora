@@ -418,6 +418,14 @@ msgstr "# CLI（dora 命令）\n"
 msgid "# Python node/operator API\n"
 msgstr "# Python 节点/算子 API\n"
 
+#: src/getting-started/installation.md:10
+msgid "The Python API needs CPython 3.11 or newer."
+msgstr "Python API 需要 CPython 3.11 或更高版本。"
+
+#: src/getting-started/installation.md:49
+msgid "# Without OpenTelemetry tracing and metrics\n"
+msgstr "# 不含 OpenTelemetry 追踪和指标\n"
+
 #: src/getting-started/installation.md:10 src/operations/cli.md:53
 msgid "From source"
 msgstr "从源码安装"
@@ -568,10 +576,6 @@ msgstr "OpenTelemetry 指标收集"
 #: src/getting-started/installation.md:44 src/concepts/dataflow-yaml.md:392
 msgid "`python`"
 msgstr ""
-
-#: src/getting-started/installation.md:44
-msgid "Python operator support (PyO3)"
-msgstr "Python 算子支持（PyO3）"
 
 #: src/getting-started/installation.md:44 src/concepts/patterns.md:209
 #: src/concepts/patterns.md:210 src/concepts/patterns.md:211
@@ -1105,7 +1109,7 @@ msgid "str"
 msgstr ""
 
 #: src/getting-started/quickstart.md:77
-msgid "`\"INPUT\"`, `\"INPUT_CLOSED\"`, `\"STOP\"`, or `\"ERROR\"`"
+msgid "`\"INPUT\"`, `\"INPUT_CLOSED\"`, `\"STOP\"` or `\"ERROR\"`; less often `\"INPUT_RECOVERED\"`, `\"NODE_RESTARTED\"`, `\"NODE_FAILED\"`, `\"RELOAD\"`, `\"PARAM_UPDATE\"` or `\"PARAM_DELETED\"`"
 msgstr ""
 
 #: src/getting-started/quickstart.md:78 src/concepts/dataflow-yaml.md:54
@@ -1115,7 +1119,7 @@ msgid "`id`"
 msgstr ""
 
 #: src/getting-started/quickstart.md:78
-msgid "Input name (e.g. `\"message\"`) -- only for `INPUT` events"
+msgid "The input name (e.g. `\"message\"`) for `INPUT` and `INPUT_CLOSED`; the stop cause (`\"MANUAL\"` or `\"ALL_INPUTS_CLOSED\"`) for `STOP`"
 msgstr ""
 
 #: src/getting-started/quickstart.md:79
