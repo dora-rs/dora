@@ -42,6 +42,25 @@ fn has_prebuilt_cli(release: &self_update::update::Release, target: &str) -> boo
         })
 }
 
+/// Whether `release_version` is newer than `current_version`. Semver
+/// comparison: a dev/pre-release build that is ahead of the latest published
+/// release must not be offered a downgrade.
+fn is_newer(current_version: &str, release_version: &str) -> bool {
+    self_update::version::bump_is_greater(current_version, release_version)
+        .unwrap_or(current_version != release_version)
+}
+
+/// Whether `dora self update` must refuse: `release` is newer than this build
+/// but has no CLI archive for `target`. When there is nothing newer, the
+/// updater reports "already at the latest version" on any target.
+fn lacks_prebuilt_update(
+    release: &self_update::update::Release,
+    current_version: &str,
+    target: &str,
+) -> bool {
+    is_newer(current_version, release.version()) && !has_prebuilt_cli(release, target)
+}
+
 /// The updater `dora self update` runs: the CLI archive of the latest
 /// `dora-rs/dora` release for this target.
 fn cli_updater() -> eyre::Result<self_update::backends::github::Update> {
@@ -82,15 +101,7 @@ impl Executable for SelfSubCommand {
                             };
                             let release_version = release.version();
                             let current_version = self_update::cargo_crate_version!();
-                            // Semver comparison — a dev/pre-release build that is
-                            // ahead of the latest published release must not be
-                            // offered a downgrade.
-                            let newer = self_update::version::bump_is_greater(
-                                current_version,
-                                release_version,
-                            )
-                            .unwrap_or(current_version != release_version);
-                            if newer {
+                            if is_newer(current_version, release_version) {
                                 println!(
                                     "An update is available: {release_version}. Run 'dora self update' to update"
                                 );
@@ -110,7 +121,11 @@ impl Executable for SelfSubCommand {
                         .get_latest_release()
                         .map_err(|e| eyre::eyre!("failed to check for updates: {e}"))?;
                     if let Some(release) = releases.latest()
-                        && !has_prebuilt_cli(release, env!("TARGET"))
+                        && lacks_prebuilt_update(
+                            release,
+                            self_update::cargo_crate_version!(),
+                            env!("TARGET"),
+                        )
                     {
                         bail!(
                             "no prebuilt dora CLI for {} in release {}; install it with \
@@ -295,6 +310,21 @@ mod tests {
             );
             assert!(!super::has_prebuilt_cli(&release, target), "{target}");
         }
+    }
+
+    /// An up-to-date (or newer dev) build on a target without a prebuilt CLI
+    /// is not refused: the updater reports "already at the latest version"
+    /// (#4169 review). Only an actual update to a release without an archive
+    /// for the target is refused.
+    #[test]
+    fn only_an_actual_update_needs_a_prebuilt_cli() {
+        let release = v1_1_0_release();
+        let musl = "x86_64-unknown-linux-musl";
+        assert!(super::lacks_prebuilt_update(&release, "1.0.0", musl));
+        assert!(!super::lacks_prebuilt_update(&release, "1.1.0", musl));
+        assert!(!super::lacks_prebuilt_update(&release, "1.2.0-dev", musl));
+        let gnu = "x86_64-unknown-linux-gnu";
+        assert!(!super::lacks_prebuilt_update(&release, "1.0.0", gnu));
     }
 
     /// The Windows release asset is made with PowerShell `Compress-Archive`,
