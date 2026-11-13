@@ -9,7 +9,8 @@ use crate::OFFICIAL_NAMESPACE;
 /// `dora-yolo@^0.5` means exactly `dora-rs/dora-yolo@^0.5`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageRef {
-    /// Index namespace (`dora-rs` when the reference was written bare).
+    /// Index namespace (`dora-rs` when the reference was written bare),
+    /// lowercased by [`PackageRef::parse`].
     pub namespace: String,
     /// Package name within the namespace.
     pub name: String,
@@ -22,7 +23,9 @@ impl PackageRef {
     ///
     /// A bare name (no `namespace/` prefix) is shorthand for the official
     /// [`OFFICIAL_NAMESPACE`](crate::OFFICIAL_NAMESPACE), and an omitted
-    /// `@version-req` means "any version" ([`VersionReq::STAR`]).
+    /// `@version-req` means "any version" ([`VersionReq::STAR`]). Namespaces
+    /// are lowercase, so the namespace is ASCII-lowercased: `ACME/x` is
+    /// `acme/x`, and resolves against the index `acme` is bound to.
     ///
     /// # Examples
     ///
@@ -36,9 +39,10 @@ impl PackageRef {
     /// assert_eq!(bare.name, "dora-yolo");
     /// assert_eq!(bare.key(), "dora-rs/dora-yolo");
     ///
-    /// // Explicit namespace is kept as-is.
+    /// // Explicit namespace is kept, lowercased.
     /// let namespaced = PackageRef::parse("acme/lidar-fusion@2.1")?;
     /// assert_eq!(namespaced.key(), "acme/lidar-fusion");
+    /// assert_eq!(PackageRef::parse("ACME/lidar-fusion@2.1")?, namespaced);
     ///
     /// // No `@version-req` means any version.
     /// assert_eq!(PackageRef::parse("dora-yolo")?.requirement, VersionReq::STAR);
@@ -74,7 +78,12 @@ impl PackageRef {
             eyre::bail!("invalid package reference `{reference}`: empty namespace or name");
         }
         Ok(Self {
-            namespace: namespace.to_string(),
+            // Namespaces are lowercase (`hub.toml` bindings and published
+            // manifests are checked for it). Kept as written, `ACME` would
+            // miss an `acme` binding and resolve against the official index,
+            // where a case-insensitive filesystem (macOS, Windows) opens the
+            // public `acme/<name>` entry for the catalog path `ACME/<name>`.
+            namespace: namespace.to_ascii_lowercase(),
             name: name.to_string(),
             requirement,
         })
@@ -123,6 +132,14 @@ mod tests {
         for req in [">=0.5, <0.7", "=1.2.3", "~0.4", "*"] {
             PackageRef::parse(&format!("x@{req}")).unwrap_or_else(|e| panic!("{req}: {e}"));
         }
+    }
+
+    #[test]
+    fn namespace_is_lowercased() {
+        let r = PackageRef::parse("ACME/Lidar@1").unwrap();
+        assert_eq!(r.namespace, "acme");
+        assert_eq!(r.name, "Lidar", "only the namespace is normalized");
+        assert_eq!(r.key(), "acme/Lidar");
     }
 
     #[test]
