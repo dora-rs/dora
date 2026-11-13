@@ -160,6 +160,9 @@ impl Coordinator {
                     tracing::warn!("failed to persist daemon unregistration: {e}");
                 }
             }
+            // While the dataflows are still running: the disconnect below can
+            // take one out of `running_dataflows` (#4161).
+            self.commit_answered_topology_changes(&disconnected).await;
             let disconnect_actions = cleanup_disconnected_daemons_from_running_dataflows(
                 &mut self.running_dataflows,
                 &disconnected,
@@ -344,6 +347,9 @@ impl Coordinator {
                 tracing::warn!("failed to persist daemon unregistration: {e}");
             }
             let disconnected = BTreeSet::from([daemon_id]);
+            // While the dataflows are still running: the disconnect below can
+            // take one out of `running_dataflows` (#4161).
+            self.commit_answered_topology_changes(&disconnected).await;
             let disconnect_actions = cleanup_disconnected_daemons_from_running_dataflows(
                 &mut self.running_dataflows,
                 &disconnected,

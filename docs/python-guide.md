@@ -76,8 +76,8 @@ Every call to `node.next()` or iteration over `for event in node` returns an eve
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `type` | str | `"INPUT"`, `"INPUT_CLOSED"`, `"STOP"`, or `"ERROR"` |
-| `id` | str | Input name (e.g. `"message"`) -- only for `INPUT` events |
+| `type` | str | `"INPUT"`, `"INPUT_CLOSED"`, `"STOP"` or `"ERROR"`; less often `"INPUT_RECOVERED"`, `"NODE_RESTARTED"`, `"NODE_FAILED"`, `"RELOAD"`, `"PARAM_UPDATE"` or `"PARAM_DELETED"` |
+| `id` | str | The input name (e.g. `"message"`) for `INPUT` and `INPUT_CLOSED`; the stop cause (`"MANUAL"` or `"ALL_INPUTS_CLOSED"`) for `STOP` |
 | `value` | pyarrow.Array or None | The data payload |
 | `metadata` | dict | Tracing/routing metadata |
 

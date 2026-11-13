@@ -620,10 +620,9 @@ async fn start_inner(
             Event::TopologyReply {
                 dataflow_id,
                 change_id,
-                result,
             } => {
                 coordinator
-                    .handle_topology_reply(dataflow_id, change_id, result)
+                    .handle_topology_reply(dataflow_id, change_id)
                     .await?
             }
         }
