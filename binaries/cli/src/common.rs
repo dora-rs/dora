@@ -145,6 +145,33 @@ pub(crate) fn query_running_dataflows(session: &WsSession) -> eyre::Result<Dataf
     expect_reply!(reply, DataflowList(list))
 }
 
+/// The dataflow a `stop`/`restart`-style command should act on.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DataflowTarget {
+    Uuid(Uuid),
+    Name(String),
+    /// Neither an identifier nor `--name` was given.
+    Interactive,
+}
+
+impl DataflowTarget {
+    /// Pick the target from a positional `NAME_OR_UUID` and an explicit
+    /// `-n/--name`. A positional value that parses as a UUID is a UUID;
+    /// anything else, and every `--name` value, is a name. `--name` never
+    /// goes through UUID parsing, so a dataflow started with a UUID-shaped
+    /// `--name` can still be addressed by that name.
+    pub(crate) fn from_args(identifier: Option<String>, name: Option<String>) -> Self {
+        match (identifier, name) {
+            (Some(ident), _) => match Uuid::parse_str(&ident) {
+                Ok(uuid) => Self::Uuid(uuid),
+                Err(_) => Self::Name(ident),
+            },
+            (None, Some(name)) => Self::Name(name),
+            (None, None) => Self::Interactive,
+        }
+    }
+}
+
 pub(crate) fn resolve_dataflow_identifier_interactive(
     session: &WsSession,
     name_or_uuid: Option<&str>,
@@ -377,6 +404,32 @@ pub(crate) struct RefusedPortGuard {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn dataflow_target_name_flag_skips_uuid_parsing() {
+        let uuid_shaped = "0123456789abcdef0123456789abcdef".to_string();
+        assert_eq!(
+            DataflowTarget::from_args(None, Some(uuid_shaped.clone())),
+            DataflowTarget::Name(uuid_shaped)
+        );
+    }
+
+    #[test]
+    fn dataflow_target_positional_uuid_or_name() {
+        let uuid = Uuid::new_v4();
+        assert_eq!(
+            DataflowTarget::from_args(Some(uuid.to_string()), None),
+            DataflowTarget::Uuid(uuid)
+        );
+        assert_eq!(
+            DataflowTarget::from_args(Some("my-flow".into()), None),
+            DataflowTarget::Name("my-flow".into())
+        );
+        assert_eq!(
+            DataflowTarget::from_args(None, None),
+            DataflowTarget::Interactive
+        );
+    }
 
     #[test]
     fn working_dir_or_parent_prefers_override() {

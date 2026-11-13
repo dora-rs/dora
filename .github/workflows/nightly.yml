@@ -220,6 +220,66 @@ jobs:
 
   # Build the dora CLI once and upload as artifact for downstream jobs.
   # Saves ~15 min × 4 downstream jobs = ~60 runner-minutes per nightly run.
+  # Backwards compatibility of `dora self update`: installs a CLI from an
+  # older release, updates it, and checks that it reports the latest release.
+  # The older CLIs select the release asset their own way (the first one
+  # matching their target), so this covers what the current CLI's unit tests
+  # can't. Skipped when there is nothing newer to update to.
+  self-update-legacy:
+    name: Self update from ${{ matrix.from }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            from: 1.0.0
+            asset: dora-cli-x86_64-unknown-linux-gnu.tar.gz
+          - os: windows-latest
+            from: 1.2.0
+            asset: dora-cli-x86_64-pc-windows-msvc.zip
+    steps:
+      - name: Update the legacy CLI and check the result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FROM: ${{ matrix.from }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          latest=$(gh release view --repo "$REPO" --json tagName --jq .tagName)
+          latest=${latest#v}
+          # Self update only works to releases from 1.2 on.
+          if [ "$(printf '%s\n%s\n' 1.2.0 "$latest" | sort -V | head -n1)" != 1.2.0 ]; then
+            echo "::notice::latest release v$latest predates the self update fix; nothing to test"
+            exit 0
+          fi
+          if ! gh release view "v$FROM" --repo "$REPO" >/dev/null 2>&1; then
+            echo "::notice::v$FROM is not released yet; nothing to test"
+            exit 0
+          fi
+          if [ "$(printf '%s\n%s\n' "$FROM" "$latest" | sort -V | tail -n1)" = "$FROM" ]; then
+            echo "::notice::v$FROM is the latest release; nothing to update to"
+            exit 0
+          fi
+          work=$(mktemp -d)
+          gh release download "v$FROM" --repo "$REPO" --pattern "$ASSET" --dir "$work"
+          case "$ASSET" in
+            *.zip) unzip -q "$work/$ASSET" -d "$work/out"; bin=$(find "$work/out" -name dora.exe | head -n1) ;;
+            *) mkdir -p "$work/out"; tar -xzf "$work/$ASSET" -C "$work/out"; bin=$(find "$work/out" -name dora -type f | head -n1) ;;
+          esac
+          "$bin" --version
+          # Released CLIs ask for confirmation before replacing themselves.
+          echo y | "$bin" self update
+          after=$("$bin" --version)
+          echo "$after"
+          case "$after" in
+            *"$latest"*) ;;
+            *) echo "::error::expected $latest after self update from $FROM, got: $after"; exit 1 ;;
+          esac
+
   build-cli:
     name: Build dora CLI (shared)
     runs-on: ubuntu-latest
@@ -1519,17 +1579,37 @@ jobs:
       - name: C++ Extension Seam example
         timeout-minutes: 15
         run: cargo run --example cxx-extension-seam
+      # A stalled Ubuntu mirror makes apt wait out its default timeout on
+      # every package before falling back, which alone can run past the step
+      # budget. So apt drops a silent connection after 15s and retries, and
+      # each `update` and download pass is capped at 5 minutes and tried up
+      # to three times; packages fetched by an earlier pass stay in apt's
+      # cache. Only network work is capped: the install that runs dpkg is
+      # not, so a timeout never leaves dpkg half-done or holding its lock.
       - name: Install Arrow C++ Library
-        timeout-minutes: 10
+        timeout-minutes: 20
         shell: bash
         run: |
           if [ "$RUNNER_OS" == "Linux" ]; then
-            sudo apt-get update
-            sudo apt-get install -y -V ca-certificates lsb-release wget
-            wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
-            sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
-            sudo apt-get update
-            sudo apt-get install -y -V libarrow-dev libarrow-glib-dev
+            APT_OPTS="-o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15"
+            apt_retry() {
+              for attempt in 1 2 3; do
+                if sudo timeout 300 apt-get $APT_OPTS "$@"; then return 0; fi
+                echo "apt-get $* failed (attempt $attempt/3)" >&2
+                sleep 10
+              done
+              return 1
+            }
+            apt_install() {
+              apt_retry install --download-only -y "$@"
+              sudo apt-get $APT_OPTS install -y -V "$@"
+            }
+            apt_retry update
+            apt_install ca-certificates lsb-release wget
+            wget --tries=3 --timeout=30 https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+            apt_install ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+            apt_retry update
+            apt_install libarrow-dev libarrow-glib-dev
           elif [ "$RUNNER_OS" == "macOS" ]; then
             brew update
             brew install apache-arrow
@@ -2201,6 +2281,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build-cli
+      - self-update-legacy
       - wheel-smoke
       - smoke-suite
       - hub-smoke
@@ -2773,6 +2854,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build-cli
+      - self-update-legacy
       - wheel-smoke
       - smoke-suite
       - hub-smoke

@@ -494,6 +494,12 @@ The redb database includes a `meta` table with a `schema_version` key. On open:
 
 This prevents silent data corruption when the serialization format of stored records changes between Dora versions. The current schema version is `1`.
 
+### Integrity Check
+
+Every time the store is opened, redb verifies the checksum of each page before any record is read. A file that was damaged after a clean shutdown (bit rot, a partial copy, an edit) is rejected with an error that starts with `redb store is corrupt` and names the file, instead of being served with altered or missing records. `dora up` adds a hint to rerun with `--recreate-store`, which archives the damaged file and starts with a fresh store. If redb can repair the damage by falling back to the previous commit, the store opens without its last write and the coordinator logs a warning. The check reads the whole file once per coordinator start.
+
+The check is all or nothing: one damaged page anywhere in the file stops the coordinator from starting, even if that page holds a record it would never read again. To keep working before you decide what to do with the file, start the coordinator yourself with `dora coordinator --store memory`. It runs without persistence and leaves the damaged file in place, so you can inspect it or restore it from a backup instead of archiving it with `--recreate-store`.
+
 ### File Security
 
 On Unix systems:

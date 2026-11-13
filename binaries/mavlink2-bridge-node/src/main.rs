@@ -92,6 +92,19 @@ enum Wake<T> {
     ReaderGone,
 }
 
+/// The frames to forward in one main-loop pass: the frame that woke the last
+/// wait (if any), then what is queued in `rx` right now.
+///
+/// A snapshot, not flume's `try_iter`: that keeps calling `try_recv` until the
+/// channel is empty, and the reader refills it while `send_output` runs. Once
+/// frames arrive faster than they are forwarded (a flooding `udpin` peer, a
+/// high-rate SITL, daemon backpressure) such a pass would never end, leaving
+/// `Stop` and `*_cmd` inputs unread. Ending the pass returns control to the event
+/// wait, whose `select` polls the event stream before the frame channel.
+fn frames_for_pass<T>(woken: Option<T>, rx: &flume::Receiver<T>) -> impl Iterator<Item = T> + '_ {
+    woken.into_iter().chain(rx.drain())
+}
+
 /// Block until `event` (a pending event-stream receive, e.g.
 /// [`recv_async_timeout`](dora_node_api::EventStream::recv_async_timeout)) completes or the reader decodes a
 /// frame — whichever comes first.
@@ -627,7 +640,7 @@ fn main() -> Result<()> {
     // iteration, ahead of anything queued behind it.
     let mut woken_frame = None;
     'run: loop {
-        for (id, arr) in woken_frame.take().into_iter().chain(rx.try_iter()) {
+        for (id, arr) in frames_for_pass(woken_frame.take(), &rx) {
             if let Err(e) = node.send_output(id, MetadataParameters::default(), arr) {
                 // A `send_output` failure means the dora stream is gone (the
                 // daemon went away). Returning `?` here would skip the
@@ -690,7 +703,9 @@ fn main() -> Result<()> {
     // but the loop exited before emitting (a `Stop` arrives while frames are
     // queued; the daemon is still alive on that path). Best-effort — on a
     // closed stream `send_output` errors and is ignored (dora-rs/dora#2027).
-    while let Ok((id, arr)) = rx.try_recv() {
+    // A snapshot, like `frames_for_pass`: the reader runs until the shutdown
+    // flag below, so a `try_recv` loop could chase its refills forever.
+    for (id, arr) in rx.drain() {
         let _ = node.send_output(id, MetadataParameters::default(), arr);
     }
 
@@ -789,6 +804,35 @@ mod tests {
 
     use super::*;
     use std::net::UdpSocket;
+
+    /// Frames the reader queues while a pass is forwarding must wait for the
+    /// next pass, so the main loop gets back to the event stream (`Stop`,
+    /// `*_cmd` inputs) instead of chasing the refills forever.
+    #[test]
+    fn frames_for_pass_ignores_frames_queued_during_the_pass() {
+        let (tx, rx) = flume::unbounded::<u32>();
+        for frame in 0..8 {
+            tx.send(frame).unwrap();
+        }
+        // Refill on every forwarded frame, as a fast reader does. `take`
+        // only keeps a regression from hanging the test.
+        let forwarded = frames_for_pass(None, &rx)
+            .take(1000)
+            .inspect(|_| tx.send(99).unwrap())
+            .count();
+        assert_eq!(forwarded, 8);
+        assert_eq!(rx.len(), 8);
+    }
+
+    #[test]
+    fn frames_for_pass_forwards_the_woken_frame_first() {
+        let (tx, rx) = flume::bounded::<u32>(4);
+        tx.send(2).unwrap();
+        tx.send(3).unwrap();
+        let order: Vec<_> = frames_for_pass(Some(1), &rx).collect();
+        assert_eq!(order, [1, 2, 3]);
+        assert!(frames_for_pass(None, &rx).next().is_none());
+    }
 
     /// Reserve a UDP port and immediately drop it so mavlink can
     /// rebind. Mirrors the pattern in `tests/udp_loopback.rs`.

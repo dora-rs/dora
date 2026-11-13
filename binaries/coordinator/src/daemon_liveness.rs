@@ -392,7 +392,17 @@ pub(crate) async fn stop_orphaned_dataflow_on_daemon(
 ///   dora-rs/dora#2028) — a `stop` racing a disconnect still returns;
 /// - removes the dataflow from `running_dataflows`; the live entry is rebuilt by
 ///   `reestablish_running_dataflow` when the daemon reconnects and re-reports it
-///   (so `dora list` / `stop` / `logs` work again — dora-rs/dora#2029 P1).
+///   (so `dora list` / `stop` / `logs` work again — dora-rs/dora#2029 P1);
+/// - moves the results of daemons that already finished from
+///   `dataflow_results` into `resent_finish_reports`. Every reader of
+///   `dataflow_results` takes an entry for a dataflow that is not in
+///   `running_dataflows` to be finished, so leaving them there would make
+///   `dora list` show the dataflow Finished and `dora stop` reply success
+///   without stopping anything, and would let `cap_dataflow_results` evict them
+///   before a resent finish report needs them to settle the record. Parked, they
+///   are merged back when a daemon re-establishes the dataflow, used by the
+///   coverage check of a resent finish report, and dropped with the record on
+///   the recovery timeout, like any other parked report.
 ///
 /// If no daemon reclaims it, the recovery-timeout path (the `Recovering -> Failed`
 /// sweep) fails it terminally after `RECOVERY_TIMEOUT_SECS`.
@@ -403,6 +413,8 @@ pub(crate) async fn begin_orphaned_dataflow_reclaim(
     uuid: DataflowId,
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     reclaimed_launches: &mut crate::state::ReclaimedLaunches,
+    dataflow_results: &mut IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    resent_finish_reports: &mut HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     clock: &HLC,
     store: &dyn dora_coordinator_store::CoordinatorStore,
 ) {
@@ -410,6 +422,11 @@ pub(crate) async fn begin_orphaned_dataflow_reclaim(
         return;
     };
     reclaimed_launches.insert(uuid, df.launch.clone());
+    // Nothing is parked for a dataflow that is still running: re-establishing
+    // it drained `resent_finish_reports` (`merge_resent_finish_reports`).
+    if let Some(finished) = dataflow_results.shift_remove(&uuid) {
+        resent_finish_reports.insert(uuid, finished);
+    }
     let msg = "all daemons running this dataflow disconnected; \
                waiting for daemon reconnect (Recovering)"
         .to_string();
@@ -468,6 +485,7 @@ pub(crate) async fn apply_disconnect_actions(
     daemon_connections: &mut DaemonConnections,
     archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
     dataflow_results: &mut IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    resent_finish_reports: &mut HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     pending_restarts: &mut HashMap<DataflowId, PendingRestart>,
     store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
     clock: &Arc<HLC>,
@@ -525,6 +543,8 @@ pub(crate) async fn apply_disconnect_actions(
                     uuid,
                     running_dataflows,
                     reclaimed_launches,
+                    dataflow_results,
+                    resent_finish_reports,
                     clock,
                     store.as_ref(),
                 )

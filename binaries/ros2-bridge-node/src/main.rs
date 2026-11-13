@@ -172,10 +172,7 @@ fn run_zenoh_mode(
         unreachable!()
     };
     tracing::info!(profile = ?compatibility, config_source = if config_uri.is_some() { "explicit" } else { "environment-or-default" }, "starting native ROS2 Zenoh transport");
-    let domain_id = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain_id = parse_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
     let context = futures::executor::block_on(ZenohContext::open(ZenohContextOptions {
         domain_id,
         config_uri: config_uri
@@ -216,10 +213,7 @@ fn run_zenoh_topic_mode(
         unreachable!()
     };
     let resolver = TypeDescriptionResolver::from_ament_prefix_path();
-    let domain_id = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain_id = parse_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
     let mut publishers = Vec::new();
     let mut subscribers = Vec::new();
     for topic in resolve_topics(config)? {
@@ -337,10 +331,7 @@ fn run_zenoh_service_mode(
         &service_name,
         &TypeDescriptionResolver::from_ament_prefix_path(),
     )?;
-    let domain_id = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain_id = parse_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
     let key = DataKey::new(domain_id, name, &identity)?;
     let qos = config.qos.to_neutral_qos();
     let token = TopicToken {
@@ -554,10 +545,7 @@ fn run_zenoh_action_mode(
     };
     let cancel = resolve_service(compatibility, "action_msgs", "CancelGoal", &resolver)?;
     let status = resolve_message(compatibility, "action_msgs", "GoalStatusArray", &resolver)?;
-    let domain = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain = parse_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
     let endpoints = dora_ros2_bridge::transport::action::ActionEndpoints::new(
         action_name,
         &package,
@@ -1302,7 +1290,7 @@ fn run_service_mode(
 
     let (mut ros_node, _pool) = create_ros_node(&config)?;
 
-    let service_qos = config.qos.to_rustdds_qos();
+    let service_qos = bridge_endpoint_qos(&config);
 
     match role {
         Ros2Role::Client => {
@@ -1544,7 +1532,8 @@ fn run_action_mode(
     let feedback_type_info = make_type_info("Feedback");
 
     let (mut ros_node, _pool) = create_ros_node(&config)?;
-    let qos = config.qos.to_rustdds_qos();
+    let qos = bridge_endpoint_qos(&config);
+    let status_qos = action_status_qos(&config.qos);
     let action_ros2_name = absolute_ros2_name(action_name)?;
     let action_type_name = ros2_client::ActionTypeName::new(&package, &type_name);
 
@@ -1555,7 +1544,7 @@ fn run_action_mode(
                 result_service: qos.clone(),
                 cancel_service: qos.clone(),
                 feedback_subscription: qos.clone(),
-                status_subscription: qos,
+                status_subscription: status_qos,
             };
 
             let client = ros_node
@@ -1581,7 +1570,7 @@ fn run_action_mode(
                 result_service: qos.clone(),
                 cancel_service: qos.clone(),
                 feedback_publisher: qos.clone(),
-                status_publisher: qos,
+                status_publisher: status_qos,
             };
 
             let server = ros_node
@@ -2264,8 +2253,9 @@ struct SubscriptionStream {
 fn create_ros_node(
     config: &Ros2BridgeConfig,
 ) -> eyre::Result<(ros2_client::Node, futures::executor::ThreadPool)> {
+    let domain_id = parse_dds_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref())?;
     let ros_context =
-        ros2_client::Context::new().map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
+        create_ros_context(domain_id).map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
     let node_name = config
         .node_name
         .clone()
@@ -2291,6 +2281,43 @@ fn create_ros_node(
     .context("failed to spawn ros2 spinner")?;
 
     Ok((ros_node, pool))
+}
+
+fn create_ros_context(domain_id: u16) -> rustdds::dds::CreateResult<ros2_client::Context> {
+    ros2_client::Context::with_options(ros2_client::ContextOptions::new().domain_id(domain_id))
+}
+
+/// Parse `ROS_DOMAIN_ID` for the Zenoh transport.
+///
+/// Zenoh keys carry the domain id as a `usize` and have no DDS port limit, so
+/// every valid value is preserved, including values above `u16::MAX`.
+fn parse_ros_domain_id(value: Option<&str>) -> usize {
+    value.and_then(|value| value.parse().ok()).unwrap_or(0)
+}
+
+/// Parse `ROS_DOMAIN_ID` for the DDS transport.
+///
+/// DDS derives its well-known ports from the domain id, so only domains `0` to
+/// `232` are usable. A missing, empty or whitespace-only value means "unset"
+/// and selects domain 0; anything else that is not a domain id in that range is
+/// an error, because silently bridging on domain 0 would hide the mistake.
+fn parse_dds_ros_domain_id(value: Option<&str>) -> eyre::Result<u16> {
+    let Some(value) = value else {
+        return Ok(0);
+    };
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(0);
+    }
+    match value.parse::<u16>() {
+        Ok(domain_id) if domain_id <= 232 => Ok(domain_id),
+        Ok(domain_id) => Err(eyre!(
+            "invalid ROS_DOMAIN_ID `{value}`: DDS domains are 0 to 232, got {domain_id}"
+        )),
+        Err(_) => Err(eyre!(
+            "invalid ROS_DOMAIN_ID `{value}`: expected a DDS domain id between 0 and 232"
+        )),
+    }
 }
 
 /// Wait for a ROS2 service to become available.
@@ -2414,6 +2441,40 @@ fn resolve_topics(config: &Ros2BridgeConfig) -> eyre::Result<Vec<Ros2TopicConfig
         (None, Some(topics)) => Ok(topics.clone()),
         _ => eyre::bail!("topic mode requires exactly one of `topic` or `topics` to be set"),
     }
+}
+
+/// QoS for DDS service and action endpoints.
+///
+/// Topic QoS defaults to best effort, but ROS 2 service and action endpoints
+/// require reliable delivery, so `reliable` is always forced on and a
+/// best-effort configuration is ignored.
+fn service_or_action_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
+    Ros2QosConfig {
+        reliable: true,
+        keep_last: config.keep_last.or(Some(10)),
+        ..config.clone()
+    }
+    .to_rustdds_qos()
+}
+
+/// QoS for the service and action endpoints of a bridge config.
+fn bridge_endpoint_qos(config: &Ros2BridgeConfig) -> rustdds::QosPolicies {
+    service_or_action_qos(&config.qos)
+}
+
+/// QoS for the action status channel.
+///
+/// ROS 2 action clients subscribe to the status topic with transient-local
+/// durability, so the status publisher and subscription always use reliable,
+/// transient-local delivery regardless of the configured topic QoS.
+fn action_status_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
+    Ros2QosConfig {
+        reliable: true,
+        keep_last: config.keep_last.or(Some(10)),
+        durability: Some("transient_local".to_string()),
+        ..config.clone()
+    }
+    .to_rustdds_qos()
 }
 
 trait ToNeutralQos {
@@ -3026,5 +3087,244 @@ mod subscriber_thread_tests {
             [("out0".into(), 1), ("out0".into(), 2), ("out1".into(), 3)]
         );
         assert_stops_promptly(stop, handles);
+    }
+}
+
+/// Unit tests for the domain id parsers and the service/action endpoint QoS.
+///
+/// The Zenoh parser preserves every valid `usize` domain id, while the DDS
+/// parser accepts only the domains DDS can address (`0` to `232`) and reports
+/// anything else as an error instead of silently bridging on domain 0.
+#[cfg(test)]
+mod domain_and_qos_tests {
+    use super::{
+        Ros2BridgeConfig, Ros2QosConfig, action_status_qos, bridge_endpoint_qos,
+        parse_dds_ros_domain_id, parse_ros_domain_id, service_or_action_qos,
+    };
+    use dora_ros2_bridge::transport::dds::from_rustdds_qos;
+    use dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
+
+    // ---- domain id parsing -------------------------------------------------
+
+    /// Zenoh keys carry the domain id as a `usize` with no DDS port limit, so
+    /// the parser must not cap at 232.
+    #[test]
+    fn zenoh_domain_id_parser_does_not_cap_above_232() {
+        assert_eq!(parse_ros_domain_id(Some("232")), 232);
+        assert_eq!(parse_ros_domain_id(Some("233")), 233);
+        assert_eq!(parse_ros_domain_id(Some("300")), 300);
+    }
+
+    #[test]
+    fn zenoh_domain_id_parser_preserves_values_above_u16() {
+        assert_eq!(parse_ros_domain_id(Some("65535")), 65535);
+        assert_eq!(parse_ros_domain_id(Some("65536")), 65536);
+        assert_eq!(parse_ros_domain_id(Some("4294967295")), 4_294_967_295);
+        assert_eq!(
+            parse_ros_domain_id(Some(&usize::MAX.to_string())),
+            usize::MAX
+        );
+    }
+
+    /// A decimal string that does not fit in `usize` is malformed, not a
+    /// domain id, so it falls back to 0 like any other unparsable value.
+    #[test]
+    fn zenoh_domain_id_parser_rejects_values_that_overflow_usize() {
+        let overflowing = format!("{}0", usize::MAX);
+        assert_eq!(parse_ros_domain_id(Some(&overflowing)), 0);
+    }
+
+    #[test]
+    fn zenoh_domain_id_parser_falls_back_to_zero_for_missing_or_malformed_input() {
+        assert_eq!(parse_ros_domain_id(None), 0);
+        assert_eq!(parse_ros_domain_id(Some("")), 0);
+        assert_eq!(parse_ros_domain_id(Some("not-a-number")), 0);
+        assert_eq!(parse_ros_domain_id(Some("-1")), 0);
+    }
+
+    #[test]
+    fn dds_domain_id_parser_keeps_values_within_the_dds_cap() {
+        assert_eq!(parse_dds_ros_domain_id(Some("0")).unwrap(), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("181")).unwrap(), 181);
+        assert_eq!(parse_dds_ros_domain_id(Some("232")).unwrap(), 232);
+    }
+
+    /// A value padded with whitespace is still a valid domain id: the parser
+    /// trims before parsing instead of rejecting it.
+    #[test]
+    fn dds_domain_id_parser_accepts_whitespace_padded_values() {
+        assert_eq!(parse_dds_ros_domain_id(Some(" 232 ")).unwrap(), 232);
+        assert_eq!(parse_dds_ros_domain_id(Some(" 181 ")).unwrap(), 181);
+        assert_eq!(parse_dds_ros_domain_id(Some("\t232\n")).unwrap(), 232);
+        assert_eq!(parse_dds_ros_domain_id(Some(" 0 ")).unwrap(), 0);
+    }
+
+    /// An unset, empty or whitespace-only value means "no domain configured"
+    /// and selects domain 0.
+    #[test]
+    fn dds_domain_id_parser_defaults_to_zero_when_unset_or_empty() {
+        assert_eq!(parse_dds_ros_domain_id(None).unwrap(), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("")).unwrap(), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("   ")).unwrap(), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("\t")).unwrap(), 0);
+        assert_eq!(parse_dds_ros_domain_id(Some("\n")).unwrap(), 0);
+    }
+
+    /// A malformed value is an error, not a silent fallback to domain 0.
+    #[test]
+    fn dds_domain_id_parser_rejects_malformed_values() {
+        for value in [
+            "not-a-number",
+            "-1",
+            "1.5",
+            "0x10",
+            "232abc",
+            "9999999999999999999999999999999999999999",
+        ] {
+            let error = parse_dds_ros_domain_id(Some(value)).unwrap_err();
+            assert!(
+                error.to_string().contains("ROS_DOMAIN_ID"),
+                "error for `{value}` must name ROS_DOMAIN_ID: {error}"
+            );
+        }
+    }
+
+    /// DDS cannot address domains above 232, so they are an error rather than
+    /// a fallback to domain 0.
+    #[test]
+    fn dds_domain_id_parser_rejects_values_above_the_dds_cap() {
+        for value in ["233", "300", "65535", "65536", "4294967296"] {
+            let error = parse_dds_ros_domain_id(Some(value)).unwrap_err();
+            assert!(
+                error.to_string().contains("ROS_DOMAIN_ID"),
+                "error for `{value}` must name ROS_DOMAIN_ID: {error}"
+            );
+        }
+    }
+
+    // ---- service / action endpoint QoS -------------------------------------
+
+    fn neutral(qos: &dora_ros2_bridge::rustdds::QosPolicies) -> Ros2Qos {
+        from_rustdds_qos(qos)
+    }
+
+    #[test]
+    fn service_endpoint_qos_is_reliable_with_keep_last_ten_by_default() {
+        let qos = neutral(&service_or_action_qos(&Ros2QosConfig::default()));
+
+        assert!(matches!(qos.reliability, Reliability::Reliable { .. }));
+        assert_eq!(qos.history, History::KeepLast { depth: 10 });
+        assert_eq!(qos.durability, Durability::Volatile);
+    }
+
+    #[test]
+    fn service_endpoint_qos_forces_reliable_even_when_config_is_best_effort() {
+        let config = Ros2QosConfig {
+            reliable: false,
+            ..Ros2QosConfig::default()
+        };
+        let qos = neutral(&service_or_action_qos(&config));
+
+        assert!(matches!(qos.reliability, Reliability::Reliable { .. }));
+    }
+
+    #[test]
+    fn service_endpoint_qos_keeps_explicit_history_depth() {
+        let config = Ros2QosConfig {
+            keep_last: Some(20),
+            ..Ros2QosConfig::default()
+        };
+        let qos = neutral(&service_or_action_qos(&config));
+
+        assert_eq!(qos.history, History::KeepLast { depth: 20 });
+    }
+
+    #[test]
+    fn service_endpoint_qos_keeps_keep_all() {
+        let config = Ros2QosConfig {
+            keep_all: true,
+            ..Ros2QosConfig::default()
+        };
+        let qos = neutral(&service_or_action_qos(&config));
+
+        assert_eq!(qos.history, History::KeepAll);
+    }
+
+    #[test]
+    fn service_endpoint_qos_preserves_durability_liveliness_and_blocking_time() {
+        let config = Ros2QosConfig {
+            durability: Some("transient_local".to_string()),
+            liveliness: Some("manual_by_topic".to_string()),
+            lease_duration: Some(3.0),
+            max_blocking_time: Some(0.25),
+            ..Ros2QosConfig::default()
+        };
+        let qos = neutral(&service_or_action_qos(&config));
+
+        assert_eq!(qos.durability, Durability::TransientLocal);
+        assert_eq!(
+            qos.liveliness,
+            Liveliness::ManualByTopic {
+                lease_duration: Some(std::time::Duration::from_secs(3)),
+            }
+        );
+        match qos.reliability {
+            Reliability::Reliable { max_blocking_time } => {
+                assert_eq!(max_blocking_time, std::time::Duration::from_millis(250));
+            }
+            Reliability::BestEffort => panic!("service endpoint QoS must be reliable"),
+        }
+    }
+
+    #[test]
+    fn bridge_endpoint_qos_uses_the_configured_qos() {
+        let config = Ros2BridgeConfig {
+            qos: Ros2QosConfig {
+                keep_last: Some(20),
+                ..Ros2QosConfig::default()
+            },
+            ..Ros2BridgeConfig::default()
+        };
+
+        let qos = neutral(&bridge_endpoint_qos(&config));
+
+        assert!(matches!(qos.reliability, Reliability::Reliable { .. }));
+        assert_eq!(qos.history, History::KeepLast { depth: 20 });
+    }
+
+    // ---- action status QoS -------------------------------------------------
+
+    #[test]
+    fn action_status_qos_is_reliable_transient_local_by_default() {
+        let qos = neutral(&action_status_qos(&Ros2QosConfig::default()));
+
+        assert!(matches!(qos.reliability, Reliability::Reliable { .. }));
+        assert_eq!(qos.durability, Durability::TransientLocal);
+        assert_eq!(qos.history, History::KeepLast { depth: 10 });
+    }
+
+    #[test]
+    fn action_status_qos_overrides_best_effort_volatile_config() {
+        let config = Ros2QosConfig {
+            reliable: false,
+            durability: Some("volatile".to_string()),
+            ..Ros2QosConfig::default()
+        };
+        let qos = neutral(&action_status_qos(&config));
+
+        assert!(matches!(qos.reliability, Reliability::Reliable { .. }));
+        assert_eq!(qos.durability, Durability::TransientLocal);
+    }
+
+    #[test]
+    fn action_status_qos_keeps_explicit_history_depth() {
+        let config = Ros2QosConfig {
+            keep_last: Some(3),
+            ..Ros2QosConfig::default()
+        };
+        let qos = neutral(&action_status_qos(&config));
+
+        assert_eq!(qos.history, History::KeepLast { depth: 3 });
+        assert_eq!(qos.durability, Durability::TransientLocal);
     }
 }

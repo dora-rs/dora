@@ -186,6 +186,7 @@ impl Daemon {
             DaemonNodeEvent::Subscribe {
                 event_sender,
                 pending_counter,
+                param_replay,
                 drained,
                 reply_sender,
             } => {
@@ -212,6 +213,23 @@ impl Daemon {
                             .pending_messages
                             .insert(node_id.clone(), pending_counter);
                         dataflow.drain_signals.insert(node_id.clone(), drained);
+                        // Capture before subscribe queues InputClosed/AllInputsClosed
+                        // and installs the channel for subsequent live writes.
+                        let snapshot = if dataflow.stop_sent {
+                            Default::default()
+                        } else {
+                            dataflow
+                                .runtime_params
+                                .get(&node_id)
+                                .into_iter()
+                                .flatten()
+                                .map(|(key, value)| Timestamped {
+                                    inner: (key.clone(), value.clone()),
+                                    timestamp: self.clock.new_timestamp(),
+                                })
+                                .collect()
+                        };
+                        let _ = param_replay.send(snapshot);
                         Self::subscribe(dataflow, node_id.clone(), event_sender, &self.clock).await;
 
                         let status = dataflow

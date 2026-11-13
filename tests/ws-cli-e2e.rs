@@ -190,6 +190,25 @@ impl CoordinatorStore for FailingListStore {
     ) -> eyre::Result<()> {
         self.inner.delete_node_param(dataflow_id, node_id, key)
     }
+
+    fn list_node_param_tombstones(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> eyre::Result<Vec<(String, Uuid)>> {
+        self.inner.list_node_param_tombstones(dataflow_id, node_id)
+    }
+
+    fn clear_node_param_tombstone(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        token: Uuid,
+    ) -> eyre::Result<()> {
+        self.inner
+            .clear_node_param_tombstone(dataflow_id, node_id, key, token)
+    }
 }
 
 /// Start a minimal control websocket server that acks `TopicSubscribe` and
@@ -1091,6 +1110,15 @@ mod real_dataflow {
         txn.commit().expect("commit incompatible store");
     }
 
+    /// A default store the coordinator must reject as damaged: redb reads
+    /// the header first and finds no magic number.
+    fn write_corrupt_coordinator_store(home: &Path) {
+        let path = home.join(".dora").join("coordinator.redb");
+        std::fs::create_dir_all(path.parent().expect("store parent"))
+            .expect("create store directory");
+        std::fs::write(path, [0x5A_u8; 8192]).expect("write damaged store");
+    }
+
     fn unused_port() -> u16 {
         std::net::TcpListener::bind(("127.0.0.1", 0))
             .expect("bind ephemeral port")
@@ -1204,6 +1232,33 @@ mod real_dataflow {
         );
         assert!(
             stderr.contains("redb schema version mismatch"),
+            "coordinator startup error was not surfaced; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("dora up --recreate-store"),
+            "recovery hint was not surfaced; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
+
+    /// A damaged default store must fail `dora up` with the store's own
+    /// diagnosis and the same `--recreate-store` recovery a schema mismatch
+    /// gets, since the fix is the same: archive the file and start fresh.
+    #[test]
+    fn e2e_up_reports_corrupt_coordinator_store() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        write_corrupt_coordinator_store(home.path());
+
+        let (status, stdout, stderr) =
+            run_dora_isolated(&dora, home.path(), unused_port(), &["up"]);
+
+        assert!(
+            !status.success(),
+            "dora up unexpectedly succeeded; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("redb store is corrupt"),
             "coordinator startup error was not surfaced; stdout:\n{stdout}\nstderr:\n{stderr}"
         );
         assert!(

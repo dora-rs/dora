@@ -62,6 +62,8 @@ use uuid::Uuid;
 
 const MAGIC: &[u8; 8] = b"DORAREC\x00";
 const FOOTER_MAGIC: &[u8; 8] = b"DORAEND\x00";
+/// The whole footer `finish` writes: the magic, then the two `u64` totals.
+const FOOTER_LEN: usize = FOOTER_MAGIC.len() + 16;
 /// Version stamped into the header of newly written `.drec` files.
 ///
 /// Bumped from 1 to 2 when `event_bytes` moved from bincode to postcard: the
@@ -452,7 +454,7 @@ impl<R: Read> RecordingReader<R> {
         // Nothing past them is read: on a pipe whose writer stays open, a
         // check for the end of the stream would block.
         if len_buf == FOOTER_MAGIC[..4] {
-            let mut rest = [0u8; FOOTER_MAGIC.len() - 4 + 16];
+            let mut rest = [0u8; FOOTER_LEN - 4];
             self.reached_footer =
                 self.reader.read_exact(&mut rest).is_ok() && rest[..4] == FOOTER_MAGIC[4..];
             return Ok(false);
@@ -479,6 +481,20 @@ impl<R: Read> RecordingReader<R> {
             // `truncated record`. Genuine intra-record corruption in a
             // *complete* record is still rejected by the bounds checks in
             // `read_array` / `read_slice` (see `parse_record`).
+            //
+            // A torn tail never ends in the footer, though: `finish` writes
+            // it after the last record. A short body that ends in the footer
+            // was read to the end of a finished recording through a corrupt
+            // length prefix, and stopping here would drop every record after
+            // it without a word. (In a recording without a footer, a corrupt
+            // length past EOF still looks like a torn tail; the format cannot
+            // tell the two apart.)
+            Ok(_) if ends_with_footer(&self.record_buf) => {
+                eyre::bail!(
+                    "record length {record_len} runs past the end of the recording: \
+                     the length prefix is corrupt"
+                )
+            }
             Ok(_) => return Ok(false),
             Err(e) => return Err(e).wrap_err("failed to read record"),
         }
@@ -526,6 +542,15 @@ fn parse_record(record_buf: &[u8]) -> eyre::Result<(&str, &str, u64, Range<usize
         timestamp_offset_nanos,
         payload_start..pos,
     ))
+}
+
+/// Whether `bytes` ends in a whole footer as written by
+/// [`RecordingWriter::finish`]: the magic followed by the two totals.
+fn ends_with_footer(bytes: &[u8]) -> bool {
+    bytes
+        .len()
+        .checked_sub(FOOTER_LEN)
+        .is_some_and(|start| bytes[start..].starts_with(FOOTER_MAGIC))
 }
 
 fn read_array<const N: usize>(buf: &[u8], pos: &mut usize) -> eyre::Result<[u8; N]> {
@@ -789,7 +814,7 @@ mod tests {
             .write_entry(&sample_entry("node1", "out1", 10, b"data"))
             .unwrap();
         writer.finish().unwrap();
-        let footer_start = finished.len() - FOOTER_MAGIC.len() - 16;
+        let footer_start = finished.len() - FOOTER_LEN;
 
         let reached = |bytes: &[u8]| {
             let mut reader = RecordingReader::open(std::io::Cursor::new(bytes)).unwrap();
@@ -884,6 +909,39 @@ mod tests {
         assert!(
             result.is_err(),
             "overlong record length must return Err, got: {result:?}"
+        );
+    }
+
+    /// A corrupt length prefix in a finished recording that points past the
+    /// end of the file must return `Err`. Its short body ends in the footer
+    /// `finish` wrote, so it is not a torn tail from a crash, and stopping
+    /// there as if it were would drop every later record without a word.
+    #[test]
+    fn record_len_past_the_footer_returns_err_not_dropped_records() {
+        let header = sample_header();
+        let entries: Vec<_> = (0..100)
+            .map(|i| sample_entry("n", "o", i, b"payload"))
+            .collect();
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        for e in &entries {
+            writer.write_entry(e).unwrap();
+        }
+        writer.finish().unwrap();
+
+        // Overwrite the second record's prefix with a length under the cap
+        // but past the end of the file.
+        let mut header_bytes = Vec::new();
+        write_header(&mut header_bytes, &header).unwrap();
+        let second = header_bytes.len() + 4 + entries[0].encoded_len();
+        buf[second..second + 4].copy_from_slice(&(1u32 << 20).to_le_bytes());
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        assert_eq!(entries[0], reader.next_entry().unwrap().unwrap());
+        let result = reader.next_entry();
+        assert!(
+            result.is_err(),
+            "a record length past the footer must return Err, got: {result:?}"
         );
     }
 

@@ -38,6 +38,7 @@ examples/**/*.jsonl
 *.wav
 *.png
 !docs/src/latency.png
+!docs/blog/images/**/*.png
 
 # Remove *.html. Likely be outputed mermaid graph.
 *.html

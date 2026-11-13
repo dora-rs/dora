@@ -318,7 +318,7 @@ Spawns `dora coordinator` and `dora daemon` as background processes. Waits for b
 | `--auth` | Enable token authentication for the coordinator |
 | `--recreate-store` | Archive `~/.dora/coordinator.redb` and start with a fresh persistent store |
 
-If the coordinator cannot start, `dora up` reports its startup error directly. After an upgrade reports an incompatible redb schema, rerun with `--recreate-store`. The old store is preserved alongside the new one as `coordinator.redb.backup` (or a numbered variant).
+If the coordinator cannot start, `dora up` reports its startup error directly. After an upgrade reports an incompatible redb schema, or when the store file is reported as damaged, rerun with `--recreate-store`. The old store is preserved alongside the new one as `coordinator.redb.backup` (or a numbered variant).
 
 The spawned coordinator's stderr is captured to `~/.dora/coordinator-stderr.log` (truncated on each `dora up`) so post-startup errors stay inspectable. `--recreate-store` only operates on the local default store: it is refused when `DORA_COORDINATOR_ADDR` points at a non-loopback address, skipped (with a notice) when a coordinator is already running, and aborted when a process is listening on the coordinator port but the connection fails (e.g. an auth token mismatch) — so a live coordinator's store is never archived out from under it.
 
@@ -532,6 +532,12 @@ dora replay <FILE> [OPTIONS]
 | `--replace <NODE_IDS>` | all recorded | Comma-separated nodes to replace |
 | `--output-yaml <PATH>` | | Write modified YAML without running (dry run) |
 
+A recording that was not finished cleanly (a crash, or a second Ctrl-C in
+`dora record --proxy`) has no footer and may be missing its last messages; it
+is still replayed, with a warning on stderr. In a finished recording, a record
+length that runs past the end of the file fails the replay instead of silently
+ending it early.
+
 #### `dora recording export`
 
 Convert a recorded `.drec` file to MCAP (Apache Arrow IPC encoding by default; see `--format`). Sinks like Foxglove display plain arrow-ipc channels but do not render them natively.
@@ -546,6 +552,10 @@ dora recording export <RECORDING> [OPTIONS]
 | `-o, --output <PATH>` | `<RECORDING>` with the extension replaced (`capture.drec` → `capture.mcap`) | Output MCAP file path |
 | `--topics <TOPICS>` | all | Comma-separated `node/output` topics to export |
 | `--format <FORMAT>` | `arrow` | `arrow` copies payloads verbatim; `foxglove` writes image outputs in Foxglove's own schemas so Foxglove can display them |
+
+As with `dora replay`, a recording without a footer is exported with a
+warning on stderr, and a finished one whose record length runs past the end
+of the file fails the export.
 
 With the default `--format arrow`, payloads are remuxed verbatim, never decoded
 and re-encoded. Two limits worth knowing before you point a consumer at the

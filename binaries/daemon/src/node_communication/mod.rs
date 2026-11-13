@@ -1,6 +1,7 @@
 use crate::{
     CONTROL_EVENT_HEADROOM, DaemonNodeEvent, Event, FaultToleranceStats, GAVE_UP_RECOVERY_ROOM,
     NODE_EVENT_CHANNEL_CAPACITY,
+    event_types::ParamReplay,
     local_delivery::{DeferredDelivery, DrainSignal},
 };
 use dora_core::{
@@ -180,6 +181,7 @@ struct Listener {
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     subscribed_events: Option<Receiver<Timestamped<NodeEvent>>>,
     pending_counter: Option<Arc<AtomicU64>>,
+    param_replay: ParamReplay,
     queue: VecDeque<SizedEvent>,
     /// Sum of the exact wire lengths over `queue`, kept incrementally.
     queued_bytes: usize,
@@ -253,6 +255,7 @@ impl Listener {
                             generation: connection_generation,
                             daemon_tx,
                             subscribed_events: None,
+                            param_replay: Default::default(),
                             pending_counter: None,
                             queue: VecDeque::new(),
                             queued_bytes: 0,
@@ -340,7 +343,7 @@ impl Listener {
     }
 
     async fn handle_events(&mut self) -> eyre::Result<()> {
-        while !self.queue_saturated() {
+        while self.can_prefetch_live_events() {
             let Some(events) = &mut self.subscribed_events else {
                 break;
             };
@@ -354,6 +357,10 @@ impl Listener {
             self.enqueue(event);
         }
         Ok(())
+    }
+
+    fn can_prefetch_live_events(&self) -> bool {
+        self.param_replay.is_empty() && !self.queue_saturated()
     }
 
     fn queue_saturated(&self) -> bool {
@@ -417,6 +424,28 @@ impl Listener {
     /// it would fail, leaving the node blocked on a reply that never comes.
     async fn wait_for_next_events(&mut self) -> DaemonReply {
         loop {
+            // Stage the snapshot in bounded batches, ahead of everything on
+            // the live channel (including AllInputsClosed at subscription).
+            while !self.queue_saturated() {
+                let Some(param) = self.param_replay.pop_front() else {
+                    break;
+                };
+                let (key, value) = param.inner;
+                self.enqueue(Timestamped {
+                    inner: NodeEvent::ParamUpdate {
+                        key,
+                        value_json: value.to_vec(),
+                    },
+                    timestamp: param.timestamp,
+                });
+            }
+            let batch = self.take_queued_events_within_budget();
+            if !batch.is_empty() {
+                return DaemonReply::NextEvents(batch);
+            }
+            if !self.param_replay.is_empty() {
+                continue; // the batch held only events too large to frame
+            }
             let Some(events) = self.subscribed_events.as_mut() else {
                 return DaemonReply::Result(Err(
                     "Ignoring event request because no subscribe message was sent yet".into(),
@@ -430,10 +459,6 @@ impl Listener {
             }
             self.note_drained();
             self.enqueue(event);
-            let batch = self.take_queued_events_within_budget();
-            if !batch.is_empty() {
-                return DaemonReply::NextEvents(batch);
-            }
         }
     }
 
@@ -529,11 +554,13 @@ impl Listener {
             DaemonRequest::Subscribe => {
                 let (tx, rx) = mpsc::channel(crate::NODE_EVENT_CHANNEL_CAPACITY);
                 let pending_counter = Arc::new(AtomicU64::new(0));
+                let (param_replay, replay) = oneshot::channel();
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
                     DaemonNodeEvent::Subscribe {
                         event_sender: tx,
                         pending_counter: pending_counter.clone(),
+                        param_replay,
                         drained: self.drained.clone(),
                         reply_sender,
                     },
@@ -541,19 +568,12 @@ impl Listener {
                     connection,
                 )
                 .await?;
+                self.param_replay = replay.await.unwrap_or_default();
                 self.subscribed_events = Some(rx);
                 self.pending_counter = Some(pending_counter);
             }
             DaemonRequest::NextEvent => {
-                // Take queued events first, bounded by encoded size so the
-                // reply fits one frame (see `NEXT_EVENTS_REPLY_BUDGET`).
-                let queued_events = self.take_queued_events_within_budget();
-                let reply = if queued_events.is_empty() {
-                    self.wait_for_next_events().await
-                } else {
-                    DaemonReply::NextEvents(queued_events)
-                };
-
+                let reply = self.wait_for_next_events().await;
                 self.send_reply(reply, connection)
                     .await
                     .wrap_err("failed to send NextEvent reply")?;
@@ -777,7 +797,7 @@ impl Listener {
             // A saturated queue takes nothing more from the channel. The
             // caller recreates this future after every request, so polling
             // resumes as soon as a `NextEvent` reply has made room.
-            if queue_saturated(self.queue.len(), self.queued_bytes) {
+            if !self.can_prefetch_live_events() {
                 return Poll::Pending;
             }
             if let Some(events) = &mut self.subscribed_events {
@@ -910,6 +930,8 @@ trait Connection {
 
 #[cfg(test)]
 mod tests {
+    mod param_replay;
+
     use super::*;
     use crate::test_tracing::TextCapture;
     use aligned_vec::AVec;
@@ -957,6 +979,7 @@ mod tests {
             daemon_tx,
             subscribed_events: Some(rx),
             pending_counter: None,
+            param_replay: Default::default(),
             queue: VecDeque::new(),
             queued_bytes: 0,
             clock: Arc::new(uhlc::HLC::default()),

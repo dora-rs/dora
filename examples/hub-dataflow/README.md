@@ -1,7 +1,9 @@
 # Hub dataflow example
 
 Demonstrates using a node published to the [Dora Hub](../../docs/plan-node-hub.md)
-with the `hub:` field — no `path:`, no `git:`, no manual `build:`.
+index with the `hub:` field — no `path:`, no `git:`, no manual `build:`.
+The local `camera.py` node generates synthetic RGB frames at 10 Hz, so this
+example does not require a physical camera or camera drivers.
 
 By default `dora` resolves from <https://dora.pub>. For a mirror or local test
 registry, override it:
