@@ -6,7 +6,15 @@
 use dora_message::ws_protocol::WsRequest;
 use eyre::{Context, eyre};
 use futures::{SinkExt, StreamExt};
-use std::{collections::HashMap, net::SocketAddr, sync::mpsc as std_mpsc};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+        mpsc as std_mpsc,
+    },
+};
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::{self, Message};
 use uuid::Uuid;
@@ -118,7 +126,7 @@ enum SessionCommand {
     /// Subscribe to topic data via binary WS frames.
     SubscribeTopics {
         request: Vec<u8>,
-        data_tx: std_mpsc::Sender<eyre::Result<Vec<u8>>>,
+        subscriber: TopicSubscriber,
         ack_tx: oneshot::Sender<eyre::Result<Uuid>>,
     },
 }
@@ -239,22 +247,27 @@ impl WsSession {
     /// Sends a `TopicSubscribe` request, waits for the ack, then returns
     /// a `(subscription_id, receiver)` pair. Binary WS frames with matching
     /// subscription UUID prefix are dispatched to the receiver.
+    ///
+    /// The receiver's backlog is bounded by `limits`; frames that arrive while
+    /// it is full are dropped and counted (see `dispatch_topic_frame` and
+    /// [`TopicReceiver::dropped`]).
     pub fn subscribe_topics(
         &self,
         dataflow_id: Uuid,
         topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
-    ) -> eyre::Result<(Uuid, std_mpsc::Receiver<eyre::Result<Vec<u8>>>)> {
+        limits: TopicBufferLimits,
+    ) -> eyre::Result<(Uuid, TopicReceiver)> {
         let request = serde_json::to_vec(
             &dora_message::cli_to_coordinator::ControlRequest::topic_subscribe(dataflow_id, topics),
         )
         .map_err(|e| eyre!("failed to serialize TopicSubscribe: {e}"))?;
 
-        let (data_tx, data_rx) = std_mpsc::channel();
+        let (subscriber, data_rx) = topic_channel(limits);
         let (ack_tx, ack_rx) = oneshot::channel();
         self.cmd_tx
             .send(SessionCommand::SubscribeTopics {
                 request,
-                data_tx,
+                subscriber,
                 ack_tx,
             })
             .map_err(|_| eyre!("WS session closed"))?;
@@ -305,14 +318,172 @@ type PendingSubscribes = HashMap<
         std_mpsc::Sender<eyre::Result<Vec<u8>>>,
     ),
 >;
-type PendingTopicSubscribes = HashMap<
-    Uuid,
-    (
-        oneshot::Sender<eyre::Result<Uuid>>,
-        std_mpsc::Sender<eyre::Result<Vec<u8>>>,
-    ),
->;
-type TopicSubscribers = HashMap<Uuid, std_mpsc::Sender<eyre::Result<Vec<u8>>>>;
+type PendingTopicSubscribes = HashMap<Uuid, (oneshot::Sender<eyre::Result<Uuid>>, TopicSubscriber)>;
+type TopicSubscribers = HashMap<Uuid, TopicSubscriber>;
+/// How much a topic subscription's backlog holds before newer frames are
+/// dropped: at most `frames` frames and `bytes` payload bytes. A frame for an
+/// empty backlog is always taken, whatever its size (the coordinator caps
+/// debug payloads at 64 MiB).
+#[derive(Debug, Clone, Copy)]
+pub struct TopicBufferLimits {
+    pub frames: usize,
+    pub bytes: usize,
+}
+
+impl TopicBufferLimits {
+    /// For live views (`topic echo`, `hz`, `info`): enough to ride out a short
+    /// consumer stall, small enough that a slow terminal can't hold more than
+    /// 64 MiB of camera frames.
+    pub const LIVE: Self = Self {
+        frames: 1024,
+        bytes: 64 * 1024 * 1024,
+    };
+
+    /// For `dora record --proxy`, where every lost frame is a gap in the
+    /// recording: a backlog that absorbs a disk stall of seconds even for
+    /// large frames (~170 1080p RGB frames), while still bounding memory.
+    pub const RECORD: Self = Self {
+        frames: 64 * 1024,
+        bytes: 1024 * 1024 * 1024,
+    };
+}
+
+/// State shared by the two ends of a topic subscription.
+#[derive(Default)]
+struct TopicBacklog {
+    /// Payload bytes sent but not yet received.
+    bytes: AtomicUsize,
+    /// Frames dropped because the backlog was full.
+    dropped: AtomicU64,
+}
+
+/// The session's end of a topic subscription.
+pub(crate) struct TopicSubscriber {
+    tx: std_mpsc::SyncSender<eyre::Result<Vec<u8>>>,
+    max_bytes: usize,
+    backlog: Arc<TopicBacklog>,
+}
+
+/// A handle to a [`TopicReceiver`]'s drop count that outlives the receiver,
+/// e.g. after it was moved into a worker thread.
+#[derive(Clone)]
+pub struct DroppedFrames(Arc<TopicBacklog>);
+
+impl DroppedFrames {
+    /// How many frames were dropped so far because the receiver fell behind.
+    pub fn get(&self) -> u64 {
+        self.0.dropped.load(Ordering::Relaxed)
+    }
+
+    /// Tell the user, on stderr, how many frames were dropped, if any.
+    pub fn report(&self) {
+        let dropped = self.get();
+        if dropped > 0 {
+            eprintln!(
+                "note: {dropped} messages were dropped because they arrived faster \
+                 than they could be processed, and are not included above."
+            );
+        }
+    }
+}
+
+/// Receives the payloads of one topic subscription's frames
+/// (see [`WsSession::subscribe_topics`]).
+pub struct TopicReceiver {
+    rx: std_mpsc::Receiver<eyre::Result<Vec<u8>>>,
+    backlog: Arc<TopicBacklog>,
+}
+
+impl TopicReceiver {
+    /// Like [`std_mpsc::Receiver::recv`].
+    pub fn recv(&self) -> Result<eyre::Result<Vec<u8>>, std_mpsc::RecvError> {
+        self.rx.recv().map(|frame| self.taken(frame))
+    }
+
+    /// Like [`std_mpsc::Receiver::recv_timeout`].
+    pub fn recv_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<eyre::Result<Vec<u8>>, std_mpsc::RecvTimeoutError> {
+        self.rx.recv_timeout(timeout).map(|frame| self.taken(frame))
+    }
+
+    /// How many frames were dropped so far because this receiver fell behind.
+    pub fn dropped(&self) -> u64 {
+        self.dropped_frames().get()
+    }
+
+    /// A handle to the drop count that can be kept after `self` is moved.
+    pub fn dropped_frames(&self) -> DroppedFrames {
+        DroppedFrames(self.backlog.clone())
+    }
+
+    fn taken(&self, frame: eyre::Result<Vec<u8>>) -> eyre::Result<Vec<u8>> {
+        if let Ok(payload) = &frame {
+            self.backlog
+                .bytes
+                .fetch_sub(payload.len(), Ordering::Relaxed);
+        }
+        frame
+    }
+}
+
+pub(crate) fn topic_channel(limits: TopicBufferLimits) -> (TopicSubscriber, TopicReceiver) {
+    let (tx, rx) = std_mpsc::sync_channel(limits.frames);
+    let backlog = Arc::new(TopicBacklog::default());
+    let subscriber = TopicSubscriber {
+        tx,
+        max_bytes: limits.bytes,
+        backlog: backlog.clone(),
+    };
+    (subscriber, TopicReceiver { rx, backlog })
+}
+
+/// Hand one binary WS frame (`subscription id ++ payload`) to its
+/// subscriber, without waiting.
+///
+/// The session loop also reads request replies, so it must never block on a
+/// slow consumer — and it must not buffer for one without limit either: it
+/// keeps the socket drained, so the coordinator's own drop-when-full policy
+/// never sees the slow consumer, and an unbounded backlog here grows until
+/// the CLI runs out of memory (e.g. `dora topic echo` on a large camera
+/// topic). A frame that would overfill the backlog — by count or by bytes —
+/// is dropped instead, before its payload is copied.
+fn dispatch_topic_frame(topic_subscribers: &mut TopicSubscribers, data: &[u8]) {
+    let Some((sub_id_bytes, payload)) = data.split_first_chunk::<16>() else {
+        tracing::warn!("binary WS frame too short ({} bytes)", data.len());
+        return;
+    };
+    let sub_id = Uuid::from_bytes(*sub_id_bytes);
+    let Some(subscriber) = topic_subscribers.get(&sub_id) else {
+        return;
+    };
+    let backlog = &subscriber.backlog;
+    let queued = backlog.bytes.load(Ordering::Relaxed);
+    let fits = queued == 0 || queued.saturating_add(payload.len()) <= subscriber.max_bytes;
+    if fits {
+        // Counted before the send, so the receiver never subtracts first.
+        backlog.bytes.fetch_add(payload.len(), Ordering::Relaxed);
+        match subscriber.tx.try_send(Ok(payload.to_vec())) {
+            Ok(()) => return,
+            Err(std_mpsc::TrySendError::Full(_)) => {
+                backlog.bytes.fetch_sub(payload.len(), Ordering::Relaxed);
+            }
+            Err(std_mpsc::TrySendError::Disconnected(_)) => {
+                topic_subscribers.remove(&sub_id);
+                return;
+            }
+        }
+    }
+    // Only `debug`: the CLI's console logger writes to stdout, which is the
+    // data stream of `topic echo`. Consumers report the count on stderr.
+    if backlog.dropped.fetch_add(1, Ordering::Relaxed) == 0 {
+        tracing::debug!(
+            "topic data arrives faster than it is processed; \
+             dropping frames for subscription {sub_id}"
+        );
+    }
+}
 
 async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<SessionCommand>) {
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
@@ -378,7 +549,7 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                             break;
                         }
                     }
-                    SessionCommand::SubscribeTopics { request, data_tx, ack_tx } => {
+                    SessionCommand::SubscribeTopics { request, subscriber, ack_tx } => {
                         let id = Uuid::new_v4();
                         let params = match serde_json::from_slice(&request) {
                             Ok(v) => v,
@@ -399,7 +570,7 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                                 continue;
                             }
                         };
-                        pending_topic_subscribes.insert(id, (ack_tx, data_tx));
+                        pending_topic_subscribes.insert(id, (ack_tx, subscriber));
                         if ws_tx.send(Message::Text(json.into())).await.is_err() {
                             break;
                         }
@@ -438,20 +609,7 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                         }
                     }
                     Ok(Message::Binary(data)) => {
-                        // Binary frame: first 16 bytes = subscription UUID, rest = payload
-                        if data.len() < 16 {
-                            tracing::warn!("binary WS frame too short ({} bytes)", data.len());
-                            continue;
-                        }
-                        let Ok(sub_id_bytes): Result<[u8; 16], _> = data[..16].try_into() else {
-                            continue;
-                        };
-                        let sub_id = Uuid::from_bytes(sub_id_bytes);
-                        let payload = data[16..].to_vec();
-                        if let Some(tx) = topic_subscribers.get(&sub_id)
-                            && tx.send(Ok(payload)).is_err() {
-                                topic_subscribers.remove(&sub_id);
-                            }
+                        dispatch_topic_frame(&mut topic_subscribers, &data);
                     }
                     Ok(Message::Close(_)) => break,
                     Ok(Message::Ping(data)) => {
@@ -540,7 +698,7 @@ fn handle_response(
     }
 
     // Check if this is a topic subscribe ack
-    if let Some((ack_tx, data_tx)) = pending_topic_subscribes.remove(&id) {
+    if let Some((ack_tx, subscriber)) = pending_topic_subscribes.remove(&id) {
         if let Some(error) = error {
             let _ = ack_tx.send(Err(eyre!("{error}")));
         } else if let Some(raw) = &result {
@@ -568,7 +726,7 @@ fn handle_response(
                     if protocol_version != Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION) {
                         let _ = ack_tx.send(Err(topic_protocol_mismatch_error(protocol_version)));
                     } else {
-                        topic_subscribers.insert(subscription_id, data_tx);
+                        topic_subscribers.insert(subscription_id, subscriber);
                         let _ = ack_tx.send(Ok(subscription_id));
                     }
                 }
@@ -748,7 +906,7 @@ mod tests {
         let id = Uuid::new_v4();
         let sub_id = Uuid::new_v4();
         let (ack_tx, mut ack_rx) = oneshot::channel();
-        let (data_tx, _data_rx) = std_mpsc::channel();
+        let (data_tx, _data_rx) = topic_channel(TopicBufferLimits::LIVE);
         let mut pending = HashMap::new();
         let mut subscribes = HashMap::new();
         let mut subs = Vec::new();
@@ -784,7 +942,7 @@ mod tests {
         let id = Uuid::new_v4();
         let sub_id = Uuid::new_v4();
         let (ack_tx, mut ack_rx) = oneshot::channel();
-        let (data_tx, _data_rx) = std_mpsc::channel();
+        let (data_tx, _data_rx) = topic_channel(TopicBufferLimits::LIVE);
         let mut pending = HashMap::new();
         let mut subscribes = HashMap::new();
         let mut subs = Vec::new();
@@ -883,5 +1041,114 @@ mod tests {
         drop(tx);
         let result = rx.await;
         assert!(result.is_err()); // RecvError = sender dropped
+    }
+
+    fn topic_frame(sub_id: Uuid, payload: &[u8]) -> Vec<u8> {
+        let mut frame = sub_id.as_bytes().to_vec();
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    fn one_subscriber() -> (Uuid, TopicSubscribers, TopicReceiver) {
+        let sub_id = Uuid::new_v4();
+        let (subscriber, rx) = topic_channel(TopicBufferLimits::LIVE);
+        (sub_id, HashMap::from([(sub_id, subscriber)]), rx)
+    }
+
+    fn drain(rx: &TopicReceiver) -> Vec<Vec<u8>> {
+        std::iter::from_fn(|| rx.recv_timeout(std::time::Duration::ZERO).ok())
+            .map(|frame| frame.unwrap())
+            .collect()
+    }
+
+    /// A consumer slower than the stream must not make the session buffer
+    /// every frame: the session keeps the socket drained, so the
+    /// coordinator never drops for it, and an unbounded backlog here grows
+    /// until the CLI runs out of memory.
+    #[test]
+    fn topic_frames_beyond_the_frame_cap_are_dropped() {
+        let (sub_id, mut subscribers, rx) = one_subscriber();
+
+        let total = TopicBufferLimits::LIVE.frames as u64 * 3;
+        for i in 0..total {
+            dispatch_topic_frame(&mut subscribers, &topic_frame(sub_id, &i.to_le_bytes()));
+        }
+
+        // The oldest frames are kept, in order; the rest are counted as dropped.
+        let received: Vec<u64> = drain(&rx)
+            .into_iter()
+            .map(|frame| u64::from_le_bytes(frame.try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            received,
+            (0..TopicBufferLimits::LIVE.frames as u64).collect::<Vec<_>>()
+        );
+        assert_eq!(rx.dropped(), total - TopicBufferLimits::LIVE.frames as u64);
+
+        // Once the consumer catches up, frames flow again.
+        dispatch_topic_frame(&mut subscribers, &topic_frame(sub_id, b"next"));
+        assert_eq!(drain(&rx), vec![b"next".to_vec()]);
+    }
+
+    /// Large frames are bounded by bytes, long before the frame cap: 64
+    /// camera images would otherwise hold gigabytes.
+    #[test]
+    fn topic_frames_beyond_the_byte_cap_are_dropped() {
+        let (sub_id, mut subscribers, rx) = one_subscriber();
+        let big = vec![0u8; TopicBufferLimits::LIVE.bytes / 4 + 1];
+
+        for _ in 0..10 {
+            dispatch_topic_frame(&mut subscribers, &topic_frame(sub_id, &big));
+        }
+        assert_eq!(drain(&rx).len(), 3, "only three fit in the byte budget");
+        assert_eq!(rx.dropped(), 7);
+
+        // Receiving frees the budget again, and an empty backlog takes a
+        // frame of any size.
+        let huge = vec![0u8; TopicBufferLimits::LIVE.bytes + 1];
+        dispatch_topic_frame(&mut subscribers, &topic_frame(sub_id, &huge));
+        assert_eq!(drain(&rx).len(), 1);
+        assert_eq!(rx.dropped(), 7);
+    }
+
+    /// A recording takes a much larger backlog than a live view: a short disk
+    /// stall must not lose large frames the live limit would drop.
+    #[test]
+    fn record_limits_absorb_what_live_limits_drop() {
+        let frame = vec![0u8; 6 * 1024 * 1024]; // a 1080p RGB image
+        for (limits, expected) in [
+            (TopicBufferLimits::LIVE, 10),
+            (TopicBufferLimits::RECORD, 100),
+        ] {
+            let sub_id = Uuid::new_v4();
+            let (subscriber, rx) = topic_channel(limits);
+            let mut subscribers: TopicSubscribers = HashMap::from([(sub_id, subscriber)]);
+            for _ in 0..100 {
+                dispatch_topic_frame(&mut subscribers, &topic_frame(sub_id, &frame));
+            }
+            assert_eq!(drain(&rx).len(), expected, "{limits:?}");
+        }
+    }
+
+    #[test]
+    fn topic_frame_for_a_dropped_receiver_unsubscribes_it() {
+        let (sub_id, mut subscribers, rx) = one_subscriber();
+        drop(rx);
+
+        dispatch_topic_frame(&mut subscribers, &topic_frame(sub_id, b"data"));
+        assert!(subscribers.is_empty());
+    }
+
+    #[test]
+    fn short_or_unknown_topic_frames_are_ignored() {
+        let (sub_id, mut subscribers, rx) = one_subscriber();
+
+        dispatch_topic_frame(&mut subscribers, &sub_id.as_bytes()[..15]);
+        dispatch_topic_frame(&mut subscribers, &topic_frame(Uuid::new_v4(), b"data"));
+        assert!(drain(&rx).is_empty());
+
+        // An empty payload is still a frame.
+        dispatch_topic_frame(&mut subscribers, sub_id.as_bytes());
+        assert_eq!(drain(&rx), vec![Vec::<u8>::new()]);
     }
 }
