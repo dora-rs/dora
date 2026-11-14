@@ -757,6 +757,14 @@ impl Spawner {
         // closes the listener instead of leaking it until dataflow end
         // (dora-rs/dora#2988 review, finding 3).
         let (listener_shutdown, node_shutdown_rx) = tokio::sync::watch::channel(false);
+        // Include every node's listeners, not just this node's: none of the
+        // advertised Zenoh ports may be claimed by a node IPC listener while
+        // the producer processes are still starting (#4107).
+        let reserved_zenoh_endpoints = self
+            .zenoh_peering
+            .values()
+            .flat_map(|peering| peering.listen.iter().cloned())
+            .collect();
         let daemon_communication = spawn_listener_loop(
             &dataflow_id,
             &node_id,
@@ -770,6 +778,7 @@ impl Spawner {
                 outputs: backpressured_outputs,
                 ft_stats: self.ft_stats.clone(),
             }),
+            &reserved_zenoh_endpoints,
         )
         .await?;
 

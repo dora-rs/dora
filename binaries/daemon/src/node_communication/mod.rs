@@ -66,6 +66,23 @@ pub fn current_millis() -> u64 {
         .as_millis() as u64
 }
 
+/// Node Zenoh listeners are advertised before the child binds them. Do not
+/// let our own IPC allocation steal one of those temporarily free ports (#4107).
+async fn avoid_reserved_listeners(
+    mut socket: TcpListener,
+    reserved_endpoints: &BTreeSet<String>,
+) -> std::io::Result<TcpListener> {
+    let mut rejected = Vec::new();
+    while reserved_endpoints.contains(&format!("tcp/{}", socket.local_addr()?)) {
+        // Hold rejected allocations until we have a usable one, otherwise the
+        // OS can keep handing back the same port. All are released on return
+        // (including errors), before the child needs its Zenoh listener.
+        rejected.push(socket);
+        socket = TcpListener::bind((LOCALHOST, 0)).await?;
+    }
+    Ok(socket)
+}
+
 /// `backpressure` names this node's outputs with at least one
 /// `queue_policy: backpressure` consumer; see [`Listener::backpressure`].
 #[allow(clippy::too_many_arguments)]
@@ -79,6 +96,7 @@ pub async fn spawn_listener_loop(
     shutdown: tokio::sync::watch::Receiver<bool>,
     node_shutdown: tokio::sync::watch::Receiver<bool>,
     backpressure: Arc<BackpressureConfig>,
+    reserved_zenoh_endpoints: &BTreeSet<String>,
 ) -> eyre::Result<DaemonCommunication> {
     let socket = match TcpListener::bind((LOCALHOST, 0)).await {
         Ok(socket) => socket,
@@ -86,6 +104,9 @@ pub async fn spawn_listener_loop(
             return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"));
         }
     };
+    let socket = avoid_reserved_listeners(socket, reserved_zenoh_endpoints)
+        .await
+        .wrap_err("failed to allocate node TCP listener outside the Zenoh peering plan")?;
     let socket_addr = socket
         .local_addr()
         .wrap_err("failed to get local addr of socket")?;
@@ -943,6 +964,34 @@ mod tests {
     use uuid::Uuid;
 
     const MIB: usize = 1024 * 1024;
+
+    #[tokio::test]
+    async fn node_listener_does_not_take_a_planned_zenoh_endpoint() {
+        // Force the allocation race: the OS handed the control listener a
+        // port that is advertised for Zenoh but not yet bound by its node.
+        let socket = TcpListener::bind((LOCALHOST, 0)).await.unwrap();
+        let reserved_addr = socket.local_addr().unwrap();
+        let reserved = BTreeSet::from([format!("tcp/{reserved_addr}")]);
+
+        let listener = avoid_reserved_listeners(socket, &reserved).await.unwrap();
+        assert_ne!(
+            listener.local_addr().unwrap(),
+            reserved_addr,
+            "node IPC must not claim a port advertised for Zenoh"
+        );
+        // The producer must still be able to bind its advertised endpoint.
+        let _zenoh_listener = TcpListener::bind(reserved_addr).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_listener_keeps_an_unreserved_endpoint() {
+        let socket = TcpListener::bind((LOCALHOST, 0)).await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        let listener = avoid_reserved_listeners(socket, &BTreeSet::new())
+            .await
+            .unwrap();
+        assert_eq!(listener.local_addr().unwrap(), addr);
+    }
 
     /// The frame `TcpConnection::send_reply` would write for `batch`.
     fn encoded_reply_len(batch: Vec<Timestamped<NodeEvent>>) -> usize {
