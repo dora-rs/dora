@@ -629,9 +629,12 @@ pub fn source_is_url(source: &str) -> bool {
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     let path = with_exe_extension(source);
 
-    // Search path within current working directory.
+    // Search path within current working directory. Only a file counts: a
+    // folder named like the executable (often a Python package's source,
+    // next to the console script that `pip install -e` puts on `$PATH`)
+    // cannot be spawned, so it must not shadow the uv/`$PATH` lookup.
     let joined = working_dir.join(&path);
-    if joined.exists() {
+    if joined.is_file() {
         absolutize_preserving_symlinks(&joined)
     // Otherwise resolve against the `uv`-managed environment first (when `uv`
     // is available), then fall back to the system `$PATH`.
@@ -1502,6 +1505,27 @@ nodes:
             result.is_err(),
             "a dangling symlink must not resolve (nothing on uv/$PATH matches \
              this name either), got {result:?}"
+        );
+    }
+
+    /// A folder named like the executable is not the executable: on Unix
+    /// (`EXE_EXTENSION` is empty) the source folder `talker` of a package
+    /// whose console script is `talker` used to resolve to the folder, and
+    /// spawn then failed with EACCES instead of finding the script.
+    #[test]
+    fn resolve_path_skips_a_directory_with_the_executable_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let name = format!(
+            "dora-dir-not-exe-regression{}",
+            std::env::consts::EXE_SUFFIX
+        );
+        std::fs::create_dir(tmp.path().join(&name)).unwrap();
+
+        let result = resolve_path(&name, tmp.path());
+        assert!(
+            result.is_err(),
+            "a directory must not resolve (nothing on uv/$PATH matches this \
+             name either), got {result:?}"
         );
     }
 
