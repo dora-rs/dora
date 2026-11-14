@@ -6,9 +6,10 @@ use crate::{
     catch_up_daemon_behind_pruned_log, check_build_timeouts, check_spawn_timeouts,
     cleanup_disconnected_daemons_from_running_builds,
     cleanup_disconnected_daemons_from_running_dataflows, expire_stopped_nodes,
-    notify_daemons_about_disconnected_peers, reestablish_running_dataflow, replay_all_nodes_ready,
-    restore_topic_debug_streams_for_daemon, send_heartbeat_with_timeout, state,
-    status_report_should_stop_orphan, stop_orphaned_dataflow_on_daemon,
+    notify_daemons_about_disconnected_peers, params::spawn_param_replay_to_daemon,
+    reestablish_running_dataflow, replay_all_nodes_ready, restore_topic_debug_streams_for_daemon,
+    send_heartbeat_with_timeout, state, status_report_should_stop_orphan,
+    stop_orphaned_dataflow_on_daemon,
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
 use dora_message::{
@@ -468,6 +469,89 @@ impl Coordinator {
         Ok(())
     }
 
+    /// Re-establish the live entry of a dataflow a reconnecting daemon reports
+    /// as running (`reestablish_running_dataflow`), and bring the daemon up to
+    /// date with what it missed. Returns whether the persisted-param replay
+    /// was started.
+    ///
+    /// If the barrier released while the daemon was gone, replay it, which
+    /// also replays the params (#2998). Otherwise, a single-daemon dataflow
+    /// whose entry was rebuilt from the store (coordinator restart, orphan
+    /// reclaim) still needs the param replay: its barrier is local to the
+    /// daemon, so `ready_barrier_released` is never set, and the rebuilt
+    /// entry has an empty state log, so the state catch-up sends nothing. A
+    /// param persisted but not forwarded before the rebuild, including one
+    /// set while the dataflow was `Recovering`, would never reach the node.
+    ///
+    /// Best-effort, like every other step in this reconciliation: a failed
+    /// send must not take down the coordinator and every other dataflow.
+    pub(crate) async fn reestablish_reported_dataflow(
+        &mut self,
+        record: &dora_coordinator_store::DataflowRecord,
+        daemon_id: &DaemonId,
+        running_nodes: &[NodeId],
+    ) -> bool {
+        let rebuilt = !self.running_dataflows.contains_key(&record.uuid);
+        let barrier_released = reestablish_running_dataflow(
+            &mut self.running_dataflows,
+            &mut self.reclaimed_launches,
+            record,
+            daemon_id,
+            running_nodes,
+        );
+        if !self.running_dataflows.contains_key(&record.uuid) {
+            return false;
+        }
+        // A daemon that finished before an orphan reclaim may have parked its
+        // resent finish report (`record_resent_finish_report`), and the
+        // reclaim's `Recovering` write can fail and leave the record
+        // `Running`. The dataflow is running again, so fold those results into
+        // `dataflow_results`; otherwise the eventual finish would settle
+        // without them.
+        self.merge_resent_finish_reports(record.uuid);
+        let Some(df) = self.running_dataflows.get(&record.uuid) else {
+            return false;
+        };
+        if barrier_released {
+            match replay_all_nodes_ready(
+                record.uuid,
+                df,
+                daemon_id,
+                &self.daemon_connections,
+                &self.store,
+                &self.clock,
+            )
+            .await
+            {
+                Ok(started) => started,
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to replay ready barrier to daemon `{daemon_id}` \
+                         for dataflow {}: {e:#}",
+                        record.uuid
+                    );
+                    false
+                }
+            }
+        } else if rebuilt && df.single_daemon() {
+            tracing::info!(
+                "replaying persisted params of rebuilt single-daemon dataflow {} \
+                 to daemon `{daemon_id}`",
+                record.uuid
+            );
+            spawn_param_replay_to_daemon(
+                record.uuid,
+                df,
+                daemon_id,
+                &self.daemon_connections,
+                &self.store,
+                &self.clock,
+            )
+        } else {
+            false
+        }
+    }
+
     pub(crate) async fn handle_daemon_status_report(
         &mut self,
         daemon_id: DaemonId,
@@ -547,52 +631,15 @@ impl Coordinator {
                         // surviving nodes are visible + manageable again
                         // (#2029 P1) — store status alone doesn't drive
                         // `dora list` / `stop` / `logs`.
-                        let barrier_released = reestablish_running_dataflow(
-                            &mut self.running_dataflows,
-                            &mut self.reclaimed_launches,
-                            &record,
-                            &daemon_id,
-                            &entry.running_nodes,
-                        );
-                        if self.running_dataflows.contains_key(&record.uuid) {
-                            // A daemon that finished before the reclaim may
-                            // have parked its resent finish report here
-                            // (`record_resent_finish_report`). The dataflow is
-                            // running again, so fold those results into
-                            // `dataflow_results`; otherwise the eventual finish
-                            // would settle without them.
-                            self.merge_resent_finish_reports(record.uuid);
-                        }
-                        if barrier_released
-                            && let Some(df) = self.running_dataflows.get(&record.uuid)
-                        {
-                            // Barrier released while this daemon was
-                            // gone; nothing else will tell it (#2998).
-                            // Best-effort, like every other step in
-                            // this reconciliation: a failed send here
-                            // means one daemon's nodes stay parked,
-                            // which must not take down the coordinator
-                            // and every other dataflow with it.
-                            match replay_all_nodes_ready(
-                                record.uuid,
-                                df,
+                        if self
+                            .reestablish_reported_dataflow(
+                                &record,
                                 &daemon_id,
-                                &self.daemon_connections,
-                                &self.store,
-                                &self.clock,
+                                &entry.running_nodes,
                             )
                             .await
-                            {
-                                Ok(true) => {
-                                    params_replay_started.insert(record.uuid);
-                                }
-                                Ok(false) => {}
-                                Err(e) => tracing::warn!(
-                                    "failed to replay ready barrier to daemon \
-                                             `{daemon_id}` for dataflow {}: {e:#}",
-                                    record.uuid
-                                ),
-                            }
+                        {
+                            params_replay_started.insert(record.uuid);
                         }
                     }
                     StoreDataflowStatus::Running => {
@@ -600,51 +647,15 @@ impl Coordinator {
                         // missing from the live map (e.g. a later report,
                         // or a coordinator restart that loaded the record
                         // but not the in-memory entry). Idempotent.
-                        let barrier_released = reestablish_running_dataflow(
-                            &mut self.running_dataflows,
-                            &mut self.reclaimed_launches,
-                            &record,
-                            &daemon_id,
-                            &entry.running_nodes,
-                        );
-                        if self.running_dataflows.contains_key(&record.uuid) {
-                            // An orphan reclaim parks the results of daemons
-                            // that already finished, and its `Recovering`
-                            // write can fail and leave the record `Running`.
-                            // Merge them back as the arm above does, or the
-                            // dataflow settles without them.
-                            self.merge_resent_finish_reports(record.uuid);
-                        }
-                        if barrier_released
-                            && let Some(df) = self.running_dataflows.get(&record.uuid)
-                        {
-                            // Barrier released while this daemon was
-                            // gone; nothing else will tell it (#2998).
-                            // Best-effort, like every other step in
-                            // this reconciliation: a failed send here
-                            // means one daemon's nodes stay parked,
-                            // which must not take down the coordinator
-                            // and every other dataflow with it.
-                            match replay_all_nodes_ready(
-                                record.uuid,
-                                df,
+                        if self
+                            .reestablish_reported_dataflow(
+                                &record,
                                 &daemon_id,
-                                &self.daemon_connections,
-                                &self.store,
-                                &self.clock,
+                                &entry.running_nodes,
                             )
                             .await
-                            {
-                                Ok(true) => {
-                                    params_replay_started.insert(record.uuid);
-                                }
-                                Ok(false) => {}
-                                Err(e) => tracing::warn!(
-                                    "failed to replay ready barrier to daemon \
-                                             `{daemon_id}` for dataflow {}: {e:#}",
-                                    record.uuid
-                                ),
-                            }
+                        {
+                            params_replay_started.insert(record.uuid);
                         }
                     }
                     status if status_report_should_stop_orphan(&status) => {

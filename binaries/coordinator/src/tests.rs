@@ -3690,6 +3690,8 @@ async fn pruned_catch_up_reuses_the_ready_barrier_replay() {
     assert!(rx.try_recv().is_err(), "no second replay");
 }
 
+/// The barrier of a multi-daemon dataflow releases through the coordinator,
+/// which replays the params to every daemon then.
 #[test]
 fn pruned_catch_up_before_barrier_release_leaves_the_replay_to_the_release() {
     let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
@@ -3698,6 +3700,9 @@ fn pruned_catch_up_before_barrier_release_leaves_the_replay_to_the_release() {
     let node_id: NodeId = "camera".to_string().into();
     let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
     dataflow.ready_barrier_released = false;
+    dataflow
+        .persisted_placement
+        .insert("receiver".to_string().into(), "m2".to_string());
 
     catch_up_daemon_behind_pruned_log(
         dataflow_id,
@@ -3710,6 +3715,44 @@ fn pruned_catch_up_before_barrier_release_leaves_the_replay_to_the_release() {
     );
 
     assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&10));
+}
+
+/// A single-daemon dataflow's barrier is local to the daemon and never
+/// releases through the coordinator, so the catch-up cannot leave the replay
+/// to the release: nothing would ever send it (#4180).
+#[tokio::test]
+async fn pruned_catch_up_of_a_single_daemon_dataflow_replays_before_any_release() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let node_id: NodeId = "camera".to_string().into();
+    let value = serde_json::to_vec(&serde_json::json!(1)).unwrap();
+    store
+        .put_node_param(&dataflow_id, &node_id, "gain", &value)
+        .unwrap();
+    let mut daemon_connections = DaemonConnections::default();
+    let (daemon_id, mut rx) = connected_test_daemon(&mut daemon_connections, "m1");
+    let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
+    dataflow.ready_barrier_released = false;
+
+    catch_up_daemon_behind_pruned_log(
+        dataflow_id,
+        &mut dataflow,
+        &daemon_id,
+        false,
+        &daemon_connections,
+        &store,
+        &Arc::new(HLC::default()),
+    );
+
+    assert_eq!(dataflow.daemon_ack_sequence.get(&daemon_id), Some(&10));
+    let events = queued_daemon_events(&mut rx).await;
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            DaemonCoordinatorEvent::SetParam { key, .. } if key == "gain"
+        )),
+        "the catch-up must replay the params itself; got {events:?}"
+    );
 }
 
 /// #3684: when nothing else replays the params to the daemon, the catch-up
@@ -10430,4 +10473,178 @@ mod lifecycle_stall {
             ROUNDS - ok
         );
     }
+}
+
+/// The persisted record of a dataflow whose barrier never released through
+/// the coordinator, seeded in a fresh store with one param for `node`.
+fn store_with_unreleased_dataflow(
+    node_to_daemon: BTreeMap<NodeId, DaemonId>,
+    status: StoreDataflowStatus,
+    node: &NodeId,
+) -> (
+    Arc<dyn CoordinatorStore>,
+    dora_coordinator_store::DataflowRecord,
+) {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let mut record = recovering_record(DataflowId::from(Uuid::new_v4()), node_to_daemon);
+    record.status = status;
+    record.ready_barrier_released = false;
+    store.put_dataflow(&record).expect("seed record");
+    let value = serde_json::to_vec(&serde_json::json!(2)).unwrap();
+    store
+        .put_node_param(&record.uuid, node, "during", &value)
+        .expect("seed param");
+    (store, record)
+}
+
+/// Report `node` of `record` as running from the daemon on `machine`.
+async fn report_running(
+    coordinator: &mut Coordinator,
+    daemon_id: DaemonId,
+    record: &dora_coordinator_store::DataflowRecord,
+    node: &NodeId,
+) {
+    coordinator
+        .handle_daemon_status_report(
+            daemon_id,
+            vec![dora_message::daemon_to_coordinator::DataflowStatusEntry {
+                dataflow_id: record.uuid,
+                running_nodes: vec![node.clone()],
+            }],
+        )
+        .await
+        .expect("handle the status report");
+    assert!(
+        coordinator.running_dataflows.contains_key(&record.uuid),
+        "the dataflow must be re-established as running"
+    );
+}
+
+/// The param replay runs in a spawned task. On the test's current-thread
+/// runtime it queues its first frame as soon as this task yields, since
+/// neither the write lock nor the channel is contended.
+async fn queued_daemon_events(
+    rx: &mut tokio::sync::mpsc::Receiver<String>,
+) -> Vec<DaemonCoordinatorEvent> {
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    received_daemon_events(rx)
+}
+
+fn has_param_during(events: &[DaemonCoordinatorEvent], node: &NodeId) -> bool {
+    events.iter().any(|event| {
+        matches!(
+            event,
+            DaemonCoordinatorEvent::SetParam { node_id, key, value, .. }
+                if node_id == node && key == "during" && *value == serde_json::json!(2)
+        )
+    })
+}
+
+/// A single-daemon dataflow keeps its start barrier local to the daemon, so
+/// the coordinator never records a release. When its entry is rebuilt from the
+/// store the state log is empty too, so without a replay a param persisted but
+/// never forwarded -- for example one set while the dataflow was `Recovering`
+/// -- would never reach the node (#4180). The daemon reconnects under a new
+/// id, as it does after a coordinator restart, and the record still places a
+/// node that already exited under the old one. Covers both store states a rebuilt
+/// entry comes from: `Recovering` (orphan reclaim, coordinator restart) and
+/// `Running` (a failed `Recovering` write, a coordinator restart that loaded
+/// the record but not the entry).
+#[tokio::test]
+async fn rebuilt_single_daemon_dataflow_gets_its_persisted_params() {
+    for status in [
+        StoreDataflowStatus::Recovering,
+        StoreDataflowStatus::Running,
+    ] {
+        let node: NodeId = "rec".to_string().into();
+        // The record holds the id the daemon had before the restart, for the
+        // running node and for one that already exited. The reconnecting
+        // daemon registers under a new id for the same machine.
+        let old_id = DaemonId::new(Some("m1".to_string()));
+        let mut daemon_connections = DaemonConnections::default();
+        let (daemon_id, mut rx) = connected_test_daemon(&mut daemon_connections, "m1");
+        let (store, record) = store_with_unreleased_dataflow(
+            BTreeMap::from([
+                (node.clone(), old_id.clone()),
+                ("exited".to_string().into(), old_id),
+            ]),
+            status.clone(),
+            &node,
+        );
+        let mut coordinator = test_coordinator(HashMap::new(), daemon_connections, store);
+        report_running(&mut coordinator, daemon_id, &record, &node).await;
+
+        let events = queued_daemon_events(&mut rx).await;
+        assert!(
+            has_param_during(&events, &node),
+            "{status:?}: the reconnecting daemon must get the persisted param; got {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, DaemonCoordinatorEvent::AllNodesReady { .. })),
+            "{status:?}: a barrier that never released through the coordinator must not \
+             be replayed; got {events:?}"
+        );
+    }
+}
+
+/// A multi-daemon dataflow whose barrier has not released yet gets its params
+/// with the release (`broadcast_all_nodes_ready`), not before it.
+#[tokio::test]
+async fn rebuilt_multi_daemon_dataflow_waits_for_its_barrier() {
+    let sender: NodeId = "sender".to_string().into();
+    let mut daemon_connections = DaemonConnections::default();
+    let (m1, mut rx) = connected_test_daemon(&mut daemon_connections, "m1");
+    let (store, record) = store_with_unreleased_dataflow(
+        BTreeMap::from([
+            (sender.clone(), m1.clone()),
+            (
+                "receiver".to_string().into(),
+                DaemonId::new(Some("m2".to_string())),
+            ),
+        ]),
+        StoreDataflowStatus::Recovering,
+        &sender,
+    );
+    let mut coordinator = test_coordinator(HashMap::new(), daemon_connections, store);
+    report_running(&mut coordinator, m1, &record, &sender).await;
+
+    let events = queued_daemon_events(&mut rx).await;
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, DaemonCoordinatorEvent::SetParam { .. })),
+        "params of an unreleased multi-daemon dataflow must wait for the barrier; \
+         got {events:?}"
+    );
+}
+
+/// A daemon relinking to a live entry is caught up from that entry's state
+/// log; the rebuilt-entry replay must not fire on top of it.
+#[tokio::test]
+async fn relinking_to_a_live_single_daemon_entry_does_not_replay() {
+    let node: NodeId = "rec".to_string().into();
+    let mut daemon_connections = DaemonConnections::default();
+    let (daemon_id, mut rx) = connected_test_daemon(&mut daemon_connections, "m1");
+    let (store, record) = store_with_unreleased_dataflow(
+        BTreeMap::from([(node.clone(), daemon_id.clone())]),
+        StoreDataflowStatus::Running,
+        &node,
+    );
+    let live = test_running_dataflow(record.uuid, daemon_id.clone(), node.clone());
+    let mut coordinator = test_coordinator(
+        HashMap::from([(record.uuid, live)]),
+        daemon_connections,
+        store,
+    );
+    report_running(&mut coordinator, daemon_id, &record, &node).await;
+
+    let events = queued_daemon_events(&mut rx).await;
+    assert!(
+        !has_param_during(&events, &node),
+        "a relink must not trigger the rebuilt-entry replay; got {events:?}"
+    );
 }
