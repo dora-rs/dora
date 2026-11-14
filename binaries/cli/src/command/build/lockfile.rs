@@ -156,11 +156,13 @@ impl BuildLockfile {
         Ok(())
     }
 
+    /// Look up the locked source for a plain `git:` node. Rejects entries with
+    /// hub provenance or a `subdir`: they were written while the node was a hub
+    /// node, a switch the descriptor fingerprint can't detect (#4182).
     pub fn get_source(&self, node_id: &NodeId, repo: &str) -> eyre::Result<GitSource> {
         let source = self
             .git_sources
             .get(node_id)
-            .cloned()
             .with_context(|| format!("no lockfile entry found for node `{node_id}`"))?;
         if source.repo != repo {
             eyre::bail!(
@@ -168,7 +170,14 @@ impl BuildLockfile {
                 source.repo
             );
         }
-        Ok(source)
+        if source.hub.is_some() || source.subdir.is_some() {
+            eyre::bail!(
+                "lockfile entry for node `{node_id}` was written for a hub node, \
+                 but the node is now a plain `git:` node. \
+                 regenerate with `dora build --write-lockfile`"
+            );
+        }
+        Ok(source.clone())
     }
 }
 
@@ -279,6 +288,44 @@ mod tests {
             .get_source(&"node-a".parse().unwrap(), "https://example.com/other")
             .unwrap_err();
         assert!(err.to_string().contains("lockfile repo mismatch"));
+    }
+
+    #[test]
+    fn get_source_rejects_hub_entry_for_plain_git_node() {
+        use dora_message::common::HubProvenance;
+
+        let repo = "https://example.com/repo";
+        let hub = Some(HubProvenance {
+            name: "dora-rs/dora-yolo".into(),
+            version: "0.5.0".into(),
+            manifest_digest: None,
+        });
+        let subdir_only = GitSource {
+            subdir: Some("node-hub/dora-yolo".into()),
+            ..source(repo, "abc123")
+        };
+        let hub_only = GitSource {
+            hub: hub.clone(),
+            ..source(repo, "abc123")
+        };
+        let hub_entry = GitSource {
+            hub,
+            ..subdir_only.clone()
+        };
+        for entry in [hub_entry, subdir_only, hub_only] {
+            let lockfile = BuildLockfile {
+                version: LOCKFILE_VERSION,
+                descriptor_fingerprint: Some("abc".into()),
+                git_sources: BTreeMap::from([("detector".parse().unwrap(), entry)]),
+                binary_sources: BTreeMap::new(),
+            };
+            let err = lockfile
+                .get_source(&"detector".parse().unwrap(), repo)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("hub node"), "{err}");
+            assert!(err.contains("--write-lockfile"), "{err}");
+        }
     }
 
     #[test]
