@@ -748,6 +748,22 @@ pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
 const MAX_STATE_LOG_ENTRIES: usize = 10_000;
 
 impl RunningDataflow {
+    /// Whether every placed node is on one and the same daemon. The start
+    /// barrier of such a dataflow is local to that daemon, which never
+    /// reports it, so `ready_barrier_released` stays `false` for the life of
+    /// the dataflow. Counts the placement persisted for nodes whose daemon has
+    /// not reported back yet; with no placement known at all (a record from
+    /// before `node_to_daemon` was persisted) it answers `false`.
+    pub(crate) fn single_daemon(&self) -> bool {
+        let daemons: BTreeSet<String> = self
+            .node_to_daemon
+            .values()
+            .map(ToString::to_string)
+            .chain(self.persisted_placement.values().cloned())
+            .collect();
+        daemons.len() == 1
+    }
+
     /// Append a state mutation to the replication log, returning its sequence.
     pub(crate) fn append_state_log(&mut self, operation: StateCatchUpOperation) -> u64 {
         self.state_log_sequence += 1;
