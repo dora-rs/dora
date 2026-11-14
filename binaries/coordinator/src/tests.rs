@@ -10546,7 +10546,9 @@ fn has_param_during(events: &[DaemonCoordinatorEvent], node: &NodeId) -> bool {
 /// the coordinator never records a release. When its entry is rebuilt from the
 /// store the state log is empty too, so without a replay a param persisted but
 /// never forwarded -- for example one set while the dataflow was `Recovering`
-/// -- would never reach the node (#4180). Covers both store states a rebuilt
+/// -- would never reach the node (#4180). The daemon reconnects under a new
+/// id, as it does after a coordinator restart, and the record still places a
+/// node that already exited under the old one. Covers both store states a rebuilt
 /// entry comes from: `Recovering` (orphan reclaim, coordinator restart) and
 /// `Running` (a failed `Recovering` write, a coordinator restart that loaded
 /// the record but not the entry).
@@ -10557,10 +10559,17 @@ async fn rebuilt_single_daemon_dataflow_gets_its_persisted_params() {
         StoreDataflowStatus::Running,
     ] {
         let node: NodeId = "rec".to_string().into();
+        // The record holds the id the daemon had before the restart, for the
+        // running node and for one that already exited. The reconnecting
+        // daemon registers under a new id for the same machine.
+        let old_id = DaemonId::new(Some("m1".to_string()));
         let mut daemon_connections = DaemonConnections::default();
         let (daemon_id, mut rx) = connected_test_daemon(&mut daemon_connections, "m1");
         let (store, record) = store_with_unreleased_dataflow(
-            BTreeMap::from([(node.clone(), daemon_id.clone())]),
+            BTreeMap::from([
+                (node.clone(), old_id.clone()),
+                ("exited".to_string().into(), old_id),
+            ]),
             status.clone(),
             &node,
         );
