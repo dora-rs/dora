@@ -307,10 +307,9 @@ async fn artifact_handler(
 
     let build_uuid: uuid::Uuid = build_id.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    let path = state
-        .artifact_store
-        .artifact_path(&build_uuid, &node_id)
-        .ok_or(StatusCode::BAD_REQUEST)?;
+    let node_id: dora_message::id::NodeId = node_id.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let path = state.artifact_store.artifact_path(&build_uuid, &node_id);
 
     let data = tokio::fs::read(&path).await.map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
