@@ -1,3 +1,4 @@
+use dora_message::id::NodeId;
 use eyre::Context;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -19,9 +20,19 @@ impl ArtifactStore {
     }
 
     /// Construct the path to a stored artifact (without checking existence).
-    /// Returns `None` if the node_id fails sanitization.
+    ///
+    /// Returns `None` if `node_id` is not a valid [`NodeId`]. A valid id is
+    /// used unchanged as the file name: `NodeId` only allows `[a-zA-Z0-9_.-]`
+    /// and forbids a leading `.`, so it can contain no path separator and
+    /// cannot be a `.`/`..` segment. Rewriting it instead would map distinct
+    /// ids (`cam.left`, `cam_left`) to the same file.
     pub fn artifact_path(&self, build_id: &Uuid, node_id: &str) -> Option<PathBuf> {
-        sanitize_node_id(node_id).map(|s| self.base_dir.join(build_id.to_string()).join(s))
+        let node_id: NodeId = node_id.parse().ok()?;
+        Some(
+            self.base_dir
+                .join(build_id.to_string())
+                .join(node_id.as_ref()),
+        )
     }
 
     /// Remove all stored artifacts.
@@ -43,30 +54,6 @@ impl Drop for ArtifactStore {
     fn drop(&mut self) {
         self.cleanup();
     }
-}
-
-/// Sanitize a node_id for safe use as a filename.
-/// Returns None if the id is empty or contains path traversal sequences.
-fn sanitize_node_id(node_id: &str) -> Option<String> {
-    if node_id.is_empty()
-        || node_id.contains("..")
-        || node_id.contains('/')
-        || node_id.contains('\\')
-    {
-        return None;
-    }
-    // Replace any non-alphanumeric/dash/underscore chars with underscore
-    let sanitized: String = node_id
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    Some(sanitized)
 }
 
 #[cfg(test)]
@@ -92,9 +79,37 @@ mod tests {
     }
 
     #[test]
-    fn sanitizes_special_chars() {
-        assert_eq!(sanitize_node_id("my node!"), Some("my_node_".into()));
-        assert_eq!(sanitize_node_id("ok-node_1"), Some("ok-node_1".into()));
+    fn artifact_path_rejects_invalid_node_ids() {
+        let store = ArtifactStore::new().unwrap();
+        let build_id = Uuid::new_v4();
+        for id in ["my node!", ".hidden", "..", ".", "dora", "n\u{e9}"] {
+            assert!(
+                store.artifact_path(&build_id, id).is_none(),
+                "{id:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn distinct_node_ids_get_distinct_paths() {
+        // `.` is valid in a NodeId; it must not be rewritten to `_`, or
+        // `cam.left` and `cam_left` would share one artifact file (#4186).
+        let store = ArtifactStore::new().unwrap();
+        let build_id = Uuid::new_v4();
+        let dotted = store.artifact_path(&build_id, "cam.left").unwrap();
+        let underscored = store.artifact_path(&build_id, "cam_left").unwrap();
+        assert_ne!(dotted, underscored);
+        assert!(dotted.ends_with("cam.left"));
+    }
+
+    #[test]
+    fn artifact_path_accepts_inner_double_dot() {
+        // Only a leading `.` is forbidden; `a..b` is a valid NodeId and a
+        // plain file name, not a traversal (#4186).
+        let store = ArtifactStore::new().unwrap();
+        let build_id = Uuid::new_v4();
+        let path = store.artifact_path(&build_id, "a..b").unwrap();
+        assert_eq!(path, store.base_dir.join(build_id.to_string()).join("a..b"));
     }
 
     #[test]
