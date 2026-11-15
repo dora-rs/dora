@@ -1109,16 +1109,22 @@ Action differences from DDS:
   default values, as rclcpp does.
 - If no action server is matched, `request_result` produces an immediate
   error event on Zenoh. DDS silently drops the request.
-- The server holds up to three `get_result` requests per unfinished goal,
-  across all clients. It answers extra requests with an error. Once the
-  goal finishes, requests can fetch the stored result.
+- The server holds up to 16 `get_result` requests per unfinished goal,
+  across all clients. Once a goal's 16 slots are full, a new request
+  displaces an older one from a client that already has more than one
+  pending, and that displaced request immediately gets `Unknown` with
+  default values — the same reply `request_result` gets for a goal the
+  server doesn't know. A request is answered with an error only once every
+  slot is a different client's single request. Once the goal finishes,
+  requests can fetch the stored result.
 - A client's `request_result` returns an error while 64 earlier calls are
   still waiting for their goal or for their result event to be read.
 
 The public Rust `TypedActionServer` sizes its result service to at least 64
-pending requests, or `3 * max_goals + 16` if that is larger. The extra slots
-let it answer new requests while every unfinished goal has three waiters.
-A goal limit that overflows this calculation is rejected at declaration.
+pending requests, or `16 * max_goals + 16` if that is larger. The extra
+slots let it answer new requests while every unfinished goal has 16
+waiters. A goal limit that overflows this calculation is rejected at
+declaration.
 
 On both transports, a goal still running 300 s after it was accepted is
 aborted when the next goal comes in, even while it publishes feedback. On

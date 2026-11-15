@@ -244,9 +244,9 @@ where
 pub struct ActionServerOptions {
     /// Goals the server keeps at once. When full, the oldest finished goal
     /// makes room; if every goal is still running, new goals are rejected.
-    /// The result service has at least 64 slots, or three per goal plus 16
-    /// extra slots if that is larger. A limit that overflows this calculation
-    /// is rejected by `declare`.
+    /// The result service has at least 64 slots, or `MAX_RESULT_WAITERS_PER_GOAL`
+    /// per goal plus 16 extra slots if that is larger. A limit that overflows
+    /// this calculation is rejected by `declare`.
     pub max_goals: usize,
     /// A goal still running this long after it was accepted is aborted (its
     /// result is the default value) when the next goal comes in, so a handler
@@ -267,9 +267,12 @@ pub type ActionServerPump = BoxFuture<'static, ()>;
 /// the goal with [`finish`](Self::finish). Results stay available to
 /// `get_result` until the goal is evicted to make room for a new one. Like
 /// rclcpp, `get_result` for a goal the server doesn't know returns
-/// `STATUS_UNKNOWN` and a default result. At most three result requests can
-/// wait on an unfinished goal across all clients. Extra requests receive a
-/// service error.
+/// `STATUS_UNKNOWN` and a default result. Up to `MAX_RESULT_WAITERS_PER_GOAL`
+/// result requests can wait on an unfinished goal across all clients; once
+/// that many are waiting, a new request displaces an older one from a
+/// client that already has more than one pending, answering the displaced
+/// request early with `STATUS_UNKNOWN`. A request is refused with a service
+/// error only once every slot is a different client's single request.
 pub struct TypedActionServer<G, R, F> {
     shared: Arc<Shared>,
     goals: flume::Receiver<(GoalId, G)>,
