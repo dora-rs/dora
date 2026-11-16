@@ -748,6 +748,33 @@ pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
 const MAX_STATE_LOG_ENTRIES: usize = 10_000;
 
 impl RunningDataflow {
+    /// Whether every placed node is on one and the same machine. The start
+    /// barrier of such a dataflow is local to its daemon, which never reports
+    /// it, so `ready_barrier_released` stays `false` for the life of the
+    /// dataflow.
+    ///
+    /// Compares machine ids, not daemon ids: a daemon that reconnects after a
+    /// coordinator restart or an orphan reclaim gets a new id, while
+    /// `persisted_placement` keeps the old one for nodes it did not report
+    /// (for example ones that already exited). Nodes are placed by machine,
+    /// so a dataflow never spans two daemons of one machine, and daemons
+    /// without a machine id share the `None` slot the same way. With no
+    /// placement known at all (a record from before `node_to_daemon` was
+    /// persisted), or a placement that does not parse, it answers `false`.
+    pub(crate) fn single_daemon(&self) -> bool {
+        let mut machines = BTreeSet::new();
+        for daemon in self.node_to_daemon.values() {
+            machines.insert(daemon.machine_id().map(str::to_owned));
+        }
+        for daemon in self.persisted_placement.values() {
+            let Some(daemon) = DaemonId::from_display_str(daemon) else {
+                return false;
+            };
+            machines.insert(daemon.machine_id().map(str::to_owned));
+        }
+        machines.len() == 1
+    }
+
     /// Append a state mutation to the replication log, returning its sequence.
     pub(crate) fn append_state_log(&mut self, operation: StateCatchUpOperation) -> u64 {
         self.state_log_sequence += 1;

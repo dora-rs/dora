@@ -33,7 +33,9 @@ pub(crate) struct ParamReplaySummary {
 /// the caller already started for it in the same status report
 /// (`params_replay_started`, the ready-barrier replay), or the one that
 /// releasing the barrier sends to every daemon of the dataflow, or else one
-/// started here. Replaying a second time would only send the same store
+/// started here. A single-daemon dataflow takes the last way even before its
+/// barrier released: that barrier is local to the daemon and never releases
+/// through the coordinator. Replaying a second time would only send the same store
 /// contents again (#3684).
 ///
 /// The ack advances to the current `state_log_sequence` right away, without
@@ -62,7 +64,7 @@ pub(crate) fn catch_up_daemon_behind_pruned_log(
             "state catch-up: log pruned for dataflow {dataflow_id}; daemon {daemon_id} \
              gets every persisted param from the ready-barrier replay"
         );
-    } else if !dataflow.ready_barrier_released {
+    } else if !dataflow.ready_barrier_released && !dataflow.single_daemon() {
         tracing::info!(
             "state catch-up: log pruned for dataflow {dataflow_id}; daemon {daemon_id} \
              gets every persisted param when the ready barrier releases"
