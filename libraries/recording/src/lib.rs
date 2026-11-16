@@ -344,8 +344,8 @@ pub struct RecordingReader<R: Read> {
     /// threshold, page-fault in) every payload of the recording just to drop
     /// it. Only the payload of a record that is returned gets its own
     /// allocation (and none at all through
-    /// [`next_record`](RecordingReader::next_record)). Keeps the capacity of the largest record read so far, at most
-    /// [`MAX_RECORD_BYTES`].
+    /// [`next_record`](RecordingReader::next_record)). Keeps the capacity of
+    /// the largest record read so far, at most [`MAX_RECORD_BYTES`].
     record_buf: Vec<u8>,
     /// See [`last_timestamp_offset_nanos`](Self::last_timestamp_offset_nanos).
     last_timestamp_offset_nanos: u64,
