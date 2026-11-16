@@ -224,11 +224,7 @@ impl Daemon {
             .try_clone()
             .await
             .context("failed to clone logger")?;
-        let mut dataflow = RunningDataflow::new(
-            dataflow_id,
-            self.daemon_id.clone(),
-            dataflow_descriptor.clone(),
-        );
+        let mut dataflow = RunningDataflow::new(dataflow_id, dataflow_descriptor.clone());
         // Read from the descriptor, which is the one copy that survives
         // everything a dataflow outlives: auto-recovery re-spawn,
         // coordinator restart with state reconstruction, and `dora

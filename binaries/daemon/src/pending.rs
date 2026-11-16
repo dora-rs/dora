@@ -6,7 +6,6 @@ use dora_core::{
 };
 use dora_message::{
     DataflowId,
-    common::DaemonId,
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, LogLevel, Timestamped},
     daemon_to_node::DaemonReply,
 };
@@ -17,7 +16,6 @@ use crate::{CascadingErrorCauses, coordinator::CoordinatorSender, log::DataflowL
 
 pub struct PendingNodes {
     dataflow_id: DataflowId,
-    daemon_id: DaemonId,
 
     /// The local nodes that are still waiting to start.
     local_nodes: HashSet<NodeId>,
@@ -77,10 +75,9 @@ pub struct PendingNodes {
 }
 
 impl PendingNodes {
-    pub fn new(dataflow_id: DataflowId, daemon_id: DaemonId) -> Self {
+    pub fn new(dataflow_id: DataflowId) -> Self {
         Self {
             dataflow_id,
-            daemon_id,
             local_nodes: HashSet::new(),
             external_nodes: false,
             waiting_subscribers: HashMap::new(),
@@ -399,7 +396,11 @@ impl PendingNodes {
 
         let msg = serde_json::to_vec(&Timestamped {
             inner: CoordinatorRequest::Event {
-                daemon_id: self.daemon_id.clone(),
+                // The id this connection registered under: after a reconnect it
+                // differs from the one the daemon had when the dataflow was
+                // spawned, and the coordinator closes the connection of a
+                // daemon whose event carries any other one.
+                daemon_id: sender.daemon_id().clone(),
                 event: DaemonEvent::AllNodesReady {
                     dataflow_id: self.dataflow_id,
                     exited_before_subscribe: self.exited_before_subscribe.clone(),
@@ -425,9 +426,10 @@ pub enum DataflowStatus {
 mod tests {
     use super::*;
     use crate::log::DaemonLogger;
+    use dora_message::common::DaemonId;
 
     fn pending() -> PendingNodes {
-        PendingNodes::new(uuid::Uuid::nil(), DaemonId::new(None))
+        PendingNodes::new(uuid::Uuid::nil())
     }
 
     fn node(id: &str) -> NodeId {
@@ -799,6 +801,44 @@ mod tests {
             matches!(status, DataflowStatus::Pending),
             "the barrier must stay pending while a cohort member has not resolved"
         );
+    }
+
+    /// A daemon that reconnects while its start barrier is pending gets a new
+    /// id from the coordinator, which closes the connection of a daemon whose
+    /// event carries a different one. The ready report must therefore carry
+    /// the id of the connection it is sent over, not the one the daemon had
+    /// when the dataflow was spawned, or the report is lost and the barrier
+    /// never releases (#4189).
+    #[tokio::test]
+    async fn ready_report_carries_the_id_of_the_connection_it_is_sent_over() {
+        let member = node("late");
+        let mut p = pending();
+        p.insert(member.clone());
+        p.set_external_nodes(true);
+
+        let reconnect_id = DaemonId::new(Some("B".to_string()));
+        let (sender, mut rx) = CoordinatorSender::for_test_registered_as(reconnect_id.clone());
+        let mut daemon_logger = test_logger();
+        let (tx, _reply) = oneshot::channel();
+        p.handle_node_subscription(
+            member,
+            tx,
+            &mut Some(sender),
+            &HLC::default(),
+            &mut CascadingErrorCauses::default(),
+            &mut daemon_logger.for_dataflow(uuid::Uuid::nil()),
+        )
+        .await
+        .expect("subscription handling");
+
+        let sent = rx
+            .try_recv()
+            .expect("the daemon must report its nodes ready");
+        let sent: serde_json::Value = serde_json::from_str(&sent).expect("valid frame");
+        let reported: DaemonId =
+            serde_json::from_value(sent["params"]["inner"]["Event"]["daemon_id"].clone())
+                .expect("the report carries a daemon id");
+        assert_eq!(reported, reconnect_id);
     }
 
     /// With external (multi-daemon) nodes the barrier is resolved by the
