@@ -292,10 +292,22 @@ impl NodeManifest {
         // metadata alone would miss FIFOs/devices and growing files
         let file = std::fs::File::open(path)
             .with_context(|| format!("failed to read node manifest at `{}`", path.display()))?;
-        let mut content = String::new();
+        // Read raw bytes and check the size cap *before* validating UTF-8: the
+        // one byte over-read to detect an oversized file can land mid-way
+        // through a multi-byte character, and `read_to_string` would then
+        // report "invalid UTF-8" instead of "too large".
+        let mut raw = Vec::new();
         file.take(MAX_MANIFEST_SIZE as u64 + 1)
-            .read_to_string(&mut content)
+            .read_to_end(&mut raw)
             .with_context(|| format!("failed to read node manifest at `{}`", path.display()))?;
+        if raw.len() > MAX_MANIFEST_SIZE {
+            eyre::bail!(
+                "node manifest at `{}` too large (more than {MAX_MANIFEST_SIZE} bytes)",
+                path.display()
+            );
+        }
+        let content = String::from_utf8(raw)
+            .with_context(|| format!("node manifest at `{}` is not valid UTF-8", path.display()))?;
         Self::parse(&content)
             .with_context(|| format!("invalid node manifest at `{}`", path.display()))
     }
@@ -450,6 +462,29 @@ env:
         let huge = format!("apiVersion: 1\n# {}", "x".repeat(MAX_MANIFEST_SIZE));
         let err = NodeManifest::parse(&huge).unwrap_err();
         assert!(format!("{err:#}").contains("too large"), "{err:#}");
+    }
+
+    #[test]
+    fn read_reports_too_large_when_the_cap_splits_a_character() {
+        // `read` over-reads one byte past the cap to detect an oversized file.
+        // When that byte is the first half of a multi-byte character, the error
+        // must still be "too large", not a confusing "invalid UTF-8".
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dora-node.yml");
+        let mut yaml = "#".repeat(MAX_MANIFEST_SIZE);
+        yaml.push('é');
+        std::fs::write(&path, yaml).unwrap();
+        let err = NodeManifest::read(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("too large"), "{err:#}");
+    }
+
+    #[test]
+    fn read_reports_invalid_utf8_for_a_small_binary_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dora-node.yml");
+        std::fs::write(&path, [0xff, 0xfe, 0x00, 0x01]).unwrap();
+        let err = NodeManifest::read(&path).unwrap_err();
+        assert!(format!("{err:#}").contains("UTF-8"), "{err:#}");
     }
 
     #[test]
