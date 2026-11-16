@@ -20,7 +20,7 @@ use eyre::{Context, Result, bail};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     mem,
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
@@ -206,9 +206,12 @@ async fn run(
     let daemon_event_stream = spawn_daemon_event_forwarder(daemon_events);
     let mut events = (operator_events, daemon_event_stream.into_stream()).merge();
 
-    let mut open_operator_inputs: HashMap<_, BTreeSet<_>> = operators
+    let mut operator_inputs: HashMap<OperatorId, OperatorInputs> = operators
         .iter()
-        .map(|(id, config)| (id, config.inputs.keys().collect()))
+        .map(|(id, config)| {
+            let inputs = config.inputs.keys().map(|id| (id.clone(), true)).collect();
+            (id.clone(), inputs)
+        })
         .collect();
 
     // Diagnostic watchdog (dora-rs/dora#2742): warn when the main loop stops
@@ -307,6 +310,7 @@ async fn run(
                     result.wrap_err("failed to close outputs of finished operator")?;
 
                     operator_channels.remove(&operator_id);
+                    operator_inputs.remove(&operator_id);
 
                     if operator_channels.is_empty() {
                         break;
@@ -354,12 +358,10 @@ async fn run(
                 tracing::warn!("Reloading runtime nodes is not supported");
             }
             RuntimeEvent::Event(Event::Input { id, metadata, data }) => {
-                let Some((operator_id, input_id)) = id.as_str().split_once('/') else {
+                let Some((operator_id, input_id)) = split_operator_input(&id) else {
                     tracing::warn!("received non-operator input {id}");
                     continue;
                 };
-                let operator_id = OperatorId::from(operator_id.to_owned());
-                let input_id = DataId::from(input_id.to_owned());
                 let Some(operator_channel) = operator_channels.get(&operator_id) else {
                     tracing::warn!("received input {id} for unknown operator");
                     continue;
@@ -383,43 +385,12 @@ async fn run(
                 }
             }
             RuntimeEvent::Event(Event::InputClosed { id }) => {
-                let Some((operator_id, input_id)) = id.as_str().split_once('/') else {
-                    tracing::warn!("received InputClosed event for non-operator input {id}");
-                    continue;
-                };
-                let operator_id = OperatorId::from(operator_id.to_owned());
-                let input_id = DataId::from(input_id.to_owned());
-
-                let Some(operator_channel) = operator_channels.get(&operator_id) else {
-                    tracing::warn!("received input {id} for unknown operator");
-                    continue;
-                };
-                if let Err(err) = operator_channel
-                    .send_async(Event::InputClosed {
-                        id: input_id.clone(),
-                    })
-                    .await
-                    .wrap_err_with(|| {
-                        format!(
-                            "failed to send InputClosed({input_id}) to operator `{operator_id}`"
-                        )
-                    })
-                {
-                    tracing::warn!("{err}");
-                }
-
-                if let Some(open_inputs) = open_operator_inputs.get_mut(&operator_id) {
-                    open_inputs.remove(&input_id);
-                    if open_inputs.is_empty() {
-                        // all inputs of the node were closed -> close its event channel
-                        tracing::trace!(
-                            "all inputs of operator {}/{operator_id} were closed -> closing event channel",
-                            node.id()
-                        );
-                        open_operator_inputs.remove(&operator_id);
-                        operator_channels.remove(&operator_id);
-                    }
-                }
+                forward_input_state_change(id, false, &mut operator_inputs, &mut operator_channels)
+                    .await;
+            }
+            RuntimeEvent::Event(Event::InputRecovered { id }) => {
+                forward_input_state_change(id, true, &mut operator_inputs, &mut operator_channels)
+                    .await;
             }
             RuntimeEvent::Event(Event::Error(err)) => eyre::bail!("received error event: {err}"),
             RuntimeEvent::Event(other) => {
@@ -431,6 +402,62 @@ async fn run(
     mem::drop(events);
 
     Ok(())
+}
+
+/// An operator's declared inputs, each mapped to whether it is open.
+type OperatorInputs = BTreeMap<DataId, bool>;
+
+/// Forward an `InputClosed` (`recovered == false`) or `InputRecovered` event
+/// for the `operator/input` id `id` to its operator, tracking which of the
+/// operator's inputs are open.
+///
+/// When the last open input of an operator closes, its event channel is
+/// dropped, which makes the operator finish. An `InputClosed` can also come
+/// from the daemon's `input_timeout` circuit breaker, which reopens the input
+/// with `InputRecovered` once data flows again; the recovered input therefore
+/// counts as open again, so a later close of the operator's *other* inputs does
+/// not finish an operator that still receives data on it.
+async fn forward_input_state_change(
+    id: DataId,
+    recovered: bool,
+    operator_inputs: &mut HashMap<OperatorId, OperatorInputs>,
+    operator_channels: &mut HashMap<OperatorId, flume::Sender<Event>>,
+) {
+    let Some((operator_id, input_id)) = split_operator_input(&id) else {
+        tracing::warn!("received input state event for non-operator input {id}");
+        return;
+    };
+
+    let (Some(operator_channel), Some(inputs)) = (
+        operator_channels.get(&operator_id),
+        operator_inputs.get_mut(&operator_id),
+    ) else {
+        tracing::warn!("received input state event for {id} of unknown or finished operator");
+        return;
+    };
+    let Some(open) = inputs.get_mut(&input_id) else {
+        tracing::warn!("received input state event for undeclared input {id}");
+        return;
+    };
+    *open = recovered;
+
+    let event = if recovered {
+        Event::InputRecovered { id: input_id }
+    } else {
+        Event::InputClosed { id: input_id }
+    };
+    if let Err(err) = operator_channel.send_async(event).await {
+        tracing::warn!("failed to forward input state event for {id} to its operator: {err}");
+    }
+
+    if !inputs.values().any(|open| *open) {
+        // all inputs of the operator were closed -> close its event channel
+        tracing::trace!(
+            "all inputs of operator {operator_id} were closed -> closing event channel"
+        );
+        operator_inputs.remove(&operator_id);
+        operator_channels.remove(&operator_id);
+    }
 }
 
 /// Forward `Stop` to every operator and close their event channels.
@@ -548,6 +575,16 @@ impl DaemonEvents for dora_node_api::EventStream {
 
 fn operator_output_id(operator_id: &OperatorId, output_id: &DataId) -> DataId {
     DataId::from(format!("{operator_id}/{output_id}"))
+}
+
+/// Split a runtime node's `operator/input` id into its operator and input ids
+/// (the inverse of how the daemon names operator inputs).
+fn split_operator_input(id: &DataId) -> Option<(OperatorId, DataId)> {
+    let (operator_id, input_id) = id.as_str().split_once('/')?;
+    Some((
+        OperatorId::from(operator_id.to_owned()),
+        DataId::from(input_id.to_owned()),
+    ))
 }
 
 #[derive(Debug)]
@@ -740,5 +777,89 @@ mod stop_responsiveness_tests {
             "buffered {} events, expected the cap to hold",
             pending.len()
         );
+    }
+}
+
+#[cfg(test)]
+mod input_state_tests {
+    use super::*;
+
+    fn data_id(id: &str) -> DataId {
+        DataId::from(id.to_owned())
+    }
+
+    type Inputs = HashMap<OperatorId, OperatorInputs>;
+    type Channels = HashMap<OperatorId, flume::Sender<Event>>;
+
+    /// One operator `op` with inputs `a` and `b`, both open.
+    fn setup() -> (Inputs, Channels, flume::Receiver<Event>) {
+        let op = OperatorId::from("op".to_owned());
+        let (tx, rx) = flume::unbounded();
+        let inputs = BTreeMap::from([(data_id("a"), true), (data_id("b"), true)]);
+        (
+            HashMap::from([(op.clone(), inputs)]),
+            HashMap::from([(op, tx)]),
+            rx,
+        )
+    }
+
+    async fn closed(id: &str, inputs: &mut Inputs, channels: &mut Channels) {
+        forward_input_state_change(data_id(id), false, inputs, channels).await;
+    }
+
+    async fn recovered(id: &str, inputs: &mut Inputs, channels: &mut Channels) {
+        forward_input_state_change(data_id(id), true, inputs, channels).await;
+    }
+
+    fn received(rx: &flume::Receiver<Event>) -> Vec<String> {
+        rx.drain()
+            .map(|event| match event {
+                Event::InputClosed { id } => format!("closed {id}"),
+                Event::InputRecovered { id } => format!("recovered {id}"),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn closing_every_input_finishes_the_operator() {
+        let (mut open, mut channels, rx) = setup();
+        closed("op/a", &mut open, &mut channels).await;
+        assert!(!channels.is_empty(), "`b` is still open");
+        closed("op/b", &mut open, &mut channels).await;
+        assert!(channels.is_empty(), "all inputs closed -> channel dropped");
+        assert_eq!(received(&rx), ["closed a", "closed b"]);
+    }
+
+    /// An `input_timeout` break of `a` followed by its recovery must leave `a`
+    /// open: closing `b` afterwards must not finish an operator that still
+    /// receives data on `a`.
+    #[tokio::test]
+    async fn a_recovered_input_counts_as_open_again() {
+        let (mut open, mut channels, rx) = setup();
+        closed("op/a", &mut open, &mut channels).await;
+        recovered("op/a", &mut open, &mut channels).await;
+        closed("op/b", &mut open, &mut channels).await;
+        assert!(
+            !channels.is_empty(),
+            "`a` recovered, so the operator must keep running"
+        );
+        assert_eq!(received(&rx), ["closed a", "recovered a", "closed b"]);
+
+        closed("op/a", &mut open, &mut channels).await;
+        assert!(channels.is_empty());
+    }
+
+    #[tokio::test]
+    async fn events_for_unknown_operators_or_inputs_are_ignored() {
+        let (mut open, mut channels, rx) = setup();
+        recovered("other/a", &mut open, &mut channels).await;
+        closed("no-operator-prefix", &mut open, &mut channels).await;
+        recovered("op/undeclared", &mut open, &mut channels).await;
+        closed("op/undeclared", &mut open, &mut channels).await;
+        assert!(rx.is_empty());
+        let op = &open[&OperatorId::from("op".to_owned())];
+        assert_eq!(op.len(), 2, "an undeclared input must not be added");
+        assert!(op.values().all(|open| *open));
     }
 }
