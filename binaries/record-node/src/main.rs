@@ -54,8 +54,9 @@ const FLUSH_EVERY_N_RECORDS: u64 = 100;
 /// wall-clock *time*: the count bound alone lets a stream below
 /// `FLUSH_EVERY_N_RECORDS / FLUSH_INTERVAL` (~100 Hz) sit unflushed for up to
 /// `FLUSH_EVERY_N_RECORDS / rate` seconds (a 2 Hz stream ≈ 50 s), which a
-/// SIGKILL would lose. Also used as the event loop's idle poll interval so a
-/// stream that goes quiet still gets its tail flushed.
+/// SIGKILL would lose. The event loop also waits at most until this much time
+/// has passed since the last flush, so a stream that goes quiet still gets its
+/// tail flushed.
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Decides when to flush buffered records to disk so an abrupt termination
@@ -134,7 +135,8 @@ impl FlushPolicy {
         Ok(Some(remaining))
     }
 
-    /// Call on an idle tick (no event within `FLUSH_INTERVAL`): flush anything
+    /// Call on an idle tick (the wait from [`flush_if_due`](Self::flush_if_due)
+    /// timed out, or an event that records nothing arrived): flush anything
     /// still buffered so a stream that goes quiet doesn't leave its last few
     /// records unflushed indefinitely.
     fn on_idle<W: Write>(&mut self, writer: &mut RecordingWriter<W>) -> eyre::Result<()> {
