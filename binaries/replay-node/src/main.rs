@@ -190,7 +190,12 @@ fn main() -> eyre::Result<()> {
         let mut skipped = 0u64;
         let mut stopped = false;
 
-        while let Some(entry) = reader.next_entry_for_node(&replay_node)? {
+        // Borrow each record from the reader instead of copying it out: the
+        // payload is only decoded, and the decode makes its own copy.
+        while let Some(entry) = reader.next_record()? {
+            if entry.node_id != replay_node {
+                continue;
+            }
             // Wait out the pacing gap, watching for `Stop` while we do.
             let gap = pacing_gap(pass_start.elapsed(), entry.timestamp_offset_nanos, speed);
             if wait_out_gap(&mut events, gap) == Replay::Stop {
@@ -199,7 +204,7 @@ fn main() -> eyre::Result<()> {
             }
 
             let timestamped: Timestamped<InterDaemonEvent> =
-                match Timestamped::deserialize_inter_daemon_event(&entry.event_bytes) {
+                match Timestamped::deserialize_inter_daemon_event(entry.event_bytes) {
                     Ok(event) => event,
                     Err(e) => {
                         eprintln!(
