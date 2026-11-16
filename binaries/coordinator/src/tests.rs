@@ -3700,9 +3700,10 @@ fn pruned_catch_up_before_barrier_release_leaves_the_replay_to_the_release() {
     let node_id: NodeId = "camera".to_string().into();
     let mut dataflow = dataflow_with_pruned_log(dataflow_id, &daemon_id, &node_id);
     dataflow.ready_barrier_released = false;
-    dataflow
-        .persisted_placement
-        .insert("receiver".to_string().into(), "m2".to_string());
+    dataflow.persisted_placement.insert(
+        "receiver".to_string().into(),
+        DaemonId::new(Some("m2".to_string())).to_string(),
+    );
 
     catch_up_daemon_behind_pruned_log(
         dataflow_id,
