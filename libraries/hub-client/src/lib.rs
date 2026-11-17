@@ -26,12 +26,14 @@ pub const OFFICIAL_NAMESPACE: &str = "dora-rs";
 /// transport URL): a Unix absolute path (`/repo`) or a Windows drive-letter
 /// absolute path (`C:\repo` / `C:/repo`). UNC paths (`\\host\share`) are
 /// deliberately excluded — they are remote SMB locations, not vetted local
-/// repos. Used by both validators so the trusted/untrusted "is this local?"
-/// decisions can never disagree (a Windows path the trusted validator accepts
-/// must also trip the untrusted local-source gate).
+/// repos. Windows reads any two leading separators as a UNC prefix, so the
+/// forward-slash (`//host/share`) and mixed (`/\host\share`) spellings are
+/// excluded too. Used by both validators so the trusted/untrusted "is this
+/// local?" decisions can never disagree (a Windows path the trusted validator
+/// accepts must also trip the untrusted local-source gate).
 fn is_local_path(url: &str) -> bool {
-    if url.starts_with('/') {
-        return true;
+    if let Some(rest) = url.strip_prefix('/') {
+        return !rest.starts_with(['/', '\\']);
     }
     let b = url.as_bytes();
     b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == b'\\')
@@ -170,7 +172,7 @@ pub const OFFICIAL_INDEX_ALIAS: &str = "official";
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_git_url, validate_git_url_untrusted};
+    use super::{local_path_to_file_url, validate_git_url, validate_git_url_untrusted};
 
     #[test]
     fn untrusted_index_sources_reject_local_paths() {
@@ -192,7 +194,6 @@ mod tests {
 
     #[test]
     fn local_paths_rewrite_to_file_urls() {
-        use super::local_path_to_file_url;
         assert_eq!(
             local_path_to_file_url("/srv/repo").as_deref(),
             Some("file:///srv/repo")
@@ -241,6 +242,16 @@ mod tests {
         assert!(validate_git_url("repo").is_err());
         assert!(validate_git_url("C:repo").is_err());
         assert!(validate_git_url("\\\\host\\share\\repo").is_err());
+    }
+
+    #[test]
+    fn rejects_unc_paths_spelled_with_forward_slashes() {
+        // Windows treats `//host/share` and `/\host\share` as UNC paths, the
+        // same remote SMB location as `\\host\share`, so neither is a local repo.
+        for unc in ["//host/share/repo", "/\\host\\share\\repo"] {
+            assert!(validate_git_url(unc).is_err(), "{unc} must be rejected");
+            assert_eq!(local_path_to_file_url(unc), None, "{unc}");
+        }
     }
 
     #[test]
