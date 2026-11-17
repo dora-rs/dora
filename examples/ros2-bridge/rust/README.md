@@ -20,10 +20,9 @@ See the [top-level README](../README.md) for the capability×language matrix and
 | `action-server`  | `rust-ros2-dataflow-action-server`  | no (dora server + client)¹   |
 | `turtle`         | `rust-ros2-dataflow`                | yes (`turtlesim`)            |
 
-¹ Action examples are gated behind `--features ros2-examples`. A dora-hosted
-action server is not discoverable by a real `rcl` client
-([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)), so the
-`action-server` example pairs a dora server with a dora client. The deferred
+¹ Action examples are gated behind `--features ros2-examples`. The
+`action-server` example pairs a dora server with a dora client so it runs
+without a ROS 2 peer; a real `rcl` client can call the server too. The deferred
 `get_result` round-trip is flaky in upstream `ros2-client`/`rustdds` (it
 repeatedly hung the x86 nightly job and stalls on the arm64 dev harness), so the
 action examples are **not run in nightly CI** — validate them with

@@ -2,9 +2,8 @@ use std::time::Duration;
 
 use dora_node_api::{self, DoraNode, Event};
 use dora_ros2_bridge::{
-    messages::example_interfaces::service::{AddTwoInts, AddTwoIntsRequest},
+    messages::example_interfaces::service::{AddTwoIntsRequest, AddTwoIntsResponse},
     ros2_client::{self, NodeOptions},
-    rustdds::{self, policy},
 };
 use eyre::{Context, eyre};
 use futures::task::SpawnExt;
@@ -82,18 +81,12 @@ fn init_ros_node() -> eyre::Result<ros2_client::Node> {
 
 fn create_service_client(
     ros_node: &mut ros2_client::Node,
-) -> eyre::Result<ros2_client::Client<AddTwoInts>> {
+) -> eyre::Result<ros2_client::Client<AddTwoIntsRequest, AddTwoIntsResponse>> {
     // create an example service client
-    let service_qos = {
-        rustdds::QosPolicyBuilder::new()
-            .reliability(policy::Reliability::Reliable {
-                max_blocking_time: rustdds::Duration::from_millis(100),
-            })
-            .history(policy::History::KeepLast { depth: 1 })
-            .build()
-    };
+    // Reliable (waiting up to 100 ms when the send window is full), keep-last 1.
+    let service_qos = ros2_client::QosProfile::publisher_default();
     let add_client = ros_node
-        .create_client::<AddTwoInts>(
+        .create_client::<AddTwoIntsRequest, AddTwoIntsResponse>(
             ros2_client::ServiceMapping::Enhanced,
             &ros2_client::Name::new("/", "add_two_ints").unwrap(),
             &ros2_client::ServiceTypeName::new("example_interfaces", "AddTwoInts"),

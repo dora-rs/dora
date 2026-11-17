@@ -138,6 +138,7 @@ mod tests {
     use dora_message::descriptor::Ros2TransportConfig;
 
     use super::{Context, Durability, History, Liveliness, Reliability, Ros2Qos, dds};
+    use crate::ros2_client;
 
     #[test]
     fn dds_qos_adapter_preserves_reliable_keep_all() {
@@ -151,8 +152,8 @@ mod tests {
                 lease_duration: None,
             },
         };
-        let rustdds = dds::to_rustdds_qos(&qos);
-        assert_eq!(dds::from_rustdds_qos(&rustdds), qos);
+        let profile = dds::to_qos_profile(&qos);
+        assert_eq!(dds::from_qos_profile(&profile), qos);
     }
 
     #[test]
@@ -165,8 +166,80 @@ mod tests {
                 lease_duration: Some(Duration::from_secs(3)),
             },
         };
-        let rustdds = dds::to_rustdds_qos(&qos);
-        assert_eq!(dds::from_rustdds_qos(&rustdds), qos);
+        let profile = dds::to_qos_profile(&qos);
+        assert_eq!(dds::from_qos_profile(&profile), qos);
+    }
+
+    /// `ros2-client` >= 0.11 has no MANUAL_BY_PARTICIPANT liveliness (ROS 2
+    /// deprecated MANUAL_BY_NODE, and rclcpp rejects it), so the DDS path
+    /// degrades it to AUTOMATIC and keeps the lease.
+    #[test]
+    fn dds_qos_adapter_degrades_manual_by_participant_to_automatic() {
+        let qos = Ros2Qos {
+            reliability: Reliability::BestEffort,
+            durability: Durability::Volatile,
+            history: History::KeepLast { depth: 1 },
+            liveliness: Liveliness::ManualByParticipant {
+                lease_duration: Some(Duration::from_secs(2)),
+            },
+        };
+        let profile = dds::to_qos_profile(&qos);
+        assert_eq!(
+            dds::from_qos_profile(&profile).liveliness,
+            Liveliness::Automatic {
+                lease_duration: Some(Duration::from_secs(2)),
+            }
+        );
+    }
+
+    /// `ros2-client` turns a `Wait(d)` / lease into `d.as_nanos() as i64`, so a
+    /// duration it cannot hold must not reach it: anything that long means
+    /// "infinite" (block / never expire), as `rustdds::Duration` saturated it.
+    #[test]
+    fn dds_qos_adapter_treats_unrepresentable_durations_as_infinite() {
+        use ros2_client::qos;
+        let qos = Ros2Qos {
+            reliability: Reliability::Reliable {
+                max_blocking_time: Duration::MAX,
+            },
+            durability: Durability::Volatile,
+            history: History::KeepLast { depth: 1 },
+            liveliness: Liveliness::Automatic {
+                lease_duration: Some(Duration::from_secs(1_000_000_000_000)),
+            },
+        };
+        let profile = dds::to_qos_profile(&qos);
+        assert_eq!(
+            profile.reliability,
+            qos::Reliability::Reliable {
+                when_full: qos::WhenFull::Block
+            }
+        );
+        assert_eq!(profile.liveliness_lease, None);
+        // ...and a blocking profile survives the round trip.
+        assert_eq!(
+            dds::to_qos_profile(&dds::from_qos_profile(&profile)).reliability,
+            profile.reliability
+        );
+    }
+
+    /// A keep-last depth below 1 retains nothing; clamp it like the YAML path.
+    #[test]
+    fn dds_qos_adapter_clamps_keep_last_depth_to_one() {
+        for depth in [-1, 0] {
+            let qos = Ros2Qos {
+                reliability: Reliability::BestEffort,
+                durability: Durability::Volatile,
+                history: History::KeepLast { depth },
+                liveliness: Liveliness::Automatic {
+                    lease_duration: None,
+                },
+            };
+            assert_eq!(
+                dds::to_qos_profile(&qos).history,
+                ros2_client::qos::History::KeepLast { depth: 1 }
+            );
+        }
     }
 
     #[test]

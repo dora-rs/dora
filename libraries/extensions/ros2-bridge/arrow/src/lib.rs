@@ -88,7 +88,7 @@ pub struct TypeInfo<'a> {
 const DUMMY_STRUCT_NAME: &str = "struct";
 
 // ---------------------------------------------------------------------------
-// BridgeMessage: dynamic-type wrapper for ros2_client Service/Action traits
+// BridgeMessage: dynamic-type payload for ros2_client services and actions
 // ---------------------------------------------------------------------------
 //
 // ros2_client requires `T: Message` (= Serialize + DeserializeOwned) for
@@ -170,8 +170,9 @@ impl Drop for TypeInfoGuard {
 
 /// A dynamically-typed message wrapper that implements `Serialize + DeserializeOwned + Clone`.
 ///
-/// This allows using dynamic Arrow-based messages with `ros2_client`'s
-/// `Service` and `ActionTypes` traits, which require `Message` bounds.
+/// This allows using dynamic Arrow-based messages as the `Req`/`Resp` and
+/// goal/result/feedback type parameters of `ros2_client` services and actions,
+/// which require `Message` bounds.
 #[derive(Clone, Debug)]
 pub struct BridgeMessage(pub Option<arrow::array::ArrayData>);
 
@@ -215,26 +216,6 @@ impl<'de> serde::Deserialize<'de> for BridgeMessage {
 }
 
 impl ros2_client::Message for BridgeMessage {}
-
-/// Service type descriptor for dynamic bridge services.
-#[derive(Debug)]
-pub struct BridgeServiceType {
-    pub request_type_name: String,
-    pub response_type_name: String,
-}
-
-impl ros2_client::Service for BridgeServiceType {
-    type Request = BridgeMessage;
-    type Response = BridgeMessage;
-
-    fn request_type_name(&self) -> &str {
-        &self.request_type_name
-    }
-
-    fn response_type_name(&self) -> &str {
-        &self.response_type_name
-    }
-}
 
 #[cfg(test)]
 mod raw_cdr_tests {
@@ -464,31 +445,5 @@ mod raw_cdr_tests {
         let mut bytes = byte_sequence_wire();
         bytes[8..12].copy_from_slice(&1_000u32.to_le_bytes());
         assert!(deserialize_raw_cdr(&bytes, type_info, 1 << 20).is_err());
-    }
-}
-
-/// Action type descriptor for dynamic bridge actions.
-#[derive(Debug)]
-pub struct BridgeActionType {
-    pub goal_type_name: String,
-    pub result_type_name: String,
-    pub feedback_type_name: String,
-}
-
-impl ros2_client::ActionTypes for BridgeActionType {
-    type GoalType = BridgeMessage;
-    type ResultType = BridgeMessage;
-    type FeedbackType = BridgeMessage;
-
-    fn goal_type_name(&self) -> &str {
-        &self.goal_type_name
-    }
-
-    fn result_type_name(&self) -> &str {
-        &self.result_type_name
-    }
-
-    fn feedback_type_name(&self) -> &str {
-        &self.feedback_type_name
     }
 }

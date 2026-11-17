@@ -7,12 +7,11 @@ use dora_node_api::{
 };
 use dora_ros2_bridge::{
     messages::{
-        example_interfaces::service::{AddTwoInts, AddTwoIntsRequest},
+        example_interfaces::service::{AddTwoIntsRequest, AddTwoIntsResponse},
         geometry_msgs::msg::{Twist, Vector3},
         turtlesim::msg::Pose,
     },
-    ros2_client::{self, NodeOptions, ros2},
-    rustdds::{self, policy},
+    ros2_client::{self, NodeOptions},
 };
 use eyre::{Context, eyre};
 use futures::task::SpawnExt;
@@ -37,15 +36,9 @@ fn main() -> eyre::Result<()> {
     .context("failed to spawn ros2 spinner")?;
 
     // create an example service client
-    let service_qos = {
-        rustdds::QosPolicyBuilder::new()
-            .reliability(policy::Reliability::Reliable {
-                max_blocking_time: rustdds::Duration::from_millis(100),
-            })
-            .history(policy::History::KeepLast { depth: 1 })
-            .build()
-    };
-    let add_client = ros_node.create_client::<AddTwoInts>(
+    // Reliable (waiting up to 100 ms when the send window is full), keep-last 1.
+    let service_qos = ros2_client::QosProfile::publisher_default();
+    let add_client = ros_node.create_client::<AddTwoIntsRequest, AddTwoIntsResponse>(
         ros2_client::ServiceMapping::Enhanced,
         &ros2_client::Name::new("/", "add_two_ints").unwrap(),
         &ros2_client::ServiceTypeName::new("example_interfaces", "AddTwoInts"),
@@ -140,7 +133,7 @@ fn main() -> eyre::Result<()> {
 }
 
 fn add_two_ints_service_ready(
-    add_client: &ros2_client::Client<AddTwoInts>,
+    add_client: &ros2_client::Client<AddTwoIntsRequest, AddTwoIntsResponse>,
     ros_node: &ros2_client::Node,
 ) -> bool {
     let ready = add_client.wait_for_service(ros_node);
@@ -153,7 +146,7 @@ fn add_two_ints_service_ready(
 }
 
 async fn add_two_ints_request(
-    add_client: &ros2_client::Client<AddTwoInts>,
+    add_client: &ros2_client::Client<AddTwoIntsRequest, AddTwoIntsResponse>,
     a: i64,
     b: i64,
 ) -> eyre::Result<i64> {
@@ -192,18 +185,9 @@ fn init_ros_node() -> eyre::Result<ros2_client::Node> {
 fn create_vel_publisher(
     ros_node: &mut ros2_client::Node,
 ) -> eyre::Result<ros2_client::Publisher<Twist>> {
-    let topic_qos: rustdds::QosPolicies = {
-        rustdds::QosPolicyBuilder::new()
-            .durability(policy::Durability::Volatile)
-            .liveliness(policy::Liveliness::Automatic {
-                lease_duration: ros2::Duration::INFINITE,
-            })
-            .reliability(policy::Reliability::Reliable {
-                max_blocking_time: ros2::Duration::from_millis(100),
-            })
-            .history(policy::History::KeepLast { depth: 1 })
-            .build()
-    };
+    // Volatile, automatic liveliness, reliable (waiting up to 100 ms when the
+    // send window is full), keep-last 1.
+    let topic_qos = ros2_client::QosProfile::publisher_default();
 
     let turtle_cmd_vel_topic = ros_node
         .create_topic(

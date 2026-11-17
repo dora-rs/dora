@@ -94,83 +94,119 @@ impl Node {
     }
 }
 
-/// Convert backend-neutral policies into RustDDS policies.
-pub fn to_rustdds_qos(qos: &Ros2Qos) -> rustdds::QosPolicies {
-    use rustdds::policy;
+/// The longest duration `ros2-client` can put on the wire: it converts a
+/// blocking time or lease with `as_nanos() as i64`. Anything this long or
+/// longer means "infinite", as `rustdds::Duration` used to saturate it.
+const INFINITE: Duration = Duration::from_nanos(i64::MAX as u64);
+
+fn finite(duration: Duration) -> Option<Duration> {
+    (duration < INFINITE).then_some(duration)
+}
+
+/// A QoS duration given as f64 seconds, as the Python and C++ QoS types take
+/// it: infinite or too long means "infinite" (blocking / never expiring), and
+/// negative or NaN means zero.
+pub fn duration_from_secs_f64(secs: f64) -> Duration {
+    Duration::try_from_secs_f64(secs.max(0.0)).unwrap_or(Duration::MAX)
+}
+
+/// The DDS durability sent for the TRANSIENT/PERSISTENT kinds that the Python
+/// and C++ QoS types expose but ROS 2 lacks: TRANSIENT_LOCAL, the closest kind
+/// that still serves late joiners. Warns once per process.
+pub fn transient_local_for_unsupported_durability() -> ros2_client::qos::Durability {
+    static WARN: std::sync::Once = std::sync::Once::new();
+    WARN.call_once(|| {
+        tracing::warn!(
+            "QoS durability `transient`/`persistent` is not supported on the DDS transport \
+             (ROS 2 has no such kind); using `transient_local`"
+        );
+    });
+    ros2_client::qos::Durability::TransientLocal
+}
+
+/// Convert backend-neutral policies into the `ros2-client` DDS QoS profile.
+///
+/// The profile has no MANUAL_BY_PARTICIPANT liveliness (ROS 2 deprecated the
+/// equivalent MANUAL_BY_NODE and rclcpp rejects it), so that kind is sent as
+/// AUTOMATIC with the same lease, and a warning is logged once.
+pub fn to_qos_profile(qos: &Ros2Qos) -> ros2_client::QosProfile {
+    use ros2_client::qos;
 
     let reliability = match qos.reliability {
-        Reliability::BestEffort => policy::Reliability::BestEffort,
-        Reliability::Reliable { max_blocking_time } => policy::Reliability::Reliable {
-            max_blocking_time: max_blocking_time.into(),
+        Reliability::BestEffort => qos::Reliability::BestEffort,
+        // On DDS `when_full` only sets the RTPS `max_blocking_time`, so
+        // `Wait(d)` is exactly the previous `max_blocking_time: d`.
+        Reliability::Reliable { max_blocking_time } => qos::Reliability::Reliable {
+            when_full: finite(max_blocking_time).map_or(qos::WhenFull::Block, qos::WhenFull::Wait),
         },
     };
     let durability = match qos.durability {
-        Durability::Volatile => policy::Durability::Volatile,
-        Durability::TransientLocal => policy::Durability::TransientLocal,
+        Durability::Volatile => qos::Durability::Volatile,
+        Durability::TransientLocal => qos::Durability::TransientLocal,
     };
     let history = match qos.history {
-        History::KeepLast { depth } => policy::History::KeepLast { depth },
-        History::KeepAll => policy::History::KeepAll,
+        // A depth below 1 would retain nothing.
+        History::KeepLast { depth } => qos::History::KeepLast {
+            depth: usize::try_from(depth.max(1)).unwrap_or(1),
+        },
+        History::KeepAll => qos::History::KeepAll,
     };
-    let liveliness = match qos.liveliness {
-        Liveliness::Automatic { lease_duration } => policy::Liveliness::Automatic {
-            lease_duration: to_dds_duration(lease_duration),
-        },
-        Liveliness::ManualByParticipant { lease_duration } => {
-            policy::Liveliness::ManualByParticipant {
-                lease_duration: to_dds_duration(lease_duration),
-            }
+    let (liveliness, lease) = match qos.liveliness {
+        Liveliness::Automatic { lease_duration } => (qos::Liveliness::Automatic, lease_duration),
+        Liveliness::ManualByTopic { lease_duration } => {
+            (qos::Liveliness::ManualByTopic, lease_duration)
         }
-        Liveliness::ManualByTopic { lease_duration } => policy::Liveliness::ManualByTopic {
-            lease_duration: to_dds_duration(lease_duration),
-        },
+        Liveliness::ManualByParticipant { lease_duration } => {
+            static WARN: std::sync::Once = std::sync::Once::new();
+            WARN.call_once(|| {
+                tracing::warn!(
+                    "QoS liveliness `manual_by_participant` is not supported on the DDS \
+                     transport (ROS 2 has no such kind); using `automatic`"
+                );
+            });
+            (qos::Liveliness::Automatic, lease_duration)
+        }
     };
 
-    rustdds::QosPolicyBuilder::new()
-        .reliability(reliability)
-        .durability(durability)
-        .history(history)
-        .liveliness(liveliness)
-        .build()
+    ros2_client::QosProfile {
+        reliability,
+        durability,
+        history,
+        deadline: None,
+        lifespan: None,
+        liveliness,
+        liveliness_lease: lease.and_then(finite),
+    }
 }
 
-/// Convert the bridge-supported subset of RustDDS policies to neutral policies.
-pub fn from_rustdds_qos(qos: &rustdds::QosPolicies) -> Ros2Qos {
-    use rustdds::policy;
+/// Convert a `ros2-client` DDS QoS profile back to neutral policies.
+pub fn from_qos_profile(profile: &ros2_client::QosProfile) -> Ros2Qos {
+    use ros2_client::qos;
 
-    let reliability = match qos.reliability().unwrap_or(policy::Reliability::BestEffort) {
-        policy::Reliability::BestEffort => Reliability::BestEffort,
-        policy::Reliability::Reliable { max_blocking_time } => Reliability::Reliable {
-            max_blocking_time: max_blocking_time.into(),
+    let reliability = match profile.reliability {
+        qos::Reliability::BestEffort => Reliability::BestEffort,
+        qos::Reliability::Reliable { when_full } => Reliability::Reliable {
+            max_blocking_time: match when_full {
+                qos::WhenFull::Fail => Duration::ZERO,
+                qos::WhenFull::Wait(d) => d,
+                qos::WhenFull::Block => INFINITE,
+            },
         },
     };
-    let durability = match qos.durability().unwrap_or(policy::Durability::Volatile) {
-        policy::Durability::TransientLocal => Durability::TransientLocal,
-        policy::Durability::Volatile
-        | policy::Durability::Transient
-        | policy::Durability::Persistent => Durability::Volatile,
+    let durability = match profile.durability {
+        qos::Durability::Volatile => Durability::Volatile,
+        qos::Durability::TransientLocal => Durability::TransientLocal,
     };
-    let history = match qos
-        .history()
-        .unwrap_or(policy::History::KeepLast { depth: 1 })
-    {
-        policy::History::KeepLast { depth } => History::KeepLast { depth },
-        policy::History::KeepAll => History::KeepAll,
+    let history = match profile.history {
+        qos::History::KeepLast { depth } => History::KeepLast {
+            depth: i32::try_from(depth).unwrap_or(i32::MAX),
+        },
+        qos::History::KeepAll => History::KeepAll,
     };
-    let liveliness = match qos.liveliness().unwrap_or(policy::Liveliness::Automatic {
-        lease_duration: rustdds::Duration::INFINITE,
-    }) {
-        policy::Liveliness::Automatic { lease_duration } => Liveliness::Automatic {
-            lease_duration: from_dds_duration(lease_duration),
-        },
-        policy::Liveliness::ManualByParticipant { lease_duration } => {
-            Liveliness::ManualByParticipant {
-                lease_duration: from_dds_duration(lease_duration),
-            }
-        }
-        policy::Liveliness::ManualByTopic { lease_duration } => Liveliness::ManualByTopic {
-            lease_duration: from_dds_duration(lease_duration),
-        },
+    let lease_duration = profile.liveliness_lease;
+    let liveliness = match profile.liveliness {
+        qos::Liveliness::Automatic => Liveliness::Automatic { lease_duration },
+        qos::Liveliness::ManualByTopic => Liveliness::ManualByTopic { lease_duration },
     };
 
     Ros2Qos {
@@ -179,14 +215,4 @@ pub fn from_rustdds_qos(qos: &rustdds::QosPolicies) -> Ros2Qos {
         history,
         liveliness,
     }
-}
-
-fn to_dds_duration(duration: Option<Duration>) -> rustdds::Duration {
-    duration
-        .map(Into::into)
-        .unwrap_or(rustdds::Duration::INFINITE)
-}
-
-fn from_dds_duration(duration: rustdds::Duration) -> Option<Duration> {
-    (duration != rustdds::Duration::INFINITE).then(|| duration.into())
 }

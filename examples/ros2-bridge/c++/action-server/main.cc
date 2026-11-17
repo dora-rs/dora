@@ -10,9 +10,9 @@
 // A dora C++ node hosting a ROS2 `Fibonacci` action server. Mirrors the
 // action-client example in reverse: instead of send_goal + downcast(result), it
 // matches incoming goals, computes the Fibonacci sequence while publishing
-// feedback, then sends the final result. A real rmw client cannot discover a
-// ros2-client-hosted server (ros2-client#4), so the example pairs this server
-// with a dora (ros2-client) action client in the same dataflow.
+// feedback, then sends the final result. The example pairs this server with a
+// dora (ros2-client) action client in the same dataflow, so it runs without a
+// ROS 2 peer.
 int main()
 {
     std::cout << "HELLO FROM C++ action server" << std::endl;
