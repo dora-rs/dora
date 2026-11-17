@@ -108,13 +108,11 @@ pub(crate) fn health_check_should_kill(
 }
 
 /// The instant a connected node's silence is counted from, or `None` while its
-/// dataflow has not started.
+/// dataflow has not started (#4198).
 ///
-/// A node that has subscribed is parked at the startup barrier until every
-/// node, on every daemon, has subscribed too; it sends nothing while it waits.
-/// On a multi-daemon dataflow a slow node on another machine can hold that
-/// barrier for longer than `health_check_timeout`, so the wait must not count
-/// as silence, and neither must the time before the barrier's release.
+/// A subscribed node sends nothing while it is parked at the startup barrier,
+/// which a slow node on another daemon can hold for longer than
+/// `health_check_timeout`. That wait is not silence.
 pub(crate) fn health_check_silence_since(
     dataflow_started: bool,
     last_activity_millis: u64,

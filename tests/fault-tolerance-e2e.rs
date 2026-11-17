@@ -564,7 +564,7 @@ async fn health_check_timeout_sigkills_unresponsive_node() {
     );
 }
 
-/// A node parked at the startup barrier is not killed by its health check.
+/// A node parked at the startup barrier is not killed by its health check (#4198).
 ///
 /// The daemon answers a node's subscribe only once every node of the
 /// dataflow, on every daemon, has subscribed. A parked node sends nothing
