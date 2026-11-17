@@ -243,31 +243,6 @@ fn aggregate_process_tree(
     Some((cpu_usage, memory_bytes, disk))
 }
 
-/// Slack, in seconds, when comparing a process's start time against the
-/// node's spawn timestamp. sysinfo reports start times with one-second
-/// resolution (derived from boot time on Linux), so a node's own process can
-/// appear to have started a little before `spawned_at` was recorded.
-const START_TIME_SLACK_SECS: u64 = 2;
-
-/// Whether the process at `pid` is the node's current incarnation.
-///
-/// `spawned_at_ms` is the node's spawn timestamp (`0` while it is in restart
-/// backoff, when `pid` still names the exited process) and
-/// `process_start_secs` is the start time sysinfo reports for `pid` (`0` when
-/// unknown). A process that started clearly before the node was spawned has
-/// recycled the PID and belongs to someone else.
-pub(crate) fn is_current_incarnation(
-    pid: u32,
-    spawned_at_ms: u64,
-    process_start_secs: u64,
-) -> bool {
-    if pid == 0 || spawned_at_ms == 0 {
-        return false;
-    }
-    process_start_secs == 0
-        || process_start_secs.saturating_add(START_TIME_SLACK_SECS) >= spawned_at_ms / 1000
-}
-
 /// Every descendant of `root` in `children_map`, each listed once.
 ///
 /// The edges can contain a cycle (see [`parent_edges`]), so the walk keeps a
@@ -435,14 +410,19 @@ pub(crate) async fn collect_and_send_metrics_bg(
                 if let Some(pid_arc) = node.pid.as_ref() {
                     let pid = pid_arc.load(atomic::Ordering::Acquire);
                     let sys_pid = Pid::from_u32(pid);
-                    let spawned_at = node.spawned_at.load(atomic::Ordering::Acquire);
-                    // A stale PID (node in backoff, or a respawn that failed)
-                    // may now belong to an unrelated process; leave the node
-                    // to the second pass instead of reporting that process.
-                    let current = sys.process(sys_pid).is_some_and(|process| {
-                        is_current_incarnation(pid, spawned_at, process.start_time())
-                    });
-                    if !current {
+                    // `pid` keeps the exited process's value while the node
+                    // is in restart backoff or after a failed respawn, and
+                    // the OS may have recycled it into an unrelated process.
+                    // `spawned_at` is `0` exactly then (reset in
+                    // `restart_loop`, set only after a successful spawn), so
+                    // leave the node to the second pass (dora-rs/dora#4196).
+                    //
+                    // This deliberately does not compare the process's start
+                    // time against `spawned_at`: sysinfo derives start times
+                    // from a boot time read once per `System`, so after a
+                    // wall-clock step (NTP on a board without an RTC) every
+                    // live node would look recycled.
+                    if pid == 0 || node.spawned_at.load(atomic::Ordering::Acquire) == 0 {
                         continue;
                     }
                     if let Some((cpu_usage, memory_bytes, disk)) =
@@ -717,7 +697,7 @@ mod disk_rate_tests {
                 nodes: vec![NodeSnapshot {
                     node_id: NodeId::from("node".to_string()),
                     pid: Some(Arc::new(AtomicU32::new(std::process::id()))),
-                    // Non-zero and older than this process: counts as live.
+                    // Non-zero: the node has a live incarnation.
                     spawned_at: Arc::new(AtomicU64::new(1)),
                     restart_count: Arc::default(),
                     restarts_disabled: false,
@@ -1102,39 +1082,11 @@ mod process_tree_tests {
 #[cfg(test)]
 mod stale_pid_tests {
     use super::*;
-    use dora_message::daemon_to_coordinator::NodeStatus;
+    use dora_message::daemon_to_coordinator::{NodeMetrics, NodeStatus};
 
-    #[test]
-    fn a_node_in_backoff_is_not_its_stale_pid() {
-        assert!(!is_current_incarnation(1234, 0, 1_000));
-        assert!(!is_current_incarnation(1234, 0, 0));
-    }
-
-    #[test]
-    fn pid_zero_is_never_current() {
-        assert!(!is_current_incarnation(0, 1_000_000, 1_000));
-    }
-
-    #[test]
-    fn a_process_started_before_the_spawn_recycled_the_pid() {
-        // Spawned at t = 1000 s; the process at the PID started at 900 s.
-        assert!(!is_current_incarnation(1234, 1_000_000, 900));
-    }
-
-    #[test]
-    fn the_spawned_process_is_current() {
-        assert!(is_current_incarnation(1234, 1_000_000, 1_000));
-        // Second-resolution start times may land just before `spawned_at`.
-        assert!(is_current_incarnation(1234, 1_000_500, 999));
-        // Unknown start time (sysinfo could not open the process).
-        assert!(is_current_incarnation(1234, 1_000_000, 0));
-    }
-
-    /// dora-rs/dora#4196: a node in restart backoff whose stale PID now names
-    /// a live, unrelated process (here: the test process itself) must be
-    /// reported as `Restarting`, not as that process `Running`.
-    #[tokio::test]
-    async fn a_stale_pid_in_backoff_reports_restarting() {
+    /// Run one metrics collection for a single node whose `pid` is the test
+    /// process itself and return what it reported for that node.
+    async fn sample_own_process(spawned_at: u64, restart_count: u32) -> NodeMetrics {
         let state = Arc::new(tokio::sync::Mutex::new(MetricsState::default()));
         let (sender, mut sent) = coordinator::CoordinatorSender::for_test();
         let node_id = NodeId::from("node".to_string());
@@ -1143,8 +1095,8 @@ mod stale_pid_tests {
             nodes: vec![NodeSnapshot {
                 node_id: node_id.clone(),
                 pid: Some(Arc::new(AtomicU32::new(std::process::id()))),
-                spawned_at: Arc::new(AtomicU64::new(0)),
-                restart_count: Arc::new(AtomicU32::new(1)),
+                spawned_at: Arc::new(AtomicU64::new(spawned_at)),
+                restart_count: Arc::new(AtomicU32::new(restart_count)),
                 restarts_disabled: false,
                 broken_inputs: Vec::new(),
                 pending_messages: 0,
@@ -1171,14 +1123,33 @@ mod stale_pid_tests {
         let msg: Timestamped<CoordinatorRequest> =
             serde_json::from_value(envelope["params"].clone()).unwrap();
         let CoordinatorRequest::Event {
-            event: DaemonEvent::NodeMetrics { metrics, .. },
+            event: DaemonEvent::NodeMetrics { mut metrics, .. },
             ..
         } = msg.inner
         else {
             panic!("expected a NodeMetrics event");
         };
-        let node = &metrics[&node_id];
+        metrics.remove(&node_id).expect("metrics for the node")
+    }
+
+    /// dora-rs/dora#4196: a node in restart backoff whose stale PID now names
+    /// a live, unrelated process (here: the test process itself) must be
+    /// reported as `Restarting`, not as that process `Running`.
+    #[tokio::test]
+    async fn a_stale_pid_in_backoff_reports_restarting() {
+        let node = sample_own_process(0, 1).await;
         assert_eq!(node.status, NodeStatus::Restarting);
         assert_eq!(node.pid, 0, "the stale PID must not be reported");
+    }
+
+    /// A live node must stay `Running` even when its process's start time is
+    /// far older than `spawned_at`, as after a forward wall-clock step on a
+    /// board without an RTC: sysinfo's start times keep the stale boot time.
+    #[tokio::test]
+    async fn a_live_node_after_a_clock_step_reports_running() {
+        let an_hour_ahead = crate::node_communication::current_millis() + 3_600_000;
+        let node = sample_own_process(an_hour_ahead, 1).await;
+        assert_eq!(node.status, NodeStatus::Running);
+        assert_eq!(node.pid, std::process::id());
     }
 }
