@@ -562,7 +562,12 @@ fn attempt_data_stream_request(
 
 /// Open the MAVLink transport, retrying briefly if the peer is not yet
 /// listening. Returns once a connection succeeds or the budget elapses.
+///
+/// A malformed endpoint (unsupported scheme, missing host, bad `?proto=` or
+/// `?baud=`) fails at once: retrying cannot fix it, and waiting out the
+/// whole budget would only delay the error.
 fn connect_with_retry(url: &Url) -> Result<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
+    transport::validate(url).map_err(|e| eyre!("invalid MAVLink endpoint: {e}"))?;
     let deadline = std::time::Instant::now() + CONNECT_RETRY_BUDGET;
     let mut last_err: Option<eyre::Report> = None;
     loop {
@@ -804,6 +809,33 @@ mod tests {
 
     use super::*;
     use std::net::UdpSocket;
+
+    /// A malformed endpoint can never connect, so it must fail at once
+    /// instead of being retried for the whole `CONNECT_RETRY_BUDGET`.
+    #[test]
+    fn connect_with_retry_fails_fast_on_a_malformed_endpoint() {
+        for endpoint in [
+            "tcp://127.0.0.1:1?proto=v3",
+            "udpx://127.0.0.1:14550",
+            "serial:///dev/ttyUSB0?baud=fast",
+        ] {
+            let url = Url::parse(endpoint).unwrap();
+            let started = std::time::Instant::now();
+            let err = match connect_with_retry(&url) {
+                Ok(_) => panic!("{endpoint}: a malformed endpoint must not connect"),
+                Err(e) => e,
+            };
+            assert!(
+                started.elapsed() < CONNECT_RETRY_BUDGET / 2,
+                "{endpoint}: took {:?} to fail, i.e. it was retried",
+                started.elapsed()
+            );
+            assert!(
+                err.to_string().contains("invalid MAVLink endpoint"),
+                "{endpoint}: unexpected error: {err}"
+            );
+        }
+    }
 
     /// Frames the reader queues while a pass is forwarding must wait for the
     /// next pass, so the main loop gets back to the event stream (`Stop`,
