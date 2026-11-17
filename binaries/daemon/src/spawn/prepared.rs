@@ -233,9 +233,80 @@ pub struct PreparedNode {
     pub(super) ft_stats: Arc<crate::FaultToleranceStats>,
 }
 
+/// Number of cores a `cpu_set_t` can hold (`CPU_SETSIZE`).
+#[cfg(target_os = "linux")]
+const CPU_SET_CAPACITY: usize = std::mem::size_of::<libc::cpu_set_t>() * 8;
+
+/// Rejects a `cpu_affinity` that can never be applied, before the node is spawned. Checked
+/// here, where the error can name the node and the core: the child can only fail with an errno.
+#[cfg(target_os = "linux")]
+fn check_cpu_affinity(node_id: &NodeId, cores: &[usize]) -> eyre::Result<()> {
+    if cores.is_empty() {
+        eyre::bail!("cpu_affinity of node {node_id} is empty: list at least one core");
+    }
+    if let Some(core) = cores.iter().find(|core| **core >= CPU_SET_CAPACITY) {
+        eyre::bail!(
+            "cpu_affinity core {core} of node {node_id} is out of range (max {})",
+            CPU_SET_CAPACITY - 1
+        );
+    }
+    Ok(())
+}
+
+/// Pins the calling process to exactly `cores`, or fails so that the node does not start. A
+/// node that runs on other cores than the dataflow says takes them from the nodes they were
+/// kept free for. The kernel accepts a set it can only partly honour, such as one with an
+/// offline core or a core outside the cpuset, so the result is read back.
+///
+/// Runs in the forked child before `exec`, so it must not allocate or panic.
+#[cfg(target_os = "linux")]
+fn apply_cpu_affinity(cores: &[usize]) -> std::io::Result<()> {
+    // SAFETY: cpu_set_t is plain data, and the calls get its size.
+    unsafe {
+        let mut wanted: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_ZERO(&mut wanted);
+        for &core in cores {
+            // CPU_SET indexes an array and would panic past its end.
+            if core >= CPU_SET_CAPACITY {
+                return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+            }
+            libc::CPU_SET(core, &mut wanted);
+        }
+        let size = std::mem::size_of::<libc::cpu_set_t>();
+        if libc::sched_setaffinity(0, size, &wanted) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut applied: libc::cpu_set_t = std::mem::zeroed();
+        if libc::sched_getaffinity(0, size, &mut applied) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        if !libc::CPU_EQUAL(&wanted, &applied) {
+            return Err(std::io::Error::from_raw_os_error(libc::EINVAL));
+        }
+    }
+    Ok(())
+}
+
 impl PreparedNode {
     pub fn node_id(&self) -> &NodeId {
         &self.node.id
+    }
+
+    /// The message for a failed spawn. The `cpu_affinity` hook can only fail the spawn with an
+    /// errno (`EINVAL` from [`apply_cpu_affinity`]), so name it when that errno comes back.
+    fn spawn_error_context(&self, err: &std::io::Error) -> String {
+        #[cfg(target_os = "linux")]
+        if let Some(cores) = &self.node.cpu_affinity
+            && err.raw_os_error() == Some(libc::EINVAL)
+        {
+            return format!(
+                "{}: cpu_affinity {cores:?} of node {} could not be applied exactly \
+                 (each core must exist, be online, and be in the cpuset the daemon runs in)",
+                self.spawn_error_msg, self.node.id
+            );
+        }
+        let _ = err;
+        self.spawn_error_msg.clone()
     }
 
     pub fn dynamic(&self) -> bool {
@@ -699,33 +770,12 @@ impl PreparedNode {
                 #[cfg(target_os = "linux")]
                 if let Some(ref cores) = self.node.cpu_affinity {
                     use std::os::unix::process::CommandExt;
+                    check_cpu_affinity(&self.node.id, cores)?;
                     let cores = cores.clone();
-                    // SAFETY: sched_setaffinity is async-signal-safe on Linux.
+                    // SAFETY: the closure only calls sched_setaffinity and sched_getaffinity,
+                    // which are async-signal-safe on Linux, and does not allocate.
                     unsafe {
-                        std_command.pre_exec(move || {
-                            let mut set: libc::cpu_set_t = std::mem::zeroed();
-                            libc::CPU_ZERO(&mut set);
-                            const MAX_CPU: usize = std::mem::size_of::<libc::cpu_set_t>() * 8;
-                            for &core in &cores {
-                                if core >= MAX_CPU {
-                                    eprintln!("warning: cpu_affinity core {core} out of range (max {}), skipping", MAX_CPU - 1);
-                                    continue;
-                                }
-                                libc::CPU_SET(core, &mut set);
-                            }
-                            let ret = libc::sched_setaffinity(
-                                0,
-                                std::mem::size_of::<libc::cpu_set_t>(),
-                                &set,
-                            );
-                            if ret != 0 {
-                                eprintln!(
-                                    "warning: sched_setaffinity failed: {}",
-                                    std::io::Error::last_os_error()
-                                );
-                            }
-                            Ok(())
-                        });
+                        std_command.pre_exec(move || apply_cpu_affinity(&cores));
                     }
                 }
 
@@ -833,7 +883,13 @@ impl PreparedNode {
                     }
                 }
 
-                command.spawn().wrap_err(self.spawn_error_msg)?
+                match command.spawn() {
+                    Ok(child) => child,
+                    Err(err) => {
+                        let msg = self.spawn_error_context(&err);
+                        return Err(eyre::Report::new(err).wrap_err(msg));
+                    }
+                }
             }
             None => {
                 return Ok(NodeKind::Dynamic);
@@ -1576,6 +1632,150 @@ mod tests {
             "the respawn truncated the previous incarnation's log: {log}"
         );
         assert!(log.contains("second-incarnation"), "{log}");
+    }
+
+    /// The first core this test process may run on: a `cpu_affinity` that can be applied.
+    #[cfg(target_os = "linux")]
+    fn first_allowed_core() -> usize {
+        // SAFETY: cpu_set_t is plain data, and the calls get its size.
+        unsafe {
+            let mut set: libc::cpu_set_t = std::mem::zeroed();
+            let size = std::mem::size_of::<libc::cpu_set_t>();
+            assert_eq!(libc::sched_getaffinity(0, size, &mut set), 0);
+            (0..CPU_SET_CAPACITY)
+                .find(|&core| libc::CPU_ISSET(core, &set))
+                .expect("the test process may run on some core")
+        }
+    }
+
+    /// A core that does not exist on the test machine, but fits in a `cpu_set_t`.
+    #[cfg(target_os = "linux")]
+    const MISSING_CORE: usize = 1023;
+
+    /// Runs `true` with `apply_cpu_affinity(cores)` as its `pre_exec` hook. The hook changes the
+    /// affinity of the process that calls it, so it runs in the child, not on the test thread.
+    #[cfg(target_os = "linux")]
+    fn run_true_pinned(cores: Vec<usize>) -> std::io::Result<std::process::ExitStatus> {
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new("true");
+        // SAFETY: apply_cpu_affinity does not allocate and only makes async-signal-safe calls.
+        unsafe {
+            command.pre_exec(move || apply_cpu_affinity(&cores));
+        }
+        command.status()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn apply_cpu_affinity_pins_to_an_allowed_core() {
+        let status = run_true_pinned(vec![first_allowed_core()]).expect("spawn pinned child");
+        assert!(status.success());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn apply_cpu_affinity_rejects_a_set_it_can_only_partly_apply() {
+        // The kernel accepts this set and drops the missing core; the read-back catches it.
+        let err = run_true_pinned(vec![first_allowed_core(), MISSING_CORE])
+            .expect_err("a set with a missing core must fail the spawn");
+        assert_eq!(err.raw_os_error(), Some(libc::EINVAL), "{err}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn apply_cpu_affinity_rejects_a_core_past_cpu_setsize() {
+        let err = run_true_pinned(vec![CPU_SET_CAPACITY + 1])
+            .expect_err("a core past CPU_SETSIZE must fail the spawn");
+        assert_eq!(err.raw_os_error(), Some(libc::EINVAL), "{err}");
+    }
+
+    /// Spawns the test node as `sh -c <script>` with `cpu_affinity: cores`. Returns the node's
+    /// log, or the spawn error as the daemon reports it (`{:?}`, see `dataflow_lifecycle`).
+    #[cfg(target_os = "linux")]
+    async fn spawn_pinned_node(cores: Vec<usize>, script: &str) -> Result<String, String> {
+        use clonable_command::{Command, Stdio};
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let (daemon_tx, _daemon_rx) = tokio::sync::mpsc::channel(64);
+        let mut node = test_prepared_node(daemon_tx, 0, 0.0);
+        node.node.cpu_affinity = Some(cores);
+        node.node_working_dir = tmp.path().to_path_buf();
+        node.command = Some(
+            Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .stdin(Stdio::Null)
+                .stdout(Stdio::Piped)
+                .stderr(Stdio::Piped),
+        );
+        let (_op_tx, op_rx) = flume::bounded(2);
+        let (finished_tx, finished_rx) = oneshot::channel();
+        if let Err(err) = node
+            .spawn_inner(&mut test_logger().await, op_rx, finished_tx)
+            .await
+        {
+            return Err(format!("{err:?}"));
+        }
+        finished_rx.await.expect("node finished");
+        Ok(std::fs::read_to_string(log::log_path(
+            tmp.path(),
+            &uuid::Uuid::nil(),
+            &NodeId::from("test".to_string()),
+        ))
+        .expect("read node log"))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_pinned_node_runs_on_exactly_its_cores() {
+        let core = first_allowed_core();
+        // The log is JSON lines, so print a token that needs no escaping.
+        let log = spawn_pinned_node(
+            vec![core],
+            "awk '/^Cpus_allowed_list/ { print \"ALLOWED=\" $2 \"=\" }' /proc/self/status",
+        )
+        .await
+        .expect("a node pinned to an allowed core starts");
+        assert!(
+            log.contains(&format!("ALLOWED={core}=")),
+            "expected the node on core {core} only: {log}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_node_with_an_out_of_range_core_does_not_start() {
+        let err = spawn_pinned_node(vec![0, 5000], "echo started")
+            .await
+            .expect_err("a core past CPU_SETSIZE must stop the node");
+        assert!(
+            err.contains("cpu_affinity core 5000 of node test is out of range"),
+            "{err}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_node_with_a_missing_core_does_not_start() {
+        let core = first_allowed_core();
+        let err = spawn_pinned_node(vec![core, MISSING_CORE], "echo started")
+            .await
+            .expect_err("a core the machine lacks must stop the node, not narrow its affinity");
+        assert!(
+            err.contains(&format!(
+                "cpu_affinity [{core}, {MISSING_CORE}] of node test could not be applied exactly"
+            )),
+            "{err}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_node_with_an_empty_cpu_affinity_does_not_start() {
+        let err = spawn_pinned_node(vec![], "echo started")
+            .await
+            .expect_err("an empty cpu_affinity must stop the node");
+        assert!(err.contains("cpu_affinity of node test is empty"), "{err}");
     }
 
     /// The incarnation that crashes in the abort-path tests below.

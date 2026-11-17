@@ -308,8 +308,11 @@ Pass criteria:
 
 Already automated in the `cpu-affinity-smoke` nightly job — it runs the
 `cpu-affinity-probe` fixture and asserts the mask lands on the spawned
-process. If `cpu-affinity-smoke` is green, this part is covered. No
-manual step required.
+process. It also runs `dataflow-missing-core.yml`, which asks for a
+core the machine lacks, and asserts that the node does not start: a
+node whose `cpu_affinity` cannot be applied exactly never runs. If
+`cpu-affinity-smoke` is green, this part is covered. No manual step
+required.
 
 ### Scope of `--rt`: daemon process only
 
