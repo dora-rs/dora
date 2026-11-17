@@ -312,6 +312,10 @@ pub struct RunningDataflow {
     pub(crate) endpoint_exchange: Option<crate::spawn::endpoint_exchange::ExchangeHandle>,
     pub(crate) pending_nodes: PendingNodes,
     pub(crate) dataflow_started: bool,
+    /// When `start()` first released the startup barrier, on the clock the
+    /// health check uses. A node is silent while it waits at the barrier, so
+    /// its liveness is measured from here, not from its last request.
+    pub(crate) started_at_millis: u64,
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
     /// One entry per locally assigned node, from spawn/add through removal.
     /// Delayed coordinator writes may update a slot, but cannot recreate it.
@@ -502,6 +506,7 @@ impl RunningDataflow {
             endpoint_exchange: None,
             pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
             dataflow_started: false,
+            started_at_millis: 0,
             subscribe_channels: HashMap::new(),
             runtime_params: BTreeMap::new(),
             pending_messages: HashMap::new(),
@@ -760,6 +765,12 @@ impl RunningDataflow {
         // the readiness path spawn the tasks". Setting it at only one call site
         // (as before) left it `false` for the entire life of a distributed
         // dataflow, silently starving timer inputs on nodes added later.
+        // `start()` runs again from `AddNode` once the dataflow is running;
+        // re-stamping there would reset every node's silence clock and keep
+        // sparing a hung node, so only the first release is recorded.
+        if !self.dataflow_started {
+            self.started_at_millis = crate::node_communication::current_millis();
+        }
         self.dataflow_started = true;
 
         Ok(())

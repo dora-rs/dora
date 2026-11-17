@@ -123,6 +123,26 @@ async fn start_marks_dataflow_started() {
     assert!(df.dataflow_started);
 }
 
+// The health check measures silence from the first barrier release, so a
+// later `start()` (e.g. from `AddNode`) must not move the stamp.
+#[tokio::test]
+async fn start_stamps_started_at_only_on_first_start() {
+    let mut df = test_dataflow();
+    let clock = Arc::new(HLC::default());
+    let (events_tx, _events_rx) = mpsc::channel(8);
+
+    assert_eq!(df.started_at_millis, 0);
+    let before = crate::node_communication::current_millis();
+    df.start(&events_tx, &clock).await.unwrap();
+    let after = crate::node_communication::current_millis();
+    let stamped = df.started_at_millis;
+    assert!((before..=after).contains(&stamped));
+
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    df.start(&events_tx, &clock).await.unwrap();
+    assert_eq!(df.started_at_millis, stamped);
+}
+
 fn test_logger(clock: Arc<HLC>) -> DaemonLogger {
     Logger {
         destination: log::LogDestination::Tracing,

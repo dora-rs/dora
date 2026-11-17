@@ -1,0 +1,30 @@
+# A node parked at the startup barrier must not be killed by its health
+# check (`health_check_timeout_spares_node_parked_at_startup_barrier`).
+#
+# `early` subscribes at once and then waits inside `init_from_env` until
+# `late`, which sleeps 5 s before creating its node, subscribes too. The
+# wait is five times `early`'s `health_check_timeout`; with checks every
+# 0.2 s, a watchdog that counts the wait as silence kills `early` long
+# before the barrier releases. Once it releases, the 100 ms timer keeps
+# both nodes requesting events until `stop_after` sends `Stop`.
+health_check_interval: 0.2
+
+nodes:
+  - id: early
+    build: cargo build -p stop-delay-node
+    path: ../../target/debug/stop-delay-node
+    restart_policy: never
+    health_check_timeout: 1.0
+    env:
+      DORA_TEST_READY_FILE: /tmp/dora-health-check-startup-barrier.ready
+    inputs:
+      tick: dora/timer/millis/100
+
+  - id: late
+    build: cargo build -p stop-delay-node
+    path: ../../target/debug/stop-delay-node
+    restart_policy: never
+    env:
+      DORA_TEST_INIT_DELAY_MS: 5000
+    inputs:
+      tick: dora/timer/millis/100

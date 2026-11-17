@@ -140,7 +140,7 @@ The health check function (`check_node_health`) iterates all running nodes:
 
 1. Skip nodes without `health_check_timeout` set
 2. Skip nodes that have not connected yet (not in `connected_nodes`)
-3. Compute `elapsed_ms = now - last_activity`
+3. Skip nodes whose dataflow has not started yet; otherwise compute `elapsed_ms = now - max(last_activity, dataflow start)`
 4. If `elapsed_ms > timeout_ms`, log a warning and **kill** the node process
 
 After killing, the normal exit handling runs, which evaluates the restart policy. This means `health_check_timeout` combined with `restart_policy: on-failure` automatically recovers hung nodes.
@@ -150,7 +150,10 @@ After killing, the normal exit handling runs, which evaluates the restart policy
 Step 2 above means `health_check_timeout` bounds **post-connection** liveness, not
 total startup time. A node joins `connected_nodes` when it first subscribes to
 events (inside `Node::init` / `DoraNode::init_from_env`), and the timeout clock is
-only consulted from that point on.
+only consulted from that point on. The wait at the startup barrier is not counted
+either: a subscribed node sends nothing until every node of the dataflow, on every
+daemon, has subscribed, so silence is measured from the later of the dataflow's
+start and the node's last request.
 
 This is deliberate: `last_activity` is seeded to the spawn timestamp, so without
 the connection gate a node whose legitimate cold start (Python imports,

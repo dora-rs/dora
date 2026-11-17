@@ -23,7 +23,9 @@
 //!   `init_from_env` returns, i.e. once the daemon has answered this
 //!   node's subscribe. The only observable for "the startup barrier
 //!   released"; `dora node list` reports `Running` for a spawned process
-//!   whether or not it is still parked inside `Node()`.
+//!   whether or not it is still parked inside `Node()`. Its second line,
+//!   `init_ms=<n>`, is how long `init_from_env` took: the time this node
+//!   was parked at the barrier.
 //! * `DORA_TEST_MARKER_FILE` (optional) — path to write the resolved
 //!   exit code to, immediately before exiting. Lets a test assert that
 //!   this fixture really did exit the way the test's premise assumes,
@@ -56,8 +58,10 @@ fn main() -> eyre::Result<()> {
         .context("DORA_TEST_INIT_DELAY_MS must be a u64")?;
     thread::sleep(Duration::from_millis(init_delay_ms));
 
+    let init_started = std::time::Instant::now();
     let (_node, mut events) =
         DoraNode::init_from_env().context("failed to init dora node from env")?;
+    let init_ms = init_started.elapsed().as_millis();
 
     // Init returned, i.e. the daemon answered this node's subscribe.
     // `dora node list` cannot show this — it reports `Running` for any
@@ -65,7 +69,7 @@ fn main() -> eyre::Result<()> {
     // tests that care whether the startup barrier actually released need
     // this marker rather than a status poll.
     if let Ok(path) = std::env::var("DORA_TEST_READY_FILE") {
-        std::fs::write(&path, "ready\n")
+        std::fs::write(&path, format!("ready\ninit_ms={init_ms}\n"))
             .with_context(|| format!("failed to write ready marker {path:?}"))?;
     }
 
