@@ -282,7 +282,10 @@ impl NodeManifest {
                 yaml.len()
             );
         }
-        serde_yaml::from_str(yaml).context("failed to parse node manifest")
+        let manifest = serde_yaml::from_str(yaml).context("failed to parse node manifest")?;
+        crate::descriptor::reject_duplicate_keys(yaml.as_bytes())
+            .context("failed to parse node manifest")?;
+        Ok(manifest)
     }
 
     /// Read and parse a manifest file.
@@ -390,6 +393,31 @@ inputs:
         .unwrap();
         assert!(m.outputs.is_empty());
         assert_eq!(m.inputs.len(), 1);
+    }
+
+    /// A repeated port name must fail instead of silently keeping only the
+    /// last definition, as it does for a dataflow file.
+    #[test]
+    fn repeated_keys_rejected() {
+        let err = NodeManifest::parse(
+            r#"
+apiVersion: 1
+name: dora-recorder
+namespace: dora-rs
+runtime: rust
+entrypoint: target/release/dora-recorder
+inputs:
+  data:
+    type: std/core/v1/Bytes
+  data:
+    type: std/media/v1/Image
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains(r#"duplicate entry with key "data""#),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]

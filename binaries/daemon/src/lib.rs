@@ -80,7 +80,7 @@ pub mod bench_support {
         Vec<mpsc::Receiver<Timestamped<NodeEvent>>>,
     ) {
         let descriptor = dora_message::descriptor::Descriptor::new(vec![]);
-        let mut df = RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor);
+        let mut df = RunningDataflow::new(Uuid::nil(), descriptor);
 
         let sender_id: NodeId = "sender".to_string().into();
         let output_id: DataId = "output".to_string().into();
