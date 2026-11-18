@@ -58,14 +58,21 @@ Both surfaces ride the same `ros2-client` / `rustdds` stack. "Client" = a Dora
 node calling into ROS2 (dora→ROS2); "server" = a Dora node serving ROS2 clients
 (ROS2→dora).
 
-**Capability × surface (all supported):**
+**Capability × surface (all supported; footnotes mark known DDS interop bugs):**
 
 | | topic pub/sub | service client | service server | action client | action server | parameters |
 |---|---|---|---|---|---|---|
 | **YAML bridge** | ✅ | ✅ | ✅ | ✅ | ✅ | (node-hosted) |
 | **Rust** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
 | **C++** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
-| **Python** (pyo3) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Python** (pyo3) | ✅ | ✅ | ✅ | ✅¹ | ✅² | ✅ |
+
+¹ On DDS, the first goal can be lost while discovery is still running
+([#4213](https://github.com/dora-rs/dora/issues/4213)).
+
+² On DDS, `rcl` action clients do not receive the goal status: the server
+publishes it `volatile`, they subscribe `transient_local`
+([#4214](https://github.com/dora-rs/dora/issues/4214)).
 
 Runnable examples for every cell live under
 [`examples/ros2-bridge/`](https://github.com/dora-rs/dora/tree/main/examples/ros2-bridge)

@@ -52,9 +52,12 @@ Rules:
 - Every entry names an open issue.
 - `flaky` marks a timing-dependent bug, such as a discovery race. Such a cell
   may pass or fail, and either result keeps the job green; the result line
-  still names the issue. Use it only for the cells where both outcomes were
-  observed, never with wildcards over cells that fail every run: a flaky entry
-  hides that cell's later failures for other reasons.
+  still names the issue. Mark every cell of a timing race `flaky`, including
+  cells that failed in every local run: a few runs on one machine cannot tell
+  "always fails" from "usually fails", and on a runner such a cell may pass
+  and fail the job with `XPASS`. Use it only for a race, not for a
+  deterministic bug: a flaky entry hides that cell's later failures for other
+  reasons.
 - An unknown distro, RMW or case name is rejected (exit 2), so a typo cannot
   silently stop matching.
 - When a fix lands, its plain entries report `XPASS` and the job fails until
