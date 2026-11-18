@@ -4,9 +4,18 @@ use super::*;
 
 /// Auth token for the direct-TCP data plane. When set (on every
 /// participating daemon), each direct-TCP connection performs a token
-/// handshake before the first data frame; a mismatched or missing token
-/// drops the connection (the origin degrades to the zenoh relay). Unset
-/// = no handshake (the daemon then relies on the port's reachability).
+/// handshake before the first data frame; a mismatched token drops the
+/// connection (the origin degrades to the zenoh relay). Unset = no
+/// handshake (the daemon then relies on the port's reachability).
+///
+/// A token set on only one of the two daemons is caught earlier, at
+/// register time: the mirror reports in `RegisterAck::data_auth` whether
+/// its listener requires the handshake, and an origin that disagrees
+/// never uses the listener (see [`direct_auth_mismatch`]). Relying on the
+/// handshake alone would not do for a token-less origin, which sends no
+/// handshake and so never reads the rejection: its frame is flushed
+/// before the mirror drops the connection, and the write would be lost
+/// rather than relayed (#4211).
 /// The token is NOT injected into spawned nodes (the handshake runs
 /// entirely in the daemon; node-side code never reads it — injecting it
 /// would leak the shared secret into every user node process, bot
@@ -25,6 +34,24 @@ pub(crate) fn cross_data_auth_token() -> Option<String> {
     std::env::var(CROSS_DATA_AUTH_TOKEN_ENV)
         .ok()
         .filter(|t| !t.is_empty())
+}
+
+/// Why an origin cannot use a mirror's direct-TCP data listener, or `None`
+/// when it can: the two daemons must agree on whether the token handshake
+/// runs. `mirror_requires_token` is the mirror's `RegisterAck::data_auth`.
+pub(crate) fn direct_auth_mismatch(
+    origin_has_token: bool,
+    mirror_requires_token: bool,
+) -> Option<String> {
+    match (origin_has_token, mirror_requires_token) {
+        (false, true) => Some(format!(
+            "the mirror requires {CROSS_DATA_AUTH_TOKEN_ENV}, which is not set on this daemon"
+        )),
+        (true, false) => Some(format!(
+            "{CROSS_DATA_AUTH_TOKEN_ENV} is set on this daemon but not on the mirror"
+        )),
+        _ => None,
+    }
 }
 
 /// Handshake frame: `[9-byte magic][u32 token_len][token]`, answered with

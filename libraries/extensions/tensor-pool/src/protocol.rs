@@ -124,6 +124,13 @@ pub enum PeerMessage {
         /// address and so is the wrong dial target under NAT, on a
         /// multi-homed host, or when the coordinator is local.
         data_addr: Option<std::net::SocketAddr>,
+        /// The mirror's data listener requires the
+        /// `DORA_MEMORY_POOL_AUTH_TOKEN` handshake. An origin whose own
+        /// token setting differs could not use the listener (#4211): a
+        /// token-less origin's frame is rejected after it has already been
+        /// flushed, so the origin would never learn of the rejection. Such
+        /// an origin skips the direct path and relays over zenoh instead.
+        data_auth: bool,
     },
     /// Drop the mirror tracking entry and unlink the mirror segment.
     Free { shared_memory_id: String },
