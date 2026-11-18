@@ -1441,51 +1441,66 @@ mod cross_pool_write_tests {
         assert!(cross_transfer_budget(1 << 30) > cross_transfer_budget(64 << 20));
     }
 
-    // The guard is held across the awaits on purpose: the point is to keep
-    // the env var stable for the whole handshake, and an async mutex would
-    /// An origin uses a mirror's direct-TCP listener only when both agree
-    /// on whether the token handshake runs (#4211). A token-less origin
-    /// facing a token-gated mirror is the case the handshake itself cannot
-    /// catch: the origin never reads the rejection, so a small frame would
-    /// be reported sent and never relayed.
-    #[test]
-    fn direct_path_requires_matching_auth_setting() {
-        assert_eq!(direct_auth_mismatch(false, false), None);
-        assert_eq!(direct_auth_mismatch(true, true), None);
-        let tokenless_origin = direct_auth_mismatch(false, true).expect("mismatch");
-        assert!(
-            tokenless_origin.contains("not set on this daemon"),
-            "{tokenless_origin}"
-        );
-        let tokenless_mirror = direct_auth_mismatch(true, false).expect("mismatch");
-        assert!(
-            tokenless_mirror.contains("not on the mirror"),
-            "{tokenless_mirror}"
-        );
-    }
-
-    /// The mirror advertises its auth requirement in the register ack, and
-    /// the field survives the wire encoding.
-    #[test]
-    fn register_ack_carries_data_auth() {
-        let ack = PeerMessage::RegisterAck {
-            shared_memory_id: "pool".to_string(),
+    fn register_ack(data_port: Option<u16>, data_auth: bool) -> RegisterAckReply {
+        RegisterAckReply {
             ok: true,
             direct: false,
-            error: None,
-            data_port: Some(4000),
+            data_port,
             data_addr: None,
-            data_auth: true,
-        };
-        let bytes = postcard::to_allocvec(&ack).unwrap();
-        let PeerMessage::RegisterAck { data_auth, .. } =
-            postcard::from_bytes::<PeerMessage>(&bytes).unwrap()
-        else {
-            panic!("expected a RegisterAck")
-        };
-        assert!(data_auth);
+            data_auth,
+        }
     }
 
+    /// The origin records a mirror's direct-TCP listener only when both
+    /// daemons agree on whether the token handshake runs (#4211). A
+    /// token-less origin facing a token-gated mirror is the case the
+    /// handshake cannot catch on its own: the origin never reads the
+    /// rejection, so a small frame would be reported sent and never
+    /// relayed.
+    #[test]
+    fn register_ack_withholds_the_direct_endpoint_on_auth_mismatch() {
+        let ip = std::net::IpAddr::from([10, 0, 0, 7]);
+        let listener = Some(std::net::SocketAddr::new(ip, 4000));
+
+        // Matching settings keep the direct path.
+        assert_eq!(
+            register_ack(Some(4000), false).direct_endpoint(ip, false),
+            Ok(listener)
+        );
+        assert_eq!(
+            register_ack(Some(4000), true).direct_endpoint(ip, true),
+            Ok(listener)
+        );
+
+        // Token on the mirror only: the bug in #4211.
+        let err = register_ack(Some(4000), true)
+            .direct_endpoint(ip, false)
+            .expect_err("a token-less origin must not use a token-gated listener");
+        assert!(err.contains("not set on this daemon"), "{err}");
+
+        // Token on the origin only.
+        let err = register_ack(Some(4000), false)
+            .direct_endpoint(ip, true)
+            .expect_err("a token-holding origin must not use an open listener");
+        assert!(err.contains("not on the mirror"), "{err}");
+
+        // No listener at all: nothing to withhold, whatever the tokens.
+        assert_eq!(
+            register_ack(None, true).direct_endpoint(ip, false),
+            Ok(None)
+        );
+
+        // The advertised address still wins over the derived one.
+        let advertised = std::net::SocketAddr::from(([192, 168, 1, 2], 5000));
+        let ack = RegisterAckReply {
+            data_addr: Some(advertised),
+            ..register_ack(Some(4000), false)
+        };
+        assert_eq!(ack.direct_endpoint(ip, false), Ok(Some(advertised)));
+    }
+
+    // The guard is held across the awaits on purpose: the point is to keep
+    // the env var stable for the whole handshake, and an async mutex would
     // let a sibling test's `set_var` interleave at the first await.
     #[allow(clippy::await_holding_lock)]
     /// The direct-TCP auth handshake: with `DORA_MEMORY_POOL_AUTH_TOKEN`

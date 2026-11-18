@@ -36,6 +36,13 @@ pub(crate) fn cross_data_auth_token() -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
+/// Whether this daemon's direct-TCP data listener requires the token
+/// handshake. The listener's gate and the `RegisterAck::data_auth` the
+/// mirror advertises both read it, so the two cannot disagree.
+pub(crate) fn data_listener_requires_token() -> bool {
+    cross_data_auth_token().is_some()
+}
+
 /// Why an origin cannot use a mirror's direct-TCP data listener, or `None`
 /// when it can: the two daemons must agree on whether the token handshake
 /// runs. `mirror_requires_token` is the mirror's `RegisterAck::data_auth`.
@@ -164,7 +171,7 @@ pub(crate) async fn auth_handshake_verify(
 /// (bad magic, over-long or wrong token) is the *inner* result and must
 /// be rejected here, not just the outer timeout.
 pub(crate) async fn cross_data_auth_gate(stream: &mut tokio::net::TcpStream) -> Result<(), String> {
-    if cross_data_auth_token().is_none() {
+    if !data_listener_requires_token() {
         return Ok(());
     }
     auth_gate_within(stream, CROSS_DATA_AUTH_TIMEOUT).await

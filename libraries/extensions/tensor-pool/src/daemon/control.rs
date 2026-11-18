@@ -186,6 +186,36 @@ pub(crate) struct RegisterAckReply {
     pub(crate) data_addr: Option<std::net::SocketAddr>,
     pub(crate) data_auth: bool,
 }
+
+impl RegisterAckReply {
+    /// The mirror's direct-TCP data listener this origin should write to.
+    ///
+    /// The explicitly advertised address wins: the coordinator-derived one
+    /// (`peer_ip`, the mirror daemon's WS source address) is the wrong dial
+    /// target under NAT, on a multi-homed host, or with a same-host
+    /// coordinator. `Ok(None)` when the mirror has no listener. `Err` when
+    /// it has one but the two daemons disagree on the auth token
+    /// (`origin_has_token` against [`Self::data_auth`]): the origin must
+    /// stay on the zenoh relay rather than lose writes to it (#4211).
+    pub(crate) fn direct_endpoint(
+        &self,
+        peer_ip: std::net::IpAddr,
+        origin_has_token: bool,
+    ) -> Result<Option<std::net::SocketAddr>, String> {
+        let Some(endpoint) = self.data_addr.or_else(|| {
+            self.data_port
+                .map(|data_port| std::net::SocketAddr::new(peer_ip, data_port))
+        }) else {
+            return Ok(None);
+        };
+        match direct_auth_mismatch(origin_has_token, self.data_auth) {
+            None => Ok(Some(endpoint)),
+            Some(mismatch) => Err(format!(
+                "not using the direct-TCP data listener {endpoint}: {mismatch}"
+            )),
+        }
+    }
+}
 pub(crate) static CROSS_REGISTER_PENDING: std::sync::LazyLock<RegisterAckSenders> =
     std::sync::LazyLock::new(RegisterAckSenders::default);
 
