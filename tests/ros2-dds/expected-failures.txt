@@ -6,3 +6,5 @@
 # cell that passes reports XPASS and fails the job, so the entry gets removed
 # together with the fix. Every entry must name an open issue. Unknown
 # distros, RMWs or case names are rejected, so a typo cannot hide a cell.
+
+* * yaml-action-server-cancel #4205  # YAML action server ignores cancel requests on DDS (#4205 item 4, 19.04)

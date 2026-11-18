@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# One YAML-bridge cell of the DDS interop matrix: an examples/ros2-bridge
+# dataflow (`dora run`) against an rclpy peer in the ROS container. Exits 0
+# when both sides pass. Called by scripts/ros2-dds-interop.sh, which puts the
+# per-distro `dora-ros2-bridge-node` first on PATH and exports DORA_ROS2_DDS_*.
+set -euo pipefail
+
+DISTRO=$1 RMW=$2 CASE=$3 PROJECT=$4 SERVICE=$5
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+PEERS=/workspace/tests/ros2-zenoh/peers
+EX="$ROOT/examples/ros2-bridge"
+compose=(docker compose -f "$ROOT/docker-compose.ros2-dds.yml" --profile "$DISTRO" -p "$PROJECT")
+
+# <dataflow> <rclpy peer> <server|client> <endpoint kind> <endpoint> <dora-log check>
+case "$CASE" in
+  yaml-service-server) set -- yaml-bridge-service/dataflow-server.yml "service_peer.py client" server service /add_two_ints "" ;;
+  yaml-service-client) set -- yaml-bridge-service/dataflow-client.yml "service_peer.py server" client service /add_two_ints "Received response: sum = 11" ;;
+  yaml-action-server) set -- yaml-bridge-action-server/dataflow.yml "action_peer.py client --no-cancel" server action /fibonacci "" ;;
+  yaml-action-server-cancel) set -- yaml-bridge-action-server/dataflow.yml "action_peer.py client" server action /fibonacci "" ;;
+  yaml-action-client) set -- yaml-bridge-action/dataflow.yml "action_peer.py server" client action /fibonacci "Result: sequence=" ;;
+  *) echo "unknown YAML case: $CASE" >&2; exit 2 ;;
+esac
+dataflow=$1 peer=$2 role=$3 kind=$4 endpoint=$5 dora_check=$6
+
+log_dir="$DORA_ROS2_DDS_ARTIFACTS/$RMW"
+mkdir -p "$log_dir"
+peer_log="$log_dir/${CASE}-rclpy.log"
+dora_log="$log_dir/${CASE}-dora.log"
+in_container() {
+  "${compose[@]}" exec -T -e RMW_IMPLEMENTATION="$RMW" -e ROS_DOMAIN_ID="$DORA_ROS2_DDS_DOMAIN" \
+    "$SERVICE" bash -lc "source /opt/ros/$DISTRO/setup.bash && $1"
+}
+
+dora_pid= peer_pid=
+cleanup() {
+  # SIGINT makes `dora run` stop the dataflow and its nodes cleanly; force
+  # the process and its children down if that has not happened in 5 s.
+  if [[ -n $dora_pid ]]; then
+    kill -INT "$dora_pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do kill -0 "$dora_pid" 2>/dev/null || break; sleep .25; done
+    pkill -KILL -P "$dora_pid" 2>/dev/null || true
+    kill -KILL "$dora_pid" 2>/dev/null || true
+  fi
+  [[ -n $peer_pid ]] && kill "$peer_pid" 2>/dev/null || true
+  "${compose[@]}" exec -T "$SERVICE" pkill -f "$PEERS/" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+start_dora() {
+  (cd "$EX/$(dirname "$dataflow")" &&
+    RMW_IMPLEMENTATION="$RMW" ROS_DOMAIN_ID="$DORA_ROS2_DDS_DOMAIN" \
+    AMENT_PREFIX_PATH="$DORA_ROS2_DDS_AMENT" \
+    exec dora run "$(basename "$dataflow")") >"$dora_log" 2>&1 &
+  dora_pid=$!
+}
+start_peer() {
+  in_container "timeout 60 python3 $PEERS/$peer" >"$peer_log" 2>&1 &
+  peer_pid=$!
+}
+wait_for() { # <seconds> <condition...>: poll until the condition holds
+  local deadline=$(( $(date +%s) + $1 )); shift
+  until "$@"; do (( $(date +%s) < deadline )) || return 1; sleep 1; done
+}
+listed() {
+  local nd=--no-daemon
+  [[ $kind == action ]] && nd= # Humble's `ros2 action list` has no --no-daemon
+  in_container "ros2 $kind list $nd" 2>/dev/null | grep -qx "$endpoint"
+}
+peer_ready() { grep -q '"event": "READY"' "$peer_log"; }
+peer_passed() { grep -q '"event": "PASS"' "$peer_log"; }
+dora_ok() { [[ -z $dora_check ]] || grep -q "$dora_check" "$dora_log"; }
+done_ok() { peer_passed && dora_ok; }
+
+if [[ $role == server ]]; then
+  start_dora
+  wait_for 60 listed || { echo "$kind $endpoint never appeared in the ROS graph" >&2; exit 1; }
+  start_peer
+  wait "$peer_pid" || true
+  peer_pid=
+  done_ok
+else
+  start_peer
+  wait_for 30 peer_ready || { echo "rclpy peer never became ready" >&2; exit 1; }
+  start_dora
+  wait_for 60 done_ok
+fi

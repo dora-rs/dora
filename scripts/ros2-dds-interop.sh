@@ -110,7 +110,7 @@ in_list "$DISTRO" "${DISTROS[@]}" || { echo "$usage" >&2; exit 2; }
   { echo "unknown case: $CASE_ARG" >&2; exit 2; }
 validate_expected
 if [[ $RMW_ARG == all ]]; then rmws=("${RMWS[@]}"); else rmws=("$RMW_ARG"); fi
-if [[ $CASE_ARG == all ]]; then cases=("${PY_CASES[@]}"); else cases=("$CASE_ARG"); fi
+if [[ $CASE_ARG == all ]]; then cases=("${PY_CASES[@]}" "${YAML_CASES[@]}"); else cases=("$CASE_ARG"); fi
 
 # Preflight the host tools before spending minutes booting a ROS container.
 missing=()
@@ -177,12 +177,27 @@ maturin build --release --features "ros2-$DISTRO" --out "$BUILD/wheels" \
 "$DORA_ROS2_DDS_PYTHON_EXECUTABLE" -m pip install --quiet --no-deps \
   --target "$DORA_ROS2_DDS_PYTHON" pyarrow "$BUILD"/wheels/dora_ros2_bridge_python-*.whl
 
+# The YAML cases run examples/ros2-bridge dataflows. Their nodes are prebuilt
+# where the dataflows expect them (target/debug), so `dora run`'s own build
+# step is a no-op. Only the bridge node depends on the distro: it is copied
+# into a per-distro bin dir that goes first on PATH, where `dora run` finds it.
+if [[ " ${cases[*]} " == *" yaml-"* ]]; then
+  cargo build -p dora-cli -p yaml-bridge-service-handler -p yaml-bridge-service-requester \
+    -p yaml-bridge-action-server-handler -p yaml-bridge-action-goal
+  cargo build -p dora-ros2-bridge-node --features "ros2-$DISTRO"
+  mkdir -p "$BUILD/bin"
+  cp "$TARGET_DIR/debug/dora" "$TARGET_DIR/debug/dora-ros2-bridge-node" "$BUILD/bin/"
+  export PATH="$BUILD/bin:$PATH"
+fi
+
 failed=0
 results=()
 for rmw in "${rmws[@]}"; do
   for case in "${cases[@]}"; do
     echo "CASE $DISTRO $rmw $case"
-    if "$ROOT/tests/ros2-dds/fixtures/run-case.sh" "$DISTRO" "$rmw" "$case" "$PROJECT" "$SERVICE"; then
+    runner=run-case.sh
+    [[ $case == yaml-* ]] && runner=run-yaml-case.sh
+    if "$ROOT/tests/ros2-dds/fixtures/$runner" "$DISTRO" "$rmw" "$case" "$PROJECT" "$SERVICE"; then
       status=0
     else
       status=$?
