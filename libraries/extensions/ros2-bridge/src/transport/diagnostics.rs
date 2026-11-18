@@ -379,43 +379,27 @@ fn ros_name(dds_topic: &str) -> String {
     }
 }
 
-/// Set to `1` to run a DDS context even though `ROS_DISTRO` needs a different
-/// Gid layout than the build.
-pub const ALLOW_DISTRO_MISMATCH_ENV: &str = "DORA_ROS2_ALLOW_DISTRO_MISMATCH";
-
 /// Outcome of comparing the build's ROS distro with `ROS_DISTRO`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum DistroCheck {
     Ok,
-    /// Possibly compatible; worth a warning.
+    /// Possibly compatible; worth a log line.
     Warn(String),
-    /// Different Gid layout: graph discovery cannot work.
+    /// Different Gid layout: ROS 2 graph tools cannot see dora's nodes.
     Mismatch(String),
 }
 
-/// What to do with a distro check: `Err` refuses to start, `Ok(Some(_))` is a
-/// warning to log. A mismatch becomes a warning when it was explicitly allowed.
-pub fn distro_gate(check: DistroCheck, allow_mismatch: bool) -> Result<Option<String>, String> {
-    match check {
-        DistroCheck::Ok => Ok(None),
-        DistroCheck::Warn(message) => Ok(Some(message)),
-        DistroCheck::Mismatch(message) if allow_mismatch => Ok(Some(message)),
-        DistroCheck::Mismatch(message) => Err(message),
-    }
-}
-
-/// Check `ROS_DISTRO` against the build before a DDS context is created.
-/// Returns the error to fail with; logs anything less serious.
-pub fn enforce_ros_distro() -> Result<(), String> {
-    let check = check_ros_distro(
+/// Check `ROS_DISTRO` against the build when a DDS context is created. A Gid
+/// mismatch goes to stderr, which dora shows by default; the rest is logged.
+pub fn report_ros_distro() {
+    match check_ros_distro(
         crate::ros2_client::COMPILED_ROS_DISTRO.as_str(),
         std::env::var("ROS_DISTRO").ok().as_deref(),
-    );
-    let allow = std::env::var(ALLOW_DISTRO_MISMATCH_ENV).is_ok_and(|v| v == "1");
-    if let Some(warning) = distro_gate(check, allow)? {
-        tracing::warn!("{warning}");
+    ) {
+        DistroCheck::Ok => {}
+        DistroCheck::Warn(message) => tracing::warn!("{message}"),
+        DistroCheck::Mismatch(message) => eprintln!("warning: {message}"),
     }
-    Ok(())
 }
 
 /// The `rmw_dds_common` Gid width a distro uses: 24 bytes up to Humble, 16
@@ -429,8 +413,9 @@ fn gid_width(distro: &str) -> Option<u8> {
 }
 
 /// Compare the distro the bridge was built for with `ROS_DISTRO`. Only a
-/// different Gid width is a hard mismatch: it is what makes graph discovery
-/// (and with it services) fail between the two sides.
+/// different Gid width is a mismatch: ROS 2 nodes then cannot decode dora's
+/// `ros_discovery_info`, so graph tools miss dora's nodes. Topics, services
+/// and actions match on DDS discovery alone and keep working.
 pub fn check_ros_distro(built: &str, env: Option<&str>) -> DistroCheck {
     let Some(env) = env else {
         return DistroCheck::Warn(format!(
@@ -443,9 +428,9 @@ pub fn check_ros_distro(built: &str, env: Option<&str>) -> DistroCheck {
     match (gid_width(built), gid_width(env)) {
         (Some(b), Some(e)) if b != e => DistroCheck::Mismatch(format!(
             "ROS_DISTRO='{env}' but the ROS 2 bridge was built for '{built}': they use \
-             different DDS graph identifiers ({e}-byte vs {b}-byte Gid), so ROS 2 nodes \
-             cannot discover dora. Rebuild the bridge with `--features ros2-{env}`, or set \
-             {ALLOW_DISTRO_MISMATCH_ENV}=1 to run anyway"
+             different graph identifiers ({e}-byte vs {b}-byte Gid), so ROS 2 graph tools \
+             like `ros2 node list` will not show dora's nodes; topics, services and actions \
+             still work. Rebuild the bridge with `--features ros2-{env}` to fix this"
         )),
         _ => DistroCheck::Warn(format!(
             "ROS_DISTRO='{env}' but the ROS 2 bridge was built for '{built}'; \
@@ -811,18 +796,6 @@ mod tests {
     }
 
     #[test]
-    fn the_distro_gate_refuses_a_mismatch_unless_allowed() {
-        let mismatch = || DistroCheck::Mismatch("gid".into());
-        assert_eq!(distro_gate(mismatch(), false), Err("gid".to_owned()));
-        assert_eq!(distro_gate(mismatch(), true), Ok(Some("gid".to_owned())));
-        assert_eq!(
-            distro_gate(DistroCheck::Warn("w".into()), false),
-            Ok(Some("w".to_owned()))
-        );
-        assert_eq!(distro_gate(DistroCheck::Ok, false), Ok(None));
-    }
-
-    #[test]
     fn service_endpoints_match_ros2_client_naming() {
         use crate::ros2_client::{Name, NodeName};
         let node = NodeName::new("/", "n").unwrap();
@@ -873,11 +846,16 @@ mod tests {
     }
 
     #[test]
-    fn the_mismatch_message_names_the_fix() {
+    fn the_mismatch_message_names_the_effect_and_the_fix() {
         let DistroCheck::Mismatch(message) = check_ros_distro("humble", Some("jazzy")) else {
             panic!("expected a mismatch");
         };
-        assert!(message.contains("ros2-jazzy"), "{message}");
-        assert!(message.contains(ALLOW_DISTRO_MISMATCH_ENV), "{message}");
+        // Measured with the DDS interop matrix: only graph introspection breaks.
+        assert!(message.contains("`ros2 node list`"), "{message}");
+        assert!(
+            message.contains("topics, services and actions still work"),
+            "{message}"
+        );
+        assert!(message.contains("--features ros2-jazzy"), "{message}");
     }
 }
