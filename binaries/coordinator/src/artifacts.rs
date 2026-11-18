@@ -1,3 +1,4 @@
+use dora_message::id::NodeId;
 use eyre::Context;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -19,9 +20,16 @@ impl ArtifactStore {
     }
 
     /// Construct the path to a stored artifact (without checking existence).
-    /// Returns `None` if the node_id fails sanitization.
-    pub fn artifact_path(&self, build_id: &Uuid, node_id: &str) -> Option<PathBuf> {
-        sanitize_node_id(node_id).map(|s| self.base_dir.join(build_id.to_string()).join(s))
+    ///
+    /// The node id is used unchanged as the file name. That is safe because
+    /// `NodeId` only allows `[a-zA-Z0-9_.-]` and forbids a leading `.`, so it
+    /// can contain no path separator and cannot be a `.`/`..` segment.
+    /// Rewriting it instead would map distinct ids (`cam.left`, `cam_left`)
+    /// to the same file (#4186).
+    pub fn artifact_path(&self, build_id: &Uuid, node_id: &NodeId) -> PathBuf {
+        self.base_dir
+            .join(build_id.to_string())
+            .join(node_id.as_ref())
     }
 
     /// Remove all stored artifacts.
@@ -45,56 +53,42 @@ impl Drop for ArtifactStore {
     }
 }
 
-/// Sanitize a node_id for safe use as a filename.
-/// Returns None if the id is empty or contains path traversal sequences.
-fn sanitize_node_id(node_id: &str) -> Option<String> {
-    if node_id.is_empty()
-        || node_id.contains("..")
-        || node_id.contains('/')
-        || node_id.contains('\\')
-    {
-        return None;
-    }
-    // Replace any non-alphanumeric/dash/underscore chars with underscore
-    let sanitized: String = node_id
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    Some(sanitized)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn artifact_path_constructs_correct_path() {
+    fn artifact_path_uses_node_id_unchanged() {
+        // `cam.left`/`cam_left` must not collide, and `a..b` is a valid id,
+        // not a traversal (#4186).
         let store = ArtifactStore::new().unwrap();
         let build_id = Uuid::new_v4();
-        let path = store.artifact_path(&build_id, "my-node").unwrap();
-        assert!(path.ends_with("my-node"));
-        assert!(path.to_str().unwrap().contains(&build_id.to_string()));
+        for id in ["my-node", "cam.left", "cam_left", "a..b"] {
+            let node_id: NodeId = id.parse().unwrap();
+            assert_eq!(
+                store.artifact_path(&build_id, &node_id),
+                store.base_dir.join(build_id.to_string()).join(id)
+            );
+        }
     }
 
     #[test]
-    fn artifact_path_rejects_traversal() {
-        let store = ArtifactStore::new().unwrap();
-        let build_id = Uuid::new_v4();
-        assert!(store.artifact_path(&build_id, "../etc/passwd").is_none());
-        assert!(store.artifact_path(&build_id, "foo/bar").is_none());
-        assert!(store.artifact_path(&build_id, "").is_none());
-    }
-
-    #[test]
-    fn sanitizes_special_chars() {
-        assert_eq!(sanitize_node_id("my node!"), Some("my_node_".into()));
-        assert_eq!(sanitize_node_id("ok-node_1"), Some("ok-node_1".into()));
+    fn unsafe_file_names_are_not_node_ids() {
+        // `artifact_path` relies on `NodeId` validation to keep the file
+        // name inside the build directory.
+        for id in [
+            "",
+            ".",
+            "..",
+            ".hidden",
+            "../etc/passwd",
+            "foo/bar",
+            r"foo\bar",
+            r"foo\..\bar",
+            "my node!",
+        ] {
+            assert!(id.parse::<NodeId>().is_err(), "{id:?} must be rejected");
+        }
     }
 
     #[test]
@@ -117,13 +111,5 @@ mod tests {
             // store dropped here
         };
         assert!(!dir.exists(), "artifact dir should be removed on drop");
-    }
-
-    #[test]
-    fn artifact_path_rejects_backslash() {
-        let store = ArtifactStore::new().unwrap();
-        let build_id = Uuid::new_v4();
-        assert!(store.artifact_path(&build_id, r"foo\..\bar").is_none());
-        assert!(store.artifact_path(&build_id, r"foo\bar").is_none());
     }
 }
