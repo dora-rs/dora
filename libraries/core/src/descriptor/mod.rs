@@ -558,8 +558,9 @@ fn merge_env(
 /// Struct fields already reject duplicates on their own, so this only adds
 /// errors for map-valued fields.
 ///
-/// [`DescriptorExt::parse`] and module loading call this already; call it
-/// when deserializing other dataflow YAML (such as a single node) directly.
+/// [`DescriptorExt::parse`], module loading, node manifests and user type
+/// files call this already; call it when deserializing other YAML that users
+/// write (such as a single node) directly.
 ///
 /// ```
 /// use dora_core::descriptor::reject_duplicate_keys;
