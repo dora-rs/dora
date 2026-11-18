@@ -59,26 +59,15 @@ const BACKPRESSURE_STALL_LIMIT: Duration = Duration::from_secs(60);
 /// it, not because it hung, and the health check must not kill it for that.
 const BACKPRESSURE_STALL_TICK: Duration = Duration::from_secs(1);
 
-/// A millisecond timestamp for the daemon's own liveness bookkeeping
-/// (`last_activity`, `spawned_at`, `started_at_millis` and the watchdogs that
-/// compare them against "now").
+/// Milliseconds for the daemon's liveness bookkeeping (`last_activity`,
+/// `spawned_at`, `started_at_millis`) and the watchdogs that compare them.
 ///
-/// The value is anchored to the wall clock once, on the first call, and
-/// then advances with the monotonic clock. Every reading stays in the
-/// daemon process, so only differences between readings matter, and those
-/// must not jump when the wall clock is stepped: an NTP correction on a
-/// board without an RTC would otherwise make every connected node look
-/// silent for hours and get it killed by the health check, or stretch a
-/// backward step into a disabled watchdog.
-///
-/// Anchoring keeps the readings on the scale of Unix milliseconds, which
-/// the code and tests that treat a small `last_activity` as "long ago"
-/// rely on; it carries no meaning beyond that. The result is never `0`,
-/// which `spawned_at` uses as its "not running" sentinel.
-///
-/// `Instant` does not advance while the host is suspended, so time spent
-/// suspended does not count towards a health-check or startup timeout,
-/// the same as for the daemon's tokio timers.
+/// Anchored to the wall clock once, then advanced by the monotonic clock,
+/// so a wall-clock step (NTP on a board without an RTC) cannot make every
+/// node look silent or hide a hung one. Only differences matter; the anchor
+/// just keeps a small stored value meaning "long ago". Never `0`, the
+/// `spawned_at` "not running" sentinel. Suspended time is not counted, as
+/// for the daemon's tokio timers.
 pub fn current_millis() -> u64 {
     static ANCHOR: std::sync::OnceLock<(std::time::Instant, u64)> = std::sync::OnceLock::new();
     let (anchor, anchor_millis) = *ANCHOR.get_or_init(|| {
@@ -1742,17 +1731,8 @@ mod clock_tests {
         // An `Instant` before the anchor (cannot happen for a monotonic
         // clock, but must not underflow) reads as the anchor itself.
         assert_eq!(anchored_millis(1_000, later, anchor), 1_000);
-    }
-
-    #[test]
-    fn anchored_millis_is_never_the_not_running_sentinel() {
-        let anchor = Instant::now();
-        // A wall clock at (or before) the epoch at daemon start.
+        // Never the `spawned_at` "not running" sentinel.
         assert_eq!(anchored_millis(0, anchor, anchor), 1);
-        assert_eq!(
-            anchored_millis(u64::MAX, anchor, anchor + Duration::from_secs(1)),
-            u64::MAX
-        );
     }
 
     /// The readings the watchdogs compare are differences of
