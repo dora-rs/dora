@@ -103,20 +103,34 @@ pub(crate) fn arm_if_run_child() {
     let Ok(raw) = std::env::var(DORA_RUN_PARENT_PID_ENV) else {
         return;
     };
-    let Ok(parent) = raw.trim().parse::<u32>() else {
+    let Some(parent) = parse_parent_pid(&raw) else {
         warn(&format!(
-            "ignoring malformed {DORA_RUN_PARENT_PID_ENV}={raw:?}"
+            "ignoring {DORA_RUN_PARENT_PID_ENV}={raw:?}: not a valid process id; \
+             orphan guard disabled"
         ));
         return;
     };
     ARMED.call_once(|| arm(parent));
 }
 
+/// Parse [`DORA_RUN_PARENT_PID_ENV`] into a pid the guard can safely watch.
+///
+/// Only a positive `pid_t` (an `i32` on every unix) is a real process id.
+/// Anything else is a value `kill(2)` reads as a *process group*: `0` is this
+/// node's own group, `-1` is "every process", and a negative id names a group
+/// that does not exist. The probe would then either never fire or report the
+/// parent gone at once and SIGKILL this node's group on startup. Parsing
+/// straight into `i32` (rather than `u32` and a cast) also keeps a value above
+/// `i32::MAX` from wrapping into one of those.
+fn parse_parent_pid(raw: &str) -> Option<i32> {
+    raw.trim().parse::<i32>().ok().filter(|&pid| pid > 0)
+}
+
 #[cfg(not(unix))]
-fn arm(_parent: u32) {}
+fn arm(_parent: i32) {}
 
 #[cfg(unix)]
-fn arm(parent: u32) {
+fn arm(parent: libc::pid_t) {
     let plan = ContainmentPlan::new(parent);
     // Checked before the thread starts, because the parent may ALREADY be gone:
     // it can be killed between forking this node and this node reaching
@@ -193,8 +207,7 @@ struct ContainmentPlan {
 
 #[cfg(unix)]
 impl ContainmentPlan {
-    fn new(parent: u32) -> Self {
-        let parent = parent as libc::pid_t;
+    fn new(parent: libc::pid_t) -> Self {
         // SAFETY: reads this process's own parent id.
         let direct_child = unsafe { libc::getppid() } == parent;
         Self {
@@ -289,6 +302,26 @@ mod tests {
         );
     }
 
+    /// Only a positive `pid_t` is accepted; see [`parse_parent_pid`].
+    #[test]
+    fn only_a_positive_pid_is_accepted() {
+        assert_eq!(parse_parent_pid("4242"), Some(4242));
+        assert_eq!(parse_parent_pid(" 4242\n"), Some(4242));
+        assert_eq!(parse_parent_pid("2147483647"), Some(2147483647));
+        for bad in [
+            "",
+            "abc",
+            "-1",
+            "0",
+            "-2147483647",
+            "2147483648",
+            "2147483649",
+            "4294967295",
+        ] {
+            assert_eq!(parse_parent_pid(bad), None, "{bad:?} must be rejected");
+        }
+    }
+
     /// A live parent must never read as gone — the check that stands between
     /// this module and killing healthy nodes twice a second.
     ///
@@ -300,7 +333,7 @@ mod tests {
     fn a_live_parent_is_never_reported_gone() {
         // SAFETY: reads this process's own parent id.
         let runner = unsafe { libc::getppid() };
-        let direct = ContainmentPlan::new(runner as u32);
+        let direct = ContainmentPlan::new(runner);
         assert!(
             direct.direct_child,
             "the test binary is its runner's direct child"
@@ -314,7 +347,7 @@ mod tests {
         // by the `is_positive` guard below.
         let grandparent = unsafe { libc::getpgid(runner) };
         if grandparent.is_positive() && grandparent != runner {
-            let wrapped = ContainmentPlan::new(grandparent as u32);
+            let wrapped = ContainmentPlan::new(grandparent);
             assert!(
                 !wrapped.direct_child,
                 "the runner's own parent is not this process's parent"
