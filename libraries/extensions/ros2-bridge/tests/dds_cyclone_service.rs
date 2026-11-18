@@ -7,7 +7,11 @@
 //! peers. The request here is exactly 16 bytes, the size of that header, so a
 //! regression shows up as a wrong `sum` rather than only as a decode error.
 //!
-//! Pure RustDDS: needs no ROS installation.
+//! Pure RustDDS: needs no ROS installation. Both ends are `ros2-client`, so
+//! this guards against that bug coming back but does not show wire
+//! compatibility with a real CycloneDDS peer. `scripts/ros2-dds-interop.sh`
+//! covers that, against `rclpy` over `rmw_cyclonedds_cpp` (see
+//! `tests/ros2-dds/README.md`).
 
 use std::time::{Duration, Instant};
 
