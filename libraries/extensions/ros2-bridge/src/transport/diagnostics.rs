@@ -108,7 +108,7 @@ pub enum Role {
 }
 
 /// One of dora's own DDS endpoints.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LocalEndpoint {
     pub dds_topic: String,
     pub role: Role,
@@ -146,27 +146,32 @@ pub fn scan(
         }
     };
     for local in locals {
-        for remote in remotes.iter().filter(|r| r.dds_topic == local.dds_topic) {
-            if remote.role != local.role {
-                let (offered, requested) = match local.role {
-                    Role::Writer => (&local.qos, &remote.qos),
-                    Role::Reader => (&remote.qos, &local.qos),
+        // Only endpoints in the other role would ever talk to this one.
+        let peers = remotes
+            .iter()
+            .filter(|r| r.dds_topic == local.dds_topic && r.role != local.role);
+        for remote in peers {
+            let (offered, requested) = match local.role {
+                Role::Writer => (&local.qos, &remote.qos),
+                Role::Reader => (&remote.qos, &local.qos),
+            };
+            if let Some(detail) = qos_mismatch(offered, requested) {
+                let (ours, theirs) = match local.role {
+                    Role::Writer => ("publisher", "subscription"),
+                    Role::Reader => ("subscription", "publisher"),
                 };
-                if let Some(detail) = qos_mismatch(offered, requested) {
-                    let (ours, theirs) = match local.role {
-                        Role::Writer => ("publisher", "subscription"),
-                        Role::Reader => ("subscription", "publisher"),
-                    };
-                    push(
-                        format!("qos {} {:?} {:?}", local.dds_topic, local.role, remote.guid),
-                        format!(
-                            "QoS mismatch on {}: dora {ours} and remote {theirs} {:?} never \
-                             match; {detail}",
-                            ros_name(&local.dds_topic),
-                            remote.guid
-                        ),
-                    );
-                }
+                push(
+                    format!(
+                        "qos {} {:?} {:?} {detail}",
+                        local.dds_topic, local.role, remote.guid
+                    ),
+                    format!(
+                        "QoS mismatch on {}: dora {ours} and remote {theirs} {} never \
+                         match; {detail}",
+                        ros_name(&local.dds_topic),
+                        guid_text(&remote.guid)
+                    ),
+                );
             }
             if is_service_topic(&local.dds_topic)
                 && let Some(peer) = peer_rmw(&remote.guid)
@@ -179,13 +184,21 @@ pub fn scan(
     findings
 }
 
+/// A GUID as dotted hex bytes, the way `ros2 topic info -v` prints GIDs.
+fn guid_text(guid: &crate::rustdds::GUID) -> String {
+    let bytes: Vec<String> = guid.to_bytes().iter().map(|b| format!("{b:02x}")).collect();
+    bytes.join(".")
+}
+
 /// Watches a DDS context in the background and reports, once each, the QoS
 /// and RMW-mapping problems [`scan`] finds between dora's endpoints and the
 /// remote ones. It reads RustDDS's discovery database, so it never consumes
 /// the participant status events ros2-client's spinner depends on.
 pub struct DdsDiagnostics {
     locals: std::sync::Arc<std::sync::Mutex<Vec<LocalEndpoint>>>,
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    // Dropping the sender wakes the thread and stops it.
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl DdsDiagnostics {
@@ -198,34 +211,52 @@ impl DdsDiagnostics {
         mapping: crate::ros2_client::ServiceMapping,
         report: impl Fn(&str) + Send + 'static,
     ) -> Self {
-        use std::sync::{
-            Arc, Mutex,
-            atomic::{AtomicBool, Ordering},
-        };
-        let locals: Arc<Mutex<Vec<LocalEndpoint>>> = Arc::default();
-        let stop = Arc::new(AtomicBool::new(false));
-        let (watched, stopped) = (locals.clone(), stop.clone());
+        Self::start_with(
+            move || remote_endpoints(&participant),
+            mapping,
+            Self::INTERVAL,
+            report,
+        )
+    }
+
+    /// [`Self::start`] with the remote endpoints read from `remotes` every
+    /// `interval`.
+    fn start_with(
+        remotes: impl Fn() -> Vec<RemoteEndpoint> + Send + 'static,
+        mapping: crate::ros2_client::ServiceMapping,
+        interval: std::time::Duration,
+        report: impl Fn(&str) + Send + 'static,
+    ) -> Self {
+        use std::sync::mpsc::RecvTimeoutError;
+        let locals: std::sync::Arc<std::sync::Mutex<Vec<LocalEndpoint>>> = Default::default();
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let watched = locals.clone();
         let spawned = std::thread::Builder::new()
             .name("dora-dds-diagnostics".into())
             .spawn(move || {
                 let mut reported = std::collections::HashSet::new();
-                while !stopped.load(Ordering::Relaxed) {
-                    std::thread::sleep(Self::INTERVAL);
+                while let Err(RecvTimeoutError::Timeout) = stopped.recv_timeout(interval) {
                     let locals = watched.lock().map(|l| l.clone()).unwrap_or_default();
                     if locals.is_empty() {
                         continue;
                     }
-                    for finding in scan(&locals, &remote_endpoints(&participant), mapping) {
+                    for finding in scan(&locals, &remotes(), mapping) {
                         if reported.insert(finding.key) {
                             report(&finding.message);
                         }
                     }
                 }
             });
-        if let Err(error) = spawned {
-            tracing::warn!("DDS diagnostics are off: cannot start their thread: {error}");
+        let thread = spawned
+            .inspect_err(|error| {
+                tracing::warn!("DDS diagnostics are off: cannot start their thread: {error}")
+            })
+            .ok();
+        Self {
+            locals,
+            stop: Some(stop),
+            thread,
         }
-        Self { locals, stop }
     }
 
     /// Watch a topic endpoint with an absolute ROS name.
@@ -253,21 +284,33 @@ impl DdsDiagnostics {
         }
     }
 
-    /// Add one of dora's endpoints to the comparison.
+    /// Add one of dora's endpoints to the comparison. `qos` is what the
+    /// endpoint was created with; like RustDDS, it is applied on top of
+    /// ros2-client's publisher or subscriber defaults.
     pub fn watch(&self, dds_topic: impl Into<String>, role: Role, qos: QosPolicies) {
-        if let Ok(mut locals) = self.locals.lock() {
-            locals.push(LocalEndpoint {
-                dds_topic: dds_topic.into(),
-                role,
-                qos,
-            });
+        let defaults = QosPolicies::from(match role {
+            Role::Writer => crate::ros2_client::DEFAULT_PUBLISHER_QOS,
+            Role::Reader => crate::ros2_client::DEFAULT_SUBSCRIPTION_QOS,
+        });
+        let endpoint = LocalEndpoint {
+            dds_topic: dds_topic.into(),
+            role,
+            qos: defaults.modify_by(&qos),
+        };
+        if let Ok(mut locals) = self.locals.lock()
+            && !locals.contains(&endpoint)
+        {
+            locals.push(endpoint);
         }
     }
 }
 
 impl Drop for DdsDiagnostics {
     fn drop(&mut self) {
-        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stop.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -615,6 +658,11 @@ mod tests {
             "{findings:?}"
         );
         assert!(findings[0].message.contains("reliability"), "{findings:?}");
+        // The GUID reads like `ros2 topic info -v` prints it.
+        assert!(
+            findings[0].message.contains("remote publisher 01.0f."),
+            "{findings:?}"
+        );
     }
 
     #[test]
@@ -646,6 +694,120 @@ mod tests {
         );
         // Same RMW as the mapping: nothing to report.
         assert_eq!(scan(&locals, &remotes, ServiceMapping::Cyclone), vec![]);
+    }
+
+    #[test]
+    fn scan_ignores_the_rmw_of_remotes_in_the_same_role() {
+        use crate::ros2_client::ServiceMapping;
+        // Another client's request writer never talks to dora's client.
+        let locals = [local("rq/add_two_intsRequest", Role::Writer, reliable())];
+        let remotes = [remote(
+            FAST,
+            "rq/add_two_intsRequest",
+            Role::Writer,
+            reliable(),
+        )];
+        assert_eq!(scan(&locals, &remotes, ServiceMapping::Cyclone), vec![]);
+    }
+
+    #[test]
+    fn scan_reports_each_distinct_mismatch_with_the_same_remote() {
+        use crate::ros2_client::ServiceMapping;
+        let transient = qos(|b| {
+            b.reliability(policy::Reliability::BestEffort)
+                .durability(policy::Durability::TransientLocal)
+        });
+        let locals = [
+            local("rt/chatter", Role::Reader, reliable()),
+            local("rt/chatter", Role::Reader, transient),
+        ];
+        let volatile_best_effort = qos(|b| {
+            b.reliability(policy::Reliability::BestEffort)
+                .durability(policy::Durability::Volatile)
+        });
+        let remotes = [remote(
+            FAST,
+            "rt/chatter",
+            Role::Writer,
+            volatile_best_effort,
+        )];
+        let findings = scan(&locals, &remotes, ServiceMapping::Enhanced);
+        assert_eq!(findings.len(), 2, "{findings:?}");
+        assert_ne!(findings[0].key, findings[1].key);
+    }
+
+    fn quiet_watcher(
+        remotes: Vec<RemoteEndpoint>,
+    ) -> (DdsDiagnostics, std::sync::mpsc::Receiver<String>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let watcher = DdsDiagnostics::start_with(
+            move || remotes.clone(),
+            crate::ros2_client::ServiceMapping::Enhanced,
+            std::time::Duration::from_millis(10),
+            move |message| {
+                let _ = tx.send(message.to_owned());
+            },
+        );
+        (watcher, rx)
+    }
+
+    #[test]
+    fn the_watcher_reports_a_finding_once() {
+        let (watcher, rx) = quiet_watcher(vec![remote(
+            FAST,
+            "rt/chatter",
+            Role::Writer,
+            best_effort(),
+        )]);
+        watcher.watch_topic("/chatter", Role::Reader, reliable());
+        let first = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(first.contains("reliability"), "{first}");
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(100))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn watching_the_same_endpoint_twice_keeps_one() {
+        let (watcher, _rx) = quiet_watcher(vec![]);
+        watcher.watch_topic("/chatter", Role::Reader, reliable());
+        watcher.watch_topic("/chatter", Role::Reader, reliable());
+        assert_eq!(watcher.locals.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn watched_qos_starts_from_ros2_client_defaults() {
+        let (watcher, _rx) = quiet_watcher(vec![]);
+        watcher.watch("rt/x", Role::Writer, QosPolicies::qos_none());
+        watcher.watch("rt/x", Role::Reader, QosPolicies::qos_none());
+        let locals = watcher.locals.lock().unwrap();
+        let writer = QosPolicies::from(crate::ros2_client::DEFAULT_PUBLISHER_QOS);
+        let reader = QosPolicies::from(crate::ros2_client::DEFAULT_SUBSCRIPTION_QOS);
+        assert_eq!(locals[0].qos, writer);
+        assert_eq!(locals[1].qos, reader);
+    }
+
+    #[test]
+    fn dropping_the_watcher_stops_its_thread_promptly() {
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let watcher = DdsDiagnostics::start_with(
+            move || {
+                let _keep = &tx; // dropped with the thread's closure
+                vec![]
+            },
+            crate::ros2_client::ServiceMapping::Enhanced,
+            std::time::Duration::from_secs(60),
+            |_| {},
+        );
+        let started = std::time::Instant::now();
+        drop(watcher);
+        // The thread (and everything it owns, like the participant) is gone.
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]
