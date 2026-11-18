@@ -589,29 +589,41 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             }
         }
 
+        /// The C++ QoS as backend-neutral policies, shared by the DDS and Zenoh
+        /// paths. Durations are f64 seconds (a non-finite lease is infinite); an
+        /// unknown liveliness value falls back to automatic.
+        fn ros2_qos(value: &ffi::Ros2QosPolicies, durability: dora_ros2_bridge::transport::Durability) -> dora_ros2_bridge::transport::Ros2Qos {
+            use dora_ros2_bridge::transport::{dds::duration_from_secs_f64, History, Liveliness, Reliability, Ros2Qos};
+            let lease_duration = value.lease_duration.is_finite().then(|| duration_from_secs_f64(value.lease_duration));
+            Ros2Qos {
+                reliability: if value.reliable {
+                    Reliability::Reliable { max_blocking_time: duration_from_secs_f64(value.max_blocking_time) }
+                } else { Reliability::BestEffort },
+                durability,
+                history: if value.keep_all { History::KeepAll } else { History::KeepLast { depth: value.keep_last } },
+                liveliness: match value.liveliness {
+                    ffi::Ros2Liveliness::ManualByParticipant => Liveliness::ManualByParticipant { lease_duration },
+                    ffi::Ros2Liveliness::ManualByTopic => Liveliness::ManualByTopic { lease_duration },
+                    _ => Liveliness::Automatic { lease_duration },
+                },
+            }
+        }
+
         #[cfg(feature = "rmw-zenoh")]
         pub fn neutral_qos(value: &ffi::Ros2QosPolicies) -> eyre::Result<dora_ros2_bridge::transport::Ros2Qos> {
-            use dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
-            let lease = value.lease_duration.is_finite().then(|| std::time::Duration::from_secs_f64(value.lease_duration.max(0.0)));
+            use dora_ros2_bridge::transport::Durability;
             let durability = match value.durability {
                 ffi::Ros2Durability::Volatile => Durability::Volatile,
                 ffi::Ros2Durability::TransientLocal => Durability::TransientLocal,
                 _ => eyre::bail!("native Zenoh supports volatile and transient-local durability"),
             };
-            let liveliness = match value.liveliness {
-                ffi::Ros2Liveliness::Automatic => Liveliness::Automatic { lease_duration: lease },
-                ffi::Ros2Liveliness::ManualByParticipant => Liveliness::ManualByParticipant { lease_duration: lease },
-                ffi::Ros2Liveliness::ManualByTopic => Liveliness::ManualByTopic { lease_duration: lease },
-                _ => eyre::bail!("unknown ROS2 liveliness policy"),
-            };
-            Ok(Ros2Qos {
-                reliability: if value.reliable {
-                    Reliability::Reliable { max_blocking_time: std::time::Duration::from_secs_f64(value.max_blocking_time.max(0.0)) }
-                } else { Reliability::BestEffort },
-                durability,
-                history: if value.keep_all { History::KeepAll } else { History::KeepLast { depth: value.keep_last } },
-                liveliness,
-            })
+            if !matches!(
+                value.liveliness,
+                ffi::Ros2Liveliness::Automatic | ffi::Ros2Liveliness::ManualByParticipant | ffi::Ros2Liveliness::ManualByTopic
+            ) {
+                eyre::bail!("unknown ROS2 liveliness policy");
+            }
+            Ok(ros2_qos(value, durability))
         }
 
         /// `name` as the generated topic, service and action endpoints use it on
@@ -656,60 +668,20 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             Ok((key, token))
         }
 
-        impl From<ffi::Ros2QosPolicies> for rustdds::QosPolicies {
+        /// The C++ QoS as the `ros2-client` DDS profile, through the same neutral
+        /// conversion as the Zenoh path and the YAML and Python bridges.
+        impl From<ffi::Ros2QosPolicies> for crate::ros2_client::QosProfile {
             fn from(value: ffi::Ros2QosPolicies) -> Self {
-                rustdds::QosPolicyBuilder::new()
-                    .durability(value.durability.into())
-                    .liveliness(value.liveliness.convert(value.lease_duration))
-                    .reliability(if value.reliable {
-                        rustdds::policy::Reliability::Reliable {
-                            max_blocking_time: rustdds::Duration::from_frac_seconds(
-                                value.max_blocking_time,
-                            ),
-                        }
-                    } else {
-                        rustdds::policy::Reliability::BestEffort
-                    })
-                    .history(if value.keep_all {
-                        rustdds::policy::History::KeepAll
-                    } else {
-                        rustdds::policy::History::KeepLast {
-                            depth: value.keep_last,
-                        }
-                    })
-                    .build()
-            }
-        }
-
-
-
-        impl From<ffi::Ros2Durability> for rustdds::policy::Durability {
-            fn from(value: ffi::Ros2Durability) -> Self {
-                match value {
-                    ffi::Ros2Durability::Volatile => rustdds::policy::Durability::Volatile,
-                    ffi::Ros2Durability::TransientLocal => rustdds::policy::Durability::TransientLocal,
-                    ffi::Ros2Durability::Transient => rustdds::policy::Durability::Transient,
-                    ffi::Ros2Durability::Persistent => rustdds::policy::Durability::Persistent,
-                    _ => unreachable!(), // required because enums are represented as integers in bridge
-                }
-            }
-        }
-
-
-        impl ffi::Ros2Liveliness {
-            fn convert(self, lease_duration: f64) -> rustdds::policy::Liveliness {
-                let lease_duration = if lease_duration.is_infinite() {
-                    rustdds::Duration::INFINITE
-                } else {
-                    rustdds::Duration::from_frac_seconds(lease_duration)
+                use dora_ros2_bridge::transport::{dds, Durability};
+                // The neutral durability has no TRANSIENT/PERSISTENT, so it is set here.
+                let durability = match value.durability {
+                    ffi::Ros2Durability::Volatile => crate::ros2_client::qos::Durability::Volatile,
+                    ffi::Ros2Durability::TransientLocal => crate::ros2_client::qos::Durability::TransientLocal,
+                    _ => dds::transient_local_for_unsupported_durability(),
                 };
-                match self {
-                    ffi::Ros2Liveliness::Automatic => rustdds::policy::Liveliness::Automatic { lease_duration },
-                    ffi::Ros2Liveliness::ManualByParticipant => {
-                        rustdds::policy::Liveliness::ManualByParticipant { lease_duration }
-                    }
-                    ffi::Ros2Liveliness::ManualByTopic => rustdds::policy::Liveliness::ManualByTopic { lease_duration },
-                    _ => unreachable!(), // required because enums are represented as integers in bridge
+                crate::ros2_client::QosProfile {
+                    durability,
+                    ..dds::to_qos_profile(&ros2_qos(&value, Durability::Volatile))
                 }
             }
         }

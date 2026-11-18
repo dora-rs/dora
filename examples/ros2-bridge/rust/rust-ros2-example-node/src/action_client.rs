@@ -2,13 +2,12 @@ use std::time::{Duration, Instant};
 
 use dora_node_api::{DoraNode, Event};
 use dora_ros2_bridge::{
-    messages::example_interfaces::action::{Fibonacci, FibonacciGoal},
+    messages::example_interfaces::action::{FibonacciFeedback, FibonacciGoal, FibonacciResult},
     ros2_client::{
-        self, ActionTypes, NodeOptions,
+        self, Message, NodeOptions,
         action::{GoalId, GoalStatusEnum},
         service::RmwRequestId,
     },
-    rustdds::{self, policy},
 };
 use eyre::{Context, eyre};
 use futures::task::SpawnExt;
@@ -98,26 +97,28 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn request_result<T>(
-    client: &ros2_client::action::ActionClient<T>,
+fn request_result<G, R, F>(
+    client: &ros2_client::action::ActionClient<G, R, F>,
     goal_id: GoalId,
 ) -> eyre::Result<RmwRequestId>
 where
-    T: ActionTypes,
-    <T as ActionTypes>::ResultType: 'static,
+    G: Message + Clone,
+    R: Message + Clone + 'static,
+    F: Message,
 {
     client
         .request_result(goal_id)
         .map_err(|err| eyre::eyre!("failed to request Fibonacci result: {err:?}"))
 }
 
-fn receive_result<T>(
-    client: &mut ros2_client::action::ActionClient<T>,
+fn receive_result<G, R, F>(
+    client: &mut ros2_client::action::ActionClient<G, R, F>,
     pending_results: &mut Vec<RmwRequestId>,
-) -> eyre::Result<Option<(GoalStatusEnum, T::ResultType)>>
+) -> eyre::Result<Option<(GoalStatusEnum, R)>>
 where
-    T: ActionTypes,
-    <T as ActionTypes>::ResultType: 'static,
+    G: Message + Clone,
+    R: Message + Clone + 'static,
+    F: Message,
 {
     loop {
         match client.result_client().receive_response() {
@@ -147,15 +148,13 @@ fn init_ros_node() -> eyre::Result<ros2_client::Node> {
 
 fn create_action_client(
     ros_node: &mut ros2_client::Node,
-) -> eyre::Result<ros2_client::action::ActionClient<Fibonacci>> {
+) -> eyre::Result<
+    ros2_client::action::ActionClient<FibonacciGoal, FibonacciResult, FibonacciFeedback>,
+> {
     // create an example service client
     let action_qos = {
-        let service_qos = rustdds::QosPolicyBuilder::new()
-            .reliability(policy::Reliability::Reliable {
-                max_blocking_time: rustdds::Duration::from_millis(100),
-            })
-            .history(policy::History::KeepLast { depth: 1 })
-            .build();
+        // Reliable (waiting up to 100 ms when the send window is full), keep-last 1.
+        let service_qos = ros2_client::QosProfile::publisher_default();
         ros2_client::action::ActionClientQosPolicies {
             goal_service: service_qos.clone(),
             result_service: service_qos.clone(),
@@ -164,8 +163,8 @@ fn create_action_client(
             status_subscription: service_qos,
         }
     };
-    let mut fib_client = ros_node
-        .create_action_client::<Fibonacci>(
+    let fib_client = ros_node
+        .create_action_client::<FibonacciGoal, FibonacciResult, FibonacciFeedback>(
             ros2_client::ServiceMapping::Enhanced,
             &ros2_client::Name::new("/", "fibonacci").unwrap(),
             &ros2_client::ActionTypeName::new("example_interfaces", "Fibonacci"),

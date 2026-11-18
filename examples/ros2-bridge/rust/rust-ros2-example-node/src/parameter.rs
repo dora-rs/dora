@@ -3,7 +3,7 @@
 //! Declares parameters on the ROS2 node `/demo_params` and exercises the
 //! parameter API. The six rcl_interfaces parameter services are hosted natively
 //! by ros2-client (driven by the node spinner), so `ros2 param` / rclpy clients
-//! can query them over DDS (subject to ros2-client#4 discoverability); this node
+//! can query them over DDS; this node
 //! uses the local get/set/list API, which needs no discovery and is therefore
 //! deterministic on every platform. This mirrors the Python `parameter` example.
 

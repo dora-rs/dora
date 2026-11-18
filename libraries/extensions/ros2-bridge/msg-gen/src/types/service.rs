@@ -47,33 +47,13 @@ impl Service {
     }
 
     pub fn alias_token_stream(&self, package_name: &Ident) -> impl ToTokens {
-        let srv_type = format_ident!("{}", self.name);
         let req_type_raw = format_ident!("{package_name}__{}_Request", self.name);
         let res_type_raw = format_ident!("{package_name}__{}_Response", self.name);
 
         let req_type = format_ident!("{}Request", self.name);
         let res_type = format_ident!("{}Response", self.name);
 
-        let request_type_name = req_type.to_string();
-        let response_type_name = res_type.to_string();
-
         quote! {
-            #[allow(non_camel_case_types)]
-            #[derive(std::fmt::Debug)]
-            pub struct #srv_type;
-
-            impl crate::ros2_client::Service for #srv_type {
-                type Request = #req_type;
-                type Response = #res_type;
-
-                fn request_type_name(&self) -> &str {
-                    #request_type_name
-                }
-                fn response_type_name(&self) -> &str {
-                    #response_type_name
-                }
-            }
-
             pub use super::ffi::#req_type_raw as #req_type;
             pub use super::ffi::#res_type_raw as #res_type;
         }
@@ -88,7 +68,6 @@ impl Service {
         let create_client = format_ident!("new_Client__{package_name}__{}", self.name);
         let cxx_create_client = format!("create_client_{package_name}_{}", self.name);
 
-        let self_name = format_ident!("{}", self.name);
         let self_name_str = &self.name;
 
         let wait_for_service = format_ident!("wait_for_service__{package_name}__{}", self.name);
@@ -142,7 +121,7 @@ impl Service {
 
                 let backend = match &mut node.node {
                     GeneratedNode::Dds(dds_node) => {
-                        let client = dds_node.create_client::< service :: #self_name >(
+                        let client = dds_node.create_client::< ffi::#req_type_raw, ffi::#res_type_raw >(
                             crate::ros2_client::ServiceMapping:: #ros_service_mapping,
                             &name,
                             &crate::ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
@@ -292,7 +271,7 @@ impl Service {
             #[allow(non_camel_case_types)]
             enum #client_backend {
                 Dds {
-                    client: std::sync::Arc<crate::ros2_client::service::Client< service :: #self_name >>,
+                    client: std::sync::Arc<crate::ros2_client::service::Client< ffi::#req_type_raw, ffi::#res_type_raw >>,
                     pending: std::sync::Arc<std::sync::Mutex<Vec<crate::ros2_client::service::RmwRequestId>>>,
                 },
                 #[cfg(feature = "rmw-zenoh")]
@@ -434,7 +413,6 @@ impl Service {
         let get_request = format_ident!("get_request__{package_name}__{}", self.name);
         let get_id = format_ident!("get_id__{package_name}__{}", self.name);
 
-        let self_name = format_ident!("{}", self.name);
         let self_name_str = &self.name;
 
         let matches = format_ident!("server_matches__{package_name}__{}", self.name);
@@ -492,7 +470,7 @@ impl Service {
 
                 let backend = match &mut node.node {
                     GeneratedNode::Dds(dds_node) => {
-                        let server = dds_node.create_server::< service :: #self_name >(
+                        let server = dds_node.create_server::< ffi::#req_type_raw, ffi::#res_type_raw >(
                             crate::ros2_client::ServiceMapping:: #ros_service_mapping,
                             &name,
                             &crate::ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
@@ -618,7 +596,7 @@ impl Service {
 
             #[allow(non_camel_case_types)]
             enum #server_backend {
-                Dds(std::sync::Arc<crate::ros2_client::service::Server< service :: #self_name >>),
+                Dds(std::sync::Arc<crate::ros2_client::service::Server< ffi::#req_type_raw, ffi::#res_type_raw >>),
                 #[cfg(feature = "rmw-zenoh")]
                 Zenoh {
                     server: std::sync::Arc<dora_ros2_bridge::transport::zenoh::service::NodeServiceServer>,
