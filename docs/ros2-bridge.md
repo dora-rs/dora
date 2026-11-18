@@ -65,14 +65,10 @@ node calling into ROS2 (dora→ROS2); "server" = a Dora node serving ROS2 client
 | **YAML bridge** | ✅ | ✅ | ✅ | ✅ | ✅ | (node-hosted) |
 | **Rust** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
 | **C++** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
-| **Python** (pyo3) | ✅ | ✅ | ✅ | ✅¹ | ✅² | ✅ |
+| **Python** (pyo3) | ✅ | ✅ | ✅ | ✅¹ | ✅ | ✅ |
 
 ¹ On DDS, the first goal can be lost while discovery is still running
 ([#4213](https://github.com/dora-rs/dora/issues/4213)).
-
-² On DDS, `rcl` action clients do not receive the goal status: the server
-publishes it `volatile`, they subscribe `transient_local`
-([#4214](https://github.com/dora-rs/dora/issues/4214)).
 
 Runnable examples for every cell live under
 [`examples/ros2-bridge/`](https://github.com/dora-rs/dora/tree/main/examples/ros2-bridge)
@@ -562,6 +558,11 @@ and `transient_local`; the configured `reliable` and `durability` are ignored
 for this channel only. The history depth differs by transport: DDS uses the
 configured `keep_last` (default `10`), while Zenoh keeps the last `1` status
 sample.
+
+The Python `create_action_server` / `create_action_client` and the generated
+C++ action servers use the same rule on both transports: their status channel
+is reliable and `transient_local` with a depth of `1` (rcl's default status
+QoS), whatever QoS they are given for the other channels.
 
 ---
 

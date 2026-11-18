@@ -19,6 +19,5 @@ humble rmw_cyclonedds_cpp action-client #4213 flaky  # failed 4/4 locally
 kilted * action-client #4213 flaky  # failed 4/4 locally on both RMWs
 humble rmw_cyclonedds_cpp service-client #4213 flaky  # failed 4/4 locally
 kilted rmw_cyclonedds_cpp service-client #4213 flaky  # 1 pass / 3 fail in 4 local runs
-* * action-server #4214  # [19.08] Python DDS action server publishes status VOLATILE; rcl clients subscribe TRANSIENT_LOCAL
 * rmw_cyclonedds_cpp parameters #4215  # [19.09] ros2-client serves parameter services with ServiceMapping::Enhanced only
 kilted * rosout #4216  # [19.10] DDS endpoints carry no REP-2016 type hash (INVALID on Iron and later)
