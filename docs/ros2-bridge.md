@@ -1157,9 +1157,11 @@ DDS only the status stream shows `Aborted`.
   another host may pick one it cannot reach: its data then never arrives, while
   dora's data still reaches it. Set `DORA_ROS2_DDS_INTERFACES` to the local IPv4
   address (or comma-separated addresses) on the network your ROS 2 peers use, for
-  example `DORA_ROS2_DDS_INTERFACES=192.168.1.231`; dora then advertises and
-  listens only there. An address this host does not have is an error when the
-  context is created. The peers have their own settings: `<Interfaces>` in
+  example `DORA_ROS2_DDS_INTERFACES=192.168.1.231`; dora then advertises only
+  those addresses and sends discovery multicast only on their interfaces. An
+  address this host does not have is an error when the context is created, and
+  one whose interface is down or cannot multicast gets a warning. The address
+  must stay assigned while dora runs. The peers have their own settings: `<Interfaces>` in
   `CYCLONEDDS_URI` for CycloneDDS, an interface allowlist profile for Fast-DDS.
 
 ### DDS diagnostics

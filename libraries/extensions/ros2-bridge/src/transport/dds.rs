@@ -78,7 +78,12 @@ impl Context {
         // filter, which its `ContextOptions` does not expose.
         let mut builder = rustdds::DomainParticipantBuilder::new(domain_id);
         match networks {
-            Some(networks) => builder = builder.with_only_networks(networks),
+            Some(networks) => {
+                for warning in interfaces::selection_warnings(&networks, &local) {
+                    eprintln!("warning: {warning}");
+                }
+                builder = builder.with_only_networks(networks);
+            }
             None => interfaces::report_unrestricted(&local),
         }
         fn context_error(error: impl std::fmt::Debug) -> TransportError {

@@ -5,7 +5,7 @@
 //! to one of those it cannot reach, and its data silently never arrives.
 //! [`INTERFACES_ENV`] restricts the participant to the given addresses.
 
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::Ipv4Addr;
 
 /// Comma-separated local IPv4 addresses to advertise and listen on.
 pub const INTERFACES_ENV: &str = "DORA_ROS2_DDS_INTERFACES";
@@ -16,6 +16,8 @@ pub(crate) struct LocalAddr {
     pub name: String,
     pub ip: Ipv4Addr,
     pub loopback: bool,
+    pub multicast: bool,
+    pub up: bool,
 }
 
 /// The host's IPv4 addresses, from the same enumeration RustDDS uses.
@@ -23,11 +25,14 @@ pub(crate) fn local_addrs() -> Vec<LocalAddr> {
     netdev::get_interfaces()
         .into_iter()
         .flat_map(|iface| {
-            let loopback = iface.is_loopback();
+            let (loopback, multicast, up) =
+                (iface.is_loopback(), iface.is_multicast(), iface.is_up());
             iface.ipv4.into_iter().map(move |net| LocalAddr {
                 name: iface.name.clone(),
                 ip: net.addr(),
                 loopback,
+                multicast,
+                up,
             })
         })
         .collect()
@@ -59,7 +64,15 @@ pub(crate) fn parse(value: Option<&str>) -> Result<Option<Vec<Ipv4Addr>>, String
             })
         })
         .collect::<Result<Vec<_>, _>>()
-        .map(Some)
+        .and_then(|addrs| {
+            if addrs.is_empty() {
+                Err(format!(
+                    "{INTERFACES_ENV} lists no address; unset it to use every interface"
+                ))
+            } else {
+                Ok(Some(addrs))
+            }
+        })
 }
 
 /// Every requested address must belong to this host: RustDDS would otherwise
@@ -84,12 +97,36 @@ pub(crate) fn check(requested: &[Ipv4Addr], local: &[LocalAddr]) -> Result<(), S
 pub(crate) fn selected(
     value: Option<&str>,
     local: &[LocalAddr],
-) -> Result<Option<Vec<IpAddr>>, String> {
+) -> Result<Option<Vec<Ipv4Addr>>, String> {
     let Some(requested) = parse(value)? else {
         return Ok(None);
     };
     check(&requested, local)?;
-    Ok(Some(requested.into_iter().map(IpAddr::V4).collect()))
+    Ok(Some(requested))
+}
+
+/// Problems with selected addresses that RustDDS would only log below dora's
+/// default level.
+pub(crate) fn selection_warnings(requested: &[Ipv4Addr], local: &[LocalAddr]) -> Vec<String> {
+    local
+        .iter()
+        .filter(|a| requested.contains(&a.ip))
+        .filter_map(|a| {
+            let addr = format!("{} {}", a.name, a.ip);
+            if !a.up {
+                Some(format!(
+                    "{INTERFACES_ENV}: {addr} is down, so ROS 2 peers cannot reach dora there"
+                ))
+            } else if !a.multicast {
+                Some(format!(
+                    "{INTERFACES_ENV}: {addr} cannot send multicast, so dora joins no \
+                     discovery group there; ROS 2 nodes on other hosts will not find it"
+                ))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// What to tell the user when [`INTERFACES_ENV`] is unset and the participant
@@ -128,6 +165,8 @@ mod tests {
             name: name.into(),
             ip,
             loopback: ip.is_loopback(),
+            multicast: !ip.is_loopback(),
+            up: true,
         }
     }
 
@@ -190,7 +229,7 @@ mod tests {
         assert_eq!(selected(None, &host()), Ok(None));
         assert_eq!(
             selected(Some("192.168.1.231"), &host()),
-            Ok(Some(vec![IpAddr::V4(Ipv4Addr::new(192, 168, 1, 231))]))
+            Ok(Some(vec![Ipv4Addr::new(192, 168, 1, 231)]))
         );
         assert!(selected(Some("192.0.2.1"), &host()).is_err());
         assert!(selected(Some("eno1"), &host()).is_err());
@@ -210,6 +249,38 @@ mod tests {
         assert!(message.contains("tailscale0 100.107.163.59"), "{message}");
         assert!(!message.contains("127.0.0.1"), "{message}");
         assert!(message.contains(INTERFACES_ENV), "{message}");
+    }
+
+    #[test]
+    fn a_value_with_only_separators_is_an_error() {
+        for value in [",", " , ,"] {
+            let error = parse(Some(value)).unwrap_err();
+            assert!(error.contains(INTERFACES_ENV), "{error}");
+            assert!(error.contains("no address"), "{error}");
+        }
+    }
+
+    #[test]
+    fn a_usable_selection_needs_no_warning() {
+        assert!(selection_warnings(&[Ipv4Addr::new(192, 168, 1, 231)], &host()).is_empty());
+    }
+
+    #[test]
+    fn an_address_without_multicast_is_warned_about() {
+        let warnings = selection_warnings(&[Ipv4Addr::LOCALHOST], &host());
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("lo 127.0.0.1"), "{warnings:?}");
+        assert!(warnings[0].contains("multicast"), "{warnings:?}");
+    }
+
+    #[test]
+    fn an_address_on_a_down_interface_is_warned_about() {
+        let mut local = host();
+        local[1].up = false;
+        let warnings = selection_warnings(&[Ipv4Addr::new(192, 168, 1, 231)], &local);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("eno1 192.168.1.231"), "{warnings:?}");
+        assert!(warnings[0].contains("down"), "{warnings:?}");
     }
 
     #[test]
