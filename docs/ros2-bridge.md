@@ -1152,6 +1152,15 @@ DDS only the status stream shows `Aborted`.
   on DDS the bridge warns when it sees a peer whose RMW does not fit (see below).
 - There is **no `wait_for_action_server`** in `ros2-client`; a client's first
   `send_goal` simply times out if no server is present.
+- **Hosts with several network interfaces.** dora advertises an address for every
+  IPv4 interface, including `docker0`, VPN and link-local ones. A ROS 2 node on
+  another host may pick one it cannot reach: its data then never arrives, while
+  dora's data still reaches it. Set `DORA_ROS2_DDS_INTERFACES` to the local IPv4
+  address (or comma-separated addresses) on the network your ROS 2 peers use, for
+  example `DORA_ROS2_DDS_INTERFACES=192.168.1.231`; dora then advertises and
+  listens only there. An address this host does not have is an error when the
+  context is created. The peers have their own settings: `<Interfaces>` in
+  `CYCLONEDDS_URI` for CycloneDDS, an interface allowlist profile for Fast-DDS.
 
 ### DDS diagnostics
 
@@ -1168,6 +1177,9 @@ that otherwise fails silently:
 - **Distro Gid width.** `ROS_DISTRO` names a distro whose `Gid` width differs from
   the build (see [Distro constraint](#distro-constraint)); the warning names the
   distro feature to add, or the newer one to drop.
+- **Several network interfaces.** `DORA_ROS2_DDS_INTERFACES` is unset and dora
+  would advertise more than one non-loopback address; the warning lists them
+  (see [Discovery & RMW notes](#discovery--rmw-notes-native-servers)).
 
 The checks read RustDDS's discovery data every 2 seconds and run for every DDS
 context; they do not change what is sent or matched. Each dora endpoint is
