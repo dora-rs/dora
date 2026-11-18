@@ -262,8 +262,8 @@ pub enum IncomingEvent {
         metadata: Option<MetadataParameters>,
         /// The input payload, given inline as the keys of [`InputData`].
         ///
-        /// Absent when the event carries none of those keys. Keys that are
-        /// present but do not form a valid [`InputData`] are an error rather
+        /// Absent when the event carries none of those keys. Keys of
+        /// [`InputData`] that do not form a valid value are an error rather
         /// than an input without data.
         #[serde(flatten, deserialize_with = "deserialize_flattened_input_data")]
         data: Option<Box<InputData>>,
@@ -274,13 +274,18 @@ pub enum IncomingEvent {
     AllInputsClosed,
 }
 
+/// The keys of [`InputData`]'s variants, as they appear flattened into an
+/// [`IncomingEvent::Input`].
+const INPUT_DATA_KEYS: &[&str] = &["data", "data_type", "path", "batch_index", "column"];
+
 /// Deserializes the flattened `data` of [`IncomingEvent::Input`].
 ///
 /// serde's own handling of a flattened `Option` discards the error of the
-/// inner type and yields `None`, so a mistyped `path` or an invalid
-/// `batch_index` would silently turn into an input without a payload.
-/// Instead, treat "no remaining keys" as `None` and report anything else
-/// that fails to parse.
+/// inner type and yields `None`, so an invalid `batch_index` or a `path`
+/// next to a mistyped key would silently turn into an input without a
+/// payload. Instead, an event that carries none of the [`InputData`] keys
+/// has no data, and one that carries any of them must parse. Other keys
+/// are ignored, as they are everywhere else in this format.
 fn deserialize_flattened_input_data<'de, D>(
     deserializer: D,
 ) -> Result<Option<Box<InputData>>, D::Error>
@@ -289,18 +294,19 @@ where
 {
     use serde::{Deserialize, de::Error};
 
-    let rest = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
+    let mut rest = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
+    rest.retain(|key, _| INPUT_DATA_KEYS.contains(&key.as_str()));
     if rest.is_empty() {
         return Ok(None);
     }
-    let keys = rest.keys().cloned().collect::<Vec<_>>().join("`, `");
-    serde_json::from_value(serde_json::Value::Object(rest))
+    let payload = serde_json::Value::Object(rest);
+    InputData::deserialize(&payload)
         .map(|data| Some(Box::new(data)))
         .map_err(|err| {
             D::Error::custom(format!(
-                "invalid input data (keys `{keys}`): expected either `data` \
-                 (with optional `data_type`) or `path` (with optional \
-                 `batch_index` and `column`): {err}"
+                "invalid input data {payload}: expected either `data` (with \
+                 optional `data_type`) or `path` (with optional `batch_index` \
+                 and `column`): {err}"
             ))
         })
 }
@@ -369,6 +375,16 @@ mod tests {
         );
     }
 
+    /// Keys outside [`InputData`] (comments, fields of a newer recorder)
+    /// are ignored, as they were before.
+    #[test]
+    fn input_with_only_unknown_keys_has_no_data() {
+        let event =
+            parse_event(r#"{"time_offset_secs":0.1,"type":"Input","id":"in","comment":"tick"}"#)
+                .expect("unknown keys are ignored");
+        assert!(matches!(event, IncomingEvent::Input { data: None, .. }));
+    }
+
     #[test]
     fn input_data_variants_still_parse() {
         let event = parse_event(
@@ -408,7 +424,9 @@ mod tests {
         for json in [
             r#"{"time_offset_secs":0,"type":"Input","id":"in","path":"x.arrow","batch_index":-1}"#,
             r#"{"time_offset_secs":0,"type":"Input","id":"in","path":"x.arrow","batch_index":"2"}"#,
-            r#"{"time_offset_secs":0,"type":"Input","id":"in","pth":"x.arrow"}"#,
+            // `path` is missing, so the other Arrow file keys match nothing.
+            r#"{"time_offset_secs":0,"type":"Input","id":"in","pth":"x.arrow","batch_index":1}"#,
+            r#"{"time_offset_secs":0,"type":"Input","id":"in","data_type":"Int32"}"#,
         ] {
             let err = parse_event(json).expect_err(json);
             assert!(
