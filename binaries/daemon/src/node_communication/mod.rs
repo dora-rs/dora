@@ -71,8 +71,14 @@ const BACKPRESSURE_STALL_TICK: Duration = Duration::from_secs(1);
 /// silent for hours and get it killed by the health check, or stretch a
 /// backward step into a disabled watchdog.
 ///
-/// The result is never `0`, which `spawned_at` uses as its "not running"
-/// sentinel.
+/// Anchoring keeps the readings on the scale of Unix milliseconds, which
+/// the code and tests that treat a small `last_activity` as "long ago"
+/// rely on; it carries no meaning beyond that. The result is never `0`,
+/// which `spawned_at` uses as its "not running" sentinel.
+///
+/// `Instant` does not advance while the host is suspended, so time spent
+/// suspended does not count towards a health-check or startup timeout,
+/// the same as for the daemon's tokio timers.
 pub fn current_millis() -> u64 {
     static ANCHOR: std::sync::OnceLock<(std::time::Instant, u64)> = std::sync::OnceLock::new();
     let (anchor, anchor_millis) = *ANCHOR.get_or_init(|| {
@@ -1763,7 +1769,8 @@ mod clock_tests {
         std::thread::sleep(Duration::from_millis(20));
         let second = current_millis();
         assert!(second >= first + 20, "{first} -> {second}");
-        // Still epoch-scaled, so a `last_activity` of 1 reads as long ago.
+        // Anchored to the wall clock, so a `last_activity` of 1 reads as
+        // long ago on any host whose clock is set.
         assert!(first.abs_diff(wall) < 3_600_000, "{first} vs {wall}");
     }
 }
