@@ -60,3 +60,11 @@ Rules:
 
 `scripts/ros2-dds-interop.sh --self-test` checks this classification without
 docker.
+
+## Running against other artifacts
+
+`DORA_ROS2_DDS_PREBUILT=<dir>` skips building the bridge. The run then uses
+`<dir>/python` (the installed wheel and pyarrow) and
+`<dir>/bin/dora-ros2-bridge-node`. Use it to check that the matrix catches a
+known bug in an older build: with ros2-client 0.10.1 (#4206), the CycloneDDS
+service/action cells fail.

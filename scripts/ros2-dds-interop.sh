@@ -174,14 +174,20 @@ docker cp "$container:/opt/ros/$DISTRO/share" "$DORA_ROS2_DDS_AMENT/"
 
 # The bridge is built per distro (the Gid layout differs from Iron on), into
 # a per-distro directory so a Humble build is never reused for Kilted.
-BUILD="$TARGET_DIR/ros2-dds-$DISTRO"
+#
+# DORA_ROS2_DDS_PREBUILT=<dir> runs against bridge artifacts built elsewhere
+# (<dir>/python: the installed wheel + pyarrow; <dir>/bin/dora-ros2-bridge-node),
+# e.g. an older dora, to check that the matrix catches a known bug.
+BUILD="${DORA_ROS2_DDS_PREBUILT:-$TARGET_DIR/ros2-dds-$DISTRO}"
 export DORA_ROS2_DDS_PYTHON="$BUILD/python"
-rm -rf "$BUILD/wheels" "$DORA_ROS2_DDS_PYTHON"
-mkdir -p "$BUILD/wheels" "$DORA_ROS2_DDS_PYTHON"
-maturin build --release --features "ros2-$DISTRO" --out "$BUILD/wheels" \
-  --manifest-path "$ROOT/libraries/extensions/ros2-bridge/python/Cargo.toml"
-"$DORA_ROS2_DDS_PYTHON_EXECUTABLE" -m pip install --quiet --no-deps \
-  --target "$DORA_ROS2_DDS_PYTHON" pyarrow "$BUILD"/wheels/dora_ros2_bridge_python-*.whl
+if [[ -z "${DORA_ROS2_DDS_PREBUILT:-}" ]]; then
+  rm -rf "$BUILD/wheels" "$DORA_ROS2_DDS_PYTHON"
+  mkdir -p "$BUILD/wheels" "$DORA_ROS2_DDS_PYTHON"
+  maturin build --release --features "ros2-$DISTRO" --out "$BUILD/wheels" \
+    --manifest-path "$ROOT/libraries/extensions/ros2-bridge/python/Cargo.toml"
+  "$DORA_ROS2_DDS_PYTHON_EXECUTABLE" -m pip install --quiet --no-deps \
+    --target "$DORA_ROS2_DDS_PYTHON" pyarrow "$BUILD"/wheels/dora_ros2_bridge_python-*.whl
+fi
 
 # The YAML cases run examples/ros2-bridge dataflows. Their nodes are prebuilt
 # where the dataflows expect them (target/debug), so `dora run`'s own build
@@ -190,10 +196,13 @@ maturin build --release --features "ros2-$DISTRO" --out "$BUILD/wheels" \
 if [[ " ${cases[*]} " == *" yaml-"* ]]; then
   cargo build -p dora-cli -p yaml-bridge-service-handler -p yaml-bridge-service-requester \
     -p yaml-bridge-action-server-handler -p yaml-bridge-action-goal
-  cargo build -p dora-ros2-bridge-node --features "ros2-$DISTRO"
   mkdir -p "$BUILD/bin"
-  cp "$TARGET_DIR/debug/dora" "$TARGET_DIR/debug/dora-ros2-bridge-node" "$BUILD/bin/"
-  export PATH="$BUILD/bin:$PATH"
+  if [[ -z "${DORA_ROS2_DDS_PREBUILT:-}" ]]; then
+    cargo build -p dora-ros2-bridge-node --features "ros2-$DISTRO"
+    cp "$TARGET_DIR/debug/dora-ros2-bridge-node" "$BUILD/bin/"
+  fi
+  # The CLI itself does not depend on the distro or the bridge.
+  export PATH="$BUILD/bin:$TARGET_DIR/debug:$PATH"
 fi
 
 failed=0

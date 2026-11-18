@@ -62,9 +62,9 @@ wait_for() { # <seconds> <condition...>: poll until the condition holds
   until "$@"; do (( $(date +%s) < deadline )) || return 1; sleep 1; done
 }
 listed() {
-  local nd=--no-daemon
-  [[ $kind == action ]] && nd= # Humble's `ros2 action list` has no --no-daemon
-  in_container "ros2 $kind list $nd" 2>/dev/null | grep -qx "$endpoint"
+  local daemon_flag=--no-daemon
+  [[ $kind == action ]] && daemon_flag= # Humble's `ros2 action list` has no --no-daemon
+  in_container "ros2 $kind list $daemon_flag" 2>/dev/null | grep -qx "$endpoint"
 }
 peer_ready() { grep -q '"event": "READY"' "$peer_log"; }
 peer_passed() { grep -q '"event": "PASS"' "$peer_log"; }
