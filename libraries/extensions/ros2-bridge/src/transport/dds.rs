@@ -1,8 +1,11 @@
 //! Adapter for the existing `ros2-client`/RustDDS implementation.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
-use super::{Durability, History, Liveliness, Reliability, Ros2Qos, TransportError};
+use super::{
+    Durability, History, Liveliness, Reliability, Ros2Qos, TransportError,
+    diagnostics::DdsDiagnostics,
+};
 
 /// Pick the DDS service mapping matching the user's ROS2 middleware.
 ///
@@ -40,17 +43,24 @@ pub fn detect_service_mapping() -> ros2_client::ServiceMapping {
 /// Existing DDS ROS2 context.
 pub struct Context {
     inner: ros2_client::Context,
+    diagnostics: Arc<DdsDiagnostics>,
 }
 
 impl Context {
     /// Open a DDS ROS2 context in the requested ROS domain.
     pub fn new(domain_id: u16) -> Result<Self, TransportError> {
         super::diagnostics::report_ros_distro();
-        ros2_client::Context::with_options(ros2_client::ContextOptions::new().domain_id(domain_id))
-            .map(|inner| Self { inner })
-            .map_err(|error| TransportError::DdsContext {
-                message: format!("{error:?}"),
-            })
+        let inner = ros2_client::Context::with_options(
+            ros2_client::ContextOptions::new().domain_id(domain_id),
+        )
+        .map_err(|error| TransportError::DdsContext {
+            message: format!("{error:?}"),
+        })?;
+        let diagnostics = Arc::new(DdsDiagnostics::start(
+            inner.domain_participant(),
+            detect_service_mapping(),
+        ));
+        Ok(Self { inner, diagnostics })
     }
 
     /// Create an existing DDS ROS2 node.
@@ -61,7 +71,10 @@ impl Context {
     ) -> Result<Node, TransportError> {
         self.inner
             .new_node(node_name, options)
-            .map(|inner| Node { inner })
+            .map(|inner| Node {
+                inner,
+                diagnostics: self.diagnostics.clone(),
+            })
             .map_err(|error| TransportError::DdsNode {
                 message: format!("{error:?}"),
             })
@@ -70,6 +83,12 @@ impl Context {
     /// Borrow the concrete context for legacy DDS-only call sites.
     pub fn as_inner(&self) -> &ros2_client::Context {
         &self.inner
+    }
+
+    /// The watcher for QoS and RMW-mapping mismatches with ROS 2 peers, for
+    /// endpoints created on the concrete context.
+    pub fn diagnostics(&self) -> &Arc<DdsDiagnostics> {
+        &self.diagnostics
     }
 
     /// Consume the adapter and return the concrete context.
@@ -81,6 +100,7 @@ impl Context {
 /// Existing DDS ROS2 node.
 pub struct Node {
     inner: ros2_client::Node,
+    diagnostics: Arc<DdsDiagnostics>,
 }
 
 impl Node {
@@ -92,6 +112,12 @@ impl Node {
     /// Borrow the concrete node for legacy DDS-only call sites.
     pub fn as_inner(&self) -> &ros2_client::Node {
         &self.inner
+    }
+
+    /// The context's watcher for QoS and RMW-mapping mismatches: register each
+    /// endpoint created on the concrete node.
+    pub fn diagnostics(&self) -> &DdsDiagnostics {
+        &self.diagnostics
     }
 
     /// Mutably borrow the concrete node for legacy DDS-only call sites.

@@ -19,13 +19,12 @@ use dora_node_api::{
     merged::{MergeExternal, MergedEvent},
 };
 use dora_ros2_bridge::ros2_client;
-use dora_ros2_bridge::rustdds::QosPolicies;
 use dora_ros2_bridge::transport::action::zenoh::{
     ActionClient as ZenohActionClient, ActionKeys, ActionServer as ZenohActionServer, ActionTokens,
     CancelableGoal, goal_accept_stamp, process_cancel_request,
 };
 use dora_ros2_bridge::transport::action::{ConcurrentGoalLimit, GoalSlots, MAX_CONCURRENT_GOALS};
-use dora_ros2_bridge::transport::diagnostics::Role;
+use dora_ros2_bridge::transport::diagnostics::{DdsDiagnostics, Role};
 use dora_ros2_bridge::transport::zenoh::{
     Context as ZenohContext, ContextOptions as ZenohContextOptions,
     compatibility::{TypeDescriptionResolver, resolve_action, resolve_message, resolve_service},
@@ -1203,15 +1202,6 @@ fn run_topic_mode(
             .unwrap_or(&config.qos)
             .to_dds_qos();
 
-        let role = match topic_config.direction {
-            Ros2Direction::Subscribe => Role::Reader,
-            Ros2Direction::Publish => Role::Writer,
-        };
-        diagnostics.watch_topic(
-            &absolute_ros2_name(&topic_config.topic)?.to_string(),
-            role,
-            QosPolicies::from(&qos),
-        );
         let ros_topic = ros_node
             .create_topic(
                 &absolute_ros2_name(&topic_config.topic)?,
@@ -1232,6 +1222,7 @@ fn run_topic_mode(
                 let subscription: ros2_client::Subscription<ArrayData> = ros_node
                     .create_subscription(&ros_topic, None)
                     .context("failed to create ROS2 subscription")?;
+                diagnostics.watch_topic(&ros_topic, Role::Reader, None);
                 let deserializer = StructDeserializer::new(Cow::Owned(type_info));
                 subscribers.push((
                     output_id,
@@ -1246,6 +1237,7 @@ fn run_topic_mode(
                 let publisher = ros_node
                     .create_publisher::<TypedValue<'static>>(&ros_topic, None)
                     .context("failed to create ROS2 publisher")?;
+                diagnostics.watch_topic(&ros_topic, Role::Writer, None);
                 publishers.push((input_id, type_info, publisher));
             }
         }
@@ -1301,23 +1293,21 @@ fn run_service_mode(
     let (mut ros_node, _pool, diagnostics) = create_ros_node(&config)?;
 
     let service_qos = bridge_endpoint_qos(&config);
-    diagnostics.watch_service(
-        &absolute_ros2_name(service_name)?.to_string(),
-        matches!(role, Ros2Role::Client),
-        &QosPolicies::from(&service_qos),
-    );
+    let service_ros2_name = absolute_ros2_name(service_name)?;
+    let is_client = matches!(role, Ros2Role::Client);
 
     match role {
         Ros2Role::Client => {
             let client = ros_node
                 .create_client::<BridgeMessage, BridgeMessage>(
                     dora_ros2_bridge::detect_service_mapping(),
-                    &absolute_ros2_name(service_name)?,
+                    &service_ros2_name,
                     &ros2_client::ServiceTypeName::new(&package, &type_name),
                     service_qos.clone(),
-                    service_qos,
+                    service_qos.clone(),
                 )
                 .map_err(|e| eyre!("failed to create service client: {e:?}"))?;
+            diagnostics.watch_service(&service_ros2_name, is_client, &service_qos, &service_qos);
 
             // Wait for service availability
             wait_for_service(&client, &ros_node)?;
@@ -1328,12 +1318,13 @@ fn run_service_mode(
             let server = ros_node
                 .create_server::<BridgeMessage, BridgeMessage>(
                     dora_ros2_bridge::detect_service_mapping(),
-                    &absolute_ros2_name(service_name)?,
+                    &service_ros2_name,
                     &ros2_client::ServiceTypeName::new(&package, &type_name),
                     service_qos.clone(),
-                    service_qos,
+                    service_qos.clone(),
                 )
                 .map_err(|e| eyre!("failed to create service server: {e:?}"))?;
+            diagnostics.watch_service(&service_ros2_name, is_client, &service_qos, &service_qos);
 
             run_service_server(server, request_type_info, response_type_info)
         }
@@ -1551,21 +1542,16 @@ fn run_action_mode(
     let status_qos = action_status_qos(&config.qos);
     let action_ros2_name = absolute_ros2_name(action_name)?;
     let action_type_name = ros2_client::ActionTypeName::new(&package, &type_name);
-    diagnostics.watch_action(
-        &action_ros2_name.to_string(),
-        matches!(role, Ros2Role::Client),
-        &QosPolicies::from(&qos),
-        &QosPolicies::from(&status_qos),
-    );
 
     match role {
         Ros2Role::Client => {
-            let action_qos = ros2_client::action::ActionClientQosPolicies {
+            // Not `Clone`: built once for ros2-client and once for the diagnostics.
+            let action_qos = || ros2_client::action::ActionClientQosPolicies {
                 goal_service: qos.clone(),
                 result_service: qos.clone(),
                 cancel_service: qos.clone(),
                 feedback_subscription: qos.clone(),
-                status_subscription: status_qos,
+                status_subscription: status_qos.clone(),
             };
 
             let client = ros_node
@@ -1573,9 +1559,10 @@ fn run_action_mode(
                     dora_ros2_bridge::detect_service_mapping(),
                     &action_ros2_name,
                     &action_type_name,
-                    action_qos,
+                    action_qos(),
                 )
                 .map_err(|e| eyre!("failed to create action client: {e:?}"))?;
+            diagnostics.watch_action_client(&action_ros2_name, &action_qos());
 
             // NOTE: ros2_client does not provide a wait_for_action_server API.
             // The first goal send will time out (ACTION_GOAL_TIMEOUT) if the
@@ -1586,12 +1573,13 @@ fn run_action_mode(
             run_action_client(client, goal_type_info, result_type_info, feedback_type_info)
         }
         Ros2Role::Server => {
-            let action_qos = ros2_client::action::ActionServerQosPolicies {
+            // Not `Clone`: built once for ros2-client and once for the diagnostics.
+            let action_qos = || ros2_client::action::ActionServerQosPolicies {
                 goal_service: qos.clone(),
                 result_service: qos.clone(),
                 cancel_service: qos.clone(),
                 feedback_publisher: qos.clone(),
-                status_publisher: status_qos,
+                status_publisher: status_qos.clone(),
             };
 
             let server = ros_node
@@ -1599,9 +1587,10 @@ fn run_action_mode(
                     dora_ros2_bridge::detect_service_mapping(),
                     &action_ros2_name,
                     &action_type_name,
-                    action_qos,
+                    action_qos(),
                 )
                 .map_err(|e| eyre!("failed to create action server: {e:?}"))?;
+            diagnostics.watch_action_server(&action_ros2_name, &action_qos());
 
             let async_server = ros2_client::action::AsyncActionServer::new(server);
             tracing::info!("action server created, waiting for goals from ROS2 clients");
@@ -2276,19 +2265,14 @@ fn create_ros_node(
 ) -> eyre::Result<(
     ros2_client::Node,
     futures::executor::ThreadPool,
-    dora_ros2_bridge::transport::diagnostics::DdsDiagnostics,
+    Arc<DdsDiagnostics>,
 )> {
     let domain_id = parse_dds_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref())?;
-    let ros_context = dora_ros2_bridge::transport::dds::Context::new(domain_id)
-        .map_err(|e| eyre!("{e}"))?
-        .into_inner();
-    // Report QoS and RMW-mapping mismatches with ROS 2 peers on stderr, which
-    // dora shows by default (warnings are below the default log level).
-    let diagnostics = dora_ros2_bridge::transport::diagnostics::DdsDiagnostics::start(
-        ros_context.domain_participant(),
-        dora_ros2_bridge::detect_service_mapping(),
-        |finding| eprintln!("warning: {finding}"),
-    );
+    let context =
+        dora_ros2_bridge::transport::dds::Context::new(domain_id).map_err(|e| eyre!("{e}"))?;
+    // Reports QoS and RMW-mapping mismatches of the endpoints registered with it.
+    let diagnostics = context.diagnostics().clone();
+    let ros_context = context.into_inner();
     let node_name = config
         .node_name
         .clone()
