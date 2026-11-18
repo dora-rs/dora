@@ -10,13 +10,13 @@
 # cell.
 
 * * yaml-action-server-cancel #4205  # YAML action server ignores cancel requests on DDS (#4205 item 4, 19.04)
-# [19.07] Python DDS clients can lose their first request/goal to discovery.
+# [19.07] #4213: Python DDS clients can lose their first request/goal to discovery.
 # `flaky` only where both outcomes were seen; the other cells failed every run.
-humble rmw_fastrtps_cpp action-client #0 flaky  # 3 pass / 1 fail in 4 runs
-humble rmw_cyclonedds_cpp action-client #0  # failed 4/4
-kilted * action-client #0  # failed 4/4 on both RMWs
-humble rmw_cyclonedds_cpp service-client #0  # failed 4/4
-kilted rmw_cyclonedds_cpp service-client #0 flaky  # 1 pass / 3 fail in 4 runs
-* * action-server #0  # [19.08] Python DDS action server publishes status VOLATILE; rcl clients subscribe TRANSIENT_LOCAL
-* rmw_cyclonedds_cpp parameters #0  # [19.09] ros2-client serves parameter services with ServiceMapping::Enhanced only
-kilted * rosout #0  # [19.10] DDS endpoints carry no REP-2016 type hash (INVALID on Iron and later)
+humble rmw_fastrtps_cpp action-client #4213 flaky  # 3 pass / 1 fail in 4 runs
+humble rmw_cyclonedds_cpp action-client #4213  # failed 4/4
+kilted * action-client #4213  # failed 4/4 on both RMWs
+humble rmw_cyclonedds_cpp service-client #4213  # failed 4/4
+kilted rmw_cyclonedds_cpp service-client #4213 flaky  # 1 pass / 3 fail in 4 runs
+* * action-server #4214  # [19.08] Python DDS action server publishes status VOLATILE; rcl clients subscribe TRANSIENT_LOCAL
+* rmw_cyclonedds_cpp parameters #4215  # [19.09] ros2-client serves parameter services with ServiceMapping::Enhanced only
+kilted * rosout #4216  # [19.10] DDS endpoints carry no REP-2016 type hash (INVALID on Iron and later)
