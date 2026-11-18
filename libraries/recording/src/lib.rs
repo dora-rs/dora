@@ -516,8 +516,14 @@ impl<R: Read> RecordingReader<R> {
         // check for the end of the stream would block.
         if len_buf == FOOTER_MAGIC[..4] {
             let mut rest = [0u8; FOOTER_LEN - 4];
-            self.reached_footer =
-                self.reader.read_exact(&mut rest).is_ok() && rest[..4] == FOOTER_MAGIC[4..];
+            // A torn footer (EOF) is an incomplete recording, but any other
+            // read error is an I/O failure the caller must see rather than
+            // a quiet "missing footer".
+            self.reached_footer = match self.reader.read_exact(&mut rest) {
+                Ok(()) => rest[..4] == FOOTER_MAGIC[4..],
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => false,
+                Err(e) => return Err(e).wrap_err("failed to read recording footer"),
+            };
             return Ok(false);
         }
 
@@ -861,6 +867,39 @@ mod tests {
         assert_eq!(entry, reader.next_entry().unwrap().unwrap());
         // The torn trailing record is discarded gracefully (no error).
         assert!(reader.next_entry().unwrap().is_none());
+        assert!(!reader.reached_footer());
+    }
+
+    /// An I/O error while reading the footer surfaces as an error instead of
+    /// being reported as a recording that merely lacks its footer.
+    #[test]
+    fn footer_read_error_is_not_swallowed() {
+        /// Fails every read, standing in for `EIO` from failing storage.
+        struct AlwaysErr;
+        impl std::io::Read for AlwaysErr {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disk on fire"))
+            }
+        }
+
+        let header = sample_header();
+        let mut finished = Vec::new();
+        let mut writer = RecordingWriter::new(&mut finished, &header).unwrap();
+        writer
+            .write_entry(&sample_entry("node1", "out1", 10, b"data"))
+            .unwrap();
+        writer.finish().unwrap();
+        // Everything up to and including the 4-byte footer prefix reads fine;
+        // the rest of the footer hits an I/O error.
+        let footer_start = finished.len() - FOOTER_LEN;
+        let input = std::io::Read::chain(&finished[..footer_start + 4], AlwaysErr);
+        let mut reader = RecordingReader::open(input).unwrap();
+        assert!(reader.next_entry().unwrap().is_some());
+        let err = reader.next_entry().unwrap_err();
+        assert!(
+            format!("{err:?}").contains("disk on fire"),
+            "unexpected error: {err:?}"
+        );
         assert!(!reader.reached_footer());
     }
 
