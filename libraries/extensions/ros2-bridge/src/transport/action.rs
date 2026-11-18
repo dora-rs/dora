@@ -648,15 +648,21 @@ pub mod zenoh {
         }
     }
 
-    pub fn action_status_qos(qos: &Ros2Qos) -> Ros2Qos {
-        Ros2Qos {
-            reliability: crate::transport::Reliability::Reliable {
-                max_blocking_time: Duration::ZERO,
-            },
-            durability: crate::transport::Durability::TransientLocal,
-            history: crate::transport::History::KeepLast { depth: 1 },
-            liveliness: qos.liveliness,
-        }
+    pub use super::action_status_qos;
+}
+
+/// QoS for an action's status channel on every transport: what rcl uses
+/// (`rcl_action_qos_profile_status_default`), reliable and transient-local,
+/// whatever the user's QoS. ROS 2 action clients subscribe to the status
+/// transient-local, so a volatile status writer never matches them (#4214).
+pub fn action_status_qos(qos: &crate::transport::Ros2Qos) -> crate::transport::Ros2Qos {
+    crate::transport::Ros2Qos {
+        reliability: crate::transport::Reliability::Reliable {
+            max_blocking_time: std::time::Duration::ZERO,
+        },
+        durability: crate::transport::Durability::TransientLocal,
+        history: crate::transport::History::KeepLast { depth: 1 },
+        liveliness: qos.liveliness,
     }
 }
 

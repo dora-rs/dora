@@ -957,9 +957,14 @@ impl Action {
                     .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?;
                 let (backend, stream_id) = match &mut node.node {
                     GeneratedNode::Dds(dds_node) => {
-                        // One QoS profile for all five action endpoints (mirrors the
-                        // native Rust action-server example).
+                        // The user's QoS for the services and feedback; the status
+                        // is reliable and transient-local, as rcl clients require.
                         let q: crate::ros2_client::QosProfile = qos.into();
+                        let status_qos = dora_ros2_bridge::transport::dds::to_qos_profile(
+                            &dora_ros2_bridge::transport::action::action_status_qos(
+                                &dora_ros2_bridge::transport::dds::from_qos_profile(&q),
+                            ),
+                        );
                         let server = dds_node.create_action_server::< #action_generics >(
                             crate::ros2_client::ServiceMapping:: #ros_service_mapping,
                             &name,
@@ -968,8 +973,8 @@ impl Action {
                                 goal_service: q.clone(),
                                 result_service: q.clone(),
                                 cancel_service: q.clone(),
-                                feedback_publisher: q.clone(),
-                                status_publisher: q,
+                                feedback_publisher: q,
+                                status_publisher: status_qos,
                             },
                         ).map_err(|e| eyre::eyre!("{e:?}"))?;
                         let server = Arc::new(crate::ros2_client::action::AsyncActionServer::new(server));
@@ -1456,5 +1461,26 @@ mod codegen_tests {
         assert!(server.contains("GeneratedNode::Zenoh"), "server create fn");
         assert!(server.contains("TypedActionServer"), "server create fn");
         assert!(!server.contains("dds_node_mut"), "server create fn");
+    }
+
+    /// rcl action clients subscribe to the status topic transient-local, so
+    /// the DDS server must not publish it with the user's (volatile) QoS
+    /// (#4214).
+    #[test]
+    fn the_dds_action_server_publishes_status_with_the_status_qos() {
+        let action = Action {
+            package: "test_pkg".to_string(),
+            name: "Fibonacci".to_string(),
+            goal: empty_msg("Fibonacci_Goal"),
+            result: empty_msg("Fibonacci_Result"),
+            feedback: empty_msg("Fibonacci_Feedback"),
+        };
+        let (_decl, imp) = action.cxx_action_server_creation_functions("test_pkg");
+        let server = format_valid_rust(imp);
+        assert!(
+            server.contains("transport::action::action_status_qos"),
+            "{server}"
+        );
+        assert!(!server.contains("status_publisher: q,"), "{server}");
     }
 }

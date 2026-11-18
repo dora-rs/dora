@@ -961,6 +961,9 @@ impl Ros2Node {
         let client = match &mut self.node {
             dora_ros2_bridge::transport::Node::Dds(node) => {
                 let qos = dora_ros2_bridge::transport::dds::to_qos_profile(&neutral_qos);
+                let status_qos = dora_ros2_bridge::transport::dds::to_qos_profile(
+                    &dora_ros2_bridge::transport::action::action_status_qos(&neutral_qos),
+                );
                 let name = parse_ros2_name(action_name)?;
                 // Not `Clone`: built once for ros2-client and once for the diagnostics.
                 let policies = || ros2_client::action::ActionClientQosPolicies {
@@ -968,7 +971,7 @@ impl Ros2Node {
                     result_service: qos.clone(),
                     cancel_service: qos.clone(),
                     feedback_subscription: qos.clone(),
-                    status_subscription: qos.clone(),
+                    status_subscription: status_qos.clone(),
                 };
                 let client = node
                     .as_inner_mut()
@@ -1038,6 +1041,9 @@ impl Ros2Node {
             match &mut self.node {
                 dora_ros2_bridge::transport::Node::Dds(node) => {
                     let qos = dora_ros2_bridge::transport::dds::to_qos_profile(&neutral_qos);
+                    let status_qos = dora_ros2_bridge::transport::dds::to_qos_profile(
+                        &dora_ros2_bridge::transport::action::action_status_qos(&neutral_qos),
+                    );
                     let name = parse_ros2_name(action_name)?;
                     // Not `Clone`: built once for ros2-client and once for the diagnostics.
                     let policies = || ros2_client::action::ActionServerQosPolicies {
@@ -1045,7 +1051,7 @@ impl Ros2Node {
                         result_service: qos.clone(),
                         cancel_service: qos.clone(),
                         feedback_publisher: qos.clone(),
-                        status_publisher: qos.clone(),
+                        status_publisher: status_qos.clone(),
                     };
                     let server = node
                         .as_inner_mut()
@@ -3814,5 +3820,115 @@ mod zenoh_node_feature_tests {
             // ~80 ticks when the GIL is free, ~1 when `set_parameter` holds it.
             assert!(during >= 10, "the Python thread ticked {during} times");
         });
+    }
+}
+
+#[cfg(test)]
+mod dds_action_status_tests {
+    use super::*;
+    use ::dora_ros2_bridge::rustdds::{self, policy::Durability};
+
+    /// A domain no other test in this crate uses.
+    const DOMAIN_ID: u16 = 92;
+
+    /// A DDS node that knows the action `status_test_msgs/Count`.
+    fn dds_test_node(node_name: &str) -> (Ros2Context, Ros2Node) {
+        let packages = std::env::temp_dir().join(format!(
+            "dora-dds-status-{node_name}-{}",
+            std::process::id()
+        ));
+        let package = packages.join("status_test_msgs");
+        std::fs::create_dir_all(package.join("action")).unwrap();
+        std::fs::write(
+            package.join("package.xml"),
+            "<package><name>status_test_msgs</name></package>",
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("action/Count.action"),
+            "int32 goal\n---\nint32 result\n---\nint32 feedback\n",
+        )
+        .unwrap();
+        let context = Ros2Context::new(
+            Some(vec![packages.clone()]),
+            Some(Ros2Transport::dds()),
+            Some(DOMAIN_ID),
+        );
+        std::fs::remove_dir_all(&packages).unwrap();
+        let context = context.unwrap();
+        let node = context
+            .new_node(node_name, "/", Ros2NodeOptions::new(Some(false)), None)
+            .unwrap();
+        (context, node)
+    }
+
+    /// The durability with which `observer` discovers the status writer (or
+    /// reader) of the action `name`.
+    fn status_durability(
+        observer: &rustdds::DomainParticipant,
+        name: &str,
+        writer: bool,
+    ) -> Durability {
+        let topic = format!("rt{name}/_action/status");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let found = if writer {
+                observer
+                    .discovered_writers()
+                    .into_iter()
+                    .find(|w| w.publication_topic_data.topic_name == topic)
+                    .map(|w| w.publication_topic_data.durability)
+            } else {
+                observer
+                    .discovered_readers()
+                    .into_iter()
+                    .find(|r| r.subscription_topic_data.topic_name() == &topic)
+                    .map(|r| r.subscription_topic_data.qos().durability())
+            };
+            if let Some(durability) = found {
+                return durability.unwrap_or(Durability::Volatile);
+            }
+            assert!(Instant::now() < deadline, "{topic} was never discovered");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// The user's QoS is volatile, as by default.
+    fn volatile() -> qos::Ros2QosPolicies {
+        qos::Ros2QosPolicies::new(None, None, Some(true), None, None, None, None)
+    }
+
+    /// rcl action clients subscribe to the status topic transient-local, so a
+    /// volatile status writer never matches them (#4214).
+    #[test]
+    fn a_dds_action_server_publishes_its_status_transient_local() {
+        let name = format!("/status_server_{}", std::process::id());
+        let (_context, mut node) = dds_test_node("status_server");
+        let _server = node
+            .create_action_server(&name, "status_test_msgs/Count".into(), volatile())
+            .unwrap();
+        let observer = rustdds::DomainParticipant::new(DOMAIN_ID).unwrap();
+        assert_eq!(
+            status_durability(&observer, &name, true),
+            Durability::TransientLocal
+        );
+    }
+
+    /// A transient-local status reader also gets the latest status from a
+    /// server that published it before the client matched.
+    #[test]
+    fn a_dds_action_client_subscribes_to_status_transient_local() {
+        let name = format!("/status_client_{}", std::process::id());
+        let (_context, mut node) = dds_test_node("status_client");
+        Python::initialize();
+        let _client = Python::attach(|py| {
+            node.create_action_client(py, &name, "status_test_msgs/Count".into(), volatile())
+        })
+        .unwrap();
+        let observer = rustdds::DomainParticipant::new(DOMAIN_ID).unwrap();
+        assert_eq!(
+            status_durability(&observer, &name, false),
+            Durability::TransientLocal
+        );
     }
 }
