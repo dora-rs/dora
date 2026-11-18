@@ -2,8 +2,8 @@
 # Drives a dora node's parameters with rclpy's own `rcl_interfaces` types, the
 # way `ros2 param list/get/set/describe` does, and checks the
 # `/parameter_events` it publishes.
-import argparse
 import json
+import os
 import time
 
 import rclpy
@@ -19,10 +19,6 @@ from rcl_interfaces.srv import (
 from rclpy.qos import qos_profile_parameter_events
 
 NODE = "/dora_test/dora_native_peer"
-
-p = argparse.ArgumentParser()
-p.add_argument("--transport", choices=["zenoh", "dds"], default="zenoh")
-a = p.parse_args()
 
 rclpy.init()
 n = rclpy.create_node("dora_zenoh_parameter_peer")
@@ -127,7 +123,7 @@ fast = Parameter(
     value=ParameterValue(type=ParameterType.PARAMETER_STRING, string_value="fast"),
 )
 results = call("set_parameters", SetParameters.Request(parameters=[fast])).results
-if a.transport == "zenoh":
+if os.environ.get("RMW_IMPLEMENTATION") == "rmw_zenoh_cpp":
     check(
         [(r.successful, r.reason) for r in results]
         == [(False, "parameter `speed` is type-stable; cannot change its declared type")],

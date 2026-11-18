@@ -9,14 +9,14 @@ import dora_ros2_bridge_python as dora
 
 p = argparse.ArgumentParser()
 p.add_argument("case")
-p.add_argument("--profile", choices=["humble", "rep2016"], required=True)
+p.add_argument("--profile", choices=["humble", "rep2016"], help="Zenoh compatibility (required for --transport zenoh)")
 p.add_argument("--ament", required=True)
 # DDS picks the RMW mapping from RMW_IMPLEMENTATION, so it needs no config.
 p.add_argument("--transport", choices=["zenoh", "dds"], default="zenoh")
 p.add_argument("--config", help="Zenoh client config (required for --transport zenoh)")
 a = p.parse_args()
-if a.transport == "zenoh" and a.config is None:
-    p.error("--config is required for --transport zenoh")
+if a.transport == "zenoh" and (a.config is None or a.profile is None):
+    p.error("--config and --profile are required for --transport zenoh")
 
 if a.case == "domain":
     os.environ["ROS_DOMAIN_ID"] = "42"

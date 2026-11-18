@@ -16,14 +16,16 @@ EXPECTED=${DORA_ROS2_DDS_EXPECTED:-$ROOT/tests/ros2-dds/expected-failures.txt}
 
 in_list() { local x=$1; shift; [[ " $* " == *" $x "* ]]; }
 
-# Check every entry of the expected-failure list; exit 2 on the first bad
-# one, so a typo can never silently stop matching its cell.
-validate_expected() {
-  local n=0 distro rmw case issue flag rest
+# Load and check the expected-failure list into ENTRIES ("distro rmw case issue
+# [flaky]"); exit 2 on the first bad entry, so a typo can never silently stop
+# matching its cell.
+ENTRIES=()
+load_expected() {
+  local n=0 line distro rmw case issue flag rest
   [[ -f "$EXPECTED" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
     n=$((n + 1))
-    line=${line%%#[^0-9]*}          # drop a trailing "# reason" comment
+    line=${line%%#[^0-9]*}          # drop a trailing "# reason", keep "#<issue>"
     [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
     read -r distro rmw case issue flag rest <<<"$line"
     if ! { [[ $distro == '*' ]] || in_list "$distro" "${DISTROS[@]}"; } ||
@@ -33,20 +35,20 @@ validate_expected() {
       echo "$EXPECTED:$n: invalid entry (want '<distro|*> <rmw|*> <case> #<issue> [flaky]'): $line" >&2
       exit 2
     fi
+    ENTRIES+=("$distro $rmw $case $issue $flag")
   done <"$EXPECTED"
 }
 
 # Print "<issue> [flaky]" for the expected-failure entry matching a cell, if any.
 expected_issue() { # <distro> <rmw> <case>
-  local distro rmw case issue flag
-  [[ -f "$EXPECTED" ]] || return 0
-  while read -r distro rmw case issue flag _; do
-    [[ -z "${distro:-}" || $distro == \#* ]] && continue
+  local entry distro rmw case issue flag
+  for entry in "${ENTRIES[@]}"; do
+    read -r distro rmw case issue flag <<<"$entry"
     if [[ ($distro == '*' || $distro == "$1") && ($rmw == '*' || $rmw == "$2") && $case == "$3" ]]; then
-      [[ $flag == flaky ]] && echo "$issue flaky" || echo "$issue"
+      echo "$issue${flag:+ $flag}"
       return
     fi
-  done <"$EXPECTED"
+  done
 }
 
 # Print the result line for one cell. Returns 0 for PASS/XFAIL, 1 for FAIL/XPASS.
@@ -70,6 +72,7 @@ self_test() {
   trap "rm -rf '$tmp'" RETURN
   cat >"$tmp/ok.txt" <<'EOF'
 # comment
+#
 humble rmw_cyclonedds_cpp graph #101  # listed for one cell
 * * yaml-action-server-cancel #102   # wildcards
 * rmw_cyclonedds_cpp service-client #103 flaky  # timing-dependent
@@ -105,7 +108,7 @@ EOF
 
 case "${1:-}" in
   --self-test) self_test; exit $? ;;
-  --classify) shift; validate_expected; classify "$@"; exit $? ;;
+  --classify) shift; load_expected; classify "$@"; exit $? ;;
 esac
 
 DISTRO=${1:-} RMW_ARG=${2:-all} CASE_ARG=${3:-all}
@@ -114,7 +117,7 @@ in_list "$DISTRO" "${DISTROS[@]}" || { echo "$usage" >&2; exit 2; }
 [[ $RMW_ARG == all ]] || in_list "$RMW_ARG" "${RMWS[@]}" || { echo "unknown rmw: $RMW_ARG" >&2; exit 2; }
 [[ $CASE_ARG == all ]] || in_list "$CASE_ARG" "${PY_CASES[@]}" "${YAML_CASES[@]}" ||
   { echo "unknown case: $CASE_ARG" >&2; exit 2; }
-validate_expected
+load_expected
 if [[ $RMW_ARG == all ]]; then rmws=("${RMWS[@]}"); else rmws=("$RMW_ARG"); fi
 if [[ $CASE_ARG == all ]]; then cases=("${PY_CASES[@]}" "${YAML_CASES[@]}"); else cases=("$CASE_ARG"); fi
 
@@ -154,24 +157,8 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
+# Start the container first: its apt install overlaps the builds below.
 "${compose[@]}" up -d "$SERVICE"
-container="${PROJECT}-${SERVICE}-1"
-if ! timeout -k 30s 180 bash -c 'until [[ $(docker inspect -f "{{.State.Health.Status}}" "$1" 2>/dev/null) == healthy ]]; do sleep 2; done' _ "$container"; then
-  echo "$SERVICE never became healthy within 180s; container log follows:" >&2
-  "${compose[@]}" logs --tail 100 "$SERVICE" >&2 || true
-  exit 1
-fi
-# Packages are unpinned (see the compose file); record what landed.
-for pkg in rmw-fastrtps-cpp rmw-cyclonedds-cpp rclpy; do
-  echo "ros-${DISTRO}-${pkg}=$("${compose[@]}" exec -T "$SERVICE" \
-    dpkg-query -W -f '${Version}' "ros-${DISTRO}-${pkg}" | tr -d '\r')"
-done
-
-export DORA_ROS2_DDS_ARTIFACTS="$TARGET_DIR/ros2-dds-logs/$PROJECT"
-export DORA_ROS2_DDS_AMENT="$DORA_ROS2_DDS_ARTIFACTS/ament"
-mkdir -p "$DORA_ROS2_DDS_AMENT"
-docker cp "$container:/opt/ros/$DISTRO/share" "$DORA_ROS2_DDS_AMENT/"
-
 # The bridge is built per distro (the Gid layout differs from Iron on), into
 # a per-distro directory so a Humble build is never reused for Kilted.
 #
@@ -205,6 +192,22 @@ if [[ " ${cases[*]} " == *" yaml-"* ]]; then
   export PATH="$BUILD/bin:$TARGET_DIR/debug:$PATH"
 fi
 
+# The container installs its packages while the bridge builds above; wait for it now.
+container="${PROJECT}-${SERVICE}-1"
+if ! timeout -k 30s 180 bash -c 'until [[ $(docker inspect -f "{{.State.Health.Status}}" "$1" 2>/dev/null) == healthy ]]; do sleep 2; done' _ "$container"; then
+  echo "$SERVICE never became healthy within 180s; container log follows:" >&2
+  "${compose[@]}" logs --tail 100 "$SERVICE" >&2 || true
+  exit 1
+fi
+# Packages are unpinned (see the compose file); record what landed.
+"${compose[@]}" exec -T "$SERVICE" dpkg-query -W -f '${Package}=${Version}\n' \
+  "ros-${DISTRO}-rmw-fastrtps-cpp" "ros-${DISTRO}-rmw-cyclonedds-cpp" "ros-${DISTRO}-rclpy" | tr -d '\r'
+
+export DORA_ROS2_DDS_ARTIFACTS="$TARGET_DIR/ros2-dds-logs/$PROJECT"
+export DORA_ROS2_DDS_AMENT="$DORA_ROS2_DDS_ARTIFACTS/ament"
+mkdir -p "$DORA_ROS2_DDS_AMENT"
+docker cp "$container:/opt/ros/$DISTRO/share" "$DORA_ROS2_DDS_AMENT/"
+
 failed=0
 results=()
 for rmw in "${rmws[@]}"; do
@@ -212,11 +215,8 @@ for rmw in "${rmws[@]}"; do
     echo "CASE $DISTRO $rmw $case"
     runner=run-case.sh
     [[ $case == yaml-* ]] && runner=run-yaml-case.sh
-    if "$ROOT/tests/ros2-dds/fixtures/$runner" "$DISTRO" "$rmw" "$case" "$PROJECT" "$SERVICE"; then
-      status=0
-    else
-      status=$?
-    fi
+    "$ROOT/tests/ros2-dds/fixtures/$runner" "$DISTRO" "$rmw" "$case" "$PROJECT" "$SERVICE" &&
+      status=0 || status=$?
     line=$(classify "$DISTRO" "$rmw" "$case" "$status") || failed=1
     echo "$line"
     results+=("$line")

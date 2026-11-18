@@ -6,10 +6,9 @@
 set -euo pipefail
 
 DISTRO=$1 RMW=$2 CASE=$3 PROJECT=$4 SERVICE=$5
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
-PEERS=/workspace/tests/ros2-zenoh/peers
+# shellcheck source=common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 EX="$ROOT/examples/ros2-bridge"
-compose=(docker compose -f "$ROOT/docker-compose.ros2-dds.yml" --profile "$DISTRO" -p "$PROJECT")
 
 # <dataflow> <rclpy peer> <server|client> <endpoint kind> <endpoint> <dora-log check>
 case "$CASE" in
@@ -22,16 +21,7 @@ case "$CASE" in
 esac
 dataflow=$1 peer=$2 role=$3 kind=$4 endpoint=$5 dora_check=$6
 
-log_dir="$DORA_ROS2_DDS_ARTIFACTS/$RMW"
-mkdir -p "$log_dir"
-peer_log="$log_dir/${CASE}-rclpy.log"
-dora_log="$log_dir/${CASE}-dora.log"
-in_container() {
-  "${compose[@]}" exec -T -e RMW_IMPLEMENTATION="$RMW" -e ROS_DOMAIN_ID="$DORA_ROS2_DDS_DOMAIN" \
-    "$SERVICE" bash -lc "source /opt/ros/$DISTRO/setup.bash && $1"
-}
-
-dora_pid= peer_pid=
+dora_pid=
 cleanup() {
   # SIGINT makes `dora run` stop the dataflow and its nodes cleanly; force
   # the process and its children down if that has not happened in 5 s.
@@ -41,8 +31,7 @@ cleanup() {
     pkill -KILL -P "$dora_pid" 2>/dev/null || true
     kill -KILL "$dora_pid" 2>/dev/null || true
   fi
-  [[ -n $peer_pid ]] && kill "$peer_pid" 2>/dev/null || true
-  "${compose[@]}" exec -T "$SERVICE" pkill -f "$PEERS/" >/dev/null 2>&1 || true
+  stop_peers
 }
 trap cleanup EXIT
 
@@ -53,33 +42,23 @@ start_dora() {
     exec dora run "$(basename "$dataflow")") >"$dora_log" 2>&1 &
   dora_pid=$!
 }
-start_peer() {
-  in_container "timeout 60 python3 $PEERS/$peer" >"$peer_log" 2>&1 &
-  peer_pid=$!
-}
-wait_for() { # <seconds> <condition...>: poll until the condition holds
-  local deadline=$(( $(date +%s) + $1 )); shift
-  until "$@"; do (( $(date +%s) < deadline )) || return 1; sleep 1; done
-}
 listed() {
   local daemon_flag=--no-daemon
   [[ $kind == action ]] && daemon_flag= # Humble's `ros2 action list` has no --no-daemon
   in_container "ros2 $kind list $daemon_flag" 2>/dev/null | grep -qx "$endpoint"
 }
-peer_ready() { grep -q '"event": "READY"' "$peer_log"; }
-peer_passed() { grep -q '"event": "PASS"' "$peer_log"; }
 dora_ok() { [[ -z $dora_check ]] || grep -q "$dora_check" "$dora_log"; }
-done_ok() { peer_passed && dora_ok; }
+done_ok() { peer_said PASS && dora_ok; }
 
 if [[ $role == server ]]; then
   start_dora
   wait_for 60 listed || { echo "$kind $endpoint never appeared in the ROS graph" >&2; exit 1; }
-  start_peer
+  start_peer "$peer"
   wait "$peer_pid" || true
   peer_pid=
   done_ok
 else
-  start_peer
+  start_peer "$peer"
   wait_for 30 peer_ready || { echo "rclpy peer never became ready" >&2; exit 1; }
   start_dora
   wait_for 60 done_ok

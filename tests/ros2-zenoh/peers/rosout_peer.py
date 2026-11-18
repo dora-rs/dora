@@ -2,8 +2,8 @@
 # Checks what `ros2 node info` shows for a dora node created with
 # `rosout=True` and no parameters: a `/rosout` publisher with rcl's QoS, and
 # no parameter services.
-import argparse
 import json
+import os
 import time
 
 import rclpy
@@ -11,14 +11,11 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, ReliabilityPolicy
 
 NAME, NAMESPACE = "dora_native_peer", "/dora_test"
 
-p = argparse.ArgumentParser()
 # Two checks only hold on Zenoh. On DDS, ros2-client serves the parameter
 # services on every node, as rclcpp does (dora's Zenoh path leaves them out of
 # a node without parameters), and DDS discovery does not carry the history
 # policy, so a remote observer cannot see the publisher's depth.
-p.add_argument("--transport", choices=["zenoh", "dds"], default="zenoh")
-a = p.parse_args()
-zenoh = a.transport == "zenoh"
+zenoh = os.environ.get("RMW_IMPLEMENTATION") == "rmw_zenoh_cpp"
 
 rclpy.init()
 # rclpy gives this node its own `/rosout` publisher to compare with.
