@@ -1849,7 +1849,7 @@ impl DoraNode {
             }
         }
 
-        let metadata = Metadata::from_parameters(self.clock.new_timestamp(), parameters);
+        let mut metadata = Metadata::from_parameters(self.clock.new_timestamp(), parameters);
 
         let finalized = sample.map(|sample| sample.finalize());
 
@@ -1904,7 +1904,7 @@ impl DoraNode {
                          (dora-rs/dora#2742 diagnostic)"
                     );
                 }
-                match self.zenoh_publish(&output_id, &metadata, finalized, diag) {
+                match self.zenoh_publish(&output_id, &mut metadata, finalized, diag) {
                     Ok(PublishOutcome::Published) => Delivery::Zenoh,
                     Ok(PublishOutcome::NotPublished(sample)) => {
                         Delivery::Daemon(Some(sample.into_data_message()))
@@ -2047,7 +2047,7 @@ impl DoraNode {
     fn zenoh_publish(
         &mut self,
         output_id: &DataId,
-        metadata: &Metadata,
+        metadata: &mut Metadata,
         finalized: FinalizedSample,
         diag: bool,
     ) -> eyre::Result<PublishOutcome> {
@@ -2079,7 +2079,9 @@ impl DoraNode {
         // on the paths that actually attach the full metadata. Returns `None`
         // (after logging) on an encode failure so the caller can fall back to
         // the daemon path.
-        let encode_metadata = || match dora_message::encode(metadata) {
+        // Takes the metadata as an argument (rather than capturing it) so the
+        // schema-once path below can borrow it mutably in between.
+        let encode_metadata = |metadata: &Metadata| match dora_message::encode(metadata) {
             Ok(bytes) => Some(bytes),
             Err(e) => {
                 tracing::warn!(output = %output_id, "failed to serialize metadata ({e}); falling back to daemon path");
@@ -2103,7 +2105,7 @@ impl DoraNode {
             // the deliberate, accepted trade-off for the zero-copy large-output
             // path, not an oversight.
             FinalizedSample::Shm(sbuf) => {
-                let Some(metadata_bytes) = encode_metadata() else {
+                let Some(metadata_bytes) = encode_metadata(metadata) else {
                     return Ok(PublishOutcome::NotPublished(FinalizedSample::Shm(sbuf)));
                 };
                 if diag {
@@ -2161,7 +2163,7 @@ impl DoraNode {
                             // over-allocated. Fall through to the reliable
                             // daemon path instead of risking that panic.
                             if sbuf.as_mut().len() == avec.len() {
-                                let Some(metadata_bytes) = encode_metadata() else {
+                                let Some(metadata_bytes) = encode_metadata(metadata) else {
                                     return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(
                                         avec,
                                     )));
@@ -2259,7 +2261,7 @@ impl DoraNode {
                         &self.id,
                         output_id,
                         &avec,
-                        metadata,
+                        &mut *metadata,
                     )
                 } else {
                     None
@@ -2284,7 +2286,7 @@ impl DoraNode {
                         attachment,
                     } => (payload, attachment.into()),
                     ZenohPutChoice::FullStream => {
-                        let Some(bytes) = encode_metadata() else {
+                        let Some(bytes) = encode_metadata(metadata) else {
                             return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)));
                         };
                         (&avec[..], bytes.into())
@@ -3394,7 +3396,7 @@ fn publish_schema_once(
     node_id: &NodeId,
     output_id: &DataId,
     full_stream: &[u8],
-    base_metadata: &Metadata,
+    metadata: &mut Metadata,
 ) -> Option<Vec<u8>> {
     let state = schema_state.get(output_id);
     let known = state.map(|state| (state.published_hash, &*state.published_schema));
@@ -3443,12 +3445,20 @@ fn publish_schema_once(
         SchemaOnceDecision::SendSchemaLessBatch => {
             tracing::debug!(output = %output_id, hash, "sending schema-less batch with SCHEMA_HASH");
             // Every batch carries the schema hash so the receiver can match it
-            // to the primed decoder (and detect a schema change).
-            let mut metadata = base_metadata.clone();
-            metadata
+            // to the primed decoder (and detect a schema change). Tag the
+            // caller's metadata in place for the encode and untag it after,
+            // instead of deep-cloning the whole parameter map per message on
+            // this, the highest-rate path: the caller still reports the same
+            // metadata to the daemon, which must not see the internal key.
+            // `send_output_sample_unchecked` strips any user-supplied
+            // `SCHEMA_HASH` up front, so there is no previous value to restore.
+            let previous = metadata
                 .parameters
                 .insert(SCHEMA_HASH.to_string(), Parameter::Integer(hash as i64));
-            dora_message::encode(&metadata).ok()
+            debug_assert!(previous.is_none(), "caller must strip SCHEMA_HASH");
+            let encoded = dora_message::encode(&*metadata).ok();
+            metadata.parameters.remove(SCHEMA_HASH);
+            encoded
         }
     }
 }
@@ -4620,7 +4630,11 @@ mod tests {
         let dataflow_id = DataflowId::new_v4();
         let node_id = NodeId::from("node".to_string());
         let output_id = DataId::from("out".to_string());
-        let metadata = Metadata::new(uhlc::HLC::default().new_timestamp());
+        let mut metadata = Metadata::new(uhlc::HLC::default().new_timestamp());
+        metadata
+            .parameters
+            .insert("frame".to_string(), Parameter::Integer(3));
+        let original = metadata.clone();
         let encode = |array: arrow::array::ArrayRef| {
             arrow_utils::encode_arrow_ipc_data(&array.to_data()).unwrap()
         };
@@ -4635,7 +4649,7 @@ mod tests {
                 &node_id,
                 &output_id,
                 stream,
-                &metadata,
+                &mut metadata,
             )
         };
 
@@ -4655,11 +4669,21 @@ mod tests {
             sent.parameters.get(SCHEMA_HASH),
             Some(&Parameter::Integer(marker as i64))
         );
+        assert_eq!(
+            sent.parameters.get("frame"),
+            Some(&Parameter::Integer(3)),
+            "the attachment carries the caller's parameters"
+        );
 
         // A different schema is hashed and published again.
         assert!(publish(&bytes, &mut state).is_none());
         let (bytes_hash, _) = arrow_utils::ipc_encode::schema_block_and_hash(&bytes).unwrap();
         assert_eq!(state[&output_id].published_hash, bytes_hash);
+
+        // The schema hash is tagged onto the caller's metadata only for the
+        // encode: the caller reports the same metadata to the daemon next, so
+        // it must come back without the internal key.
+        assert_eq!(metadata, original);
     }
 
     #[test]
