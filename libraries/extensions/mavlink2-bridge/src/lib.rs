@@ -5,7 +5,8 @@
 //!
 //! - Arrow conversion for common-dialect messages via the [`MavlinkArrow`]
 //!   trait.
-//! - Transport builders for TCP, UDP, and serial links (see [`transport`]).
+//! - Transport builders for TCP, UDP, and serial links (see [`transport`]),
+//!   plus replay of recorded `.tlog` files with the `tlog` feature.
 //! - [`MAVLINK_VERSION`], the protocol version a transport uses unless its
 //!   URL selects another with `?proto=`.
 //!
@@ -16,6 +17,8 @@
 
 mod arrow_convert;
 mod error;
+#[cfg(feature = "tlog")]
+mod tlog;
 pub mod transport;
 
 pub use arrow_convert::MavlinkArrow;

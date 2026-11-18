@@ -9,6 +9,15 @@
 //! | `udp://host:port`                     | `udpin:host:port`            | server    |
 //! | `serial:///dev/path?baud=N` (Unix)    | `serial:/dev/path:N`         | n/a       |
 //! | `serial://COM1?baud=N` (Windows)      | `serial:COM1:N`              | n/a       |
+//! | `tlog:///path/flight.tlog?speed=S`    | (replays a recorded `.tlog`) | read-only |
+//!
+//! `tlog://` needs the `tlog` cargo feature. It replays a telemetry log
+//! saved by QGroundControl, Mission Planner or MAVProxy at the pace it was
+//! recorded: `?speed=` scales that pace (default `1.0`; `0` replays as fast
+//! as the reader asks). Frames are decoded in whichever MAVLink version
+//! each was recorded in, sending fails, and once the log is exhausted the
+//! link stays quiet until the node stops. The path must be absolute; on
+//! Windows write it as `tlog:///C:/logs/flight.tlog`.
 //!
 //! An optional `?proto=` query selects the MAVLink protocol version and is
 //! honored uniformly across every scheme: absent defaults to
@@ -59,15 +68,40 @@ pub const DEFAULT_SERIAL_BAUD: u32 = 115_200;
 /// query selects V1 (see the module docs). It is `Send + Sync`, so
 /// reader and writer threads may share an `Arc<_>` without an extra mutex.
 pub fn connect(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
-    let (address, version) = resolve(url)?;
-    open_mavlink_versioned(&address, version)
+    let (endpoint, version) = resolve(url)?;
+    match endpoint {
+        Endpoint::Link(address) => open_mavlink_versioned(&address, version),
+        #[cfg(feature = "tlog")]
+        Endpoint::Tlog(config) => {
+            let mut conn = crate::tlog::TlogConnection::open(&config).map_err(|e| {
+                BridgeError::Config(format!("failed to open tlog replay '{config}': {e}"))
+            })?;
+            MavConnection::<MavMessage>::set_protocol_version(&mut conn, version);
+            Ok(Box::new(conn))
+        }
+    }
 }
+
+/// What [`resolve`] parsed a URL into.
+enum Endpoint {
+    /// A live link opened through mavlink's own transports.
+    Link(ConnectionAddress),
+    /// A recorded `.tlog` replayed from disk.
+    #[cfg(feature = "tlog")]
+    Tlog(crate::tlog::TlogConfig),
+}
+
+/// The schemes [`resolve`] accepts, for its error message.
+#[cfg(feature = "tlog")]
+const SUPPORTED_SCHEMES: &str = "tcp, udp, serial, tlog";
+#[cfg(not(feature = "tlog"))]
+const SUPPORTED_SCHEMES: &str = "tcp, udp, serial; tlog needs the `tlog` feature";
 
 /// Check that `url` names a well-formed endpoint without opening it.
 ///
 /// Fails on exactly the errors [`connect`] reports before it tries to open
-/// the transport: an unsupported scheme, a missing host or device, or an
-/// invalid `?proto=` / `?baud=` value. These never go away by retrying, so a
+/// the transport: an unsupported scheme, a missing host, device or log
+/// path, or an invalid `?proto=` / `?baud=` / `?speed=` value. These never go away by retrying, so a
 /// caller that retries [`connect`] while the peer comes up should validate
 /// first and give up at once on an error here.
 ///
@@ -89,18 +123,63 @@ pub fn validate(url: &Url) -> BridgeResult<()> {
 /// Parse `url` into the transport to open and its protocol version, doing
 /// no I/O. Shared by [`connect`] and [`validate`] so the two can never
 /// disagree on what a well-formed endpoint is.
-fn resolve(url: &Url) -> BridgeResult<(ConnectionAddress, MavlinkVersion)> {
-    let address = match url.scheme() {
-        "tcp" => TcpConfig::new(host_port(url, DEFAULT_TCP_PORT)?, TcpMode::TcpOut).into(),
-        "udp" => UdpConfig::new(host_port(url, DEFAULT_UDP_PORT)?, UdpMode::Udpin).into(),
-        "serial" => SerialConfig::new(serial_device(url)?, parse_baud(url)?).into(),
+fn resolve(url: &Url) -> BridgeResult<(Endpoint, MavlinkVersion)> {
+    let endpoint = match url.scheme() {
+        "tcp" => Endpoint::Link(
+            TcpConfig::new(host_port(url, DEFAULT_TCP_PORT)?, TcpMode::TcpOut).into(),
+        ),
+        "udp" => {
+            Endpoint::Link(UdpConfig::new(host_port(url, DEFAULT_UDP_PORT)?, UdpMode::Udpin).into())
+        }
+        "serial" => Endpoint::Link(SerialConfig::new(serial_device(url)?, parse_baud(url)?).into()),
+        #[cfg(feature = "tlog")]
+        "tlog" => Endpoint::Tlog(crate::tlog::TlogConfig {
+            path: tlog_path(url)?,
+            speed: parse_speed(url)?,
+        }),
         scheme => {
             return Err(BridgeError::Config(format!(
-                "unsupported transport scheme '{scheme}' (supported: tcp, udp, serial)"
+                "unsupported transport scheme '{scheme}' (supported: {SUPPORTED_SCHEMES})"
             )));
         }
     };
-    Ok((address, parse_proto_query(url)?))
+    Ok((endpoint, parse_proto_query(url)?))
+}
+
+/// The file a `tlog:` URL names. Only absolute paths are accepted, so that
+/// `tlog://flight.tlog` (where `flight.tlog` parses as a host) is an error
+/// rather than a surprise.
+#[cfg(feature = "tlog")]
+fn tlog_path(url: &Url) -> BridgeResult<std::path::PathBuf> {
+    url.to_file_path()
+        .ok()
+        .filter(|path| path.file_name().is_some())
+        .ok_or_else(|| {
+            BridgeError::Config(format!(
+                "missing or relative log path in '{url}' (expected tlog:///absolute/path/flight.tlog)"
+            ))
+        })
+}
+
+/// Resolve the replay speed from an optional `?speed=` query parameter.
+///
+/// - absent → `1.0`, the recorded pace;
+/// - a finite number `>= 0` → that multiple of it, `0` meaning unpaced;
+/// - anything else → a [`BridgeError::Config`], like [`parse_baud`].
+#[cfg(feature = "tlog")]
+fn parse_speed(url: &Url) -> BridgeResult<f64> {
+    match url.query_pairs().find(|(k, _)| k == "speed") {
+        None => Ok(1.0),
+        Some((_, v)) => v
+            .parse::<f64>()
+            .ok()
+            .filter(|speed| speed.is_finite() && *speed >= 0.0)
+            .ok_or_else(|| {
+                BridgeError::Config(format!(
+                    "invalid tlog speed '{v}' in '{url}' (expected a number >= 0)"
+                ))
+            }),
+    }
 }
 
 /// The `host:port` of a network endpoint, with `default_port` if omitted.

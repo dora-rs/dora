@@ -14,6 +14,10 @@
 //! component_id: 1
 //! ```
 //!
+//! Built with the `tlog` feature, `endpoint: tlog:///path/flight.tlog` replays
+//! a recorded telemetry log instead of opening a live link (see
+//! `dora_mavlink2_bridge::transport`).
+//!
 //! ## Outputs (telemetry, MAVLink → dora)
 //!
 //! | dora output            | MAVLink message       |
@@ -963,6 +967,74 @@ mod tests {
         }
         assert!(handle.is_finished(), "wake for `{url}` did not deliver");
         handle.join().expect("panic").expect("err");
+    }
+
+    /// A replayed `.tlog` is forwarded like a live link, and once the log is
+    /// exhausted the reader still sees the shutdown flag within ~100 ms
+    /// (the replay idles with `WouldBlock`, like an idle TCP link).
+    #[cfg(feature = "tlog")]
+    #[test]
+    fn run_reader_forwards_a_tlog_replay_and_stops_after_it() {
+        use mavlink::dialects::common::HEARTBEAT_DATA;
+
+        let path = std::env::temp_dir().join(format!(
+            "dora-mavlink2-bridge-node-{}.tlog",
+            std::process::id()
+        ));
+        let mut log = Vec::new();
+        for sequence in 0..3u8 {
+            let header = MavHeader {
+                system_id: 1,
+                component_id: 1,
+                sequence,
+            };
+            log.extend_from_slice(
+                &(1_700_000_000_000_000 + u64::from(sequence) * 10_000).to_be_bytes(),
+            );
+            mavlink::write_versioned_msg(
+                &mut log,
+                mavlink::MavlinkVersion::V2,
+                header,
+                &MavMessage::HEARTBEAT(HEARTBEAT_DATA::default()),
+            )
+            .unwrap();
+        }
+        std::fs::write(&path, log).unwrap();
+        let file_url = Url::from_file_path(&path).unwrap();
+        let url = Url::parse(&format!("tlog://{}", file_url.path())).unwrap();
+
+        let conn: Arc<dyn MavConnection<MavMessage> + Send + Sync> =
+            Arc::from(connect_with_retry(&url).expect("open tlog replay"));
+        let (tx, rx) = flume::bounded::<(DataId, ArrayRef)>(64);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let handle = std::thread::spawn({
+            let shutdown = Arc::clone(&shutdown);
+            move || run_reader(conn, tx, shutdown, false)
+        });
+
+        for _ in 0..3 {
+            let (id, array) = rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("a replayed HEARTBEAT");
+            assert_eq!(id.as_str(), "heartbeat");
+            assert_eq!(array.len(), 1);
+        }
+        assert!(
+            !handle.is_finished(),
+            "the reader must idle after the log ends"
+        );
+
+        shutdown.store(true, Ordering::Relaxed);
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !handle.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            handle.is_finished(),
+            "reader ignored shutdown after the replay ended"
+        );
+        handle.join().expect("panic").expect("err");
+        std::fs::remove_file(path).unwrap();
     }
 
     /// Every outbound frame must carry an increasing sequence number, not a

@@ -18,3 +18,7 @@ serde_yaml = { workspace = true }
 eyre = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3"
+
+[features]
+## Replay recorded `.tlog` files through `tlog://` endpoints.
+tlog = ["dora-mavlink2-bridge/tlog"]
