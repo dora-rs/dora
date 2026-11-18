@@ -2254,6 +2254,54 @@ jobs:
           name: ros2-zenoh-kilted-logs
           path: target/ros2-zenoh-logs
 
+  # ROS 2 DDS interop matrix (#4205): dora's Python bridge and YAML bridge
+  # against real rclpy peers over Fast-DDS and CycloneDDS, both directions.
+  # Known failures live in tests/ros2-dds/expected-failures.txt, so the job
+  # fails only on a new failure or on a fix whose entry was not removed.
+  ros2-dds-humble:
+    name: ROS2 DDS Interop (Humble)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      # The script builds the Python bridge wheel with maturin.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install maturin
+        run: pip install maturin
+      - run: scripts/ros2-dds-interop.sh humble all all
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ros2-dds-humble-logs
+          path: target/ros2-dds-logs
+
+  ros2-dds-kilted:
+    name: ROS2 DDS Interop (Kilted)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      # The script builds the Python bridge wheel with maturin.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install maturin
+        run: pip install maturin
+      - run: scripts/ros2-dds-interop.sh kilted all all
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ros2-dds-kilted-logs
+          path: target/ros2-dds-logs
+
   # ===== MSRV check =====
   # Restored from upstream dora CI — verifies the minimum supported
   # Rust version declared in Cargo.toml.
@@ -2320,6 +2368,8 @@ jobs:
       - ros2-bridge
       - ros2-zenoh-humble
       - ros2-zenoh-kilted
+      - ros2-dds-humble
+      - ros2-dds-kilted
       - msrv
     # `always() && contains(needs.*.result, 'failure')` covers both direct
     # failures and the case where build-cli fails and downstream jobs get
@@ -2488,6 +2538,8 @@ jobs:
               # an unmapped name there defaults to "report it".
               ros2-zenoh-humble) echo '^ROS2 Zenoh Interop \(Humble\)$' ;;
               ros2-zenoh-kilted) echo '^ROS2 Zenoh Interop \(Kilted\)$' ;;
+              ros2-dds-humble) echo '^ROS2 DDS Interop \(Humble\)$' ;;
+              ros2-dds-kilted) echo '^ROS2 DDS Interop \(Kilted\)$' ;;
               msrv) echo '^MSRV check$' ;;
               *) echo '' ;;
             esac
@@ -2897,6 +2949,8 @@ jobs:
       # are advisory (`result` reads `success`), correct once that drops (#2987).
       - ros2-zenoh-humble
       - ros2-zenoh-kilted
+      - ros2-dds-humble
+      - ros2-dds-kilted
       - msrv
     # Inverse of `file-issue-on-failure`: on a scheduled run where the suite
     # actually ran (build-cli succeeded) and nothing failed or was cancelled

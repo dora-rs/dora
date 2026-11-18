@@ -1172,6 +1172,16 @@ DDS only the status stream shows `Aborted`.
 - There is **no `wait_for_action_server`** in `ros2-client`; a client's first
   `send_goal` simply times out if no server is present.
 
+### Interop testing
+
+`scripts/ros2-dds-interop.sh <humble|kilted>` runs the Python and YAML bridges
+against real `rclpy` peers over Fast-DDS and CycloneDDS, in both directions. It
+runs nightly as `ROS2 DDS Interop (Humble)` / `(Kilted)`. Cells that fail today
+are listed, with their issues, in `tests/ros2-dds/expected-failures.txt`; check
+there before relying on a cell of the capability table above on DDS. See
+`tests/ros2-dds/README.md` for the details. The Zenoh counterpart is
+`scripts/ros2-zenoh-interop.sh`.
+
 ---
 
 ## Limitations and Known Constraints
