@@ -417,6 +417,12 @@ type OperatorInputs = BTreeMap<DataId, bool>;
 /// with `InputRecovered` once data flows again; the recovered input therefore
 /// counts as open again, so a later close of the operator's *other* inputs does
 /// not finish an operator that still receives data on it.
+///
+/// Limitation: `InputClosed` does not say whether the close is a recoverable
+/// `input_timeout` break or final, so a timed-out input counts as closed until
+/// it recovers. If every other input closes while it is still broken (or it is
+/// the operator's only input), the operator finishes and a later recovery is
+/// dropped. Telling the two apart needs the daemon to mark recoverable closes.
 async fn forward_input_state_change(
     id: DataId,
     recovered: bool,
