@@ -959,12 +959,9 @@ impl Action {
                     GeneratedNode::Dds(dds_node) => {
                         // The user's QoS for the services and feedback; the status
                         // is reliable and transient-local, as rcl clients require.
+                        use dora_ros2_bridge::transport::{action::action_status_qos, dds, Durability};
+                        let status_qos = dds::to_qos_profile(&action_status_qos(&crate::ros2::default_impl::ros2_qos(&qos, Durability::Volatile)));
                         let q: crate::ros2_client::QosProfile = qos.into();
-                        let status_qos = dora_ros2_bridge::transport::dds::to_qos_profile(
-                            &dora_ros2_bridge::transport::action::action_status_qos(
-                                &dora_ros2_bridge::transport::dds::from_qos_profile(&q),
-                            ),
-                        );
                         let server = dds_node.create_action_server::< #action_generics >(
                             crate::ros2_client::ServiceMapping:: #ros_service_mapping,
                             &name,
@@ -1477,10 +1474,7 @@ mod codegen_tests {
         };
         let (_decl, imp) = action.cxx_action_server_creation_functions("test_pkg");
         let server = format_valid_rust(imp);
-        assert!(
-            server.contains("transport::action::action_status_qos"),
-            "{server}"
-        );
+        assert!(server.contains("action::action_status_qos"), "{server}");
         assert!(server.contains("status_publisher: status_qos"), "{server}");
     }
 }

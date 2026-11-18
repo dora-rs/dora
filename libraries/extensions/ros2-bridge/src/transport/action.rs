@@ -6,9 +6,12 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use thiserror::Error;
+
+use crate::transport::{Durability, History, Reliability, Ros2Qos};
 
 pub const MAX_CONCURRENT_GOALS: usize = 8;
 
@@ -657,13 +660,13 @@ pub mod zenoh {
 /// action clients subscribe to the status transient-local, so a volatile
 /// status writer never matches them (#4214). Liveliness follows the user's
 /// QoS, as on the other channels.
-pub fn action_status_qos(qos: &crate::transport::Ros2Qos) -> crate::transport::Ros2Qos {
-    crate::transport::Ros2Qos {
-        reliability: crate::transport::Reliability::Reliable {
-            max_blocking_time: std::time::Duration::ZERO,
+pub fn action_status_qos(qos: &Ros2Qos) -> Ros2Qos {
+    Ros2Qos {
+        reliability: Reliability::Reliable {
+            max_blocking_time: Duration::ZERO,
         },
-        durability: crate::transport::Durability::TransientLocal,
-        history: crate::transport::History::KeepLast { depth: 1 },
+        durability: Durability::TransientLocal,
+        history: History::KeepLast { depth: 1 },
         liveliness: qos.liveliness,
     }
 }

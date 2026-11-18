@@ -592,7 +592,7 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
         /// The C++ QoS as backend-neutral policies, shared by the DDS and Zenoh
         /// paths. Durations are f64 seconds (a non-finite lease is infinite); an
         /// unknown liveliness value falls back to automatic.
-        fn ros2_qos(value: &ffi::Ros2QosPolicies, durability: dora_ros2_bridge::transport::Durability) -> dora_ros2_bridge::transport::Ros2Qos {
+        pub(crate) fn ros2_qos(value: &ffi::Ros2QosPolicies, durability: dora_ros2_bridge::transport::Durability) -> dora_ros2_bridge::transport::Ros2Qos {
             use dora_ros2_bridge::transport::{dds::duration_from_secs_f64, History, Liveliness, Reliability, Ros2Qos};
             let lease_duration = value.lease_duration.is_finite().then(|| duration_from_secs_f64(value.lease_duration));
             Ros2Qos {

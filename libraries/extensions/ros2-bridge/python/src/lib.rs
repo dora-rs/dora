@@ -3823,10 +3823,7 @@ mod zenoh_node_feature_tests {
 #[cfg(test)]
 mod dds_action_status_tests {
     use super::*;
-    use ::dora_ros2_bridge::rustdds::{
-        self,
-        policy::{Durability, Reliability},
-    };
+    use ::dora_ros2_bridge::rustdds::policy::{Durability, Reliability};
 
     /// A domain no other test in this crate uses.
     const DOMAIN_ID: u16 = 92;
@@ -3883,11 +3880,6 @@ mod dds_action_status_tests {
         }
     }
 
-    /// The user's QoS is volatile, as by default.
-    fn volatile() -> qos::Ros2QosPolicies {
-        qos::Ros2QosPolicies::new(None, None, Some(true), None, None, None, None)
-    }
-
     /// rcl action clients subscribe to the status topic transient-local, so a
     /// volatile status writer never matches them (#4214).
     #[test]
@@ -3895,7 +3887,12 @@ mod dds_action_status_tests {
         let name = format!("/status_server_{}", std::process::id());
         let (_context, mut node) = dds_test_node("status_server");
         let _server = node
-            .create_action_server(&name, "status_test_msgs/Count".into(), volatile())
+            .create_action_server(
+                &name,
+                "status_test_msgs/Count".into(),
+                // Reliable and, by default, volatile.
+                qos::Ros2QosPolicies::new(None, None, Some(true), None, None, None, None),
+            )
             .unwrap();
         let observer = rustdds::DomainParticipant::new(DOMAIN_ID).unwrap();
         let qos = status_writer_qos(&observer, &name);
