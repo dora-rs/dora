@@ -2596,6 +2596,7 @@ dependencies = [
  "flume 0.12.0",
  "futures",
  "futures-timer",
+ "netdev",
  "process-wrap",
  "ros2-client",
  "serde",

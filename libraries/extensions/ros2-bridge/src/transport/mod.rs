@@ -5,6 +5,7 @@ use dora_message::descriptor::Ros2TransportConfig;
 pub mod action;
 pub mod dds;
 pub mod diagnostics;
+pub mod interfaces;
 mod types;
 pub mod zenoh;
 

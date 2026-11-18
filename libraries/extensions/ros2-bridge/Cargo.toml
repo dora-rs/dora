@@ -36,6 +36,7 @@ widestring = "1.2.1"
 # Version comes from `[workspace.dependencies]`; the ROS distro is selected by
 # the `ros2-*` features above.
 ros2-client = { workspace = true }
+netdev = { workspace = true }
 eyre = { workspace = true }
 tracing = { workspace = true }
 flume = "0.12.0"
