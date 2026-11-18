@@ -465,10 +465,8 @@ pub(crate) async fn collect_and_send_metrics_bg(
                 let restart_count = node.restart_count.load(atomic::Ordering::Acquire);
                 let status = if node.restarts_disabled {
                     dora_message::daemon_to_coordinator::NodeStatus::Failed
-                } else if restart_count > 0 {
-                    dora_message::daemon_to_coordinator::NodeStatus::Restarting
                 } else {
-                    continue;
+                    dora_message::daemon_to_coordinator::NodeStatus::Restarting
                 };
                 metrics.insert(
                     node.node_id.clone(),
@@ -1135,11 +1133,24 @@ mod stale_pid_tests {
     /// dora-rs/dora#4196: a node in restart backoff whose stale PID now names
     /// a live, unrelated process (here: the test process itself) must be
     /// reported as `Restarting`, not as that process `Running`.
+    ///
+    /// This holds both on the first crash (`restart_count == 0`, during backoff
+    /// prior to attempt 1) and on subsequent restart attempts (`restart_count > 0`).
     #[tokio::test]
     async fn a_stale_pid_in_backoff_reports_restarting() {
-        let node = sample_own_process(0, 1).await;
-        assert_eq!(node.status, NodeStatus::Restarting);
-        assert_eq!(node.pid, 0, "the stale PID must not be reported");
+        let initial_crash = sample_own_process(0, 0).await;
+        assert_eq!(initial_crash.status, NodeStatus::Restarting);
+        assert_eq!(
+            initial_crash.pid, 0,
+            "the stale PID must not be reported on initial crash"
+        );
+
+        let subsequent_crash = sample_own_process(0, 1).await;
+        assert_eq!(subsequent_crash.status, NodeStatus::Restarting);
+        assert_eq!(
+            subsequent_crash.pid, 0,
+            "the stale PID must not be reported on subsequent crash"
+        );
     }
 
     /// A live node must stay `Running` even when its process's start time is
