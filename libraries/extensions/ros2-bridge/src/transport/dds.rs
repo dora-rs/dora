@@ -68,23 +68,22 @@ impl Context {
     /// those local addresses are advertised and used, or all when `None`.
     pub(crate) fn with_interfaces(
         domain_id: u16,
-        interfaces: Option<&str>,
+        value: Option<&str>,
     ) -> Result<Self, TransportError> {
         super::diagnostics::report_ros_distro();
-        let local = interfaces::local_addrs();
-        let networks = interfaces::selected(interfaces, &local)
-            .map_err(|message| TransportError::DdsContext { message })?;
+        let requested =
+            interfaces::parse(value).map_err(|message| TransportError::DdsContext { message })?;
         // What `ros2_client::Context::with_options` does, plus the network
         // filter, which its `ContextOptions` does not expose.
         let mut builder = rustdds::DomainParticipantBuilder::new(domain_id);
-        match networks {
-            Some(networks) => {
-                for warning in interfaces::selection_warnings(&networks, &local) {
-                    eprintln!("warning: {warning}");
-                }
-                builder = builder.with_only_networks(networks);
-            }
-            None => interfaces::report_unrestricted(&local),
+        if let Some(requested) = &requested {
+            let local = interfaces::local_addrs();
+            interfaces::check(requested, &local)
+                .map_err(|message| TransportError::DdsContext { message })?;
+            interfaces::report_once(Some(requested), || local);
+            builder = builder.with_only_networks(requested.iter().copied());
+        } else {
+            interfaces::report_once(None, interfaces::local_addrs);
         }
         fn context_error(error: impl std::fmt::Debug) -> TransportError {
             TransportError::DdsContext {

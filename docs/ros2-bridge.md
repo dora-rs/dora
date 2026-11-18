@@ -1161,8 +1161,9 @@ DDS only the status stream shows `Aborted`.
   those addresses and sends discovery multicast only on their interfaces. An
   address this host does not have is an error when the context is created, and
   one whose interface is down or cannot multicast gets a warning. The address
-  must stay assigned while dora runs. The peers have their own settings: `<Interfaces>` in
-  `CYCLONEDDS_URI` for CycloneDDS, an interface allowlist profile for Fast-DDS.
+  must stay assigned while dora runs. The peers have their own settings:
+  `<Interfaces>` in `CYCLONEDDS_URI` for CycloneDDS, an interface allowlist
+  profile for Fast-DDS.
 
 ### DDS diagnostics
 

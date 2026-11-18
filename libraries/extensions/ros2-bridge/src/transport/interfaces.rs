@@ -7,11 +7,12 @@
 
 use std::net::Ipv4Addr;
 
-/// Comma-separated local IPv4 addresses to advertise and listen on.
+/// Comma-separated local IPv4 addresses to advertise, the only ones peers
+/// will send to.
 pub const INTERFACES_ENV: &str = "DORA_ROS2_DDS_INTERFACES";
 
 /// One IPv4 address of a local interface.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) struct LocalAddr {
     pub name: String,
     pub ip: Ipv4Addr,
@@ -38,10 +39,16 @@ pub(crate) fn local_addrs() -> Vec<LocalAddr> {
         .collect()
 }
 
-fn list(addrs: impl IntoIterator<Item = impl std::borrow::Borrow<LocalAddr>>) -> String {
+impl std::fmt::Display for LocalAddr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.name, self.ip)
+    }
+}
+
+fn list<'a>(addrs: impl IntoIterator<Item = &'a LocalAddr>) -> String {
     addrs
         .into_iter()
-        .map(|a| format!("{} {}", a.borrow().name, a.borrow().ip))
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -51,7 +58,7 @@ pub(crate) fn parse(value: Option<&str>) -> Result<Option<Vec<Ipv4Addr>>, String
     let Some(value) = value.filter(|v| !v.trim().is_empty()) else {
         return Ok(None);
     };
-    value
+    let addrs = value
         .split(',')
         .map(str::trim)
         .filter(|entry| !entry.is_empty())
@@ -63,16 +70,13 @@ pub(crate) fn parse(value: Option<&str>) -> Result<Option<Vec<Ipv4Addr>>, String
                 )
             })
         })
-        .collect::<Result<Vec<_>, _>>()
-        .and_then(|addrs| {
-            if addrs.is_empty() {
-                Err(format!(
-                    "{INTERFACES_ENV} lists no address; unset it to use every interface"
-                ))
-            } else {
-                Ok(Some(addrs))
-            }
-        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if addrs.is_empty() {
+        return Err(format!(
+            "{INTERFACES_ENV} lists no address; unset it to use every interface"
+        ));
+    }
+    Ok(Some(addrs))
 }
 
 /// Every requested address must belong to this host: RustDDS would otherwise
@@ -93,18 +97,6 @@ pub(crate) fn check(requested: &[Ipv4Addr], local: &[LocalAddr]) -> Result<(), S
     ))
 }
 
-/// The networks to restrict the participant to, from [`INTERFACES_ENV`].
-pub(crate) fn selected(
-    value: Option<&str>,
-    local: &[LocalAddr],
-) -> Result<Option<Vec<Ipv4Addr>>, String> {
-    let Some(requested) = parse(value)? else {
-        return Ok(None);
-    };
-    check(&requested, local)?;
-    Ok(Some(requested))
-}
-
 /// Problems with selected addresses that RustDDS would only log below dora's
 /// default level.
 pub(crate) fn selection_warnings(requested: &[Ipv4Addr], local: &[LocalAddr]) -> Vec<String> {
@@ -112,14 +104,13 @@ pub(crate) fn selection_warnings(requested: &[Ipv4Addr], local: &[LocalAddr]) ->
         .iter()
         .filter(|a| requested.contains(&a.ip))
         .filter_map(|a| {
-            let addr = format!("{} {}", a.name, a.ip);
             if !a.up {
                 Some(format!(
-                    "{INTERFACES_ENV}: {addr} is down, so ROS 2 peers cannot reach dora there"
+                    "{INTERFACES_ENV}: {a} is down, so ROS 2 peers cannot reach dora there"
                 ))
             } else if !a.multicast {
                 Some(format!(
-                    "{INTERFACES_ENV}: {addr} cannot send multicast, so dora joins no \
+                    "{INTERFACES_ENV}: {a} cannot send multicast, so dora joins no \
                      discovery group there; ROS 2 nodes on other hosts will not find it"
                 ))
             } else {
@@ -145,12 +136,19 @@ pub(crate) fn unrestricted_warning(local: &[LocalAddr]) -> Option<String> {
     ))
 }
 
-/// Print [`unrestricted_warning`] once per process.
-pub(crate) fn report_unrestricted(local: &[LocalAddr]) {
+/// Print, once per process, [`selection_warnings`] when [`INTERFACES_ENV`] is
+/// set, or else [`unrestricted_warning`]. Contexts share the process
+/// environment, so later ones would only repeat the same lines.
+pub(crate) fn report_once(requested: Option<&[Ipv4Addr]>, local: impl FnOnce() -> Vec<LocalAddr>) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        if let Some(message) = unrestricted_warning(local) {
-            eprintln!("warning: {message}");
+        let local = local();
+        let warnings = match requested {
+            Some(requested) => selection_warnings(requested, &local),
+            None => unrestricted_warning(&local).into_iter().collect(),
+        };
+        for warning in warnings {
+            eprintln!("warning: {warning}");
         }
     });
 }
@@ -222,17 +220,6 @@ mod tests {
         assert!(error.contains("lists 192.0.2.1, which"), "{error}");
         assert!(error.contains("eno1 192.168.1.231"), "{error}");
         assert!(error.contains("docker0 172.17.0.1"), "{error}");
-    }
-
-    #[test]
-    fn selected_combines_parse_and_check() {
-        assert_eq!(selected(None, &host()), Ok(None));
-        assert_eq!(
-            selected(Some("192.168.1.231"), &host()),
-            Ok(Some(vec![Ipv4Addr::new(192, 168, 1, 231)]))
-        );
-        assert!(selected(Some("192.0.2.1"), &host()).is_err());
-        assert!(selected(Some("eno1"), &host()).is_err());
     }
 
     #[test]
