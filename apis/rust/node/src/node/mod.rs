@@ -184,6 +184,25 @@ fn parse_zero_copy_threshold(raw: Option<&str>) -> usize {
     }
 }
 
+/// Parse a `DORA_NODE_SHM_POOL_SIZE` override with the same grammar as the
+/// per-node `shared_memory_pool_size` YAML key (`134217728`, `128MB`, ...).
+///
+/// Returns `None` when the variable is absent or invalid, so the built-in
+/// default applies; an invalid value is logged rather than dropped silently,
+/// since the variable exists to raise the pool for large payloads.
+fn parse_shm_pool_size(raw: Option<&str>) -> Option<usize> {
+    let raw = raw?;
+    match raw.parse::<dora_message::config::ByteSize>() {
+        Ok(size) => Some(size.as_bytes()),
+        Err(err) => {
+            tracing::warn!(
+                "invalid DORA_NODE_SHM_POOL_SIZE={raw:?} ({err}); using the default pool size"
+            );
+            None
+        }
+    }
+}
+
 /// How many large outbound sends are traced hop-by-hop
 /// (dora-rs/dora#2742 diagnostic; see [`DoraNode::send_output_sample`]).
 ///
@@ -1290,9 +1309,7 @@ impl DoraNode {
             .shared_memory_pool_size
             .map(|bs| bs.as_bytes())
             .or_else(|| {
-                std::env::var("DORA_NODE_SHM_POOL_SIZE")
-                    .ok()
-                    .and_then(|s| s.parse::<usize>().ok())
+                parse_shm_pool_size(std::env::var("DORA_NODE_SHM_POOL_SIZE").ok().as_deref())
             })
             // 8 MB default — kept deliberately small so the pool fits a
             // constrained `/dev/shm` (Docker/Kubernetes commonly cap it at
@@ -3803,6 +3820,17 @@ mod tests {
         IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
         integration_testing_format::{IncomingEvent, TimedIncomingEvent},
     };
+
+    #[test]
+    fn shm_pool_size_override_accepts_the_yaml_grammar() {
+        assert_eq!(parse_shm_pool_size(None), None);
+        assert_eq!(parse_shm_pool_size(Some("4096")), Some(4096));
+        assert_eq!(parse_shm_pool_size(Some(" 134217728 ")), Some(128 << 20));
+        assert_eq!(parse_shm_pool_size(Some("128MB")), Some(128 << 20));
+        assert_eq!(parse_shm_pool_size(Some("64 KB")), Some(64 << 10));
+        assert_eq!(parse_shm_pool_size(Some("junk")), None);
+        assert_eq!(parse_shm_pool_size(Some("-1MB")), None);
+    }
 
     #[test]
     fn zero_copy_threshold_override_is_parsed_and_clamped() {
