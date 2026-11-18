@@ -52,11 +52,14 @@ Rules:
 - Every entry names an open issue.
 - `flaky` marks a timing-dependent bug, such as a discovery race. Such a cell
   may pass or fail, and either result keeps the job green; the result line
-  still names the issue.
+  still names the issue. Use it only for the cells where both outcomes were
+  observed, never with wildcards over cells that fail every run: a flaky entry
+  hides that cell's later failures for other reasons.
 - An unknown distro, RMW or case name is rejected (exit 2), so a typo cannot
   silently stop matching.
-- When a fix lands, its cells report `XPASS` and the job fails until the
-  entry is removed in the same change.
+- When a fix lands, its plain entries report `XPASS` and the job fails until
+  they are removed in the same change. Flaky entries never XPASS, so remove
+  them by hand together with the fix.
 
 `scripts/ros2-dds-interop.sh --self-test` checks this classification without
 docker.

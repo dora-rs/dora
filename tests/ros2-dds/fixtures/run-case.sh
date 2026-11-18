@@ -22,7 +22,7 @@ case "$CASE" in
   domain) peer="graph_peer.py domain" ;;
   namespace) peer="topic_peer.py subscribe --topic /robot/chatter" ;;
   qos-transient-local) peer="topic_peer.py publish-transient" ;;
-  parameters) peer="parameter_peer.py" ;;
+  parameters) peer="parameter_peer.py --transport dds" ;;
   rosout) peer="rosout_peer.py --transport dds" ;;
   *) echo "unknown Python case: $CASE" >&2; exit 2 ;;
 esac
