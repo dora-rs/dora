@@ -359,7 +359,7 @@ impl PoolState {
                             error,
                             data_port,
                             data_addr,
-                            data_auth: cross_data_auth_token().is_some(),
+                            data_auth: data_listener_requires_token(),
                         },
                         shm_provider.as_deref(),
                     )
@@ -909,43 +909,20 @@ impl PoolState {
                                 Ok(Ok(ack)) if ack.ok => {
                                     // Direct-TCP data plane: remember the
                                     // mirror's data listener so per-frame
-                                    // writes bypass the zenoh relay. The
-                                    // explicitly advertised address wins —
-                                    // the coordinator-derived one
-                                    // (`peer_addr.ip()`, the mirror daemon's
-                                    // WS source address) is the wrong dial
-                                    // target under NAT / multi-homed /
-                                    // same-host coordinator deployment.
-                                    let endpoint = ack.data_addr.or_else(|| {
-                                        ack.data_port.map(|data_port| {
-                                            std::net::SocketAddr::new(
-                                                peer_addr.ip(),
-                                                data_port,
-                                            )
-                                        })
-                                    });
-                                    // The listener is no use when the two
-                                    // daemons disagree on the auth token:
-                                    // stay on the relay from the start
-                                    // rather than lose writes to it (#4211).
-                                    let endpoint = endpoint.filter(|endpoint| {
-                                        match direct_auth_mismatch(
+                                    // writes bypass the zenoh relay.
+                                    let endpoint = ack
+                                        .direct_endpoint(
+                                            peer_addr.ip(),
                                             cross_data_auth_token().is_some(),
-                                            ack.data_auth,
-                                        ) {
-                                            None => true,
-                                            Some(mismatch) => {
-                                                tracing::warn!(
-                                                    "memory pool: not using the direct-TCP data \
-                                                     listener {endpoint} of machine \
-                                                     \"{machine_id}\" for pool \
-                                                     {shared_memory_id}: {mismatch}; writes go \
-                                                     over the zenoh relay"
-                                                );
-                                                false
-                                            }
-                                        }
-                                    });
+                                        )
+                                        .unwrap_or_else(|e| {
+                                            tracing::warn!(
+                                                "memory pool: pool {shared_memory_id} on \
+                                                 machine \"{machine_id}\": {e}; writes go \
+                                                 over the zenoh relay"
+                                            );
+                                            None
+                                        });
                                     if let Some(endpoint) = endpoint {
                                         cross_data_endpoints
                                             .lock()
