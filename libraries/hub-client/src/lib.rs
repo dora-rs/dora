@@ -1,12 +1,15 @@
 //! Client for the Dora Hub package index (docs/plan-node-hub.md §7).
 //!
-//! The index is a git-hosted catalog mapping `namespace/name@version` to a
-//! node manifest plus a source pointer. This crate provides:
+//! A catalog maps `namespace/name@version` to a node manifest plus a source
+//! pointer. Catalogs can be git-hosted indexes or the HTTP registry
+//! (<https://dora.pub>, overridable with `DORA_HUB_REGISTRY_URL`). This crate
+//! provides:
 //!
 //! - [`reference`]: parsing `[<namespace>/]<name>@<semver-req>` references,
 //! - [`index`]: the on-disk catalog format and semver/yank resolution,
 //! - [`config`]: `hub.toml` multi-index configuration with namespace binding,
-//! - [`transport`]: sparse-clone fetch and refresh of remote indexes.
+//! - [`transport`]: sparse-clone fetch and refresh of remote indexes,
+//! - [`registry`]: HTTP sparse-index/registry client (default `https://dora.pub`).
 //!
 //! Everything network-facing lives in [`transport`]; the rest are pure
 //! functions over parsed data, usable against fixture directories in tests.
@@ -14,6 +17,7 @@
 pub mod config;
 pub mod index;
 pub mod reference;
+pub mod registry;
 pub mod transport;
 
 // re-exported so consumers can name version types without a separate dep
@@ -161,6 +165,44 @@ pub fn validate_git_url_untrusted(url: &str) -> eyre::Result<()> {
     Ok(())
 }
 
+/// Rewrite an SCP-style or `ssh://` repository URL into its HTTPS clone URL
+/// when the host is a known public hosting platform.
+///
+/// `dora hub publish` defaults `--repo` to the node repo's `origin`, which is
+/// often an SSH remote (`git@atomgit.com:owner/repo.git`). Recording that pin
+/// makes the package unclonable for consumers without SSH keys, so the default
+/// is normalized before it is validated and stored. Returns `None` when the URL
+/// is not a known-host SSH URL (https pins, local paths and private hosts are
+/// left for the caller to pass through unchanged).
+pub fn normalize_public_repo_url(url: &str) -> Option<String> {
+    const KNOWN_HOSTS: &[&str] = &[
+        "atomgit.com",
+        "bitbucket.org",
+        "gitee.com",
+        "github.com",
+        "gitcode.com",
+        "gitlab.com",
+    ];
+    let url = url.trim();
+    let (host, path) = if let Some(rest) = url.strip_prefix("git@") {
+        rest.split_once(':')?
+    } else {
+        let rest = url.strip_prefix("ssh://")?;
+        let rest = rest.strip_prefix("git@").unwrap_or(rest);
+        let (host, path) = rest.split_once('/')?;
+        (host.split(':').next().unwrap_or(host), path)
+    };
+    let host = host.to_ascii_lowercase();
+    let path = path.trim_start_matches('/');
+    let known = KNOWN_HOSTS
+        .iter()
+        .any(|known| host == *known || host.ends_with(&format!(".{known}")));
+    if !known || path.is_empty() {
+        return None;
+    }
+    Some(format!("https://{host}/{path}"))
+}
+
 /// The official index location (spec §7.3).
 pub const OFFICIAL_INDEX_GIT: &str = "https://github.com/dora-rs/dora-hub";
 /// Catalog directory inside the official index repository.
@@ -170,7 +212,29 @@ pub const OFFICIAL_INDEX_ALIAS: &str = "official";
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_git_url, validate_git_url_untrusted};
+    use super::{normalize_public_repo_url, validate_git_url, validate_git_url_untrusted};
+
+    #[test]
+    fn normalizes_known_host_ssh_repos_to_https() {
+        assert_eq!(
+            normalize_public_repo_url("git@atomgit.com:Leon/helloworld.git").as_deref(),
+            Some("https://atomgit.com/Leon/helloworld.git")
+        );
+        assert_eq!(
+            normalize_public_repo_url("ssh://git@github.com/owner/repo.git").as_deref(),
+            Some("https://github.com/owner/repo.git")
+        );
+        // https, local and unknown-host pins are left alone
+        assert_eq!(
+            normalize_public_repo_url("https://atomgit.com/Leon/helloworld.git"),
+            None
+        );
+        assert_eq!(normalize_public_repo_url("file:///tmp/repo"), None);
+        assert_eq!(
+            normalize_public_repo_url("git@example.internal:team/repo.git"),
+            None
+        );
+    }
 
     #[test]
     fn untrusted_index_sources_reject_local_paths() {

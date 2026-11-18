@@ -822,8 +822,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # Do not depend on the Ubuntu archive here: GitHub runners have seen
+      # transient DNS/apt outages that fail this job before any repo code runs.
+      # Fetch the pinned ripgrep release from GitHub Releases and verify its
+      # checksum instead.
       - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=14.1.1
+          target=x86_64-unknown-linux-musl
+          archive="ripgrep-${version}-${target}.tar.gz"
+          sha256=4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e
+          curl -fsSL --retry 5 --retry-all-errors \
+            -o "${RUNNER_TEMP}/${archive}" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${version}/${archive}"
+          echo "${sha256}  ${RUNNER_TEMP}/${archive}" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}"
+          mkdir -p "${HOME}/.local/bin"
+          install -m 0755 "${RUNNER_TEMP}/ripgrep-${version}-${target}/rg" "${HOME}/.local/bin/rg"
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+          "${HOME}/.local/bin/rg" --version
       - run: make qa-unwrap
 
   # ===== Compatibility gate =====

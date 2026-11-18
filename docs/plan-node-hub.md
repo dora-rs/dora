@@ -11,6 +11,29 @@
 > marked *(seeking owner)* are open for anyone to claim — contributions from
 > the original proposal's author are explicitly invited on the items closest
 > to that design (P2.3 index bootstrap, category curation, P4.1 web).
+>
+> **Update (2026-11):** The client can resolve `hub:` through the HTTP
+> registry, but that path is **opt-in**: set `DORA_HUB_REGISTRY_URL` (for
+> example `https://dora.pub`) to use it; without it, unbound namespaces keep
+> resolving through the configured/default git index. `dora hub login/token`
+> and registry publishing speak that registry. Git/path catalogs configured
+> through `hub.toml` remain supported for explicit namespace bindings. The
+> guide (`guide/src/hub/`) is the up-to-date user documentation; the
+> git-catalog sections below describe that compatibility path.
+>
+> **Security hardening (2026-11):** registry archive fallbacks are accepted only
+> when their SHA-256 matches the checksum pinned in the lockfile; `--offline`
+> skips the hosting-source probe and the fallback; lockfile sources are
+> revalidated before git; publishing to the public registry requires
+> confirmation (`--yes` non-interactively); Hub checkout caches are project-keyed
+> and plain `git:` nodes keep their historical project-local path; token
+> variables are scrubbed from spawned nodes/build scripts. See
+> `guide/src/hub/`.
+>
+> **Known limitation (2026-11):** the archive fallback is package-subtree based;
+> monorepo packages that depend on their parent Cargo workspace may build from
+> the hosting repository but not from the fallback archive. The fallback fails
+> clearly rather than silently using a different tree.
 
 Dora Hub is dora's node packaging, discovery, and distribution system: node
 authors publish typed, versioned nodes once; dataflow authors find and use

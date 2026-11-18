@@ -24,6 +24,7 @@ use dora_hub_client::{
     config::ResolvedConfig,
     index::{IndexCatalog, current_platform},
     reference::PackageRef,
+    registry::{REGISTRY_URL_ENV, RegistryClient},
     transport::IndexFetcher,
 };
 use dora_message::{
@@ -47,6 +48,10 @@ pub struct HubResolution {
     /// nodes that resolved to a `binary` artifact — written to the lockfile so
     /// `--locked` reproduces the exact artifact (spec §8.2).
     pub binary_sources: BTreeMap<NodeId, BinaryPin>,
+    /// Per-node SHA-256 of the registry source archive, kept out of the
+    /// frozen `HubProvenance` wire type. The local builder uses it to verify
+    /// an archive fallback; the lockfile persists it separately.
+    pub archive_sha256: BTreeMap<NodeId, String>,
     /// Per-node local working dir for `--hub-override` substitutions (UC11):
     /// the node builds and runs from this checkout instead of a cloned commit.
     /// Threaded into the local builder so build + spawn root there.
@@ -94,6 +99,16 @@ fn manifest_digest(manifest: &NodeManifest) -> eyre::Result<String> {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect())
+}
+
+/// The single source of truth for "should this namespace use the HTTP
+/// registry?". It must stay in lock-step with `HubContext::registry_mode_for`.
+fn registry_resolution_enabled(
+    namespace: &str,
+    config: &dora_hub_client::config::ResolvedConfig,
+    registry_override: bool,
+) -> bool {
+    !config.is_bound(namespace) && !config.official_explicit() && registry_override
 }
 
 /// Resolve and desugar every `hub:` node in `dataflow`.
@@ -300,12 +315,22 @@ fn resolve_locked_git(
     reference: &PackageRef,
     node_id: &NodeId,
     resolution: &mut HubResolution,
+    strict: bool,
 ) -> eyre::Result<Resolved> {
     let valid_hash = matches!(pin.commit_hash.len(), 40 | 64)
         && pin.commit_hash.chars().all(|c| c.is_ascii_hexdigit());
     if !valid_hash {
         eyre::bail!("node `{node_id}`: lockfile commit hash is not a valid hex hash");
     }
+    // The lockfile is a plain file: it can arrive from a PR or a template. Never
+    // hand its `repo` to git without the same scheme/transport/local-path gate
+    // used for index entries.
+    dora_hub_client::validate_git_url_untrusted(&pin.repo).with_context(|| {
+        format!(
+            "node `{node_id}`: lockfile git source `{}` is not an allowed hub source",
+            pin.repo
+        )
+    })?;
     let provenance = pin.hub.as_ref().with_context(|| {
         format!(
             "node `{node_id}`: lockfile entry has no hub provenance — \
@@ -370,18 +395,39 @@ fn resolve_locked_git(
         };
     match stale {
         Ok(true) => {
-            resolution.warnings.push(format!(
+            let message = format!(
                 "node `{node_id}`: the index entry for `{}@{version}` no longer matches the \
-                 lockfile pin — the index may have been rewritten; the lockfile pin is used",
+                 lockfile pin — the index may have been rewritten",
                 reference.key()
-            ));
+            );
+            if strict {
+                eyre::bail!(
+                    "{message}\n  regenerate with `dora build --write-lockfile` \
+                     (or drop `--locked` for a live re-resolution)"
+                );
+            }
+            resolution
+                .warnings
+                .push(format!("{message}; the lockfile pin is used"));
         }
-        Err(_) => {
-            resolution.warnings.push(format!(
+        Err(err) => {
+            let message = format!(
                 "node `{node_id}`: the index entry for `{}@{version}` has a malformed source — \
-                 the index may have been rewritten; the lockfile pin is used",
+                 the index may have been rewritten",
                 reference.key()
-            ));
+            );
+            if strict {
+                return Err(err).with_context(|| {
+                    format!(
+                        "node `{node_id}`: the lockfile pin for `{}@{version}` cannot be \
+                         verified against the index source",
+                        reference.key()
+                    )
+                });
+            }
+            resolution
+                .warnings
+                .push(format!("{message}; the lockfile pin is used"));
         }
         _ => {}
     }
@@ -546,6 +592,13 @@ pub fn resolve_hub_nodes(
 
     let config = ResolvedConfig::load_default().context("failed to load hub configuration")?;
     let mut fetcher = IndexFetcher::new(offline)?;
+    // Registry resolution is opt-in: only `DORA_HUB_REGISTRY_URL` enables
+    // the HTTP transport for unbound namespaces. Without it the configured
+    // default git index remains the source, matching `registry_mode_for` in
+    // the discovery commands. Explicit `[[index]]` bindings always win.
+    let registry_override = std::env::var_os(REGISTRY_URL_ENV).is_some();
+    let mut registry_client: Option<RegistryClient> = None;
+    let mut registry_noted = false;
 
     for node in &mut dataflow.nodes {
         let Some(raw_reference) = node.hub.clone() else {
@@ -667,10 +720,31 @@ pub fn resolve_hub_nodes(
             );
         }
 
-        let index_config = config.index_for_namespace(&reference.namespace);
-        let catalog_dir = fetcher
-            .catalog_dir(index_config, &config.config_dir)
-            .with_context(|| format!("node `{}`: failed to fetch the hub index", node.id))?;
+        let via_registry =
+            registry_resolution_enabled(&reference.namespace, &config, registry_override);
+        let catalog_dir = if via_registry {
+            if registry_client.is_none() {
+                registry_client = Some(RegistryClient::new(offline)?);
+            }
+            let registry = registry_client.as_mut().expect("initialized above");
+            if !registry_noted {
+                resolution.notes.push(format!(
+                    "using registry {} (override with {REGISTRY_URL_ENV})",
+                    registry.base_url()
+                ));
+                registry_noted = true;
+            }
+            registry
+                .catalog_dir(&reference.namespace, &reference.name)
+                .with_context(|| {
+                    format!("node `{}`: failed to fetch from the hub registry", node.id)
+                })?
+        } else {
+            let index_config = config.index_for_namespace(&reference.namespace);
+            fetcher
+                .catalog_dir(index_config, &config.config_dir)
+                .with_context(|| format!("node `{}`: failed to fetch the hub index", node.id))?
+        };
         let catalog = IndexCatalog::open(&catalog_dir)?;
 
         // a pinned-resolution helper may push warnings (yank, index-rewrite)
@@ -699,7 +773,7 @@ pub fn resolve_hub_nodes(
                 }
             }
         } else if let Some(pin) = pin {
-            match resolve_locked_git(pin, &catalog, &reference, &node.id, &mut resolution) {
+            match resolve_locked_git(pin, &catalog, &reference, &node.id, &mut resolution, locked) {
                 Ok(resolved) => resolved,
                 Err(e) if locked => return Err(e),
                 Err(e) => {
@@ -724,6 +798,12 @@ pub fn resolve_hub_nodes(
             }
             resolve_live(&catalog, &reference, &node.id, &raw_reference)?
         };
+
+        if let Some(archive_sha256) = entry.archive_sha256.clone() {
+            resolution
+                .archive_sha256
+                .insert(node.id.clone(), archive_sha256);
+        }
 
         if let NodeBytes::Git(git) = &bytes
             && let Some(subdir) = &git.subdir
@@ -861,6 +941,19 @@ pub fn resolve_hub_nodes(
 #[cfg(test)]
 mod tests {
     use super::normalize_git_source_url;
+
+    #[test]
+    fn registry_resolution_requires_an_explicit_opt_in() {
+        use dora_hub_client::config::ResolvedConfig;
+        use tempfile::tempdir;
+
+        let tmp = tempdir().unwrap();
+        let config = ResolvedConfig::load_from(&tmp.path().join("hub.toml")).unwrap();
+        assert!(!super::registry_resolution_enabled(
+            "dora-rs", &config, false
+        ));
+        assert!(super::registry_resolution_enabled("dora-rs", &config, true));
+    }
 
     #[test]
     fn normalizes_scp_and_path_sources_to_parseable_urls() {
@@ -1214,7 +1307,8 @@ mod tests {
         let node_id = "lidar".parse().unwrap();
         let warnings = |pin| {
             let mut resolution = HubResolution::default();
-            resolve_locked_git(pin, &catalog, &reference, &node_id, &mut resolution).unwrap();
+            resolve_locked_git(pin, &catalog, &reference, &node_id, &mut resolution, false)
+                .unwrap();
             resolution.warnings
         };
         assert_eq!(warnings(&pin), Vec::<String>::new());
@@ -1226,6 +1320,37 @@ mod tests {
         assert!(
             stale_warnings[0].contains("no longer matches the lockfile pin"),
             "{stale_warnings:?}"
+        );
+
+        // strict `--locked` must not merely warn when the lockfile source no
+        // longer matches the index: it is a trust-boundary violation.
+        let mut resolution = HubResolution::default();
+        let err = resolve_locked_git(
+            &stale,
+            &catalog,
+            &reference,
+            &node_id,
+            &mut resolution,
+            true,
+        )
+        .err()
+        .expect("strict --locked must reject a stale source");
+        assert!(
+            format!("{err:#}").contains("no longer matches the lockfile pin"),
+            "unexpected error: {err:#}"
+        );
+
+        // a lockfile repo that would be rejected as an index source must not
+        // reach `git` at all.
+        let mut bad = pin.clone();
+        bad.repo = "ext::sh -c 'echo pwned'".into();
+        let mut resolution = HubResolution::default();
+        let err = resolve_locked_git(&bad, &catalog, &reference, &node_id, &mut resolution, false)
+            .err()
+            .expect("an invalid lockfile repo must be rejected");
+        assert!(
+            format!("{err:#}").contains("not an allowed hub source"),
+            "unexpected error: {err:#}"
         );
     }
 }

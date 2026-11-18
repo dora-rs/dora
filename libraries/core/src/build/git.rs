@@ -253,6 +253,22 @@ impl GitManager {
             .insert(dir)
     }
 
+    /// Whether a complete cached checkout already exists for this exact
+    /// repo/commit, without touching the network. The Hub fallback probe uses
+    /// this to avoid a 15s `ls-remote` per node on warm builds.
+    pub fn cached_clone_exists(base_dir: &Path, repo: &str, commit: &str) -> bool {
+        let Ok(url) = Url::parse(repo) else {
+            return false;
+        };
+        let Ok(path) = Self::clone_dir_path(base_dir, &url, &commit.to_string()) else {
+            return false;
+        };
+        let Ok(repository) = git2::Repository::open(&path) else {
+            return false;
+        };
+        repository.revparse_single(commit).is_ok()
+    }
+
     fn clone_dir_path(
         base_dir: &Path,
         repo_url: &Url,

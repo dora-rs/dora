@@ -36,6 +36,11 @@ pub struct IndexEntry {
     /// Reason recorded when yanking.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yank_reason: Option<String>,
+    /// SHA-256 of the registry source archive, when known. Materialized from
+    /// the sparse index's `cksum` and pinned via [`HubProvenance`] in the
+    /// lockfile; legacy git/path entries leave it unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive_sha256: Option<String>,
 }
 
 /// The source pointer of a published version (spec §8.1).

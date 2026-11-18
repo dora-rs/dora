@@ -19,7 +19,11 @@ impl Executable for Info {
     fn execute(self) -> eyre::Result<()> {
         let reference = PackageRef::parse(&self.package)?;
         let mut ctx = HubContext::load(self.offline)?;
-        let catalog = ctx.catalog_for_namespace(&reference.namespace)?;
+        let catalog = if ctx.registry_mode_for(&reference.namespace) {
+            ctx.registry_catalog(&reference.namespace, &reference.name)?
+        } else {
+            ctx.catalog_for_namespace(&reference.namespace)?
+        };
 
         let (version, entry) = resolve_or_yanked(&catalog, &reference, &self.package)?;
         ctx.drain_warnings();
@@ -54,6 +58,14 @@ impl Executable for Info {
             println!("  platforms: {platforms}");
         }
         println!("  runtime: {:?}", m.runtime);
+        if let (Some(git), Some(rev)) = (&entry.source.git, &entry.source.rev) {
+            let short: String = rev.chars().take(12).collect();
+            print!("  source: {}@{}", sanitize(git), sanitize(&short));
+            if let Some(subdir) = &entry.source.subdir {
+                print!(" ({})", sanitize(subdir));
+            }
+            println!();
+        }
 
         print_ports("inputs", &m.inputs);
         print_ports("outputs", &m.outputs);

@@ -98,27 +98,44 @@ dora hub install
 dora hub install | <_args>
 dora hub list
 dora hub list | <dataflow> (required)
+dora hub login
+dora hub login | --registry <value>
+dora hub login | <token>
+dora hub logout
+dora hub logout | --registry <value>
 dora hub outdated
 dora hub outdated | --offline
 dora hub outdated | <dataflow> (required)
 dora hub publish
+dora hub publish | --description <value>
 dora hub publish | --dry-run
 dora hub publish | --index <value>
+dora hub publish | --license <value>
+dora hub publish | --registry <value>
 dora hub publish | --repo <value>
+dora hub publish | --repository <value>
 dora hub publish | --rev <value>
+dora hub publish | --token <value>
 dora hub publish | --version <value>
+dora hub publish | --yes
 dora hub publish | <path>
 dora hub search
 dora hub search | --category <value>
 dora hub search | --offline
 dora hub search | --platform <value>
 dora hub search | <query>
+dora hub token
+dora hub token | --clear
+dora hub token | --registry <value>
+dora hub token | --show
 dora hub update
 dora hub update | --dry-run
 dora hub update | --offline
 dora hub update | <dataflow> (required)
 dora hub yank
 dora hub yank | --reason <value>
+dora hub yank | --registry <value>
+dora hub yank | --token <value>
 dora hub yank | --undo
 dora hub yank | <package> (required)
 dora inspect

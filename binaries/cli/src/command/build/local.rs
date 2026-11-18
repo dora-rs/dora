@@ -2,19 +2,38 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use colored::Colorize;
 use dora_core::{
-    build::{BuildInfo, BuildLogger, Builder, GitManager, LogLevelOrStdout, PrevGitSource},
+    build::{
+        BuildInfo, BuildLogger, Builder, GitManager, LogLevelOrStdout, PrevGitSource,
+        hub_cache_project_key,
+    },
     descriptor::{Descriptor, DescriptorExt},
 };
+use dora_hub_client::registry::{registry_fallback_source, source_available};
 use dora_message::{common::GitSource, id::NodeId};
 use eyre::Context;
 
 use crate::session::DataflowSession;
 
+/// Filesystem roots for one local build. `working_dir` is the user's dataflow
+/// directory (used for local/path nodes); `hub_cache_dir` is outside the
+/// project and is used for Hub git checkouts.
+#[derive(Clone, Debug)]
+pub struct BuildLayout {
+    pub working_dir: PathBuf,
+    pub hub_cache_dir: PathBuf,
+    /// `--offline`: do not probe the hosting source or fetch a registry
+    /// archive fallback.
+    pub offline: bool,
+    /// Pinned registry archive checksums for this build (kept out of the
+    /// frozen wire `HubProvenance`).
+    pub hub_archive_sha256: BTreeMap<NodeId, String>,
+}
+
 pub fn build_dataflow_locally(
     dataflow: Descriptor,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
-    working_dir: PathBuf,
+    layout: BuildLayout,
     uv: bool,
     parallel: bool,
     node_working_dir_overrides: &BTreeMap<NodeId, PathBuf>,
@@ -25,7 +44,7 @@ pub fn build_dataflow_locally(
         dataflow,
         git_sources,
         dataflow_session,
-        working_dir,
+        layout,
         uv,
         parallel,
         node_working_dir_overrides,
@@ -36,14 +55,21 @@ async fn build_dataflow(
     dataflow: Descriptor,
     git_sources: &BTreeMap<NodeId, GitSource>,
     dataflow_session: &DataflowSession,
-    base_working_dir: PathBuf,
+    layout: BuildLayout,
     uv: bool,
     parallel: bool,
     node_working_dir_overrides: &BTreeMap<NodeId, PathBuf>,
 ) -> eyre::Result<BuildInfo> {
+    let offline = layout.offline;
+    let hub_archive_sha256 = layout.hub_archive_sha256.clone();
+    let hub_cache_root = layout
+        .hub_cache_dir
+        .join("sources")
+        .join(hub_cache_project_key(&layout.working_dir));
     let builder = Builder {
         session_id: dataflow_session.session_id,
-        base_working_dir,
+        base_working_dir: layout.working_dir,
+        hub_cache_dir: layout.hub_cache_dir,
         uv,
     };
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
@@ -56,16 +82,94 @@ async fn build_dataflow(
     // Resolve git sources and prepare build tasks (sequential due to &mut git_manager)
     for node in nodes.into_values() {
         let node_id = node.id.clone();
-        let git_source = git_sources.get(&node_id).cloned();
+        let mut git_source = git_sources.get(&node_id).cloned();
+        let mut used_registry_fallback = false;
+        // `--offline` promises no network: skip both the hosting-source probe
+        // and the registry fallback. The build then uses an already-cached
+        // clone or fails, instead of silently reaching the internet.
+        if !offline
+            && let Some(source) = git_source.as_ref()
+            && let Some(hub) = source.hub.as_ref()
+        {
+            let repo = source.repo.clone();
+            let commit = source.commit_hash.clone();
+            // A warm clone already holds the pinned commit; do not pay for a
+            // network probe (and do not replace a reusable checkout just
+            // because the host is temporarily down).
+            let cached = GitManager::cached_clone_exists(&hub_cache_root, &repo, &commit);
+            let available = cached
+                || tokio::task::spawn_blocking(move || source_available(&repo, &commit))
+                    .await
+                    .unwrap_or(false);
+            if !available {
+                // The archive fallback executes the package's build script, so
+                // only use it when the archive hash was pinned at resolution
+                // time (lockfile). Legacy pins without a checksum fail closed.
+                if let Some(expected_archive_sha256) = hub_archive_sha256.get(&node_id).cloned() {
+                    let hub_name = hub.name.clone();
+                    let hub_version = hub.version.clone();
+                    let fallback = tokio::task::spawn_blocking(move || {
+                        registry_fallback_source(
+                            &hub_name,
+                            &hub_version,
+                            Some(&expected_archive_sha256),
+                            false,
+                        )
+                    })
+                    .await;
+                    match fallback {
+                        Ok(Ok(Some(fallback))) => {
+                            eprintln!(
+                                "  warning: hosting source for `{node_id}` is unavailable; \
+                                 using the checksum-verified registry archive fallback"
+                            );
+                            git_source = Some(GitSource {
+                                repo: fallback.repo,
+                                commit_hash: fallback.commit_hash,
+                                subdir: None,
+                                hub: Some(hub.clone()),
+                            });
+                            used_registry_fallback = true;
+                        }
+                        Ok(Ok(None)) => {
+                            eprintln!(
+                                "  warning: hosting source for `{node_id}` is unavailable and \
+                                 the registry has no fallback archive"
+                            );
+                        }
+                        Ok(Err(error)) => {
+                            eprintln!(
+                                "  warning: registry fallback for `{node_id}` failed: {error:#}"
+                            );
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "  warning: registry fallback task for `{node_id}` failed: {error}"
+                            );
+                        }
+                    }
+                } else {
+                    eprintln!(
+                        "  warning: hosting source for `{node_id}` is unavailable and the \
+                         lockfile has no pinned archive checksum; refusing the unverified \
+                         registry fallback (regenerate the lockfile to enable it)"
+                    );
+                }
+            }
+        }
         let prev_git_source = prev_git_sources.get(&node_id).cloned();
-        let prev_git = prev_git_source.map(|prev_source| PrevGitSource {
-            // compare clone identity (repo + commit) only: hub provenance and
-            // subdir don't change which directory the clone occupies
-            still_needed_for_this_build: git_sources
-                .values()
-                .any(|s| s.repo == prev_source.repo && s.commit_hash == prev_source.commit_hash),
-            git_source: prev_source,
-        });
+        let prev_git = if used_registry_fallback {
+            None
+        } else {
+            prev_git_source.map(|prev_source| PrevGitSource {
+                // compare clone identity (repo + commit) only: hub provenance and
+                // subdir don't change which directory the clone occupies
+                still_needed_for_this_build: git_sources.values().any(|s| {
+                    s.repo == prev_source.repo && s.commit_hash == prev_source.commit_hash
+                }),
+                git_source: prev_source,
+            })
+        };
 
         // `--hub-override` roots this node's build (and, via the recorded
         // working dir, its spawn) at a local checkout instead of the dataflow
@@ -188,7 +292,12 @@ mod tests {
                 descriptor.clone(),
                 &BTreeMap::new(),
                 &DataflowSession::default(),
-                tmp.path().to_owned(),
+                BuildLayout {
+                    working_dir: tmp.path().to_owned(),
+                    hub_cache_dir: tmp.path().join("hub-cache"),
+                    offline: false,
+                    hub_archive_sha256: BTreeMap::new(),
+                },
                 false,
                 parallel,
                 &BTreeMap::new(),

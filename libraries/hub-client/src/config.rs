@@ -95,11 +95,22 @@ pub struct ResolvedConfig {
     pub config_dir: PathBuf,
     bindings: BTreeMap<String, usize>,
     default_index: usize,
+    /// Whether the user explicitly configured an `official` index (e.g. an
+    /// enterprise mirror). When false, unbound namespaces use the HTTP
+    /// registry instead of the legacy official git index.
+    official_explicit: bool,
+    /// Whether the user configured any `[[index]]` entries at all.
+    explicit_indexes: bool,
 }
 
 impl ResolvedConfig {
     /// Build from parsed entries, enforcing the binding rules.
     pub fn new(mut indexes: Vec<IndexConfig>, config_dir: PathBuf) -> eyre::Result<Self> {
+        // Remember whether `official` was explicit before injecting the
+        // default: an explicit official entry opts out of the HTTP registry
+        // for unbound namespaces (enterprise mirror / air-gapped use).
+        let explicit_indexes = !indexes.is_empty();
+        let official_explicit = indexes.iter().any(|i| i.alias == OFFICIAL_INDEX_ALIAS);
         // the official index is always present; an explicit `official` alias
         // entry may override its location (e.g. an enterprise mirror)
         if !indexes.iter().any(IndexConfig::is_official) {
@@ -150,6 +161,8 @@ impl ResolvedConfig {
             config_dir,
             bindings,
             default_index,
+            official_explicit,
+            explicit_indexes,
         })
     }
 
@@ -195,10 +208,37 @@ impl ResolvedConfig {
             .with_context(|| format!("invalid hub config `{}`", path.display()))
     }
 
+    /// Whether `namespace` has an explicit `[[index]]` binding.
+    ///
+    /// Namespace matching is ASCII-case-insensitive, matching #4159's
+    /// `index_for_namespace` behavior; otherwise a lockfile-derived `ACME/x`
+    /// would look unbound and could fall through to the registry.
+    pub fn is_bound(&self, namespace: &str) -> bool {
+        self.binding_for(namespace).is_some()
+    }
+
+    fn binding_for(&self, namespace: &str) -> Option<usize> {
+        self.bindings
+            .iter()
+            .find(|(bound, _)| bound.eq_ignore_ascii_case(namespace))
+            .map(|(_, index)| *index)
+    }
+
+    /// Whether the config explicitly overrides the official index. If not,
+    /// unbound namespaces resolve through the HTTP registry.
+    pub fn official_explicit(&self) -> bool {
+        self.official_explicit
+    }
+
+    /// Whether `hub.toml` configured any custom index at all.
+    pub fn has_explicit_indexes(&self) -> bool {
+        self.explicit_indexes
+    }
+
     /// The index a namespace resolves against (spec §7.3).
     pub fn index_for_namespace(&self, namespace: &str) -> &IndexConfig {
-        match self.bindings.get(namespace) {
-            Some(&idx) => &self.indexes[idx],
+        match self.binding_for(namespace) {
+            Some(idx) => &self.indexes[idx],
             None => &self.indexes[self.default_index],
         }
     }
@@ -425,9 +465,29 @@ namespaces = ["test"]
     }
 
     #[test]
+    fn registry_mode_is_reported_for_unbound_namespaces() {
+        let resolved = ResolvedConfig::new(Vec::new(), PathBuf::from(".")).unwrap();
+        assert!(!resolved.is_bound("acme"));
+        assert!(!resolved.official_explicit());
+        assert!(!resolved.has_explicit_indexes());
+
+        let bound = config(ACME).unwrap();
+        assert!(bound.is_bound("test"));
+        assert!(!bound.is_bound("unbound"));
+        assert!(bound.has_explicit_indexes());
+
+        let official =
+            config("[[index]]\nalias = \"official\"\ngit = \"https://example.com/mirror\"\n")
+                .unwrap();
+        assert!(official.official_explicit());
+    }
+
+    #[test]
     fn explicit_bindings_win_and_official_takes_the_rest() {
         let resolved = config(ACME).unwrap();
         assert_eq!(resolved.index_for_namespace("acme").alias, "acme");
+        assert_eq!(resolved.index_for_namespace("ACME").alias, "acme");
+        assert!(resolved.is_bound("ACME"));
         assert_eq!(resolved.index_for_namespace("test").alias, "fixtures");
         assert_eq!(resolved.index_for_namespace("dora-rs").alias, "official");
         assert_eq!(resolved.index_for_namespace("unbound").alias, "official");

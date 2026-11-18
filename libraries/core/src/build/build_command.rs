@@ -70,6 +70,12 @@ pub async fn run_build_command(
         };
         cmd.args(split);
 
+        // Never hand the user's registry credential to a package build script.
+        // A Hub package's build commands are arbitrary code; the token is only
+        // needed by `dora hub publish`/`yank`, not by builds.
+        cmd.env_remove("DORA_HUB_TOKEN");
+        cmd.env_remove("DORA_HUB_TOKEN_FILE");
+
         // Inject Environment Variables
         if let Some(envs) = envs {
             for (key, value) in envs {

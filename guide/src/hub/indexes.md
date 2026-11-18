@@ -1,10 +1,11 @@
 # Custom & Enterprise Indexes
 
-By default the Hub resolves every namespace from the public catalog at
-[`dora-rs/dora-hub`](https://github.com/dora-rs/dora-hub). With **no config at
-all**, that is the only index. A `hub.toml` lets you add private or mirrored
-catalogs and bind namespaces to them — for an internal node registry, an
-air-gapped mirror, or an enterprise fork.
+By default unbound namespaces use the configured/default git index. Set
+`DORA_HUB_REGISTRY_URL` (for example `https://dora.pub`) to opt into the HTTP
+registry for unbound namespaces. A `hub.toml` can add private or mirrored
+**git/path catalogs** and bind namespaces to them — for an internal node
+registry, an air-gapped mirror, or an enterprise fork. Explicit namespace
+bindings take precedence over the registry URL.
 
 ## `hub.toml`
 
@@ -51,14 +52,15 @@ Resolution is **not** a search order — it's an exclusive mapping, which is wha
 prevents dependency-confusion attacks:
 
 - A namespace listed under an index resolves **only** there.
-- Any namespace **not** bound to a custom index resolves from the official
-  catalog.
+- Any namespace **not** bound to a custom index resolves from the HTTP
+  registry only when `DORA_HUB_REGISTRY_URL` is set; otherwise it uses the
+  default git index.
 - Binding the same namespace to two indexes is a **config error**.
-- The official `dora-rs` namespace always resolves to the official catalog; a
+- The official `dora-rs` namespace always resolves to the official registry (or an explicit `official` mirror); a
   custom index cannot claim it.
 
 So `hub: acme/lidar` in the config above resolves from the `acme` index, while
-`hub: dora-yolo` still resolves from the official catalog — there is exactly one
+`hub: dora-yolo` still resolves from the official source — there is exactly one
 place each can come from.
 
 ### Mirroring the official index
