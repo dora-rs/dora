@@ -37,8 +37,8 @@ if(DORA_ROOT_DIR)
         WORKING_DIRECTORY ${DORA_ROOT_DIR}
         DEPENDS Dora
         COMMAND ${CMAKE_COMMAND} -E make_directory ${dora_cxx_include_dir}
-        COMMAND ${CMAKE_COMMAND} -E copy target/cxxbridge/dora-node-api-cxx/src/lib.rs.cc ${node_bridge}
-        COMMAND ${CMAKE_COMMAND} -E copy target/cxxbridge/dora-node-api-cxx/src/lib.rs.h ${dora_cxx_include_dir}/dora-node-api.h
+        COMMAND ${CMAKE_COMMAND} -E copy target/cxxbridge/dora-node-api-cxx/src/dora-node-api.cc ${node_bridge}
+        COMMAND ${CMAKE_COMMAND} -E copy target/cxxbridge/dora-node-api-cxx/include/dora-node-api.h ${dora_cxx_include_dir}/dora-node-api.h
     )
 
     add_custom_target(Dora_cxx DEPENDS ${node_bridge} ${dora_cxx_include_dir})
@@ -63,8 +63,8 @@ else()
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
         DEPENDS Dora
         COMMAND ${CMAKE_COMMAND} -E make_directory ${dora_cxx_include_dir}
-        COMMAND ${CMAKE_COMMAND} -E copy cxxbridge/dora-node-api-cxx/src/lib.rs.cc ${node_bridge}
-        COMMAND ${CMAKE_COMMAND} -E copy cxxbridge/dora-node-api-cxx/src/lib.rs.h ${dora_cxx_include_dir}/dora-node-api.h
+        COMMAND ${CMAKE_COMMAND} -E copy cxxbridge/dora-node-api-cxx/src/dora-node-api.cc ${node_bridge}
+        COMMAND ${CMAKE_COMMAND} -E copy cxxbridge/dora-node-api-cxx/include/dora-node-api.h ${dora_cxx_include_dir}/dora-node-api.h
     )
 
     set(dora_link_dirs ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target/${dora_cargo_profile_dir})

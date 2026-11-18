@@ -18,6 +18,7 @@ use dora_node_api::{
     DoraNode, Event,
     merged::{MergeExternal, MergedEvent},
 };
+use dora_ros2_bridge::ros2_client;
 use dora_ros2_bridge::transport::action::zenoh::{
     ActionClient as ZenohActionClient, ActionKeys, ActionServer as ZenohActionServer, ActionTokens,
     CancelableGoal, goal_accept_stamp, process_cancel_request,
@@ -32,11 +33,9 @@ use dora_ros2_bridge::transport::zenoh::{
     service::{NodeServiceClient, NodeServiceServer},
 };
 use dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
-use dora_ros2_bridge::{ros2_client, rustdds};
 use dora_ros2_bridge_arrow::{
-    BridgeActionType, BridgeMessage, BridgeServiceType, TypeInfo, TypeInfoGuard, TypedValue,
-    deserialize::StructDeserializer, deserialize_cdr, deserialize_raw_cdr, serialize_cdr,
-    serialize_raw_cdr,
+    BridgeMessage, TypeInfo, TypeInfoGuard, TypedValue, deserialize::StructDeserializer,
+    deserialize_cdr, deserialize_raw_cdr, serialize_cdr, serialize_raw_cdr,
 };
 use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{Context, ContextCompat, eyre};
@@ -61,8 +60,8 @@ fn value_or_warn<T, E: std::fmt::Display>(result: Result<T, E>, operation: &str)
 /// Why one DDS service or action call failed.
 #[derive(Debug)]
 enum DdsCallFailure {
-    Write(rustdds::dds::result::WriteError<()>),
-    Read(rustdds::dds::result::ReadError),
+    Write(ros2_client::WriteError<()>),
+    Read(ros2_client::ReadError),
     TimedOut(Duration),
 }
 
@@ -96,7 +95,7 @@ impl DdsCallFailure {
     /// nested-message or sequence row, #3678), so the next message of the
     /// same type may go out fine; it is dropped like on the Zenoh path.
     fn is_fatal(&self) -> bool {
-        use rustdds::dds::result::{ReadError, WriteError};
+        use ros2_client::{ReadError, WriteError};
         match self {
             Self::Write(e) => {
                 matches!(e, WriteError::Poisoned { .. } | WriteError::Internal { .. })
@@ -1200,7 +1199,7 @@ fn run_topic_mode(
             .qos
             .as_ref()
             .unwrap_or(&config.qos)
-            .to_rustdds_qos();
+            .to_dds_qos();
 
         let ros_topic = ros_node
             .create_topic(
@@ -1295,7 +1294,7 @@ fn run_service_mode(
     match role {
         Ros2Role::Client => {
             let client = ros_node
-                .create_client::<BridgeServiceType>(
+                .create_client::<BridgeMessage, BridgeMessage>(
                     dora_ros2_bridge::detect_service_mapping(),
                     &absolute_ros2_name(service_name)?,
                     &ros2_client::ServiceTypeName::new(&package, &type_name),
@@ -1311,7 +1310,7 @@ fn run_service_mode(
         }
         Ros2Role::Server => {
             let server = ros_node
-                .create_server::<BridgeServiceType>(
+                .create_server::<BridgeMessage, BridgeMessage>(
                     dora_ros2_bridge::detect_service_mapping(),
                     &absolute_ros2_name(service_name)?,
                     &ros2_client::ServiceTypeName::new(&package, &type_name),
@@ -1335,7 +1334,7 @@ const ACTION_GOAL_TIMEOUT: Duration = Duration::from_secs(30);
 const ACTION_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn run_service_client(
-    client: ros2_client::Client<BridgeServiceType>,
+    client: ros2_client::Client<BridgeMessage, BridgeMessage>,
     request_type_info: TypeInfo<'static>,
     response_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
@@ -1406,7 +1405,7 @@ fn run_service_client(
 }
 
 fn run_service_server(
-    server: ros2_client::Server<BridgeServiceType>,
+    server: ros2_client::Server<BridgeMessage, BridgeMessage>,
     request_type_info: TypeInfo<'static>,
     response_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
@@ -1548,7 +1547,7 @@ fn run_action_mode(
             };
 
             let client = ros_node
-                .create_action_client::<BridgeActionType>(
+                .create_action_client::<BridgeMessage, BridgeMessage, BridgeMessage>(
                     dora_ros2_bridge::detect_service_mapping(),
                     &action_ros2_name,
                     &action_type_name,
@@ -1574,7 +1573,7 @@ fn run_action_mode(
             };
 
             let server = ros_node
-                .create_action_server::<BridgeActionType>(
+                .create_action_server::<BridgeMessage, BridgeMessage, BridgeMessage>(
                     dora_ros2_bridge::detect_service_mapping(),
                     &action_ros2_name,
                     &action_type_name,
@@ -1596,7 +1595,7 @@ fn run_action_mode(
 }
 
 fn run_action_client(
-    client: ros2_client::action::ActionClient<BridgeActionType>,
+    client: ros2_client::action::ActionClient<BridgeMessage, BridgeMessage, BridgeMessage>,
     goal_type_info: TypeInfo<'static>,
     result_type_info: TypeInfo<'static>,
     feedback_type_info: TypeInfo<'static>,
@@ -1761,7 +1760,7 @@ enum ServerEvent {
 }
 
 fn run_action_server(
-    server: ros2_client::action::AsyncActionServer<BridgeActionType>,
+    server: ros2_client::action::AsyncActionServer<BridgeMessage, BridgeMessage, BridgeMessage>,
     goal_type_info: TypeInfo<'static>,
     result_type_info: TypeInfo<'static>,
     feedback_type_info: TypeInfo<'static>,
@@ -1965,7 +1964,7 @@ fn run_action_server(
 /// Send an Aborted result response for an executing goal so the ROS2 client
 /// doesn't hang indefinitely.
 fn abort_executing_goal(
-    server: &ros2_client::action::AsyncActionServer<BridgeActionType>,
+    server: &ros2_client::action::AsyncActionServer<BridgeMessage, BridgeMessage, BridgeMessage>,
     result_type_info: &TypeInfo<'static>,
     handle: ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
     goal_id: &str,
@@ -2283,7 +2282,7 @@ fn create_ros_node(
     Ok((ros_node, pool))
 }
 
-fn create_ros_context(domain_id: u16) -> rustdds::dds::CreateResult<ros2_client::Context> {
+fn create_ros_context(domain_id: u16) -> ros2_client::CreateResult<ros2_client::Context> {
     ros2_client::Context::with_options(ros2_client::ContextOptions::new().domain_id(domain_id))
 }
 
@@ -2325,7 +2324,7 @@ fn parse_dds_ros_domain_id(value: Option<&str>) -> eyre::Result<u16> {
 /// NOTE: This blocks the main thread and does not respond to Dora Stop events.
 /// If the service never appears, the loop will exhaust its 10 retries and bail.
 fn wait_for_service(
-    client: &ros2_client::Client<BridgeServiceType>,
+    client: &ros2_client::Client<BridgeMessage, BridgeMessage>,
     ros_node: &ros2_client::Node,
 ) -> eyre::Result<()> {
     let service_ready = async {
@@ -2448,17 +2447,17 @@ fn resolve_topics(config: &Ros2BridgeConfig) -> eyre::Result<Vec<Ros2TopicConfig
 /// Topic QoS defaults to best effort, but ROS 2 service and action endpoints
 /// require reliable delivery, so `reliable` is always forced on and a
 /// best-effort configuration is ignored.
-fn service_or_action_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
+fn service_or_action_qos(config: &Ros2QosConfig) -> ros2_client::QosProfile {
     Ros2QosConfig {
         reliable: true,
         keep_last: config.keep_last.or(Some(10)),
         ..config.clone()
     }
-    .to_rustdds_qos()
+    .to_dds_qos()
 }
 
 /// QoS for the service and action endpoints of a bridge config.
-fn bridge_endpoint_qos(config: &Ros2BridgeConfig) -> rustdds::QosPolicies {
+fn bridge_endpoint_qos(config: &Ros2BridgeConfig) -> ros2_client::QosProfile {
     service_or_action_qos(&config.qos)
 }
 
@@ -2467,20 +2466,20 @@ fn bridge_endpoint_qos(config: &Ros2BridgeConfig) -> rustdds::QosPolicies {
 /// ROS 2 action clients subscribe to the status topic with transient-local
 /// durability, so the status publisher and subscription always use reliable,
 /// transient-local delivery regardless of the configured topic QoS.
-fn action_status_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
+fn action_status_qos(config: &Ros2QosConfig) -> ros2_client::QosProfile {
     Ros2QosConfig {
         reliable: true,
         keep_last: config.keep_last.or(Some(10)),
         durability: Some("transient_local".to_string()),
         ..config.clone()
     }
-    .to_rustdds_qos()
+    .to_dds_qos()
 }
 
 trait ToNeutralQos {
     fn to_neutral_qos(&self) -> Ros2Qos;
-    fn to_rustdds_qos(&self) -> rustdds::QosPolicies {
-        dora_ros2_bridge::transport::dds::to_rustdds_qos(&self.to_neutral_qos())
+    fn to_dds_qos(&self) -> ros2_client::QosProfile {
+        dora_ros2_bridge::transport::dds::to_qos_profile(&self.to_neutral_qos())
     }
 }
 
@@ -2522,7 +2521,7 @@ impl ToNeutralQos for Ros2QosConfig {
 #[cfg(test)]
 mod dds_call_failure_tests {
     use super::{DdsCallFailure, dds_call_or_warn};
-    use dora_ros2_bridge::rustdds::dds::result::{ReadError, WriteError};
+    use dora_ros2_bridge::ros2_client::{ReadError, WriteError};
     use std::time::Duration;
 
     #[test]
@@ -3101,7 +3100,7 @@ mod domain_and_qos_tests {
         Ros2BridgeConfig, Ros2QosConfig, action_status_qos, bridge_endpoint_qos,
         parse_dds_ros_domain_id, parse_ros_domain_id, service_or_action_qos,
     };
-    use dora_ros2_bridge::transport::dds::from_rustdds_qos;
+    use dora_ros2_bridge::transport::dds::from_qos_profile;
     use dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
 
     // ---- domain id parsing -------------------------------------------------
@@ -3204,8 +3203,8 @@ mod domain_and_qos_tests {
 
     // ---- service / action endpoint QoS -------------------------------------
 
-    fn neutral(qos: &dora_ros2_bridge::rustdds::QosPolicies) -> Ros2Qos {
-        from_rustdds_qos(qos)
+    fn neutral(qos: &dora_ros2_bridge::ros2_client::QosProfile) -> Ros2Qos {
+        from_qos_profile(qos)
     }
 
     #[test]

@@ -16,21 +16,18 @@ fn main() -> eyre::Result<()> {
     let build_dir = Path::new("build");
 
     // 1. Build the Dora C++ node library. This compiles `apis/c++/node/src/lib.rs`
-    //    (which now contains `clone_output_sender` / `safe_send_output`) and
-    //    generates the C++ glue files `lib.rs.cc` / `lib.rs.h`.
+    //    (which contains `clone_output_sender` / `safe_send_output`) and
+    //    generates the C++ glue files `dora-node-api.cc` / `dora-node-api.h`.
     build_package("dora-node-api-cxx")?;
-    let node_cxxbridge = target
-        .join("cxxbridge")
-        .join("dora-node-api-cxx")
-        .join("src");
+    let node_cxxbridge = target.join("cxxbridge").join("dora-node-api-cxx");
 
     // Copy the generated glue next to our node so the compiler can find it.
     std::fs::copy(
-        node_cxxbridge.join("lib.rs.cc"),
+        node_cxxbridge.join("src/dora-node-api.cc"),
         build_dir.join("node-bridge.cc"),
     )?;
     std::fs::copy(
-        node_cxxbridge.join("lib.rs.h"),
+        node_cxxbridge.join("include/dora-node-api.h"),
         build_dir.join("dora-node-api.h"),
     )?;
 

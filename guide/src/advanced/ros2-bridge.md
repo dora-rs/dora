@@ -577,7 +577,7 @@ Neither topic sets `output:`/`input:`, so both use the topic-derived ids (`fast_
 |-------|-------------|
 | `reliable` | `true`, `false` |
 | `durability` | `"volatile"`, `"transient_local"` |
-| `liveliness` | `"automatic"`, `"manual_by_participant"`, `"manual_by_topic"` |
+| `liveliness` | `"automatic"`, `"manual_by_participant"`, `"manual_by_topic"`. On the DDS transport `manual_by_participant` is sent as `automatic` (ROS 2 has no equivalent kind) and a warning is logged. |
 | `keep_last` | `1` to `10000` |
 | `keep_all` | `true`, `false` (mutually exclusive intent with `keep_last`) |
 | `lease_duration` | Finite non-negative float (seconds) |
@@ -1136,16 +1136,22 @@ Action differences from DDS:
   default values, as rclcpp does.
 - If no action server is matched, `request_result` produces an immediate
   error event on Zenoh. DDS silently drops the request.
-- The server holds up to three `get_result` requests per unfinished goal,
-  across all clients. It answers extra requests with an error. Once the
-  goal finishes, requests can fetch the stored result.
+- The server holds up to 16 `get_result` requests per unfinished goal,
+  across all clients. Once a goal's 16 slots are full, a new request
+  displaces an older one from a client that already has more than one
+  pending, and that displaced request immediately gets `Unknown` with
+  default values — the same reply `request_result` gets for a goal the
+  server doesn't know. A request is answered with an error only once every
+  slot is a different client's single request. Once the goal finishes,
+  requests can fetch the stored result.
 - A client's `request_result` returns an error while 64 earlier calls are
   still waiting for their goal or for their result event to be read.
 
 The public Rust `TypedActionServer` sizes its result service to at least 64
-pending requests, or `3 * max_goals + 16` if that is larger. The extra slots
-let it answer new requests while every unfinished goal has three waiters.
-A goal limit that overflows this calculation is rejected at declaration.
+pending requests, or `16 * max_goals + 16` if that is larger. The extra
+slots let it answer new requests while every unfinished goal has 16
+waiters. A goal limit that overflows this calculation is rejected at
+declaration.
 
 On both transports, a goal still running 300 s after it was accepted is
 aborted when the next goal comes in, even while it publishes feedback. On
@@ -1154,10 +1160,11 @@ DDS only the status stream shows `Aborted`.
 
 ### Discovery & RMW notes (native servers)
 
-- **A Dora-hosted *server* is not discoverable by a real `rcl`/`rclcpp`/`rclpy`
-  client for *actions*** ([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)):
-  the action examples pair a Dora server with a Dora client in one dataflow.
-  *Service* servers, by contrast, are discovered fine by a real `ros2` client.
+- **Dora-hosted servers interoperate with `rcl` clients in both directions.**
+  A real `rclcpp`/`rclpy` client (or the `ros2` CLI) discovers and calls Dora
+  service and action servers, and Dora clients call `rcl` servers, on both
+  Fast-DDS and CycloneDDS. CycloneDDS needs `ros2-client` 0.11 or later, which
+  fixed the decoding of Cyclone-mapped request and response bodies.
 - **RMW must match.** Service/action correlation differs between Fast-DDS
   (`Enhanced`) and Cyclone mappings; the bridge picks the mapping from
   `RMW_IMPLEMENTATION` (at codegen time for native, runtime for the YAML bridge).
@@ -1176,7 +1183,6 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 - **Action server auto-accept**: All incoming goals are automatically accepted. The handler cannot reject goals before execution starts.
 - **No action cancel support (YAML bridge)**: The YAML action bridge does not handle ROS2 cancel requests (the Python native action API does).
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
-- **Native action server discovery (ros2-client#4)**: a Dora-hosted *action* server is not discoverable by a real `rcl`-based client; pair it with a Dora client. Service servers are unaffected.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
 - **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable.
 - **`AMENT_PREFIX_PATH` required**: The bridge fails at startup if no ROS2 message definitions are found.

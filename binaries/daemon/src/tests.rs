@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64};
 
 pub(super) fn test_dataflow() -> RunningDataflow {
     let descriptor = Descriptor::new(vec![]);
-    RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor)
+    RunningDataflow::new(Uuid::nil(), descriptor)
 }
 
 // dora-rs/dora: a node added to an already-running dataflow (via
@@ -767,8 +767,7 @@ fn stdout_line_to_unsubscribed_consumer_is_not_a_lost_message() {
 
     // Subscribed since (no longer gating the barrier), then lost its stream
     // without re-subscribing: the #3201 mode, which must stay visible.
-    daemon.running.get_mut(&dataflow_id).unwrap().pending_nodes =
-        PendingNodes::new(dataflow_id, DaemonId::new(None));
+    daemon.running.get_mut(&dataflow_id).unwrap().pending_nodes = PendingNodes::new(dataflow_id);
     rt.block_on(daemon.handle_dora_event(logs(&clock))).unwrap();
     assert_eq!(dropped(&daemon), 1);
     assert_eq!(lost(&daemon), 1);
@@ -1216,7 +1215,7 @@ fn dynamic_join_rejects_static_nodes_and_stopping_dataflows() {
 }
 
 fn dataflow_with_node(id: Uuid, node: &NodeId, dynamic: bool) -> RunningDataflow {
-    let mut df = RunningDataflow::new(id, DaemonId::new(None), Descriptor::new(vec![]));
+    let mut df = RunningDataflow::new(id, Descriptor::new(vec![]));
     let mut running = test_running_node();
     running.node_config.node_id = node.clone();
     running.node_config.dynamic = dynamic;

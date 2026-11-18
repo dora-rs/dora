@@ -253,6 +253,11 @@ impl SharedLibraryOperator<'_> {
                     // Reloading shared lib operator is not supported. See: https://github.com/dora-rs/adora/pull/239#discussion_r1154313139
                     continue;
                 }
+                Event::InputRecovered { .. } => {
+                    // The C ABI `RawEvent` has no way to express a recovered
+                    // input; the operator just starts receiving inputs again.
+                    continue;
+                }
                 Event::Error(err) => dora_operator_api_types::RawEvent {
                     error: Some(err.into()),
                     input_closed: None,

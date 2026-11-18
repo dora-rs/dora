@@ -775,6 +775,8 @@ impl TypeRegistry {
                 std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             let pkg: TypePackage =
                 serde_yaml::from_str(&content).map_err(|e| format!("{}: {e}", path.display()))?;
+            crate::descriptor::reject_duplicate_keys(content.as_bytes())
+                .map_err(|e| format!("{}: {e}", path.display()))?;
             for (name, def) in pkg.types {
                 let urn = format!("{urn_prefix}/{name}");
                 self.types.insert(urn, def);
@@ -1341,6 +1343,26 @@ mod tests {
         let count = reg.load_from_dir(dir.path()).unwrap();
         assert_eq!(count, 1);
         assert!(reg.resolve("myproject/sensors/v1/MySensor").is_some());
+    }
+
+    /// A type defined twice in one file must fail instead of the second
+    /// definition silently replacing the first.
+    #[test]
+    fn load_user_types_repeated_key_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg_dir = dir.path().join("myproject").join("sensors");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(
+            pkg_dir.join("v1.yml"),
+            "types:\n  MySensor:\n    arrow: Struct\n  MySensor:\n    arrow: Binary\n",
+        )
+        .unwrap();
+        let mut reg = TypeRegistry::new();
+        let err = reg.load_from_dir(dir.path()).unwrap_err();
+        assert!(
+            err.contains(r#"duplicate entry with key "MySensor""#),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

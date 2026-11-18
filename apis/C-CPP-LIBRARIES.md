@@ -244,7 +244,8 @@ cargo build --release \
 
 # Static libraries:   target/release/
 # C headers:          apis/c/node/, apis/c/operator/
-# C++ bridge files:   target/cxxbridge/dora-{node,operator}-api-cxx/src/lib.rs.{h,cc}
+# C++ bridge files:   target/cxxbridge/dora-{node,operator}-api-cxx/src/dora-{node,operator}-api.cc
+#                     target/cxxbridge/dora-{node,operator}-api-cxx/include/dora-{node,operator}-api.h
 ```
 
 To produce a find_package-ready prefix from a source build, run `xtask stage` after `cargo build`:

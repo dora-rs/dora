@@ -558,8 +558,9 @@ fn merge_env(
 /// Struct fields already reject duplicates on their own, so this only adds
 /// errors for map-valued fields.
 ///
-/// [`DescriptorExt::parse`] and module loading call this already; call it
-/// when deserializing other dataflow YAML (such as a single node) directly.
+/// [`DescriptorExt::parse`], module loading, node manifests and user type
+/// files call this already; call it when deserializing other YAML that users
+/// write (such as a single node) directly.
 ///
 /// ```
 /// use dora_core::descriptor::reject_duplicate_keys;
@@ -629,9 +630,14 @@ pub fn source_is_url(source: &str) -> bool {
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     let path = with_exe_extension(source);
 
-    // Search path within current working directory.
+    // Search path within current working directory. A folder named like the
+    // executable (often a Python package's source, next to the console
+    // script that `pip install -e` puts on `$PATH`) cannot be spawned, so it
+    // must not shadow the uv/`$PATH` lookup. The exception is a folder with a
+    // `__main__.py`: `dora run --uv` spawns it as `uv run <folder>`, which
+    // runs that file.
     let joined = working_dir.join(&path);
-    if joined.exists() {
+    if joined.is_file() || joined.join("__main__.py").is_file() {
         absolutize_preserving_symlinks(&joined)
     // Otherwise resolve against the `uv`-managed environment first (when `uv`
     // is available), then fall back to the system `$PATH`.
@@ -1503,6 +1509,41 @@ nodes:
             "a dangling symlink must not resolve (nothing on uv/$PATH matches \
              this name either), got {result:?}"
         );
+    }
+
+    /// A folder named like the executable is not the executable: on Unix
+    /// (`EXE_EXTENSION` is empty) the source folder `talker` of a package
+    /// whose console script is `talker` used to resolve to the folder, and
+    /// spawn then failed with EACCES instead of finding the script.
+    #[test]
+    fn resolve_path_skips_a_directory_with_the_executable_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let name = format!(
+            "dora-dir-not-exe-regression{}",
+            std::env::consts::EXE_SUFFIX
+        );
+        std::fs::create_dir(tmp.path().join(&name)).unwrap();
+
+        let result = resolve_path(&name, tmp.path());
+        assert!(
+            result.is_err(),
+            "a directory must not resolve (nothing on uv/$PATH matches this \
+             name either), got {result:?}"
+        );
+    }
+
+    /// A folder with a `__main__.py` is still a node path: under `--uv` it is
+    /// spawned as `uv run <folder>`, which runs that file.
+    #[test]
+    fn resolve_path_keeps_a_directory_with_a_main_py() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let name = format!("dora-main-py-dir{}", std::env::consts::EXE_SUFFIX);
+        let dir = tmp.path().join(&name);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("__main__.py"), "").unwrap();
+
+        let resolved = resolve_path(&name, tmp.path()).unwrap();
+        assert_eq!(resolved, absolutize_preserving_symlinks(&dir).unwrap());
     }
 
     /// `path_fallback` is internal, so a dataflow file must not set it, with

@@ -1,4 +1,4 @@
-use ::dora_ros2_bridge::rustdds::{self, policy};
+use ::dora_ros2_bridge::ros2_client;
 use ::dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
 use pyo3::prelude::{pyclass, pymethods};
 /// ROS2 QoS Policy
@@ -50,37 +50,24 @@ impl Ros2QosPolicies {
     }
 }
 
-impl From<Ros2QosPolicies> for rustdds::QosPolicies {
+impl From<Ros2QosPolicies> for ros2_client::QosProfile {
     fn from(value: Ros2QosPolicies) -> Self {
-        // `Transient`/`Persistent` durability exists only on the DDS path: the
-        // backend-neutral `Ros2Qos` collapses both to `Volatile`, so routing DDS
-        // QoS through it would silently downgrade them on the wire. Build the
-        // shared policies through the neutral path (reliability/history/
-        // liveliness), then restore the faithful four-variant DDS durability.
-        let durability: policy::Durability = value.durability.into();
-        let neutral = ::dora_ros2_bridge::transport::dds::to_rustdds_qos(&value.into());
-        let mut builder = rustdds::QosPolicyBuilder::new().durability(durability);
-        if let Some(reliability) = neutral.reliability() {
-            builder = builder.reliability(reliability);
+        // The backend-neutral `Ros2Qos` collapses `Transient`/`Persistent` to
+        // `Volatile`, so build reliability/history/liveliness through it and
+        // then set the durability from the Python value directly.
+        let durability = value.durability.into();
+        ros2_client::QosProfile {
+            durability,
+            ..::dora_ros2_bridge::transport::dds::to_qos_profile(&value.into())
         }
-        if let Some(history) = neutral.history() {
-            builder = builder.history(history);
-        }
-        if let Some(liveliness) = neutral.liveliness() {
-            builder = builder.liveliness(liveliness);
-        }
-        builder.build()
     }
 }
 
 impl From<Ros2QosPolicies> for Ros2Qos {
     fn from(value: Ros2QosPolicies) -> Self {
-        // `Duration::from_secs_f64` panics on a negative, NaN, or overflowing
-        // value; the pre-existing `rustdds` path did not. Convert without
-        // panicking, treating an invalid duration as zero.
-        let to_duration = |secs: f64| {
-            std::time::Duration::try_from_secs_f64(secs).unwrap_or(std::time::Duration::ZERO)
-        };
+        // Shared with the C++ bridge: never panics; infinite or too long means
+        // "infinite", negative or NaN means zero.
+        let to_duration = ::dora_ros2_bridge::transport::dds::duration_from_secs_f64;
         let lease_duration =
             (!value.lease_duration.is_infinite()).then(|| to_duration(value.lease_duration));
         Self {
@@ -125,17 +112,14 @@ pub enum Ros2Durability {
     Persistent,
 }
 
-/// :type value: dora.Ros2Durability
-/// :rtype: dora.Ros2Durability
-impl From<Ros2Durability> for policy::Durability {
-    /// :type value: dora.Ros2Durability
-    /// :rtype: dora.Ros2Durability
+impl From<Ros2Durability> for ros2_client::qos::Durability {
     fn from(value: Ros2Durability) -> Self {
         match value {
-            Ros2Durability::Volatile => policy::Durability::Volatile,
-            Ros2Durability::TransientLocal => policy::Durability::TransientLocal,
-            Ros2Durability::Transient => policy::Durability::Transient,
-            Ros2Durability::Persistent => policy::Durability::Persistent,
+            Ros2Durability::Volatile => Self::Volatile,
+            Ros2Durability::TransientLocal => Self::TransientLocal,
+            Ros2Durability::Transient | Ros2Durability::Persistent => {
+                ::dora_ros2_bridge::transport::dds::transient_local_for_unsupported_durability()
+            }
         }
     }
 }
@@ -171,22 +155,22 @@ mod tests {
         }
     }
 
-    /// The DDS conversion must preserve all four durability variants. Routing it
-    /// through the two-variant backend-neutral `Ros2Qos` used to silently
-    /// downgrade `Transient`/`Persistent` to `Volatile` (regression from #2790).
+    /// The DDS profile carries VOLATILE and TRANSIENT_LOCAL as-is. ROS 2 (and
+    /// `ros2-client` >= 0.11) has no TRANSIENT/PERSISTENT, so those are sent as
+    /// TRANSIENT_LOCAL, the closest kind that still serves late joiners. They
+    /// must not fall back to VOLATILE, as the backend-neutral `Ros2Qos` does.
     #[test]
-    fn dds_durability_preserves_all_variants() {
+    fn dds_durability_maps_to_ros2_kinds() {
+        use ::dora_ros2_bridge::ros2_client::qos::Durability as D;
         for (variant, expected) in [
-            (Ros2Durability::Volatile, policy::Durability::Volatile),
-            (
-                Ros2Durability::TransientLocal,
-                policy::Durability::TransientLocal,
-            ),
-            (Ros2Durability::Transient, policy::Durability::Transient),
-            (Ros2Durability::Persistent, policy::Durability::Persistent),
+            (Ros2Durability::Volatile, D::Volatile),
+            (Ros2Durability::TransientLocal, D::TransientLocal),
+            (Ros2Durability::Transient, D::TransientLocal),
+            (Ros2Durability::Persistent, D::TransientLocal),
         ] {
-            let qos: rustdds::QosPolicies = policies(variant, f64::INFINITY, false, 0.0).into();
-            assert_eq!(qos.durability(), Some(expected));
+            let qos: ::dora_ros2_bridge::ros2_client::QosProfile =
+                policies(variant, f64::INFINITY, false, 0.0).into();
+            assert_eq!(qos.durability, expected);
         }
     }
 

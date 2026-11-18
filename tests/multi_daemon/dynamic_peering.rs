@@ -82,11 +82,10 @@ fn dynamic_peering_case(both_dynamic: bool, restart: bool, local: bool) {
     }
     let fixture = bin("dynamic-peering-node");
     let static_node = |name: &str| {
-        format!(
-            "path: {}\n    args: '{name} {}'",
-            fixture.display(),
-            dir.display()
-        )
+        // Static nodes start in the descriptor's directory. Avoid passing its
+        // absolute path through shell parsing, which strips Windows backslashes
+        // and splits temporary paths containing spaces.
+        format!("path: {}\n    args: '{name} .'", fixture.display())
     };
     let first = if both_dynamic {
         "path: dynamic".to_owned()

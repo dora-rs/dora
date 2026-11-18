@@ -93,6 +93,8 @@ impl ClusterConfig {
             .with_context(|| format!("failed to read `{}`", path.display()))?;
         let config: Self = serde_yaml::from_str(&raw)
             .with_context(|| format!("failed to parse `{}`", path.display()))?;
+        dora_core::descriptor::reject_duplicate_keys(raw.as_bytes())
+            .with_context(|| format!("failed to parse `{}`", path.display()))?;
         config.validate()?;
         Ok(config)
     }
@@ -463,6 +465,20 @@ mod tests {
         assert_eq!(
             cfg.machines[0].labels.get("arch").map(|s| s.as_str()),
             Some("arm64")
+        );
+    }
+
+    /// A repeated label key must fail instead of silently keeping only the
+    /// last value.
+    #[test]
+    fn reject_repeated_label_key() {
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: 10.0.0.2\n    labels:\n      gpu: \"true\"\n      gpu: \"false\"\n",
+        );
+        let err = ClusterConfig::load(f.path()).unwrap_err();
+        assert!(
+            format!("{err:#}").contains(r#"duplicate entry with key "gpu""#),
+            "unexpected error: {err:#}"
         );
     }
 

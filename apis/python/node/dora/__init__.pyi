@@ -521,9 +521,7 @@ class Ros2Node:
 
     warnings::
     - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
-    at any point without it being considered a breaking change.
-    - There's a known issue about ROS2 nodes not being discoverable by ROS2
-    See: https://github.com/jhelovuo/ros2-client/issues/4"""
+    at any point without it being considered a breaking change."""
 
     def create_publisher(
         self, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies = None

@@ -47,6 +47,8 @@ pub struct CoordinatorSender {
     /// Topic debug frames, kept off `sender` so they can never delay a control
     /// message; see `run_coordinator_ws_writer`.
     topic_debug: mpsc::Sender<String>,
+    /// The id the coordinator assigned this connection at registration.
+    daemon_id: DaemonId,
 }
 
 #[derive(Debug)]
@@ -80,6 +82,15 @@ impl std::fmt::Display for TrySendEventError {
 impl std::error::Error for TrySendEventError {}
 
 impl CoordinatorSender {
+    /// The id the coordinator assigned when this connection registered. The
+    /// coordinator closes the connection of a daemon whose event carries any
+    /// other id, and a reconnect gets a new one, so an event built for this
+    /// sender must carry this id rather than one kept from an earlier
+    /// connection.
+    pub(crate) fn daemon_id(&self) -> &DaemonId {
+        &self.daemon_id
+    }
+
     fn format_event_message(message: &[u8]) -> Result<String, TrySendEventError> {
         let params_str = std::str::from_utf8(message).map_err(TrySendEventError::InvalidUtf8)?;
         let id = Uuid::new_v4();
@@ -166,12 +177,19 @@ impl CoordinatorSender {
     /// distinct, valid `CoordinatorSender` instance.
     #[cfg(test)]
     pub(crate) fn for_test() -> (Self, mpsc::Receiver<String>) {
+        Self::for_test_registered_as(DaemonId::new(None))
+    }
+
+    /// Like [`Self::for_test`], for a connection registered under `daemon_id`.
+    #[cfg(test)]
+    pub(crate) fn for_test_registered_as(daemon_id: DaemonId) -> (Self, mpsc::Receiver<String>) {
         let (sender, rx) = mpsc::channel(8);
         let (topic_debug, _) = mpsc::channel(1);
         (
             Self {
                 sender,
                 topic_debug,
+                daemon_id,
             },
             rx,
         )
@@ -370,12 +388,13 @@ pub async fn register(
     ));
 
     Ok((
-        daemon_id,
+        daemon_id.clone(),
         reserved_listen_endpoint,
         peer_zenoh_endpoints,
         CoordinatorSender {
             sender: send_tx,
             topic_debug: topic_debug_tx,
+            daemon_id,
         },
         ReceiverStream::new(rx),
     ))
