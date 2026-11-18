@@ -299,14 +299,14 @@ where
     if rest.is_empty() {
         return Ok(None);
     }
-    let payload = serde_json::Value::Object(rest);
-    InputData::deserialize(&payload)
+    let keys = rest.keys().cloned().collect::<Vec<_>>();
+    InputData::deserialize(serde_json::Value::Object(rest))
         .map(|data| Some(Box::new(data)))
         .map_err(|err| {
             D::Error::custom(format!(
-                "invalid input data {payload}: expected either `data` (with \
-                 optional `data_type`) or `path` (with optional `batch_index` \
-                 and `column`): {err}"
+                "invalid input data (keys {keys:?}): expected either `data` \
+                 (with optional `data_type`) or `path` (with optional \
+                 `batch_index` and `column`): {err}"
             ))
         })
 }
@@ -373,6 +373,30 @@ mod tests {
                 data: None,
             }
         );
+    }
+
+    /// [`INPUT_DATA_KEYS`] must name every field of [`InputData`]: a field
+    /// missing from it would be filtered out before parsing.
+    #[test]
+    fn input_data_keys_cover_every_input_data_field() {
+        for data in [
+            InputData::JsonObject {
+                data: serde_json::json!([1]),
+                data_type: Some(serde_json::json!("Int32")),
+            },
+            InputData::ArrowFile {
+                path: "x.arrow".into(),
+                batch_index: 1,
+                column: Some("c".into()),
+            },
+        ] {
+            let serde_json::Value::Object(fields) = serde_json::to_value(&data).unwrap() else {
+                panic!("InputData serializes as an object");
+            };
+            for key in fields.keys() {
+                assert!(INPUT_DATA_KEYS.contains(&key.as_str()), "`{key}` missing");
+            }
+        }
     }
 
     /// Keys outside [`InputData`] (comments, fields of a newer recorder)
