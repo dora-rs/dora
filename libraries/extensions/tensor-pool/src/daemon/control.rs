@@ -173,11 +173,19 @@ pub(crate) async fn publish_cross_pool_free(
 /// repeats across concurrently running dataflows and an ack could
 /// satisfy the wrong registration.
 pub(crate) type RegisterAckSenders = std::sync::Mutex<
-    std::collections::HashMap<
-        (Uuid, String),
-        tokio::sync::oneshot::Sender<(bool, bool, Option<u16>, Option<std::net::SocketAddr>)>,
-    >,
+    std::collections::HashMap<(Uuid, String), tokio::sync::oneshot::Sender<RegisterAckReply>>,
 >;
+
+/// The fields of a [`PeerMessage::RegisterAck`] the waiting register task
+/// needs.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RegisterAckReply {
+    pub(crate) ok: bool,
+    pub(crate) direct: bool,
+    pub(crate) data_port: Option<u16>,
+    pub(crate) data_addr: Option<std::net::SocketAddr>,
+    pub(crate) data_auth: bool,
+}
 pub(crate) static CROSS_REGISTER_PENDING: std::sync::LazyLock<RegisterAckSenders> =
     std::sync::LazyLock::new(RegisterAckSenders::default);
 

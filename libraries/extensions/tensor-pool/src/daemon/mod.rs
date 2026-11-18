@@ -1443,6 +1443,49 @@ mod cross_pool_write_tests {
 
     // The guard is held across the awaits on purpose: the point is to keep
     // the env var stable for the whole handshake, and an async mutex would
+    /// An origin uses a mirror's direct-TCP listener only when both agree
+    /// on whether the token handshake runs (#4211). A token-less origin
+    /// facing a token-gated mirror is the case the handshake itself cannot
+    /// catch: the origin never reads the rejection, so a small frame would
+    /// be reported sent and never relayed.
+    #[test]
+    fn direct_path_requires_matching_auth_setting() {
+        assert_eq!(direct_auth_mismatch(false, false), None);
+        assert_eq!(direct_auth_mismatch(true, true), None);
+        let tokenless_origin = direct_auth_mismatch(false, true).expect("mismatch");
+        assert!(
+            tokenless_origin.contains("not set on this daemon"),
+            "{tokenless_origin}"
+        );
+        let tokenless_mirror = direct_auth_mismatch(true, false).expect("mismatch");
+        assert!(
+            tokenless_mirror.contains("not on the mirror"),
+            "{tokenless_mirror}"
+        );
+    }
+
+    /// The mirror advertises its auth requirement in the register ack, and
+    /// the field survives the wire encoding.
+    #[test]
+    fn register_ack_carries_data_auth() {
+        let ack = PeerMessage::RegisterAck {
+            shared_memory_id: "pool".to_string(),
+            ok: true,
+            direct: false,
+            error: None,
+            data_port: Some(4000),
+            data_addr: None,
+            data_auth: true,
+        };
+        let bytes = postcard::to_allocvec(&ack).unwrap();
+        let PeerMessage::RegisterAck { data_auth, .. } =
+            postcard::from_bytes::<PeerMessage>(&bytes).unwrap()
+        else {
+            panic!("expected a RegisterAck")
+        };
+        assert!(data_auth);
+    }
+
     // let a sibling test's `set_var` interleave at the first await.
     #[allow(clippy::await_holding_lock)]
     /// The direct-TCP auth handshake: with `DORA_MEMORY_POOL_AUTH_TOKEN`
