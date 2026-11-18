@@ -180,9 +180,17 @@ fi
 # where the dataflows expect them (target/debug), so `dora run`'s own build
 # step is a no-op. Only the bridge node depends on the distro: it is copied
 # into a per-distro bin dir that goes first on PATH, where `dora run` finds it.
+#
+# Each node package is built by its own `cargo build -p <package>`, the command
+# its dataflow runs. One combined `-p a -p b` build resolves features across
+# all the packages, so the dataflow's single-package build would not find its
+# dependencies built and would recompile them inside the case's time limit.
 if [[ " ${cases[*]} " == *" yaml-"* ]]; then
-  cargo build -p dora-cli -p yaml-bridge-service-handler -p yaml-bridge-service-requester \
-    -p yaml-bridge-action-server-handler -p yaml-bridge-action-goal
+  cargo build -p dora-cli
+  for package in yaml-bridge-service-handler yaml-bridge-service-requester \
+    yaml-bridge-action-server-handler yaml-bridge-action-goal; do
+    cargo build -p "$package"
+  done
   mkdir -p "$BUILD/bin"
   if [[ -z "${DORA_ROS2_DDS_PREBUILT:-}" ]]; then
     cargo build -p dora-ros2-bridge-node --features "ros2-$DISTRO"
