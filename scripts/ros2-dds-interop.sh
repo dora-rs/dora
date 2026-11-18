@@ -19,42 +19,44 @@ in_list() { local x=$1; shift; [[ " $* " == *" $x "* ]]; }
 # Check every entry of the expected-failure list; exit 2 on the first bad
 # one, so a typo can never silently stop matching its cell.
 validate_expected() {
-  local n=0 distro rmw case issue rest
+  local n=0 distro rmw case issue flag rest
   [[ -f "$EXPECTED" ]] || return 0
   while IFS= read -r line || [[ -n "$line" ]]; do
     n=$((n + 1))
     line=${line%%#[^0-9]*}          # drop a trailing "# reason" comment
     [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
-    read -r distro rmw case issue rest <<<"$line"
+    read -r distro rmw case issue flag rest <<<"$line"
     if ! { [[ $distro == '*' ]] || in_list "$distro" "${DISTROS[@]}"; } ||
        ! { [[ $rmw == '*' ]] || in_list "$rmw" "${RMWS[@]}"; } ||
        ! in_list "$case" "${PY_CASES[@]}" "${YAML_CASES[@]}" ||
-       [[ ! "$issue" =~ ^#[0-9]+$ ]] || [[ -n "$rest" ]]; then
-      echo "$EXPECTED:$n: invalid entry (want '<distro|*> <rmw|*> <case> #<issue>'): $line" >&2
+       [[ ! "$issue" =~ ^#[0-9]+$ ]] || [[ -n "$flag" && $flag != flaky ]] || [[ -n "$rest" ]]; then
+      echo "$EXPECTED:$n: invalid entry (want '<distro|*> <rmw|*> <case> #<issue> [flaky]'): $line" >&2
       exit 2
     fi
   done <"$EXPECTED"
 }
 
-# Print the issue of the expected-failure entry matching a cell, if any.
+# Print "<issue> [flaky]" for the expected-failure entry matching a cell, if any.
 expected_issue() { # <distro> <rmw> <case>
-  local distro rmw case issue
+  local distro rmw case issue flag
   [[ -f "$EXPECTED" ]] || return 0
-  while read -r distro rmw case issue _; do
+  while read -r distro rmw case issue flag _; do
     [[ -z "${distro:-}" || $distro == \#* ]] && continue
     if [[ ($distro == '*' || $distro == "$1") && ($rmw == '*' || $rmw == "$2") && $case == "$3" ]]; then
-      echo "$issue"
+      [[ $flag == flaky ]] && echo "$issue flaky" || echo "$issue"
       return
     fi
   done <"$EXPECTED"
 }
 
 # Print the result line for one cell. Returns 0 for PASS/XFAIL, 1 for FAIL/XPASS.
+# A cell listed as flaky (a timing-dependent bug) may pass or fail: both are ok.
 classify() { # <distro> <rmw> <case> <case-exit-status>
   local issue
   issue=$(expected_issue "$1" "$2" "$3")
   if [[ -n "$issue" ]]; then
     if [[ $4 -ne 0 ]]; then echo "XFAIL $1 $2 $3 ($issue)"; return 0; fi
+    if [[ $issue == *flaky ]]; then echo "PASS $1 $2 $3 ($issue)"; return 0; fi
     echo "XPASS $1 $2 $3 ($issue)"; return 1
   fi
   if [[ $4 -eq 0 ]]; then echo "PASS $1 $2 $3"; return 0; fi
@@ -70,6 +72,7 @@ self_test() {
 # comment
 humble rmw_cyclonedds_cpp graph #101  # listed for one cell
 * * yaml-action-server-cancel #102   # wildcards
+* rmw_cyclonedds_cpp service-client #103 flaky  # timing-dependent
 EOF
   expect() { # <name> <want-output> <want-rc> <got-output> <got-rc>
     if [[ "$4" == "$2" && "$5" == "$3" ]]; then echo "ok   $1"
@@ -80,7 +83,9 @@ EOF
     "listed+pass|humble rmw_cyclonedds_cpp graph 0|XPASS humble rmw_cyclonedds_cpp graph (#101)|1" \
     "unlisted+fail|kilted rmw_cyclonedds_cpp graph 1|FAIL kilted rmw_cyclonedds_cpp graph|1" \
     "unlisted+pass|humble rmw_fastrtps_cpp graph 0|PASS humble rmw_fastrtps_cpp graph|0" \
-    "wildcard+fail|kilted rmw_fastrtps_cpp yaml-action-server-cancel 1|XFAIL kilted rmw_fastrtps_cpp yaml-action-server-cancel (#102)|0"; do
+    "wildcard+fail|kilted rmw_fastrtps_cpp yaml-action-server-cancel 1|XFAIL kilted rmw_fastrtps_cpp yaml-action-server-cancel (#102)|0" \
+    "flaky+fail|humble rmw_cyclonedds_cpp service-client 1|XFAIL humble rmw_cyclonedds_cpp service-client (#103 flaky)|0" \
+    "flaky+pass|kilted rmw_cyclonedds_cpp service-client 0|PASS kilted rmw_cyclonedds_cpp service-client (#103 flaky)|0"; do
     IFS='|' read -r name args want_out want_rc <<<"$c"
     # shellcheck disable=SC2086
     out=$(DORA_ROS2_DDS_EXPECTED="$tmp/ok.txt" "$0" --classify $args 2>&1) && got=0 || got=$?
@@ -90,7 +95,8 @@ EOF
   printf '%s\n' "humble rmw_fastrtps_cpp graph   # no issue" >"$tmp/bad-issue.txt"
   printf '%s\n' "jazzy rmw_fastrtps_cpp graph #1" >"$tmp/bad-distro.txt"
   printf '%s\n' "humble rmw_connext graph #1" >"$tmp/bad-rmw.txt"
-  for f in bad-case bad-issue bad-distro bad-rmw; do
+  printf '%s\n' "humble rmw_fastrtps_cpp graph #1 sometimes" >"$tmp/bad-flag.txt"
+  for f in bad-case bad-issue bad-distro bad-rmw bad-flag; do
     DORA_ROS2_DDS_EXPECTED="$tmp/$f.txt" "$0" --classify humble rmw_fastrtps_cpp graph 0 >/dev/null 2>&1 && got=0 || got=$?
     expect "rejects $f" "" 2 "" "$got"
   done

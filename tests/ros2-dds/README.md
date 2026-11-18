@@ -44,12 +44,15 @@ Each cell prints one line, `<RESULT> <distro> <rmw> <case>`:
 `expected-failures.txt` lists cells that fail today, one per line:
 
 ```
-<distro|*> <rmw|*> <case> #<issue>  # reason
+<distro|*> <rmw|*> <case> #<issue> [flaky]  # reason
 ```
 
 Rules:
 
 - Every entry names an open issue.
+- `flaky` marks a timing-dependent bug, such as a discovery race. Such a cell
+  may pass or fail, and either result keeps the job green; the result line
+  still names the issue.
 - An unknown distro, RMW or case name is rejected (exit 2), so a typo cannot
   silently stop matching.
 - When a fix lands, its cells report `XPASS` and the job fails until the
