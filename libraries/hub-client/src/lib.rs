@@ -28,7 +28,10 @@ pub const OFFICIAL_NAMESPACE: &str = "dora-rs";
 /// deliberately excluded — they are remote SMB locations, not vetted local
 /// repos. Windows reads any two leading separators as a UNC prefix, so the
 /// forward-slash (`//host/share`) and mixed (`/\host\share`) spellings are
-/// excluded too. Used by both validators so the trusted/untrusted "is this
+/// excluded too. This only classifies bare paths: an explicit `file://` URL
+/// is a scheme the caller chose (`validate_git_url` accepts it, and the
+/// untrusted validator gates it as local), so a `file://host/share` URL is
+/// not rejected here. Used by both validators so the trusted/untrusted "is this
 /// local?" decisions can never disagree (a Windows path the trusted validator
 /// accepts must also trip the untrusted local-source gate).
 fn is_local_path(url: &str) -> bool {
