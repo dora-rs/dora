@@ -465,8 +465,10 @@ pub(crate) async fn collect_and_send_metrics_bg(
                 let restart_count = node.restart_count.load(atomic::Ordering::Acquire);
                 let status = if node.restarts_disabled {
                     dora_message::daemon_to_coordinator::NodeStatus::Failed
-                } else {
+                } else if restart_count > 0 || node.pid.is_some() {
                     dora_message::daemon_to_coordinator::NodeStatus::Restarting
+                } else {
+                    continue;
                 };
                 metrics.insert(
                     node.node_id.clone(),
@@ -1162,5 +1164,47 @@ mod stale_pid_tests {
         let node = sample_own_process(an_hour_ahead, 1).await;
         assert_eq!(node.status, NodeStatus::Running);
         assert_eq!(node.pid, std::process::id());
+    }
+
+    /// Dynamic nodes have no process spawned by the daemon (`pid: None`) and
+    /// must not be falsely reported as `Restarting`.
+    #[tokio::test]
+    async fn a_dynamic_node_without_pid_is_not_reported_as_restarting() {
+        let state = Arc::new(tokio::sync::Mutex::new(MetricsState::default()));
+        let (sender, mut sent) = coordinator::CoordinatorSender::for_test();
+        let node_id = NodeId::from("dynamic_node".to_string());
+        let snapshot = vec![DataflowMetricsSnapshot {
+            dataflow_id: DataflowId::new_v4(),
+            nodes: vec![NodeSnapshot {
+                node_id,
+                pid: None,
+                spawned_at: Arc::new(AtomicU64::new(0)),
+                restart_count: Arc::new(AtomicU32::new(0)),
+                restarts_disabled: false,
+                broken_inputs: Vec::new(),
+                pending_messages: 0,
+            }],
+            net_bytes_sent: Arc::default(),
+            net_bytes_received: Arc::default(),
+            net_messages_sent: Arc::default(),
+            net_messages_received: Arc::default(),
+            net_publish_failures: Arc::default(),
+        }];
+
+        collect_and_send_metrics_bg(
+            snapshot,
+            state,
+            sender,
+            DaemonId::new(None),
+            Arc::new(uhlc::HLC::default()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sent.recv().await,
+            None,
+            "dynamic nodes without a PID must not be reported as Restarting"
+        );
     }
 }
