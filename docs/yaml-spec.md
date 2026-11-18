@@ -415,7 +415,7 @@ Pin a node's process to specific CPU cores (Linux only, ignored on other platfor
     sensor: sensor/data
 ```
 
-The daemon applies `sched_setaffinity` before exec. Core indices must be less than the system's `CPU_SETSIZE` (typically 1024). Out-of-range cores are skipped with a warning.
+The daemon applies `sched_setaffinity` before exec and reads the mask back. If the node cannot run on exactly the listed cores, it does not start, and the error names the node and its `cpu_affinity`. That happens for an empty list, a core at or above `CPU_SETSIZE` (typically 1024), and a core that is offline, missing, or outside the daemon's cpuset.
 
 ### Deployment
 

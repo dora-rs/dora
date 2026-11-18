@@ -1,0 +1,12 @@
+# Negative fixture for `cpu_affinity`: core 1023 fits in a cpu_set_t but
+# does not exist on the CI runner. The kernel would silently drop it and
+# pin the probe to core 0 alone; the daemon must refuse to start the
+# node instead. The nightly `cpu-affinity-smoke` job asserts the probe never prints
+# AFFINITY_MASK and that the error names the node's cpu_affinity.
+nodes:
+  - id: probe
+    build: cargo build -p cpu-affinity-probe
+    path: ../../target/debug/cpu-affinity-probe
+    cpu_affinity: [0, 1023]
+    inputs:
+      tick: dora/timer/millis/100

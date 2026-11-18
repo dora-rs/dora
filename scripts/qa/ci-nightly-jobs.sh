@@ -1422,6 +1422,23 @@ job_cpu_affinity() {
     return 1
   fi
   echo "OK: probe ran with expected affinity mask: $mask"
+
+  # Negative case: core 1023 does not exist on the runner. The kernel
+  # would drop it and run the probe on core 0 alone; the daemon must
+  # refuse to start the node instead.
+  cd examples/cpu-affinity-probe
+  out=$(dora run dataflow-missing-core.yml --stop-after 3s 2>&1 || true)
+  cd - > /dev/null
+  echo "$out"
+  if echo "$out" | grep -q 'AFFINITY_MASK:'; then
+    echo "ERROR: probe ran although cpu_affinity [0, 1023] cannot be applied"
+    return 1
+  fi
+  if ! echo "$out" | grep -qF 'cpu_affinity [0, 1023] of node probe could not be applied exactly'; then
+    echo "ERROR: expected the spawn error to name the node's cpu_affinity"
+    return 1
+  fi
+  echo "OK: probe with a missing core did not start"
 }
 
 # -----------------------------------------------------------------------------

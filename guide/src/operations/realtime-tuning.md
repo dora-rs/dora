@@ -35,7 +35,7 @@ Instead of pinning the entire daemon with `taskset`, you can pin individual node
   cpu_affinity: [4, 5]
 ```
 
-The daemon calls `sched_setaffinity` on the spawned process. This is Linux only; on other platforms the field is silently ignored.
+The daemon calls `sched_setaffinity` on the spawned process. This is Linux only; on other platforms the field is silently ignored. On Linux, a node whose `cpu_affinity` cannot be applied exactly (for example, it lists a core that is offline or outside the daemon's cpuset) does not start, so it never runs on cores reserved for other nodes.
 
 Combine with `--rt` for best results: the daemon gets real-time scheduling while each node is pinned to dedicated cores, avoiding contention.
 

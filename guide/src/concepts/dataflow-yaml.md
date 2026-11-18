@@ -333,7 +333,7 @@ When nodes are on different machines, communication automatically switches from 
 
 ### CPU Affinity
 
-Pin a node's process to specific CPU cores (Linux only).
+Pin a node's process to specific CPU cores (Linux only). If the node cannot be pinned to exactly these cores, it does not start.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
