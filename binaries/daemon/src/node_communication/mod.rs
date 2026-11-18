@@ -59,11 +59,42 @@ const BACKPRESSURE_STALL_LIMIT: Duration = Duration::from_secs(60);
 /// it, not because it hung, and the health check must not kill it for that.
 const BACKPRESSURE_STALL_TICK: Duration = Duration::from_secs(1);
 
+/// A millisecond timestamp for the daemon's own liveness bookkeeping
+/// (`last_activity`, `spawned_at`, `started_at_millis` and the watchdogs that
+/// compare them against "now").
+///
+/// The value is anchored to the wall clock once, on the first call, and
+/// then advances with the monotonic clock. Every reading stays in the
+/// daemon process, so only differences between readings matter, and those
+/// must not jump when the wall clock is stepped: an NTP correction on a
+/// board without an RTC would otherwise make every connected node look
+/// silent for hours and get it killed by the health check, or stretch a
+/// backward step into a disabled watchdog.
+///
+/// The result is never `0`, which `spawned_at` uses as its "not running"
+/// sentinel.
 pub fn current_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    static ANCHOR: std::sync::OnceLock<(std::time::Instant, u64)> = std::sync::OnceLock::new();
+    let (anchor, anchor_millis) = *ANCHOR.get_or_init(|| {
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        (std::time::Instant::now(), duration_millis(wall))
+    });
+    anchored_millis(anchor_millis, anchor, std::time::Instant::now())
+}
+
+/// `anchor_millis` plus the time elapsed from `anchor` to `now`, saturating
+/// and never `0`. Split out of [`current_millis`] so it can be tested
+/// without waiting.
+fn anchored_millis(anchor_millis: u64, anchor: std::time::Instant, now: std::time::Instant) -> u64 {
+    anchor_millis
+        .saturating_add(duration_millis(now.saturating_duration_since(anchor)))
+        .max(1)
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Node Zenoh listeners are advertised before the child binds them. Do not
@@ -1688,5 +1719,51 @@ mod tests {
             "the payload must not be logged ({} bytes)",
             line.len()
         );
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn anchored_millis_advances_with_the_monotonic_clock() {
+        let anchor = Instant::now();
+        let later = anchor + Duration::from_secs(30);
+        assert_eq!(anchored_millis(1_000, anchor, anchor), 1_000);
+        assert_eq!(anchored_millis(1_000, anchor, later), 31_000);
+        // An `Instant` before the anchor (cannot happen for a monotonic
+        // clock, but must not underflow) reads as the anchor itself.
+        assert_eq!(anchored_millis(1_000, later, anchor), 1_000);
+    }
+
+    #[test]
+    fn anchored_millis_is_never_the_not_running_sentinel() {
+        let anchor = Instant::now();
+        // A wall clock at (or before) the epoch at daemon start.
+        assert_eq!(anchored_millis(0, anchor, anchor), 1);
+        assert_eq!(
+            anchored_millis(u64::MAX, anchor, anchor + Duration::from_secs(1)),
+            u64::MAX
+        );
+    }
+
+    /// The readings the watchdogs compare are differences of
+    /// `current_millis()`, so they must track elapsed time, not the wall
+    /// clock: a stepped wall clock used to make every node look silent.
+    #[test]
+    fn current_millis_is_monotonic_and_epoch_scaled() {
+        let wall = duration_millis(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap(),
+        );
+        let first = current_millis();
+        std::thread::sleep(Duration::from_millis(20));
+        let second = current_millis();
+        assert!(second >= first + 20, "{first} -> {second}");
+        // Still epoch-scaled, so a `last_activity` of 1 reads as long ago.
+        assert!(first.abs_diff(wall) < 3_600_000, "{first} vs {wall}");
     }
 }
