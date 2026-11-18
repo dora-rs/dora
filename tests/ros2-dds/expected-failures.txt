@@ -1,0 +1,8 @@
+# Known failures of the ROS 2 DDS interop matrix (scripts/ros2-dds-interop.sh).
+#
+# One cell per line:  <distro|*> <rmw|*> <case> #<issue>  # reason
+#
+# A listed cell that fails reports XFAIL and keeps the job green; a listed
+# cell that passes reports XPASS and fails the job, so the entry gets removed
+# together with the fix. Every entry must name an open issue. Unknown
+# distros, RMWs or case names are rejected, so a typo cannot hide a cell.

@@ -122,9 +122,10 @@ fast = Parameter(
     value=ParameterValue(type=ParameterType.PARAMETER_STRING, string_value="fast"),
 )
 results = call("set_parameters", SetParameters.Request(parameters=[fast])).results
+# The wording differs between dora's Zenoh parameter server and ros2-client's
+# DDS one; what matters is that the change is rejected, with a reason.
 check(
-    [(r.successful, r.reason) for r in results]
-    == [(False, "parameter `speed` is type-stable; cannot change its declared type")],
+    [r.successful for r in results] == [False] and "speed" in results[0].reason,
     f"set speed=fast: {results!r}",
 )
 
