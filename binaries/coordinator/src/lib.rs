@@ -107,7 +107,6 @@ fn build_result_timeout() -> Duration {
     })
 }
 
-pub(crate) mod artifacts;
 mod control;
 mod control_requests;
 mod daemon_events;
@@ -261,8 +260,6 @@ async fn start_with_events(
     span_store: SpanStore,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let clock = Arc::new(HLC::default());
-    let artifact_store =
-        Arc::new(artifacts::ArtifactStore::new().wrap_err("failed to create artifact store")?);
 
     let mut tasks = FuturesUnordered::new();
 
@@ -295,7 +292,6 @@ async fn start_with_events(
         topic_debug_tx,
         clock.clone(),
         auth_token,
-        artifact_store,
         store.clone(),
         daemon_peer_addrs.clone(),
     )

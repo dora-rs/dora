@@ -111,7 +111,7 @@ dora build dataflow.yml     # runs each node's build on its target machine
 dora start dataflow.yml --attach
 ```
 
-A node without `deploy` runs on the daemon without a name, if there is one. Paths are resolved on the target machine, so use absolute paths or set `deploy.working_dir`. Dora does not copy binaries to other machines by default. See [binary distribution](distributed-deployment.md#binary-distribution) for the SCP and HTTP options.
+A node without `deploy` runs on the daemon without a name, if there is one. Paths are resolved on the target machine, so use absolute paths or set `deploy.working_dir`. Any configured build steps run there. Prebuilt binaries must already exist on the target machine. See [binary distribution](distributed-deployment.md#binary-distribution).
 
 ### Machines with several network interfaces
 

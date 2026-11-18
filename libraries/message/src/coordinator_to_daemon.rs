@@ -314,8 +314,7 @@ pub struct SpawnDataflowNodes {
     pub spawn_nodes: BTreeSet<NodeId>,
     pub uv: bool,
     pub write_events_to: Option<PathBuf>,
-    /// Base URL for downloading artifacts from the coordinator (HTTP distribution mode).
-    /// When set, daemons can pull binaries from `{artifact_base_url}/{build_id}/{node_id}`.
+    /// Reserved for wire compatibility. Daemons currently build locally.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_base_url: Option<String>,
 }

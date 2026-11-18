@@ -343,9 +343,9 @@ pub enum DistributeStrategy {
     /// Each daemon builds from source (current/default behavior).
     #[default]
     Local,
-    /// CLI pushes built binary via SSH/SCP before spawn.
+    /// Reserved for SCP distribution. Currently uses local builds.
     Scp,
-    /// Daemon pulls binary from coordinator HTTP artifact store before spawn.
+    /// Reserved for HTTP distribution. Currently uses local builds.
     Http,
 }
 

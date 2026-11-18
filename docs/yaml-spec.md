@@ -434,7 +434,7 @@ Assign nodes to specific machines using `deploy`:
     machine: gpu-server
     labels:
       gpu: "true"
-    distribute: scp
+    distribute: local
   path: ./target/debug/inference
   inputs:
     frames: camera-driver/frames
@@ -445,7 +445,7 @@ Assign nodes to specific machines using `deploy`:
 | `machine` | string | -- | Target machine/daemon ID. The coordinator routes the node to the daemon registered with this ID |
 | `working_dir` | string | -- | Working directory on the target machine |
 | `labels` | object | -- | Key-value labels for scheduling. The coordinator matches these against labels reported by each daemon at registration |
-| `distribute` | string | `local` | How built binaries reach the target daemon: **`local`** -- each daemon builds from source independently; **`scp`** -- CLI pushes the built binary via SSH/SCP before spawn; **`http`** -- daemon pulls the binary from the coordinator's HTTP artifact store |
+| `distribute` | string | `local` | Configured build steps run on the target machine. Prebuilt binaries must already exist there. The values `scp` and `http` are accepted for compatibility and use the same behavior as `local`. |
 
 When nodes are on different machines, communication automatically switches from shared memory to Zenoh pub/sub.
 
