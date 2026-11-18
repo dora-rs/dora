@@ -94,10 +94,10 @@ impl Node {
     }
 }
 
-/// The longest duration `ros2-client` can put on the wire: it converts a
-/// blocking time or lease with `as_nanos() as i64`. Anything this long or
-/// longer means "infinite", as `rustdds::Duration` used to saturate it.
-const INFINITE: Duration = Duration::from_nanos(i64::MAX as u64);
+/// Durations this long or longer mean "infinite". An RTPS duration holds its
+/// seconds in an `i32`, and RustDDS converts into it with a wrapping cast, so
+/// a longer blocking time or lease must not reach it as a finite value.
+const INFINITE: Duration = Duration::from_secs(i32::MAX as u64);
 
 fn finite(duration: Duration) -> Option<Duration> {
     (duration < INFINITE).then_some(duration)

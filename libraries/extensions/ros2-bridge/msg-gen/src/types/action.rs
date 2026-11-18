@@ -322,18 +322,11 @@ impl Action {
                                     if result_tx.is_disconnected() {
                                         break;
                                     }
-                                    // SAFETY: the `&mut`-via-ptr cast mirrors the feedback stream
-                                    // above — `result_client(&mut self)` only needs `&mut` to hand
-                                    // back the sub-client, and `receive_response` itself takes &self.
-                                    // Only this pump thread receives. The concurrent &self
+                                    // Only this pump thread receives. The concurrent
                                     // `send_request` from `request_result` is data-race-free on the
                                     // ros2-client `Client` (disjoint request/response paths + atomic
                                     // sequence ids) — the same concurrency the #1971 service pump relies on.
-                                    let recv = unsafe {
-                                        let ptr = Arc::as_ptr(&client)
-                                            as *mut crate::ros2_client::action::ActionClient< #action_generics >;
-                                        (&mut *ptr).result_client().receive_response()
-                                    };
+                                    let recv = client.result_client().receive_response();
                                     match recv {
                                         Ok(Some((req_id, response))) => {
                                             // Route the response to its goal; drop responses we
@@ -374,18 +367,8 @@ impl Action {
 
                         let feedback_id = {
                             let stream = futures_lite::stream::unfold(Arc::clone(&client), |client| async {
-                                // SAFETY:
-                                // The ros2_client crate only provides &mut access to the feedback subscription, but
-                                // the mutable permission is not required at all.
-                                // There is no other position that will access the feedback subscription.
-                                // There is no modification on the feedback_subscription.
-                                // The Arc ensures the client is not dropped while the stream is active.
-                                // The async_take() method only requires immutable access to the subscription struct.
-                                let item = unsafe {
-                                    let ptr = Arc::as_ptr(&client) as *mut crate::ros2_client::action::ActionClient< #action_generics >;
-                                    let sub = (&mut *ptr).feedback_subscription();
-                                    sub.async_take().await
-                                };
+                                // Nothing else takes from the feedback subscription.
+                                let item = client.feedback_subscription().async_take().await;
                                 let item = item.map(
                                     |(crate::ros2_client::action::FeedbackMessage {goal_id, feedback}, _msg_info)| {
                                         Box::new(#feedback_event_name {

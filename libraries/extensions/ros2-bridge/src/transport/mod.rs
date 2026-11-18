@@ -192,35 +192,56 @@ mod tests {
         );
     }
 
-    /// `ros2-client` turns a `Wait(d)` / lease into `d.as_nanos() as i64`, so a
-    /// duration it cannot hold must not reach it: anything that long means
-    /// "infinite" (block / never expire), as `rustdds::Duration` saturated it.
+    /// An RTPS duration holds its seconds in an `i32`, and RustDDS wraps a
+    /// longer one instead of saturating it. Such a duration must not reach it
+    /// as a finite value: it means "infinite" (block / never expire).
     #[test]
     fn dds_qos_adapter_treats_unrepresentable_durations_as_infinite() {
         use ros2_client::qos;
-        let qos = Ros2Qos {
-            reliability: Reliability::Reliable {
-                max_blocking_time: Duration::MAX,
-            },
-            durability: Durability::Volatile,
-            history: History::KeepLast { depth: 1 },
-            liveliness: Liveliness::Automatic {
-                lease_duration: Some(Duration::from_secs(1_000_000_000_000)),
-            },
+        let profile_for = |duration| {
+            dds::to_qos_profile(&Ros2Qos {
+                reliability: Reliability::Reliable {
+                    max_blocking_time: duration,
+                },
+                durability: Durability::Volatile,
+                history: History::KeepLast { depth: 1 },
+                liveliness: Liveliness::Automatic {
+                    lease_duration: Some(duration),
+                },
+            })
         };
-        let profile = dds::to_qos_profile(&qos);
+        let first_too_long = Duration::from_secs(i32::MAX as u64);
+        for too_long in [
+            first_too_long,
+            Duration::from_secs(3_000_000_000),
+            Duration::from_secs(1_000_000_000_000),
+            Duration::MAX,
+        ] {
+            let profile = profile_for(too_long);
+            assert_eq!(
+                profile.reliability,
+                qos::Reliability::Reliable {
+                    when_full: qos::WhenFull::Block
+                },
+                "{too_long:?}"
+            );
+            assert_eq!(profile.liveliness_lease, None, "{too_long:?}");
+            // ...and a blocking profile survives the round trip.
+            assert_eq!(
+                dds::to_qos_profile(&dds::from_qos_profile(&profile)).reliability,
+                profile.reliability
+            );
+        }
+
+        let longest = first_too_long - Duration::from_nanos(1);
+        let profile = profile_for(longest);
         assert_eq!(
             profile.reliability,
             qos::Reliability::Reliable {
-                when_full: qos::WhenFull::Block
+                when_full: qos::WhenFull::Wait(longest)
             }
         );
-        assert_eq!(profile.liveliness_lease, None);
-        // ...and a blocking profile survives the round trip.
-        assert_eq!(
-            dds::to_qos_profile(&dds::from_qos_profile(&profile)).reliability,
-            profile.reliability
-        );
+        assert_eq!(profile.liveliness_lease, Some(longest));
     }
 
     /// A keep-last depth below 1 retains nothing; clamp it like the YAML path.
