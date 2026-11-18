@@ -629,12 +629,14 @@ pub fn source_is_url(source: &str) -> bool {
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     let path = with_exe_extension(source);
 
-    // Search path within current working directory. Only a file counts: a
-    // folder named like the executable (often a Python package's source,
-    // next to the console script that `pip install -e` puts on `$PATH`)
-    // cannot be spawned, so it must not shadow the uv/`$PATH` lookup.
+    // Search path within current working directory. A folder named like the
+    // executable (often a Python package's source, next to the console
+    // script that `pip install -e` puts on `$PATH`) cannot be spawned, so it
+    // must not shadow the uv/`$PATH` lookup. The exception is a folder with a
+    // `__main__.py`: `dora run --uv` spawns it as `uv run <folder>`, which
+    // runs that file.
     let joined = working_dir.join(&path);
-    if joined.is_file() {
+    if joined.is_file() || joined.join("__main__.py").is_file() {
         absolutize_preserving_symlinks(&joined)
     // Otherwise resolve against the `uv`-managed environment first (when `uv`
     // is available), then fall back to the system `$PATH`.
@@ -1527,6 +1529,20 @@ nodes:
             "a directory must not resolve (nothing on uv/$PATH matches this \
              name either), got {result:?}"
         );
+    }
+
+    /// A folder with a `__main__.py` is still a node path: under `--uv` it is
+    /// spawned as `uv run <folder>`, which runs that file.
+    #[test]
+    fn resolve_path_keeps_a_directory_with_a_main_py() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let name = format!("dora-main-py-dir{}", std::env::consts::EXE_SUFFIX);
+        let dir = tmp.path().join(&name);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("__main__.py"), "").unwrap();
+
+        let resolved = resolve_path(&name, tmp.path()).unwrap();
+        assert_eq!(resolved, absolutize_preserving_symlinks(&dir).unwrap());
     }
 
     /// `path_fallback` is internal, so a dataflow file must not set it, with
