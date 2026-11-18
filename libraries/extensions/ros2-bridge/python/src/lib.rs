@@ -961,9 +961,6 @@ impl Ros2Node {
         let client = match &mut self.node {
             dora_ros2_bridge::transport::Node::Dds(node) => {
                 let qos = dora_ros2_bridge::transport::dds::to_qos_profile(&neutral_qos);
-                let status_qos = dora_ros2_bridge::transport::dds::to_qos_profile(
-                    &dora_ros2_bridge::transport::action::action_status_qos(&neutral_qos),
-                );
                 let name = parse_ros2_name(action_name)?;
                 // Not `Clone`: built once for ros2-client and once for the diagnostics.
                 let policies = || ros2_client::action::ActionClientQosPolicies {
@@ -971,7 +968,7 @@ impl Ros2Node {
                     result_service: qos.clone(),
                     cancel_service: qos.clone(),
                     feedback_subscription: qos.clone(),
-                    status_subscription: status_qos.clone(),
+                    status_subscription: qos.clone(),
                 };
                 let client = node
                     .as_inner_mut()
@@ -3826,7 +3823,10 @@ mod zenoh_node_feature_tests {
 #[cfg(test)]
 mod dds_action_status_tests {
     use super::*;
-    use ::dora_ros2_bridge::rustdds::{self, policy::Durability};
+    use ::dora_ros2_bridge::rustdds::{
+        self,
+        policy::{Durability, Reliability},
+    };
 
     /// A domain no other test in this crate uses.
     const DOMAIN_ID: u16 = 92;
@@ -3862,31 +3862,21 @@ mod dds_action_status_tests {
         (context, node)
     }
 
-    /// The durability with which `observer` discovers the status writer (or
-    /// reader) of the action `name`.
-    fn status_durability(
+    /// The QoS with which `observer` discovers the status writer of the
+    /// action `name`.
+    fn status_writer_qos(
         observer: &rustdds::DomainParticipant,
         name: &str,
-        writer: bool,
-    ) -> Durability {
+    ) -> rustdds::QosPolicies {
         let topic = format!("rt{name}/_action/status");
         let deadline = Instant::now() + Duration::from_secs(20);
         loop {
-            let found = if writer {
-                observer
-                    .discovered_writers()
-                    .into_iter()
-                    .find(|w| w.publication_topic_data.topic_name == topic)
-                    .map(|w| w.publication_topic_data.durability)
-            } else {
-                observer
-                    .discovered_readers()
-                    .into_iter()
-                    .find(|r| r.subscription_topic_data.topic_name() == &topic)
-                    .map(|r| r.subscription_topic_data.qos().durability())
-            };
-            if let Some(durability) = found {
-                return durability.unwrap_or(Durability::Volatile);
+            let found = observer
+                .discovered_writers()
+                .into_iter()
+                .find(|w| w.publication_topic_data.topic_name == topic);
+            if let Some(writer) = found {
+                return writer.publication_topic_data.qos();
             }
             assert!(Instant::now() < deadline, "{topic} was never discovered");
             std::thread::sleep(Duration::from_millis(100));
@@ -3908,27 +3898,11 @@ mod dds_action_status_tests {
             .create_action_server(&name, "status_test_msgs/Count".into(), volatile())
             .unwrap();
         let observer = rustdds::DomainParticipant::new(DOMAIN_ID).unwrap();
-        assert_eq!(
-            status_durability(&observer, &name, true),
-            Durability::TransientLocal
-        );
-    }
-
-    /// A transient-local status reader also gets the latest status from a
-    /// server that published it before the client matched.
-    #[test]
-    fn a_dds_action_client_subscribes_to_status_transient_local() {
-        let name = format!("/status_client_{}", std::process::id());
-        let (_context, mut node) = dds_test_node("status_client");
-        Python::initialize();
-        let _client = Python::attach(|py| {
-            node.create_action_client(py, &name, "status_test_msgs/Count".into(), volatile())
-        })
-        .unwrap();
-        let observer = rustdds::DomainParticipant::new(DOMAIN_ID).unwrap();
-        assert_eq!(
-            status_durability(&observer, &name, false),
-            Durability::TransientLocal
+        let qos = status_writer_qos(&observer, &name);
+        assert_eq!(qos.durability(), Some(Durability::TransientLocal));
+        assert!(
+            matches!(qos.reliability(), Some(Reliability::Reliable { .. })),
+            "{qos:?}"
         );
     }
 }

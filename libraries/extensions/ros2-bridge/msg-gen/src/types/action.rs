@@ -1481,6 +1481,6 @@ mod codegen_tests {
             server.contains("transport::action::action_status_qos"),
             "{server}"
         );
-        assert!(!server.contains("status_publisher: q,"), "{server}");
+        assert!(server.contains("status_publisher: status_qos"), "{server}");
     }
 }

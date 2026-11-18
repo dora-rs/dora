@@ -651,10 +651,12 @@ pub mod zenoh {
     pub use super::action_status_qos;
 }
 
-/// QoS for an action's status channel on every transport: what rcl uses
-/// (`rcl_action_qos_profile_status_default`), reliable and transient-local,
-/// whatever the user's QoS. ROS 2 action clients subscribe to the status
-/// transient-local, so a volatile status writer never matches them (#4214).
+/// QoS for an action server's status channel on every transport: reliable,
+/// transient-local and keep-last 1, as in rcl's
+/// `rcl_action_qos_profile_status_default`, whatever the user's QoS. ROS 2
+/// action clients subscribe to the status transient-local, so a volatile
+/// status writer never matches them (#4214). Liveliness follows the user's
+/// QoS, as on the other channels.
 pub fn action_status_qos(qos: &crate::transport::Ros2Qos) -> crate::transport::Ros2Qos {
     crate::transport::Ros2Qos {
         reliability: crate::transport::Reliability::Reliable {

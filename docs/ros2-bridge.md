@@ -559,10 +559,11 @@ for this channel only. The history depth differs by transport: DDS uses the
 configured `keep_last` (default `10`), while Zenoh keeps the last `1` status
 sample.
 
-The Python `create_action_server` / `create_action_client` and the generated
-C++ action servers use the same rule on both transports: their status channel
-is reliable and `transient_local` with a depth of `1` (rcl's default status
-QoS), whatever QoS they are given for the other channels.
+The Python `create_action_server` and the generated C++ action servers
+publish the status the same way on DDS: reliable and `transient_local` with a
+depth of `1` (rcl's default status QoS), whatever QoS they are given for the
+other channels. The Python action client's status subscription keeps the given
+QoS: a volatile subscription matches any server's status writer.
 
 ---
 
