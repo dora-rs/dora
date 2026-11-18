@@ -41,8 +41,8 @@
 
 use crate::{BridgeError, BridgeResult};
 use mavlink::{
-    Connectable, MavConnection, MavlinkVersion, SerialConfig, TcpConfig, TcpMode, UdpConfig,
-    UdpMode, dialects::common::MavMessage,
+    Connectable, ConnectionAddress, MavConnection, MavlinkVersion, SerialConfig, TcpConfig,
+    TcpMode, UdpConfig, UdpMode, dialects::common::MavMessage,
 };
 use url::Url;
 
@@ -59,45 +59,56 @@ pub const DEFAULT_SERIAL_BAUD: u32 = 115_200;
 /// query selects V1 (see the module docs). It is `Send + Sync`, so
 /// reader and writer threads may share an `Arc<_>` without an extra mutex.
 pub fn connect(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
-    match url.scheme() {
-        "tcp" => connect_tcp(url),
-        "udp" => connect_udp(url),
-        "serial" => connect_serial(url),
-        scheme => Err(BridgeError::Config(format!(
-            "unsupported transport scheme '{scheme}' (supported: tcp, udp, serial)"
-        ))),
-    }
+    let (address, version) = resolve(url)?;
+    open_mavlink_versioned(&address, version)
 }
 
-fn connect_tcp(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
+/// Check that `url` names a well-formed endpoint without opening it.
+///
+/// Fails on exactly the errors [`connect`] reports before it tries to open
+/// the transport: an unsupported scheme, a missing host or device, or an
+/// invalid `?proto=` / `?baud=` value. These never go away by retrying, so a
+/// caller that retries [`connect`] while the peer comes up should validate
+/// first and give up at once on an error here.
+///
+/// ```
+/// use dora_mavlink2_bridge::transport;
+/// use url::Url;
+///
+/// # fn main() -> Result<(), url::ParseError> {
+/// assert!(transport::validate(&Url::parse("tcp://127.0.0.1:5760")?).is_ok());
+/// assert!(transport::validate(&Url::parse("tcp://127.0.0.1:5760?proto=v3")?).is_err());
+/// assert!(transport::validate(&Url::parse("udpx://127.0.0.1:14550")?).is_err());
+/// # Ok(())
+/// # }
+/// ```
+pub fn validate(url: &Url) -> BridgeResult<()> {
+    resolve(url).map(drop)
+}
+
+/// Parse `url` into the transport to open and its protocol version, doing
+/// no I/O. Shared by [`connect`] and [`validate`] so the two can never
+/// disagree on what a well-formed endpoint is.
+fn resolve(url: &Url) -> BridgeResult<(ConnectionAddress, MavlinkVersion)> {
+    let address = match url.scheme() {
+        "tcp" => TcpConfig::new(host_port(url, DEFAULT_TCP_PORT)?, TcpMode::TcpOut).into(),
+        "udp" => UdpConfig::new(host_port(url, DEFAULT_UDP_PORT)?, UdpMode::Udpin).into(),
+        "serial" => SerialConfig::new(serial_device(url)?, parse_baud(url)?).into(),
+        scheme => {
+            return Err(BridgeError::Config(format!(
+                "unsupported transport scheme '{scheme}' (supported: tcp, udp, serial)"
+            )));
+        }
+    };
+    Ok((address, parse_proto_query(url)?))
+}
+
+/// The `host:port` of a network endpoint, with `default_port` if omitted.
+fn host_port(url: &Url, default_port: u16) -> BridgeResult<String> {
     let host = url
         .host_str()
         .ok_or_else(|| BridgeError::Config(format!("missing host in '{url}'")))?;
-    let port = url.port().unwrap_or(DEFAULT_TCP_PORT);
-    let version = parse_proto_query(url)?;
-    open_mavlink_versioned(
-        &TcpConfig::new(format!("{host}:{port}"), TcpMode::TcpOut),
-        version,
-    )
-}
-
-fn connect_udp(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
-    let host = url
-        .host_str()
-        .ok_or_else(|| BridgeError::Config(format!("missing host in '{url}'")))?;
-    let port = url.port().unwrap_or(DEFAULT_UDP_PORT);
-    let version = parse_proto_query(url)?;
-    open_mavlink_versioned(
-        &UdpConfig::new(format!("{host}:{port}"), UdpMode::Udpin),
-        version,
-    )
-}
-
-fn connect_serial(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
-    let device = serial_device(url)?;
-    let baud = parse_baud(url)?;
-    let version = parse_proto_query(url)?;
-    open_mavlink_versioned(&SerialConfig::new(device, baud), version)
+    Ok(format!("{host}:{}", url.port().unwrap_or(default_port)))
 }
 
 /// Extract the serial device name from a `serial:` URL.
