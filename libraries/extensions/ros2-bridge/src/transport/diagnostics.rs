@@ -100,6 +100,242 @@ pub fn mapping_mismatch(
     ))
 }
 
+/// Which side of a DDS topic an endpoint is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Role {
+    Writer,
+    Reader,
+}
+
+/// One of dora's own DDS endpoints.
+#[derive(Clone, Debug)]
+pub struct LocalEndpoint {
+    pub dds_topic: String,
+    pub role: Role,
+    pub qos: QosPolicies,
+}
+
+/// A DDS endpoint of another participant, as discovery reports it.
+#[derive(Clone, Debug)]
+pub struct RemoteEndpoint {
+    pub guid: crate::rustdds::GUID,
+    pub dds_topic: String,
+    pub role: Role,
+    pub qos: QosPolicies,
+}
+
+/// Something to tell the user. `key` identifies it so it is reported once.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Finding {
+    pub key: String,
+    pub message: String,
+}
+
+/// Compare dora's endpoints with the remote ones: incompatible QoS on a shared
+/// topic, and peers whose RMW does not fit dora's service mapping on a service
+/// topic dora uses.
+pub fn scan(
+    locals: &[LocalEndpoint],
+    remotes: &[RemoteEndpoint],
+    mapping: crate::ros2_client::ServiceMapping,
+) -> Vec<Finding> {
+    let mut findings: Vec<Finding> = Vec::new();
+    let mut push = |key: String, message: String| {
+        if !findings.iter().any(|f| f.key == key) {
+            findings.push(Finding { key, message });
+        }
+    };
+    for local in locals {
+        for remote in remotes.iter().filter(|r| r.dds_topic == local.dds_topic) {
+            if remote.role != local.role {
+                let (offered, requested) = match local.role {
+                    Role::Writer => (&local.qos, &remote.qos),
+                    Role::Reader => (&remote.qos, &local.qos),
+                };
+                if let Some(detail) = qos_mismatch(offered, requested) {
+                    let (ours, theirs) = match local.role {
+                        Role::Writer => ("publisher", "subscription"),
+                        Role::Reader => ("subscription", "publisher"),
+                    };
+                    push(
+                        format!("qos {} {:?} {:?}", local.dds_topic, local.role, remote.guid),
+                        format!(
+                            "QoS mismatch on {}: dora {ours} and remote {theirs} {:?} never \
+                             match; {detail}",
+                            ros_name(&local.dds_topic),
+                            remote.guid
+                        ),
+                    );
+                }
+            }
+            if is_service_topic(&local.dds_topic)
+                && let Some(peer) = peer_rmw(&remote.guid)
+                && let Some(message) = mapping_mismatch(mapping, peer)
+            {
+                push(format!("rmw {peer:?}"), message);
+            }
+        }
+    }
+    findings
+}
+
+/// Watches a DDS context in the background and reports, once each, the QoS
+/// and RMW-mapping problems [`scan`] finds between dora's endpoints and the
+/// remote ones. It reads RustDDS's discovery database, so it never consumes
+/// the participant status events ros2-client's spinner depends on.
+pub struct DdsDiagnostics {
+    locals: std::sync::Arc<std::sync::Mutex<Vec<LocalEndpoint>>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl DdsDiagnostics {
+    /// How often discovery is re-checked.
+    pub const INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// Start watching `participant`; `report` receives each new finding.
+    pub fn start(
+        participant: crate::rustdds::DomainParticipant,
+        mapping: crate::ros2_client::ServiceMapping,
+        report: impl Fn(&str) + Send + 'static,
+    ) -> Self {
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
+        let locals: Arc<Mutex<Vec<LocalEndpoint>>> = Arc::default();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (watched, stopped) = (locals.clone(), stop.clone());
+        let spawned = std::thread::Builder::new()
+            .name("dora-dds-diagnostics".into())
+            .spawn(move || {
+                let mut reported = std::collections::HashSet::new();
+                while !stopped.load(Ordering::Relaxed) {
+                    std::thread::sleep(Self::INTERVAL);
+                    let locals = watched.lock().map(|l| l.clone()).unwrap_or_default();
+                    if locals.is_empty() {
+                        continue;
+                    }
+                    for finding in scan(&locals, &remote_endpoints(&participant), mapping) {
+                        if reported.insert(finding.key) {
+                            report(&finding.message);
+                        }
+                    }
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!("DDS diagnostics are off: cannot start their thread: {error}");
+        }
+        Self { locals, stop }
+    }
+
+    /// Watch a topic endpoint with an absolute ROS name.
+    pub fn watch_topic(&self, name: &str, role: Role, qos: QosPolicies) {
+        self.watch(format!("rt{name}"), role, qos);
+    }
+
+    /// Watch a service client or server with an absolute ROS name.
+    pub fn watch_service(&self, name: &str, client: bool, qos: &QosPolicies) {
+        for (topic, role) in service_endpoints(name, client) {
+            self.watch(topic, role, qos.clone());
+        }
+    }
+
+    /// Watch an action client or server with an absolute ROS name.
+    pub fn watch_action(
+        &self,
+        name: &str,
+        client: bool,
+        qos: &QosPolicies,
+        status_qos: &QosPolicies,
+    ) {
+        for (topic, role, status) in action_endpoints(name, client) {
+            self.watch(topic, role, if status { status_qos } else { qos }.clone());
+        }
+    }
+
+    /// Add one of dora's endpoints to the comparison.
+    pub fn watch(&self, dds_topic: impl Into<String>, role: Role, qos: QosPolicies) {
+        if let Ok(mut locals) = self.locals.lock() {
+            locals.push(LocalEndpoint {
+                dds_topic: dds_topic.into(),
+                role,
+                qos,
+            });
+        }
+    }
+}
+
+impl Drop for DdsDiagnostics {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The DDS request and reply topics of a service with an absolute ROS name,
+/// from the client's (`client`) or the server's side.
+pub fn service_endpoints(name: &str, client: bool) -> Vec<(String, Role)> {
+    let (request, reply) = if client {
+        (Role::Writer, Role::Reader)
+    } else {
+        (Role::Reader, Role::Writer)
+    };
+    vec![
+        (format!("rq{name}Request"), request),
+        (format!("rr{name}Reply"), reply),
+    ]
+}
+
+/// The DDS topics of an action with an absolute ROS name: its three services
+/// and its feedback and status topics. The flag marks the status topic, which
+/// uses its own QoS.
+pub fn action_endpoints(name: &str, client: bool) -> Vec<(String, Role, bool)> {
+    let mut endpoints: Vec<_> = ["send_goal", "cancel_goal", "get_result"]
+        .iter()
+        .flat_map(|service| service_endpoints(&format!("{name}/_action/{service}"), client))
+        .map(|(topic, role)| (topic, role, false))
+        .collect();
+    let topic_role = if client { Role::Reader } else { Role::Writer };
+    endpoints.push((format!("rt{name}/_action/feedback"), topic_role, false));
+    endpoints.push((format!("rt{name}/_action/status"), topic_role, true));
+    endpoints
+}
+
+/// Every endpoint discovery knows about that belongs to another participant.
+fn remote_endpoints(participant: &crate::rustdds::DomainParticipant) -> Vec<RemoteEndpoint> {
+    use crate::rustdds::RTPSEntity;
+    let own = participant.guid().prefix;
+    let readers = participant
+        .discovered_readers()
+        .into_iter()
+        .map(|r| RemoteEndpoint {
+            guid: r.reader_proxy.remote_reader_guid,
+            dds_topic: r.subscription_topic_data.topic_name().clone(),
+            role: Role::Reader,
+            qos: r.subscription_topic_data.qos(),
+        });
+    let writers = participant
+        .discovered_writers()
+        .into_iter()
+        .map(|w| RemoteEndpoint {
+            guid: w.writer_proxy.remote_writer_guid,
+            dds_topic: w.publication_topic_data.topic_name().clone(),
+            role: Role::Writer,
+            qos: w.publication_topic_data.qos(),
+        });
+    readers
+        .chain(writers)
+        .filter(|e| e.guid.prefix != own)
+        .collect()
+}
+
+/// `rt/turtle1/pose` -> `/turtle1/pose`, for messages.
+fn ros_name(dds_topic: &str) -> String {
+    match dds_topic.split_once('/') {
+        Some((_, rest)) => format!("/{rest}"),
+        None => dds_topic.to_owned(),
+    }
+}
+
 /// Set to `1` to run a DDS context even though `ROS_DISTRO` needs a different
 /// Gid layout than the build.
 pub const ALLOW_DISTRO_MISMATCH_ENV: &str = "DORA_ROS2_ALLOW_DISTRO_MISMATCH";
@@ -112,6 +348,31 @@ pub enum DistroCheck {
     Warn(String),
     /// Different Gid layout: graph discovery cannot work.
     Mismatch(String),
+}
+
+/// What to do with a distro check: `Err` refuses to start, `Ok(Some(_))` is a
+/// warning to log. A mismatch becomes a warning when it was explicitly allowed.
+pub fn distro_gate(check: DistroCheck, allow_mismatch: bool) -> Result<Option<String>, String> {
+    match check {
+        DistroCheck::Ok => Ok(None),
+        DistroCheck::Warn(message) => Ok(Some(message)),
+        DistroCheck::Mismatch(message) if allow_mismatch => Ok(Some(message)),
+        DistroCheck::Mismatch(message) => Err(message),
+    }
+}
+
+/// Check `ROS_DISTRO` against the build before a DDS context is created.
+/// Returns the error to fail with; logs anything less serious.
+pub fn enforce_ros_distro() -> Result<(), String> {
+    let check = check_ros_distro(
+        crate::ros2_client::COMPILED_ROS_DISTRO.as_str(),
+        std::env::var("ROS_DISTRO").ok().as_deref(),
+    );
+    let allow = std::env::var(ALLOW_DISTRO_MISMATCH_ENV).is_ok_and(|v| v == "1");
+    if let Some(warning) = distro_gate(check, allow)? {
+        tracing::warn!("{warning}");
+    }
+    Ok(())
 }
 
 /// The `rmw_dds_common` Gid width a distro uses: 24 bytes up to Humble, 16
@@ -307,6 +568,146 @@ mod tests {
         assert!(is_service_topic("rr/fibonacci/_action/send_goalReply"));
         assert!(!is_service_topic("rt/chatter"));
         assert!(!is_service_topic("rt/fibonacci/_action/status"));
+    }
+
+    fn reliable() -> QosPolicies {
+        qos(|b| {
+            b.reliability(policy::Reliability::Reliable {
+                max_blocking_time: rustdds::Duration::ZERO,
+            })
+        })
+    }
+
+    fn best_effort() -> QosPolicies {
+        qos(|b| b.reliability(policy::Reliability::BestEffort))
+    }
+
+    fn local(topic: &str, role: Role, qos: QosPolicies) -> LocalEndpoint {
+        LocalEndpoint {
+            dds_topic: topic.into(),
+            role,
+            qos,
+        }
+    }
+
+    fn remote(vendor: [u8; 2], topic: &str, role: Role, qos: QosPolicies) -> RemoteEndpoint {
+        RemoteEndpoint {
+            guid: guid_from_vendor(vendor),
+            dds_topic: topic.into(),
+            role,
+            qos,
+        }
+    }
+
+    const FAST: [u8; 2] = [0x01, 0x0f];
+    const CYCLONE: [u8; 2] = [0x01, 0x10];
+
+    #[test]
+    fn scan_reports_an_incompatible_remote_on_the_same_topic() {
+        use crate::ros2_client::ServiceMapping;
+        let locals = [local("rt/chatter", Role::Reader, reliable())];
+        let remotes = [remote(FAST, "rt/chatter", Role::Writer, best_effort())];
+        let findings = scan(&locals, &remotes, ServiceMapping::Enhanced);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].message.contains("/chatter"), "{findings:?}");
+        assert!(
+            findings[0].message.contains("dora subscription"),
+            "{findings:?}"
+        );
+        assert!(findings[0].message.contains("reliability"), "{findings:?}");
+    }
+
+    #[test]
+    fn scan_ignores_other_topics_same_roles_and_compatible_qos() {
+        use crate::ros2_client::ServiceMapping;
+        let locals = [local("rt/chatter", Role::Reader, reliable())];
+        let remotes = [
+            remote(FAST, "rt/other", Role::Writer, best_effort()),
+            remote(FAST, "rt/chatter", Role::Reader, best_effort()),
+            remote(FAST, "rt/chatter", Role::Writer, reliable()),
+        ];
+        assert_eq!(scan(&locals, &remotes, ServiceMapping::Enhanced), vec![]);
+    }
+
+    #[test]
+    fn scan_reports_a_mapping_mismatch_once_per_rmw() {
+        use crate::ros2_client::ServiceMapping;
+        let locals = [local("rq/add_two_intsRequest", Role::Writer, reliable())];
+        let remotes = [
+            remote(CYCLONE, "rq/add_two_intsRequest", Role::Reader, reliable()),
+            remote(CYCLONE, "rq/add_two_intsRequest", Role::Reader, reliable()),
+            remote(CYCLONE, "rq/unrelatedRequest", Role::Reader, reliable()),
+        ];
+        let findings = scan(&locals, &remotes, ServiceMapping::Enhanced);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].message.contains("rmw_cyclonedds_cpp"),
+            "{findings:?}"
+        );
+        // Same RMW as the mapping: nothing to report.
+        assert_eq!(scan(&locals, &remotes, ServiceMapping::Cyclone), vec![]);
+    }
+
+    #[test]
+    fn the_distro_gate_refuses_a_mismatch_unless_allowed() {
+        let mismatch = || DistroCheck::Mismatch("gid".into());
+        assert_eq!(distro_gate(mismatch(), false), Err("gid".to_owned()));
+        assert_eq!(distro_gate(mismatch(), true), Ok(Some("gid".to_owned())));
+        assert_eq!(
+            distro_gate(DistroCheck::Warn("w".into()), false),
+            Ok(Some("w".to_owned()))
+        );
+        assert_eq!(distro_gate(DistroCheck::Ok, false), Ok(None));
+    }
+
+    #[test]
+    fn service_endpoints_match_ros2_client_naming() {
+        use crate::ros2_client::{Name, NodeName};
+        let node = NodeName::new("/", "n").unwrap();
+        let name = Name::parse("/add_two_ints").unwrap();
+        let request = name.to_dds_name("rq", &node, "Request");
+        let reply = name.to_dds_name("rr", &node, "Reply");
+        assert_eq!(
+            service_endpoints("/add_two_ints", true),
+            vec![
+                (request.clone(), Role::Writer),
+                (reply.clone(), Role::Reader)
+            ]
+        );
+        assert_eq!(
+            service_endpoints("/add_two_ints", false),
+            vec![(request, Role::Reader), (reply, Role::Writer)]
+        );
+    }
+
+    #[test]
+    fn action_endpoints_cover_the_three_services_and_two_topics() {
+        let client = action_endpoints("/fibonacci", true);
+        assert!(client.contains(&(
+            "rq/fibonacci/_action/send_goalRequest".into(),
+            Role::Writer,
+            false
+        )));
+        assert!(client.contains(&(
+            "rr/fibonacci/_action/get_resultReply".into(),
+            Role::Reader,
+            false
+        )));
+        assert!(client.contains(&(
+            "rq/fibonacci/_action/cancel_goalRequest".into(),
+            Role::Writer,
+            false
+        )));
+        assert!(client.contains(&("rt/fibonacci/_action/feedback".into(), Role::Reader, false)));
+        assert!(client.contains(&("rt/fibonacci/_action/status".into(), Role::Reader, true)));
+        assert_eq!(client.len(), 8);
+        let server = action_endpoints("/fibonacci", false);
+        assert!(server.contains(&("rt/fibonacci/_action/status".into(), Role::Writer, true)));
+        assert!(server.contains(&(
+            "rq/fibonacci/_action/send_goalRequest".into(),
+            Role::Reader,
+            false
+        )));
     }
 
     #[test]

@@ -45,6 +45,8 @@ pub struct Context {
 impl Context {
     /// Open a DDS ROS2 context in the requested ROS domain.
     pub fn new(domain_id: u16) -> Result<Self, TransportError> {
+        super::diagnostics::enforce_ros_distro()
+            .map_err(|message| TransportError::DdsContext { message })?;
         ros2_client::Context::with_options(ros2_client::ContextOptions::new().domain_id(domain_id))
             .map(|inner| Self { inner })
             .map_err(|error| TransportError::DdsContext {
@@ -69,6 +71,11 @@ impl Context {
     /// Borrow the concrete context for legacy DDS-only call sites.
     pub fn as_inner(&self) -> &ros2_client::Context {
         &self.inner
+    }
+
+    /// Consume the adapter and return the concrete context.
+    pub fn into_inner(self) -> ros2_client::Context {
+        self.inner
     }
 }
 

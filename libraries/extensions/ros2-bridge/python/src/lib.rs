@@ -23,6 +23,7 @@ use ::dora_ros2_bridge::{
             wait_for_server as wait_for_action_server,
         },
     },
+    transport::diagnostics::{DdsDiagnostics, Role},
 };
 use arrow::{
     array::{ArrayData, make_array},
@@ -138,6 +139,8 @@ pub struct Ros2Context {
     context: dora_ros2_bridge::transport::Context,
     transport: Ros2Transport,
     messages: Arc<HashMap<String, HashMap<String, Message>>>,
+    // Reports QoS and RMW-mapping mismatches with ROS 2 peers (DDS only).
+    diagnostics: Option<Arc<DdsDiagnostics>>,
 }
 
 /// Resolve the DDS domain: explicit `domain_id` wins, else `ROS_DOMAIN_ID`, else 0.
@@ -256,10 +259,21 @@ impl Ros2Context {
             &transport.config,
             domain_id,
         ))?;
+        let diagnostics = match &context {
+            dora_ros2_bridge::transport::Context::Dds(dds) => {
+                Some(Arc::new(DdsDiagnostics::start(
+                    dds.as_inner().domain_participant(),
+                    dora_ros2_bridge::detect_service_mapping(),
+                    |finding| eprintln!("warning: {finding}"),
+                )))
+            }
+            dora_ros2_bridge::transport::Context::Zenoh(_) => None,
+        };
         Ok(Self {
             context,
             transport,
             messages: Arc::new(messages),
+            diagnostics,
         })
     }
 
@@ -435,6 +449,7 @@ impl Ros2Context {
             _spinner_pool: spinner_pool,
             _rosout: rosout,
             parameters,
+            diagnostics: self.diagnostics.clone(),
         })
     }
 }
@@ -492,6 +507,7 @@ pub struct Ros2Node {
     // A Zenoh node's parameters and their services (`None` on DDS, where the
     // ros2-client node has them, and on a Zenoh node without parameters).
     parameters: Option<ParameterServer>,
+    diagnostics: Option<Arc<DdsDiagnostics>>,
 }
 
 impl Ros2Node {
@@ -633,6 +649,7 @@ impl Ros2Node {
     ) -> eyre::Result<Ros2Publisher> {
         let publisher = match (&mut self.node, &topic.topic) {
             (dora_ros2_bridge::transport::Node::Dds(node), TopicBackend::Dds(topic)) => {
+                watch_dds_topic(self.diagnostics.as_deref(), topic, Role::Writer, &qos);
                 PublisherBackend::Dds(
                     node.as_inner_mut()
                         .create_publisher(topic, qos.map(Into::into))?,
@@ -680,6 +697,7 @@ impl Ros2Node {
     ) -> eyre::Result<Ros2Subscription> {
         let subscription = match (&mut self.node, &topic.topic) {
             (dora_ros2_bridge::transport::Node::Dds(node), TopicBackend::Dds(topic)) => {
+                watch_dds_topic(self.diagnostics.as_deref(), topic, Role::Reader, &qos);
                 SubscriptionBackend::Dds(Some(
                     node.as_inner_mut()
                         .create_subscription(topic, qos.map(Into::into))?,
@@ -755,6 +773,13 @@ impl Ros2Node {
         let client = match &mut self.node {
             dora_ros2_bridge::transport::Node::Dds(node) => {
                 let qos = dora_ros2_bridge::transport::dds::to_qos_profile(&neutral_qos);
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics.watch_service(
+                        &parse_ros2_name(service_name)?.to_string(),
+                        true,
+                        &(&qos).into(),
+                    );
+                }
                 ServiceClientBackend::Dds(Box::new(
                     node.as_inner_mut()
                         .create_client::<BridgeMessage, BridgeMessage>(
@@ -876,6 +901,13 @@ impl Ros2Node {
         let server = match &mut self.node {
             dora_ros2_bridge::transport::Node::Dds(node) => {
                 let qos = dora_ros2_bridge::transport::dds::to_qos_profile(&neutral_qos);
+                if let Some(diagnostics) = &self.diagnostics {
+                    diagnostics.watch_service(
+                        &parse_ros2_name(service_name)?.to_string(),
+                        false,
+                        &(&qos).into(),
+                    );
+                }
                 ServiceServerBackend::Dds(Box::new(
                     node.as_inner_mut()
                         .create_server::<BridgeMessage, BridgeMessage>(
@@ -946,6 +978,15 @@ impl Ros2Node {
         let client = match &mut self.node {
             dora_ros2_bridge::transport::Node::Dds(node) => {
                 let qos = dora_ros2_bridge::transport::dds::to_qos_profile(&neutral_qos);
+                if let Some(diagnostics) = &self.diagnostics {
+                    let policies = (&qos).into();
+                    diagnostics.watch_action(
+                        &parse_ros2_name(action_name)?.to_string(),
+                        true,
+                        &policies,
+                        &policies,
+                    );
+                }
                 ActionClientBackend::Dds(Box::new(
                     node.as_inner_mut()
                         .create_action_client::<BridgeMessage, BridgeMessage, BridgeMessage>(
@@ -1017,6 +1058,15 @@ impl Ros2Node {
             match &mut self.node {
                 dora_ros2_bridge::transport::Node::Dds(node) => {
                     let qos = dora_ros2_bridge::transport::dds::to_qos_profile(&neutral_qos);
+                    if let Some(diagnostics) = &self.diagnostics {
+                        let policies = (&qos).into();
+                        diagnostics.watch_action(
+                            &parse_ros2_name(action_name)?.to_string(),
+                            false,
+                            &policies,
+                            &policies,
+                        );
+                    }
                     let server = node
                         .as_inner_mut()
                         .create_action_server::<BridgeMessage, BridgeMessage, BridgeMessage>(
@@ -1398,6 +1448,28 @@ pub struct Ros2Topic {
     name: String,
     topic: TopicBackend,
     type_info: TypeInfo<'static>,
+}
+
+/// Registers a DDS publisher or subscription with the diagnostics watcher, with
+/// the QoS RustDDS gives the endpoint: the topic's QoS overridden by `qos`.
+fn watch_dds_topic(
+    diagnostics: Option<&DdsDiagnostics>,
+    topic: &rustdds::Topic,
+    role: Role,
+    qos: &Option<qos::Ros2QosPolicies>,
+) {
+    use rustdds::{TopicDescription, qos::HasQoSPolicy};
+    let Some(diagnostics) = diagnostics else {
+        return;
+    };
+    let effective = match qos {
+        Some(qos) => {
+            let profile: ros2_client::QosProfile = qos.clone().into();
+            topic.qos().modify_by(&rustdds::QosPolicies::from(&profile))
+        }
+        None => topic.qos(),
+    };
+    diagnostics.watch(topic.name(), role, effective);
 }
 
 enum TopicBackend {

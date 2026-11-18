@@ -19,11 +19,13 @@ use dora_node_api::{
     merged::{MergeExternal, MergedEvent},
 };
 use dora_ros2_bridge::ros2_client;
+use dora_ros2_bridge::rustdds::QosPolicies;
 use dora_ros2_bridge::transport::action::zenoh::{
     ActionClient as ZenohActionClient, ActionKeys, ActionServer as ZenohActionServer, ActionTokens,
     CancelableGoal, goal_accept_stamp, process_cancel_request,
 };
 use dora_ros2_bridge::transport::action::{ConcurrentGoalLimit, GoalSlots, MAX_CONCURRENT_GOALS};
+use dora_ros2_bridge::transport::diagnostics::Role;
 use dora_ros2_bridge::transport::zenoh::{
     Context as ZenohContext, ContextOptions as ZenohContextOptions,
     compatibility::{TypeDescriptionResolver, resolve_action, resolve_message, resolve_service},
@@ -1184,7 +1186,7 @@ fn run_topic_mode(
 ) -> eyre::Result<()> {
     let topics = resolve_topics(&config)?;
 
-    let (mut ros_node, _pool) = create_ros_node(&config)?;
+    let (mut ros_node, _pool, diagnostics) = create_ros_node(&config)?;
 
     let mut subscribers: Vec<(String, SubscriptionStream)> = Vec::new();
     let mut publishers: Vec<(
@@ -1201,6 +1203,15 @@ fn run_topic_mode(
             .unwrap_or(&config.qos)
             .to_dds_qos();
 
+        let role = match topic_config.direction {
+            Ros2Direction::Subscribe => Role::Reader,
+            Ros2Direction::Publish => Role::Writer,
+        };
+        diagnostics.watch_topic(
+            &absolute_ros2_name(&topic_config.topic)?.to_string(),
+            role,
+            QosPolicies::from(&qos),
+        );
         let ros_topic = ros_node
             .create_topic(
                 &absolute_ros2_name(&topic_config.topic)?,
@@ -1287,9 +1298,14 @@ fn run_service_mode(
         messages: messages.clone(),
     };
 
-    let (mut ros_node, _pool) = create_ros_node(&config)?;
+    let (mut ros_node, _pool, diagnostics) = create_ros_node(&config)?;
 
     let service_qos = bridge_endpoint_qos(&config);
+    diagnostics.watch_service(
+        &absolute_ros2_name(service_name)?.to_string(),
+        matches!(role, Ros2Role::Client),
+        &QosPolicies::from(&service_qos),
+    );
 
     match role {
         Ros2Role::Client => {
@@ -1530,11 +1546,17 @@ fn run_action_mode(
     let result_type_info = make_type_info("Result");
     let feedback_type_info = make_type_info("Feedback");
 
-    let (mut ros_node, _pool) = create_ros_node(&config)?;
+    let (mut ros_node, _pool, diagnostics) = create_ros_node(&config)?;
     let qos = bridge_endpoint_qos(&config);
     let status_qos = action_status_qos(&config.qos);
     let action_ros2_name = absolute_ros2_name(action_name)?;
     let action_type_name = ros2_client::ActionTypeName::new(&package, &type_name);
+    diagnostics.watch_action(
+        &action_ros2_name.to_string(),
+        matches!(role, Ros2Role::Client),
+        &QosPolicies::from(&qos),
+        &QosPolicies::from(&status_qos),
+    );
 
     match role {
         Ros2Role::Client => {
@@ -2251,10 +2273,22 @@ struct SubscriptionStream {
 
 fn create_ros_node(
     config: &Ros2BridgeConfig,
-) -> eyre::Result<(ros2_client::Node, futures::executor::ThreadPool)> {
+) -> eyre::Result<(
+    ros2_client::Node,
+    futures::executor::ThreadPool,
+    dora_ros2_bridge::transport::diagnostics::DdsDiagnostics,
+)> {
     let domain_id = parse_dds_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref())?;
-    let ros_context =
-        create_ros_context(domain_id).map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
+    let ros_context = dora_ros2_bridge::transport::dds::Context::new(domain_id)
+        .map_err(|e| eyre!("{e}"))?
+        .into_inner();
+    // Report QoS and RMW-mapping mismatches with ROS 2 peers on stderr, which
+    // dora shows by default (warnings are below the default log level).
+    let diagnostics = dora_ros2_bridge::transport::diagnostics::DdsDiagnostics::start(
+        ros_context.domain_participant(),
+        dora_ros2_bridge::detect_service_mapping(),
+        |finding| eprintln!("warning: {finding}"),
+    );
     let node_name = config
         .node_name
         .clone()
@@ -2279,11 +2313,7 @@ fn create_ros_node(
     })
     .context("failed to spawn ros2 spinner")?;
 
-    Ok((ros_node, pool))
-}
-
-fn create_ros_context(domain_id: u16) -> ros2_client::CreateResult<ros2_client::Context> {
-    ros2_client::Context::with_options(ros2_client::ContextOptions::new().domain_id(domain_id))
+    Ok((ros_node, pool, diagnostics))
 }
 
 /// Parse `ROS_DOMAIN_ID` for the Zenoh transport.
