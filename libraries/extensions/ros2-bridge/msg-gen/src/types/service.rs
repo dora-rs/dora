@@ -153,9 +153,20 @@ impl Service {
                         // Request ids this client has sent and not yet matched to a
                         // response. `receive_response` can hand back responses for *other*
                         // clients sharing the service topic (see its rustdoc), so the pump
-                        // forwards only responses whose id is in this set.
-                        let pending: std::sync::Arc<std::sync::Mutex<Vec<crate::ros2_client::service::RmwRequestId>>> =
-                            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+                        // forwards only responses whose id is in this set. Bound both age
+                        // and count so unanswered calls cannot leak indefinitely.
+                        let pending: std::sync::Arc<
+                            std::sync::Mutex<
+                                dora_ros2_bridge::transport::dds::PendingDdsRequests<
+                                    crate::ros2_client::service::RmwRequestId,
+                                >,
+                            >,
+                        > = std::sync::Arc::new(std::sync::Mutex::new(
+                            dora_ros2_bridge::transport::dds::PendingDdsRequests::new(
+                                MAX_PENDING_REQUESTS,
+                                Some(SERVICE_RESPONSE_TIMEOUT),
+                            ),
+                        ));
 
                         // Single response pump per client. ros2-client's
                         // `async_receive_response(id)` discards samples whose id does not
@@ -178,13 +189,9 @@ impl Service {
                                             // they belong to another client and are delivered
                                             // to that client's own pump too.
                                             let is_ours = match pending.lock() {
-                                                Ok(mut pending) => match pending.iter().position(|pid| *pid == req_id) {
-                                                    Some(pos) => {
-                                                        pending.remove(pos);
-                                                        true
-                                                    }
-                                                    None => false,
-                                                },
+                                                Ok(mut pending) => pending
+                                                    .take_matching(|pid| *pid == req_id)
+                                                    .is_some(),
                                                 Err(_) => false,
                                             };
                                             if is_ours && response_tx.send(Ok(response)).is_err() {
@@ -293,7 +300,13 @@ impl Service {
             enum #client_backend {
                 Dds {
                     client: std::sync::Arc<crate::ros2_client::service::Client< service :: #self_name >>,
-                    pending: std::sync::Arc<std::sync::Mutex<Vec<crate::ros2_client::service::RmwRequestId>>>,
+                    pending: std::sync::Arc<
+                        std::sync::Mutex<
+                            dora_ros2_bridge::transport::dds::PendingDdsRequests<
+                                crate::ros2_client::service::RmwRequestId,
+                            >,
+                        >,
+                    >,
                 },
                 #[cfg(feature = "rmw-zenoh")]
                 Zenoh {
@@ -754,6 +767,25 @@ mod codegen_tests {
         assert!(
             server.contains("NodeServiceServer::declare"),
             "server create fn"
+        );
+    }
+
+    #[test]
+    fn dds_service_client_bounds_pending_requests() {
+        let svc = add_two_ints();
+        let (_decl, imp) = svc.cxx_service_creation_functions("test_pkg");
+        let client = format_valid_rust(imp);
+        assert!(
+            client.contains("PendingDdsRequests"),
+            "DDS service client must track pending requests in a bounded PendingDdsRequests queue"
+        );
+        assert!(
+            client.contains("SERVICE_RESPONSE_TIMEOUT"),
+            "DDS service client must configure SERVICE_RESPONSE_TIMEOUT eviction"
+        );
+        assert!(
+            client.contains("MAX_PENDING_REQUESTS"),
+            "DDS service client must bound pending requests to MAX_PENDING_REQUESTS"
         );
     }
 }

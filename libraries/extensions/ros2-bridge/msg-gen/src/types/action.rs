@@ -331,9 +331,21 @@ impl Action {
                         ).map_err(|e| eyre::eyre!("{e:?}"))?;
                         let client = Arc::new(client);
                         // GetResult request ids this client has sent and not yet matched to a
-                        // response, each paired with the goal it belongs to.
-                        let pending: Arc<std::sync::Mutex<Vec<(crate::ros2_client::service::RmwRequestId, ffi::ActionGoalId)>>> =
-                            Arc::new(std::sync::Mutex::new(Vec::new()));
+                        // response, each paired with the goal it belongs to. Bounded to
+                        // `MAX_PENDING_REQUESTS` so unanswered calls cannot leak indefinitely.
+                        let pending: Arc<
+                            std::sync::Mutex<
+                                dora_ros2_bridge::transport::dds::PendingDdsRequests<(
+                                    crate::ros2_client::service::RmwRequestId,
+                                    ffi::ActionGoalId,
+                                )>,
+                            >,
+                        > = Arc::new(std::sync::Mutex::new(
+                            dora_ros2_bridge::transport::dds::PendingDdsRequests::new(
+                                MAX_PENDING_REQUESTS,
+                                None,
+                            ),
+                        ));
 
                         // dora #1972 (same class as #1970): one GetResult response pump that
                         // demuxes by request id. ros2-client's `async_request_result` discards
@@ -367,9 +379,8 @@ impl Action {
                                             // client sharing the topic).
                                             let goal_id = match pending.lock() {
                                                 Ok(mut guard) => guard
-                                                    .iter()
-                                                    .position(|(pid, _)| *pid == req_id)
-                                                    .map(|pos| guard.remove(pos).1),
+                                                    .take_matching(|(pid, _)| *pid == req_id)
+                                                    .map(|(_, goal_id)| goal_id),
                                                 Err(_) => None,
                                             };
                                             if let Some(goal_id) = goal_id {
@@ -539,7 +550,14 @@ impl Action {
             enum #client_backend {
                 Dds {
                     client: std::sync::Arc<crate::ros2_client::action::ActionClient< action :: #self_name>>,
-                    pending: std::sync::Arc<std::sync::Mutex<Vec<(crate::ros2_client::service::RmwRequestId, ffi::ActionGoalId)>>>,
+                    pending: std::sync::Arc<
+                        std::sync::Mutex<
+                            dora_ros2_bridge::transport::dds::PendingDdsRequests<(
+                                crate::ros2_client::service::RmwRequestId,
+                                ffi::ActionGoalId,
+                            )>,
+                        >,
+                    >,
                 },
                 #[cfg(feature = "rmw-zenoh")]
                 Zenoh {
@@ -1498,5 +1516,26 @@ mod codegen_tests {
         assert!(server.contains("GeneratedNode::Zenoh"), "server create fn");
         assert!(server.contains("TypedActionServer"), "server create fn");
         assert!(!server.contains("dds_node_mut"), "server create fn");
+    }
+
+    #[test]
+    fn dds_action_client_bounds_pending_results() {
+        let action = Action {
+            package: "test_pkg".to_string(),
+            name: "Fibonacci".to_string(),
+            goal: empty_msg("Fibonacci_Goal"),
+            result: empty_msg("Fibonacci_Result"),
+            feedback: empty_msg("Fibonacci_Feedback"),
+        };
+        let (_decl, imp) = action.cxx_action_creation_functions("test_pkg");
+        let client = format_valid_rust(imp);
+        assert!(
+            client.contains("PendingDdsRequests"),
+            "DDS action client must bound pending GetResult requests with PendingDdsRequests"
+        );
+        assert!(
+            client.contains("MAX_PENDING_REQUESTS"),
+            "DDS action client must bound pending GetResult requests to MAX_PENDING_REQUESTS"
+        );
     }
 }
