@@ -4,9 +4,9 @@
 use crate::{
     Daemon, DoraEvent, ProcessOperation, break_input,
     extract_err_from_stderr::extract_err_from_stderr, extract_node_results, finish_drain_grace,
-    health_check_should_kill, is_sigkill_like_exit, is_sigterm_like_exit, node_communication,
-    reclaim_extensions_of_exited_node, running_dataflow, send_with_timestamp,
-    spawn_stack_sample_capture, startup_timeout_should_kill,
+    health_check_should_kill, health_check_silence_since, is_sigkill_like_exit,
+    is_sigterm_like_exit, node_communication, reclaim_extensions_of_exited_node, running_dataflow,
+    send_with_timestamp, spawn_stack_sample_capture, startup_timeout_should_kill,
 };
 use dora_core::config::NodeId;
 use dora_message::{
@@ -115,7 +115,13 @@ impl Daemon {
                 let Some(timeout) = node.health_check_timeout else {
                     continue;
                 };
-                let last = node.last_activity.load(atomic::Ordering::Acquire);
+                let Some(last) = health_check_silence_since(
+                    dataflow.dataflow_started,
+                    node.last_activity.load(atomic::Ordering::Acquire),
+                    dataflow.started_at_millis,
+                ) else {
+                    continue;
+                };
                 if !health_check_should_kill(connected, last, now_millis, timeout) {
                     continue;
                 }

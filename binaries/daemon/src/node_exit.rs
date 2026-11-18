@@ -107,6 +107,20 @@ pub(crate) fn health_check_should_kill(
     u128::from(elapsed_ms) > timeout.as_millis()
 }
 
+/// The instant a connected node's silence is counted from, or `None` while its
+/// dataflow has not started (#4198).
+///
+/// A subscribed node sends nothing while it is parked at the startup barrier,
+/// which a slow node on another daemon can hold for longer than
+/// `health_check_timeout`. That wait is not silence.
+pub(crate) fn health_check_silence_since(
+    dataflow_started: bool,
+    last_activity_millis: u64,
+    started_at_millis: u64,
+) -> Option<u64> {
+    dataflow_started.then(|| last_activity_millis.max(started_at_millis))
+}
+
 /// Grace period before the finish-straggler watchdog escalates a stuck node, or
 /// `None` if the watchdog has been explicitly **disabled**.
 ///
@@ -212,6 +226,40 @@ mod health_check_tests {
     use std::time::Duration;
 
     const TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn a_node_parked_at_the_startup_barrier_is_not_checked() {
+        // Connected (subscribed) 10 s ago, but the dataflow has not started:
+        // a node on another daemon has not subscribed yet.
+        assert_eq!(super::health_check_silence_since(false, 1_000, 0), None);
+    }
+
+    #[test]
+    fn silence_is_counted_from_the_barrier_release() {
+        // Last request at subscribe (1 s), barrier released at 9 s: at 9.5 s
+        // the node has been silent for 0.5 s, not 8.5 s.
+        let since = super::health_check_silence_since(true, 1_000, 9_000).unwrap();
+        assert!(!health_check_should_kill(
+            true,
+            since,
+            9_500,
+            Duration::from_secs(1)
+        ));
+        assert!(health_check_should_kill(
+            true,
+            since,
+            10_500,
+            Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn later_activity_is_used_after_start() {
+        assert_eq!(
+            super::health_check_silence_since(true, 12_000, 9_000),
+            Some(12_000)
+        );
+    }
 
     #[test]
     fn not_connected_is_never_killed_even_when_long_silent() {

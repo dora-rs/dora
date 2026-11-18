@@ -185,8 +185,8 @@ pub(crate) use local_delivery::{
 };
 pub(crate) use metrics::{METRICS_INTERVAL, MetricsState};
 pub(crate) use node_exit::{
-    finish_drain_grace, health_check_should_kill, is_sigkill_like_exit, is_sigterm_like_exit,
-    startup_timeout_should_kill,
+    finish_drain_grace, health_check_should_kill, health_check_silence_since, is_sigkill_like_exit,
+    is_sigterm_like_exit, startup_timeout_should_kill,
 };
 pub(crate) use running_dataflow::{
     FinishDataflowWhen, InputDeadline, ProcessHandle, ProcessOperation, RunningDataflow,
