@@ -1148,9 +1148,28 @@ DDS only the status stream shows `Aborted`.
 - **RMW must match.** Service/action correlation differs between Fast-DDS
   (`Enhanced`) and Cyclone mappings; the bridge picks the mapping from
   `RMW_IMPLEMENTATION` (at codegen time for native, runtime for the YAML bridge).
-  A mismatch makes calls hang. Set `RMW_IMPLEMENTATION` consistently on both sides.
+  A mismatch makes calls hang. Set `RMW_IMPLEMENTATION` consistently on both sides;
+  on DDS the bridge warns when it sees a peer whose RMW does not fit (see below).
 - There is **no `wait_for_action_server`** in `ros2-client`; a client's first
   `send_goal` simply times out if no server is present.
+
+### DDS diagnostics
+
+On the DDS transport, the YAML and Python bridges print a `warning:` line on
+stderr (shown by default), once per finding, when they detect a misconfiguration
+that otherwise fails silently:
+
+- **QoS mismatch.** A ROS 2 endpoint on the same topic whose QoS can never match
+  dora's endpoint, with the policy and both values, for example
+  `QoS mismatch on /chatter: dora subscription and remote publisher 01.0f.… never match; reliability: the reader requests RELIABLE, the writer offers BEST_EFFORT`.
+- **RMW mapping.** Services or actions served by Fast-DDS or CycloneDDS peers
+  while dora frames them for the other mapping; the warning names the
+  `RMW_IMPLEMENTATION` value to set.
+- **Distro Gid width.** `ROS_DISTRO` names a distro whose `Gid` width differs from
+  the build (see [Distro constraint](#distro-constraint)).
+
+The checks read RustDDS's discovery data every 2 seconds and run for every DDS
+context; they do not change what is sent or matched.
 
 ### Interop testing
 
@@ -1188,7 +1207,7 @@ This applies to **all** bridge surfaces (YAML and native code APIs).
 - **Humble is a floor, not a lock.** The workspace keeps `features = ["humble"]` on its `ros2-client` line, so `ros2-humble` is on by default and a `--no-default-features` build still resolves to Humble instead of `ros2-client`'s Galactic fallback. A newer distro enabled anywhere in the build wins over it; there is no way to force "exactly Humble".
 - **The `Gid` width is what changes.** Humble and Galactic use the **24-byte `Gid`**, Iron and newer the **16-byte** one, and that is the `rmw_dds_common` graph-discovery wire format. ROS 2 changed it between Humble and Iron, so graph *discovery* against an Iron-or-newer stack will not match a Humble build. Topic, service, and action **payloads are unaffected** -- those are ordinary CDR and interoperate across distros regardless.
 - **Feature unification can switch the distro from outside dora.** Cargo compiles one `ros2-client` per build with the union of every enabled feature. If any other crate in the dependency graph enables a newer distro, the bridge becomes that distro too, with nothing in dora to stop it. Depending on `ros2-client` with its default features does exactly that, because its default is `jazzy`. Match the whole build, not just the bridge's own features.
-- **Nothing warns at build time.** The only signal is `ros2-client`'s runtime check on the first `Context`: it logs an error when `ROS_DISTRO` is set and doesn't match the build, and a warning when it is unset. Check that startup log line.
+- **Nothing warns at build time.** At runtime, the bridge prints a warning on stderr when `ROS_DISTRO` names a distro whose `Gid` width differs from the build: ROS 2 graph tools such as `ros2 node list` will not show dora's nodes, while topics, services and actions keep working. `ros2-client` also logs its own check on the first `Context` (an error when `ROS_DISTRO` doesn't match the build, a warning when it is unset), but through the `log` crate, so it may not reach the output.
 
 ### Building for your ROS distro
 
