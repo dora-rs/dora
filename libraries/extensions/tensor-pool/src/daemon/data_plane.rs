@@ -208,27 +208,41 @@ pub(crate) async fn accept_cross_data_connections<F, Fut>(
 /// connections and sending nothing would take every pre-admission slot and
 /// lock out every other origin (#4065). Kept small and independent of the
 /// cap, so that filling the pre-admission pool takes many peers: with the
-/// default cap of 256, 32 distinct addresses or /64s. An origin whose burst
+/// default cap of 256, 32 distinct addresses. An origin whose burst
 /// of concurrent writes, each on a fresh connection, goes over it loses
 /// nothing: with a token, a refused connection fails the origin's handshake
-/// and that write falls back to the zenoh relay. Peers are counted per IPv4
-/// address and per IPv6 /64 (see [`peer_key`]).
+/// and that write falls back to the zenoh relay. Counted per address (an
+/// IPv4-mapped IPv6 address counts as its IPv4 address); an IPv6 /64 is
+/// bounded as well, by [`CROSS_DATA_MAX_PENDING_PER_PREFIX`].
 pub(crate) const CROSS_DATA_MAX_PENDING_PER_PEER: usize = 8;
 
-/// The address a peer is counted under for
-/// [`CROSS_DATA_MAX_PENDING_PER_PEER`]: its IPv4 address (also when it
-/// arrives IPv4-mapped on an IPv6 listener), or its IPv6 /64, since a single
-/// IPv6 host usually has a whole /64 to pick source addresses from.
-pub(crate) fn peer_key(ip: std::net::IpAddr) -> std::net::IpAddr {
-    match ip {
+/// Connections from one IPv6 /64 the data listener lets wait for admission
+/// at once, when an auth token is configured, on top of
+/// [`CROSS_DATA_MAX_PENDING_PER_PEER`] per address. A single IPv6 host
+/// usually has a whole /64 to pick source addresses from, so the per-address
+/// bound alone would not stop it from filling the pre-admission pool. But
+/// a /64 is also a whole LAN, so this bound is larger: a host without the
+/// token that sticks to one address leaves its neighbours most of it, and
+/// filling the default pool still takes 8 distinct /64s (#4065).
+pub(crate) const CROSS_DATA_MAX_PENDING_PER_PREFIX: usize = 4 * CROSS_DATA_MAX_PENDING_PER_PEER;
+
+/// The keys a connection from `ip` is counted under while it waits for
+/// admission, each with its bound: its address (an IPv4-mapped IPv6 address
+/// as its IPv4 address) and, for IPv6, its /64.
+pub(crate) fn pending_keys(ip: std::net::IpAddr) -> Vec<(std::net::IpAddr, usize)> {
+    let ip = match ip {
+        std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, std::net::IpAddr::V4),
         std::net::IpAddr::V4(_) => ip,
-        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => std::net::IpAddr::V4(v4),
-            None => std::net::IpAddr::V6(std::net::Ipv6Addr::from(
-                u128::from(v6) & !u128::from(u64::MAX),
-            )),
-        },
+    };
+    let mut keys = vec![(ip, CROSS_DATA_MAX_PENDING_PER_PEER)];
+    if let std::net::IpAddr::V6(v6) = ip {
+        let prefix = std::net::Ipv6Addr::from(u128::from(v6) & !u128::from(u64::MAX));
+        keys.push((
+            std::net::IpAddr::V6(prefix),
+            CROSS_DATA_MAX_PENDING_PER_PREFIX,
+        ));
     }
+    keys
 }
 
 /// A data connection's place in the listener before it is admitted (see
@@ -291,39 +305,46 @@ pub(crate) struct ConnectionCap {
 /// Connections waiting for admission, per peer (see
 /// [`CROSS_DATA_MAX_PENDING_PER_PEER`]).
 #[derive(Default)]
-struct PendingPerPeer {
+pub(crate) struct PendingPerPeer {
     counts: std::sync::Mutex<HashMap<std::net::IpAddr, usize>>,
 }
 
 impl PendingPerPeer {
-    /// Counts a connection from `ip` until the returned guard drops, or
-    /// `None` when its peer already has the most it may.
-    fn enter(self: Arc<Self>, ip: std::net::IpAddr) -> Option<PendingPeerSlot> {
-        let ip = peer_key(ip);
+    /// Counts a connection from `ip` under each of its [`pending_keys`]
+    /// until the returned guard drops, or `None` when one of them already
+    /// has the most it may.
+    pub(crate) fn enter(self: Arc<Self>, ip: std::net::IpAddr) -> Option<PendingPeerSlot> {
+        let keys = pending_keys(ip);
         {
             let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-            let count = counts.entry(ip).or_default();
-            if *count >= CROSS_DATA_MAX_PENDING_PER_PEER {
+            if keys
+                .iter()
+                .any(|(key, limit)| counts.get(key).is_some_and(|count| count >= limit))
+            {
                 return None;
             }
-            *count += 1;
+            for (key, _) in &keys {
+                *counts.entry(*key).or_default() += 1;
+            }
         }
-        Some(PendingPeerSlot { peers: self, ip })
+        Some(PendingPeerSlot { peers: self, keys })
     }
 }
 
 pub(crate) struct PendingPeerSlot {
     peers: Arc<PendingPerPeer>,
-    ip: std::net::IpAddr,
+    keys: Vec<(std::net::IpAddr, usize)>,
 }
 
 impl Drop for PendingPeerSlot {
     fn drop(&mut self) {
         let mut counts = self.peers.counts.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(count) = counts.get_mut(&self.ip) {
-            *count -= 1;
-            if *count == 0 {
-                counts.remove(&self.ip);
+        for (key, _) in &self.keys {
+            if let Some(count) = counts.get_mut(key) {
+                *count -= 1;
+                if *count == 0 {
+                    counts.remove(key);
+                }
             }
         }
     }

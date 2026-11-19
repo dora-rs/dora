@@ -1727,20 +1727,56 @@ mod cross_pool_write_tests {
         accept.abort();
     }
 
-    /// Peers are counted per IPv4 address and per IPv6 /64, so one IPv6
-    /// host cannot dodge the per-peer bound by using a new source address
-    /// for every connection.
+    /// A pending connection is counted under its own address, IPv4-mapped
+    /// addresses as their IPv4 address, and an IPv6 one under its /64 too
+    /// with a larger bound. So one IPv6 host cannot fill the pool by using a
+    /// new source address per connection, and one that sticks to its address
+    /// leaves the rest of its LAN's /64 to its neighbours.
     #[test]
-    fn pending_peers_are_keyed_by_ipv4_address_or_ipv6_prefix() {
+    fn pending_peers_are_bounded_per_address_and_per_ipv6_prefix() {
         use std::net::IpAddr;
         let v4: IpAddr = "192.0.2.7".parse().unwrap();
-        assert_eq!(peer_key(v4), v4);
-        assert_eq!(peer_key("::ffff:192.0.2.7".parse().unwrap()), v4);
-        let a = peer_key("2001:db8:1:2:aaaa::1".parse().unwrap());
-        let b = peer_key("2001:db8:1:2:ffff:1:2:3".parse().unwrap());
-        assert_eq!(a, b);
-        assert_eq!(a, "2001:db8:1:2::".parse::<IpAddr>().unwrap());
-        assert_ne!(a, peer_key("2001:db8:1:3::1".parse().unwrap()));
+        assert_eq!(
+            pending_keys(v4),
+            vec![(v4, CROSS_DATA_MAX_PENDING_PER_PEER)]
+        );
+        assert_eq!(
+            pending_keys("::ffff:192.0.2.7".parse().unwrap()),
+            pending_keys(v4)
+        );
+
+        let pending = std::sync::Arc::new(PendingPerPeer::default());
+        let host = |n: u16| IpAddr::from([0x2001, 0xdb8, 1, 2, 0, 0, 0, n]);
+        let mut held: Vec<_> = (0..CROSS_DATA_MAX_PENDING_PER_PEER)
+            .map(|_| pending.clone().enter(host(1)).unwrap())
+            .collect();
+        assert!(
+            pending.clone().enter(host(1)).is_none(),
+            "one address gets 8"
+        );
+        let neighbour = pending.clone().enter(host(2));
+        assert!(
+            neighbour.is_some(),
+            "a neighbour on the same /64 still gets in"
+        );
+        held.extend(neighbour);
+
+        // A host rotating through its /64 is stopped by the prefix bound.
+        let mut n = 3;
+        while let Some(slot) = pending.clone().enter(host(n)) {
+            held.push(slot);
+            n += 1;
+        }
+        assert_eq!(held.len(), CROSS_DATA_MAX_PENDING_PER_PREFIX);
+        assert!(
+            pending
+                .clone()
+                .enter("2001:db8:1:3::1".parse().unwrap())
+                .is_some(),
+            "another /64 is not affected"
+        );
+        drop(held);
+        assert!(pending.clone().enter(host(1)).is_some(), "slots are freed");
     }
 
     /// Without a token there is no per-peer bound: it would protect nothing
