@@ -1185,7 +1185,10 @@ that otherwise fails silently:
   host talks to one of dora's; the warning lists the addresses (see
   [Discovery & RMW notes](#discovery--rmw-notes-native-servers)). Peers on the
   same host reach dora over loopback, so a laptop with Docker or a VPN gets no
-  warning for a same-host dataflow.
+  warning for a same-host dataflow; a container on a Docker bridge network
+  counts as another host. The warning says dora is exposed to the problem, not
+  that data is being lost: it also appears when the peer happens to pick a
+  reachable address.
 
 The checks read RustDDS's discovery data every 2 seconds and run for every DDS
 context; they do not change what is sent or matched. Each dora endpoint is
