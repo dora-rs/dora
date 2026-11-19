@@ -1180,9 +1180,12 @@ that otherwise fails silently:
 - **Distro Gid width.** `ROS_DISTRO` names a distro whose `Gid` width differs from
   the build (see [Distro constraint](#distro-constraint)); the warning names the
   distro feature to add, or the newer one to drop.
-- **Several network interfaces.** `DORA_ROS2_DDS_INTERFACES` is unset and dora
-  would advertise more than one non-loopback address; the warning lists them
-  (see [Discovery & RMW notes](#discovery--rmw-notes-native-servers)).
+- **Several network interfaces.** `DORA_ROS2_DDS_INTERFACES` is unset, dora
+  advertises more than one non-loopback address, and a ROS 2 endpoint on another
+  host talks to one of dora's; the warning lists the addresses (see
+  [Discovery & RMW notes](#discovery--rmw-notes-native-servers)). Peers on the
+  same host reach dora over loopback, so a laptop with Docker or a VPN gets no
+  warning for a same-host dataflow.
 
 The checks read RustDDS's discovery data every 2 seconds and run for every DDS
 context; they do not change what is sent or matched. Each dora endpoint is

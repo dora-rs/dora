@@ -76,15 +76,16 @@ impl Context {
         // What `ros2_client::Context::with_options` does, plus the network
         // filter, which its `ContextOptions` does not expose.
         let mut builder = rustdds::DomainParticipantBuilder::new(domain_id);
-        if let Some(requested) = &requested {
-            let local = interfaces::local_addrs();
+        let local = interfaces::local_addrs();
+        let unrestricted = if let Some(requested) = &requested {
             interfaces::check(requested, &local)
                 .map_err(|message| TransportError::DdsContext { message })?;
-            interfaces::report_once(Some(requested), || local);
+            interfaces::report_once(requested, &local);
             builder = builder.with_only_networks(requested.iter().copied());
+            None
         } else {
-            interfaces::report_once(None, interfaces::local_addrs);
-        }
+            interfaces::Unrestricted::new(&local)
+        };
         fn context_error(error: impl std::fmt::Debug) -> TransportError {
             TransportError::DdsContext {
                 message: format!("{error:?}"),
@@ -96,6 +97,7 @@ impl Context {
         let diagnostics = Arc::new(DdsDiagnostics::start(
             inner.domain_participant(),
             detect_service_mapping(),
+            unrestricted,
         ));
         Ok(Self { inner, diagnostics })
     }

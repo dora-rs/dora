@@ -120,34 +120,58 @@ pub(crate) fn selection_warnings(requested: &[Ipv4Addr], local: &[LocalAddr]) ->
         .collect()
 }
 
-/// What to tell the user when [`INTERFACES_ENV`] is unset and the participant
-/// will advertise more than one non-loopback address.
-pub(crate) fn unrestricted_warning(local: &[LocalAddr]) -> Option<String> {
-    let advertised: Vec<&LocalAddr> = local.iter().filter(|a| !a.loopback).collect();
-    if advertised.len() < 2 {
-        return None;
-    }
-    Some(format!(
-        "the DDS participant advertises {} network addresses ({}); a ROS 2 node on another host \
-         may send to one it cannot reach, and then its data never arrives. Set \
-         {INTERFACES_ENV}=<address> to advertise only the network your ROS 2 peers are on",
-        advertised.len(),
-        list(advertised),
-    ))
+/// More than one non-loopback address advertised while [`INTERFACES_ENV`] is
+/// unset. Harmless on its own: same-host peers reach dora over loopback. So
+/// [`super::diagnostics`] reports [`Self::message`] only once a peer that
+/// [`Self::is_elsewhere`] talks to dora.
+#[derive(Clone, Debug)]
+pub(crate) struct Unrestricted {
+    /// Every local IPv4 address.
+    own: Vec<Ipv4Addr>,
+    pub message: String,
 }
 
-/// Print, once per process, [`selection_warnings`] when [`INTERFACES_ENV`] is
-/// set, or else [`unrestricted_warning`]. Contexts share the process
-/// environment, so later ones would only repeat the same lines.
-pub(crate) fn report_once(requested: Option<&[Ipv4Addr]>, local: impl FnOnce() -> Vec<LocalAddr>) {
+impl Unrestricted {
+    /// `None` when the participant advertises at most one non-loopback
+    /// address of `local`.
+    pub(crate) fn new(local: &[LocalAddr]) -> Option<Self> {
+        let advertised: Vec<&LocalAddr> = local.iter().filter(|a| !a.loopback).collect();
+        if advertised.len() < 2 {
+            return None;
+        }
+        let message = format!(
+            "the DDS participant advertises {} network addresses ({}), and a ROS 2 node on \
+             another host talks to it; that node may send to one it cannot reach, and then its \
+             data never arrives. Set {INTERFACES_ENV}=<address> to advertise only the network \
+             your ROS 2 peers are on",
+            advertised.len(),
+            list(advertised),
+        );
+        Some(Self {
+            own: local.iter().map(|a| a.ip).collect(),
+            message,
+        })
+    }
+
+    /// Whether a peer advertising `addresses` runs on another host (or in
+    /// another network namespace): it advertises an address that is neither
+    /// loopback nor one of this host's. A same-host peer advertises only this
+    /// host's addresses; another host may share some, such as Docker's
+    /// 172.17.0.1.
+    pub(crate) fn is_elsewhere(&self, addresses: &[Ipv4Addr]) -> bool {
+        addresses
+            .iter()
+            .any(|ip| !ip.is_loopback() && !self.own.contains(ip))
+    }
+}
+
+/// Print, once per process, the [`selection_warnings`] for `requested`.
+/// Contexts share the process environment, so later ones would only repeat
+/// the same lines.
+pub(crate) fn report_once(requested: &[Ipv4Addr], local: &[LocalAddr]) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let local = local();
-        let warnings = match requested {
-            Some(requested) => selection_warnings(requested, &local),
-            None => unrestricted_warning(&local).into_iter().collect(),
-        };
-        for warning in warnings {
+        for warning in selection_warnings(requested, local) {
             eprintln!("warning: {warning}");
         }
     });
@@ -225,12 +249,26 @@ mod tests {
     #[test]
     fn one_non_loopback_address_needs_no_warning() {
         let local = vec![addr("lo", "127.0.0.1"), addr("eno1", "192.168.1.231")];
-        assert_eq!(unrestricted_warning(&local), None);
+        assert!(Unrestricted::new(&local).is_none());
+    }
+
+    #[test]
+    fn a_peer_advertising_none_of_the_local_addresses_is_elsewhere() {
+        let unrestricted = Unrestricted::new(&host()).unwrap();
+        let ip = |ip: &str| ip.parse::<Ipv4Addr>().unwrap();
+        assert!(unrestricted.is_elsewhere(&[ip("192.168.1.50")]));
+        // Another host with Docker advertises 172.17.0.1 too.
+        assert!(unrestricted.is_elsewhere(&[ip("192.168.1.50"), ip("172.17.0.1")]));
+        // Same host: it advertises this host's addresses, or only loopback.
+        assert!(!unrestricted.is_elsewhere(&[ip("192.168.1.231")]));
+        assert!(!unrestricted.is_elsewhere(&[ip("127.0.0.1")]));
+        // Nothing to judge by (e.g. IPv6 locators only).
+        assert!(!unrestricted.is_elsewhere(&[]));
     }
 
     #[test]
     fn several_non_loopback_addresses_are_listed_with_the_fix() {
-        let message = unrestricted_warning(&host()).unwrap();
+        let message = Unrestricted::new(&host()).unwrap().message;
         assert!(message.contains("eno1 192.168.1.231"), "{message}");
         assert!(message.contains("docker0 172.17.0.1"), "{message}");
         assert!(message.contains("tailscale0 100.107.163.59"), "{message}");
