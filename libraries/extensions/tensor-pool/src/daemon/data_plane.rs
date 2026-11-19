@@ -92,10 +92,13 @@ pub(crate) const CROSS_DATA_BIND_DEFAULT: &str = "0.0.0.0";
 /// port could open connections until the daemon hits `EMFILE` (#4033). An
 /// origin keeps one pooled connection per mirror endpoint, plus one per
 /// concurrent write in flight, so the default leaves plenty of headroom for
-/// legitimate peers while staying well below a default `ulimit -n` of 1024.
-/// Only an admitted connection counts towards the cap: with an auth token,
-/// one that passed the handshake (#4065); connections still waiting for
-/// admission are bounded separately (see [`accept_cross_data_connections`]).
+/// legitimate peers. Only an admitted connection counts towards the cap:
+/// with an auth token, one that passed the handshake (#4065); connections
+/// still waiting for admission are bounded separately, by as many again (see
+/// [`accept_cross_data_connections`]). So the listener holds up to
+/// `2 * max_connections` fds, 512 at the default, on top of the daemon's
+/// other fds; keep that well below `ulimit -n` (1024 by default on Linux)
+/// when raising the cap.
 /// A connection over the cap is closed. That does not reliably reach the
 /// origin as an error: with an auth token, the origin's handshake is
 /// rejected and the write falls back to the zenoh relay, but without a
@@ -166,34 +169,39 @@ pub(crate) async fn accept_cross_data_connections<F, Fut>(
         // concurrent writes (each opens a fresh connection) and protect
         // nothing.
         let limit_per_peer = cross_data_auth_token().is_some();
-        let slot = pending
-            .clone()
-            .try_acquire_owned()
-            .ok()
-            .and_then(|pending| {
+        let slot = match pending.clone().try_acquire_owned() {
+            Err(_) => Err(format!("{max_connections} in all")),
+            Ok(pending) => {
                 let peer_slot = if limit_per_peer {
-                    Some(pending_per_peer.clone().enter(peer.ip())?)
+                    pending_per_peer
+                        .clone()
+                        .enter(peer.ip())
+                        .map(Some)
+                        .map_err(|full| full.to_string())
                 } else {
-                    None
+                    Ok(None)
                 };
-                Some(AdmissionSlot {
+                peer_slot.map(|peer_slot| AdmissionSlot {
                     _pending: pending,
                     _peer: peer_slot,
                     cap: cap.clone(),
                     peer,
                 })
-            });
-        let Some(slot) = slot else {
-            if !refusing {
-                tracing::warn!(
-                    "memory pool: refusing direct-TCP data connections (first from {peer}): \
-                     too many waiting for admission ({max_connections} in all, \
-                     {CROSS_DATA_MAX_PENDING_PER_PEER} per peer)"
-                );
-                refusing = true;
             }
-            // Dropping `stream` closes the connection.
-            continue;
+        };
+        let slot = match slot {
+            Ok(slot) => slot,
+            Err(limit) => {
+                if !refusing {
+                    tracing::warn!(
+                        "memory pool: refusing direct-TCP data connections (first from {peer}): \
+                         too many waiting for admission ({limit})"
+                    );
+                    refusing = true;
+                }
+                // Dropping `stream` closes the connection.
+                continue;
+            }
         };
         refusing = false;
         tracing::debug!("memory pool: direct-TCP data connection from {peer}");
@@ -226,21 +234,48 @@ pub(crate) const CROSS_DATA_MAX_PENDING_PER_PEER: usize = 8;
 /// filling the default pool still takes 8 distinct /64s (#4065).
 pub(crate) const CROSS_DATA_MAX_PENDING_PER_PREFIX: usize = 4 * CROSS_DATA_MAX_PENDING_PER_PEER;
 
+/// What a connection waiting for admission is counted under (see
+/// [`pending_keys`]). An address and a /64 are distinct keys even when the
+/// address is the /64's all-zero host, so such a host gets both bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PendingKey {
+    Address(std::net::IpAddr),
+    Prefix64(std::net::Ipv6Addr),
+}
+
+impl PendingKey {
+    pub(crate) fn limit(self) -> usize {
+        match self {
+            PendingKey::Address(_) => CROSS_DATA_MAX_PENDING_PER_PEER,
+            PendingKey::Prefix64(_) => CROSS_DATA_MAX_PENDING_PER_PREFIX,
+        }
+    }
+}
+
+impl std::fmt::Display for PendingKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PendingKey::Address(ip) => write!(f, "{} per address, from {ip}", self.limit()),
+            PendingKey::Prefix64(prefix) => {
+                write!(f, "{} per IPv6 /64, from {prefix}/64", self.limit())
+            }
+        }
+    }
+}
+
 /// The keys a connection from `ip` is counted under while it waits for
-/// admission, each with its bound: its address (an IPv4-mapped IPv6 address
-/// as its IPv4 address) and, for IPv6, its /64.
-pub(crate) fn pending_keys(ip: std::net::IpAddr) -> Vec<(std::net::IpAddr, usize)> {
+/// admission: its address (an IPv4-mapped IPv6 address as its IPv4 address)
+/// and, for IPv6, its /64.
+pub(crate) fn pending_keys(ip: std::net::IpAddr) -> Vec<PendingKey> {
     let ip = match ip {
         std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, std::net::IpAddr::V4),
         std::net::IpAddr::V4(_) => ip,
     };
-    let mut keys = vec![(ip, CROSS_DATA_MAX_PENDING_PER_PEER)];
+    let mut keys = vec![PendingKey::Address(ip)];
     if let std::net::IpAddr::V6(v6) = ip {
-        let prefix = std::net::Ipv6Addr::from(u128::from(v6) & !u128::from(u64::MAX));
-        keys.push((
-            std::net::IpAddr::V6(prefix),
-            CROSS_DATA_MAX_PENDING_PER_PREFIX,
-        ));
+        keys.push(PendingKey::Prefix64(std::net::Ipv6Addr::from(
+            u128::from(v6) & !u128::from(u64::MAX),
+        )));
     }
     keys
 }
@@ -306,40 +341,43 @@ pub(crate) struct ConnectionCap {
 /// [`CROSS_DATA_MAX_PENDING_PER_PEER`]).
 #[derive(Default)]
 pub(crate) struct PendingPerPeer {
-    counts: std::sync::Mutex<HashMap<std::net::IpAddr, usize>>,
+    counts: std::sync::Mutex<HashMap<PendingKey, usize>>,
 }
 
 impl PendingPerPeer {
     /// Counts a connection from `ip` under each of its [`pending_keys`]
-    /// until the returned guard drops, or `None` when one of them already
-    /// has the most it may.
-    pub(crate) fn enter(self: Arc<Self>, ip: std::net::IpAddr) -> Option<PendingPeerSlot> {
+    /// until the returned guard drops, or returns the key that already has
+    /// the most it may.
+    pub(crate) fn enter(
+        self: Arc<Self>,
+        ip: std::net::IpAddr,
+    ) -> Result<PendingPeerSlot, PendingKey> {
         let keys = pending_keys(ip);
         {
             let mut counts = self.counts.lock().unwrap_or_else(|e| e.into_inner());
-            if keys
+            if let Some(full) = keys
                 .iter()
-                .any(|(key, limit)| counts.get(key).is_some_and(|count| count >= limit))
+                .find(|key| counts.get(*key).is_some_and(|&count| count >= key.limit()))
             {
-                return None;
+                return Err(*full);
             }
-            for (key, _) in &keys {
+            for key in &keys {
                 *counts.entry(*key).or_default() += 1;
             }
         }
-        Some(PendingPeerSlot { peers: self, keys })
+        Ok(PendingPeerSlot { peers: self, keys })
     }
 }
 
 pub(crate) struct PendingPeerSlot {
     peers: Arc<PendingPerPeer>,
-    keys: Vec<(std::net::IpAddr, usize)>,
+    keys: Vec<PendingKey>,
 }
 
 impl Drop for PendingPeerSlot {
     fn drop(&mut self) {
         let mut counts = self.peers.counts.lock().unwrap_or_else(|e| e.into_inner());
-        for (key, _) in &self.keys {
+        for key in &self.keys {
             if let Some(count) = counts.get_mut(key) {
                 *count -= 1;
                 if *count == 0 {
