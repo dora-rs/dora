@@ -61,47 +61,36 @@ fn lacks_prebuilt_update(
     is_newer(current_version, release.version()) && !has_prebuilt_cli(release, target)
 }
 
-/// The command that upgrades a CLI installed from the `dora-rs-cli` wheel.
-const WHEEL_UPDATE_COMMAND: &str = "pip install -U dora-rs-cli";
+/// How to upgrade a CLI installed from the `dora-rs-cli` wheel. Printed
+/// rather than run: only the user knows which installer and environment the
+/// `dora` on their `PATH` came from, and each one upgrades differently.
+const WHEEL_UPDATE_HINT: &str = "upgrade the `dora-rs-cli` package with the installer you used: \
+     `pip install -U dora-rs-cli`, `uv pip install -U dora-rs-cli`, \
+     `uv tool upgrade dora-rs-cli` or `pipx upgrade dora-rs-cli`";
 
-/// What `dora self update` does for this build.
-#[derive(Debug, PartialEq, Eq)]
-enum UpdateMethod {
-    /// Replace the running binary with the release's CLI archive.
-    ReleaseArchive,
-    /// The CLI is hosted by the `dora-rs-cli` wheel: the running executable is
-    /// the Python interpreter, and pip owns the installed files. Replacing
-    /// `current_exe()` would overwrite the interpreter and leave pip's record
-    /// of the package stale, so the user upgrades through their installer
-    /// instead (#4172).
-    PythonPackage,
+/// Why `dora self update` must not replace the running binary, if it must not.
+///
+/// `wheel` is whether this CLI was built with the `python` feature, which
+/// marks the build shipped in the `dora-rs-cli` wheel. There the running
+/// executable is the Python interpreter and the installer owns the files, so
+/// replacing `current_exe()` would overwrite the interpreter and leave the
+/// installer's record of the package stale (#4172). `--check-only` never
+/// replaces anything, so it always proceeds.
+fn update_refusal(wheel: bool, check_only: bool) -> Option<String> {
+    (wheel && !check_only).then(|| {
+        format!(
+            "this dora CLI was installed from the `dora-rs-cli` Python package; {WHEEL_UPDATE_HINT}"
+        )
+    })
 }
 
-impl UpdateMethod {
-    /// `wheel` is whether this CLI was built with the `python` feature, which
-    /// marks the build shipped in the `dora-rs-cli` wheel.
-    fn for_build(wheel: bool) -> Self {
-        if wheel {
-            Self::PythonPackage
-        } else {
-            Self::ReleaseArchive
-        }
+/// What `--check-only` tells the user to do when an update is available.
+fn check_only_update_hint(wheel: bool) -> String {
+    if wheel {
+        format!("To update, {WHEEL_UPDATE_HINT}")
+    } else {
+        "Run `dora self update` to update".to_owned()
     }
-
-    /// The command `--check-only` tells the user to run when an update exists.
-    fn update_hint(&self) -> String {
-        match self {
-            Self::ReleaseArchive => "`dora self update`".to_owned(),
-            Self::PythonPackage => wheel_update_hint(),
-        }
-    }
-}
-
-/// How to upgrade a wheel-installed CLI, for both installers the wheel is
-/// usually installed with. Printed rather than run: only the user knows which
-/// environment and installer the `dora` on their `PATH` came from.
-fn wheel_update_hint() -> String {
-    format!("`{WHEEL_UPDATE_COMMAND}` (or `uv {WHEEL_UPDATE_COMMAND}` in a uv-managed environment)")
 }
 
 /// The updater `dora self update` runs: the CLI archive of the latest
@@ -131,13 +120,9 @@ impl Executable for SelfSubCommand {
 
         match self {
             SelfSubCommand::Update { check_only } => {
-                let method = UpdateMethod::for_build(cfg!(feature = "python"));
-                if method == UpdateMethod::PythonPackage && !check_only {
-                    bail!(
-                        "this dora CLI was installed from the `dora-rs-cli` Python package; \
-                         update it with {}",
-                        wheel_update_hint()
-                    );
+                let wheel = cfg!(feature = "python");
+                if let Some(refusal) = update_refusal(wheel, check_only) {
+                    bail!(refusal);
                 }
 
                 println!("Checking for updates...");
@@ -155,8 +140,8 @@ impl Executable for SelfSubCommand {
                             let current_version = self_update::cargo_crate_version!();
                             if is_newer(current_version, release_version) {
                                 println!(
-                                    "An update is available: {release_version}. Run {} to update",
-                                    method.update_hint()
+                                    "An update is available: {release_version}. {}",
+                                    check_only_update_hint(wheel)
                                 );
                             } else {
                                 println!(
@@ -380,23 +365,36 @@ mod tests {
         assert!(!super::lacks_prebuilt_update(&release, "1.0.0", gnu));
     }
 
-    /// A wheel-installed CLI is upgraded through pip, never by replacing the
-    /// running executable, which is the Python interpreter (#4172). The
-    /// `--check-only` hint names the command that actually updates it.
+    /// A wheel-installed CLI refuses to replace the running executable, which
+    /// is the Python interpreter, and points at the package installers instead
+    /// (#4172). `--check-only` and a standalone CLI proceed.
     #[test]
-    fn a_wheel_build_updates_through_pip() {
-        use super::UpdateMethod;
+    fn a_wheel_build_refuses_the_binary_swap() {
+        let refusal = super::update_refusal(true, false).expect("a wheel update must be refused");
+        for command in [
+            "`pip install -U dora-rs-cli`",
+            "`uv pip install -U dora-rs-cli`",
+            "`uv tool upgrade dora-rs-cli`",
+            "`pipx upgrade dora-rs-cli`",
+        ] {
+            assert!(refusal.contains(command), "{refusal:?} lacks {command}");
+        }
 
-        assert_eq!(UpdateMethod::for_build(true), UpdateMethod::PythonPackage);
-        let wheel_hint = UpdateMethod::PythonPackage.update_hint();
-        assert!(wheel_hint.contains("`pip install -U dora-rs-cli`"));
-        assert!(wheel_hint.contains("`uv pip install -U dora-rs-cli`"));
-        assert!(!wheel_hint.contains("dora self update"));
+        assert_eq!(super::update_refusal(true, true), None);
+        assert_eq!(super::update_refusal(false, false), None);
+        assert_eq!(super::update_refusal(false, true), None);
+    }
 
-        assert_eq!(UpdateMethod::for_build(false), UpdateMethod::ReleaseArchive);
+    /// The `--check-only` hint names the command that actually updates this
+    /// build; the nightly smoke greps for "update is available" around it.
+    #[test]
+    fn check_only_names_the_matching_update_command() {
+        let wheel = super::check_only_update_hint(true);
+        assert!(wheel.contains("`pipx upgrade dora-rs-cli`"));
+        assert!(!wheel.contains("dora self update"));
         assert_eq!(
-            UpdateMethod::ReleaseArchive.update_hint(),
-            "`dora self update`"
+            super::check_only_update_hint(false),
+            "Run `dora self update` to update"
         );
     }
 
