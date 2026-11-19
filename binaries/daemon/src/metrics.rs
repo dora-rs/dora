@@ -465,7 +465,9 @@ pub(crate) async fn collect_and_send_metrics_bg(
                 let restart_count = node.restart_count.load(atomic::Ordering::Acquire);
                 let status = if node.restarts_disabled {
                     dora_message::daemon_to_coordinator::NodeStatus::Failed
-                } else if restart_count > 0 || node.pid.is_some() {
+                } else if restart_count > 0
+                    || (node.pid.is_some() && node.spawned_at.load(atomic::Ordering::Acquire) == 0)
+                {
                     dora_message::daemon_to_coordinator::NodeStatus::Restarting
                 } else {
                     continue;
@@ -1205,6 +1207,50 @@ mod stale_pid_tests {
             sent.recv().await,
             None,
             "dynamic nodes without a PID must not be reported as Restarting"
+        );
+    }
+
+    /// A spawned node not in restart backoff (`spawned_at > 0, restart_count == 0`)
+    /// whose process is missing from the system refresh (e.g. during a refresh failure)
+    /// must not be falsely reported as `Restarting`.
+    #[tokio::test]
+    async fn a_spawned_node_not_in_backoff_is_not_reported_as_restarting_when_process_missing() {
+        let state = Arc::new(tokio::sync::Mutex::new(MetricsState::default()));
+        let (sender, mut sent) = coordinator::CoordinatorSender::for_test();
+        let node_id = NodeId::from("live_node".to_string());
+        let unused_pid = 99_999_999;
+        let snapshot = vec![DataflowMetricsSnapshot {
+            dataflow_id: DataflowId::new_v4(),
+            nodes: vec![NodeSnapshot {
+                node_id,
+                pid: Some(Arc::new(AtomicU32::new(unused_pid))),
+                spawned_at: Arc::new(AtomicU64::new(1)),
+                restart_count: Arc::new(AtomicU32::new(0)),
+                restarts_disabled: false,
+                broken_inputs: Vec::new(),
+                pending_messages: 0,
+            }],
+            net_bytes_sent: Arc::default(),
+            net_bytes_received: Arc::default(),
+            net_messages_sent: Arc::default(),
+            net_messages_received: Arc::default(),
+            net_publish_failures: Arc::default(),
+        }];
+
+        collect_and_send_metrics_bg(
+            snapshot,
+            state,
+            sender,
+            DaemonId::new(None),
+            Arc::new(uhlc::HLC::default()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sent.recv().await,
+            None,
+            "a spawned node with spawned_at > 0 must not be reported as Restarting in the second pass"
         );
     }
 }
