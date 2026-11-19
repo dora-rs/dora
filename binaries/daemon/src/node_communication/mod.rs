@@ -59,11 +59,59 @@ const BACKPRESSURE_STALL_LIMIT: Duration = Duration::from_secs(60);
 /// it, not because it hung, and the health check must not kill it for that.
 const BACKPRESSURE_STALL_TICK: Duration = Duration::from_secs(1);
 
+/// Milliseconds for the daemon's liveness bookkeeping (`last_activity`,
+/// `spawned_at`, `started_at_millis`) and the watchdogs that compare them.
+///
+/// Read from the daemon's [`LivenessClock`], so a wall-clock step (NTP on
+/// a board without an RTC) cannot make every node look silent or hide a
+/// hung one.
 pub fn current_millis() -> u64 {
+    LIVENESS_CLOCK
+        .get_or_init(|| LivenessClock::anchored_at(wall_clock_since_epoch()))
+        .now_millis()
+}
+
+static LIVENESS_CLOCK: std::sync::OnceLock<LivenessClock> = std::sync::OnceLock::new();
+
+fn wall_clock_since_epoch() -> Duration {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+}
+
+/// A millisecond clock anchored to a wall-clock reading once and then
+/// advanced by the monotonic clock.
+///
+/// Only differences between readings matter; the anchor just keeps a small
+/// stored value meaning "long ago". Readings are never `0`, the
+/// `spawned_at` "not running" sentinel. Suspended time is not counted, as
+/// for the daemon's tokio timers.
+struct LivenessClock {
+    anchor: std::time::Instant,
+    anchor_millis: u64,
+}
+
+impl LivenessClock {
+    fn anchored_at(wall_clock: Duration) -> Self {
+        Self {
+            anchor: std::time::Instant::now(),
+            anchor_millis: duration_millis(wall_clock),
+        }
+    }
+
+    fn now_millis(&self) -> u64 {
+        self.millis_at(std::time::Instant::now())
+    }
+
+    fn millis_at(&self, now: std::time::Instant) -> u64 {
+        self.anchor_millis
+            .saturating_add(duration_millis(now.saturating_duration_since(self.anchor)))
+            .max(1)
+    }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Node Zenoh listeners are advertised before the child binds them. Do not
@@ -1688,5 +1736,58 @@ mod tests {
             "the payload must not be logged ({} bytes)",
             line.len()
         );
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+
+    #[test]
+    fn liveness_clock_advances_with_the_monotonic_clock() {
+        let clock = LivenessClock::anchored_at(Duration::from_millis(1_000));
+        let anchor = clock.anchor;
+        assert_eq!(clock.millis_at(anchor), 1_000);
+        assert_eq!(clock.millis_at(anchor + Duration::from_secs(30)), 31_000);
+        // A reading before the anchor (cannot happen for a monotonic clock,
+        // but must not underflow) reads as the anchor itself.
+        let later = LivenessClock {
+            anchor: anchor + Duration::from_secs(30),
+            anchor_millis: 1_000,
+        };
+        assert_eq!(later.millis_at(anchor), 1_000);
+        // Never the `spawned_at` "not running" sentinel.
+        assert_eq!(
+            LivenessClock::anchored_at(Duration::ZERO).millis_at(anchor),
+            1
+        );
+    }
+
+    /// After anchoring, readings follow elapsed time and ignore the wall
+    /// clock. Anchoring at a "stale" wall clock (1970 plus 1000 s, as on a
+    /// board without an RTC before NTP sync) and reading it now must not
+    /// jump to today's date, which is the step that used to make every
+    /// connected node look silent to the health check.
+    #[test]
+    fn liveness_clock_ignores_a_wall_clock_step_after_anchoring() {
+        let stale = Duration::from_secs(1_000);
+        let clock = LivenessClock::anchored_at(stale);
+        std::thread::sleep(Duration::from_millis(20));
+        let elapsed = clock.now_millis() - duration_millis(stale);
+        assert!(
+            (20..60_000).contains(&elapsed),
+            "reading moved by {elapsed} ms over a 20 ms sleep"
+        );
+    }
+
+    /// `current_millis()` must read the shared [`LivenessClock`]; a body
+    /// that reads the wall clock again would leave it uninitialised.
+    #[test]
+    fn current_millis_reads_the_liveness_clock() {
+        let reading = current_millis();
+        let clock = LIVENESS_CLOCK
+            .get()
+            .expect("current_millis initialises the liveness clock");
+        assert!(clock.anchor_millis <= reading && reading <= clock.now_millis());
     }
 }
