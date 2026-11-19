@@ -1691,7 +1691,9 @@ mod cross_pool_write_tests {
     }
 
     /// Connects to `addr` from the loopback address `from`, so a test can
-    /// stand in for several peers.
+    /// stand in for several peers. Linux only: other systems configure just
+    /// `127.0.0.1` on the loopback interface by default.
+    #[cfg(target_os = "linux")]
     async fn connect_from(from: [u8; 4], addr: std::net::SocketAddr) -> tokio::net::TcpStream {
         let socket = tokio::net::TcpSocket::new_v4().unwrap();
         socket.bind(std::net::SocketAddr::from((from, 0))).unwrap();
@@ -1744,6 +1746,7 @@ mod cross_pool_write_tests {
     // The env lock is held across the awaits on purpose, as in the tests
     // above: a sibling test must not change the token mid-test.
     #[allow(clippy::await_holding_lock)]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn silent_peers_without_the_token_cannot_fill_the_connection_cap() {
         use tokio::io::AsyncWriteExt;
@@ -1802,10 +1805,7 @@ mod cross_pool_write_tests {
     fn pending_peers_are_bounded_per_address_and_per_ipv6_prefix() {
         use std::net::IpAddr;
         let v4: IpAddr = "192.0.2.7".parse().unwrap();
-        assert_eq!(
-            pending_keys(v4),
-            vec![(v4, CROSS_DATA_MAX_PENDING_PER_PEER)]
-        );
+        assert_eq!(pending_keys(v4), vec![PendingKey::Address(v4)]);
         assert_eq!(
             pending_keys("::ffff:192.0.2.7".parse().unwrap()),
             pending_keys(v4)
@@ -1817,19 +1817,19 @@ mod cross_pool_write_tests {
             .map(|_| pending.clone().enter(host(1)).unwrap())
             .collect();
         assert!(
-            pending.clone().enter(host(1)).is_none(),
+            pending.clone().enter(host(1)).is_err(),
             "one address gets 8"
         );
         let neighbour = pending.clone().enter(host(2));
         assert!(
-            neighbour.is_some(),
+            neighbour.is_ok(),
             "a neighbour on the same /64 still gets in"
         );
         held.extend(neighbour);
 
         // A host rotating through its /64 is stopped by the prefix bound.
         let mut n = 3;
-        while let Some(slot) = pending.clone().enter(host(n)) {
+        while let Ok(slot) = pending.clone().enter(host(n)) {
             held.push(slot);
             n += 1;
         }
@@ -1838,11 +1838,24 @@ mod cross_pool_write_tests {
             pending
                 .clone()
                 .enter("2001:db8:1:3::1".parse().unwrap())
-                .is_some(),
+                .is_ok(),
             "another /64 is not affected"
         );
         drop(held);
-        assert!(pending.clone().enter(host(1)).is_some(), "slots are freed");
+        assert!(pending.clone().enter(host(1)).is_ok(), "slots are freed");
+
+        // An address that is its /64's all-zero host still gets its own 8:
+        // the address and the prefix are different keys.
+        let pending = std::sync::Arc::new(PendingPerPeer::default());
+        let zero_host: IpAddr = "2001:db8:9:9::".parse().unwrap();
+        let held: Vec<_> = (0..CROSS_DATA_MAX_PENDING_PER_PEER)
+            .map(|_| pending.clone().enter(zero_host).unwrap())
+            .collect();
+        assert!(matches!(
+            pending.clone().enter(zero_host),
+            Err(PendingKey::Address(_))
+        ));
+        drop(held);
     }
 
     /// Without a token there is no per-peer bound: it would protect nothing
