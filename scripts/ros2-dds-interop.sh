@@ -142,6 +142,10 @@ fi
 export DORA_ROS2_DDS_PYTHON_EXECUTABLE
 # A dedicated domain keeps other DDS traffic on the host out of the matrix.
 export DORA_ROS2_DDS_DOMAIN=${DORA_ROS2_DDS_DOMAIN:-23}
+# The dora side runs on the host: tell it which distro its peers run, instead of
+# inheriting a sourced workspace's ROS_DISTRO (the bridge warns about a distro
+# whose Gid width differs from its build).
+export ROS_DISTRO="$DISTRO"
 
 # shellcheck source=cargo-target-dir.sh
 source "$ROOT/scripts/cargo-target-dir.sh"
