@@ -435,11 +435,24 @@ fn gid_width(distro: &str) -> Option<usize> {
 fn gid_mismatch(built: RosDistro, built_gid: usize, env: Option<&str>) -> Option<String> {
     let env = env?;
     let env_gid = gid_width(env).filter(|&width| width != built_gid)?;
+    // The distro features form a chain where the newest one wins, and
+    // `ros2-humble` (24-byte Gid) is the default. So a newer distro needs a
+    // feature added, and an older one needs the newer feature removed.
+    let fix = if env_gid > built_gid {
+        format!("Rebuild the bridge without `--features ros2-{built}`")
+    } else {
+        let feature = match env {
+            "iron" | "jazzy" | "kilted" => env,
+            // No feature of its own; the newest one has the same Gid width.
+            _ => "kilted",
+        };
+        format!("Rebuild the bridge with `--features ros2-{feature}`")
+    };
     Some(format!(
         "ROS_DISTRO='{env}' but the ROS 2 bridge was built for '{built}': they use different \
          graph identifiers ({env_gid}-byte vs {built_gid}-byte Gid), so ROS 2 graph tools like \
          `ros2 node list` will not show dora's nodes; topics, services and actions still work. \
-         Rebuild the bridge with `--features ros2-{env}` to fix this"
+         {fix} to fix this"
     ))
 }
 
@@ -477,6 +490,27 @@ mod tests {
         );
         assert!(message.contains("16-byte vs 24-byte"), "{message}");
         assert!(message.contains("--features ros2-jazzy"), "{message}");
+    }
+
+    #[test]
+    fn a_newer_distro_without_a_feature_gets_the_newest_feature() {
+        // The bridge has no `ros2-rolling`, `ros2-lyrical` or `ros2-galactic`.
+        for env in ["rolling", "lyrical"] {
+            let message = gid_mismatch(RosDistro::Humble, 24, Some(env)).expect("mismatch");
+            assert!(message.contains("--features ros2-kilted"), "{message}");
+            assert!(!message.contains(&format!("ros2-{env}")), "{message}");
+        }
+    }
+
+    #[test]
+    fn an_older_distro_is_fixed_by_dropping_the_newer_feature() {
+        // `ros2-humble` is on by default and the newest feature wins, so adding
+        // it to a Kilted build changes nothing.
+        for env in ["humble", "galactic"] {
+            let message = gid_mismatch(RosDistro::Kilted, 16, Some(env)).expect("mismatch");
+            assert!(message.contains("without `--features ros2-kilted`"), "{message}");
+            assert!(!message.contains(&format!("--features ros2-{env}")), "{message}");
+        }
     }
 
     fn qos(f: impl FnOnce(QosPolicyBuilder) -> QosPolicyBuilder) -> QosPolicies {
