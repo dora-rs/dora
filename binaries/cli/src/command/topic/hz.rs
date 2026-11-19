@@ -1,4 +1,4 @@
-use crossterm::event::{Event, KeyCode};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use dora_core::descriptor::Descriptor;
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use itertools::Itertools;
@@ -482,26 +482,10 @@ fn run_hz(
         if crossterm::event::poll(Duration::from_millis(50))?
             && let Event::Key(key) = crossterm::event::read()?
         {
-            if crate::common::is_quit_key(&key) {
-                break;
-            }
-
-            match key.code {
-                KeyCode::Up => {
-                    if selected == 0 {
-                        selected = stats.len().saturating_sub(1);
-                    } else {
-                        selected -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if stats.is_empty() {
-                        selected = 0;
-                    } else {
-                        selected = (selected + 1) % stats.len();
-                    }
-                }
-                _ => {}
+            match handle_key(&key, selected, stats.len()) {
+                KeyAction::Quit => break,
+                KeyAction::Select(index) => selected = index,
+                KeyAction::Ignore => {}
             }
         }
     }
@@ -693,9 +677,74 @@ fn ui(
     f.render_widget(footer, chunks[2]);
 }
 
+/// What the `hz` TUI does in response to one key event.
+#[derive(Debug, PartialEq, Eq)]
+enum KeyAction {
+    Quit,
+    Select(usize),
+    Ignore,
+}
+
+/// Map a key event to the selection change it causes in a list of `len` rows
+/// whose current selection is `selected`.
+///
+/// Only `Press` events act, as in `dora top`: on Windows crossterm also reports
+/// a `Release` for every key, and acting on both moved the selection two rows
+/// per arrow press (with two rows, straight back to where it started). A held
+/// key still repeats, as repeated `Press` events.
+fn handle_key(key: &KeyEvent, selected: usize, len: usize) -> KeyAction {
+    if key.kind != KeyEventKind::Press {
+        return KeyAction::Ignore;
+    }
+    if crate::common::is_quit_key(key) {
+        return KeyAction::Quit;
+    }
+    match key.code {
+        KeyCode::Up => KeyAction::Select(selected.checked_sub(1).unwrap_or(len.saturating_sub(1))),
+        KeyCode::Down => KeyAction::Select((selected + 1) % len.max(1)),
+        _ => KeyAction::Ignore,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyModifiers;
+
+    fn key(code: KeyCode, kind: KeyEventKind) -> KeyEvent {
+        KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind)
+    }
+
+    #[test]
+    fn key_press_moves_selection_by_one() {
+        let down = key(KeyCode::Down, KeyEventKind::Press);
+        assert_eq!(handle_key(&down, 0, 3), KeyAction::Select(1));
+        assert_eq!(handle_key(&down, 2, 3), KeyAction::Select(0));
+        let up = key(KeyCode::Up, KeyEventKind::Press);
+        assert_eq!(handle_key(&up, 1, 3), KeyAction::Select(0));
+        assert_eq!(handle_key(&up, 0, 3), KeyAction::Select(2));
+    }
+
+    #[test]
+    fn non_press_events_are_ignored() {
+        for kind in [KeyEventKind::Release, KeyEventKind::Repeat] {
+            for code in [KeyCode::Down, KeyCode::Up, KeyCode::Char('q'), KeyCode::Esc] {
+                assert_eq!(handle_key(&key(code, kind), 0, 3), KeyAction::Ignore);
+            }
+        }
+    }
+
+    #[test]
+    fn key_press_quit_and_empty_list() {
+        assert_eq!(
+            handle_key(&key(KeyCode::Char('q'), KeyEventKind::Press), 0, 3),
+            KeyAction::Quit
+        );
+        let down = key(KeyCode::Down, KeyEventKind::Press);
+        assert_eq!(handle_key(&down, 0, 0), KeyAction::Select(0));
+        let up = key(KeyCode::Up, KeyEventKind::Press);
+        assert_eq!(handle_key(&up, 0, 0), KeyAction::Select(0));
+    }
 
     #[test]
     fn parse_window_valid() {
