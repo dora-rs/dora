@@ -371,6 +371,57 @@ Event::Input { id, metadata, data } => match id.as_str() {
 5. Handler sends `result` (once) with same `goal_id`; bridge returns it to the ROS2 client
 6. Result send times out after 5 minutes if the client never requests it
 
+A ROS2 client may cancel the goal at any point before step 5 (see
+[Canceling goals](#canceling-goals)).
+
+### Canceling goals
+
+To let ROS2 clients cancel goals, declare a `cancel` output on the bridge and
+connect it to the handler:
+
+```yaml
+  - id: fib_server
+    ros2:
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
+      role: server
+    inputs:
+      feedback: handler/feedback
+      result: handler/result
+    outputs:
+      - goal
+      - cancel
+
+  - id: handler
+    inputs:
+      goal: fib_server/goal
+      cancel: fib_server/cancel
+```
+
+When a client asks to cancel goals, the bridge:
+
+1. selects the goals as rcl does (by id, by stamp, or all), among those the
+   handler is still running and not already canceling. A cancel that arrives
+   just before the handler got the goal waits for it;
+2. answers the client with the goals it is canceling and publishes them as
+   `Canceling`;
+3. sends one `cancel` event per goal to the handler, with the goal's `goal_id`
+   in the metadata and no data.
+
+A request that cancels no goal is answered `ERROR_REJECTED` on DDS; on Zenoh it
+gets the specific code (`ERROR_UNKNOWN_GOAL_ID`, `ERROR_GOAL_TERMINATED`), as
+rcl gives. A handler can also get a `cancel` for a goal it has just finished;
+it can ignore it.
+
+The handler then ends the goal by sending `result` with
+`goal_status: "canceled"` (see [Goal Status](#goal-status)). It may also finish
+the goal normally instead: ROS2 lets a canceling goal end as succeeded or
+aborted. The example handler in `examples/ros2-bridge/yaml-bridge-action-server/`
+computes one step per tick and stops at the step it reached.
+
+**Without a `cancel` output, the bridge rejects cancel requests**, so clients
+get an answer instead of waiting: nothing could stop the goal.
+
 Goals that contain no data or cannot be forwarded to the handler are automatically aborted -- the bridge sends `Aborted` status back to the ROS2 client so it does not hang indefinitely.
 
 ### Goal Status
@@ -1193,7 +1244,7 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 (notably: the Python action client/server *do* support cancel).
 
 - **Action server auto-accept**: All incoming goals are automatically accepted. The handler cannot reject goals before execution starts.
-- **No action cancel support (YAML bridge)**: The YAML action bridge does not handle ROS2 cancel requests (the Python native action API does).
+- **Action cancel needs a `cancel` output**: Without one, the YAML action server rejects ROS2 cancel requests (see [Canceling goals](#canceling-goals)).
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
 - **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable. On the DDS transport these channels additionally apply the override described in [Service and action QoS](#service-and-action-qos-dds-only); on the Zenoh transport ordinary service/action channels use the configured QoS as-is. On both transports the action status channel is always reliable and `transient_local` (see [Action status channel](#action-status-channel)).
