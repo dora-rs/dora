@@ -1193,6 +1193,19 @@ mod tests {
             (node, publisher)
         };
 
+        // A same-host peer is never reported as being elsewhere. The extra
+        // address makes this hold on single-address hosts too, where the
+        // check would otherwise not run.
+        let mut local = crate::transport::interfaces::local_addrs();
+        local.push(LocalAddr {
+            name: "test0".into(),
+            ip: Ipv4Addr::new(198, 51, 100, 1),
+            loopback: false,
+            multicast: true,
+            up: true,
+        });
+        let unrestricted = Unrestricted::new(&local).expect("two or more addresses");
+
         let options = || ContextOptions::new().domain_id(DOMAIN_ID);
         let dora = Context::with_options(options()).unwrap();
         let remote = Context::with_options(options()).unwrap();
@@ -1200,9 +1213,7 @@ mod tests {
         let watcher = DdsDiagnostics::start_reporting(
             dora.domain_participant(),
             ServiceMapping::Enhanced,
-            // On a host with several addresses: a same-host peer is not
-            // reported as being elsewhere.
-            Unrestricted::new(&crate::transport::interfaces::local_addrs()),
+            Some(unrestricted),
             Duration::from_millis(100),
             move |message| {
                 let _ = tx.send(message.to_owned());
