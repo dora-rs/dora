@@ -465,7 +465,9 @@ pub(crate) async fn collect_and_send_metrics_bg(
                 let restart_count = node.restart_count.load(atomic::Ordering::Acquire);
                 let status = if node.restarts_disabled {
                     dora_message::daemon_to_coordinator::NodeStatus::Failed
-                } else if restart_count > 0 {
+                } else if restart_count > 0
+                    || (node.pid.is_some() && node.spawned_at.load(atomic::Ordering::Acquire) == 0)
+                {
                     dora_message::daemon_to_coordinator::NodeStatus::Restarting
                 } else {
                     continue;
@@ -1135,11 +1137,24 @@ mod stale_pid_tests {
     /// dora-rs/dora#4196: a node in restart backoff whose stale PID now names
     /// a live, unrelated process (here: the test process itself) must be
     /// reported as `Restarting`, not as that process `Running`.
+    ///
+    /// This holds both on the first crash (`restart_count == 0`, during backoff
+    /// prior to attempt 1) and on subsequent restart attempts (`restart_count > 0`).
     #[tokio::test]
     async fn a_stale_pid_in_backoff_reports_restarting() {
-        let node = sample_own_process(0, 1).await;
-        assert_eq!(node.status, NodeStatus::Restarting);
-        assert_eq!(node.pid, 0, "the stale PID must not be reported");
+        let initial_crash = sample_own_process(0, 0).await;
+        assert_eq!(initial_crash.status, NodeStatus::Restarting);
+        assert_eq!(
+            initial_crash.pid, 0,
+            "the stale PID must not be reported on initial crash"
+        );
+
+        let subsequent_crash = sample_own_process(0, 1).await;
+        assert_eq!(subsequent_crash.status, NodeStatus::Restarting);
+        assert_eq!(
+            subsequent_crash.pid, 0,
+            "the stale PID must not be reported on subsequent crash"
+        );
     }
 
     /// A live node must stay `Running` even when its process's start time is
@@ -1151,5 +1166,91 @@ mod stale_pid_tests {
         let node = sample_own_process(an_hour_ahead, 1).await;
         assert_eq!(node.status, NodeStatus::Running);
         assert_eq!(node.pid, std::process::id());
+    }
+
+    /// Dynamic nodes have no process spawned by the daemon (`pid: None`) and
+    /// must not be falsely reported as `Restarting`.
+    #[tokio::test]
+    async fn a_dynamic_node_without_pid_is_not_reported_as_restarting() {
+        let state = Arc::new(tokio::sync::Mutex::new(MetricsState::default()));
+        let (sender, mut sent) = coordinator::CoordinatorSender::for_test();
+        let node_id = NodeId::from("dynamic_node".to_string());
+        let snapshot = vec![DataflowMetricsSnapshot {
+            dataflow_id: DataflowId::new_v4(),
+            nodes: vec![NodeSnapshot {
+                node_id,
+                pid: None,
+                spawned_at: Arc::new(AtomicU64::new(0)),
+                restart_count: Arc::new(AtomicU32::new(0)),
+                restarts_disabled: false,
+                broken_inputs: Vec::new(),
+                pending_messages: 0,
+            }],
+            net_bytes_sent: Arc::default(),
+            net_bytes_received: Arc::default(),
+            net_messages_sent: Arc::default(),
+            net_messages_received: Arc::default(),
+            net_publish_failures: Arc::default(),
+        }];
+
+        collect_and_send_metrics_bg(
+            snapshot,
+            state,
+            sender,
+            DaemonId::new(None),
+            Arc::new(uhlc::HLC::default()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sent.recv().await,
+            None,
+            "dynamic nodes without a PID must not be reported as Restarting"
+        );
+    }
+
+    /// A spawned node not in restart backoff (`spawned_at > 0, restart_count == 0`)
+    /// whose process is missing from the system refresh (e.g. during a refresh failure)
+    /// must not be falsely reported as `Restarting`.
+    #[tokio::test]
+    async fn a_spawned_node_not_in_backoff_is_not_reported_as_restarting_when_process_missing() {
+        let state = Arc::new(tokio::sync::Mutex::new(MetricsState::default()));
+        let (sender, mut sent) = coordinator::CoordinatorSender::for_test();
+        let node_id = NodeId::from("live_node".to_string());
+        let unused_pid = 99_999_999;
+        let snapshot = vec![DataflowMetricsSnapshot {
+            dataflow_id: DataflowId::new_v4(),
+            nodes: vec![NodeSnapshot {
+                node_id,
+                pid: Some(Arc::new(AtomicU32::new(unused_pid))),
+                spawned_at: Arc::new(AtomicU64::new(1)),
+                restart_count: Arc::new(AtomicU32::new(0)),
+                restarts_disabled: false,
+                broken_inputs: Vec::new(),
+                pending_messages: 0,
+            }],
+            net_bytes_sent: Arc::default(),
+            net_bytes_received: Arc::default(),
+            net_messages_sent: Arc::default(),
+            net_messages_received: Arc::default(),
+            net_publish_failures: Arc::default(),
+        }];
+
+        collect_and_send_metrics_bg(
+            snapshot,
+            state,
+            sender,
+            DaemonId::new(None),
+            Arc::new(uhlc::HLC::default()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sent.recv().await,
+            None,
+            "a spawned node with spawned_at > 0 must not be reported as Restarting in the second pass"
+        );
     }
 }
