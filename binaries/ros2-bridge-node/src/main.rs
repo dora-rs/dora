@@ -1185,7 +1185,9 @@ fn run_topic_mode(
 ) -> eyre::Result<()> {
     let topics = resolve_topics(&config)?;
 
-    let (mut ros_node, _pool, diagnostics) = create_ros_node(&config)?;
+    let (mut ros_node, _pool, diagnostics, _) = create_ros_node(&config)?;
+    // The endpoints live until this function returns.
+    let mut watches = Vec::new();
 
     let mut subscribers: Vec<(String, SubscriptionStream)> = Vec::new();
     let mut publishers: Vec<(
@@ -1222,7 +1224,7 @@ fn run_topic_mode(
                 let subscription: ros2_client::Subscription<ArrayData> = ros_node
                     .create_subscription(&ros_topic, None)
                     .context("failed to create ROS2 subscription")?;
-                diagnostics.watch_topic(&ros_topic, Role::Reader, None);
+                watches.push(diagnostics.watch_topic(&ros_topic, Role::Reader, None));
                 let deserializer = StructDeserializer::new(Cow::Owned(type_info));
                 subscribers.push((
                     output_id,
@@ -1237,7 +1239,7 @@ fn run_topic_mode(
                 let publisher = ros_node
                     .create_publisher::<TypedValue<'static>>(&ros_topic, None)
                     .context("failed to create ROS2 publisher")?;
-                diagnostics.watch_topic(&ros_topic, Role::Writer, None);
+                watches.push(diagnostics.watch_topic(&ros_topic, Role::Writer, None));
                 publishers.push((input_id, type_info, publisher));
             }
         }
@@ -1290,7 +1292,7 @@ fn run_service_mode(
         messages: messages.clone(),
     };
 
-    let (mut ros_node, _pool, diagnostics) = create_ros_node(&config)?;
+    let (mut ros_node, _pool, diagnostics, node_name) = create_ros_node(&config)?;
 
     let service_qos = bridge_endpoint_qos(&config);
     let service_ros2_name = absolute_ros2_name(service_name)?;
@@ -1307,7 +1309,13 @@ fn run_service_mode(
                     service_qos.clone(),
                 )
                 .map_err(|e| eyre!("failed to create service client: {e:?}"))?;
-            diagnostics.watch_service(&service_ros2_name, is_client, &service_qos, &service_qos);
+            let _watch = diagnostics.watch_service(
+                &node_name,
+                &service_ros2_name,
+                is_client,
+                &service_qos,
+                &service_qos,
+            );
 
             // Wait for service availability
             wait_for_service(&client, &ros_node)?;
@@ -1324,7 +1332,13 @@ fn run_service_mode(
                     service_qos.clone(),
                 )
                 .map_err(|e| eyre!("failed to create service server: {e:?}"))?;
-            diagnostics.watch_service(&service_ros2_name, is_client, &service_qos, &service_qos);
+            let _watch = diagnostics.watch_service(
+                &node_name,
+                &service_ros2_name,
+                is_client,
+                &service_qos,
+                &service_qos,
+            );
 
             run_service_server(server, request_type_info, response_type_info)
         }
@@ -1537,7 +1551,7 @@ fn run_action_mode(
     let result_type_info = make_type_info("Result");
     let feedback_type_info = make_type_info("Feedback");
 
-    let (mut ros_node, _pool, diagnostics) = create_ros_node(&config)?;
+    let (mut ros_node, _pool, diagnostics, node_name) = create_ros_node(&config)?;
     let qos = bridge_endpoint_qos(&config);
     let status_qos = action_status_qos(&config.qos);
     let action_ros2_name = absolute_ros2_name(action_name)?;
@@ -1562,7 +1576,8 @@ fn run_action_mode(
                     action_qos(),
                 )
                 .map_err(|e| eyre!("failed to create action client: {e:?}"))?;
-            diagnostics.watch_action_client(&action_ros2_name, &action_qos());
+            let _watch =
+                diagnostics.watch_action_client(&node_name, &action_ros2_name, &action_qos());
 
             // NOTE: ros2_client does not provide a wait_for_action_server API.
             // The first goal send will time out (ACTION_GOAL_TIMEOUT) if the
@@ -1590,7 +1605,8 @@ fn run_action_mode(
                     action_qos(),
                 )
                 .map_err(|e| eyre!("failed to create action server: {e:?}"))?;
-            diagnostics.watch_action_server(&action_ros2_name, &action_qos());
+            let _watch =
+                diagnostics.watch_action_server(&node_name, &action_ros2_name, &action_qos());
 
             let async_server = ros2_client::action::AsyncActionServer::new(server);
             tracing::info!("action server created, waiting for goals from ROS2 clients");
@@ -2266,6 +2282,7 @@ fn create_ros_node(
     ros2_client::Node,
     futures::executor::ThreadPool,
     Arc<DdsDiagnostics>,
+    ros2_client::NodeName,
 )> {
     let domain_id = parse_dds_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref())?;
     let context =
@@ -2278,10 +2295,11 @@ fn create_ros_node(
         .clone()
         .unwrap_or_else(|| "dora_ros2_bridge".to_string());
     let namespace = &config.namespace;
+    let node_name = ros2_client::NodeName::new(namespace, &node_name)
+        .map_err(|e| eyre!("failed to create ROS2 node name: {e}"))?;
     let mut ros_node = ros_context
         .new_node(
-            ros2_client::NodeName::new(namespace, &node_name)
-                .map_err(|e| eyre!("failed to create ROS2 node name: {e}"))?,
+            node_name.clone(),
             ros2_client::NodeOptions::new().enable_rosout(true),
         )
         .map_err(|e| eyre!("failed to create ROS2 node: {e:?}"))?;
@@ -2297,7 +2315,7 @@ fn create_ros_node(
     })
     .context("failed to spawn ros2 spinner")?;
 
-    Ok((ros_node, pool, diagnostics))
+    Ok((ros_node, pool, diagnostics, node_name))
 }
 
 /// Parse `ROS_DOMAIN_ID` for the Zenoh transport.

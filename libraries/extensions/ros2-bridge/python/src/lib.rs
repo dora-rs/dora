@@ -23,7 +23,7 @@ use ::dora_ros2_bridge::{
             wait_for_server as wait_for_action_server,
         },
     },
-    transport::diagnostics::Role,
+    transport::diagnostics::{Role, Watched},
 };
 use arrow::{
     array::{ArrayData, make_array},
@@ -636,9 +636,10 @@ impl Ros2Node {
             (dora_ros2_bridge::transport::Node::Dds(node), TopicBackend::Dds(topic)) => {
                 let qos: Option<ros2_client::QosProfile> = qos.map(Into::into);
                 let publisher = node.as_inner_mut().create_publisher(topic, qos.clone())?;
-                node.diagnostics()
+                let watch = node
+                    .diagnostics()
                     .watch_topic(topic, Role::Writer, qos.as_ref());
-                PublisherBackend::Dds(publisher)
+                PublisherBackend::Dds(watch.attach(publisher))
             }
             (
                 dora_ros2_bridge::transport::Node::Zenoh(node),
@@ -686,9 +687,10 @@ impl Ros2Node {
                 let subscription = node
                     .as_inner_mut()
                     .create_subscription(topic, qos.clone())?;
-                node.diagnostics()
+                let watch = node
+                    .diagnostics()
                     .watch_topic(topic, Role::Reader, qos.as_ref());
-                SubscriptionBackend::Dds(Some(subscription))
+                SubscriptionBackend::Dds(Some(watch.attach(subscription)))
             }
             (
                 dora_ros2_bridge::transport::Node::Zenoh(node),
@@ -771,8 +773,10 @@ impl Ros2Node {
                         qos.clone(),
                     )
                     .map_err(|e| eyre!("failed to create service client: {e:?}"))?;
-                node.diagnostics().watch_service(&name, true, &qos, &qos);
-                ServiceClientBackend::Dds(Box::new(client))
+                let watch = node
+                    .diagnostics()
+                    .watch_service(node.name(), &name, true, &qos, &qos);
+                ServiceClientBackend::Dds(Box::new(watch.attach(client)))
             }
             dora_ros2_bridge::transport::Node::Zenoh(node) => {
                 let dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. } =
@@ -894,8 +898,10 @@ impl Ros2Node {
                         qos.clone(),
                     )
                     .map_err(|e| eyre!("failed to create service server: {e:?}"))?;
-                node.diagnostics().watch_service(&name, false, &qos, &qos);
-                ServiceServerBackend::Dds(Box::new(server))
+                let watch = node
+                    .diagnostics()
+                    .watch_service(node.name(), &name, false, &qos, &qos);
+                ServiceServerBackend::Dds(Box::new(watch.attach(server)))
             }
             dora_ros2_bridge::transport::Node::Zenoh(node) => {
                 let dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. } =
@@ -973,8 +979,10 @@ impl Ros2Node {
                         policies(),
                     )
                     .map_err(|e| eyre!("failed to create action client: {e:?}"))?;
-                node.diagnostics().watch_action_client(&name, &policies());
-                ActionClientBackend::Dds(Box::new(client))
+                let watch = node
+                    .diagnostics()
+                    .watch_action_client(node.name(), &name, &policies());
+                ActionClientBackend::Dds(Box::new(watch.attach(client)))
             }
             dora_ros2_bridge::transport::Node::Zenoh(node) => {
                 let dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. } =
@@ -1048,10 +1056,12 @@ impl Ros2Node {
                             policies(),
                         )
                         .map_err(|e| eyre!("failed to create action server: {e:?}"))?;
-                    node.diagnostics().watch_action_server(&name, &policies());
+                    let watch =
+                        node.diagnostics()
+                            .watch_action_server(node.name(), &name, &policies());
                     (
                         ActionServerBackend::Dds(Box::new(
-                            ros2_client::action::AsyncActionServer::new(server),
+                            watch.attach(ros2_client::action::AsyncActionServer::new(server)),
                         )),
                         None,
                     )
@@ -1439,7 +1449,7 @@ pub struct Ros2Publisher {
 }
 
 enum PublisherBackend {
-    Dds(ros2_client::Publisher<TypedValue<'static>>),
+    Dds(Watched<ros2_client::Publisher<TypedValue<'static>>>),
     /// Locked for each publish: the attachment's sequence number is taken
     /// before the put, so two puts at once could go out of order, which
     /// rmw_zenoh counts as lost messages. rmw_zenoh locks each publisher too.
@@ -1526,7 +1536,7 @@ pub struct Ros2Subscription {
 // One per subscription; the size difference between the backends does not matter.
 #[allow(clippy::large_enum_variant)]
 enum SubscriptionBackend {
-    Dds(Option<ros2_client::Subscription<ArrayData>>),
+    Dds(Option<Watched<ros2_client::Subscription<ArrayData>>>),
     Zenoh(Option<NodeSubscription<ArrayData>>),
 }
 
@@ -1598,7 +1608,7 @@ pub struct Ros2SubscriptionStream {
 // One per subscription; the size difference between the backends does not matter.
 #[allow(clippy::large_enum_variant)]
 enum Ros2SubscriptionStreamBackend {
-    Dds(ros2_client::Subscription<ArrayData>),
+    Dds(Watched<ros2_client::Subscription<ArrayData>>),
     Zenoh(NodeSubscription<ArrayData>),
 }
 
@@ -1753,7 +1763,11 @@ pub struct Ros2ActionClient {
 }
 
 enum ActionClientBackend {
-    Dds(Box<ros2_client::action::ActionClient<BridgeMessage, BridgeMessage, BridgeMessage>>),
+    Dds(
+        Box<
+            Watched<ros2_client::action::ActionClient<BridgeMessage, BridgeMessage, BridgeMessage>>,
+        >,
+    ),
     Zenoh(Box<ZenohActionClient>),
 }
 
@@ -1777,7 +1791,13 @@ pub struct Ros2ActionServer {
 }
 
 enum ActionServerBackend {
-    Dds(Box<ros2_client::action::AsyncActionServer<BridgeMessage, BridgeMessage, BridgeMessage>>),
+    Dds(
+        Box<
+            Watched<
+                ros2_client::action::AsyncActionServer<BridgeMessage, BridgeMessage, BridgeMessage>,
+            >,
+        >,
+    ),
     Zenoh(Arc<ZenohActionServer>),
 }
 
@@ -3007,7 +3027,7 @@ pub struct Ros2ServiceClient {
 }
 
 enum ServiceClientBackend {
-    Dds(Box<ros2_client::Client<BridgeMessage, BridgeMessage>>),
+    Dds(Box<Watched<ros2_client::Client<BridgeMessage, BridgeMessage>>>),
     Zenoh(NodeServiceClient),
 }
 
@@ -3104,7 +3124,7 @@ pub struct Ros2ServiceServer {
 }
 
 enum ServiceServerBackend {
-    Dds(Box<ros2_client::Server<BridgeMessage, BridgeMessage>>),
+    Dds(Box<Watched<ros2_client::Server<BridgeMessage, BridgeMessage>>>),
     Zenoh(NodeServiceServer),
 }
 

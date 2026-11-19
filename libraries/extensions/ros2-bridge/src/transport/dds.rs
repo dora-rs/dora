@@ -70,9 +70,10 @@ impl Context {
         options: ros2_client::NodeOptions,
     ) -> Result<Node, TransportError> {
         self.inner
-            .new_node(node_name, options)
+            .new_node(node_name.clone(), options)
             .map(|inner| Node {
                 inner,
+                name: node_name,
                 diagnostics: self.diagnostics.clone(),
             })
             .map_err(|error| TransportError::DdsNode {
@@ -100,6 +101,7 @@ impl Context {
 /// Existing DDS ROS2 node.
 pub struct Node {
     inner: ros2_client::Node,
+    name: ros2_client::NodeName,
     diagnostics: Arc<DdsDiagnostics>,
 }
 
@@ -112,6 +114,11 @@ impl Node {
     /// Borrow the concrete node for legacy DDS-only call sites.
     pub fn as_inner(&self) -> &ros2_client::Node {
         &self.inner
+    }
+
+    /// The node's name, which places its relative service and action names.
+    pub fn name(&self) -> &ros2_client::NodeName {
+        &self.name
     }
 
     /// The context's watcher for QoS and RMW-mapping mismatches: register each

@@ -6,7 +6,7 @@
 
 use crate::{
     ros2_client::{
-        self, Name, QosProfile, RosDistro, ServiceMapping,
+        self, Name, NodeName, QosProfile, RosDistro, ServiceMapping,
         action::{ActionClientQosPolicies, ActionServerQosPolicies},
     },
     rustdds::{
@@ -15,8 +15,12 @@ use crate::{
     },
 };
 use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex, mpsc},
+    collections::{BTreeMap, HashSet},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
     thread::JoinHandle,
     time::Duration,
 };
@@ -180,16 +184,72 @@ fn scan(
     findings
 }
 
+/// dora's endpoints by [`Watch`]: each watch adds its endpoints and removes
+/// them when dropped.
+type Locals = Arc<Mutex<BTreeMap<u64, Vec<LocalEndpoint>>>>;
+
 /// Watches a DDS participant in the background and reports, once each, the
 /// QoS and RMW-mapping problems [`scan`] finds between dora's endpoints and the
 /// remote ones. It reads RustDDS's discovery database, so it never consumes
 /// the participant status events ros2-client's spinner depends on.
 ///
-/// [`super::dds::Context`] owns one; register endpoints after creating them.
+/// [`super::dds::Context`] owns one. Register each endpoint after creating it
+/// and keep the returned [`Watch`] as long as the endpoint lives (see
+/// [`Watched`]). RustDDS's discovery database only lists dora's own endpoints
+/// once they come back over the network, so they are registered by hand.
 pub struct DdsDiagnostics {
-    locals: Arc<Mutex<Vec<LocalEndpoint>>>,
+    locals: Locals,
+    next_watch: AtomicU64,
     stop: mpsc::Sender<()>,
     thread: Option<JoinHandle<()>>,
+}
+
+/// Keeps endpoints registered with [`DdsDiagnostics`]; dropping it removes
+/// them, so a dropped endpoint is not compared with peers that appear later.
+#[must_use = "the endpoints are unregistered when the watch is dropped"]
+pub struct Watch {
+    locals: Weak<Mutex<BTreeMap<u64, Vec<LocalEndpoint>>>>,
+    id: u64,
+}
+
+impl Watch {
+    /// Bundle `endpoint` with this watch, so it is watched exactly as long as
+    /// it lives.
+    pub fn attach<T>(self, endpoint: T) -> Watched<T> {
+        Watched {
+            endpoint,
+            _watch: self,
+        }
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        if let Some(locals) = self.locals.upgrade()
+            && let Ok(mut locals) = locals.lock()
+        {
+            locals.remove(&self.id);
+        }
+    }
+}
+
+/// An endpoint together with its [`Watch`]. Derefs to the endpoint.
+pub struct Watched<T> {
+    endpoint: T,
+    _watch: Watch,
+}
+
+impl<T> std::ops::Deref for Watched<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.endpoint
+    }
+}
+
+impl<T> std::ops::DerefMut for Watched<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.endpoint
+    }
 }
 
 impl DdsDiagnostics {
@@ -198,6 +258,19 @@ impl DdsDiagnostics {
 
     /// Start watching `participant`, reporting findings on stderr.
     pub(crate) fn start(participant: rustdds::DomainParticipant, mapping: ServiceMapping) -> Self {
+        Self::start_reporting(participant, mapping, Self::INTERVAL, |finding| {
+            eprintln!("warning: {finding}")
+        })
+    }
+
+    /// [`Self::start`], checking every `interval` and sending findings to
+    /// `report`.
+    fn start_reporting(
+        participant: rustdds::DomainParticipant,
+        mapping: ServiceMapping,
+        interval: Duration,
+        report: impl Fn(&str) + Send + 'static,
+    ) -> Self {
         use rustdds::RTPSEntity;
         let own = participant.guid().prefix;
         Self::start_with(
@@ -207,8 +280,8 @@ impl DdsDiagnostics {
                 remotes
             },
             mapping,
-            Self::INTERVAL,
-            |finding| eprintln!("warning: {finding}"),
+            interval,
+            report,
         )
     }
 
@@ -220,7 +293,7 @@ impl DdsDiagnostics {
         interval: Duration,
         report: impl Fn(&str) + Send + 'static,
     ) -> Self {
-        let locals: Arc<Mutex<Vec<LocalEndpoint>>> = Arc::default();
+        let locals = Locals::default();
         let (stop, stopped) = mpsc::channel();
         let watched = locals.clone();
         let thread = std::thread::Builder::new()
@@ -228,7 +301,7 @@ impl DdsDiagnostics {
             .spawn(move || {
                 let mut reported = HashSet::new();
                 while let Err(mpsc::RecvTimeoutError::Timeout) = stopped.recv_timeout(interval) {
-                    let locals = watched.lock().map(|l| l.clone()).unwrap_or_default();
+                    let locals = flatten(&watched);
                     if locals.is_empty() {
                         continue;
                     }
@@ -245,6 +318,7 @@ impl DdsDiagnostics {
             .ok();
         Self {
             locals,
+            next_watch: AtomicU64::new(0),
             stop,
             thread,
         }
@@ -252,99 +326,137 @@ impl DdsDiagnostics {
 
     /// Watch a publisher (`Role::Writer`) or subscription (`Role::Reader`)
     /// created on `topic`, with `qos` as the override passed to ros2-client.
-    pub fn watch_topic(&self, topic: &rustdds::Topic, role: Role, qos: Option<&QosProfile>) {
+    pub fn watch_topic(
+        &self,
+        topic: &rustdds::Topic,
+        role: Role,
+        qos: Option<&QosProfile>,
+    ) -> Watch {
         use rustdds::{TopicDescription, qos::HasQoSPolicy};
         let topic_qos = match qos {
             Some(qos) => topic.qos().modify_by(&QosPolicies::from(qos)),
             None => topic.qos(),
         };
-        self.watch(topic.name(), role, topic_qos);
+        self.watch(vec![(topic.name(), role, topic_qos)])
     }
 
-    /// Watch a service client or server, with the QoS passed to ros2-client.
+    /// Watch a service client or server that `node` created, with the QoS
+    /// passed to ros2-client.
     pub fn watch_service(
         &self,
+        node: &NodeName,
         name: &Name,
         client: bool,
         request_qos: &QosProfile,
         reply_qos: &QosProfile,
-    ) {
-        self.watch_service_topics(&name.to_string(), client, request_qos, reply_qos);
+    ) -> Watch {
+        self.watch(service_endpoints(node, name, "", client, request_qos, reply_qos).into())
     }
 
-    /// Watch an action client, with the QoS passed to ros2-client.
-    pub fn watch_action_client(&self, name: &Name, qos: &ActionClientQosPolicies) {
+    /// Watch an action client that `node` created, with the QoS passed to
+    /// ros2-client.
+    pub fn watch_action_client(
+        &self,
+        node: &NodeName,
+        name: &Name,
+        qos: &ActionClientQosPolicies,
+    ) -> Watch {
         self.watch_action(
-            &name.to_string(),
+            node,
+            name,
             true,
             [&qos.goal_service, &qos.result_service, &qos.cancel_service],
             &qos.feedback_subscription,
             &qos.status_subscription,
-        );
+        )
     }
 
-    /// Watch an action server, with the QoS passed to ros2-client.
-    pub fn watch_action_server(&self, name: &Name, qos: &ActionServerQosPolicies) {
+    /// Watch an action server that `node` created, with the QoS passed to
+    /// ros2-client.
+    pub fn watch_action_server(
+        &self,
+        node: &NodeName,
+        name: &Name,
+        qos: &ActionServerQosPolicies,
+    ) -> Watch {
         self.watch_action(
-            &name.to_string(),
+            node,
+            name,
             false,
             [&qos.goal_service, &qos.result_service, &qos.cancel_service],
             &qos.feedback_publisher,
             &qos.status_publisher,
-        );
+        )
     }
 
-    /// An action is three services plus the feedback and status topics.
+    /// An action is three services plus the feedback and status topics, all
+    /// under `<name>/_action/`.
     fn watch_action(
         &self,
-        name: &str,
+        node: &NodeName,
+        name: &Name,
         client: bool,
         [goal, result, cancel]: [&QosProfile; 3],
         feedback: &QosProfile,
         status: &QosProfile,
-    ) {
+    ) -> Watch {
+        let mut endpoints = Vec::new();
         for (service, qos) in [
             ("send_goal", goal),
             ("get_result", result),
             ("cancel_goal", cancel),
         ] {
-            self.watch_service_topics(&format!("{name}/_action/{service}"), client, qos, qos);
+            let service = format!("/_action/{service}");
+            endpoints.extend(service_endpoints(node, name, &service, client, qos, qos));
         }
         let role = if client { Role::Reader } else { Role::Writer };
-        self.watch(format!("rt{name}/_action/feedback"), role, feedback.into());
-        self.watch(format!("rt{name}/_action/status"), role, status.into());
+        for (topic, qos) in [("feedback", feedback), ("status", status)] {
+            let dds_topic = name.to_dds_name("rt", node, &format!("/_action/{topic}"));
+            endpoints.push((dds_topic, role, qos.into()));
+        }
+        self.watch(endpoints)
     }
 
-    fn watch_service_topics(
-        &self,
-        name: &str,
-        client: bool,
-        request_qos: &QosProfile,
-        reply_qos: &QosProfile,
-    ) {
-        let [(request, request_role), (reply, reply_role)] = service_topics(name, client);
-        self.watch(request, request_role, request_qos.into());
-        self.watch(reply, reply_role, reply_qos.into());
-    }
-
-    /// Add one of dora's endpoints to the comparison. Like RustDDS, `qos`
-    /// applies on top of ros2-client's publisher or subscriber defaults.
-    fn watch(&self, dds_topic: String, role: Role, qos: QosPolicies) {
-        let defaults = QosPolicies::from(match role {
-            Role::Writer => ros2_client::DEFAULT_PUBLISHER_QOS,
-            Role::Reader => ros2_client::DEFAULT_SUBSCRIPTION_QOS,
-        });
-        let endpoint = LocalEndpoint {
-            dds_topic,
-            role,
-            qos: defaults.modify_by(&qos),
-        };
-        if let Ok(mut locals) = self.locals.lock()
-            && !locals.contains(&endpoint)
-        {
-            locals.push(endpoint);
+    /// Add dora's endpoints to the comparison until the returned watch is
+    /// dropped. Like RustDDS, each QoS applies on top of ros2-client's
+    /// publisher or subscriber defaults.
+    fn watch(&self, endpoints: Vec<(String, Role, QosPolicies)>) -> Watch {
+        let endpoints = endpoints
+            .into_iter()
+            .map(|(dds_topic, role, qos)| {
+                let defaults = QosPolicies::from(match role {
+                    Role::Writer => ros2_client::DEFAULT_PUBLISHER_QOS,
+                    Role::Reader => ros2_client::DEFAULT_SUBSCRIPTION_QOS,
+                });
+                LocalEndpoint {
+                    dds_topic,
+                    role,
+                    qos: defaults.modify_by(&qos),
+                }
+            })
+            .collect();
+        let id = self.next_watch.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut locals) = self.locals.lock() {
+            locals.insert(id, endpoints);
+        }
+        Watch {
+            locals: Arc::downgrade(&self.locals),
+            id,
         }
     }
+
+    /// Every endpoint currently watched.
+    #[cfg(test)]
+    fn local_endpoints(&self) -> Vec<LocalEndpoint> {
+        flatten(&self.locals)
+    }
+}
+
+fn flatten(locals: &Locals) -> Vec<LocalEndpoint> {
+    locals
+        .lock()
+        .map(|l| l.values().flatten().cloned().collect())
+        .unwrap_or_default()
 }
 
 impl Drop for DdsDiagnostics {
@@ -356,17 +468,33 @@ impl Drop for DdsDiagnostics {
     }
 }
 
-/// The DDS request and reply topics of a service with an absolute ROS name,
-/// from the client's (`client`) or the server's side.
-fn service_topics(name: &str, client: bool) -> [(String, Role); 2] {
+/// The request and reply topics of service `name` + `suffix` that `node`
+/// created, from the client's (`client`) or the server's side. The DDS names
+/// come from ros2-client, so a relative `name` gets the node's namespace.
+fn service_endpoints(
+    node: &NodeName,
+    name: &Name,
+    suffix: &str,
+    client: bool,
+    request_qos: &QosProfile,
+    reply_qos: &QosProfile,
+) -> [(String, Role, QosPolicies); 2] {
     let (request, reply) = if client {
         (Role::Writer, Role::Reader)
     } else {
         (Role::Reader, Role::Writer)
     };
     [
-        (format!("rq{name}Request"), request),
-        (format!("rr{name}Reply"), reply),
+        (
+            name.to_dds_name("rq", node, &format!("{suffix}Request")),
+            request,
+            request_qos.into(),
+        ),
+        (
+            name.to_dds_name("rr", node, &format!("{suffix}Reply")),
+            reply,
+            reply_qos.into(),
+        ),
     ]
 }
 
@@ -508,8 +636,14 @@ mod tests {
         // it to a Kilted build changes nothing.
         for env in ["humble", "galactic"] {
             let message = gid_mismatch(RosDistro::Kilted, 16, Some(env)).expect("mismatch");
-            assert!(message.contains("without `--features ros2-kilted`"), "{message}");
-            assert!(!message.contains(&format!("--features ros2-{env}")), "{message}");
+            assert!(
+                message.contains("without `--features ros2-kilted`"),
+                "{message}"
+            );
+            assert!(
+                !message.contains(&format!("--features ros2-{env}")),
+                "{message}"
+            );
         }
     }
 
@@ -736,11 +870,15 @@ mod tests {
     }
 
     fn watched(watcher: &DdsDiagnostics) -> Vec<(String, Role)> {
-        let locals = watcher.locals.lock().unwrap();
-        locals
-            .iter()
-            .map(|l| (l.dds_topic.clone(), l.role))
+        watcher
+            .local_endpoints()
+            .into_iter()
+            .map(|l| (l.dds_topic, l.role))
             .collect()
+    }
+
+    fn node() -> NodeName {
+        NodeName::new("/robot", "n").unwrap()
     }
 
     #[test]
@@ -751,26 +889,54 @@ mod tests {
             Role::Writer,
             best_effort(),
         )]);
-        watcher.watch("rt/chatter".into(), Role::Reader, reliable());
+        let _watch = watcher.watch(vec![("rt/chatter".into(), Role::Reader, reliable())]);
         let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert!(first.contains("reliability"), "{first}");
         assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
     }
 
     #[test]
-    fn watching_the_same_endpoint_twice_keeps_one() {
+    fn dropping_a_watch_unregisters_its_endpoints() {
         let (watcher, _rx) = quiet_watcher(vec![]);
-        watcher.watch("rt/chatter".into(), Role::Reader, reliable());
-        watcher.watch("rt/chatter".into(), Role::Reader, reliable());
-        assert_eq!(watched(&watcher).len(), 1);
+        let kept = watcher.watch(vec![("rt/kept".into(), Role::Reader, reliable())]);
+        let dropped = watcher.watch(vec![
+            ("rt/chatter".into(), Role::Reader, reliable()),
+            ("rt/other".into(), Role::Writer, reliable()),
+        ]);
+        assert_eq!(watched(&watcher).len(), 3);
+        drop(dropped);
+        assert_eq!(watched(&watcher), vec![("rt/kept".into(), Role::Reader)]);
+        drop(kept);
+        assert_eq!(watched(&watcher), vec![]);
+    }
+
+    #[test]
+    fn an_endpoint_watched_twice_stays_until_both_watches_drop() {
+        let (watcher, _rx) = quiet_watcher(vec![]);
+        let first = watcher.watch(vec![("rt/chatter".into(), Role::Reader, reliable())]);
+        let second = watcher.watch(vec![("rt/chatter".into(), Role::Reader, reliable())]);
+        drop(first);
+        assert_eq!(watched(&watcher), vec![("rt/chatter".into(), Role::Reader)]);
+        drop(second);
+        assert_eq!(watched(&watcher), vec![]);
+    }
+
+    #[test]
+    fn a_watch_outliving_the_watcher_drops_quietly() {
+        let (watcher, _rx) = quiet_watcher(vec![]);
+        let watch = watcher.watch(vec![("rt/chatter".into(), Role::Reader, reliable())]);
+        drop(watcher);
+        drop(watch);
     }
 
     #[test]
     fn watched_qos_starts_from_ros2_client_defaults() {
         let (watcher, _rx) = quiet_watcher(vec![]);
-        watcher.watch("rt/x".into(), Role::Writer, QosPolicies::qos_none());
-        watcher.watch("rt/x".into(), Role::Reader, QosPolicies::qos_none());
-        let locals = watcher.locals.lock().unwrap();
+        let _watch = watcher.watch(vec![
+            ("rt/x".into(), Role::Writer, QosPolicies::qos_none()),
+            ("rt/x".into(), Role::Reader, QosPolicies::qos_none()),
+        ]);
+        let locals = watcher.local_endpoints();
         let writer = QosPolicies::from(ros2_client::DEFAULT_PUBLISHER_QOS);
         let reader = QosPolicies::from(ros2_client::DEFAULT_SUBSCRIPTION_QOS);
         assert_eq!(locals[0].qos, writer);
@@ -779,17 +945,25 @@ mod tests {
 
     #[test]
     fn service_topics_match_ros2_client_naming() {
-        use crate::ros2_client::NodeName;
-        let node = NodeName::new("/", "n").unwrap();
-        let name = Name::parse("/add_two_ints").unwrap();
-        let request = name.to_dds_name("rq", &node, "Request");
-        let reply = name.to_dds_name("rr", &node, "Reply");
-        let (watcher, _rx) = quiet_watcher(vec![]);
-        let qos = QosProfile::publisher_default();
-        watcher.watch_service(&name, true, &qos, &qos);
+        // A relative name goes under the node's namespace, like ros2-client
+        // names it (`parse_ros2_name("ns/add_two_ints")` in the Python bridge).
+        for name in ["/add_two_ints", "ns/add_two_ints"] {
+            let name = Name::parse(name).unwrap();
+            let request = name.to_dds_name("rq", &node(), "Request");
+            let reply = name.to_dds_name("rr", &node(), "Reply");
+            let (watcher, _rx) = quiet_watcher(vec![]);
+            let qos = QosProfile::publisher_default();
+            let _watch = watcher.watch_service(&node(), &name, true, &qos, &qos);
+            assert_eq!(
+                watched(&watcher),
+                vec![(request, Role::Writer), (reply, Role::Reader)]
+            );
+        }
         assert_eq!(
-            watched(&watcher),
-            vec![(request, Role::Writer), (reply, Role::Reader)]
+            Name::parse("ns/add_two_ints")
+                .unwrap()
+                .to_dds_name("rq", &node(), "Request"),
+            "rq/robot/ns/add_two_intsRequest"
         );
     }
 
@@ -807,22 +981,27 @@ mod tests {
             feedback_publisher: qos.clone(),
             status_publisher: status,
         };
-        watcher.watch_action_server(&Name::parse("/fibonacci").unwrap(), &policies);
+        // Relative, so it lands under the node's namespace.
+        let name = Name::parse("fibonacci").unwrap();
+        let _watch = watcher.watch_action_server(&node(), &name, &policies);
         let endpoints = watched(&watcher);
         assert_eq!(endpoints.len(), 8, "{endpoints:?}");
         for (topic, role) in [
-            ("rq/fibonacci/_action/send_goalRequest", Role::Reader),
-            ("rr/fibonacci/_action/get_resultReply", Role::Writer),
-            ("rq/fibonacci/_action/cancel_goalRequest", Role::Reader),
-            ("rt/fibonacci/_action/feedback", Role::Writer),
-            ("rt/fibonacci/_action/status", Role::Writer),
+            ("rq/robot/fibonacci/_action/send_goalRequest", Role::Reader),
+            ("rr/robot/fibonacci/_action/get_resultReply", Role::Writer),
+            (
+                "rq/robot/fibonacci/_action/cancel_goalRequest",
+                Role::Reader,
+            ),
+            ("rt/robot/fibonacci/_action/feedback", Role::Writer),
+            ("rt/robot/fibonacci/_action/status", Role::Writer),
         ] {
             assert!(
                 endpoints.contains(&(topic.into(), role)),
                 "{topic} {role:?} in {endpoints:?}"
             );
         }
-        let locals = watcher.locals.lock().unwrap();
+        let locals = watcher.local_endpoints();
         let durability = |suffix: &str| {
             let endpoint = locals.iter().find(|l| l.dds_topic.ends_with(suffix));
             endpoint.unwrap().qos.durability()
@@ -854,5 +1033,77 @@ mod tests {
             Err(mpsc::RecvTimeoutError::Disconnected)
         );
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    /// Against real RustDDS discovery: a remote participant's best-effort
+    /// writer is reported against dora's reliable reader, and the participant's
+    /// own best-effort writer on the same topic is not. Covers what the fakes
+    /// above cannot: `remote_endpoints`, the own-prefix filter and the QoS that
+    /// discovery reports.
+    #[test]
+    fn a_real_participant_reports_an_incompatible_remote_writer() {
+        use crate::ros2_client::{Context, ContextOptions, MessageTypeName, NodeOptions};
+        use rustdds::RTPSEntity;
+
+        /// A domain no other test in this crate uses.
+        const DOMAIN_ID: u16 = 88;
+        let topic_name = Name::parse("/dora_diagnostics_chatter").unwrap();
+        let best_effort = QosProfile::publisher_default().reliability_best_effort();
+        let prefix_text = |context: &Context| {
+            let bytes = context.domain_participant().guid().to_bytes();
+            let prefix: Vec<String> = bytes[..12].iter().map(|b| format!("{b:02x}")).collect();
+            prefix.join(".")
+        };
+        // A node with a best-effort writer on the topic.
+        let writer_node = |context: &Context, name: &str| {
+            let mut node = context
+                .new_node(NodeName::new("/", name).unwrap(), NodeOptions::new())
+                .unwrap();
+            let topic = node
+                .create_topic(
+                    &topic_name,
+                    MessageTypeName::new("std_msgs", "String"),
+                    &best_effort,
+                )
+                .unwrap();
+            let publisher = node
+                .create_publisher::<String>(&topic, Some(best_effort.clone()))
+                .unwrap();
+            (node, publisher)
+        };
+
+        let options = || ContextOptions::new().domain_id(DOMAIN_ID);
+        let dora = Context::with_options(options()).unwrap();
+        let remote = Context::with_options(options()).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let watcher = DdsDiagnostics::start_reporting(
+            dora.domain_participant(),
+            ServiceMapping::Enhanced,
+            Duration::from_millis(100),
+            move |message| {
+                let _ = tx.send(message.to_owned());
+            },
+        );
+        let _watch = watcher.watch(vec![(
+            topic_name.to_dds_name("rt", &NodeName::new("/", "dora").unwrap(), ""),
+            Role::Reader,
+            reliable(),
+        )]);
+        let _own = writer_node(&dora, "dora_writer");
+        let _remote = writer_node(&remote, "remote_writer");
+
+        let first = rx
+            .recv_timeout(Duration::from_secs(20))
+            .expect("the remote writer is reported");
+        assert!(
+            first.starts_with("QoS mismatch on /dora_diagnostics_chatter"),
+            "{first}"
+        );
+        assert!(first.contains("reliability"), "{first}");
+        assert!(first.contains(&prefix_text(&remote)), "{first}");
+        // The own writer has had as long as the remote one to show up.
+        while let Ok(more) = rx.recv_timeout(Duration::from_secs(1)) {
+            assert!(!more.contains(&prefix_text(&dora)), "own writer: {more}");
+        }
     }
 }

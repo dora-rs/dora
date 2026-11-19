@@ -1166,10 +1166,13 @@ that otherwise fails silently:
   while dora frames them for the other mapping; the warning names the
   `RMW_IMPLEMENTATION` value to set.
 - **Distro Gid width.** `ROS_DISTRO` names a distro whose `Gid` width differs from
-  the build (see [Distro constraint](#distro-constraint)).
+  the build (see [Distro constraint](#distro-constraint)); the warning names the
+  distro feature to add, or the newer one to drop.
 
 The checks read RustDDS's discovery data every 2 seconds and run for every DDS
-context; they do not change what is sent or matched.
+context; they do not change what is sent or matched. Each dora endpoint is
+checked while it exists: once a Python publisher, subscription, client or server
+is dropped, peers that appear later are no longer compared with it.
 
 ### Interop testing
 
