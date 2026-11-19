@@ -61,6 +61,38 @@ fn lacks_prebuilt_update(
     is_newer(current_version, release.version()) && !has_prebuilt_cli(release, target)
 }
 
+/// How to upgrade a CLI installed from the `dora-rs-cli` wheel. Printed
+/// rather than run: only the user knows which installer and environment the
+/// `dora` on their `PATH` came from, and each one upgrades differently.
+const WHEEL_UPDATE_HINT: &str = "upgrade the `dora-rs-cli` package with the installer you used: \
+     `pip install -U dora-rs-cli`, `uv pip install -U dora-rs-cli`, \
+     `uv tool upgrade dora-rs-cli` or `pipx upgrade dora-rs-cli`";
+
+/// Why `dora self update` must not replace the running binary, if it must not.
+///
+/// `wheel` is whether this CLI was built with the `python` feature, which
+/// marks the build shipped in the `dora-rs-cli` wheel. There the running
+/// executable is the Python interpreter and the installer owns the files, so
+/// replacing `current_exe()` would overwrite the interpreter and leave the
+/// installer's record of the package stale (#4172). `--check-only` never
+/// replaces anything, so it always proceeds.
+fn update_refusal(wheel: bool, check_only: bool) -> Option<String> {
+    (wheel && !check_only).then(|| {
+        format!(
+            "this dora CLI was installed from the `dora-rs-cli` Python package; {WHEEL_UPDATE_HINT}"
+        )
+    })
+}
+
+/// What `--check-only` tells the user to do when an update is available.
+fn check_only_update_hint(wheel: bool) -> String {
+    if wheel {
+        format!("To update, {WHEEL_UPDATE_HINT}")
+    } else {
+        "Run `dora self update` to update".to_owned()
+    }
+}
+
 /// The updater `dora self update` runs: the CLI archive of the latest
 /// `dora-rs/dora` release for this target.
 fn cli_updater() -> eyre::Result<self_update::backends::github::Update> {
@@ -88,6 +120,11 @@ impl Executable for SelfSubCommand {
 
         match self {
             SelfSubCommand::Update { check_only } => {
+                let wheel = cfg!(feature = "python");
+                if let Some(refusal) = update_refusal(wheel, check_only) {
+                    bail!(refusal);
+                }
+
                 println!("Checking for updates...");
 
                 let status = cli_updater()?;
@@ -103,7 +140,8 @@ impl Executable for SelfSubCommand {
                             let current_version = self_update::cargo_crate_version!();
                             if is_newer(current_version, release_version) {
                                 println!(
-                                    "An update is available: {release_version}. Run 'dora self update' to update"
+                                    "An update is available: {release_version}. {}",
+                                    check_only_update_hint(wheel)
                                 );
                             } else {
                                 println!(
@@ -325,6 +363,39 @@ mod tests {
         assert!(!super::lacks_prebuilt_update(&release, "1.2.0-dev", musl));
         let gnu = "x86_64-unknown-linux-gnu";
         assert!(!super::lacks_prebuilt_update(&release, "1.0.0", gnu));
+    }
+
+    /// A wheel-installed CLI refuses to replace the running executable, which
+    /// is the Python interpreter, and points at the package installers instead
+    /// (#4172). `--check-only` and a standalone CLI proceed.
+    #[test]
+    fn a_wheel_build_refuses_the_binary_swap() {
+        let refusal = super::update_refusal(true, false).expect("a wheel update must be refused");
+        for command in [
+            "`pip install -U dora-rs-cli`",
+            "`uv pip install -U dora-rs-cli`",
+            "`uv tool upgrade dora-rs-cli`",
+            "`pipx upgrade dora-rs-cli`",
+        ] {
+            assert!(refusal.contains(command), "{refusal:?} lacks {command}");
+        }
+
+        assert_eq!(super::update_refusal(true, true), None);
+        assert_eq!(super::update_refusal(false, false), None);
+        assert_eq!(super::update_refusal(false, true), None);
+    }
+
+    /// The `--check-only` hint names the command that actually updates this
+    /// build; the nightly smoke greps for "update is available" around it.
+    #[test]
+    fn check_only_names_the_matching_update_command() {
+        let wheel = super::check_only_update_hint(true);
+        assert!(wheel.contains("`pipx upgrade dora-rs-cli`"));
+        assert!(!wheel.contains("dora self update"));
+        assert_eq!(
+            super::check_only_update_hint(false),
+            "Run `dora self update` to update"
+        );
     }
 
     /// The Windows release asset is made with PowerShell `Compress-Archive`,
