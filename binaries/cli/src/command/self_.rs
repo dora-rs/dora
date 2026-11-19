@@ -61,6 +61,49 @@ fn lacks_prebuilt_update(
     is_newer(current_version, release.version()) && !has_prebuilt_cli(release, target)
 }
 
+/// The command that upgrades a CLI installed from the `dora-rs-cli` wheel.
+const WHEEL_UPDATE_COMMAND: &str = "pip install -U dora-rs-cli";
+
+/// What `dora self update` does for this build.
+#[derive(Debug, PartialEq, Eq)]
+enum UpdateMethod {
+    /// Replace the running binary with the release's CLI archive.
+    ReleaseArchive,
+    /// The CLI is hosted by the `dora-rs-cli` wheel: the running executable is
+    /// the Python interpreter, and pip owns the installed files. Replacing
+    /// `current_exe()` would overwrite the interpreter and leave pip's record
+    /// of the package stale, so the user upgrades through their installer
+    /// instead (#4172).
+    PythonPackage,
+}
+
+impl UpdateMethod {
+    /// `wheel` is whether this CLI was built with the `python` feature, which
+    /// marks the build shipped in the `dora-rs-cli` wheel.
+    fn for_build(wheel: bool) -> Self {
+        if wheel {
+            Self::PythonPackage
+        } else {
+            Self::ReleaseArchive
+        }
+    }
+
+    /// The command `--check-only` tells the user to run when an update exists.
+    fn update_hint(&self) -> String {
+        match self {
+            Self::ReleaseArchive => "`dora self update`".to_owned(),
+            Self::PythonPackage => wheel_update_hint(),
+        }
+    }
+}
+
+/// How to upgrade a wheel-installed CLI, for both installers the wheel is
+/// usually installed with. Printed rather than run: only the user knows which
+/// environment and installer the `dora` on their `PATH` came from.
+fn wheel_update_hint() -> String {
+    format!("`{WHEEL_UPDATE_COMMAND}` (or `uv {WHEEL_UPDATE_COMMAND}` in a uv-managed environment)")
+}
+
 /// The updater `dora self update` runs: the CLI archive of the latest
 /// `dora-rs/dora` release for this target.
 fn cli_updater() -> eyre::Result<self_update::backends::github::Update> {
@@ -88,6 +131,15 @@ impl Executable for SelfSubCommand {
 
         match self {
             SelfSubCommand::Update { check_only } => {
+                let method = UpdateMethod::for_build(cfg!(feature = "python"));
+                if method == UpdateMethod::PythonPackage && !check_only {
+                    bail!(
+                        "this dora CLI was installed from the `dora-rs-cli` Python package; \
+                         update it with {}",
+                        wheel_update_hint()
+                    );
+                }
+
                 println!("Checking for updates...");
 
                 let status = cli_updater()?;
@@ -103,7 +155,8 @@ impl Executable for SelfSubCommand {
                             let current_version = self_update::cargo_crate_version!();
                             if is_newer(current_version, release_version) {
                                 println!(
-                                    "An update is available: {release_version}. Run 'dora self update' to update"
+                                    "An update is available: {release_version}. Run {} to update",
+                                    method.update_hint()
                                 );
                             } else {
                                 println!(
@@ -325,6 +378,26 @@ mod tests {
         assert!(!super::lacks_prebuilt_update(&release, "1.2.0-dev", musl));
         let gnu = "x86_64-unknown-linux-gnu";
         assert!(!super::lacks_prebuilt_update(&release, "1.0.0", gnu));
+    }
+
+    /// A wheel-installed CLI is upgraded through pip, never by replacing the
+    /// running executable, which is the Python interpreter (#4172). The
+    /// `--check-only` hint names the command that actually updates it.
+    #[test]
+    fn a_wheel_build_updates_through_pip() {
+        use super::UpdateMethod;
+
+        assert_eq!(UpdateMethod::for_build(true), UpdateMethod::PythonPackage);
+        let wheel_hint = UpdateMethod::PythonPackage.update_hint();
+        assert!(wheel_hint.contains("`pip install -U dora-rs-cli`"));
+        assert!(wheel_hint.contains("`uv pip install -U dora-rs-cli`"));
+        assert!(!wheel_hint.contains("dora self update"));
+
+        assert_eq!(UpdateMethod::for_build(false), UpdateMethod::ReleaseArchive);
+        assert_eq!(
+            UpdateMethod::ReleaseArchive.update_hint(),
+            "`dora self update`"
+        );
     }
 
     /// The Windows release asset is made with PowerShell `Compress-Archive`,

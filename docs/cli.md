@@ -1457,6 +1457,8 @@ dora self update [--check-only]
 
 Downloads from GitHub releases (`dora-rs/dora`). TLS certificates are validated against the operating system's trust store; minimal images need `ca-certificates` installed.
 
+A CLI installed from the `dora-rs-cli` Python package is not replaced in place: `dora self update` stops and tells you to run `pip install -U dora-rs-cli` (or `uv pip install -U dora-rs-cli`), so pip's record of the package stays correct. `--check-only` works the same for both installs and names that command when an update is available.
+
 #### `dora self uninstall`
 
 Remove the CLI from the system.
