@@ -508,11 +508,13 @@ When the coordinator starts on a store that holds data from a previous run:
 
 1. It clears the stored daemon records; daemons register again when they reconnect.
 2. Every dataflow record with a non-final status (`Pending`, `Running`, `Stopping`, `Recovering`) is marked `Recovering` and written back. `Succeeded` and `Failed` records are left unchanged.
-3. When a daemon reconnects, it reports the dataflows it is still running. The coordinator moves each reported `Recovering` record back to `Running` and rebuilds the dataflow from the record and the nodes the daemon reported, so `dora list`, `dora stop` and `dora logs` work for it again. A record that is `Failed` with `terminal: true` is not revived; the coordinator stops its nodes instead.
+3. When a daemon reconnects, it reports the dataflows it is still running. The coordinator moves each reported `Recovering` record back to `Running` and rebuilds the dataflow from the record and the nodes the daemon reported, so `dora list`, `dora stop` and `dora logs` work for it again. A record that is `Succeeded`, or `Failed` with `terminal: true`, is not revived; the coordinator stops its nodes instead.
 4. The rebuilt dataflow gets its persisted params again: a daemon that missed the start barrier release gets the release and the params replayed, and a dataflow that runs on a single daemon gets its params replayed when that daemon reports. Params deleted while a daemon was away are removed from its nodes.
 5. A record no daemon has reported 60 seconds after it became `Recovering` is marked `Failed { error: "recovery timeout (60s): no daemon reconnected", terminal: true }`.
 
 The same `Recovering` path covers a running coordinator that loses every daemon of a dataflow (for example during a network partition): the record waits 60 seconds for a daemon to report it again.
+
+`dora list` shows only the dataflows the coordinator holds in memory: the running ones and the last 200 that finished since it started. It does not read the store. A `Recovering` record is not listed while it waits, a record that hits the recovery timeout is not listed at all, and dataflows that finished before a restart stay in the store file but no longer appear in `dora list`. `dora clean` deletes the finished and failed records from the store.
 
 ### Error Detail Preservation
 
@@ -532,7 +534,7 @@ The redb database includes a `meta` table with a `schema_version` key. On open:
 - If the stored version matches the binary's version, the database opens normally
 - If there is a mismatch, the database is rejected with an error
 
-This prevents silent data corruption when the serialization format of stored records changes between Dora versions. The current schema version is `5`. A store written by an older version is rejected with a hint to rerun `dora up` with `--recreate-store` (see [Migrating from 0.x](migration-from-0.x.md)).
+This prevents silent data corruption when the serialization format of stored records changes between Dora versions. The current version is `SCHEMA_VERSION` in `libraries/coordinator-store/src/redb_store.rs`. A store written with a different version is rejected with an error that names both versions. `dora up` adds a hint to rerun it with `--recreate-store`; `dora coordinator` run directly prints only the error (see [Migrating from 0.x](migration-from-0.x.md#the-coordinator-store)).
 
 ### Integrity Check
 
@@ -885,9 +887,9 @@ dora coordinator --store redb
 3. Logs: `INFO coordinator restarted: dataflow <uuid> (Some("my-pipeline")) -> Recovering (waiting for daemon reconnect)`
 4. The daemons reconnect and report `my-pipeline` as running; the record goes back to `Running`
 5. `dora list`, `dora stop` and `dora logs` work for `my-pipeline` again, and its nodes kept their processes. Params set before the crash are replayed to the nodes
-6. If no daemon reports `my-pipeline` within 60 seconds, it is marked `Failed` with `recovery timeout (60s): no daemon reconnected`
+6. If no daemon reports `my-pipeline` within 60 seconds, its record in the store is marked `Failed` with `recovery timeout (60s): no daemon reconnected`. `dora list` does not show it
 
-The key benefit: a coordinator restart does not stop running dataflows, and the coordinator keeps the history of finished ones. With `--store memory`, the restarted coordinator has no record of what was running before the crash.
+The key benefit: a coordinator restart does not stop running dataflows. The records of finished dataflows also stay in the store file, but `dora list` does not show them after a restart. With `--store memory`, the restarted coordinator has no record of what was running before the crash.
 
 ### 7. Periodic Batch Job with Always-Restart
 
@@ -930,7 +932,7 @@ The node processes one batch, exits with code 0, waits 10s, then restarts to pro
 
 **Use `InputTracker` for critical paths**. When a node must keep running even with degraded inputs, use `InputTracker` to fall back to cached data. This is essential for sensor fusion, planning, and control nodes.
 
-**Use `--store redb` for production deployments**. The redb backend ensures the coordinator retains dataflow history across crashes and restarts. The in-memory default is fine for development but loses all state on exit. The redb file is small (proportional to the number of dataflow records) and adds negligible overhead.
+**Keep the default `redb` store in production**. It lets a restarted coordinator take back the dataflows that are still running and keeps their params. `--store memory` is fine for development but loses all state on exit. The redb file is small (proportional to the number of dataflow records) and adds negligible overhead.
 
 **Combine features for defense in depth**:
 - `restart_policy` + `restart_delay` -> recover from node crashes
