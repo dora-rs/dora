@@ -3,12 +3,19 @@
 # `rosout=True` and no parameters: a `/rosout` publisher with rcl's QoS, and
 # no parameter services.
 import json
+import os
 import time
 
 import rclpy
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, ReliabilityPolicy
 
 NAME, NAMESPACE = "dora_native_peer", "/dora_test"
+
+# Two checks only hold on Zenoh. On DDS, ros2-client serves the parameter
+# services on every node, as rclcpp does (dora's Zenoh path leaves them out of
+# a node without parameters), and DDS discovery does not carry the history
+# policy, so a remote observer cannot see the publisher's depth.
+zenoh = os.environ.get("RMW_IMPLEMENTATION") == "rmw_zenoh_cpp"
 
 rclpy.init()
 # rclpy gives this node its own `/rosout` publisher to compare with.
@@ -41,15 +48,17 @@ publishers = rosout_publishers()
 
 topics = n.get_publisher_names_and_types_by_node(NAME, NAMESPACE)
 check(("/rosout", ["rcl_interfaces/msg/Log"]) in topics, f"node info: {topics!r}")
-services = n.get_service_names_and_types_by_node(NAME, NAMESPACE)
-check(services == [], f"a node without parameters serves {services!r}")
+if zenoh:
+    services = n.get_service_names_and_types_by_node(NAME, NAMESPACE)
+    check(services == [], f"a node without parameters serves {services!r}")
 
 dora = publishers[(NAMESPACE, NAME)]
 qos = dora.qos_profile
 check(qos.reliability == ReliabilityPolicy.RELIABLE, f"reliability: {qos}")
 check(qos.durability == DurabilityPolicy.TRANSIENT_LOCAL, f"durability: {qos}")
-check(qos.history == HistoryPolicy.KEEP_LAST, f"history: {qos}")
-check(qos.depth == 1000, f"depth: {qos}")
+if zenoh:
+    check(qos.history == HistoryPolicy.KEEP_LAST, f"history: {qos}")
+    check(qos.depth == 1000, f"depth: {qos}")
 # Humble's rclpy has no type hashes.
 ros = publishers[(n.get_namespace(), n.get_name())]
 dora_hash = str(getattr(dora, "topic_type_hash", None))
