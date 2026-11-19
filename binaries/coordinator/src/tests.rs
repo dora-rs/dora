@@ -7939,6 +7939,68 @@ async fn resent_finish_report_finalizes_a_recovering_dataflow() {
     );
 }
 
+/// After a coordinator restart, a dataflow that finished before it, or that the
+/// recovery timeout failed, exists only in the store. `dora list` must still
+/// show it, as `dora clean` does, while a record that has not finished
+/// (`Recovering` here) stays out: the CLI has no status for it. A finished
+/// dataflow that is also in memory is listed once.
+#[tokio::test]
+async fn list_shows_finished_dataflows_that_exist_only_in_the_store() {
+    use dora_message::coordinator_to_cli::DataflowStatus;
+
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let record = |status: StoreDataflowStatus| {
+        let mut record = recovering_record(DataflowId::from(Uuid::new_v4()), BTreeMap::new());
+        record.status = status;
+        store.put_dataflow(&record).expect("seed record");
+        record.uuid
+    };
+    let succeeded = record(StoreDataflowStatus::Succeeded);
+    let timed_out = record(StoreDataflowStatus::Failed {
+        error: "recovery timeout (60s): no daemon reconnected".to_string(),
+        terminal: true,
+    });
+    let recovering = record(StoreDataflowStatus::Recovering);
+    let in_memory = record(StoreDataflowStatus::Succeeded);
+    let mut coordinator = coordinator_with_store(store);
+    let clock = coordinator.clock.clone();
+    coordinator.dataflow_results.insert(
+        in_memory,
+        BTreeMap::from([(
+            DaemonId::new(Some("machine".to_string())),
+            finish_result(&clock, BTreeMap::new()),
+        )]),
+    );
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    coordinator.handle_list(tx).await.expect("handle list");
+    let reply = rx.await.expect("list reply").expect("list ok");
+    let ControlRequestReply::DataflowList(list) = reply else {
+        panic!("expected a dataflow list, got {reply:?}");
+    };
+    let listed = |uuid: Uuid| -> Vec<DataflowStatus> {
+        list.0
+            .iter()
+            .filter(|entry| entry.id.uuid == uuid)
+            .map(|entry| entry.status)
+            .collect()
+    };
+    assert_eq!(
+        listed(succeeded),
+        [DataflowStatus::Finished],
+        "{:?}",
+        list.0
+    );
+    assert_eq!(listed(timed_out), [DataflowStatus::Failed], "{:?}", list.0);
+    assert_eq!(listed(recovering), [], "{:?}", list.0);
+    assert_eq!(
+        listed(in_memory),
+        [DataflowStatus::Finished],
+        "{:?}",
+        list.0
+    );
+}
+
 /// `Recovering` can also mean every daemon dropped while some were still
 /// running. A report that covers only part of the dataflow must not finalize
 /// it, or the daemon that has not reported yet is stopped as an orphan even
