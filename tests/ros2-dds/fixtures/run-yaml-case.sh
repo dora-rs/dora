@@ -16,6 +16,8 @@ case "$CASE" in
   yaml-service-client) set -- yaml-bridge-service/dataflow-client.yml "service_peer.py server" client service /add_two_ints "Received response: sum = 11" ;;
   yaml-action-server) set -- yaml-bridge-action-server/dataflow.yml "action_peer.py client --no-cancel" server action /fibonacci "" ;;
   yaml-action-server-cancel) set -- yaml-bridge-action-server/dataflow.yml "action_peer.py client" server action /fibonacci "" ;;
+  yaml-action-server-accept) set -- yaml-bridge-action-server/dataflow-accept.yml "action_peer.py client --no-cancel" server action /fibonacci "" ;;
+  yaml-action-server-reject) set -- yaml-bridge-action-server/dataflow-accept.yml "action_peer.py client --order 50 --expect-reject" server action /fibonacci "Rejected" ;;
   yaml-action-client) set -- yaml-bridge-action/dataflow.yml "action_peer.py server" client action /fibonacci "Result: sequence=" ;;
   *) echo "unknown YAML case: $CASE" >&2; exit 2 ;;
 esac

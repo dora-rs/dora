@@ -1,0 +1,43 @@
+# Action Server Dataflow where the handler accepts or rejects each goal
+#
+# The same as dataflow.yml, plus a `goal_response` input: because the bridge
+# declares it, the bridge forwards each goal on `goal` without answering the
+# ROS2 client, and accepts or rejects it once the handler answers on
+# `goal_response`. The example handler rejects an
+# order above 46, whose last value would overflow i32. A goal without an
+# answer within 10 s is rejected.
+#
+# Prerequisites:
+#   - ROS2 environment sourced (AMENT_PREFIX_PATH set)
+#   - A ROS2 Fibonacci action client, e.g.:
+#       ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10}"
+#       ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 50}"  # rejected
+#
+# Usage:
+#   dora run dataflow-accept.yml
+
+nodes:
+  - id: fib_server
+    ros2:
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
+      role: server
+    inputs:
+      goal_response: handler/goal_response
+      feedback: handler/feedback
+      result: handler/result
+    outputs:
+      - goal
+      - cancel
+
+  - id: handler
+    build: cargo build -p yaml-bridge-action-server-handler
+    path: ../../../target/debug/yaml-bridge-action-server-handler
+    inputs:
+      goal: fib_server/goal
+      cancel: fib_server/cancel
+      tick: dora/timer/millis/250
+    outputs:
+      - goal_response
+      - feedback
+      - result

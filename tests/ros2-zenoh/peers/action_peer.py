@@ -10,6 +10,11 @@ p.add_argument("role", choices=["client", "server"])
 # Client only: send a plain goal and require SUCCEEDED instead of canceling it,
 # for servers that do not handle cancel (the YAML bridge on DDS, see #4205).
 p.add_argument("--no-cancel", action="store_true")
+# Client only: the goal's Fibonacci order.
+p.add_argument("--order", type=int, default=8)
+# Client only: require the server to reject the goal (a YAML bridge with
+# a `goal_response` input whose handler refuses it).
+p.add_argument("--expect-reject", action="store_true")
 a = p.parse_args()
 rclpy.init()
 n = rclpy.create_node("dora_zenoh_action_peer")
@@ -39,9 +44,18 @@ else:
     print(json.dumps({"event": "READY", "role": a.role}), flush=True)
     if not client.wait_for_server(timeout_sec=20):
         raise SystemExit("action discovery timeout")
-    sent = client.send_goal_async(Fibonacci.Goal(order=8))
+    sent = client.send_goal_async(Fibonacci.Goal(order=a.order))
     rclpy.spin_until_future_complete(n, sent, timeout_sec=20)
     goal = sent.result()
+    if a.expect_reject:
+        if goal is None:
+            raise SystemExit("goal response timed out")
+        if goal.accepted:
+            raise SystemExit("goal accepted, expected a rejection")
+        print(json.dumps({"event": "PASS", "role": a.role}), flush=True)
+        n.destroy_node()
+        rclpy.shutdown()
+        raise SystemExit(0)
     if goal is None or not goal.accepted:
         raise SystemExit("goal rejected or timed out")
     if not a.no_cancel:
