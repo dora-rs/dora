@@ -291,6 +291,7 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 if let Some(topics) = &config.topics {
                     validate_ros2_topic_ports(&node.id, topics, &node.inputs, &node.outputs)?;
                 }
+                validate_ros2_accept(&node.id, &config, &node.inputs)?;
                 let bridge_config_json = serde_json::to_string(&config)
                     .context("failed to serialize ROS2 bridge config")?;
 
@@ -433,6 +434,32 @@ pub(crate) fn resolve_ros2_single_topic<'a>(
 /// silently there (dora-rs/dora#3484).
 ///
 /// [`input_port_id`]: Ros2TopicConfig::input_port_id
+/// `accept` is only for an action server, and `accept: handler` needs a
+/// `goal_response` input for the handler's decisions; without one, every goal
+/// would be rejected after the bridge's timeout. Called on the resolution
+/// path, like [`validate_ros2_topic_ports`], so `dora start` enforces it too.
+pub(crate) fn validate_ros2_accept(
+    node_id: &NodeId,
+    config: &Ros2BridgeConfig,
+    node_inputs: &BTreeMap<DataId, Input>,
+) -> eyre::Result<()> {
+    use dora_message::descriptor::{Ros2AcceptMode, Ros2Role};
+
+    let action_server = config.action.is_some() && config.role == Some(Ros2Role::Server);
+    if config.accept.is_some() && !action_server {
+        bail!("node `{node_id}`: ros2 `accept` is only for an `action` with `role: server`");
+    }
+    if config.accept == Some(Ros2AcceptMode::Handler)
+        && !node_inputs.contains_key(&DataId::from("goal_response".to_owned()))
+    {
+        bail!(
+            "node `{node_id}`: ros2 action server with `accept: handler` requires a \
+             `goal_response` input carrying the handler's decisions"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_ros2_topic_ports(
     node_id: &NodeId,
     topics: &[Ros2TopicConfig],
@@ -2125,6 +2152,31 @@ nodes:
             err.contains("scna") && err.contains("not declared"),
             "error should name the undeclared output, got: {err}"
         );
+    }
+
+    /// `dora start` resolves without validating, so an `accept: handler`
+    /// action server without a `goal_response` input must be rejected here;
+    /// otherwise the bridge would reject every goal after its timeout.
+    #[test]
+    fn resolve_rejects_accept_handler_without_goal_response_input() {
+        let yaml = r#"
+nodes:
+  - id: fib_server
+    ros2:
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
+      role: server
+      accept: handler
+    inputs:
+      result: handler/result
+    outputs: [goal]
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let err = desc
+            .resolve_aliases_and_set_defaults()
+            .expect_err("resolution must reject accept: handler without goal_response")
+            .to_string();
+        assert!(err.contains("`goal_response`"), "got: {err}");
     }
 
     /// The publish counterpart: a topic bound to an undeclared input is rejected

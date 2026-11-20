@@ -757,6 +757,9 @@ fn validate_ros2_config(
 ) -> eyre::Result<()> {
     use dora_message::descriptor::{Ros2Role, Ros2TransportConfig};
 
+    // Shared with the resolution path, so `dora start` enforces it too.
+    super::validate_ros2_accept(node_id, config, node_inputs)?;
+
     if let Ros2TransportConfig::Zenoh {
         config_uri: Some(uri),
         ..
@@ -1538,8 +1541,8 @@ mod tests {
     use crate::types::TypeRegistry;
     use dora_message::config::{Input, InputMapping};
     use dora_message::descriptor::{
-        Descriptor, RmwZenohCompatibility, Ros2BridgeConfig, Ros2Direction, Ros2Role,
-        Ros2TopicConfig, Ros2TransportConfig,
+        Descriptor, RmwZenohCompatibility, Ros2AcceptMode, Ros2BridgeConfig, Ros2Direction,
+        Ros2Role, Ros2TopicConfig, Ros2TransportConfig,
     };
     use std::{path::PathBuf, time::Duration};
 
@@ -2601,6 +2604,59 @@ nodes:
         let mut outputs = BTreeSet::new();
         outputs.insert(DataId::from("goal".to_owned()));
         validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs).unwrap();
+    }
+
+    #[test]
+    fn validate_action_server_accept_handler_requires_goal_response_input() {
+        let config = Ros2BridgeConfig {
+            accept: Some(Ros2AcceptMode::Handler),
+            ..action_config(Ros2Role::Server)
+        };
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("result".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("goal".to_owned()));
+        let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
+            .unwrap_err();
+        assert!(err.to_string().contains("`goal_response`"), "{err}");
+
+        inputs.insert(DataId::from("goal_response".to_owned()), dummy_input());
+        validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs).unwrap();
+    }
+
+    #[test]
+    fn validate_accept_auto_needs_no_goal_response_input() {
+        let config = Ros2BridgeConfig {
+            accept: Some(Ros2AcceptMode::Auto),
+            ..action_config(Ros2Role::Server)
+        };
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("result".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("goal".to_owned()));
+        validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs).unwrap();
+    }
+
+    #[test]
+    fn validate_accept_is_only_for_action_servers() {
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("goal".to_owned()), dummy_input());
+        inputs.insert(DataId::from("goal_response".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("result".to_owned()));
+        for config in [
+            action_config(Ros2Role::Client),
+            service_config(Ros2Role::Server),
+        ] {
+            let config = Ros2BridgeConfig {
+                accept: Some(Ros2AcceptMode::Handler),
+                ..config
+            };
+            let err =
+                validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
+                    .unwrap_err();
+            assert!(err.to_string().contains("`accept`"), "{err}");
+        }
     }
 
     #[test]
