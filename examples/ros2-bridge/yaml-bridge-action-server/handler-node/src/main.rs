@@ -6,15 +6,22 @@
 //! output) ends with the steps computed so far and `goal_status: canceled`.
 //! The `goal_id` is passed through metadata parameters so the bridge can
 //! correlate feedback/result to the correct goal.
+//!
+//! With a `goal_response` output (a bridge with `accept: handler`), the handler
+//! decides each goal: it rejects an order outside `0..=MAX_ORDER`, whose last
+//! value would overflow `i32`, and accepts the rest.
 
 use std::{collections::BTreeMap, sync::Arc};
 
-use arrow::array::{Array, Int32Array, Int32Builder, ListBuilder, StructArray};
+use arrow::array::{Array, BooleanArray, Int32Array, Int32Builder, ListBuilder, StructArray};
 use arrow::datatypes::Field;
 use dora_node_api::{
     DoraNode, Event, GOAL_ID, GOAL_STATUS, GOAL_STATUS_CANCELED, MetadataParameters, Parameter,
     dora_core::config::DataId, get_string_param,
 };
+
+/// The largest order whose Fibonacci sequence fits in `i32`.
+const MAX_ORDER: i32 = 46;
 
 /// A goal being computed: its metadata (with `goal_id`), its order, and the
 /// sequence so far.
@@ -28,6 +35,12 @@ fn main() -> eyre::Result<()> {
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let feedback_output = DataId::from("feedback".to_owned());
     let result_output = DataId::from("result".to_owned());
+    let goal_response_output = DataId::from("goal_response".to_owned());
+    // Decide goals only when the bridge waits for it (`accept: handler`).
+    let decides_goals = node
+        .node_config()
+        .outputs
+        .contains(goal_response_output.as_str());
     let mut goals: BTreeMap<String, Goal> = BTreeMap::new();
 
     while let Some(event) = events.recv() {
@@ -47,6 +60,20 @@ fn main() -> eyre::Result<()> {
                         continue;
                     };
                     println!("Received Fibonacci goal {goal_id}: order={order}");
+                    if decides_goals {
+                        let accepted = (0..=MAX_ORDER).contains(&order);
+                        node.send_output(
+                            goal_response_output.clone(),
+                            params.clone(),
+                            BooleanArray::from(vec![accepted]),
+                        )?;
+                        if !accepted {
+                            println!(
+                                "Rejected {goal_id}: order {order} is outside 0..={MAX_ORDER}"
+                            );
+                            continue;
+                        }
+                    }
                     goals.insert(
                         goal_id,
                         Goal {

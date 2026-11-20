@@ -3338,6 +3338,7 @@ nodes:
             "examples/ros2-bridge/yaml-bridge-action/dataflow-zenoh.yml",
             "examples/ros2-bridge/yaml-bridge-action-server/dataflow.yml",
             "examples/ros2-bridge/yaml-bridge-action-server/dataflow-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-action-server/dataflow-accept.yml",
         ];
         for relative in examples {
             let Some(yaml) = repo_fixture(relative) else {
