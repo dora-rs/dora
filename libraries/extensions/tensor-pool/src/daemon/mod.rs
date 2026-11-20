@@ -182,6 +182,72 @@ mod cross_pool_write_tests {
         }
     }
 
+    /// The explicit free paths (`PeerMessage::Free`, `NodeRequest::Free`)
+    /// unlink only the mirror segment the entry recorded (#4241). On the
+    /// origin daemon the re-derived name is the sender node's own live,
+    /// auto-named local segment, and a `Free` for a pool with no
+    /// cross-machine entry may name a purely local pool of this daemon:
+    /// both must survive.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn free_unlinks_only_the_recorded_mirror() {
+        let dataflow_id = Uuid::new_v4().to_string();
+        // Machine-qualified names in the shape both the Python transport's
+        // auto-named local segments and the mirrors use.
+        let name = |pool_id: &str| {
+            TensorPoolManager::cross_pool_shmem_name("relB", &dataflow_id, pool_id).unwrap()
+        };
+        let tensor_pool = TensorPoolManager::new();
+        let mut cleanup = Vec::new();
+        for pool_id in ["pool_sender_0", "pool_local_0", "pool_mirror_0"] {
+            let shmem_name = name(pool_id);
+            std::fs::write(format!("/dev/shm/{shmem_name}"), vec![0u8; 4096]).unwrap();
+            cleanup.push(ShmemCleanup(shmem_name));
+        }
+        // Origin side: no segment of its own.
+        tensor_pool.register_cross_pool(
+            dataflow_id.clone(),
+            "pool_sender_0".into(),
+            "target".into(),
+            None,
+        );
+        tensor_pool.register_cross_pool(
+            dataflow_id.clone(),
+            "pool_mirror_0".into(),
+            "origin".into(),
+            Some(name("pool_mirror_0")),
+        );
+        let exists =
+            |pool_id: &str| std::path::Path::new(&format!("/dev/shm/{}", name(pool_id))).exists();
+
+        let origin = release_cross_pool_entry(&tensor_pool, &dataflow_id, "pool_sender_0");
+        assert_eq!(
+            origin.map(|entry| entry.peer_machine).as_deref(),
+            Some("target")
+        );
+        assert!(
+            exists("pool_sender_0"),
+            "the sender's live segment must survive"
+        );
+
+        assert_eq!(
+            release_cross_pool_entry(&tensor_pool, &dataflow_id, "pool_local_0"),
+            None
+        );
+        assert!(
+            exists("pool_local_0"),
+            "a pool with no cross entry must survive"
+        );
+
+        let mirror = release_cross_pool_entry(&tensor_pool, &dataflow_id, "pool_mirror_0");
+        assert_eq!(
+            mirror.map(|entry| entry.peer_machine).as_deref(),
+            Some("origin")
+        );
+        assert!(!exists("pool_mirror_0"), "the recorded mirror is unlinked");
+        assert!(!tensor_pool.is_cross(&dataflow_id, "pool_mirror_0"));
+    }
+
     /// A stale mirror segment (leftover from a killed daemon that never
     /// ran shutdown cleanup) must be replaced on re-register instead of
     /// failing with EEXIST.
