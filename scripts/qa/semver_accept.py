@@ -40,6 +40,8 @@ ACCEPTED_SEMVER: dict[str, list[tuple[str, str, str, str]]] = {
 }
 
 _FAILURE = re.compile(r"^--- failure (\w+):")
+# CI runs cargo with colour forced on, so the output carries SGR escapes.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 _ITEM = re.compile(r"^\s+(.+?) in (?:file )?(\S+?):\d+(?::\d+)?$")
 
 
@@ -54,7 +56,7 @@ def parse_failures(output: str, root: str) -> list[tuple[str, str, str]]:
     failures = []
     lint = None
     in_block = False
-    for line in output.splitlines():
+    for line in _ANSI.sub("", output).splitlines():
         header = _FAILURE.match(line)
         if header:
             lint, in_block = header.group(1), False

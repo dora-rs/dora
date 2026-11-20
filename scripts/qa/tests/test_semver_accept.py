@@ -67,6 +67,13 @@ class ParseFailures(unittest.TestCase):
             ],
         )
 
+    def test_coloured_output_parses_like_plain_output(self):
+        coloured = OUTPUT.replace("Failed in:", "\x1b[1mFailed in:\x1b[0m").replace(
+            "--- failure", "\x1b[1m\x1b[31m--- failure"
+        )
+        self.assertNotEqual(coloured, OUTPUT)
+        self.assertEqual(parse_failures(coloured, ROOT), parse_failures(OUTPUT, ROOT))
+
     def test_a_line_of_another_shape_is_kept_and_not_dropped(self):
         output = "--- failure some_lint: x ---\n\nFailed in:\n  something unusual\n"
         self.assertEqual(
