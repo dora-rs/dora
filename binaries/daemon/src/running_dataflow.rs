@@ -1197,6 +1197,56 @@ impl RunningDataflow {
         self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
     }
 
+    /// Check whether a runtime mapping (`dora node connect`) can safely deliver
+    /// payloads before mutating any dataflow state.
+    ///
+    /// An output running on direct Zenoh cannot deliver to a newly added consumer
+    /// because the consumer started without that input mapping and therefore did not
+    /// establish a Zenoh subscription for the output. Neither `AddMapping` nor the
+    /// running producer can re-negotiate transport dynamically in 1.x without risking
+    /// in-flight message reordering or exceeding daemon transport limits.
+    ///
+    /// Thus, an edge is admitted only if:
+    /// 1. It is already present in `mappings` (idempotent retry).
+    /// 2. The source node is running locally and its output is pinned to `daemon_only`
+    ///    (or legacy unconfigured routing, which stays on the daemon path).
+    /// 3. The source node is on another daemon and forwarding for that output was already
+    ///    established in `open_external_mappings`.
+    pub(crate) fn check_add_mapping(
+        &self,
+        source_node: &NodeId,
+        source_output: &DataId,
+        target_node: &NodeId,
+        target_input: &DataId,
+    ) -> Result<(), String> {
+        let output_id = OutputId(source_node.clone(), source_output.clone());
+        if let Some(receivers) = self.mappings.get(&output_id)
+            && receivers.contains(&(target_node.clone(), target_input.clone()))
+        {
+            return Ok(());
+        }
+        if let Some(producer) = self.running_nodes.get(source_node) {
+            let pinned = match &producer.node_config.output_routing {
+                None => true,
+                Some(routing) => routing.get(source_output).is_some_and(|r| r.daemon_only),
+            };
+            if !pinned {
+                return Err(format!(
+                    "Cannot connect {source_node}/{source_output} to {target_node}/{target_input} because \
+                     {source_node}/{source_output} may publish directly over Zenoh. \
+                     Declare input: {source_node}/{source_output} in the node YAML when adding {target_node}."
+                ));
+            }
+        } else if !self.open_external_mappings.contains(&output_id) {
+            return Err(format!(
+                "Cannot connect {source_node}/{source_output} to {target_node}/{target_input} because \
+                 source node `{source_node}` is not running locally and output `{source_output}` is not \
+                 configured for cross-daemon delivery."
+            ));
+        }
+        Ok(())
+    }
+
     /// Wire up a node-to-node edge added at runtime (`dora node connect`).
     ///
     /// Kept here, rather than inline in the `AddMapping` handler, so the

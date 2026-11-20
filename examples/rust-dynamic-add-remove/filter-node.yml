@@ -7,5 +7,7 @@ id: filter
 # CARGO_TARGET_DIR/build-vs-path mismatch).
 build: cargo build -p rust-dynamic-add-remove-filter --target-dir ../../target
 path: ../../target/debug/rust-dynamic-add-remove-filter
+inputs:
+  input: sender/value
 outputs:
   - output

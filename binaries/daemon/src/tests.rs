@@ -1416,6 +1416,69 @@ fn backpressure_consumer_is_refused_only_for_an_unpinned_running_producer() {
     );
 }
 
+/// Runtime edge wiring (`dora node connect`) refuses edges whose producer
+/// can publish directly over Zenoh because dynamically added consumers
+/// do not have corresponding Zenoh subscriptions established (issue #4063).
+#[test]
+fn check_add_mapping_refuses_direct_zenoh_and_unknown_sources() {
+    use dora_message::daemon_to_node::OutputRouting;
+    let mut df = test_dataflow();
+    let src = NodeId::from("src".to_string());
+    let sink = NodeId::from("sink".to_string());
+    let val = DataId::from("val".to_string());
+    let inp = DataId::from("inp".to_string());
+
+    // 1. Source not running locally and not in open_external_mappings -> Err
+    let err = df.check_add_mapping(&src, &val, &sink, &inp).unwrap_err();
+    assert!(err.contains("not running locally"), "{err}");
+
+    // 2. Source in open_external_mappings -> Ok
+    df.open_external_mappings
+        .insert(OutputId(src.clone(), val.clone()));
+    assert!(df.check_add_mapping(&src, &val, &sink, &inp).is_ok());
+    df.open_external_mappings.clear();
+
+    // 3. Source running with unpinned output (may publish directly over Zenoh) -> Err
+    let direct = BTreeMap::from([(val.clone(), OutputRouting::default())]);
+    df.running_nodes.insert(
+        src.clone(),
+        running_node_with(BTreeMap::new(), Some(direct)),
+    );
+    let err = df.check_add_mapping(&src, &val, &sink, &inp).unwrap_err();
+    assert!(err.contains("may publish directly over Zenoh"), "{err}");
+
+    // 4. Source running with pinned daemon_only output -> Ok
+    let pinned = BTreeMap::from([(
+        val.clone(),
+        OutputRouting {
+            daemon_only: true,
+            ..Default::default()
+        },
+    )]);
+    df.running_nodes.insert(
+        src.clone(),
+        running_node_with(BTreeMap::new(), Some(pinned)),
+    );
+    assert!(df.check_add_mapping(&src, &val, &sink, &inp).is_ok());
+
+    // 5. Source running with no routing table (legacy unconfigured) -> Ok
+    df.running_nodes
+        .insert(src.clone(), running_node_with(BTreeMap::new(), None));
+    assert!(df.check_add_mapping(&src, &val, &sink, &inp).is_ok());
+
+    // 6. Edge already in mappings (idempotent retry) -> Ok even if unpinned
+    let direct = BTreeMap::from([(val.clone(), OutputRouting::default())]);
+    df.running_nodes.insert(
+        src.clone(),
+        running_node_with(BTreeMap::new(), Some(direct)),
+    );
+    df.mappings
+        .entry(OutputId(src.clone(), val.clone()))
+        .or_default()
+        .insert((sink.clone(), inp.clone()));
+    assert!(df.check_add_mapping(&src, &val, &sink, &inp).is_ok());
+}
+
 /// dora-rs/dora#2988 review, finding 1 (still upheld) and dora-rs/dora#2997:
 /// the Event::Node gate accepts only the entry's own lineage — its current
 /// generation or the successor its own restart loop announced into

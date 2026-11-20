@@ -1015,6 +1015,8 @@ Add a live mapping between two nodes in a running dataflow.
 dora node connect <SOURCE/OUTPUT> <TARGET/INPUT> [OPTIONS]
 ```
 
+> **Note on transport admission:** A node's outputs that were configured for direct Zenoh delivery establish subscriptions at consumer startup. Connecting an existing direct-capable output to a dynamically added node at runtime cannot deliver payloads over Zenoh (the consumer has no subscription), and live transport renegotiation is not supported in 1.x. Declare the input in the node YAML when adding the consumer (`dora node add --from-yaml ...`) instead. `dora node connect` succeeds for outputs pinned to the daemon path (such as receiver-less outputs of dynamically added nodes) and for cross-daemon edges configured for forwarding.
+
 ##### `dora node disconnect`
 
 Remove a live mapping between two nodes in a running dataflow.

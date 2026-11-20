@@ -2,13 +2,13 @@
 #   dora node add --from-yaml filter-node.yml --dataflow <name>
 #
 # This node filters values, keeping only even numbers.
-# After adding, wire it with:
-#   dora node connect <dataflow> sender/value filter/input
+# Upstream inputs are declared so Zenoh subscriptions are established on startup.
+# After adding, wire its output into downstream consumers with:
 #   dora node connect <dataflow> filter/output receiver/filtered
 
 id: filter
 path: filter.py
-# No inputs declared — wire explicitly after adding:
-#   dora node connect <dataflow> sender/value filter/input
+inputs:
+  input: sender/value
 outputs:
   - output

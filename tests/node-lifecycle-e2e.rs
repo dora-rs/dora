@@ -409,6 +409,24 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
     );
 
     // --- 4 + 5. dora node connect (two edges) ---------------------------
+    // An undeclared edge from a direct-capable output must be refused with
+    // an actionable error (issue #4063).
+    let (ok_refused, _, stderr_refused) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "connect",
+            "--dataflow",
+            name,
+            "sender/value",
+            "filter/undeclared_input",
+        ]),
+        "dora node connect unpinnable direct edge",
+    );
+    assert!(
+        !ok_refused && stderr_refused.contains("may publish directly over Zenoh"),
+        "direct-capable edge without declared subscription must be rejected; got ok={ok_refused}, stderr:\n{stderr_refused}"
+    );
+
     let (ok, stdout, stderr) = run_capture(
         Command::new(&dora).args([
             "node",
