@@ -107,7 +107,6 @@ The coordinator is an Axum-based WebSocket server that orchestrates distributed 
    CLI ◄──────────────────►  │  │   State    │  │ ◄──────────────────► Daemon(s)
                           │  │   Store    │  │
                           │  └────────────┘  │
-                          │  /api/artifacts  │
                           │  /health         │
                           └──────────────────┘
 ```
@@ -115,7 +114,6 @@ The coordinator is an Axum-based WebSocket server that orchestrates distributed 
 **WebSocket routes:**
 - `/api/control` — CLI control plane (build, start, stop, list, logs, topic subscribe)
 - `/api/daemon` — Daemon registration and event stream
-- `/api/artifacts/{build_id}/{node_id}` — Binary artifact downloads
 - `/health` — Health check endpoint
 
 **State management:** In-memory by default, optional persistent storage via `redb` backend.
@@ -625,10 +623,7 @@ dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}
 
 ### Build Distribution
 
-Three strategies via `DistributeStrategy`:
-- **Local** — each daemon builds from source (default)
-- **Scp** — CLI pushes built binaries via SSH/SCP
-- **Http** — daemons pull from coordinator's `/api/artifacts` endpoint
+Configured build steps run on the target machine. Prebuilt binaries must already exist there. The values `scp` and `http` are accepted for compatibility and use the same behavior as `local`.
 
 ### Machine Labels
 

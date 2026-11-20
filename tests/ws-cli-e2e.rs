@@ -70,6 +70,18 @@ fn start_coordinator_background_with_store(store: Arc<dyn CoordinatorStore>) -> 
     port
 }
 
+#[tokio::test]
+async fn removed_artifact_endpoint_returns_not_found() {
+    let port = start_coordinator_background();
+    // An invalid build ID used to reach the handler and return 400.
+    let url = format!("ws://127.0.0.1:{port}/api/artifacts/invalid/node");
+    let err = tokio_tungstenite::connect_async(url).await.unwrap_err();
+    let tokio_tungstenite::tungstenite::Error::Http(response) = err else {
+        panic!("expected an HTTP response, got {err}");
+    };
+    assert_eq!(response.status().as_u16(), 404);
+}
+
 fn seed_dataflow_record(store: &dyn CoordinatorStore, dataflow_id: uuid::Uuid, node_ids: &[&str]) {
     let descriptor_json = serde_json::json!({
         "nodes": node_ids.iter().map(|id| serde_json::json!({ "id": id })).collect::<Vec<_>>()
