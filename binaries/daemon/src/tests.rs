@@ -1185,6 +1185,32 @@ fn dynamic_join_dials_both_local_producers_and_consumers() {
     assert_eq!(df.zenoh_peering[&joining].listen, [again.listen]);
 }
 
+/// A planned Zenoh port is free until its node binds it, so the endpoints
+/// a node IPC listener must avoid come from every running dataflow, not just
+/// the one being spawned (#4242).
+#[test]
+fn planned_zenoh_endpoints_cover_every_running_dataflow() {
+    let plan = |port: u16| crate::spawn::NodeZenohPeering {
+        listen: vec![format!("tcp/127.0.0.1:{port}")],
+        connect: vec![],
+        routable: false,
+    };
+    let mut a = test_dataflow();
+    Arc::make_mut(&mut a.zenoh_peering).insert("a1".to_owned().into(), plan(13001));
+    let mut b = test_dataflow();
+    Arc::make_mut(&mut b.zenoh_peering).insert("b1".to_owned().into(), plan(13002));
+    Arc::make_mut(&mut b.zenoh_peering).insert("b2".to_owned().into(), plan(13003));
+
+    assert_eq!(
+        crate::running_dataflow::planned_zenoh_endpoints([&a, &b]),
+        BTreeSet::from([
+            "tcp/127.0.0.1:13001".to_owned(),
+            "tcp/127.0.0.1:13002".to_owned(),
+            "tcp/127.0.0.1:13003".to_owned(),
+        ])
+    );
+}
+
 #[test]
 fn dynamic_join_publishes_listener_before_next_configuration_request() {
     let mut df = test_dataflow();

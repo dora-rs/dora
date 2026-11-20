@@ -600,6 +600,12 @@ pub struct Spawner {
     /// Per-node listener + dial-list, so the node↔node links the dataflow needs
     /// are established deterministically. See [`build_peering_plan`].
     pub zenoh_peering: Arc<BTreeMap<NodeId, NodeZenohPeering>>,
+    /// Zenoh listen endpoints planned by the dataflows running on this daemon
+    /// when this spawner was built (see
+    /// [`planned_zenoh_endpoints`](crate::running_dataflow::planned_zenoh_endpoints)).
+    /// The spawner is used within one daemon event, so no other dataflow can
+    /// be planned before its listeners are bound.
+    pub planned_zenoh_endpoints: Arc<BTreeSet<String>>,
     /// Whether this daemon runs without multicast scouting, so spawned nodes
     /// should too (see [`DORA_ZENOH_MULTICAST_ENV`]). Mixing modes leaves a
     /// node scouting for a daemon that no longer answers.
@@ -620,6 +626,18 @@ pub struct Spawner {
 }
 
 impl Spawner {
+    /// The Zenoh endpoints a node IPC listener must not take: every node's
+    /// listeners, not just this node's, and those of every other dataflow on
+    /// this daemon too, since none of the advertised ports may be claimed
+    /// while their producer processes are still starting (#4107, #4242).
+    fn reserved_zenoh_endpoints(&self) -> BTreeSet<String> {
+        self.zenoh_peering
+            .values()
+            .flat_map(|peering| peering.listen.iter().cloned())
+            .chain(self.planned_zenoh_endpoints.iter().cloned())
+            .collect()
+    }
+
     fn maybe_inject_machine_id(&self, command: Command) -> Command {
         let command = match &self.machine_id {
             Some(machine_id) => command.env("DORA_MACHINE_ID", machine_id),
@@ -757,14 +775,7 @@ impl Spawner {
         // closes the listener instead of leaking it until dataflow end
         // (dora-rs/dora#2988 review, finding 3).
         let (listener_shutdown, node_shutdown_rx) = tokio::sync::watch::channel(false);
-        // Include every node's listeners, not just this node's: none of the
-        // advertised Zenoh ports may be claimed by a node IPC listener while
-        // the producer processes are still starting (#4107).
-        let reserved_zenoh_endpoints = self
-            .zenoh_peering
-            .values()
-            .flat_map(|peering| peering.listen.iter().cloned())
-            .collect();
+        let reserved_zenoh_endpoints = self.reserved_zenoh_endpoints();
         let daemon_communication = spawn_listener_loop(
             &dataflow_id,
             &node_id,
@@ -984,6 +995,7 @@ mod tests {
             // Empty: exercises the daemon-endpoint fallback arm, which is the
             // one a node without its own peering plan takes.
             zenoh_peering: Arc::new(BTreeMap::new()),
+            planned_zenoh_endpoints: Arc::default(),
             disable_multicast,
             machine_id: None,
             // The `dora up` shape: a long-lived daemon whose nodes outlive it.
@@ -1021,6 +1033,34 @@ mod tests {
             env_of(&command, DORA_ZENOH_LISTEN_EXTRA_ENV),
             Some(Some(OsString::from("tcp/10.0.0.2:41001"))),
             "the routable endpoint belongs in the extra var"
+        );
+    }
+
+    /// A node IPC listener must stay off this dataflow's planned Zenoh ports
+    /// and off those another dataflow on the daemon has planned but whose
+    /// nodes may not have bound them yet (#4107, #4242).
+    #[test]
+    fn reserved_endpoints_include_other_dataflows_plans() {
+        let mut spawner = spawner_for(None, false);
+        spawner.zenoh_peering = Arc::new(BTreeMap::from([(
+            node("sink"),
+            NodeZenohPeering {
+                listen: vec!["tcp/127.0.0.1:41000".into()],
+                connect: Vec::new(),
+                routable: false,
+            },
+        )]));
+        spawner.planned_zenoh_endpoints = Arc::new(BTreeSet::from([
+            "tcp/127.0.0.1:41000".to_owned(),
+            "tcp/127.0.0.1:42000".to_owned(),
+        ]));
+
+        assert_eq!(
+            spawner.reserved_zenoh_endpoints(),
+            BTreeSet::from([
+                "tcp/127.0.0.1:41000".to_owned(),
+                "tcp/127.0.0.1:42000".to_owned(),
+            ])
         );
     }
 

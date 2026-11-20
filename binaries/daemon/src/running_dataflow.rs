@@ -296,6 +296,20 @@ pub struct LogSubscriber {
     pub filter: dora_message::config::LogSubscriptionFilter,
 }
 
+/// Every Zenoh listen endpoint planned by `dataflows`. A planned port is
+/// only probed free, not held, until its node binds it, so a node IPC
+/// listener of *any* dataflow on this daemon must stay off it (#4107,
+/// #4242).
+pub(crate) fn planned_zenoh_endpoints<'a>(
+    dataflows: impl IntoIterator<Item = &'a RunningDataflow>,
+) -> BTreeSet<String> {
+    dataflows
+        .into_iter()
+        .flat_map(|dataflow| dataflow.zenoh_peering.values())
+        .flat_map(|peering| peering.listen.iter().cloned())
+        .collect()
+}
+
 pub struct RunningDataflow {
     pub(crate) id: uuid::Uuid,
     pub(crate) descriptor: Descriptor,
