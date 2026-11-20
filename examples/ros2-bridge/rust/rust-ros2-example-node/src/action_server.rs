@@ -164,7 +164,11 @@ fn create_action_server(ros_node: &mut ros2_client::Node) -> eyre::Result<Fibona
             result_service: service_qos.clone(),
             cancel_service: service_qos.clone(),
             feedback_publisher: service_qos.clone(),
-            status_publisher: service_qos,
+            // rcl action clients subscribe to the status transient-local.
+            status_publisher: ros2_client::QosProfile {
+                durability: ros2_client::qos::Durability::TransientLocal,
+                ..service_qos
+            },
         }
     };
     let server = ros_node
