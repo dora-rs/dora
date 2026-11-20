@@ -242,8 +242,12 @@ impl Daemon {
         // daemons running the rest of the dataflow, then build the dial lists.
         // The trade has to finish before any node spawns — a node's zenoh
         // session reads its dial list once at startup and never again.
-        let listeners =
-            crate::spawn::reserve_node_listeners(&nodes, &spawn_nodes, self.zenoh_routable_addr);
+        let listeners = crate::spawn::reserve_node_listeners(
+            &nodes,
+            &spawn_nodes,
+            self.zenoh_routable_addr,
+            &crate::running_dataflow::planned_zenoh_endpoints(self.running.values()),
+        );
         // Started here but awaited below, so its bounded wait overlaps the
         // build metadata and working-directory work in between rather than
         // stalling the event loop on its own. Same reason the memory-pool

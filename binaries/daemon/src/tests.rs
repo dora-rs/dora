@@ -1166,7 +1166,7 @@ fn dynamic_join_dials_both_local_producers_and_consumers() {
         );
     }
     let (_, plan) = df
-        .dynamic_node_config(&joining, Some("tcp/127.0.0.1:12000"))
+        .dynamic_node_config(&joining, Some("tcp/127.0.0.1:12000"), &BTreeSet::new())
         .unwrap();
     assert_eq!(
         plan.connect,
@@ -1177,7 +1177,10 @@ fn dynamic_join_dials_both_local_producers_and_consumers() {
         ]
     );
     assert!(plan.listen.starts_with("tcp/127.0.0.1:"));
-    let again = df.dynamic_node_config(&joining, None).unwrap().1;
+    let again = df
+        .dynamic_node_config(&joining, None, &BTreeSet::new())
+        .unwrap()
+        .1;
     assert_ne!(
         again.listen, plan.listen,
         "a restarted node must not inherit a port nothing held while it was down"
@@ -1223,8 +1226,14 @@ fn dynamic_join_publishes_listener_before_next_configuration_request() {
         df.running_nodes.insert(id.clone(), node);
     }
     add_input(&mut df, "b", "in", "a");
-    let first = df.dynamic_node_config(&a, None).unwrap().1;
-    let second = df.dynamic_node_config(&b, None).unwrap().1;
+    let first = df
+        .dynamic_node_config(&a, None, &BTreeSet::new())
+        .unwrap()
+        .1;
+    let second = df
+        .dynamic_node_config(&b, None, &BTreeSet::new())
+        .unwrap()
+        .1;
     assert_eq!(
         second.connect.as_slice(),
         std::slice::from_ref(&first.listen)
@@ -1232,7 +1241,10 @@ fn dynamic_join_publishes_listener_before_next_configuration_request() {
     assert_ne!(first.listen, second.listen);
     // Once both have asked, either order of reconnect has explicit endpoints.
     assert_eq!(
-        df.dynamic_node_config(&a, None).unwrap().1.connect,
+        df.dynamic_node_config(&a, None, &BTreeSet::new())
+            .unwrap()
+            .1
+            .connect,
         [second.listen]
     );
 }
@@ -1243,7 +1255,7 @@ fn dynamic_join_rejects_static_nodes_and_stopping_dataflows() {
     let id = NodeId::from("test".to_owned());
     df.running_nodes.insert(id.clone(), test_running_node());
     assert!(
-        df.dynamic_node_config(&id, None)
+        df.dynamic_node_config(&id, None, &BTreeSet::new())
             .unwrap_err()
             .to_string()
             .contains("not dynamic")
@@ -1252,7 +1264,7 @@ fn dynamic_join_rejects_static_nodes_and_stopping_dataflows() {
     df.running_nodes.get_mut(&id).unwrap().node_config.dynamic = true;
     df.stop_sent = true;
     assert!(
-        df.dynamic_node_config(&id, None)
+        df.dynamic_node_config(&id, None, &BTreeSet::new())
             .unwrap_err()
             .to_string()
             .contains("stopping")
@@ -1302,7 +1314,7 @@ fn dynamic_join_ignores_a_static_node_with_the_same_id_elsewhere() {
     let picked = dataflow_for_dynamic_node(&mut running, &camera).unwrap();
     assert!(
         picked
-            .dynamic_node_config(&camera, None)
+            .dynamic_node_config(&camera, None, &BTreeSet::new())
             .unwrap_err()
             .to_string()
             .contains("not dynamic")
