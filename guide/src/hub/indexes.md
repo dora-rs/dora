@@ -9,7 +9,9 @@ air-gapped mirror, or an enterprise fork.
 ## `hub.toml`
 
 Config lives in `hub.toml` in the platform's config directory (override the
-path with the `DORA_HUB_CONFIG` environment variable):
+path with the `DORA_HUB_CONFIG` environment variable; unlike the default
+location, the file it names must exist — point it at `/dev/null` to use only
+the official index):
 
 | Platform | Path |
 |---|---|

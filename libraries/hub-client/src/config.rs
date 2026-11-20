@@ -156,12 +156,30 @@ impl ResolvedConfig {
     /// Load from the conventional location (`<config_dir>/dora/hub.toml`),
     /// falling back to official-only when the file does not exist. The
     /// `DORA_HUB_CONFIG` environment variable overrides the location
-    /// (integration tests, hermetic CI).
+    /// (integration tests, hermetic CI); unlike the default location, the
+    /// file it names must exist.
     pub fn load_default() -> eyre::Result<Self> {
-        if let Ok(path) = std::env::var("DORA_HUB_CONFIG") {
-            return Self::load_from(Path::new(&path));
+        if let Some(path) = std::env::var_os("DORA_HUB_CONFIG") {
+            return Self::load_override(Path::new(&path));
         }
         Self::load_default_in(dirs::config_dir(), linux_path_to_check(dirs::home_dir()))
+    }
+
+    /// Load the file named by `DORA_HUB_CONFIG`. An explicit override that
+    /// names no file (a typo, an empty value, a file not created yet) is an
+    /// error rather than official-only: falling back would silently drop the
+    /// namespace bindings the override was meant to apply, so a bound
+    /// namespace would resolve against the official index instead. Anything
+    /// readable is accepted, so `/dev/null` still means official-only.
+    fn load_override(path: &Path) -> eyre::Result<Self> {
+        let raw = std::fs::read_to_string(path).with_context(|| {
+            format!(
+                "failed to read `{}` named by DORA_HUB_CONFIG; \
+                 point it at an existing hub.toml or unset it",
+                path.display()
+            )
+        })?;
+        Self::parse(path, &raw)
     }
 
     /// [`Self::load_default`] past the `DORA_HUB_CONFIG` override, with the
@@ -182,16 +200,31 @@ impl ResolvedConfig {
     }
 
     /// Load from an explicit config file path (missing file = official only).
+    ///
+    /// Only a path with nothing at it (or under a parent that is not a
+    /// directory) counts as missing. A file that exists but cannot be read
+    /// (permissions, a directory, a dangling symlink) is an error, since
+    /// treating it as absent would drop its namespace bindings without a word.
     pub fn load_from(path: &Path) -> eyre::Result<Self> {
-        let config_dir = path.parent().unwrap_or(Path::new(".")).to_path_buf();
-        if !path.is_file() {
-            return Self::new(Vec::new(), config_dir);
-        }
-        let raw = std::fs::read_to_string(path)
-            .with_context(|| format!("failed to read `{}`", path.display()))?;
-        let config: HubConfig = toml::from_str(&raw)
+        let raw = match std::fs::read_to_string(path) {
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) && std::fs::symlink_metadata(path).is_err() =>
+            {
+                return Self::new(Vec::new(), config_dir(path));
+            }
+            result => result.with_context(|| format!("failed to read `{}`", path.display()))?,
+        };
+        Self::parse(path, &raw)
+    }
+
+    /// Parse the contents of the hub config at `path`.
+    fn parse(path: &Path, raw: &str) -> eyre::Result<Self> {
+        let config: HubConfig = toml::from_str(raw)
             .with_context(|| format!("invalid hub config `{}`", path.display()))?;
-        Self::new(config.indexes, config_dir)
+        Self::new(config.indexes, config_dir(path))
             .with_context(|| format!("invalid hub config `{}`", path.display()))
     }
 
@@ -217,6 +250,12 @@ impl ResolvedConfig {
             None => &self.indexes[self.default_index],
         }
     }
+}
+
+/// The directory relative `path` entries in the hub config at `path` resolve
+/// against.
+fn config_dir(path: &Path) -> PathBuf {
+    path.parent().unwrap_or(Path::new(".")).to_path_buf()
 }
 
 /// The Linux location, `~/.config/dora/hub.toml`, on the platforms that never
@@ -323,6 +362,64 @@ pub(crate) fn validate_index_entry(index: &IndexConfig) -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_missing_override_file_is_an_error_not_official_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let typo = dir.path().join("hub.tmol");
+        let err = ResolvedConfig::load_override(&typo)
+            .expect_err("a DORA_HUB_CONFIG naming no file must not fall back");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("DORA_HUB_CONFIG"), "{msg}");
+        assert!(msg.contains(&typo.display().to_string()), "{msg}");
+
+        let err = ResolvedConfig::load_override(Path::new(""))
+            .expect_err("an empty DORA_HUB_CONFIG must not fall back");
+        assert!(format!("{err:#}").contains("DORA_HUB_CONFIG"), "{err:#}");
+
+        let real = dir.path().join("hub.toml");
+        std::fs::write(
+            &real,
+            "[[index]]\nalias = \"acme\"\npath = \"/srv/acme\"\nnamespaces = [\"acme\"]\n",
+        )
+        .unwrap();
+        let config = ResolvedConfig::load_override(&real).unwrap();
+        assert_eq!(config.index_for_namespace("acme").alias, "acme");
+    }
+
+    /// Anything readable is a valid override, so `/dev/null` still pins the
+    /// official index (and process substitution's `/dev/fd/N` still works).
+    #[cfg(unix)]
+    #[test]
+    fn dev_null_override_is_official_only() {
+        let config = ResolvedConfig::load_override(Path::new("/dev/null")).unwrap();
+        assert_eq!(config.indexes.len(), 1);
+    }
+
+    #[test]
+    fn load_from_falls_back_only_when_nothing_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = ResolvedConfig::load_from(&dir.path().join("hub.toml")).unwrap();
+        assert_eq!(missing.indexes.len(), 1);
+
+        // a directory where the file should be is unreadable, not absent
+        let as_dir = dir.path().join("dir-hub.toml");
+        std::fs::create_dir(&as_dir).unwrap();
+        let err =
+            ResolvedConfig::load_from(&as_dir).expect_err("a directory must not read as absent");
+        assert!(format!("{err:#}").contains("failed to read"), "{err:#}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_hub_toml_symlink_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("hub.toml");
+        std::os::unix::fs::symlink(dir.path().join("gone.toml"), &link).unwrap();
+        let err = ResolvedConfig::load_from(&link)
+            .expect_err("a dangling symlink must not read as absent");
+        assert!(format!("{err:#}").contains("failed to read"), "{err:#}");
+    }
+
     #[test]
     fn a_hub_toml_at_the_linux_path_is_not_silently_ignored() {
         let home = tempfile::tempdir().unwrap();
