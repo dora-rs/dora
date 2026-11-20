@@ -1059,6 +1059,10 @@ fn run_zenoh_action_server(
     };
 
     let server = Arc::new(server);
+    let unknown_goal_response = {
+        let _guard = TypeInfoGuard::serialize(result_type_info.clone());
+        unknown_goal_result_response()?
+    };
     let (mut node, events) = DoraNode::init_from_env()?;
     let cancel_output = declares_cancel_output(&node);
     let (tx, rx) = flume::bounded(MAX_CONCURRENT_GOALS * 4);
@@ -1175,11 +1179,14 @@ fn run_zenoh_action_server(
                         }
                     },
                     None => {
+                        // A normal STATUS_UNKNOWN reply, as rclcpp and the typed
+                        // server give: `rmw_zenoh_cpp` drops error replies
+                        // unread, so a `reject` would leave the call hanging.
                         if let Err(error) = futures::executor::block_on(
-                            server.get_result.reject(request.id, "unknown goal"),
+                            server.get_result.reply(request.id, &unknown_goal_response),
                         ) {
                             tracing::warn!(
-                                "failed to reject unknown-goal get-result request: {error}"
+                                "failed to answer unknown-goal get-result request: {error}"
                             );
                         }
                         false
@@ -2289,6 +2296,17 @@ fn block_on_result_timeout<F: std::future::Future>(send: F) -> Option<F::Output>
     })
 }
 
+/// The Zenoh `GetResult` reply for a goal the server doesn't know:
+/// `STATUS_UNKNOWN` with a default result, as rclcpp answers. Not an error
+/// reply, which `rmw_zenoh_cpp` drops unread, leaving the client's call
+/// hanging (#4244). Must run under the result type's `TypeInfoGuard`.
+fn unknown_goal_result_response() -> eyre::Result<Vec<u8>> {
+    serialize_cdr(&ros2_client::action::GetResultResponse {
+        status: ros2_client::action::GoalStatusEnum::Unknown,
+        result: default_result_message(),
+    })
+}
+
 /// A result message with every field at its ROS2 default, for goals the
 /// bridge ends itself (aborted) without a result from the handler.
 ///
@@ -3371,6 +3389,30 @@ mod abort_result_tests {
         let payload = serialize_cdr(&default_result_message()).expect("abort payload");
         // CDR encapsulation header, then the defaulted `int32 code`.
         assert_eq!(&payload[4..], &[0, 0, 0, 0]);
+    }
+
+    /// A GetResult for a goal the YAML bridge's Zenoh server doesn't know is
+    /// answered with STATUS_UNKNOWN and a default result, which every client
+    /// decodes, rather than an error reply that `rmw_zenoh_cpp` drops (#4244).
+    #[test]
+    fn unknown_goal_result_response_is_status_unknown_with_defaults() {
+        use ros2_client::action::{GetResultResponse, GoalStatusEnum};
+        let payload = {
+            let _guard = TypeInfoGuard::serialize(result_type_info());
+            unknown_goal_result_response().expect("unknown-goal payload")
+        };
+        let _guard = TypeInfoGuard::deserialize(result_type_info());
+        let response: GetResultResponse<BridgeMessage> =
+            deserialize_cdr(&payload).expect("the reply must decode");
+        assert!(matches!(response.status, GoalStatusEnum::Unknown));
+        let result = arrow::array::StructArray::from(response.result.0.expect("a result"));
+        let code = result
+            .column_by_name("code")
+            .expect("the result's member")
+            .as_any()
+            .downcast_ref::<arrow::array::Int32Array>()
+            .expect("int32 code");
+        assert_eq!(code.value(0), 0);
     }
 
     /// A DDS result the handler sent but that cannot be serialized must end
