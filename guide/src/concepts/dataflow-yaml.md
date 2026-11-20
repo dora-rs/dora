@@ -499,7 +499,6 @@ QoS can be set at the bridge level (applies to all topics) or per-topic:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `namespace` | string | `/` | ROS2 namespace |
-| `accept` | string | `auto` | Action server only: `handler` waits for the handler's `goal_response` to accept or reject each goal |
 | `node_name` | string | node `id` | ROS2 node name |
 
 ## Debug

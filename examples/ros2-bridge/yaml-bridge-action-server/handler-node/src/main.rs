@@ -7,8 +7,8 @@
 //! The `goal_id` is passed through metadata parameters so the bridge can
 //! correlate feedback/result to the correct goal.
 //!
-//! With a `goal_response` output (a bridge with `accept: handler`), the handler
-//! decides each goal: it rejects an order outside `0..=MAX_ORDER`, whose last
+//! With a `goal_response` output (wired to the bridge's `goal_response`
+//! input), the handler decides each goal: it rejects an order outside `0..=MAX_ORDER`, whose last
 //! value would overflow `i32`, and accepts the rest.
 
 use std::{collections::BTreeMap, sync::Arc};
@@ -36,7 +36,7 @@ fn main() -> eyre::Result<()> {
     let feedback_output = DataId::from("feedback".to_owned());
     let result_output = DataId::from("result".to_owned());
     let goal_response_output = DataId::from("goal_response".to_owned());
-    // Decide goals only when the bridge waits for it (`accept: handler`).
+    // Decide goals only when the bridge waits for it (a `goal_response` input).
     let decides_goals = node
         .node_config()
         .outputs

@@ -1904,13 +1904,6 @@ pub struct Ros2BridgeConfig {
     /// ROS2 node name. Defaults to the dora node id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_name: Option<String>,
-    // Appended last: inserting a field before the end would shift the
-    // later ones in the wire format.
-    /// Who accepts the goals an action server receives: `auto` (the default)
-    /// accepts each one on arrival; `handler` waits for the handler's decision
-    /// on the `goal_response` input. Only for `action` with `role: server`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accept: Option<Ros2AcceptMode>,
 }
 
 impl Default for Ros2BridgeConfig {
@@ -1929,7 +1922,6 @@ impl Default for Ros2BridgeConfig {
             qos: Ros2QosConfig::default(),
             namespace: default_ros2_namespace(),
             node_name: None,
-            accept: None,
         }
     }
 }
@@ -1969,20 +1961,6 @@ pub enum Ros2Role {
     Client,
     /// Server: receives requests, sends responses.
     Server,
-}
-
-/// Who accepts the goals a ROS2 action server bridge receives.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Ros2AcceptMode {
-    /// Accept each goal on arrival and forward it on `goal`.
-    #[default]
-    Auto,
-    /// Forward each goal on `goal`, then accept or reject it with the ROS2
-    /// client as the handler answers on `goal_response`: `goal_id` in the
-    /// metadata, a one-element boolean array (`true` = accept) as data. A goal
-    /// without an answer within 10 s is rejected.
-    Handler,
 }
 
 fn default_ros2_namespace() -> String {

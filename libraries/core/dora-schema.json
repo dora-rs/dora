@@ -839,36 +839,10 @@
         }
       ]
     },
-    "Ros2AcceptMode": {
-      "description": "Who accepts the goals a ROS2 action server bridge receives.",
-      "oneOf": [
-        {
-          "description": "Accept each goal on arrival and forward it on `goal`.",
-          "type": "string",
-          "const": "auto"
-        },
-        {
-          "description": "Forward each goal on `goal`, then accept or reject it with the ROS2\nclient as the handler answers on `goal_response`: `goal_id` in the\nmetadata, a one-element boolean array (`true` = accept) as data. A goal\nwithout an answer within 10 s is rejected.",
-          "type": "string",
-          "const": "handler"
-        }
-      ]
-    },
     "Ros2BridgeConfig": {
       "description": "ROS2 bridge configuration for declarative ROS2 bridging.\n\nThis allows nodes to interact with ROS2 topics, services, and actions\nwithout writing any custom code. The framework spawns a bridge binary that\nhandles the ROS2 DDS communication and Arrow data conversion.\n\nExactly one of `topic`, `topics`, `service`, or `action` must be set.",
       "type": "object",
       "properties": {
-        "accept": {
-          "description": "Who accepts the goals an action server receives: `auto` (the default)\naccepts each one on arrival; `handler` waits for the handler's decision\non the `goal_response` input. Only for `action` with `role: server`.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Ros2AcceptMode"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "action": {
           "description": "ROS2 action name (e.g. \"/navigate\").\nMutually exclusive with `topic`, `topics`, `service`.",
           "type": [

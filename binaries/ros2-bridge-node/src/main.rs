@@ -9,7 +9,7 @@ use std::{
 use arrow::array::{Array, ArrayData, StructArray};
 use dora_message::{
     descriptor::{
-        Ros2AcceptMode, Ros2BridgeConfig, Ros2Direction, Ros2QosConfig, Ros2Role, Ros2TopicConfig,
+        Ros2BridgeConfig, Ros2Direction, Ros2QosConfig, Ros2Role, Ros2TopicConfig,
         Ros2TransportConfig,
     },
     metadata::{Parameter, get_string_param},
@@ -634,7 +634,6 @@ fn run_zenoh_action_mode(
             futures::executor::block_on(ZenohActionServer::declare(
                 zenoh_node, &keys, tokens, &qos,
             ))?,
-            config.accept.unwrap_or_default(),
             goal_info,
             result_info,
             feedback_info,
@@ -804,7 +803,7 @@ fn is_terminal_goal_status(status: ros2_client::action::GoalStatusEnum) -> bool 
 
 /// Decides whether a Zenoh `SendGoal` for goal `key` is accepted, making room
 /// in `goals` first when it is full. Goals still awaiting the handler's
-/// decision (`pending`, `accept: handler`) count toward the limit, and their
+/// decision (`pending`) count toward the limit, and their
 /// ids are taken.
 ///
 /// Like `rcl_action`, a goal id that is already tracked is rejected and the
@@ -867,11 +866,13 @@ impl ZenohServerGoal {
     }
 }
 
-/// The input on which an `accept: handler` action server's handler answers
-/// each goal: `goal_id` in the metadata, a one-element boolean array as data.
+/// The input on which an action server's handler answers each goal: `goal_id`
+/// in the metadata, a one-element boolean array as data. An action server that
+/// declares it waits for the handler's answer; one that does not accepts every
+/// goal on arrival.
 const GOAL_RESPONSE_INPUT: &str = "goal_response";
 
-/// How long an `accept: handler` server waits for the handler's answer before
+/// How long a server with a [`GOAL_RESPONSE_INPUT`] waits for the handler's answer before
 /// rejecting the goal, so that the ROS2 client is not left waiting.
 const GOAL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -898,7 +899,7 @@ fn spawn_ticker<E: Send + 'static>(tx: flume::Sender<E>, event: impl Fn() -> E +
     });
 }
 
-/// Goals of an `accept: handler` action server that the handler has not
+/// Goals of an action server with a [`GOAL_RESPONSE_INPUT`] that the handler has not
 /// answered yet, with the request to answer the ROS2 client with (`R`).
 struct PendingGoals<R> {
     goals: HashMap<String, (R, Instant)>,
@@ -1144,6 +1145,12 @@ fn declares_cancel_output(node: &DoraNode) -> bool {
     node.node_config().outputs.contains(CANCEL_OUTPUT)
 }
 
+/// Whether the node declares the [`GOAL_RESPONSE_INPUT`], which makes the
+/// handler accept or reject each goal.
+fn declares_goal_response_input(node: &DoraNode) -> bool {
+    node.node_config().inputs.contains_key(GOAL_RESPONSE_INPUT)
+}
+
 /// Metadata naming the goal an action server output is about: the handler
 /// correlates `goal`, `cancel`, `feedback` and `result` by it.
 fn goal_parameters(goal_id: &str) -> dora_message::metadata::MetadataParameters {
@@ -1190,7 +1197,6 @@ fn zenoh_result_goal_status(status: Option<&str>) -> ros2_client::action::GoalSt
 
 fn run_zenoh_action_server(
     server: ZenohActionServer,
-    accept: Ros2AcceptMode,
     goal_type_info: TypeInfo<'static>,
     result_type_info: TypeInfo<'static>,
     feedback_type_info: TypeInfo<'static>,
@@ -1203,6 +1209,7 @@ fn run_zenoh_action_server(
     let server = Arc::new(server);
     let (mut node, events) = DoraNode::init_from_env()?;
     let cancel_output = declares_cancel_output(&node);
+    let handler_decides = declares_goal_response_input(&node);
     let (tx, rx) = flume::bounded(MAX_CONCURRENT_GOALS * 4);
     for kind in 0..3 {
         let server = server.clone();
@@ -1228,12 +1235,12 @@ fn run_zenoh_action_server(
             });
         });
     }
-    if accept == Ros2AcceptMode::Handler {
+    if handler_decides {
         spawn_ticker(tx.clone(), || ZenohActionServerEvent::Tick);
     }
     drop(tx);
     let mut goals: GoalSlots<String, ZenohServerGoal> = GoalSlots::new(MAX_CONCURRENT_GOALS);
-    // Goals sent to the handler but not answered yet (`accept: handler`), with
+    // Goals sent to the handler but not answered yet, with
     // the request to answer and the goal id.
     let mut pending: PendingGoals<(
         dora_ros2_bridge::transport::RequestId,
@@ -1267,7 +1274,7 @@ fn run_zenoh_action_server(
                 let key = decoded.goal_id.uuid.to_string();
                 let accepted =
                     zenoh_accept_goal(&mut goals, &key, decoded.goal.0.is_some(), &pending);
-                if accept == Ros2AcceptMode::Handler
+                if handler_decides
                     && accepted
                     && let Some(data) = decoded.goal.0
                 {
@@ -1952,7 +1959,6 @@ fn run_action_mode(
 
             run_action_server(
                 async_server,
-                config.accept.unwrap_or_default(),
                 goal_type_info,
                 result_type_info,
                 feedback_type_info,
@@ -2131,7 +2137,7 @@ enum ServerEvent {
     Pending(String),
     /// A pending goal failed to start and will not reach the main loop.
     Dropped(String),
-    /// `accept: handler`: a new goal for the handler to accept or reject.
+    /// With a [`GOAL_RESPONSE_INPUT`]: a new goal for the handler to accept or reject.
     GoalRequest {
         handle: ros2_client::action::NewGoalHandle<BridgeMessage>,
         data: Option<ArrayData>,
@@ -2142,13 +2148,13 @@ enum ServerEvent {
 
 fn run_action_server(
     server: ros2_client::action::AsyncActionServer<BridgeMessage, BridgeMessage, BridgeMessage>,
-    accept: Ros2AcceptMode,
     goal_type_info: TypeInfo<'static>,
     result_type_info: TypeInfo<'static>,
     feedback_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
     let (mut node, dora_events) = DoraNode::init_from_env()?;
     let cancel_output = declares_cancel_output(&node);
+    let handler_decides = declares_goal_response_input(&node);
     let server = Arc::new(server);
 
     // Map goal_id -> ExecutingGoalHandle for dispatching feedback/result
@@ -2162,7 +2168,7 @@ fn run_action_server(
     // the receive thread will block.
     let (tx, rx) = flume::bounded::<ServerEvent>(MAX_CONCURRENT_GOALS * 2);
     let cancel_tx = tx.clone();
-    if accept == Ros2AcceptMode::Handler {
+    if handler_decides {
         spawn_ticker(tx.clone(), || ServerEvent::Tick);
     }
 
@@ -2182,7 +2188,7 @@ fn run_action_server(
                 };
 
                 let goal_data = server_ref.get_new_goal(new_goal_handle.clone());
-                if accept == Ros2AcceptMode::Handler {
+                if handler_decides {
                     // The main loop accepts or rejects it once the handler
                     // has decided.
                     let request = ServerEvent::GoalRequest {
@@ -2255,7 +2261,7 @@ fn run_action_server(
     });
 
     let mut cancels = DdsCancels::new(cancel_output);
-    // Goals sent to the handler but not answered yet (`accept: handler`).
+    // Goals sent to the handler but not answered yet.
     let mut pending: PendingGoals<ros2_client::action::NewGoalHandle<BridgeMessage>> =
         PendingGoals::default();
 
@@ -2470,7 +2476,7 @@ fn run_action_server(
     Ok(())
 }
 
-/// Reject a DDS goal that the handler did not accept (`accept: handler`).
+/// Reject a DDS goal that the handler did not accept.
 fn reject_new_goal(
     server: &ros2_client::action::AsyncActionServer<BridgeMessage, BridgeMessage, BridgeMessage>,
     handle: ros2_client::action::NewGoalHandle<BridgeMessage>,

@@ -1,8 +1,9 @@
 # Action Server Dataflow where the handler accepts or rejects each goal
 #
-# The same as dataflow.yml, with `accept: handler`: the bridge forwards each
-# goal on `goal` without answering the ROS2 client, and accepts or rejects it
-# once the handler answers on `goal_response`. The example handler rejects an
+# The same as dataflow.yml, plus a `goal_response` input: because the bridge
+# declares it, the bridge forwards each goal on `goal` without answering the
+# ROS2 client, and accepts or rejects it once the handler answers on
+# `goal_response`. The example handler rejects an
 # order above 46, whose last value would overflow i32. A goal without an
 # answer within 10 s is rejected.
 #
@@ -21,7 +22,6 @@ nodes:
       action: /fibonacci
       action_type: example_interfaces/Fibonacci
       role: server
-      accept: handler
     inputs:
       goal_response: handler/goal_response
       feedback: handler/feedback

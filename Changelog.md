@@ -4,7 +4,7 @@
 
 ### Added
 
-- **A YAML ROS 2 action server can let its handler accept or reject each goal** ([#4248](https://github.com/dora-rs/dora/pull/4248), [#4234](https://github.com/dora-rs/dora/issues/4234)). With `accept: handler` in its `ros2:` config, the bridge forwards each new goal on `goal` without answering the ROS 2 client. It then accepts or rejects the goal as the handler answers on a `goal_response` input: the goal's `goal_id` in the metadata and a one-element boolean array, `true` to accept, as data. A goal without an answer within 10 s is rejected. The default, `accept: auto`, keeps accepting every goal on arrival. This works on DDS and native Zenoh.
+- **A YAML ROS 2 action server can let its handler accept or reject each goal** ([#4248](https://github.com/dora-rs/dora/pull/4248), [#4234](https://github.com/dora-rs/dora/issues/4234)). When the bridge node declares a `goal_response` input, the bridge forwards each new goal on `goal` without answering the ROS 2 client. It then accepts or rejects the goal as the handler answers on a `goal_response` input: the goal's `goal_id` in the metadata and a one-element boolean array, `true` to accept, as data. A goal without an answer within 10 s is rejected. Without that input the bridge keeps accepting every goal on arrival, and the `ros2:` config gains no new key. This works on DDS and native Zenoh.
 
 ### Fixed
 

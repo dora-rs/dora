@@ -13,7 +13,7 @@ p.add_argument("--no-cancel", action="store_true")
 # Client only: the goal's Fibonacci order.
 p.add_argument("--order", type=int, default=8)
 # Client only: require the server to reject the goal (a YAML bridge with
-# `accept: handler` whose handler refuses it).
+# a `goal_response` input whose handler refuses it).
 p.add_argument("--expect-reject", action="store_true")
 a = p.parse_args()
 rclpy.init()
