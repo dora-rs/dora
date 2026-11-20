@@ -158,6 +158,8 @@ dora-message = { version = "=1.1.0", path = "libraries/message" }
 # `ros2-kilted` still win over the floor. Changing the selected distro changes
 # graph-discovery wire compatibility.
 ros2-client = { version = "0.12.1", default-features = false, features = ["dds", "humble"] }
+# Same enumeration RustDDS uses for its locators (ros2-bridge, #4227).
+netdev = { version = "0.46", default-features = false }
 # Kept in step with the `cdr-encoding` that `rustdds` depends on, so the
 # workspace resolves a single copy.
 cdr-encoding = "0.11"

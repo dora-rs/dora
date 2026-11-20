@@ -1152,6 +1152,18 @@ DDS only the status stream shows `Aborted`.
   on DDS the bridge warns when it sees a peer whose RMW does not fit (see below).
 - There is **no `wait_for_action_server`** in `ros2-client`; a client's first
   `send_goal` simply times out if no server is present.
+- **Hosts with several network interfaces.** dora advertises an address for every
+  IPv4 interface, including `docker0`, VPN and link-local ones. A ROS 2 node on
+  another host may pick one it cannot reach: its data then never arrives, while
+  dora's data still reaches it. Set `DORA_ROS2_DDS_INTERFACES` to the local IPv4
+  address (or comma-separated addresses) on the network your ROS 2 peers use, for
+  example `DORA_ROS2_DDS_INTERFACES=192.168.1.231`; dora then advertises only
+  those addresses and sends discovery multicast only on their interfaces. An
+  address this host does not have is an error when the context is created, and
+  one whose interface is down or cannot multicast gets a warning. The address
+  must stay assigned while dora runs. The peers have their own settings:
+  `<Interfaces>` in `CYCLONEDDS_URI` for CycloneDDS, an interface allowlist
+  profile for Fast-DDS.
 
 ### DDS diagnostics
 
@@ -1168,6 +1180,15 @@ that otherwise fails silently:
 - **Distro Gid width.** `ROS_DISTRO` names a distro whose `Gid` width differs from
   the build (see [Distro constraint](#distro-constraint)); the warning names the
   distro feature to add, or the newer one to drop.
+- **Several network interfaces.** `DORA_ROS2_DDS_INTERFACES` is unset, dora
+  advertises more than one non-loopback address, and a ROS 2 endpoint on another
+  host talks to one of dora's; the warning lists the addresses (see
+  [Discovery & RMW notes](#discovery--rmw-notes-native-servers)). Peers on the
+  same host reach dora over loopback, so a laptop with Docker or a VPN gets no
+  warning for a same-host dataflow; a container on a Docker bridge network
+  counts as another host. The warning says dora is exposed to the problem, not
+  that data is being lost: it also appears when the peer happens to pick a
+  reachable address.
 
 The checks read RustDDS's discovery data every 2 seconds and run for every DDS
 context; they do not change what is sent or matched. Each dora endpoint is

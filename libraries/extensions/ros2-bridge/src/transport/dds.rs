@@ -5,7 +5,9 @@ use std::{sync::Arc, time::Duration};
 use super::{
     Durability, History, Liveliness, Reliability, Ros2Qos, TransportError,
     diagnostics::DdsDiagnostics,
+    interfaces::{self, INTERFACES_ENV},
 };
+use crate::rustdds;
 
 /// Pick the DDS service mapping matching the user's ROS2 middleware.
 ///
@@ -47,18 +49,55 @@ pub struct Context {
 }
 
 impl Context {
-    /// Open a DDS ROS2 context in the requested ROS domain.
+    /// Open a DDS ROS2 context in the requested ROS domain, advertising only
+    /// the addresses in [`INTERFACES_ENV`] when it is set.
     pub fn new(domain_id: u16) -> Result<Self, TransportError> {
+        let interfaces = match std::env::var(INTERFACES_ENV) {
+            Ok(value) => Some(value),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err(TransportError::DdsContext {
+                    message: format!("{INTERFACES_ENV} is not valid UTF-8"),
+                });
+            }
+        };
+        Self::with_interfaces(domain_id, interfaces.as_deref())
+    }
+
+    /// [`Context::new`] with the value of [`INTERFACES_ENV`] passed in: only
+    /// those local addresses are advertised and used, or all when `None`.
+    pub(crate) fn with_interfaces(
+        domain_id: u16,
+        value: Option<&str>,
+    ) -> Result<Self, TransportError> {
         super::diagnostics::report_ros_distro();
-        let inner = ros2_client::Context::with_options(
-            ros2_client::ContextOptions::new().domain_id(domain_id),
-        )
-        .map_err(|error| TransportError::DdsContext {
-            message: format!("{error:?}"),
-        })?;
+        let requested =
+            interfaces::parse(value).map_err(|message| TransportError::DdsContext { message })?;
+        // What `ros2_client::Context::with_options` does, plus the network
+        // filter, which its `ContextOptions` does not expose.
+        let mut builder = rustdds::DomainParticipantBuilder::new(domain_id);
+        let local = interfaces::local_addrs();
+        let unrestricted = if let Some(requested) = &requested {
+            interfaces::check(requested, &local)
+                .map_err(|message| TransportError::DdsContext { message })?;
+            interfaces::report_once(requested, &local);
+            builder = builder.with_only_networks(requested.iter().copied());
+            None
+        } else {
+            interfaces::Unrestricted::new(&local)
+        };
+        fn context_error(error: impl std::fmt::Debug) -> TransportError {
+            TransportError::DdsContext {
+                message: format!("{error:?}"),
+            }
+        }
+        let participant = builder.build().map_err(context_error)?;
+        let inner =
+            ros2_client::Context::from_domain_participant(participant).map_err(context_error)?;
         let diagnostics = Arc::new(DdsDiagnostics::start(
             inner.domain_participant(),
             detect_service_mapping(),
+            unrestricted,
         ));
         Ok(Self { inner, diagnostics })
     }
@@ -253,5 +292,86 @@ pub fn from_qos_profile(profile: &ros2_client::QosProfile) -> Ros2Qos {
         durability,
         history,
         liveliness,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        time::Instant,
+    };
+
+    /// A domain no other test in this crate uses.
+    const DOMAIN_ID: u16 = 89;
+
+    #[derive(serde::Deserialize)]
+    struct Probe {}
+
+    #[test]
+    fn an_address_this_host_lacks_fails_naming_the_variable() {
+        let Err(TransportError::DdsContext { message }) =
+            Context::with_interfaces(DOMAIN_ID, Some("192.0.2.1"))
+        else {
+            panic!("expected a DdsContext error");
+        };
+        assert!(message.contains(INTERFACES_ENV), "{message}");
+        assert!(message.contains("192.0.2.1"), "{message}");
+    }
+
+    #[test]
+    fn a_restricted_context_advertises_only_the_given_address() {
+        let restricted = Context::with_interfaces(DOMAIN_ID, Some("127.0.0.1")).unwrap();
+        let mut node = restricted
+            .new_node(
+                ros2_client::NodeName::new("/", "restricted").unwrap(),
+                ros2_client::NodeOptions::new(),
+            )
+            .unwrap();
+        let topic = node
+            .as_inner_mut()
+            .create_topic(
+                &ros2_client::Name::new("/", "interfaces_probe").unwrap(),
+                ros2_client::MessageTypeName::new("std_msgs", "Empty"),
+                &ros2_client::QosProfile::subscription_default(),
+            )
+            .unwrap();
+        let _reader = node
+            .as_inner_mut()
+            .create_subscription::<Probe>(&topic, None)
+            .unwrap();
+
+        let observer = Context::with_interfaces(DOMAIN_ID, None).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let locators = loop {
+            let found = observer
+                .as_inner()
+                .domain_participant()
+                .discovered_readers()
+                .into_iter()
+                .find(|r| {
+                    r.subscription_topic_data
+                        .topic_name()
+                        .ends_with("interfaces_probe")
+                });
+            if let Some(reader) = found {
+                break reader.reader_proxy.unicast_locator_list;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the restricted reader was never discovered"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let ips: Vec<IpAddr> = locators
+            .into_iter()
+            .map(|l| SocketAddr::from(l).ip())
+            .collect();
+        assert!(!ips.is_empty());
+        assert!(
+            ips.iter().all(|ip| *ip == IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            "{ips:?}"
+        );
     }
 }

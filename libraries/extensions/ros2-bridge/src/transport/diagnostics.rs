@@ -4,6 +4,7 @@
 //! Findings go to stderr, which dora shows by default (warnings logged through
 //! `tracing` are below the default level of most dora processes).
 
+use super::interfaces::Unrestricted;
 use crate::{
     ros2_client::{
         self, Name, NodeName, QosProfile, RosDistro, ServiceMapping,
@@ -16,6 +17,7 @@ use crate::{
 };
 use std::{
     collections::{BTreeMap, HashSet},
+    net::{Ipv4Addr, SocketAddr},
     sync::{
         Arc, Mutex, Weak,
         atomic::{AtomicU64, Ordering},
@@ -123,6 +125,8 @@ struct RemoteEndpoint {
     dds_topic: String,
     role: Role,
     qos: QosPolicies,
+    /// The IPv4 addresses it receives data on.
+    addresses: Vec<Ipv4Addr>,
 }
 
 /// Something to tell the user. `key` identifies it so it is reported once.
@@ -139,12 +143,14 @@ fn guid_text(guid: &GUID) -> String {
 }
 
 /// Compare dora's endpoints with the remote ones that would talk to them (same
-/// topic, other role): incompatible QoS, and peers whose RMW does not fit
-/// dora's service mapping on a service topic. The caller reports each key once.
+/// topic, other role): incompatible QoS, peers whose RMW does not fit dora's
+/// service mapping on a service topic, and, with `unrestricted`, peers on
+/// another host. The caller reports each key once.
 fn scan(
     locals: &[LocalEndpoint],
     remotes: &[RemoteEndpoint],
     mapping: ServiceMapping,
+    unrestricted: Option<&Unrestricted>,
 ) -> Vec<Finding> {
     let mut findings = Vec::new();
     for local in locals {
@@ -177,6 +183,14 @@ fn scan(
                 findings.push(Finding {
                     key: format!("rmw {peer:?}"),
                     message,
+                });
+            }
+            if let Some(unrestricted) = unrestricted
+                && unrestricted.is_elsewhere(&remote.addresses)
+            {
+                findings.push(Finding {
+                    key: "interfaces".into(),
+                    message: unrestricted.message.clone(),
                 });
             }
         }
@@ -257,10 +271,19 @@ impl DdsDiagnostics {
     const INTERVAL: Duration = Duration::from_secs(2);
 
     /// Start watching `participant`, reporting findings on stderr.
-    pub(crate) fn start(participant: rustdds::DomainParticipant, mapping: ServiceMapping) -> Self {
-        Self::start_reporting(participant, mapping, Self::INTERVAL, |finding| {
-            eprintln!("warning: {finding}")
-        })
+    /// `unrestricted` is reported once a peer on another host talks to dora.
+    pub(crate) fn start(
+        participant: rustdds::DomainParticipant,
+        mapping: ServiceMapping,
+        unrestricted: Option<Unrestricted>,
+    ) -> Self {
+        Self::start_reporting(
+            participant,
+            mapping,
+            unrestricted,
+            Self::INTERVAL,
+            |finding| eprintln!("warning: {finding}"),
+        )
     }
 
     /// [`Self::start`], checking every `interval` and sending findings to
@@ -268,6 +291,7 @@ impl DdsDiagnostics {
     fn start_reporting(
         participant: rustdds::DomainParticipant,
         mapping: ServiceMapping,
+        unrestricted: Option<Unrestricted>,
         interval: Duration,
         report: impl Fn(&str) + Send + 'static,
     ) -> Self {
@@ -280,6 +304,7 @@ impl DdsDiagnostics {
                 remotes
             },
             mapping,
+            unrestricted,
             interval,
             report,
         )
@@ -290,6 +315,7 @@ impl DdsDiagnostics {
     fn start_with(
         remotes: impl Fn() -> Vec<RemoteEndpoint> + Send + 'static,
         mapping: ServiceMapping,
+        unrestricted: Option<Unrestricted>,
         interval: Duration,
         report: impl Fn(&str) + Send + 'static,
     ) -> Self {
@@ -305,7 +331,8 @@ impl DdsDiagnostics {
                     if locals.is_empty() {
                         continue;
                     }
-                    for finding in scan(&locals, &remotes(), mapping) {
+                    let remotes = remotes();
+                    for finding in scan(&locals, &remotes, mapping, unrestricted.as_ref()) {
                         if reported.insert(finding.key) {
                             report(&finding.message);
                         }
@@ -498,6 +525,18 @@ fn service_endpoints(
     ]
 }
 
+/// The IPv4 addresses among `locators` (RustDDS does not export its
+/// `Locator` type, only its conversion to a socket address).
+fn ipv4<L: Copy + Into<SocketAddr>>(locators: &[L]) -> Vec<Ipv4Addr> {
+    locators
+        .iter()
+        .filter_map(|&locator| match locator.into() {
+            SocketAddr::V4(address) => Some(*address.ip()),
+            SocketAddr::V6(_) => None,
+        })
+        .collect()
+}
+
 /// Every endpoint discovery knows about, including the participant's own.
 fn remote_endpoints(participant: &rustdds::DomainParticipant) -> Vec<RemoteEndpoint> {
     let readers = participant
@@ -508,6 +547,7 @@ fn remote_endpoints(participant: &rustdds::DomainParticipant) -> Vec<RemoteEndpo
             dds_topic: r.subscription_topic_data.topic_name().clone(),
             role: Role::Reader,
             qos: r.subscription_topic_data.qos(),
+            addresses: ipv4(&r.reader_proxy.unicast_locator_list),
         });
     let writers = participant
         .discovered_writers()
@@ -517,6 +557,7 @@ fn remote_endpoints(participant: &rustdds::DomainParticipant) -> Vec<RemoteEndpo
             dds_topic: w.publication_topic_data.topic_name().clone(),
             role: Role::Writer,
             qos: w.publication_topic_data.qos(),
+            addresses: ipv4(&w.writer_proxy.unicast_locator_list),
         });
     readers.chain(writers).collect()
 }
@@ -587,7 +628,7 @@ fn gid_mismatch(built: RosDistro, built_gid: usize, env: Option<&str>) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rustdds::QosPolicyBuilder;
+    use crate::{rustdds::QosPolicyBuilder, transport::interfaces::LocalAddr};
 
     #[test]
     fn a_different_gid_width_is_reported() {
@@ -769,14 +810,82 @@ mod tests {
             dds_topic: topic.into(),
             role,
             qos,
+            addresses: vec![],
         }
+    }
+
+    /// A reliable remote endpoint advertising `addresses`.
+    fn remote_at(topic: &str, role: Role, addresses: &[&str]) -> RemoteEndpoint {
+        RemoteEndpoint {
+            addresses: addresses.iter().map(|a| a.parse().unwrap()).collect(),
+            ..remote(FAST, topic, role, reliable())
+        }
+    }
+
+    /// This host: eno1 192.168.1.231 and docker0 172.17.0.1.
+    fn unrestricted() -> Unrestricted {
+        let addr = |name: &str, ip: &str| LocalAddr {
+            name: name.into(),
+            ip: ip.parse().unwrap(),
+            loopback: false,
+            multicast: true,
+            up: true,
+        };
+        Unrestricted::new(&[addr("eno1", "192.168.1.231"), addr("docker0", "172.17.0.1")]).unwrap()
+    }
+
+    #[test]
+    fn several_addresses_are_reported_once_a_peer_on_another_host_talks_to_dora() {
+        let locals = [local("rt/chatter", Role::Reader, reliable())];
+        let remotes = [
+            remote_at("rt/chatter", Role::Writer, &["192.168.1.50"]),
+            remote_at("rt/chatter", Role::Writer, &["192.168.1.51"]),
+        ];
+        let findings = scan(
+            &locals,
+            &remotes,
+            ServiceMapping::Enhanced,
+            Some(&unrestricted()),
+        );
+        let keys: HashSet<_> = findings.iter().map(|f| &f.key).collect();
+        assert_eq!(keys.len(), 1, "{findings:?}");
+        assert!(
+            findings[0].message.contains("docker0 172.17.0.1"),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn several_addresses_are_not_reported_without_a_peer_on_another_host() {
+        let locals = [local("rt/chatter", Role::Reader, reliable())];
+        let remotes = [
+            // Same host: this host's address, or loopback.
+            remote_at("rt/chatter", Role::Writer, &["192.168.1.231"]),
+            remote_at("rt/chatter", Role::Writer, &["127.0.0.1"]),
+            // Another host, but not talking to dora.
+            remote_at("rt/other", Role::Writer, &["192.168.1.50"]),
+            remote_at("rt/chatter", Role::Reader, &["192.168.1.50"]),
+        ];
+        let findings = scan(
+            &locals,
+            &remotes,
+            ServiceMapping::Enhanced,
+            Some(&unrestricted()),
+        );
+        assert_eq!(findings, vec![]);
+        // One address, or DORA_ROS2_DDS_INTERFACES set: nothing to report.
+        let elsewhere = [remote_at("rt/chatter", Role::Writer, &["192.168.1.50"])];
+        assert_eq!(
+            scan(&locals, &elsewhere, ServiceMapping::Enhanced, None),
+            vec![]
+        );
     }
 
     #[test]
     fn scan_reports_an_incompatible_remote_on_the_same_topic() {
         let locals = [local("rt/chatter", Role::Reader, reliable())];
         let remotes = [remote(FAST, "rt/chatter", Role::Writer, best_effort())];
-        let findings = scan(&locals, &remotes, ServiceMapping::Enhanced);
+        let findings = scan(&locals, &remotes, ServiceMapping::Enhanced, None);
         assert_eq!(findings.len(), 1, "{findings:?}");
         let message = &findings[0].message;
         assert!(
@@ -796,7 +905,10 @@ mod tests {
             remote(FAST, "rt/chatter", Role::Reader, best_effort()),
             remote(FAST, "rt/chatter", Role::Writer, reliable()),
         ];
-        assert_eq!(scan(&locals, &remotes, ServiceMapping::Enhanced), vec![]);
+        assert_eq!(
+            scan(&locals, &remotes, ServiceMapping::Enhanced, None),
+            vec![]
+        );
     }
 
     #[test]
@@ -807,7 +919,7 @@ mod tests {
             remote(CYCLONE, "rq/add_two_intsRequest", Role::Reader, reliable()),
             remote(CYCLONE, "rq/unrelatedRequest", Role::Reader, reliable()),
         ];
-        let findings = scan(&locals, &remotes, ServiceMapping::Enhanced);
+        let findings = scan(&locals, &remotes, ServiceMapping::Enhanced, None);
         let keys: HashSet<_> = findings.iter().map(|f| &f.key).collect();
         assert_eq!(keys.len(), 1, "{findings:?}");
         assert!(
@@ -815,7 +927,10 @@ mod tests {
             "{findings:?}"
         );
         // Same RMW as the mapping: nothing to report.
-        assert_eq!(scan(&locals, &remotes, ServiceMapping::Cyclone), vec![]);
+        assert_eq!(
+            scan(&locals, &remotes, ServiceMapping::Cyclone, None),
+            vec![]
+        );
     }
 
     #[test]
@@ -828,7 +943,10 @@ mod tests {
             Role::Writer,
             reliable(),
         )];
-        assert_eq!(scan(&locals, &remotes, ServiceMapping::Cyclone), vec![]);
+        assert_eq!(
+            scan(&locals, &remotes, ServiceMapping::Cyclone, None),
+            vec![]
+        );
     }
 
     #[test]
@@ -851,7 +969,7 @@ mod tests {
             Role::Writer,
             volatile_best_effort,
         )];
-        let findings = scan(&locals, &remotes, ServiceMapping::Enhanced);
+        let findings = scan(&locals, &remotes, ServiceMapping::Enhanced, None);
         assert_eq!(findings.len(), 2, "{findings:?}");
         assert_ne!(findings[0].key, findings[1].key);
     }
@@ -861,6 +979,7 @@ mod tests {
         let watcher = DdsDiagnostics::start_with(
             move || remotes.clone(),
             ServiceMapping::Enhanced,
+            None,
             Duration::from_millis(10),
             move |message| {
                 let _ = tx.send(message.to_owned());
@@ -1022,6 +1141,7 @@ mod tests {
                 vec![]
             },
             ServiceMapping::Enhanced,
+            None,
             Duration::from_secs(60),
             |_| {},
         );
@@ -1037,7 +1157,8 @@ mod tests {
 
     /// Against real RustDDS discovery: a remote participant's best-effort
     /// writer is reported against dora's reliable reader, and the participant's
-    /// own best-effort writer on the same topic is not. Covers what the fakes
+    /// own best-effort writer on the same topic is not; nor are several local
+    /// addresses, since the remote participant runs on this host. Covers what the fakes
     /// above cannot: `remote_endpoints`, the own-prefix filter and the QoS that
     /// discovery reports.
     #[test]
@@ -1072,6 +1193,19 @@ mod tests {
             (node, publisher)
         };
 
+        // A same-host peer is never reported as being elsewhere. The extra
+        // address makes this hold on single-address hosts too, where the
+        // check would otherwise not run.
+        let mut local = crate::transport::interfaces::local_addrs();
+        local.push(LocalAddr {
+            name: "test0".into(),
+            ip: Ipv4Addr::new(198, 51, 100, 1),
+            loopback: false,
+            multicast: true,
+            up: true,
+        });
+        let unrestricted = Unrestricted::new(&local).expect("two or more addresses");
+
         let options = || ContextOptions::new().domain_id(DOMAIN_ID);
         let dora = Context::with_options(options()).unwrap();
         let remote = Context::with_options(options()).unwrap();
@@ -1079,6 +1213,7 @@ mod tests {
         let watcher = DdsDiagnostics::start_reporting(
             dora.domain_participant(),
             ServiceMapping::Enhanced,
+            Some(unrestricted),
             Duration::from_millis(100),
             move |message| {
                 let _ = tx.send(message.to_owned());
@@ -1104,6 +1239,7 @@ mod tests {
         // The own writer has had as long as the remote one to show up.
         while let Ok(more) = rx.recv_timeout(Duration::from_secs(1)) {
             assert!(!more.contains(&prefix_text(&dora)), "own writer: {more}");
+            assert!(!more.contains("network addresses"), "same host: {more}");
         }
     }
 }
