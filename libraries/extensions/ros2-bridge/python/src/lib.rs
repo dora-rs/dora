@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -19,9 +19,11 @@ use ::dora_ros2_bridge::{
         GoalSlots, MAX_CONCURRENT_GOALS,
         zenoh::{
             ActionClient as ZenohActionClient, ActionKeys, ActionServer as ZenohActionServer,
-            ActionTokens, wait_for_server as wait_for_action_server,
+            ActionTokens, CancelableGoal, goal_accept_stamp, process_cancel_request,
+            wait_for_server as wait_for_action_server,
         },
     },
+    transport::diagnostics::{Role, Watched},
 };
 use arrow::{
     array::{ArrayData, make_array},
@@ -41,10 +43,7 @@ use pyo3::{
     },
 };
 use std::time::{Duration, Instant};
-use typed::{
-    BridgeActionType, BridgeMessage, BridgeServiceType, TypeInfo, TypeInfoGuard, TypedValue,
-    deserialize::StructDeserializer,
-};
+use typed::{BridgeMessage, TypeInfo, TypeInfoGuard, TypedValue, deserialize::StructDeserializer};
 
 pub mod qos;
 pub mod typed;
@@ -479,8 +478,6 @@ fn declare_zenoh_rosout(
 /// warnings::
 /// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///   at any point without it being considered a breaking change.
-/// - There's a known issue about ROS2 nodes not being discoverable by ROS2
-///   See: https://github.com/jhelovuo/ros2-client/issues/4
 ///
 #[pyclass]
 pub struct Ros2Node {
@@ -564,7 +561,7 @@ impl Ros2Node {
                 TopicBackend::Dds(node.as_inner().create_topic(
                     &topic_name,
                     message_type_name,
-                    &dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
+                    &dora_ros2_bridge::transport::dds::to_qos_profile(&neutral_qos),
                 )?)
             }
             dora_ros2_bridge::transport::Node::Zenoh(node) => {
@@ -637,10 +634,12 @@ impl Ros2Node {
     ) -> eyre::Result<Ros2Publisher> {
         let publisher = match (&mut self.node, &topic.topic) {
             (dora_ros2_bridge::transport::Node::Dds(node), TopicBackend::Dds(topic)) => {
-                PublisherBackend::Dds(
-                    node.as_inner_mut()
-                        .create_publisher(topic, qos.map(Into::into))?,
-                )
+                let qos: Option<ros2_client::QosProfile> = qos.map(Into::into);
+                let publisher = node.as_inner_mut().create_publisher(topic, qos.clone())?;
+                let watch = node
+                    .diagnostics()
+                    .watch_topic(topic, Role::Writer, qos.as_ref());
+                PublisherBackend::Dds(watch.attach(publisher))
             }
             (
                 dora_ros2_bridge::transport::Node::Zenoh(node),
@@ -684,10 +683,14 @@ impl Ros2Node {
     ) -> eyre::Result<Ros2Subscription> {
         let subscription = match (&mut self.node, &topic.topic) {
             (dora_ros2_bridge::transport::Node::Dds(node), TopicBackend::Dds(topic)) => {
-                SubscriptionBackend::Dds(Some(
-                    node.as_inner_mut()
-                        .create_subscription(topic, qos.map(Into::into))?,
-                ))
+                let qos: Option<ros2_client::QosProfile> = qos.map(Into::into);
+                let subscription = node
+                    .as_inner_mut()
+                    .create_subscription(topic, qos.clone())?;
+                let watch = node
+                    .diagnostics()
+                    .watch_topic(topic, Role::Reader, qos.as_ref());
+                SubscriptionBackend::Dds(Some(watch.attach(subscription)))
             }
             (
                 dora_ros2_bridge::transport::Node::Zenoh(node),
@@ -757,17 +760,24 @@ impl Ros2Node {
 
         let neutral_qos: dora_ros2_bridge::transport::Ros2Qos = qos.into();
         let client = match &mut self.node {
-            dora_ros2_bridge::transport::Node::Dds(node) => ServiceClientBackend::Dds(Box::new(
-                node.as_inner_mut()
-                    .create_client::<BridgeServiceType>(
+            dora_ros2_bridge::transport::Node::Dds(node) => {
+                let qos = dora_ros2_bridge::transport::dds::to_qos_profile(&neutral_qos);
+                let name = parse_ros2_name(service_name)?;
+                let client = node
+                    .as_inner_mut()
+                    .create_client::<BridgeMessage, BridgeMessage>(
                         dora_ros2_bridge::detect_service_mapping(),
-                        &parse_ros2_name(service_name)?,
+                        &name,
                         &ros2_client::ServiceTypeName::new(&package, &type_name),
-                        dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
-                        dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
+                        qos.clone(),
+                        qos.clone(),
                     )
-                    .map_err(|e| eyre!("failed to create service client: {e:?}"))?,
-            )),
+                    .map_err(|e| eyre!("failed to create service client: {e:?}"))?;
+                let watch = node
+                    .diagnostics()
+                    .watch_service(node.name(), &name, true, &qos, &qos);
+                ServiceClientBackend::Dds(Box::new(watch.attach(client)))
+            }
             dora_ros2_bridge::transport::Node::Zenoh(node) => {
                 let dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. } =
                     self.transport.config
@@ -875,17 +885,24 @@ impl Ros2Node {
 
         let neutral_qos: dora_ros2_bridge::transport::Ros2Qos = qos.into();
         let server = match &mut self.node {
-            dora_ros2_bridge::transport::Node::Dds(node) => ServiceServerBackend::Dds(Box::new(
-                node.as_inner_mut()
-                    .create_server::<BridgeServiceType>(
+            dora_ros2_bridge::transport::Node::Dds(node) => {
+                let qos = dora_ros2_bridge::transport::dds::to_qos_profile(&neutral_qos);
+                let name = parse_ros2_name(service_name)?;
+                let server = node
+                    .as_inner_mut()
+                    .create_server::<BridgeMessage, BridgeMessage>(
                         dora_ros2_bridge::detect_service_mapping(),
-                        &parse_ros2_name(service_name)?,
+                        &name,
                         &ros2_client::ServiceTypeName::new(&package, &type_name),
-                        dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
-                        dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
+                        qos.clone(),
+                        qos.clone(),
                     )
-                    .map_err(|e| eyre!("failed to create service server: {e:?}"))?,
-            )),
+                    .map_err(|e| eyre!("failed to create service server: {e:?}"))?;
+                let watch = node
+                    .diagnostics()
+                    .watch_service(node.name(), &name, false, &qos, &qos);
+                ServiceServerBackend::Dds(Box::new(watch.attach(server)))
+            }
             dora_ros2_bridge::transport::Node::Zenoh(node) => {
                 let dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. } =
                     self.transport.config
@@ -943,30 +960,29 @@ impl Ros2Node {
         let neutral_qos: dora_ros2_bridge::transport::Ros2Qos = qos.into();
         let client = match &mut self.node {
             dora_ros2_bridge::transport::Node::Dds(node) => {
-                ActionClientBackend::Dds(Box::new(
-                    node.as_inner_mut()
-                        .create_action_client::<BridgeActionType>(
-                            dora_ros2_bridge::detect_service_mapping(),
-                            &parse_ros2_name(action_name)?,
-                            &ros2_client::ActionTypeName::new(&package, &type_name),
-                            ros2_client::action::ActionClientQosPolicies {
-                                goal_service: dora_ros2_bridge::transport::dds::to_rustdds_qos(
-                                    &neutral_qos,
-                                ),
-                                result_service: dora_ros2_bridge::transport::dds::to_rustdds_qos(
-                                    &neutral_qos,
-                                ),
-                                cancel_service: dora_ros2_bridge::transport::dds::to_rustdds_qos(
-                                    &neutral_qos,
-                                ),
-                                feedback_subscription:
-                                    dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
-                                status_subscription:
-                                    dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
-                            },
-                        )
-                        .map_err(|e| eyre!("failed to create action client: {e:?}"))?,
-                ))
+                let qos = dora_ros2_bridge::transport::dds::to_qos_profile(&neutral_qos);
+                let name = parse_ros2_name(action_name)?;
+                // Not `Clone`: built once for ros2-client and once for the diagnostics.
+                let policies = || ros2_client::action::ActionClientQosPolicies {
+                    goal_service: qos.clone(),
+                    result_service: qos.clone(),
+                    cancel_service: qos.clone(),
+                    feedback_subscription: qos.clone(),
+                    status_subscription: qos.clone(),
+                };
+                let client = node
+                    .as_inner_mut()
+                    .create_action_client::<BridgeMessage, BridgeMessage, BridgeMessage>(
+                        dora_ros2_bridge::detect_service_mapping(),
+                        &name,
+                        &ros2_client::ActionTypeName::new(&package, &type_name),
+                        policies(),
+                    )
+                    .map_err(|e| eyre!("failed to create action client: {e:?}"))?;
+                let watch = node
+                    .diagnostics()
+                    .watch_action_client(node.name(), &name, &policies());
+                ActionClientBackend::Dds(Box::new(watch.attach(client)))
             }
             dora_ros2_bridge::transport::Node::Zenoh(node) => {
                 let dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. } =
@@ -1021,33 +1037,34 @@ impl Ros2Node {
         let (server, zenoh_result_requests) =
             match &mut self.node {
                 dora_ros2_bridge::transport::Node::Dds(node) => {
+                    let qos = dora_ros2_bridge::transport::dds::to_qos_profile(&neutral_qos);
+                    let status_qos = dora_ros2_bridge::transport::dds::to_qos_profile(
+                        &dora_ros2_bridge::transport::action::action_status_qos(&neutral_qos),
+                    );
+                    let name = parse_ros2_name(action_name)?;
+                    // Not `Clone`: built once for ros2-client and once for the diagnostics.
+                    let policies = || ros2_client::action::ActionServerQosPolicies {
+                        goal_service: qos.clone(),
+                        result_service: qos.clone(),
+                        cancel_service: qos.clone(),
+                        feedback_publisher: qos.clone(),
+                        status_publisher: status_qos.clone(),
+                    };
                     let server = node
                         .as_inner_mut()
-                        .create_action_server::<BridgeActionType>(
+                        .create_action_server::<BridgeMessage, BridgeMessage, BridgeMessage>(
                             dora_ros2_bridge::detect_service_mapping(),
-                            &parse_ros2_name(action_name)?,
+                            &name,
                             &ros2_client::ActionTypeName::new(&package, &type_name),
-                            ros2_client::action::ActionServerQosPolicies {
-                                goal_service: dora_ros2_bridge::transport::dds::to_rustdds_qos(
-                                    &neutral_qos,
-                                ),
-                                result_service: dora_ros2_bridge::transport::dds::to_rustdds_qos(
-                                    &neutral_qos,
-                                ),
-                                cancel_service: dora_ros2_bridge::transport::dds::to_rustdds_qos(
-                                    &neutral_qos,
-                                ),
-                                feedback_publisher:
-                                    dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
-                                status_publisher: dora_ros2_bridge::transport::dds::to_rustdds_qos(
-                                    &neutral_qos,
-                                ),
-                            },
+                            policies(),
                         )
                         .map_err(|e| eyre!("failed to create action server: {e:?}"))?;
+                    let watch =
+                        node.diagnostics()
+                            .watch_action_server(node.name(), &name, &policies());
                     (
                         ActionServerBackend::Dds(Box::new(
-                            ros2_client::action::AsyncActionServer::new(server),
+                            watch.attach(ros2_client::action::AsyncActionServer::new(server)),
                         )),
                         None,
                     )
@@ -1089,6 +1106,7 @@ impl Ros2Node {
             result_type_info,
             feedback_type_info,
             executing: GoalSlots::new(MAX_CONCURRENT_GOALS),
+            zenoh_cancel: Default::default(),
             zenoh_result_requests,
             pending_result_requests: HashMap::new(),
             pending_result_seq: 0,
@@ -1434,7 +1452,7 @@ pub struct Ros2Publisher {
 }
 
 enum PublisherBackend {
-    Dds(ros2_client::Publisher<TypedValue<'static>>),
+    Dds(Watched<ros2_client::Publisher<TypedValue<'static>>>),
     /// Locked for each publish: the attachment's sequence number is taken
     /// before the put, so two puts at once could go out of order, which
     /// rmw_zenoh counts as lost messages. rmw_zenoh locks each publisher too.
@@ -1518,8 +1536,10 @@ pub struct Ros2Subscription {
     subscription: SubscriptionBackend,
 }
 
+// One per subscription; the size difference between the backends does not matter.
+#[allow(clippy::large_enum_variant)]
 enum SubscriptionBackend {
-    Dds(Option<ros2_client::Subscription<ArrayData>>),
+    Dds(Option<Watched<ros2_client::Subscription<ArrayData>>>),
     Zenoh(Option<NodeSubscription<ArrayData>>),
 }
 
@@ -1588,8 +1608,10 @@ pub struct Ros2SubscriptionStream {
     subscription: Ros2SubscriptionStreamBackend,
 }
 
+// One per subscription; the size difference between the backends does not matter.
+#[allow(clippy::large_enum_variant)]
 enum Ros2SubscriptionStreamBackend {
-    Dds(ros2_client::Subscription<ArrayData>),
+    Dds(Watched<ros2_client::Subscription<ArrayData>>),
     Zenoh(NodeSubscription<ArrayData>),
 }
 
@@ -1744,7 +1766,11 @@ pub struct Ros2ActionClient {
 }
 
 enum ActionClientBackend {
-    Dds(Box<ros2_client::action::ActionClient<BridgeActionType>>),
+    Dds(
+        Box<
+            Watched<ros2_client::action::ActionClient<BridgeMessage, BridgeMessage, BridgeMessage>>,
+        >,
+    ),
     Zenoh(Box<ZenohActionClient>),
 }
 
@@ -1756,6 +1782,10 @@ pub struct Ros2ActionServer {
     result_type_info: TypeInfo<'static>,
     feedback_type_info: TypeInfo<'static>,
     executing: GoalSlots<String, PythonServerGoal>,
+    /// What a native-Zenoh server's cancel requests have changed. It sits
+    /// behind a lock so `take_cancel` keeps taking `&self`: a thread waiting
+    /// for a cancel request must not block `send_feedback` on another thread.
+    zenoh_cancel: std::sync::Mutex<ZenohCancelState>,
     zenoh_result_requests:
         Option<flume::Receiver<dora_ros2_bridge::transport::zenoh::service::ServiceRequest>>,
     pending_result_requests: HashMap<String, (dora_ros2_bridge::transport::RequestId, u64)>,
@@ -1764,7 +1794,13 @@ pub struct Ros2ActionServer {
 }
 
 enum ActionServerBackend {
-    Dds(Box<ros2_client::action::AsyncActionServer<BridgeActionType>>),
+    Dds(
+        Box<
+            Watched<
+                ros2_client::action::AsyncActionServer<BridgeMessage, BridgeMessage, BridgeMessage>,
+            >,
+        >,
+    ),
     Zenoh(Arc<ZenohActionServer>),
 }
 
@@ -1773,7 +1809,54 @@ enum PythonServerGoal {
         ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
         Instant,
     ),
-    Zenoh(ros2_client::action::GoalId, Instant),
+    Zenoh(ZenohServerGoal, Instant),
+}
+
+/// The cancel bookkeeping of a native-Zenoh action server.
+#[derive(Default)]
+struct ZenohCancelState {
+    /// Keys of the executing goals a cancel request moved to canceling.
+    canceling: HashSet<String>,
+    /// The last [`MAX_CONCURRENT_GOALS`] goals the server finished, so a cancel
+    /// naming one is answered `ERROR_GOAL_TERMINATED` like `rcl_action` does.
+    finished: VecDeque<ZenohServerGoal>,
+}
+
+impl ZenohCancelState {
+    fn lock(state: &std::sync::Mutex<Self>) -> std::sync::MutexGuard<'_, Self> {
+        // The state stays consistent if a holder panicked: every update is a
+        // single insert or remove.
+        state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// A goal of a native-Zenoh action server, as its `CancelGoal` and status
+/// replies need it.
+#[derive(Clone, Copy)]
+struct ZenohServerGoal {
+    id: ros2_client::action::GoalId,
+    /// When the goal was accepted, as sent in the `SendGoal` response.
+    stamp: ros2_client::builtin_interfaces::Time,
+    status: ros2_client::action::GoalStatusEnum,
+}
+
+impl CancelableGoal for ZenohServerGoal {
+    fn goal_info(&self) -> ros2_client::action::GoalInfo {
+        ros2_client::action::GoalInfo {
+            goal_id: self.id,
+            stamp: self.stamp,
+        }
+    }
+
+    fn status(&self) -> ros2_client::action::GoalStatusEnum {
+        self.status
+    }
+
+    fn set_status(&mut self, status: ros2_client::action::GoalStatusEnum) {
+        self.status = status;
+    }
 }
 
 impl PythonServerGoal {
@@ -2064,16 +2147,17 @@ impl Ros2ActionServer {
                         deserialize_cdr(&request.payload)?;
                     let accepted =
                         self.executing.len() < MAX_CONCURRENT_GOALS && decoded.goal.0.is_some();
-                    let response = serialize_cdr(&ros2_client::action::SendGoalResponse {
-                        accepted,
-                        stamp: ros2_client::builtin_interfaces::Time::ZERO,
-                    })?;
+                    let stamp = goal_accept_stamp();
+                    let response =
+                        serialize_cdr(&ros2_client::action::SendGoalResponse { accepted, stamp })?;
                     server.send_goal.reply(request.id, &response).await?;
                     Ok(decoded.goal.0.filter(|_| accepted).map(|data| {
-                        (
-                            PythonServerGoal::Zenoh(decoded.goal_id, Instant::now()),
-                            data,
-                        )
+                        let goal = ZenohServerGoal {
+                            id: decoded.goal_id,
+                            stamp,
+                            status: ros2_client::action::GoalStatusEnum::Executing,
+                        };
+                        (PythonServerGoal::Zenoh(goal, Instant::now()), data)
                     }))
                 }),
             }
@@ -2083,7 +2167,7 @@ impl Ros2ActionServer {
         };
         let goal_id = match &executing {
             PythonServerGoal::Dds(handle, _) => handle.goal_id().uuid.to_string(),
-            PythonServerGoal::Zenoh(id, _) => id.uuid.to_string(),
+            PythonServerGoal::Zenoh(goal, _) => goal.id.uuid.to_string(),
         };
         while self.executing.len() >= MAX_CONCURRENT_GOALS {
             let Some(oldest) = self
@@ -2095,9 +2179,12 @@ impl Ros2ActionServer {
                 break;
             };
             self.executing.remove(&oldest);
+            ZenohCancelState::lock(&self.zenoh_cancel)
+                .canceling
+                .remove(&oldest);
         }
         self.executing.insert(goal_id.clone(), executing)?;
-        publish_python_zenoh_status(py, &self.server, &self.executing)?;
+        publish_python_zenoh_status(py, &self.server, &self.executing, &self.zenoh_cancel)?;
         Ok(Some((goal_id, arr.to_pyarrow(py)?.unbind())))
     }
 
@@ -2118,9 +2205,9 @@ impl Ros2ActionServer {
                     )
                     .map_err(|error| eyre!("publish_feedback: {error:?}"))
                 }
-                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(id, _)) => {
+                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(goal, _)) => {
                     let payload = serialize_cdr(&ros2_client::action::FeedbackMessage {
-                        goal_id: *id,
+                        goal_id: goal.id,
                         feedback: BridgeMessage(Some(array_data)),
                     })?;
                     futures::executor::block_on(server.feedback.publish(&payload))?;
@@ -2173,7 +2260,7 @@ impl Ros2ActionServer {
                         }
                     })
                 }
-                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(id, _)) => {
+                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(goal, _)) => {
                     let status = end_status_to_status(end);
                     let response = serialize_cdr(&ros2_client::action::GetResultResponse {
                         status,
@@ -2209,7 +2296,7 @@ impl Ros2ActionServer {
                                         }
                                     };
                                 let key = decoded.goal_id.uuid.to_string();
-                                if decoded.goal_id == *id {
+                                if decoded.goal_id == goal.id {
                                     return Some(request.id);
                                 }
                                 // The key is a peer-controlled goal UUID; a flood of
@@ -2242,13 +2329,21 @@ impl Ros2ActionServer {
                 _ => eyre::bail!("action goal belongs to a different transport"),
             }
         })?;
-        self.executing.remove(goal_id);
-        publish_python_zenoh_status(py, &self.server, &self.executing)?;
+        if let Some(PythonServerGoal::Zenoh(mut goal, _)) = self.executing.remove(goal_id) {
+            goal.status = end_status_to_status(end);
+            let mut state = ZenohCancelState::lock(&self.zenoh_cancel);
+            state.canceling.remove(goal_id);
+            remember_finished_goal(&mut state.finished, goal);
+        }
+        publish_python_zenoh_status(py, &self.server, &self.executing, &self.zenoh_cancel)?;
         Ok(())
     }
 
     /// Poll up to `timeout_s` (default 1.0) for a cancel request. Returns the
     /// goal_id strings the client asked to cancel that we still track, or None.
+    /// On native Zenoh, the request is answered like `rcl_action` does and only
+    /// the goals it newly moves to canceling are returned: a goal that is
+    /// already canceling is not returned again.
     #[pyo3(signature = (timeout_s=None))]
     pub fn take_cancel(
         &self,
@@ -2256,82 +2351,205 @@ impl Ros2ActionServer {
         timeout_s: Option<f64>,
     ) -> eyre::Result<Option<Vec<String>>> {
         let timeout = timeout_or(timeout_s, 1.0);
-        py.detach(|| match &self.server {
-            ActionServerBackend::Dds(server) => futures::executor::block_on(async {
-                let recv = server.receive_cancel_request();
-                futures::pin_mut!(recv);
-                let delay = futures_timer::Delay::new(timeout);
-                let cancel_handle = match futures::future::select(recv, delay).await {
-                    futures::future::Either::Left((r, _)) => {
-                        r.map_err(|e| eyre!("receive_cancel_request: {e:?}"))?
+        let canceled: Option<Vec<String>> = py.detach(|| -> eyre::Result<_> {
+            match &self.server {
+                ActionServerBackend::Dds(server) => futures::executor::block_on(async {
+                    let recv = server.receive_cancel_request();
+                    futures::pin_mut!(recv);
+                    let delay = futures_timer::Delay::new(timeout);
+                    let cancel_handle = match futures::future::select(recv, delay).await {
+                        futures::future::Either::Left((r, _)) => {
+                            r.map_err(|e| eyre!("receive_cancel_request: {e:?}"))?
+                        }
+                        futures::future::Either::Right(_) => return Ok(None),
+                    };
+                    let goals: Vec<_> = cancel_handle.goals().collect();
+                    server
+                        .respond_to_cancel_requests(&cancel_handle, goals.iter().copied())
+                        .await
+                        .map_err(|e| eyre!("respond_to_cancel_requests: {e:?}"))?;
+                    let mine: Vec<String> = goals
+                        .iter()
+                        .map(|g| g.uuid.to_string())
+                        .filter(|s| self.executing.contains_key(s))
+                        .collect();
+                    Ok(Some(mine))
+                }),
+                ActionServerBackend::Zenoh(server) => futures::executor::block_on(async {
+                    let recv = server.cancel_goal.recv();
+                    futures::pin_mut!(recv);
+                    let delay = futures_timer::Delay::new(timeout);
+                    let request = match futures::future::select(recv, delay).await {
+                        futures::future::Either::Left((result, _)) => result?,
+                        futures::future::Either::Right(_) => return Ok(None),
+                    };
+                    #[derive(serde::Deserialize)]
+                    struct CancelRequest {
+                        goal_info: ros2_client::action::GoalInfo,
                     }
-                    futures::future::Either::Right(_) => return Ok(None),
-                };
-                let goals: Vec<_> = cancel_handle.goals().collect();
-                server
-                    .respond_to_cancel_requests(&cancel_handle, goals.iter().copied())
-                    .await
-                    .map_err(|e| eyre!("respond_to_cancel_requests: {e:?}"))?;
-                let mine: Vec<String> = goals
-                    .iter()
-                    .map(|g| g.uuid.to_string())
-                    .filter(|s| self.executing.contains_key(s))
-                    .collect();
-                Ok(Some(mine))
-            }),
-            ActionServerBackend::Zenoh(server) => futures::executor::block_on(async {
-                let recv = server.cancel_goal.recv();
-                futures::pin_mut!(recv);
-                let delay = futures_timer::Delay::new(timeout);
-                let request = match futures::future::select(recv, delay).await {
-                    futures::future::Either::Left((result, _)) => result?,
-                    futures::future::Either::Right(_) => return Ok(None),
-                };
-                #[derive(serde::Deserialize)]
-                struct CancelRequest {
-                    goal_info: ros2_client::action::GoalInfo,
+                    let decoded: CancelRequest = deserialize_cdr(&request.payload)?;
+                    let (goals_canceling, return_code) = answer_zenoh_cancel(
+                        &self.executing,
+                        &mut ZenohCancelState::lock(&self.zenoh_cancel),
+                        &decoded.goal_info,
+                    );
+                    let mine: Vec<String> = goals_canceling
+                        .iter()
+                        .map(|info| info.goal_id.uuid.to_string())
+                        .collect();
+                    let response = ros2_client::action::CancelGoalResponse {
+                        return_code,
+                        goals_canceling,
+                    };
+                    server
+                        .cancel_goal
+                        .reply(request.id, &serialize_cdr(&response)?)
+                        .await?;
+                    Ok(Some(mine))
+                }),
+            }
+        })?;
+        if canceled.is_some() {
+            // Clients learn that goals are canceling from the status topic,
+            // as with rclcpp and the YAML bridge. A no-op on DDS.
+            publish_python_zenoh_status(py, &self.server, &self.executing, &self.zenoh_cancel)?;
+        }
+        Ok(canceled)
+    }
+}
+
+/// Answers a native-Zenoh `CancelGoal` request with the shared, rcl-conformant
+/// [`process_cancel_request`], recording the goals it moves to canceling in
+/// `state`. Finished goals are offered too, so naming one is answered
+/// `GoalTerminated`; they are never canceled again.
+fn answer_zenoh_cancel(
+    executing: &GoalSlots<String, PythonServerGoal>,
+    state: &mut ZenohCancelState,
+    requested: &ros2_client::action::GoalInfo,
+) -> (
+    Vec<ros2_client::action::GoalInfo>,
+    ros2_client::action_msgs::CancelGoalResponseEnum,
+) {
+    use ros2_client::action::GoalStatusEnum;
+    let ZenohCancelState {
+        canceling,
+        finished,
+    } = state;
+    let mut active: Vec<(&String, ZenohServerGoal)> = executing
+        .iter()
+        .filter_map(|(key, goal)| match goal {
+            PythonServerGoal::Zenoh(goal, _) => {
+                let mut goal = *goal;
+                if canceling.contains(key) {
+                    goal.status = GoalStatusEnum::Canceling;
                 }
-                let decoded: CancelRequest = deserialize_cdr(&request.payload)?;
-                let requested = decoded.goal_info.goal_id.uuid;
-                let mine: Vec<String> = self
-                    .executing
-                    .iter()
-                    .filter_map(|(key, goal)| match goal {
-                        PythonServerGoal::Zenoh(id, _)
-                            if requested.is_nil() || id.uuid == requested =>
-                        {
-                            Some(key.clone())
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                let goals_canceling = mine
-                    .iter()
-                    .filter_map(|key| match self.executing.get(key) {
-                        Some(PythonServerGoal::Zenoh(id, _)) => {
-                            Some(ros2_client::action::GoalInfo {
-                                goal_id: *id,
-                                stamp: ros2_client::builtin_interfaces::Time::ZERO,
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                let response = ros2_client::action::CancelGoalResponse {
-                    return_code: if mine.is_empty() {
-                        ros2_client::action_msgs::CancelGoalResponseEnum::UnknownGoal
-                    } else {
-                        ros2_client::action_msgs::CancelGoalResponseEnum::None
-                    },
-                    goals_canceling,
-                };
-                server
-                    .cancel_goal
-                    .reply(request.id, &serialize_cdr(&response)?)
-                    .await?;
-                Ok(Some(mine))
-            }),
+                Some((key, goal))
+            }
+            PythonServerGoal::Dds(..) => None,
         })
+        .collect();
+    let answer = process_cancel_request(
+        active
+            .iter_mut()
+            .map(|(_, goal)| goal)
+            .chain(finished.iter_mut()),
+        requested,
+    );
+    for (key, goal) in &active {
+        if goal.status == GoalStatusEnum::Canceling {
+            canceling.insert((*key).clone());
+        }
+    }
+    answer
+}
+
+/// Keep `goal` among the last [`MAX_CONCURRENT_GOALS`] finished goals.
+fn remember_finished_goal(finished: &mut VecDeque<ZenohServerGoal>, goal: ZenohServerGoal) {
+    if finished.len() >= MAX_CONCURRENT_GOALS {
+        finished.pop_front();
+    }
+    finished.push_back(goal);
+}
+
+#[cfg(test)]
+mod zenoh_cancel_tests {
+    use super::ros2_client::action::{GoalId, GoalInfo, GoalStatusEnum};
+    use super::ros2_client::action_msgs::CancelGoalResponseEnum;
+    use super::ros2_client::builtin_interfaces::Time;
+    use super::{
+        CancelableGoal, GoalSlots, MAX_CONCURRENT_GOALS, PythonServerGoal, ZenohCancelState,
+        ZenohServerGoal, answer_zenoh_cancel, process_cancel_request, remember_finished_goal,
+    };
+    use std::collections::VecDeque;
+
+    fn goal(status: GoalStatusEnum) -> ZenohServerGoal {
+        ZenohServerGoal {
+            id: GoalId::new_random(),
+            stamp: Time::from_nanos(10),
+            status,
+        }
+    }
+
+    fn by_id(goal_id: GoalId) -> GoalInfo {
+        GoalInfo {
+            goal_id,
+            stamp: Time::ZERO,
+        }
+    }
+
+    /// A goal the server finished is still known: naming it is
+    /// `ERROR_GOAL_TERMINATED`, as in rcl.
+    #[test]
+    fn cancelling_a_finished_goal_reports_goal_terminated() {
+        let mut executing = [goal(GoalStatusEnum::Executing)];
+        let mut finished = VecDeque::new();
+        let done = goal(GoalStatusEnum::Succeeded);
+        remember_finished_goal(&mut finished, done);
+        let (canceling, code) = process_cancel_request(
+            executing.iter_mut().chain(finished.iter_mut()),
+            &by_id(done.id),
+        );
+        assert!(canceling.is_empty());
+        assert_eq!(code, CancelGoalResponseEnum::GoalTerminated);
+        assert_eq!(finished[0].status(), GoalStatusEnum::Succeeded);
+    }
+
+    /// A second cancel of the same goal finds it canceling: rcl answers
+    /// `ERROR_GOAL_TERMINATED` and does not list it again. The
+    /// canceling state survives between requests in `ZenohCancelState`.
+    #[test]
+    fn a_canceling_goal_is_not_canceled_again() {
+        let mut executing = GoalSlots::new(MAX_CONCURRENT_GOALS);
+        let running = goal(GoalStatusEnum::Executing);
+        let key = running.id.uuid.to_string();
+        executing
+            .insert(
+                key.clone(),
+                PythonServerGoal::Zenoh(running, std::time::Instant::now()),
+            )
+            .unwrap();
+        let mut state = ZenohCancelState::default();
+
+        let (canceling, code) = answer_zenoh_cancel(&executing, &mut state, &by_id(running.id));
+        assert_eq!(canceling.len(), 1);
+        assert_eq!(code, CancelGoalResponseEnum::None);
+        assert!(state.canceling.contains(&key));
+
+        let (canceling, code) = answer_zenoh_cancel(&executing, &mut state, &by_id(running.id));
+        assert!(canceling.is_empty());
+        assert_eq!(code, CancelGoalResponseEnum::GoalTerminated);
+    }
+
+    #[test]
+    fn only_the_last_finished_goals_are_remembered() {
+        let mut finished = VecDeque::new();
+        let first = goal(GoalStatusEnum::Succeeded);
+        remember_finished_goal(&mut finished, first);
+        for _ in 0..MAX_CONCURRENT_GOALS {
+            remember_finished_goal(&mut finished, goal(GoalStatusEnum::Aborted));
+        }
+        assert_eq!(finished.len(), MAX_CONCURRENT_GOALS);
+        assert!(finished.iter().all(|goal| goal.id != first.id));
     }
 }
 
@@ -2353,24 +2571,31 @@ fn publish_python_zenoh_status(
     py: Python<'_>,
     server: &ActionServerBackend,
     goals: &GoalSlots<String, PythonServerGoal>,
+    cancel: &std::sync::Mutex<ZenohCancelState>,
 ) -> eyre::Result<()> {
     let ActionServerBackend::Zenoh(server) = server else {
         return Ok(());
     };
-    let status = ros2_client::action_msgs::GoalStatusArray {
-        status_list: goals
-            .iter()
-            .filter_map(|(_, goal)| match goal {
-                PythonServerGoal::Zenoh(id, _) => Some(ros2_client::action_msgs::GoalStatus {
-                    goal_info: ros2_client::action::GoalInfo {
-                        goal_id: *id,
-                        stamp: ros2_client::builtin_interfaces::Time::ZERO,
-                    },
-                    status: ros2_client::action::GoalStatusEnum::Executing,
-                }),
-                _ => None,
-            })
-            .collect(),
+    let status = {
+        let cancel = ZenohCancelState::lock(cancel);
+        ros2_client::action_msgs::GoalStatusArray {
+            status_list: goals
+                .iter()
+                .filter_map(|(key, goal)| match goal {
+                    PythonServerGoal::Zenoh(goal, _) => {
+                        Some(ros2_client::action_msgs::GoalStatus {
+                            goal_info: goal.goal_info(),
+                            status: if cancel.canceling.contains(key) {
+                                ros2_client::action::GoalStatusEnum::Canceling
+                            } else {
+                                goal.status
+                            },
+                        })
+                    }
+                    _ => None,
+                })
+                .collect(),
+        }
     };
     let payload = serialize_cdr(&status)?;
     // A reliable Zenoh publish can wait for the network: don't hold the GIL.
@@ -2583,7 +2808,13 @@ mod publish_gil_tests {
         let hold_up = HoldUp::declare(&node, &keys.status);
 
         let thread_ran = hold_up.run_with_python_thread(|py| {
-            publish_python_zenoh_status(py, &server.server, &server.executing).unwrap();
+            publish_python_zenoh_status(
+                py,
+                &server.server,
+                &server.executing,
+                &server.zenoh_cancel,
+            )
+            .unwrap();
         });
         assert!(thread_ran);
     }
@@ -2799,7 +3030,7 @@ pub struct Ros2ServiceClient {
 }
 
 enum ServiceClientBackend {
-    Dds(Box<ros2_client::Client<BridgeServiceType>>),
+    Dds(Box<Watched<ros2_client::Client<BridgeMessage, BridgeMessage>>>),
     Zenoh(NodeServiceClient),
 }
 
@@ -2896,7 +3127,7 @@ pub struct Ros2ServiceServer {
 }
 
 enum ServiceServerBackend {
-    Dds(Box<ros2_client::Server<BridgeServiceType>>),
+    Dds(Box<Watched<ros2_client::Server<BridgeMessage, BridgeMessage>>>),
     Zenoh(NodeServiceServer),
 }
 
@@ -3586,5 +3817,89 @@ mod zenoh_node_feature_tests {
             // ~80 ticks when the GIL is free, ~1 when `set_parameter` holds it.
             assert!(during >= 10, "the Python thread ticked {during} times");
         });
+    }
+}
+
+#[cfg(test)]
+mod dds_action_status_tests {
+    use super::*;
+    use ::dora_ros2_bridge::rustdds::policy::{Durability, Reliability};
+
+    /// A domain no other test in this crate uses.
+    const DOMAIN_ID: u16 = 92;
+
+    /// A DDS node that knows the action `status_test_msgs/Count`.
+    fn dds_test_node(node_name: &str) -> (Ros2Context, Ros2Node) {
+        let packages = std::env::temp_dir().join(format!(
+            "dora-dds-status-{node_name}-{}",
+            std::process::id()
+        ));
+        let package = packages.join("status_test_msgs");
+        std::fs::create_dir_all(package.join("action")).unwrap();
+        std::fs::write(
+            package.join("package.xml"),
+            "<package><name>status_test_msgs</name></package>",
+        )
+        .unwrap();
+        std::fs::write(
+            package.join("action/Count.action"),
+            "int32 goal\n---\nint32 result\n---\nint32 feedback\n",
+        )
+        .unwrap();
+        let context = Ros2Context::new(
+            Some(vec![packages.clone()]),
+            Some(Ros2Transport::dds()),
+            Some(DOMAIN_ID),
+        );
+        std::fs::remove_dir_all(&packages).unwrap();
+        let context = context.unwrap();
+        let node = context
+            .new_node(node_name, "/", Ros2NodeOptions::new(Some(false)), None)
+            .unwrap();
+        (context, node)
+    }
+
+    /// The QoS with which `observer` discovers the status writer of the
+    /// action `name`.
+    fn status_writer_qos(
+        observer: &rustdds::DomainParticipant,
+        name: &str,
+    ) -> rustdds::QosPolicies {
+        let topic = format!("rt{name}/_action/status");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let found = observer
+                .discovered_writers()
+                .into_iter()
+                .find(|w| w.publication_topic_data.topic_name == topic);
+            if let Some(writer) = found {
+                return writer.publication_topic_data.qos();
+            }
+            assert!(Instant::now() < deadline, "{topic} was never discovered");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// rcl action clients subscribe to the status topic transient-local, so a
+    /// volatile status writer never matches them (#4214).
+    #[test]
+    fn a_dds_action_server_publishes_its_status_transient_local() {
+        let name = format!("/status_server_{}", std::process::id());
+        let (_context, mut node) = dds_test_node("status_server");
+        let _server = node
+            .create_action_server(
+                &name,
+                "status_test_msgs/Count".into(),
+                // Reliable and, by default, volatile.
+                qos::Ros2QosPolicies::new(None, None, Some(true), None, None, None, None),
+            )
+            .unwrap();
+        let observer = rustdds::DomainParticipant::new(DOMAIN_ID).unwrap();
+        let qos = status_writer_qos(&observer, &name);
+        assert_eq!(qos.durability(), Some(Durability::TransientLocal));
+        assert!(
+            matches!(qos.reliability(), Some(Reliability::Reliable { .. })),
+            "{qos:?}"
+        );
     }
 }

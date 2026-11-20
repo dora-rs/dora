@@ -143,10 +143,18 @@ impl Daemon {
                 event: DynamicNodeEvent::NodeConfig { node_id },
                 reply_tx,
             } => {
+                // Every dataflow's plan, including this one's: its own listeners
+                // are also checked against its live `zenoh_peering`.
+                let planned =
+                    crate::running_dataflow::planned_zenoh_endpoints(self.running.values());
                 let node_config =
                     dataflow_for_dynamic_node(&mut self.running, &node_id).and_then(|dataflow| {
                         dataflow
-                            .dynamic_node_config(&node_id, self.zenoh_listen_endpoint.as_deref())
+                            .dynamic_node_config(
+                                &node_id,
+                                self.zenoh_listen_endpoint.as_deref(),
+                                &planned,
+                            )
                             .map_err(|err| {
                                 format!(
                                     "failed to get dynamic node config within given dataflow: {err}"
@@ -186,6 +194,7 @@ impl Daemon {
             DaemonNodeEvent::Subscribe {
                 event_sender,
                 pending_counter,
+                param_replay,
                 drained,
                 reply_sender,
             } => {
@@ -212,6 +221,23 @@ impl Daemon {
                             .pending_messages
                             .insert(node_id.clone(), pending_counter);
                         dataflow.drain_signals.insert(node_id.clone(), drained);
+                        // Capture before subscribe queues InputClosed/AllInputsClosed
+                        // and installs the channel for subsequent live writes.
+                        let snapshot = if dataflow.stop_sent {
+                            Default::default()
+                        } else {
+                            dataflow
+                                .runtime_params
+                                .get(&node_id)
+                                .into_iter()
+                                .flatten()
+                                .map(|(key, value)| Timestamped {
+                                    inner: (key.clone(), value.clone()),
+                                    timestamp: self.clock.new_timestamp(),
+                                })
+                                .collect()
+                        };
+                        let _ = param_replay.send(snapshot);
                         Self::subscribe(dataflow, node_id.clone(), event_sender, &self.clock).await;
 
                         let status = dataflow
@@ -424,6 +450,14 @@ impl Daemon {
         Ok(())
     }
 
+    /// Deliver a `Reload` to a node this daemon runs.
+    ///
+    /// The coordinator fans the request out to every daemon of the dataflow
+    /// and turns an `Err` into a visible CLI failure, so a reload the node
+    /// never saw must not be reported as success: a full channel (the event
+    /// was dropped) and a closed one (the node's event stream is gone) are
+    /// both errors. A node hosted by another daemon is not this daemon's to
+    /// reload and stays `Ok`.
     pub(crate) async fn send_reload(
         &mut self,
         dataflow_id: Uuid,
@@ -433,18 +467,32 @@ impl Daemon {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("Reload failed: no running dataflow with ID `{dataflow_id}`")
         })?;
-        if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
-            match send_with_timestamp(channel, NodeEvent::Reload { operator_id }, &self.clock) {
-                Ok(true) => {
-                    dataflow.inc_pending(&node_id);
-                }
-                Ok(false) => { /* event dropped (channel full) */ }
-                Err(_) => {
-                    dataflow.subscribe_channels.remove(&node_id);
-                }
+        let Some(channel) = dataflow.subscribe_channels.get(&node_id) else {
+            if dataflow.running_nodes.contains_key(&node_id) {
+                return Err(eyre!(
+                    "Reload failed: node `{node_id}` is not connected to this daemon \
+                     (it has not subscribed yet or dropped its event stream)"
+                ));
+            }
+            // Hosted by another daemon: that daemon answers for it.
+            return Ok(());
+        };
+        match send_with_timestamp(channel, NodeEvent::Reload { operator_id }, &self.clock) {
+            Ok(true) => {
+                dataflow.inc_pending(&node_id);
+                Ok(())
+            }
+            Ok(false) => Err(eyre!(
+                "Reload failed: node `{node_id}` event channel is full; the reload was dropped"
+            )),
+            Err(_) => {
+                dataflow.subscribe_channels.remove(&node_id);
+                Err(eyre!(
+                    "Reload failed: node `{node_id}` event channel is closed; \
+                     the node is no longer listening"
+                ))
             }
         }
-        Ok(())
     }
 
     /// Record an output event that named a dataflow the daemon no longer

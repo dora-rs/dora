@@ -71,7 +71,6 @@ impl Action {
     }
 
     pub fn alias_token_stream(&self, package_name: &Ident) -> impl ToTokens {
-        let action_type = format_ident!("{}", self.name);
         let goal_type_raw = format_ident!("{package_name}__{}_Goal", self.name);
         let result_type_raw = format_ident!("{package_name}__{}_Result", self.name);
         let feedback_type_raw = format_ident!("{package_name}__{}_Feedback", self.name);
@@ -80,33 +79,7 @@ impl Action {
         let result_type = format_ident!("{}Result", self.name);
         let feedback_type = format_ident!("{}Feedback", self.name);
 
-        let goal_type_name = goal_type.to_string();
-        let result_type_name = result_type.to_string();
-        let feedback_type_name = feedback_type.to_string();
-
         quote! {
-            #[allow(non_camel_case_types)]
-            #[derive(std::fmt::Debug)]
-            pub struct #action_type;
-
-            impl crate::ros2_client::ActionTypes for #action_type {
-                type GoalType = #goal_type;
-                type ResultType = #result_type;
-                type FeedbackType = #feedback_type;
-
-                fn goal_type_name(&self) -> &str {
-                    #goal_type_name
-                }
-
-                fn result_type_name(&self) -> &str {
-                    #result_type_name
-                }
-
-                fn feedback_type_name(&self) -> &str {
-                    #feedback_type_name
-                }
-            }
-
             pub use super::ffi::#goal_type_raw as #goal_type;
             pub use super::ffi::#result_type_raw as #result_type;
             pub use super::ffi::#feedback_type_raw as #feedback_type;
@@ -123,7 +96,6 @@ impl Action {
         let create_client = format_ident!("new_ActionClient__{package_name}__{}", self.name);
         let cxx_create_client = format!("create_{}_action_client", self.name);
 
-        let self_name = format_ident!("{}", self.name);
         let self_name_str = &self.name;
 
         let wait_for_action = format_ident!("wait_for__{package_name}__{}", self.name);
@@ -190,9 +162,11 @@ impl Action {
         let feedback_type_raw_str = feedback_type_raw.to_string();
 
         let client_backend = format_ident!("ActionClientBackend__{package_name}__{}", self.name);
+        let action_generics =
+            quote! { ffi::#goal_type_raw, ffi::#result_type_raw, ffi::#feedback_type_raw };
         let zenoh_client = quote! {
             dora_ros2_bridge::transport::action::zenoh::TypedActionClient<
-                ffi::#goal_type_raw, ffi::#result_type_raw, ffi::#feedback_type_raw
+                #action_generics
             >
         };
 
@@ -323,7 +297,7 @@ impl Action {
 
                 let (backend, feedback_id, status_id) = match &mut node.node {
                     GeneratedNode::Dds(dds_node) => {
-                        let client = dds_node.create_action_client::< action :: #self_name >(
+                        let client = dds_node.create_action_client::< #action_generics >(
                             crate::ros2_client::ServiceMapping:: #ros_service_mapping,
                             &name,
                             &crate::ros2_client::ActionTypeName::new(#package_name, #self_name_str),
@@ -348,18 +322,11 @@ impl Action {
                                     if result_tx.is_disconnected() {
                                         break;
                                     }
-                                    // SAFETY: the `&mut`-via-ptr cast mirrors the feedback stream
-                                    // above — `result_client(&mut self)` only needs `&mut` to hand
-                                    // back the sub-client, and `receive_response` itself takes &self.
-                                    // Only this pump thread receives. The concurrent &self
+                                    // Only this pump thread receives. The concurrent
                                     // `send_request` from `request_result` is data-race-free on the
                                     // ros2-client `Client` (disjoint request/response paths + atomic
                                     // sequence ids) — the same concurrency the #1971 service pump relies on.
-                                    let recv = unsafe {
-                                        let ptr = Arc::as_ptr(&client)
-                                            as *mut crate::ros2_client::action::ActionClient< action :: #self_name >;
-                                        (&mut *ptr).result_client().receive_response()
-                                    };
+                                    let recv = client.result_client().receive_response();
                                     match recv {
                                         Ok(Some((req_id, response))) => {
                                             // Route the response to its goal; drop responses we
@@ -400,18 +367,8 @@ impl Action {
 
                         let feedback_id = {
                             let stream = futures_lite::stream::unfold(Arc::clone(&client), |client| async {
-                                // SAFETY:
-                                // The ros2_client crate only provides &mut access to the feedback subscription, but
-                                // the mutable permission is not required at all.
-                                // There is no other position that will access the feedback subscription.
-                                // There is no modification on the feedback_subscription.
-                                // The Arc ensures the client is not dropped while the stream is active.
-                                // The async_take() method only requires immutable access to the subscription struct.
-                                let item = unsafe {
-                                    let ptr = Arc::as_ptr(&client) as *mut crate::ros2_client::action::ActionClient< action :: #self_name>;
-                                    let sub = (&mut *ptr).feedback_subscription();
-                                    sub.async_take().await
-                                };
+                                // Nothing else takes from the feedback subscription.
+                                let item = client.feedback_subscription().async_take().await;
                                 let item = item.map(
                                     |(crate::ros2_client::action::FeedbackMessage {goal_id, feedback}, _msg_info)| {
                                         Box::new(#feedback_event_name {
@@ -538,7 +495,7 @@ impl Action {
             #[allow(non_camel_case_types)]
             enum #client_backend {
                 Dds {
-                    client: std::sync::Arc<crate::ros2_client::action::ActionClient< action :: #self_name>>,
+                    client: std::sync::Arc<crate::ros2_client::action::ActionClient< #action_generics >>,
                     pending: std::sync::Arc<std::sync::Mutex<Vec<(crate::ros2_client::service::RmwRequestId, ffi::ActionGoalId)>>>,
                 },
                 #[cfg(feature = "rmw-zenoh")]
@@ -941,7 +898,6 @@ impl Action {
         );
         let send_result = format_ident!("action_server_send_result__{package_name}__{}", self.name);
 
-        let self_name = format_ident!("{}", self.name);
         let self_name_str = &self.name;
 
         let goal_type_raw = format_ident!("{package_name}__{}_Goal", self.name);
@@ -952,9 +908,11 @@ impl Action {
         let ros_service_mapping = crate::detect_ros_service_mapping_ident();
 
         let server_backend = format_ident!("ActionServerBackend__{package_name}__{}", self.name);
+        let action_generics =
+            quote! { ffi::#goal_type_raw, ffi::#result_type_raw, ffi::#feedback_type_raw };
         let zenoh_server = quote! {
             dora_ros2_bridge::transport::action::zenoh::TypedActionServer<
-                ffi::#goal_type_raw, ffi::#result_type_raw, ffi::#feedback_type_raw
+                #action_generics
             >
         };
 
@@ -999,10 +957,12 @@ impl Action {
                     .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?;
                 let (backend, stream_id) = match &mut node.node {
                     GeneratedNode::Dds(dds_node) => {
-                        // One QoS profile for all five action endpoints (mirrors the
-                        // native Rust action-server example).
-                        let q: crate::rustdds::QosPolicies = qos.into();
-                        let server = dds_node.create_action_server::< action :: #self_name >(
+                        // The user's QoS for the services and feedback; the status
+                        // is reliable and transient-local, as rcl clients require.
+                        use dora_ros2_bridge::transport::{action::action_status_qos, dds, Durability};
+                        let status_qos = dds::to_qos_profile(&action_status_qos(&crate::ros2::default_impl::ros2_qos(&qos, Durability::Volatile)));
+                        let q: crate::ros2_client::QosProfile = qos.into();
+                        let server = dds_node.create_action_server::< #action_generics >(
                             crate::ros2_client::ServiceMapping:: #ros_service_mapping,
                             &name,
                             &crate::ros2_client::ActionTypeName::new(#package_name, #self_name_str),
@@ -1010,8 +970,8 @@ impl Action {
                                 goal_service: q.clone(),
                                 result_service: q.clone(),
                                 cancel_service: q.clone(),
-                                feedback_publisher: q.clone(),
-                                status_publisher: q,
+                                feedback_publisher: q,
+                                status_publisher: status_qos,
                             },
                         ).map_err(|e| eyre::eyre!("{e:?}"))?;
                         let server = Arc::new(crate::ros2_client::action::AsyncActionServer::new(server));
@@ -1162,7 +1122,7 @@ impl Action {
             #[allow(non_camel_case_types)]
             enum #server_backend {
                 Dds {
-                    server: std::sync::Arc<crate::ros2_client::action::AsyncActionServer< action :: #self_name >>,
+                    server: std::sync::Arc<crate::ros2_client::action::AsyncActionServer< #action_generics >>,
                     executing: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (crate::ros2_client::action::ExecutingGoalHandle< ffi :: #goal_type_raw >, std::time::Instant)>>>,
                 },
                 #[cfg(feature = "rmw-zenoh")]
@@ -1498,5 +1458,23 @@ mod codegen_tests {
         assert!(server.contains("GeneratedNode::Zenoh"), "server create fn");
         assert!(server.contains("TypedActionServer"), "server create fn");
         assert!(!server.contains("dds_node_mut"), "server create fn");
+    }
+
+    /// rcl action clients subscribe to the status topic transient-local, so
+    /// the DDS server must not publish it with the user's (volatile) QoS
+    /// (#4214).
+    #[test]
+    fn the_dds_action_server_publishes_status_with_the_status_qos() {
+        let action = Action {
+            package: "test_pkg".to_string(),
+            name: "Fibonacci".to_string(),
+            goal: empty_msg("Fibonacci_Goal"),
+            result: empty_msg("Fibonacci_Result"),
+            feedback: empty_msg("Fibonacci_Feedback"),
+        };
+        let (_decl, imp) = action.cxx_action_server_creation_functions("test_pkg");
+        let server = format_valid_rust(imp);
+        assert!(server.contains("action::action_status_qos"), "{server}");
+        assert!(server.contains("status_publisher: status_qos"), "{server}");
     }
 }

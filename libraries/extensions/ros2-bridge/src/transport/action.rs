@@ -6,9 +6,12 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use thiserror::Error;
+
+use crate::transport::{Durability, History, Reliability, Ros2Qos};
 
 pub const MAX_CONCURRENT_GOALS: usize = 8;
 
@@ -185,6 +188,9 @@ impl<K: std::hash::Hash + Eq, V> GoalSlots<K, V> {
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, &mut V)> {
+        self.values.iter_mut()
+    }
     pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> {
         self.values.iter()
     }
@@ -359,8 +365,8 @@ pub mod zenoh {
 
     mod typed;
     pub use typed::{
-        ActionCallError, ActionServerOptions, ActionServerPump, TypedActionClient,
-        TypedActionServer,
+        ActionCallError, ActionServerOptions, ActionServerPump, CancelableGoal, TypedActionClient,
+        TypedActionServer, goal_accept_stamp, process_cancel_request,
     };
 
     /// Data keys for the three services followed by feedback and status.
@@ -645,15 +651,23 @@ pub mod zenoh {
         }
     }
 
-    pub fn action_status_qos(qos: &Ros2Qos) -> Ros2Qos {
-        Ros2Qos {
-            reliability: crate::transport::Reliability::Reliable {
-                max_blocking_time: Duration::ZERO,
-            },
-            durability: crate::transport::Durability::TransientLocal,
-            history: crate::transport::History::KeepLast { depth: 1 },
-            liveliness: qos.liveliness,
-        }
+    pub use super::action_status_qos;
+}
+
+/// QoS for an action server's status channel on every transport: reliable,
+/// transient-local and keep-last 1, as in rcl's
+/// `rcl_action_qos_profile_status_default`, whatever the user's QoS. ROS 2
+/// action clients subscribe to the status transient-local, so a volatile
+/// status writer never matches them (#4214). Liveliness follows the user's
+/// QoS, as on the other channels.
+pub fn action_status_qos(qos: &Ros2Qos) -> Ros2Qos {
+    Ros2Qos {
+        reliability: Reliability::Reliable {
+            max_blocking_time: Duration::ZERO,
+        },
+        durability: Durability::TransientLocal,
+        history: History::KeepLast { depth: 1 },
+        liveliness: qos.liveliness,
     }
 }
 

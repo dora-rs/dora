@@ -1,5 +1,6 @@
 use dora_core::config::DataId;
 use dora_message::config::{DEFAULT_QUEUE_SIZE, QueuePolicy};
+use dora_message::metadata::{GOAL_ID, GOAL_STATUS, REQUEST_ID, carries_pattern_correlation};
 use dora_node_api::Event;
 use futures::{
     FutureExt,
@@ -35,6 +36,9 @@ struct InputState {
     /// Number of this input's events in `queue`, kept in step with it so the
     /// per-push cap check does not have to scan the queue.
     queued: usize,
+    /// Running count of this input's events dropped at the cap; drives the
+    /// rate-limited drop log (see [`should_log_drop`]).
+    dropped: u64,
 }
 
 impl InputState {
@@ -43,6 +47,7 @@ impl InputState {
             cap: policy.effective_cap(size),
             policy,
             queued: 0,
+            dropped: 0,
         }
     }
 }
@@ -127,11 +132,13 @@ impl InputBuffer {
         }
     }
 
-    fn add_event(&mut self, event: Event) {
+    /// Queue `event`, dropping the oldest event of the same input if that
+    /// puts it over its cap. Returns whether a drop was logged.
+    fn add_event(&mut self, event: Event) -> bool {
         let Event::Input { id, .. } = &event else {
             // Not an input (e.g. `InputClosed`) — nothing to cap.
             self.queue.push_back(event);
-            return;
+            return false;
         };
 
         // Only the pushed input can now exceed its cap: every other input was
@@ -161,44 +168,110 @@ impl InputBuffer {
         // and counting it on every push made each message cost a pass over the
         // whole backlog exactly when the runtime is behind.
         state.queued += 1;
-        let over_cap = state.queued.saturating_sub(state.cap);
-        if over_cap > 0 {
+        let mut logged_drop = false;
+        if state.queued > state.cap {
             // Make room before pushing, so the newest `cap` (this event
             // included) stay queued in FIFO order. `effective_cap` is always
             // >= 1, so a single push can only put an input one over.
-            if let QueuePolicy::Backpressure = state.policy {
-                tracing::error!(
-                    "backpressure input `{id}` hit hard cap, dropping oldest to prevent OOM"
-                );
+            //
+            // A dropped service/action event leaves its caller waiting
+            // forever, so spare those as the node-side scheduler does
+            // (`select_eviction`).
+            let dropped = match eviction_candidates(&self.queue, id) {
+                (_, Some(ordinary)) => {
+                    self.queue.remove(ordinary);
+                    Some("oldest")
+                }
+                // Only correlations are queued and the incoming event is
+                // ordinary: drop it instead.
+                (Some(_), None) if !is_correlated(&event) => Some("incoming"),
+                // Only correlations on both sides: one has to go. Every such
+                // drop breaks a request, so each one is logged.
+                (Some(oldest), None) => {
+                    if let Some(Event::Input { metadata, .. }) = self.queue.remove(oldest) {
+                        let params = &metadata.parameters;
+                        tracing::error!(
+                            input = %id,
+                            request_id = ?params.get(REQUEST_ID),
+                            goal_id = ?params.get(GOAL_ID),
+                            goal_status = ?params.get(GOAL_STATUS),
+                            "operator queue full of correlated messages; dropping oldest \
+                             correlation. This breaks the service/action request-response \
+                             contract. Consider increasing queue_size or switching this \
+                             input to `queue_policy: backpressure`."
+                        );
+                    }
+                    Some("oldest")
+                }
+                // The counter ran ahead of the queue and nothing can be
+                // evicted; the decrement below still keeps it at the cap.
+                (None, _) => {
+                    debug_assert!(false, "queued count for `{id}` exceeds the queue");
+                    None
+                }
+            };
+            state.queued -= 1;
+            if let Some(which) = dropped {
+                // An operator slower than its input sits at the cap, so this
+                // runs for every incoming message. Log at a power-of-two
+                // cadence, like the node-side scheduler, instead of once or
+                // twice per message.
+                state.dropped = state.dropped.saturating_add(1);
+                if should_log_drop(state.dropped) {
+                    logged_drop = true;
+                    let total = state.dropped;
+                    if let QueuePolicy::Backpressure = state.policy {
+                        tracing::error!(
+                            "backpressure input `{id}` hit hard cap, dropping the {which} \
+                             event to prevent OOM ({total} dropped so far)"
+                        );
+                    } else {
+                        tracing::warn!(
+                            "dropped the {which} operator input `{id}` because its queue \
+                             was full ({total} dropped so far)"
+                        );
+                    }
+                }
+                if which == "incoming" {
+                    return logged_drop;
+                }
             }
-            let dropped = drop_oldest(&mut self.queue, id, over_cap);
-            debug_assert_eq!(
-                dropped, over_cap,
-                "queued count for `{id}` exceeds the queue"
-            );
-            state.queued -= dropped;
-            tracing::warn!("dropped {dropped} operator inputs because event queue was too full");
         }
         self.queue.push_back(event);
+        logged_drop
     }
 }
 
-/// Remove up to `count` of the oldest queued events of input `id`, returning
-/// how many were removed.
-fn drop_oldest(queue: &mut VecDeque<Event>, id: &DataId, count: usize) -> usize {
-    let mut dropped = 0;
-    while dropped < count {
-        // The oldest occurrence is usually near the front of the queue; only a
-        // low-rate input queued behind a large backlog of others pays for a
-        // longer search and shift.
-        let oldest = queue
-            .iter()
-            .position(|event| matches!(event, Event::Input { id: other, .. } if other == id));
-        let Some(index) = oldest else { break };
-        queue.remove(index);
-        dropped += 1;
+/// Whether the drop that brings an input's running drop count to `count`
+/// should be logged: at 1, 2, 4, 8, … so a lasting overload keeps being
+/// reported, but only O(log N) times for N drops. Mirrors the node-side
+/// `should_warn_drop` in `dora-node-api`.
+fn should_log_drop(count: u64) -> bool {
+    count.is_power_of_two()
+}
+
+/// Whether `event` is part of a service or action exchange: it carries a
+/// `request_id`, `goal_id` or `goal_status`.
+fn is_correlated(event: &Event) -> bool {
+    matches!(event, Event::Input { metadata, .. } if carries_pattern_correlation(&metadata.parameters))
+}
+
+/// The indices of the oldest queued event of input `id`, and of the oldest
+/// one that is not a service/action correlation, found in one pass.
+fn eviction_candidates(queue: &VecDeque<Event>, id: &DataId) -> (Option<usize>, Option<usize>) {
+    // The oldest occurrence is usually near the front of the queue; only a
+    // low-rate input queued behind a large backlog of others pays for a longer
+    // search.
+    let mut oldest = None;
+    for (index, event) in queue.iter().enumerate() {
+        if matches!(event, Event::Input { id: other, .. } if other == id) {
+            oldest.get_or_insert(index);
+            if !is_correlated(event) {
+                return (oldest, Some(index));
+            }
+        }
     }
-    dropped
+    (oldest, None)
 }
 
 #[cfg(test)]
@@ -206,7 +279,7 @@ mod tests {
     use super::*;
     use arrow::array::new_empty_array;
     use arrow::datatypes::DataType;
-    use dora_message::metadata::Metadata;
+    use dora_message::metadata::{Metadata, Parameter};
     use dora_node_api::DoraArray;
 
     fn closed_event(id: &str) -> Event {
@@ -273,8 +346,73 @@ mod tests {
         assert_eq!(queued(&buffer, &b), Some(0));
     }
 
+    fn correlated_input_event(id: &str, request_id: &str) -> Event {
+        let mut event = input_event(id);
+        if let Event::Input { metadata, .. } = &mut event {
+            metadata.parameters.insert(
+                REQUEST_ID.to_string(),
+                Parameter::String(request_id.to_string()),
+            );
+        }
+        event
+    }
+
+    fn request_ids(buffer: &InputBuffer) -> Vec<Option<String>> {
+        buffer
+            .queue
+            .iter()
+            .map(|e| match e {
+                Event::Input { metadata, .. } => match metadata.parameters.get(REQUEST_ID) {
+                    Some(Parameter::String(r)) => Some(r.clone()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn buffer_with_cap(id: &str, cap: usize) -> InputBuffer {
+        let mut caps = BTreeMap::new();
+        caps.insert(DataId::from(id.to_string()), (cap, QueuePolicy::DropOldest));
+        InputBuffer::new(caps)
+    }
+
+    // A service response must not be evicted while an ordinary event of the
+    // same input can go instead, matching the node-side scheduler.
+    #[test]
+    fn over_cap_evicts_an_ordinary_event_before_a_correlated_one() {
+        let mut buffer = buffer_with_cap("x", 2);
+        buffer.add_event(correlated_input_event("x", "A"));
+        buffer.add_event(input_event("x"));
+        buffer.add_event(input_event("x"));
+        assert_eq!(request_ids(&buffer), [Some("A".into()), None]);
+        assert_eq!(queued(&buffer, &DataId::from("x".to_string())), Some(2));
+    }
+
+    // With only correlations queued, an ordinary incoming event is the one
+    // dropped.
+    #[test]
+    fn over_cap_drops_ordinary_incoming_when_only_correlations_are_queued() {
+        let mut buffer = buffer_with_cap("x", 1);
+        buffer.add_event(correlated_input_event("x", "A"));
+        buffer.add_event(input_event("x"));
+        assert_eq!(request_ids(&buffer), [Some("A".into())]);
+        assert_eq!(queued(&buffer, &DataId::from("x".to_string())), Some(1));
+    }
+
+    // When both sides are correlations the oldest still has to go, so the
+    // queue stays bounded.
+    #[test]
+    fn over_cap_drops_oldest_correlation_when_nothing_else_is_left() {
+        let mut buffer = buffer_with_cap("x", 1);
+        buffer.add_event(correlated_input_event("x", "A"));
+        buffer.add_event(correlated_input_event("x", "B"));
+        assert_eq!(request_ids(&buffer), [Some("B".into())]);
+        assert_eq!(queued(&buffer, &DataId::from("x".to_string())), Some(1));
+    }
+
     // Integration-level guard for #2483: driving the *real* path
-    // (`add_event` -> `drop_oldest`) under a stalled consumer must keep
+    // (`add_event` -> `eviction_candidates`) under a stalled consumer must keep
     // the deque physically bounded to the cap. The stall is modelled by never
     // draining the queue (no `send_next_queued`).
     #[test]
@@ -362,5 +500,23 @@ mod tests {
                 .contains_key(&DataId::from("undeclared".to_string())),
             "the default cap must be recorded for the unconfigured input"
         );
+    }
+
+    // An operator slower than its input sits at the cap, so every push drops
+    // one event. The drop log must follow a power-of-two cadence over the
+    // running count, not fire once (or twice) per message.
+    #[test]
+    fn drops_are_counted_and_logged_at_power_of_two_cadence() {
+        let id = DataId::from("fast".to_string());
+        let mut buffer =
+            InputBuffer::new(BTreeMap::from([(id.clone(), (2, QueuePolicy::DropOldest))]));
+
+        let logged = (0..1002)
+            .filter(|_| buffer.add_event(input_event("fast")))
+            .count();
+
+        assert_eq!(buffer.inputs[&id].dropped, 1000);
+        // 1, 2, 4, …, 512: ten log lines for a thousand drops.
+        assert_eq!(logged, 10);
     }
 }

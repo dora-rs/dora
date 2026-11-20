@@ -107,7 +107,6 @@ fn build_result_timeout() -> Duration {
     })
 }
 
-pub(crate) mod artifacts;
 mod control;
 mod control_requests;
 mod daemon_events;
@@ -128,6 +127,7 @@ mod tests;
 mod topic_debug;
 mod topic_subscriber;
 mod topology;
+mod topology_lane;
 mod traces;
 mod ws_control;
 mod ws_daemon;
@@ -260,8 +260,6 @@ async fn start_with_events(
     span_store: SpanStore,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let clock = Arc::new(HLC::default());
-    let artifact_store =
-        Arc::new(artifacts::ArtifactStore::new().wrap_err("failed to create artifact store")?);
 
     let mut tasks = FuturesUnordered::new();
 
@@ -287,19 +285,13 @@ async fn start_with_events(
     #[cfg(feature = "metrics")]
     let otel_metrics = otel_metrics::new_shared();
 
-    // DaemonId -> WS peer address, shared with the WS server so the
-    // ResolveMachine reply can carry the target daemon's direct-TCP data
-    // listener address.
-    let daemon_peer_addrs: Arc<
-        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
-    > = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
+    let daemon_peer_addrs = state::DaemonPeerAddrs::default();
     let (port, ws_shutdown, ws_future) = ws_server::serve(
         bind,
         ws_event_tx.clone(),
         topic_debug_tx,
         clock.clone(),
         auth_token,
-        artifact_store,
         store.clone(),
         daemon_peer_addrs.clone(),
     )
@@ -365,19 +357,24 @@ pub(crate) struct Coordinator {
     /// (see [`state::ReclaimedLaunches`]).
     pub(crate) reclaimed_launches: state::ReclaimedLaunches,
     pub(crate) dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
-    /// Finish reports from daemons that reconnected for a dataflow the orphan
-    /// reclaim left `Recovering`. Parked here rather than in `dataflow_results`
-    /// until they cover every node the record assigns: readers treat any
-    /// `dataflow_results` entry as a finished dataflow, so a partial report
-    /// there would make `dora list` / `stop` / `clean` act on a dataflow that is
-    /// still recovering. See `Coordinator::record_resent_finish_report`.
+    /// Finish reports for a dataflow the orphan reclaim left `Recovering`: the
+    /// results of daemons that finished before the reclaim (moved here by
+    /// `begin_orphaned_dataflow_reclaim`) and reports daemons resent after
+    /// reconnecting. Parked here rather than in `dataflow_results` until they
+    /// cover every node the record assigns: readers treat any
+    /// `dataflow_results` entry for a dataflow not in `running_dataflows` as a
+    /// finished dataflow, so a partial one there would make `dora list` /
+    /// `stop` / `clean` act on a dataflow that is still recovering,
+    /// and `cap_dataflow_results` could evict it. See
+    /// `Coordinator::record_resent_finish_report`.
     pub(crate) resent_finish_reports: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     pub(crate) archived_dataflows: IndexMap<DataflowId, ArchivedDataflow>,
     pub(crate) daemon_connections: DaemonConnections,
+    /// Node-lifecycle changes in flight or waiting, per dataflow.
+    pub(crate) topology: topology_lane::TopologyLanes,
     pub(crate) clock: Arc<HLC>,
     pub(crate) store: Arc<dyn CoordinatorStore>,
     pub(crate) span_store: SpanStore,
-    pub(crate) daemon_peer_addrs: Arc<std::sync::RwLock<HashMap<String, SocketAddr>>>,
     #[cfg(feature = "metrics")]
     pub(crate) otel_metrics: otel_metrics::SharedMetrics,
     /// Aborts the event stream on `dora down` / Ctrl-C.
@@ -404,18 +401,28 @@ async fn start_inner(
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
     span_store: SpanStore,
-    daemon_peer_addrs: Arc<
-        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
-    >,
+    daemon_peer_addrs: state::DaemonPeerAddrs,
     #[cfg(feature = "metrics")] otel_metrics: otel_metrics::SharedMetrics,
 ) -> eyre::Result<()> {
     let daemon_heartbeat_interval =
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
             .map(|_| Event::DaemonHeartbeatInterval);
 
+    // Answers to topology changes, reported by the tasks that wait for the
+    // daemons so this loop does not (see `topology_lane`). The event
+    // dispatch below is mirrored by `serial_loop` in
+    // `tests::lifecycle_stall`; keep the two in step.
+    let (topology_tx, topology_rx) = tokio::sync::mpsc::channel::<Event>(64);
+
     // events that should be aborted on `dora down`
-    let (abortable_events, abort_handle) =
-        futures::stream::abortable((events, daemon_heartbeat_interval).merge());
+    let (abortable_events, abort_handle) = futures::stream::abortable(
+        (
+            events,
+            daemon_heartbeat_interval,
+            ReceiverStream::new(topology_rx),
+        )
+            .merge(),
+    );
 
     let mut events = abortable_events;
 
@@ -481,11 +488,11 @@ async fn start_inner(
         dataflow_results: IndexMap::new(),
         resent_finish_reports: HashMap::new(),
         archived_dataflows: IndexMap::new(),
-        daemon_connections: DaemonConnections::default(),
+        daemon_connections: DaemonConnections::with_peer_addrs(daemon_peer_addrs),
+        topology: topology_lane::TopologyLanes::new(topology_tx),
         clock,
         store,
         span_store,
-        daemon_peer_addrs,
         #[cfg(feature = "metrics")]
         otel_metrics,
         abort_handle,
@@ -597,7 +604,20 @@ async fn start_inner(
                     .handle_daemon_node_stopped(daemon_id, dataflow_id, node_id, clean_stop)
                     .await?
             }
+            Event::TopologyReply {
+                dataflow_id,
+                change_id,
+            } => {
+                coordinator
+                    .handle_topology_reply(dataflow_id, change_id)
+                    .await?
+            }
         }
+
+        // Whatever event just ran may have removed a daemon (exit, watchdog,
+        // re-registration): a topology change waiting on it will not be
+        // answered, so fail it now instead of at its timeout.
+        coordinator.fail_topology_changes_of_gone_daemons().await;
 
         // warn if event handling took too long -> the main loop should never be blocked for too long
         let elapsed = start.elapsed();

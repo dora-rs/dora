@@ -68,13 +68,47 @@ impl LaunchContext {
     }
 }
 
+/// `DaemonId` (as its `Display` string) -> the daemon's WS peer address.
+///
+/// Shared with the WS server, so a `ResolveMachine` reply can carry the target
+/// daemon's direct-TCP data listener address.
+pub(crate) type DaemonPeerAddrs = Arc<std::sync::RwLock<HashMap<String, SocketAddr>>>;
+
 #[derive(Default)]
 pub(crate) struct DaemonConnections {
     daemons: BTreeMap<DaemonId, DaemonConnection>,
+    /// Kept in step with `daemons` by `add`, `remove` and `drain`, so an entry
+    /// cannot outlive its connection: a daemon that comes back registers under
+    /// a fresh `DaemonId`, so a stale entry would never be overwritten or read
+    /// again — one leaked entry per daemon restart.
+    peer_addrs: DaemonPeerAddrs,
 }
 
 impl DaemonConnections {
+    pub(crate) fn with_peer_addrs(peer_addrs: DaemonPeerAddrs) -> Self {
+        Self {
+            daemons: BTreeMap::new(),
+            peer_addrs,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn peer_addrs(&self) -> DaemonPeerAddrs {
+        self.peer_addrs.clone()
+    }
+
+    fn peer_addrs_mut(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, SocketAddr>> {
+        self.peer_addrs.write().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub(crate) fn add(&mut self, daemon_id: DaemonId, connection: DaemonConnection) {
+        {
+            let mut peer_addrs = self.peer_addrs_mut();
+            match connection.peer_addr {
+                Some(addr) => peer_addrs.insert(daemon_id.to_string(), addr),
+                None => peer_addrs.remove(&daemon_id.to_string()),
+            };
+        }
         let previous = self.daemons.insert(daemon_id.clone(), connection);
         if previous.is_some() {
             tracing::info!("closing previous connection `{daemon_id}` on new register");
@@ -102,6 +136,7 @@ impl DaemonConnections {
     }
 
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = (DaemonId, DaemonConnection)> {
+        self.peer_addrs_mut().clear();
         std::mem::take(&mut self.daemons).into_iter()
     }
 
@@ -114,6 +149,7 @@ impl DaemonConnections {
     }
 
     pub(crate) fn remove(&mut self, daemon_id: &DaemonId) -> Option<DaemonConnection> {
+        self.peer_addrs_mut().remove(&daemon_id.to_string());
         self.daemons.remove(daemon_id)
     }
 
@@ -351,30 +387,67 @@ pub(crate) struct PendingDaemonReply {
 
 impl PendingDaemonReply {
     /// Wait for the daemon's reply, for at most `TCP_READ_TIMEOUT`.
-    pub(crate) async fn wait(self) -> eyre::Result<Vec<u8>> {
-        let response_json =
-            match tokio::time::timeout(dora_message::TCP_READ_TIMEOUT, self.reply_rx).await {
-                Ok(result) => result.map_err(|_| eyre!("daemon WS reply channel dropped"))?,
-                Err(_) => {
-                    self.pending_replies.lock().await.remove(&self.id);
-                    return Err(eyre!("timeout waiting for daemon WS reply"));
-                }
-            };
-
-        // A WS-level failure on the daemon side arrives as a `{"ws_error": ...}`
-        // envelope (see `handle_daemon_response` in `ws_daemon.rs`). It matches
-        // no `DaemonCoordinatorReply` variant, so returning it verbatim would
-        // make every caller fail with an opaque "failed to deserialize ... reply"
-        // and drop the daemon's real error text (it would survive only in a log
-        // line). Surface it as an `Err` carrying that text instead.
-        if let Ok(WsErrorEnvelope { ws_error }) =
-            serde_json::from_str::<WsErrorEnvelope>(&response_json)
+    pub(crate) async fn wait(mut self) -> eyre::Result<Vec<u8>> {
+        match tokio::time::timeout(
+            dora_message::TCP_READ_TIMEOUT,
+            std::future::poll_fn(|cx| self.poll_reply(cx)),
+        )
+        .await
         {
-            return Err(eyre!("daemon returned error: {ws_error}"));
+            Ok(result) => result,
+            Err(_) => {
+                self.forget().await;
+                Err(eyre!("timeout waiting for daemon WS reply"))
+            }
         }
-
-        Ok(response_json.into_bytes())
     }
+
+    /// Poll for the daemon's reply, with no timeout. Must not be called again
+    /// once it has returned `Ready`.
+    pub(crate) fn poll_reply(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<eyre::Result<Vec<u8>>> {
+        std::pin::Pin::new(&mut self.reply_rx)
+            .poll(cx)
+            .map(|received| decode_daemon_reply(received.ok()))
+    }
+
+    /// The daemon's reply if the WS layer has already delivered it (or
+    /// dropped its channel), without waiting. Must not be called once a poll
+    /// or an earlier call has returned the reply.
+    pub(crate) fn try_reply(&mut self) -> Option<eyre::Result<Vec<u8>>> {
+        match self.reply_rx.try_recv() {
+            Err(oneshot::error::TryRecvError::Empty) => None,
+            received => Some(decode_daemon_reply(received.ok())),
+        }
+    }
+
+    /// Stop expecting the reply: drop its entry from the connection's pending
+    /// replies, so it does not keep holding one of the slots.
+    pub(crate) async fn forget(&self) {
+        self.pending_replies.lock().await.remove(&self.id);
+    }
+}
+
+/// What the WS layer delivered for a request, as its result. `None` means the
+/// reply channel was dropped.
+fn decode_daemon_reply(received: Option<String>) -> eyre::Result<Vec<u8>> {
+    let response_json = received.ok_or_else(|| eyre!("daemon WS reply channel dropped"))?;
+
+    // A WS-level failure on the daemon side arrives as a `{"ws_error": ...}`
+    // envelope (see `handle_daemon_response` in `ws_daemon.rs`). It matches
+    // no `DaemonCoordinatorReply` variant, so returning it verbatim would
+    // make every caller fail with an opaque "failed to deserialize ... reply"
+    // and drop the daemon's real error text (it would survive only in a log
+    // line). Surface it as an `Err` carrying that text instead.
+    if let Ok(WsErrorEnvelope { ws_error }) =
+        serde_json::from_str::<WsErrorEnvelope>(&response_json)
+    {
+        return Err(eyre!("daemon returned error: {ws_error}"));
+    }
+
+    Ok(response_json.into_bytes())
 }
 
 /// The envelope `handle_daemon_response` (see `ws_daemon.rs`) produces when a
@@ -675,6 +748,33 @@ pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
 const MAX_STATE_LOG_ENTRIES: usize = 10_000;
 
 impl RunningDataflow {
+    /// Whether every placed node is on one and the same machine. The start
+    /// barrier of such a dataflow is local to its daemon, which never reports
+    /// it, so `ready_barrier_released` stays `false` for the life of the
+    /// dataflow.
+    ///
+    /// Compares machine ids, not daemon ids: a daemon that reconnects after a
+    /// coordinator restart or an orphan reclaim gets a new id, while
+    /// `persisted_placement` keeps the old one for nodes it did not report
+    /// (for example ones that already exited). Nodes are placed by machine,
+    /// so a dataflow never spans two daemons of one machine, and daemons
+    /// without a machine id share the `None` slot the same way. With no
+    /// placement known at all (a record from before `node_to_daemon` was
+    /// persisted), or a placement that does not parse, it answers `false`.
+    pub(crate) fn single_daemon(&self) -> bool {
+        let mut machines = BTreeSet::new();
+        for daemon in self.node_to_daemon.values() {
+            machines.insert(daemon.machine_id().map(str::to_owned));
+        }
+        for daemon in self.persisted_placement.values() {
+            let Some(daemon) = DaemonId::from_display_str(daemon) else {
+                return false;
+            };
+            machines.insert(daemon.machine_id().map(str::to_owned));
+        }
+        machines.len() == 1
+    }
+
     /// Append a state mutation to the replication log, returning its sequence.
     pub(crate) fn append_state_log(&mut self, operation: StateCatchUpOperation) -> u64 {
         self.state_log_sequence += 1;

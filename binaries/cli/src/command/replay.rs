@@ -132,6 +132,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
             .entry(entry.output_id)
             .or_default() += 1;
     }
+    super::recording::warn_if_unfinished(&reader, &args.file);
 
     if recorded_counts.is_empty() {
         bail!(

@@ -58,14 +58,17 @@ Both surfaces ride the same `ros2-client` / `rustdds` stack. "Client" = a Dora
 node calling into ROS2 (dora→ROS2); "server" = a Dora node serving ROS2 clients
 (ROS2→dora).
 
-**Capability × surface (all supported):**
+**Capability × surface (all supported; footnotes mark known DDS interop bugs):**
 
 | | topic pub/sub | service client | service server | action client | action server | parameters |
 |---|---|---|---|---|---|---|
 | **YAML bridge** | ✅ | ✅ | ✅ | ✅ | ✅ | (node-hosted) |
 | **Rust** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
 | **C++** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
-| **Python** (pyo3) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Python** (pyo3) | ✅ | ✅ | ✅ | ✅¹ | ✅ | ✅ |
+
+¹ On DDS, the first goal can be lost while discovery is still running
+([#4213](https://github.com/dora-rs/dora/issues/4213)).
 
 Runnable examples for every cell live under
 [`examples/ros2-bridge/`](https://github.com/dora-rs/dora/tree/main/examples/ros2-bridge)
@@ -292,7 +295,7 @@ For each Arrow goal input:
 
 The action bridge sends feedback and results on separate outputs:
 
-- **`feedback`**: Streamed as each feedback message arrives from the action server. Contains the action's feedback message as Arrow (e.g., `{partial_sequence: int32[]}` for Fibonacci)
+- **`feedback`**: Streamed as each feedback message arrives from the action server. Contains the action's feedback message as Arrow (e.g., `{sequence: int32[]}` for Fibonacci)
 - **`result`**: Sent once when the action completes. Contains the action's result message as Arrow (e.g., `{sequence: int32[]}` for Fibonacci)
 
 ### Concurrent Goals
@@ -363,6 +366,57 @@ Event::Input { id, metadata, data } => match id.as_str() {
 4. Handler sends `feedback` (zero or more times) with same `goal_id`
 5. Handler sends `result` (once) with same `goal_id`; bridge returns it to the ROS2 client
 6. Result send times out after 5 minutes if the client never requests it
+
+A ROS2 client may cancel the goal at any point before step 5 (see
+[Canceling goals](#canceling-goals)).
+
+### Canceling goals
+
+To let ROS2 clients cancel goals, declare a `cancel` output on the bridge and
+connect it to the handler:
+
+```yaml
+  - id: fib_server
+    ros2:
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
+      role: server
+    inputs:
+      feedback: handler/feedback
+      result: handler/result
+    outputs:
+      - goal
+      - cancel
+
+  - id: handler
+    inputs:
+      goal: fib_server/goal
+      cancel: fib_server/cancel
+```
+
+When a client asks to cancel goals, the bridge:
+
+1. selects the goals as rcl does (by id, by stamp, or all), among those the
+   handler is still running and not already canceling. A cancel that arrives
+   just before the handler got the goal waits for it;
+2. answers the client with the goals it is canceling and publishes them as
+   `Canceling`;
+3. sends one `cancel` event per goal to the handler, with the goal's `goal_id`
+   in the metadata and no data.
+
+A request that cancels no goal is answered `ERROR_REJECTED` on DDS; on Zenoh it
+gets the specific code (`ERROR_UNKNOWN_GOAL_ID`, `ERROR_GOAL_TERMINATED`), as
+rcl gives. A handler can also get a `cancel` for a goal it has just finished;
+it can ignore it.
+
+The handler then ends the goal by sending `result` with
+`goal_status: "canceled"` (see [Goal Status](#goal-status)). It may also finish
+the goal normally instead: ROS2 lets a canceling goal end as succeeded or
+aborted. The example handler in `examples/ros2-bridge/yaml-bridge-action-server/`
+computes one step per tick and stops at the step it reached.
+
+**Without a `cancel` output, the bridge rejects cancel requests**, so clients
+get an answer instead of waiting: nothing could stop the goal.
 
 Goals that contain no data or cannot be forwarded to the handler are automatically aborted -- the bridge sends `Aborted` status back to the ROS2 client so it does not hang indefinitely.
 
@@ -468,6 +522,24 @@ nodes:
 | `keep_last` | `1` |
 | `keep_all` | `false` |
 
+These are the defaults for topics and for ordinary Zenoh service/action
+channels. Two exceptions apply: DDS service and action endpoints always use
+reliable delivery and default to `keep_last: 10` (see
+[Service and action QoS](#service-and-action-qos-dds-only)), and the action
+status channel is always reliable with `transient_local` durability on both
+transports (see [Action status channel](#action-status-channel)).
+
+### Domain ID
+
+The bridge reads `ROS_DOMAIN_ID` from the environment. The DDS transport accepts
+domains `0` to `232` only, because DDS derives its well-known ports from the
+domain id. Surrounding whitespace is ignored, and an unset or empty value
+selects domain `0`. A malformed value, or one above `232`, is an error: the
+bridge fails at startup with a message naming `ROS_DOMAIN_ID` instead of
+silently bridging on domain `0`. The Zenoh transport has no such limit: it
+preserves any non-negative domain id that fits in a platform-sized unsigned
+integer (`usize`), and falls back to `0` for values that do not.
+
 ### Per-Topic QoS Override
 
 In multi-topic mode, each topic can override the bridge-level QoS:
@@ -504,11 +576,45 @@ Neither topic sets `output:`/`input:`, so both use the topic-derived ids (`fast_
 |-------|-------------|
 | `reliable` | `true`, `false` |
 | `durability` | `"volatile"`, `"transient_local"` |
-| `liveliness` | `"automatic"`, `"manual_by_participant"`, `"manual_by_topic"` |
+| `liveliness` | `"automatic"`, `"manual_by_participant"`, `"manual_by_topic"`. On the DDS transport `manual_by_participant` is sent as `automatic` (ROS 2 has no equivalent kind) and a warning is logged. |
 | `keep_last` | `1` to `10000` |
 | `keep_all` | `true`, `false` (mutually exclusive intent with `keep_last`) |
 | `lease_duration` | Finite non-negative float (seconds) |
 | `max_blocking_time` | Finite non-negative float (seconds) |
+
+### Service and action QoS (DDS only)
+
+On the DDS transport, service and action endpoints do not use the configured
+topic QoS verbatim:
+
+- **Reliability is forced to reliable.** ROS 2 service and action endpoints
+  require reliable delivery, so a `reliable: false` config is ignored for these
+  channels.
+- **`keep_last` defaults to `10`** when the config does not set it. An explicit
+  `keep_last` or `keep_all` is still honoured.
+- **The action status channel is forced to `transient_local` durability**, on
+  both the client subscription and the server publisher, because ROS 2 action
+  clients subscribe to the status topic with transient-local durability.
+
+All other fields (`liveliness`, `lease_duration`, `max_blocking_time`) are
+passed through unchanged. The Zenoh transport is unaffected by this override:
+its ordinary service and action channels use the configured QoS as-is, apart
+from the status channel described below.
+
+### Action status channel
+
+The action status channel is special on both transports, because ROS 2 action
+clients subscribe to it with transient-local durability. It is always reliable
+and `transient_local`; the configured `reliable` and `durability` are ignored
+for this channel only. The history depth differs by transport: DDS uses the
+configured `keep_last` (default `10`), while Zenoh keeps the last `1` status
+sample.
+
+On DDS, the Python `create_action_server` and the generated C++ action
+servers always publish the status reliable, `transient_local`, keep-last `1`
+(rcl's default status QoS), whatever QoS they are given. The Python action
+client's status subscription keeps the given QoS: a volatile subscription
+matches any server's status writer.
 
 ---
 
@@ -586,14 +692,14 @@ fn read_response(data: &dyn arrow::array::Array) -> i64 {
 | Bounded sequence (`int32[<=10]`) | `List` (length validated) | `ListArray` |
 | Fixed-size array (`int32[3]`) | `FixedSizeList` | `FixedSizeListArray` |
 
-Example: reading a `ListArray` from Fibonacci feedback (`{partial_sequence: int32[]}`):
+Example: reading a `ListArray` from Fibonacci feedback (`{sequence: int32[]}`):
 
 ```rust
 use arrow::array::{Int32Array, ListArray, StructArray};
 
 let struct_array = data.as_any().downcast_ref::<StructArray>().unwrap();
 let list = struct_array
-    .column_by_name("partial_sequence")
+    .column_by_name("sequence")
     .unwrap()
     .as_any()
     .downcast_ref::<ListArray>()
@@ -878,7 +984,7 @@ Prerequisites: start the action server **before** the dataflow:
 ros2 run examples_rclcpp_action_server fibonacci_action_server
 ```
 
-The goal node sends `{order: int32}`, receives streamed `{partial_sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result.
+The goal node sends `{order: int32}`, receives streamed `{sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result.
 
 ### 7. Action Server: Expose an Dora Handler as ROS2 Action
 
@@ -904,7 +1010,7 @@ nodes:
       - result
 ```
 
-The handler receives `{order: int32}` goals with a `goal_id` in metadata, sends `{partial_sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result -- all with the same `goal_id` in metadata. External ROS2 clients can send goals:
+The handler receives `{order: int32}` goals with a `goal_id` in metadata, sends `{sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result -- all with the same `goal_id` in metadata. External ROS2 clients can send goals:
 ```bash
 ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10}"
 ```
@@ -1063,16 +1169,22 @@ Action differences from DDS:
   default values, as rclcpp does.
 - If no action server is matched, `request_result` produces an immediate
   error event on Zenoh. DDS silently drops the request.
-- The server holds up to three `get_result` requests per unfinished goal,
-  across all clients. It answers extra requests with an error. Once the
-  goal finishes, requests can fetch the stored result.
+- The server holds up to 16 `get_result` requests per unfinished goal,
+  across all clients. Once a goal's 16 slots are full, a new request
+  displaces an older one from a client that already has more than one
+  pending, and that displaced request immediately gets `Unknown` with
+  default values — the same reply `request_result` gets for a goal the
+  server doesn't know. A request is answered with an error only once every
+  slot is a different client's single request. Once the goal finishes,
+  requests can fetch the stored result.
 - A client's `request_result` returns an error while 64 earlier calls are
   still waiting for their goal or for their result event to be read.
 
 The public Rust `TypedActionServer` sizes its result service to at least 64
-pending requests, or `3 * max_goals + 16` if that is larger. The extra slots
-let it answer new requests while every unfinished goal has three waiters.
-A goal limit that overflows this calculation is rejected at declaration.
+pending requests, or `16 * max_goals + 16` if that is larger. The extra
+slots let it answer new requests while every unfinished goal has 16
+waiters. A goal limit that overflows this calculation is rejected at
+declaration.
 
 On both transports, a goal still running 300 s after it was accepted is
 aborted when the next goal comes in, even while it publishes feedback. On
@@ -1081,16 +1193,70 @@ DDS only the status stream shows `Aborted`.
 
 ### Discovery & RMW notes (native servers)
 
-- **A Dora-hosted *server* is not discoverable by a real `rcl`/`rclcpp`/`rclpy`
-  client for *actions*** ([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)):
-  the action examples pair a Dora server with a Dora client in one dataflow.
-  *Service* servers, by contrast, are discovered fine by a real `ros2` client.
+- **Dora-hosted servers interoperate with `rcl` clients in both directions.**
+  A real `rclcpp`/`rclpy` client (or the `ros2` CLI) discovers and calls Dora
+  service and action servers, and Dora clients call `rcl` servers, on both
+  Fast-DDS and CycloneDDS. CycloneDDS needs `ros2-client` 0.11 or later, which
+  fixed the decoding of Cyclone-mapped request and response bodies.
 - **RMW must match.** Service/action correlation differs between Fast-DDS
   (`Enhanced`) and Cyclone mappings; the bridge picks the mapping from
   `RMW_IMPLEMENTATION` (at codegen time for native, runtime for the YAML bridge).
-  A mismatch makes calls hang. Set `RMW_IMPLEMENTATION` consistently on both sides.
+  A mismatch makes calls hang. Set `RMW_IMPLEMENTATION` consistently on both sides;
+  on DDS the bridge warns when it sees a peer whose RMW does not fit (see below).
 - There is **no `wait_for_action_server`** in `ros2-client`; a client's first
   `send_goal` simply times out if no server is present.
+- **Hosts with several network interfaces.** dora advertises an address for every
+  IPv4 interface, including `docker0`, VPN and link-local ones. A ROS 2 node on
+  another host may pick one it cannot reach: its data then never arrives, while
+  dora's data still reaches it. Set `DORA_ROS2_DDS_INTERFACES` to the local IPv4
+  address (or comma-separated addresses) on the network your ROS 2 peers use, for
+  example `DORA_ROS2_DDS_INTERFACES=192.168.1.231`; dora then advertises only
+  those addresses and sends discovery multicast only on their interfaces. An
+  address this host does not have is an error when the context is created, and
+  one whose interface is down or cannot multicast gets a warning. The address
+  must stay assigned while dora runs. The peers have their own settings:
+  `<Interfaces>` in `CYCLONEDDS_URI` for CycloneDDS, an interface allowlist
+  profile for Fast-DDS.
+
+### DDS diagnostics
+
+On the DDS transport, the YAML and Python bridges print a `warning:` line on
+stderr (shown by default), once per finding, when they detect a misconfiguration
+that otherwise fails silently:
+
+- **QoS mismatch.** A ROS 2 endpoint on the same topic whose QoS can never match
+  dora's endpoint, with the policy and both values, for example
+  `QoS mismatch on /chatter: dora subscription and remote publisher 01.0f.… never match; reliability: the reader requests RELIABLE, the writer offers BEST_EFFORT`.
+- **RMW mapping.** Services or actions served by Fast-DDS or CycloneDDS peers
+  while dora frames them for the other mapping; the warning names the
+  `RMW_IMPLEMENTATION` value to set.
+- **Distro Gid width.** `ROS_DISTRO` names a distro whose `Gid` width differs from
+  the build (see [Distro constraint](#distro-constraint)); the warning names the
+  distro feature to add, or the newer one to drop.
+- **Several network interfaces.** `DORA_ROS2_DDS_INTERFACES` is unset, dora
+  advertises more than one non-loopback address, and a ROS 2 endpoint on another
+  host talks to one of dora's; the warning lists the addresses (see
+  [Discovery & RMW notes](#discovery--rmw-notes-native-servers)). Peers on the
+  same host reach dora over loopback, so a laptop with Docker or a VPN gets no
+  warning for a same-host dataflow; a container on a Docker bridge network
+  counts as another host. The warning says dora is exposed to the problem, not
+  that data is being lost: it also appears when the peer happens to pick a
+  reachable address.
+
+The checks read RustDDS's discovery data every 2 seconds and run for every DDS
+context; they do not change what is sent or matched. Each dora endpoint is
+checked while it exists: once a Python publisher, subscription, client or server
+is dropped, peers that appear later are no longer compared with it.
+
+### Interop testing
+
+`scripts/ros2-dds-interop.sh <humble|kilted>` runs the Python and YAML bridges
+against real `rclpy` peers over Fast-DDS and CycloneDDS, in both directions. It
+runs nightly as `ROS2 DDS Interop (Humble)` / `(Kilted)`. Cells that fail today
+are listed, with their issues, in `tests/ros2-dds/expected-failures.txt`; check
+there before relying on a cell of the capability table above on DDS. See
+`tests/ros2-dds/README.md` for the details. The Zenoh counterpart is
+`scripts/ros2-zenoh-interop.sh`.
 
 ---
 
@@ -1101,11 +1267,10 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 (notably: the Python action client/server *do* support cancel).
 
 - **Action server auto-accept**: All incoming goals are automatically accepted. The handler cannot reject goals before execution starts.
-- **No action cancel support (YAML bridge)**: The YAML action bridge does not handle ROS2 cancel requests (the Python native action API does).
+- **Action cancel needs a `cancel` output**: Without one, the YAML action server rejects ROS2 cancel requests (see [Canceling goals](#canceling-goals)).
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
-- **Native action server discovery (ros2-client#4)**: a Dora-hosted *action* server is not discoverable by a real `rcl`-based client; pair it with a Dora client. Service servers are unaffected.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
-- **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable.
+- **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable. On the DDS transport these channels additionally apply the override described in [Service and action QoS](#service-and-action-qos-dds-only); on the Zenoh transport ordinary service/action channels use the configured QoS as-is. On both transports the action status channel is always reliable and `transient_local` (see [Action status channel](#action-status-channel)).
 - **`AMENT_PREFIX_PATH` required**: The bridge fails at startup if no ROS2 message definitions are found.
 - **Max 64 topics**: Multi-topic mode supports at most 64 topics per bridge node.
 - **Max 8 concurrent action goals**: Additional goals receive `Aborted` status when the limit is reached.
@@ -1119,7 +1284,7 @@ This applies to **all** bridge surfaces (YAML and native code APIs).
 - **Humble is a floor, not a lock.** The workspace keeps `features = ["humble"]` on its `ros2-client` line, so `ros2-humble` is on by default and a `--no-default-features` build still resolves to Humble instead of `ros2-client`'s Galactic fallback. A newer distro enabled anywhere in the build wins over it; there is no way to force "exactly Humble".
 - **The `Gid` width is what changes.** Humble and Galactic use the **24-byte `Gid`**, Iron and newer the **16-byte** one, and that is the `rmw_dds_common` graph-discovery wire format. ROS 2 changed it between Humble and Iron, so graph *discovery* against an Iron-or-newer stack will not match a Humble build. Topic, service, and action **payloads are unaffected** -- those are ordinary CDR and interoperate across distros regardless.
 - **Feature unification can switch the distro from outside dora.** Cargo compiles one `ros2-client` per build with the union of every enabled feature. If any other crate in the dependency graph enables a newer distro, the bridge becomes that distro too, with nothing in dora to stop it. Depending on `ros2-client` with its default features does exactly that, because its default is `jazzy`. Match the whole build, not just the bridge's own features.
-- **Nothing warns at build time.** The only signal is `ros2-client`'s runtime check on the first `Context`: it logs an error when `ROS_DISTRO` is set and doesn't match the build, and a warning when it is unset. Check that startup log line.
+- **Nothing warns at build time.** At runtime, the bridge prints a warning on stderr when `ROS_DISTRO` names a distro whose `Gid` width differs from the build: ROS 2 graph tools such as `ros2 node list` will not show dora's nodes, while topics, services and actions keep working. `ros2-client` also logs its own check on the first `Context` (an error when `ROS_DISTRO` doesn't match the build, a warning when it is unset), but through the `log` crate, so it may not reach the output.
 
 ### Building for your ROS distro
 

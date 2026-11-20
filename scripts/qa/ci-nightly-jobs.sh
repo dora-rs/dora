@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # scripts/qa/ci-nightly-jobs.sh -- local driver for the GHA nightly jobs.
 #
-# The GHA nightly workflow (.github/workflows/nightly.yml) has 27 test jobs
+# The GHA nightly workflow (.github/workflows/nightly.yml) has 29 test jobs
 # (re-counted in #2999: the previous 23 counted neither hub-smoke nor the two
-# ros2-zenoh-* jobs, and multi-daemon-late-subscriber is new)
+# ros2-zenoh-* jobs, and multi-daemon-late-subscriber is new; the two
+# ros2-dds-* jobs were added for #4205)
 # (post-#1716, plus cluster-record-replay from #2013, kani-proofs, and
 # wheel-smoke, which has no local driver entry here -- it needs maturin and
 # two interpreters).
 # `cargo test -p dora-examples --test example-smoke` (run by qa-nightly's
 # example-smoke step)
 # covers 4 of them (smoke-suite + log-sinks + service-action + streaming).
-# This script covers 20 of the rest -- hub-smoke has
+# This script covers 22 of the rest -- hub-smoke has
 # no entry here, and one local cli-tests run covers both cli-tests halves -- with
 # platform-aware dispatch -- on macOS dev machines it runs the macOS subset,
 # on Linux it runs the Linux subset, etc. (#1716).
@@ -136,7 +137,7 @@ assert_clean_dataflow_run() {
 
 known_job() {
   case "$1" in
-    record-replay|cluster-smoke|cluster-e2e|cluster-record-replay|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|multi-daemon-late-subscriber|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge|ros2-zenoh-humble|ros2-zenoh-kilted|kani-proofs)
+    record-replay|cluster-smoke|cluster-e2e|cluster-record-replay|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|multi-daemon-late-subscriber|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge|ros2-zenoh-humble|ros2-zenoh-kilted|ros2-dds-humble|ros2-dds-kilted|kani-proofs)
       return 0
       ;;
     *)
@@ -172,6 +173,8 @@ Supported jobs:
   ros2-bridge
   ros2-zenoh-humble
   ros2-zenoh-kilted
+  ros2-dds-humble
+  ros2-dds-kilted
   kani-proofs
 EOF
 }
@@ -1422,6 +1425,23 @@ job_cpu_affinity() {
     return 1
   fi
   echo "OK: probe ran with expected affinity mask: $mask"
+
+  # Negative case: core 1023 does not exist on the runner. The kernel
+  # would drop it and run the probe on core 0 alone; the daemon must
+  # refuse to start the node instead.
+  cd examples/cpu-affinity-probe
+  out=$(dora run dataflow-missing-core.yml --stop-after 3s 2>&1 || true)
+  cd - > /dev/null
+  echo "$out"
+  if echo "$out" | grep -q 'AFFINITY_MASK:'; then
+    echo "ERROR: probe ran although cpu_affinity [0, 1023] cannot be applied"
+    return 1
+  fi
+  if ! echo "$out" | grep -qF 'cpu_affinity [0, 1023] of node probe could not be applied exactly'; then
+    echo "ERROR: expected the spawn error to name the node's cpu_affinity"
+    return 1
+  fi
+  echo "OK: probe with a missing core did not start"
 }
 
 # -----------------------------------------------------------------------------
@@ -2117,6 +2137,14 @@ job_ros2_zenoh_kilted() {
   timeout -k 30s 3600s scripts/ros2-zenoh-interop.sh kilted all
 }
 
+job_ros2_dds_humble() {
+  timeout -k 30s 5400s scripts/ros2-dds-interop.sh humble all all
+}
+
+job_ros2_dds_kilted() {
+  timeout -k 30s 5400s scripts/ros2-dds-interop.sh kilted all all
+}
+
 # -----------------------------------------------------------------------------
 # Dispatch
 # -----------------------------------------------------------------------------
@@ -2140,6 +2168,8 @@ run_job "cross-check"               job_cross_check
 run_job "ros2-bridge"               job_ros2_bridge
 run_job "ros2-zenoh-humble"        job_ros2_zenoh_humble
 run_job "ros2-zenoh-kilted"        job_ros2_zenoh_kilted
+run_job "ros2-dds-humble"          job_ros2_dds_humble
+run_job "ros2-dds-kilted"          job_ros2_dds_kilted
 run_job "kani-proofs"               job_kani_proofs
 
 echo

@@ -396,8 +396,15 @@ impl PoolState {
                 // A creation task for an earlier `Register` that has not
                 // built its mirror yet now skips it.
                 note_mirror_free(&self.mirror_generations, dataflow_id, &shared_memory_id).await;
-                self.tensor_pool
-                    .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id);
+                // Unlinks only a mirror this daemon recorded creating: on
+                // the origin, or for a pool that was never cross-machine
+                // here, the id's derived name may be a live local segment
+                // (#4241).
+                let released = release_cross_pool_entry(
+                    &self.tensor_pool,
+                    &dataflow_id.to_string(),
+                    &shared_memory_id,
+                );
                 // The replicated mirror descriptor goes away with the
                 // pool — through the notify path so receiver nodes on
                 // this machine learn via `drain_dropped` and release
@@ -423,15 +430,9 @@ impl PoolState {
                     .lock()
                     .await
                     .remove(&(dataflow_id, shared_memory_id.to_string()));
-                // Same machine-qualified id as `create_cross_pool_shmem`.
-                if !unlink_cross_pool_segment(
-                    svc.machine_id().unwrap_or_default().as_str(),
-                    &dataflow_id.to_string(),
-                    &shared_memory_id,
-                ) {
-                    return Ok(());
+                if released.is_some() {
+                    tracing::info!("memory pool: freed cross-machine pool {shared_memory_id}");
                 }
-                tracing::info!("memory pool: freed cross-machine pool {shared_memory_id}");
                 Ok(())
             }
         }
@@ -1085,19 +1086,19 @@ impl PoolState {
             }
             NodeRequest::Free { shared_memory_id } => {
                 // Drop the cross_pools entry and, when the pool was
-                // cross-machine, publish the targeted `PeerMessage::Free` and unlink
-                // this machine's mirror.
-                let peer = self
-                    .tensor_pool
-                    .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id)
-                    .map(|entry| entry.peer_machine);
-                if let Some(peer) = &peer {
-                    release_cross_pool(
+                // cross-machine, unlink the mirror this machine recorded
+                // (if it is the mirror side) and publish the targeted
+                // `PeerMessage::Free` to the pool's other machine.
+                if let Some(entry) = release_cross_pool_entry(
+                    &self.tensor_pool,
+                    &dataflow_id.to_string(),
+                    &shared_memory_id,
+                ) {
+                    publish_cross_pool_free(
                         &svc.zenoh_session(),
                         &svc.clock(),
                         &dataflow_id,
-                        svc.machine_id().unwrap_or_default().as_str(),
-                        peer,
+                        &entry.peer_machine,
                         &shared_memory_id,
                         self.shm_provider.as_deref(),
                     )
@@ -1108,8 +1109,8 @@ impl PoolState {
                 // resolves the segment). Remove it here — and let
                 // `free_tensor_pool` unlink the *actual* sender segment
                 // (the metadata's `shared_memory_name` is the real
-                // `name=`, which the derived-name unlink in
-                // `release_cross_pool` misses, leaving the /dev/shm
+                // `name=`, which the mirror-only unlink in
+                // `release_cross_pool_entry` leaves alone, leaving the /dev/shm
                 // object behind). Not-found (local pools, auto-named
                 // cross-machine pools) is fine — the table is only
                 // populated on the explicit-name path (何勇 review

@@ -87,10 +87,9 @@ prerequisites.
 Some examples have platform caveats (full detail in
 [`docs/ros2-bridge.md`](../../docs/ros2-bridge.md)):
 
-- A dora-hosted **action** server is not discoverable by a real
-  `rcl`/`rclcpp`/`rclpy` client ([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)),
-  so the action examples pair a dora server with a dora client in one dataflow.
-  **Service** servers are discovered fine by a real `ros2` client.
+- The `action-server` examples pair a dora server with a dora client in one
+  dataflow so they run without a ROS 2 peer. A real `rcl`/`rclcpp`/`rclpy`
+  client (or `ros2 action send_goal`) can call a dora-hosted action server too.
 - The deferred action `get_result` round-trip is flaky in upstream
   `ros2-client`/`rustdds` (it repeatedly hung the x86 nightly job and stalls on
   the macOS/arm64 dev harness). The Rust/C++ action examples are therefore

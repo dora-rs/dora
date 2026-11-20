@@ -1,6 +1,7 @@
 use crate::{
     CONTROL_EVENT_HEADROOM, DaemonNodeEvent, Event, FaultToleranceStats, GAVE_UP_RECOVERY_ROOM,
     NODE_EVENT_CHANNEL_CAPACITY,
+    event_types::ParamReplay,
     local_delivery::{DeferredDelivery, DrainSignal},
 };
 use dora_core::{
@@ -58,11 +59,76 @@ const BACKPRESSURE_STALL_LIMIT: Duration = Duration::from_secs(60);
 /// it, not because it hung, and the health check must not kill it for that.
 const BACKPRESSURE_STALL_TICK: Duration = Duration::from_secs(1);
 
+/// Milliseconds for the daemon's liveness bookkeeping (`last_activity`,
+/// `spawned_at`, `started_at_millis`) and the watchdogs that compare them.
+///
+/// Read from the daemon's [`LivenessClock`], so a wall-clock step (NTP on
+/// a board without an RTC) cannot make every node look silent or hide a
+/// hung one.
 pub fn current_millis() -> u64 {
+    LIVENESS_CLOCK
+        .get_or_init(|| LivenessClock::anchored_at(wall_clock_since_epoch()))
+        .now_millis()
+}
+
+static LIVENESS_CLOCK: std::sync::OnceLock<LivenessClock> = std::sync::OnceLock::new();
+
+fn wall_clock_since_epoch() -> Duration {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+}
+
+/// A millisecond clock anchored to a wall-clock reading once and then
+/// advanced by the monotonic clock.
+///
+/// Only differences between readings matter; the anchor just keeps a small
+/// stored value meaning "long ago". Readings are never `0`, the
+/// `spawned_at` "not running" sentinel. Suspended time is not counted, as
+/// for the daemon's tokio timers.
+struct LivenessClock {
+    anchor: std::time::Instant,
+    anchor_millis: u64,
+}
+
+impl LivenessClock {
+    fn anchored_at(wall_clock: Duration) -> Self {
+        Self {
+            anchor: std::time::Instant::now(),
+            anchor_millis: duration_millis(wall_clock),
+        }
+    }
+
+    fn now_millis(&self) -> u64 {
+        self.millis_at(std::time::Instant::now())
+    }
+
+    fn millis_at(&self, now: std::time::Instant) -> u64 {
+        self.anchor_millis
+            .saturating_add(duration_millis(now.saturating_duration_since(self.anchor)))
+            .max(1)
+    }
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// Node Zenoh listeners are advertised before the child binds them. Do not
+/// let our own IPC allocation steal one of those temporarily free ports (#4107).
+async fn avoid_reserved_listeners(
+    mut socket: TcpListener,
+    reserved_endpoints: &BTreeSet<String>,
+) -> std::io::Result<TcpListener> {
+    let mut rejected = Vec::new();
+    while reserved_endpoints.contains(&format!("tcp/{}", socket.local_addr()?)) {
+        // Hold rejected allocations until we have a usable one, otherwise the
+        // OS can keep handing back the same port. All are released on return
+        // (including errors), before the child needs its Zenoh listener.
+        rejected.push(socket);
+        socket = TcpListener::bind((LOCALHOST, 0)).await?;
+    }
+    Ok(socket)
 }
 
 /// `backpressure` names this node's outputs with at least one
@@ -78,6 +144,7 @@ pub async fn spawn_listener_loop(
     shutdown: tokio::sync::watch::Receiver<bool>,
     node_shutdown: tokio::sync::watch::Receiver<bool>,
     backpressure: Arc<BackpressureConfig>,
+    reserved_zenoh_endpoints: &BTreeSet<String>,
 ) -> eyre::Result<DaemonCommunication> {
     let socket = match TcpListener::bind((LOCALHOST, 0)).await {
         Ok(socket) => socket,
@@ -85,6 +152,9 @@ pub async fn spawn_listener_loop(
             return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"));
         }
     };
+    let socket = avoid_reserved_listeners(socket, reserved_zenoh_endpoints)
+        .await
+        .wrap_err("failed to allocate node TCP listener outside the Zenoh peering plan")?;
     let socket_addr = socket
         .local_addr()
         .wrap_err("failed to get local addr of socket")?;
@@ -180,6 +250,7 @@ struct Listener {
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     subscribed_events: Option<Receiver<Timestamped<NodeEvent>>>,
     pending_counter: Option<Arc<AtomicU64>>,
+    param_replay: ParamReplay,
     queue: VecDeque<SizedEvent>,
     /// Sum of the exact wire lengths over `queue`, kept incrementally.
     queued_bytes: usize,
@@ -253,6 +324,7 @@ impl Listener {
                             generation: connection_generation,
                             daemon_tx,
                             subscribed_events: None,
+                            param_replay: Default::default(),
                             pending_counter: None,
                             queue: VecDeque::new(),
                             queued_bytes: 0,
@@ -340,7 +412,7 @@ impl Listener {
     }
 
     async fn handle_events(&mut self) -> eyre::Result<()> {
-        while !self.queue_saturated() {
+        while self.can_prefetch_live_events() {
             let Some(events) = &mut self.subscribed_events else {
                 break;
             };
@@ -354,6 +426,10 @@ impl Listener {
             self.enqueue(event);
         }
         Ok(())
+    }
+
+    fn can_prefetch_live_events(&self) -> bool {
+        self.param_replay.is_empty() && !self.queue_saturated()
     }
 
     fn queue_saturated(&self) -> bool {
@@ -417,6 +493,28 @@ impl Listener {
     /// it would fail, leaving the node blocked on a reply that never comes.
     async fn wait_for_next_events(&mut self) -> DaemonReply {
         loop {
+            // Stage the snapshot in bounded batches, ahead of everything on
+            // the live channel (including AllInputsClosed at subscription).
+            while !self.queue_saturated() {
+                let Some(param) = self.param_replay.pop_front() else {
+                    break;
+                };
+                let (key, value) = param.inner;
+                self.enqueue(Timestamped {
+                    inner: NodeEvent::ParamUpdate {
+                        key,
+                        value_json: value.to_vec(),
+                    },
+                    timestamp: param.timestamp,
+                });
+            }
+            let batch = self.take_queued_events_within_budget();
+            if !batch.is_empty() {
+                return DaemonReply::NextEvents(batch);
+            }
+            if !self.param_replay.is_empty() {
+                continue; // the batch held only events too large to frame
+            }
             let Some(events) = self.subscribed_events.as_mut() else {
                 return DaemonReply::Result(Err(
                     "Ignoring event request because no subscribe message was sent yet".into(),
@@ -430,10 +528,6 @@ impl Listener {
             }
             self.note_drained();
             self.enqueue(event);
-            let batch = self.take_queued_events_within_budget();
-            if !batch.is_empty() {
-                return DaemonReply::NextEvents(batch);
-            }
         }
     }
 
@@ -529,11 +623,13 @@ impl Listener {
             DaemonRequest::Subscribe => {
                 let (tx, rx) = mpsc::channel(crate::NODE_EVENT_CHANNEL_CAPACITY);
                 let pending_counter = Arc::new(AtomicU64::new(0));
+                let (param_replay, replay) = oneshot::channel();
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
                     DaemonNodeEvent::Subscribe {
                         event_sender: tx,
                         pending_counter: pending_counter.clone(),
+                        param_replay,
                         drained: self.drained.clone(),
                         reply_sender,
                     },
@@ -541,19 +637,12 @@ impl Listener {
                     connection,
                 )
                 .await?;
+                self.param_replay = replay.await.unwrap_or_default();
                 self.subscribed_events = Some(rx);
                 self.pending_counter = Some(pending_counter);
             }
             DaemonRequest::NextEvent => {
-                // Take queued events first, bounded by encoded size so the
-                // reply fits one frame (see `NEXT_EVENTS_REPLY_BUDGET`).
-                let queued_events = self.take_queued_events_within_budget();
-                let reply = if queued_events.is_empty() {
-                    self.wait_for_next_events().await
-                } else {
-                    DaemonReply::NextEvents(queued_events)
-                };
-
+                let reply = self.wait_for_next_events().await;
                 self.send_reply(reply, connection)
                     .await
                     .wrap_err("failed to send NextEvent reply")?;
@@ -777,7 +866,7 @@ impl Listener {
             // A saturated queue takes nothing more from the channel. The
             // caller recreates this future after every request, so polling
             // resumes as soon as a `NextEvent` reply has made room.
-            if queue_saturated(self.queue.len(), self.queued_bytes) {
+            if !self.can_prefetch_live_events() {
                 return Poll::Pending;
             }
             if let Some(events) = &mut self.subscribed_events {
@@ -910,6 +999,8 @@ trait Connection {
 
 #[cfg(test)]
 mod tests {
+    mod param_replay;
+
     use super::*;
     use crate::test_tracing::TextCapture;
     use aligned_vec::AVec;
@@ -921,6 +1012,34 @@ mod tests {
     use uuid::Uuid;
 
     const MIB: usize = 1024 * 1024;
+
+    #[tokio::test]
+    async fn node_listener_does_not_take_a_planned_zenoh_endpoint() {
+        // Force the allocation race: the OS handed the control listener a
+        // port that is advertised for Zenoh but not yet bound by its node.
+        let socket = TcpListener::bind((LOCALHOST, 0)).await.unwrap();
+        let reserved_addr = socket.local_addr().unwrap();
+        let reserved = BTreeSet::from([format!("tcp/{reserved_addr}")]);
+
+        let listener = avoid_reserved_listeners(socket, &reserved).await.unwrap();
+        assert_ne!(
+            listener.local_addr().unwrap(),
+            reserved_addr,
+            "node IPC must not claim a port advertised for Zenoh"
+        );
+        // The producer must still be able to bind its advertised endpoint.
+        let _zenoh_listener = TcpListener::bind(reserved_addr).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn node_listener_keeps_an_unreserved_endpoint() {
+        let socket = TcpListener::bind((LOCALHOST, 0)).await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        let listener = avoid_reserved_listeners(socket, &BTreeSet::new())
+            .await
+            .unwrap();
+        assert_eq!(listener.local_addr().unwrap(), addr);
+    }
 
     /// The frame `TcpConnection::send_reply` would write for `batch`.
     fn encoded_reply_len(batch: Vec<Timestamped<NodeEvent>>) -> usize {
@@ -957,6 +1076,7 @@ mod tests {
             daemon_tx,
             subscribed_events: Some(rx),
             pending_counter: None,
+            param_replay: Default::default(),
             queue: VecDeque::new(),
             queued_bytes: 0,
             clock: Arc::new(uhlc::HLC::default()),
@@ -1616,5 +1736,58 @@ mod tests {
             "the payload must not be logged ({} bytes)",
             line.len()
         );
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+
+    #[test]
+    fn liveness_clock_advances_with_the_monotonic_clock() {
+        let clock = LivenessClock::anchored_at(Duration::from_millis(1_000));
+        let anchor = clock.anchor;
+        assert_eq!(clock.millis_at(anchor), 1_000);
+        assert_eq!(clock.millis_at(anchor + Duration::from_secs(30)), 31_000);
+        // A reading before the anchor (cannot happen for a monotonic clock,
+        // but must not underflow) reads as the anchor itself.
+        let later = LivenessClock {
+            anchor: anchor + Duration::from_secs(30),
+            anchor_millis: 1_000,
+        };
+        assert_eq!(later.millis_at(anchor), 1_000);
+        // Never the `spawned_at` "not running" sentinel.
+        assert_eq!(
+            LivenessClock::anchored_at(Duration::ZERO).millis_at(anchor),
+            1
+        );
+    }
+
+    /// After anchoring, readings follow elapsed time and ignore the wall
+    /// clock. Anchoring at a "stale" wall clock (1970 plus 1000 s, as on a
+    /// board without an RTC before NTP sync) and reading it now must not
+    /// jump to today's date, which is the step that used to make every
+    /// connected node look silent to the health check.
+    #[test]
+    fn liveness_clock_ignores_a_wall_clock_step_after_anchoring() {
+        let stale = Duration::from_secs(1_000);
+        let clock = LivenessClock::anchored_at(stale);
+        std::thread::sleep(Duration::from_millis(20));
+        let elapsed = clock.now_millis() - duration_millis(stale);
+        assert!(
+            (20..60_000).contains(&elapsed),
+            "reading moved by {elapsed} ms over a 20 ms sleep"
+        );
+    }
+
+    /// `current_millis()` must read the shared [`LivenessClock`]; a body
+    /// that reads the wall clock again would leave it uninitialised.
+    #[test]
+    fn current_millis_reads_the_liveness_clock() {
+        let reading = current_millis();
+        let clock = LIVENESS_CLOCK
+            .get()
+            .expect("current_millis initialises the liveness clock");
+        assert!(clock.anchor_millis <= reading && reading <= clock.now_millis());
     }
 }

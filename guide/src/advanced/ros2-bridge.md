@@ -98,14 +98,17 @@ Both surfaces preserve DDS as their default. Selecting native Zenoh uses its
 own graph and endpoint implementations. "Client" = a Dora node calling into
 ROS2 (dora→ROS2); "server" = a Dora node serving ROS2 clients (ROS2→dora).
 
-**Capability × surface (all supported):**
+**Capability × surface (all supported; footnotes mark known DDS interop bugs):**
 
 | | topic pub/sub | service client | service server | action client | action server | parameters |
 |---|---|---|---|---|---|---|
 | **YAML bridge** | ✅ | ✅ | ✅ | ✅ | ✅ | (node-hosted) |
 | **Rust** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
 | **C++** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
-| **Python** (pyo3) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Python** (pyo3) | ✅ | ✅ | ✅ | ✅¹ | ✅ | ✅ |
+
+¹ On DDS, the first goal can be lost while discovery is still running
+([#4213](https://github.com/dora-rs/dora/issues/4213)).
 
 Runnable examples for every cell live under
 [`examples/ros2-bridge/`](https://github.com/dora-rs/dora/tree/main/examples/ros2-bridge)
@@ -437,6 +440,57 @@ Event::Input { id, metadata, data } => match id.as_str() {
 5. Handler sends `result` (once) with same `goal_id`; bridge returns it to the ROS2 client
 6. Result send times out after 5 minutes if the client never requests it
 
+A ROS2 client may cancel the goal at any point before step 5 (see
+[Canceling goals](#canceling-goals)).
+
+### Canceling goals
+
+To let ROS2 clients cancel goals, declare a `cancel` output on the bridge and
+connect it to the handler:
+
+```yaml
+  - id: fib_server
+    ros2:
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
+      role: server
+    inputs:
+      feedback: handler/feedback
+      result: handler/result
+    outputs:
+      - goal
+      - cancel
+
+  - id: handler
+    inputs:
+      goal: fib_server/goal
+      cancel: fib_server/cancel
+```
+
+When a client asks to cancel goals, the bridge:
+
+1. selects the goals as rcl does (by id, by stamp, or all), among those the
+   handler is still running and not already canceling. A cancel that arrives
+   just before the handler got the goal waits for it;
+2. answers the client with the goals it is canceling and publishes them as
+   `Canceling`;
+3. sends one `cancel` event per goal to the handler, with the goal's `goal_id`
+   in the metadata and no data.
+
+A request that cancels no goal is answered `ERROR_REJECTED` on DDS; on Zenoh it
+gets the specific code (`ERROR_UNKNOWN_GOAL_ID`, `ERROR_GOAL_TERMINATED`), as
+rcl gives. A handler can also get a `cancel` for a goal it has just finished;
+it can ignore it.
+
+The handler then ends the goal by sending `result` with
+`goal_status: "canceled"` (see [Goal Status](#goal-status)). It may also finish
+the goal normally instead: ROS2 lets a canceling goal end as succeeded or
+aborted. The example handler in `examples/ros2-bridge/yaml-bridge-action-server/`
+computes one step per tick and stops at the step it reached.
+
+**Without a `cancel` output, the bridge rejects cancel requests**, so clients
+get an answer instead of waiting: nothing could stop the goal.
+
 Goals that contain no data or cannot be forwarded to the handler are automatically aborted -- the bridge sends `Aborted` status back to the ROS2 client so it does not hang indefinitely.
 
 ### Goal Status
@@ -577,7 +631,7 @@ Neither topic sets `output:`/`input:`, so both use the topic-derived ids (`fast_
 |-------|-------------|
 | `reliable` | `true`, `false` |
 | `durability` | `"volatile"`, `"transient_local"` |
-| `liveliness` | `"automatic"`, `"manual_by_participant"`, `"manual_by_topic"` |
+| `liveliness` | `"automatic"`, `"manual_by_participant"`, `"manual_by_topic"`. On the DDS transport `manual_by_participant` is sent as `automatic` (ROS 2 has no equivalent kind) and a warning is logged. |
 | `keep_last` | `1` to `10000` |
 | `keep_all` | `true`, `false` (mutually exclusive intent with `keep_last`) |
 | `lease_duration` | Finite non-negative float (seconds) |
@@ -1136,16 +1190,22 @@ Action differences from DDS:
   default values, as rclcpp does.
 - If no action server is matched, `request_result` produces an immediate
   error event on Zenoh. DDS silently drops the request.
-- The server holds up to three `get_result` requests per unfinished goal,
-  across all clients. It answers extra requests with an error. Once the
-  goal finishes, requests can fetch the stored result.
+- The server holds up to 16 `get_result` requests per unfinished goal,
+  across all clients. Once a goal's 16 slots are full, a new request
+  displaces an older one from a client that already has more than one
+  pending, and that displaced request immediately gets `Unknown` with
+  default values — the same reply `request_result` gets for a goal the
+  server doesn't know. A request is answered with an error only once every
+  slot is a different client's single request. Once the goal finishes,
+  requests can fetch the stored result.
 - A client's `request_result` returns an error while 64 earlier calls are
   still waiting for their goal or for their result event to be read.
 
 The public Rust `TypedActionServer` sizes its result service to at least 64
-pending requests, or `3 * max_goals + 16` if that is larger. The extra slots
-let it answer new requests while every unfinished goal has three waiters.
-A goal limit that overflows this calculation is rejected at declaration.
+pending requests, or `16 * max_goals + 16` if that is larger. The extra
+slots let it answer new requests while every unfinished goal has 16
+waiters. A goal limit that overflows this calculation is rejected at
+declaration.
 
 On both transports, a goal still running 300 s after it was accepted is
 aborted when the next goal comes in, even while it publishes feedback. On
@@ -1154,16 +1214,27 @@ DDS only the status stream shows `Aborted`.
 
 ### Discovery & RMW notes (native servers)
 
-- **A Dora-hosted *server* is not discoverable by a real `rcl`/`rclcpp`/`rclpy`
-  client for *actions*** ([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)):
-  the action examples pair a Dora server with a Dora client in one dataflow.
-  *Service* servers, by contrast, are discovered fine by a real `ros2` client.
+- **Dora-hosted servers interoperate with `rcl` clients in both directions.**
+  A real `rclcpp`/`rclpy` client (or the `ros2` CLI) discovers and calls Dora
+  service and action servers, and Dora clients call `rcl` servers, on both
+  Fast-DDS and CycloneDDS. CycloneDDS needs `ros2-client` 0.11 or later, which
+  fixed the decoding of Cyclone-mapped request and response bodies.
 - **RMW must match.** Service/action correlation differs between Fast-DDS
   (`Enhanced`) and Cyclone mappings; the bridge picks the mapping from
   `RMW_IMPLEMENTATION` (at codegen time for native, runtime for the YAML bridge).
   A mismatch makes calls hang. Set `RMW_IMPLEMENTATION` consistently on both sides.
 - There is **no `wait_for_action_server`** in `ros2-client`; a client's first
   `send_goal` simply times out if no server is present.
+
+### Interop testing
+
+`scripts/ros2-dds-interop.sh <humble|kilted>` runs the Python and YAML bridges
+against real `rclpy` peers over Fast-DDS and CycloneDDS, in both directions. It
+runs nightly as `ROS2 DDS Interop (Humble)` / `(Kilted)`. Cells that fail today
+are listed, with their issues, in `tests/ros2-dds/expected-failures.txt`; check
+there before relying on a cell of the capability table above on DDS. See
+`tests/ros2-dds/README.md` for the details. The Zenoh counterpart is
+`scripts/ros2-zenoh-interop.sh`.
 
 ---
 
@@ -1174,9 +1245,8 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 (notably: the Python action client/server *do* support cancel).
 
 - **Action server auto-accept**: All incoming goals are automatically accepted. The handler cannot reject goals before execution starts.
-- **No action cancel support (YAML bridge)**: The YAML action bridge does not handle ROS2 cancel requests (the Python native action API does).
+- **Action cancel needs a `cancel` output**: Without one, the YAML action server rejects ROS2 cancel requests (see [Canceling goals](#canceling-goals)).
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
-- **Native action server discovery (ros2-client#4)**: a Dora-hosted *action* server is not discoverable by a real `rcl`-based client; pair it with a Dora client. Service servers are unaffected.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
 - **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable.
 - **`AMENT_PREFIX_PATH` required**: The bridge fails at startup if no ROS2 message definitions are found.

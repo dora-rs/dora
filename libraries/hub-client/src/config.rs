@@ -196,8 +196,23 @@ impl ResolvedConfig {
     }
 
     /// The index a namespace resolves against (spec §7.3).
+    ///
+    /// Bindings are lowercase (enforced when the config loads), and the
+    /// namespace is matched ignoring ASCII case. [`PackageRef::parse`]
+    /// already lowercases it, but not every caller parses one (`hub outdated`
+    /// builds its reference from the lockfile), and an `ACME` that missed the
+    /// `acme` binding would resolve against the official index — where, on a
+    /// case-insensitive filesystem (macOS, Windows), the catalog path
+    /// `ACME/x` opens the public `acme/x` entry.
+    ///
+    /// [`PackageRef::parse`]: crate::reference::PackageRef::parse
     pub fn index_for_namespace(&self, namespace: &str) -> &IndexConfig {
-        match self.bindings.get(namespace) {
+        let namespace = if namespace.bytes().any(|b| b.is_ascii_uppercase()) {
+            std::borrow::Cow::Owned(namespace.to_ascii_lowercase())
+        } else {
+            std::borrow::Cow::Borrowed(namespace)
+        };
+        match self.bindings.get(namespace.as_ref()) {
             Some(&idx) => &self.indexes[idx],
             None => &self.indexes[self.default_index],
         }
@@ -262,7 +277,7 @@ pub(crate) fn validate_index_entry(index: &IndexConfig) -> eyre::Result<()> {
                 .collect::<String>()
         );
     }
-    // bindings match references exactly, and real namespaces are lowercase:
+    // real namespaces are lowercase, and references are matched lowercased:
     // a binding that can never match (`Acme`, `acme `) would silently leave
     // its namespace resolving against the official index
     for namespace in &index.namespaces {
@@ -433,6 +448,20 @@ namespaces = ["test"]
         assert_eq!(resolved.index_for_namespace("unbound").alias, "official");
     }
 
+    /// A namespace spelled in another case must still resolve against its
+    /// binding: falling through to the official index would let a
+    /// case-insensitive filesystem serve the public `acme/...` entry for a
+    /// namespace the user bound to a private index.
+    #[test]
+    fn a_binding_matches_the_namespace_in_any_case() {
+        let resolved = config(ACME).unwrap();
+        for namespace in ["ACME", "Acme", "aCmE"] {
+            assert_eq!(resolved.index_for_namespace(namespace).alias, "acme");
+        }
+        assert_eq!(resolved.index_for_namespace("TEST").alias, "fixtures");
+        assert_eq!(resolved.index_for_namespace("UNBOUND").alias, "official");
+    }
+
     #[test]
     fn official_alias_override_is_case_insensitive() {
         // `Official` overrides the built-in entry like `official` does
@@ -488,8 +517,8 @@ namespaces = ["dora-rs"]
         assert!(format!("{err}").contains("official namespace"), "{err}");
     }
 
-    /// Bindings match `PackageRef` namespaces exactly, and real namespaces
-    /// are lowercase. A binding that can never match (`Acme`, `acme `) would
+    /// Bindings match lowercased `PackageRef` namespaces, and real
+    /// namespaces are lowercase. A binding that can never match (`Acme`, `acme `) would
     /// silently leave `acme/...` resolving against the official index — the
     /// dependency-confusion fallback bindings exist to rule out.
     #[test]

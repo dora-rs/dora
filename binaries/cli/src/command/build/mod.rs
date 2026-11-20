@@ -410,6 +410,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
     let resolved_nodes = dataflow_descriptor
         .resolve_aliases_and_set_defaults()
         .context("failed to resolve nodes")?;
+    super::warn_unsupported_distribution(&dataflow_descriptor);
     // Compute the session-level build-inputs fingerprint up front, while we
     // still hold a borrow of `resolved_nodes` (Pass 2 below consumes it).
     // This is what `dora start` / `dora run` / `dora daemon --run-dataflow`

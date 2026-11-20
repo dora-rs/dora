@@ -29,6 +29,12 @@ pub(crate) const MIN_METRICS_WINDOW_SECS: f64 = 0.1;
 pub(crate) struct NodeSnapshot {
     node_id: NodeId,
     pid: Option<Arc<AtomicU32>>,
+    /// The node's `RunningNode::spawned_at`: when its current process was
+    /// spawned (millis since epoch), `0` while it is in restart backoff. The
+    /// restart loop leaves `pid` at the exited process's value until a
+    /// successor spawns, so this is what tells a live incarnation from a
+    /// stale PID (dora-rs/dora#4196).
+    spawned_at: Arc<AtomicU64>,
     restart_count: Arc<AtomicU32>,
     restarts_disabled: bool,
     broken_inputs: Vec<String>,
@@ -172,7 +178,7 @@ fn metrics_refresh_kind() -> sysinfo::ProcessRefreshKind {
 }
 
 /// Parent -> children edges for every process in `sys`.
-fn child_process_map(sys: &sysinfo::System) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
+pub(crate) fn child_process_map(sys: &sysinfo::System) -> HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> {
     parent_edges(
         sys.processes()
             .iter()
@@ -241,7 +247,7 @@ fn aggregate_process_tree(
 ///
 /// The edges can contain a cycle (see [`parent_edges`]), so the walk keeps a
 /// visited set; without it a cycle looped forever while growing the stack.
-fn descendants(
+pub(crate) fn descendants(
     children_map: &HashMap<sysinfo::Pid, Vec<sysinfo::Pid>>,
     root: sysinfo::Pid,
 ) -> Vec<sysinfo::Pid> {
@@ -256,6 +262,60 @@ fn descendants(
             }
         }
     }
+    found
+}
+
+/// Every descendant of an exited `root` process, bounded by the leader's recorded start time.
+///
+/// On Windows, child processes retain their parent PID even after the parent exits,
+/// and the OS does not re-parent them. If an unrelated process originally had `root`
+/// as its PID before this node was spawned, that stale child still lists `root` as
+/// its parent.
+///
+/// To filter out stale children, direct children of `root` must have started at or
+/// after `root_start_time` (unless start time is 0/unknown), and must never include
+/// `own_pid`. Descendants below direct children are already protected by [`parent_edges`]
+/// because their parents are still alive in `processes`.
+#[cfg_attr(unix, allow(dead_code))]
+pub(crate) fn bounded_descendants_for_exited_root(
+    processes: impl IntoIterator<Item = (sysinfo::Pid, Option<sysinfo::Pid>, u64)>,
+    root: sysinfo::Pid,
+    root_start_time: u64,
+    own_pid: sysinfo::Pid,
+) -> Vec<sysinfo::Pid> {
+    let processes: Vec<_> = processes.into_iter().collect();
+    let start_times: HashMap<_, _> = processes.iter().map(|&(pid, _, t)| (pid, t)).collect();
+    let children_map = parent_edges(processes);
+
+    let mut visited = HashSet::from([root, own_pid]);
+    let mut found = Vec::new();
+    let mut stack = Vec::new();
+
+    // Direct children of `root` must start at or after `root_start_time` and not be `own_pid`.
+    for &child in children_map.get(&root).into_iter().flatten() {
+        if child == own_pid {
+            continue;
+        }
+        let child_start = start_times.get(&child).copied().unwrap_or(0);
+        if child_start != 0 && root_start_time != 0 && child_start < root_start_time {
+            continue;
+        }
+        if visited.insert(child) {
+            found.push(child);
+            stack.push(child);
+        }
+    }
+
+    // Traverse deeper descendants (their edges were already checked by parent_edges).
+    while let Some(parent) = stack.pop() {
+        for &child in children_map.get(&parent).into_iter().flatten() {
+            if visited.insert(child) {
+                found.push(child);
+                stack.push(child);
+            }
+        }
+    }
+
     found
 }
 
@@ -350,6 +410,21 @@ pub(crate) async fn collect_and_send_metrics_bg(
                 if let Some(pid_arc) = node.pid.as_ref() {
                     let pid = pid_arc.load(atomic::Ordering::Acquire);
                     let sys_pid = Pid::from_u32(pid);
+                    // `pid` keeps the exited process's value while the node
+                    // is in restart backoff or after a failed respawn, and
+                    // the OS may have recycled it into an unrelated process.
+                    // `spawned_at` is `0` exactly then (reset in
+                    // `restart_loop`, set only after a successful spawn), so
+                    // leave the node to the second pass (dora-rs/dora#4196).
+                    //
+                    // This deliberately does not compare the process's start
+                    // time against `spawned_at`: sysinfo derives start times
+                    // from a boot time read once per `System`, so after a
+                    // wall-clock step (NTP on a board without an RTC) every
+                    // live node would look recycled.
+                    if pid == 0 || node.spawned_at.load(atomic::Ordering::Acquire) == 0 {
+                        continue;
+                    }
                     if let Some((cpu_usage, memory_bytes, disk)) =
                         aggregate_process_tree(sys, &children_map, &previous_processes, sys_pid)
                     {
@@ -390,7 +465,9 @@ pub(crate) async fn collect_and_send_metrics_bg(
                 let restart_count = node.restart_count.load(atomic::Ordering::Acquire);
                 let status = if node.restarts_disabled {
                     dora_message::daemon_to_coordinator::NodeStatus::Failed
-                } else if restart_count > 0 {
+                } else if restart_count > 0
+                    || (node.pid.is_some() && node.spawned_at.load(atomic::Ordering::Acquire) == 0)
+                {
                     dora_message::daemon_to_coordinator::NodeStatus::Restarting
                 } else {
                     continue;
@@ -493,6 +570,7 @@ impl Daemon {
                     .map(|(nid, rn)| NodeSnapshot {
                         node_id: nid.clone(),
                         pid: rn.pid.clone(),
+                        spawned_at: rn.spawned_at.clone(),
                         restart_count: rn.restart_count.clone(),
                         restarts_disabled: rn.restarts_disabled(),
                         broken_inputs: df
@@ -621,6 +699,8 @@ mod disk_rate_tests {
                 nodes: vec![NodeSnapshot {
                     node_id: NodeId::from("node".to_string()),
                     pid: Some(Arc::new(AtomicU32::new(std::process::id()))),
+                    // Non-zero: the node has a live incarnation.
+                    spawned_at: Arc::new(AtomicU64::new(1)),
                     restart_count: Arc::default(),
                     restarts_disabled: false,
                     broken_inputs: Vec::new(),
@@ -795,6 +875,40 @@ mod disk_rate_tests {
         // Having now been recorded, the *next* refresh's delta is a real one.
         assert!(has_disk_baseline(&snapshot, pid, start_time));
     }
+
+    #[test]
+    fn bounded_descendants_drops_stale_parent_links() {
+        let root = sysinfo::Pid::from_u32(100);
+        let daemon = sysinfo::Pid::from_u32(1);
+        let root_start = 1000;
+
+        let processes = [
+            // Stale orphan that started before root existed (e.g. daemon launched by old dora up)
+            (daemon, Some(root), 500),
+            // Child of the stale orphan
+            (sysinfo::Pid::from_u32(2), Some(daemon), 550),
+            // Real direct child of root
+            (sysinfo::Pid::from_u32(200), Some(root), 1005),
+            // Grandchild through real child
+            (
+                sysinfo::Pid::from_u32(201),
+                Some(sysinfo::Pid::from_u32(200)),
+                1010,
+            ),
+            // Another stale orphan directly naming root
+            (sysinfo::Pid::from_u32(300), Some(root), 800),
+        ];
+
+        let found = bounded_descendants_for_exited_root(processes, root, root_start, daemon);
+        let mut found_pids: Vec<u32> = found.into_iter().map(|p| p.as_u32()).collect();
+        found_pids.sort_unstable();
+
+        assert_eq!(
+            found_pids,
+            vec![200, 201],
+            "must only return descendants that started at or after root and never own_pid"
+        );
+    }
 }
 
 /// Regression tests for #3546: on Linux, sysinfo reports every thread of a
@@ -963,6 +1077,180 @@ mod process_tree_tests {
         assert_eq!(
             memory_bytes, own_memory,
             "a single-threaded node must be counted exactly once"
+        );
+    }
+}
+
+#[cfg(test)]
+mod stale_pid_tests {
+    use super::*;
+    use dora_message::daemon_to_coordinator::{NodeMetrics, NodeStatus};
+
+    /// Run one metrics collection for a single node whose `pid` is the test
+    /// process itself and return what it reported for that node.
+    async fn sample_own_process(spawned_at: u64, restart_count: u32) -> NodeMetrics {
+        let state = Arc::new(tokio::sync::Mutex::new(MetricsState::default()));
+        let (sender, mut sent) = coordinator::CoordinatorSender::for_test();
+        let node_id = NodeId::from("node".to_string());
+        let snapshot = vec![DataflowMetricsSnapshot {
+            dataflow_id: DataflowId::new_v4(),
+            nodes: vec![NodeSnapshot {
+                node_id: node_id.clone(),
+                pid: Some(Arc::new(AtomicU32::new(std::process::id()))),
+                spawned_at: Arc::new(AtomicU64::new(spawned_at)),
+                restart_count: Arc::new(AtomicU32::new(restart_count)),
+                restarts_disabled: false,
+                broken_inputs: Vec::new(),
+                pending_messages: 0,
+            }],
+            net_bytes_sent: Arc::default(),
+            net_bytes_received: Arc::default(),
+            net_messages_sent: Arc::default(),
+            net_messages_received: Arc::default(),
+            net_publish_failures: Arc::default(),
+        }];
+
+        collect_and_send_metrics_bg(
+            snapshot,
+            state,
+            sender,
+            DaemonId::new(None),
+            Arc::new(uhlc::HLC::default()),
+        )
+        .await
+        .unwrap();
+
+        let msg = sent.recv().await.expect("metrics for the dataflow");
+        let envelope: serde_json::Value = serde_json::from_str(&msg).unwrap();
+        let msg: Timestamped<CoordinatorRequest> =
+            serde_json::from_value(envelope["params"].clone()).unwrap();
+        let CoordinatorRequest::Event {
+            event: DaemonEvent::NodeMetrics { mut metrics, .. },
+            ..
+        } = msg.inner
+        else {
+            panic!("expected a NodeMetrics event");
+        };
+        metrics.remove(&node_id).expect("metrics for the node")
+    }
+
+    /// dora-rs/dora#4196: a node in restart backoff whose stale PID now names
+    /// a live, unrelated process (here: the test process itself) must be
+    /// reported as `Restarting`, not as that process `Running`.
+    ///
+    /// This holds both on the first crash (`restart_count == 0`, during backoff
+    /// prior to attempt 1) and on subsequent restart attempts (`restart_count > 0`).
+    #[tokio::test]
+    async fn a_stale_pid_in_backoff_reports_restarting() {
+        let initial_crash = sample_own_process(0, 0).await;
+        assert_eq!(initial_crash.status, NodeStatus::Restarting);
+        assert_eq!(
+            initial_crash.pid, 0,
+            "the stale PID must not be reported on initial crash"
+        );
+
+        let subsequent_crash = sample_own_process(0, 1).await;
+        assert_eq!(subsequent_crash.status, NodeStatus::Restarting);
+        assert_eq!(
+            subsequent_crash.pid, 0,
+            "the stale PID must not be reported on subsequent crash"
+        );
+    }
+
+    /// A live node must stay `Running` even when its process's start time is
+    /// far older than `spawned_at`, as after a forward wall-clock step on a
+    /// board without an RTC: sysinfo's start times keep the stale boot time.
+    #[tokio::test]
+    async fn a_live_node_after_a_clock_step_reports_running() {
+        let an_hour_ahead = crate::node_communication::current_millis() + 3_600_000;
+        let node = sample_own_process(an_hour_ahead, 1).await;
+        assert_eq!(node.status, NodeStatus::Running);
+        assert_eq!(node.pid, std::process::id());
+    }
+
+    /// Dynamic nodes have no process spawned by the daemon (`pid: None`) and
+    /// must not be falsely reported as `Restarting`.
+    #[tokio::test]
+    async fn a_dynamic_node_without_pid_is_not_reported_as_restarting() {
+        let state = Arc::new(tokio::sync::Mutex::new(MetricsState::default()));
+        let (sender, mut sent) = coordinator::CoordinatorSender::for_test();
+        let node_id = NodeId::from("dynamic_node".to_string());
+        let snapshot = vec![DataflowMetricsSnapshot {
+            dataflow_id: DataflowId::new_v4(),
+            nodes: vec![NodeSnapshot {
+                node_id,
+                pid: None,
+                spawned_at: Arc::new(AtomicU64::new(0)),
+                restart_count: Arc::new(AtomicU32::new(0)),
+                restarts_disabled: false,
+                broken_inputs: Vec::new(),
+                pending_messages: 0,
+            }],
+            net_bytes_sent: Arc::default(),
+            net_bytes_received: Arc::default(),
+            net_messages_sent: Arc::default(),
+            net_messages_received: Arc::default(),
+            net_publish_failures: Arc::default(),
+        }];
+
+        collect_and_send_metrics_bg(
+            snapshot,
+            state,
+            sender,
+            DaemonId::new(None),
+            Arc::new(uhlc::HLC::default()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sent.recv().await,
+            None,
+            "dynamic nodes without a PID must not be reported as Restarting"
+        );
+    }
+
+    /// A spawned node not in restart backoff (`spawned_at > 0, restart_count == 0`)
+    /// whose process is missing from the system refresh (e.g. during a refresh failure)
+    /// must not be falsely reported as `Restarting`.
+    #[tokio::test]
+    async fn a_spawned_node_not_in_backoff_is_not_reported_as_restarting_when_process_missing() {
+        let state = Arc::new(tokio::sync::Mutex::new(MetricsState::default()));
+        let (sender, mut sent) = coordinator::CoordinatorSender::for_test();
+        let node_id = NodeId::from("live_node".to_string());
+        let unused_pid = 99_999_999;
+        let snapshot = vec![DataflowMetricsSnapshot {
+            dataflow_id: DataflowId::new_v4(),
+            nodes: vec![NodeSnapshot {
+                node_id,
+                pid: Some(Arc::new(AtomicU32::new(unused_pid))),
+                spawned_at: Arc::new(AtomicU64::new(1)),
+                restart_count: Arc::new(AtomicU32::new(0)),
+                restarts_disabled: false,
+                broken_inputs: Vec::new(),
+                pending_messages: 0,
+            }],
+            net_bytes_sent: Arc::default(),
+            net_bytes_received: Arc::default(),
+            net_messages_sent: Arc::default(),
+            net_messages_received: Arc::default(),
+            net_publish_failures: Arc::default(),
+        }];
+
+        collect_and_send_metrics_bg(
+            snapshot,
+            state,
+            sender,
+            DaemonId::new(None),
+            Arc::new(uhlc::HLC::default()),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            sent.recv().await,
+            None,
+            "a spawned node with spawned_at > 0 must not be reported as Restarting in the second pass"
         );
     }
 }

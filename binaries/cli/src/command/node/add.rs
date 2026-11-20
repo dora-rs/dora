@@ -29,6 +29,8 @@ impl Executable for Add {
             .wrap_err_with(|| format!("failed to read {}", self.from_yaml.display()))?;
         let node: dora_message::descriptor::Node =
             serde_yaml::from_str(&yaml_content).wrap_err("failed to parse node YAML")?;
+        dora_core::descriptor::reject_duplicate_keys(yaml_content.as_bytes())
+            .wrap_err("failed to parse node YAML")?;
 
         let reply = send_control_request(&session, &ControlRequest::AddNode { dataflow_id, node })
             .wrap_err("failed to add node")?;

@@ -18,9 +18,8 @@ fn main() -> eyre::Result<()> {
 
     // The dora node is the Fibonacci action server. Its peer is the dora C++
     // action client (the existing c++/action-client example), run as a second
-    // dataflow node -- a real rmw client cannot discover a ros2-client-hosted
-    // server (ros2-client#4), so both nodes use ros2-client and discover each
-    // other over DDS. Both C++ binaries are built here.
+    // dataflow node, so the example runs without a ROS 2 peer. Both C++
+    // binaries are built here.
     build_package("dora-node-api-cxx", &["ros2-bridge"])?;
     let node_cxxbridge = target
         .join("cxxbridge")

@@ -318,7 +318,7 @@ Spawns `dora coordinator` and `dora daemon` as background processes. Waits for b
 | `--auth` | Enable token authentication for the coordinator |
 | `--recreate-store` | Archive `~/.dora/coordinator.redb` and start with a fresh persistent store |
 
-If the coordinator cannot start, `dora up` reports its startup error directly. After an upgrade reports an incompatible redb schema, rerun with `--recreate-store`. The old store is preserved alongside the new one as `coordinator.redb.backup` (or a numbered variant).
+If the coordinator cannot start, `dora up` reports its startup error directly. After an upgrade reports an incompatible redb schema, or when the store file is reported as damaged, rerun with `--recreate-store`. The old store is preserved alongside the new one as `coordinator.redb.backup` (or a numbered variant).
 
 The spawned coordinator's stderr is captured to `~/.dora/coordinator-stderr.log` (truncated on each `dora up`) so post-startup errors stay inspectable. `--recreate-store` only operates on the local default store: it is refused when `DORA_COORDINATOR_ADDR` points at a non-loopback address, skipped (with a notice) when a coordinator is already running, and aborted when a process is listening on the coordinator port but the connection fails (e.g. an auth token mismatch) — so a live coordinator's store is never archived out from under it.
 
@@ -508,7 +508,7 @@ dora record <DATAFLOW_YAML> [OPTIONS]
 
 Default mode injects a record node into the dataflow. `--proxy` mode requires a running dataflow and `enable_debug_inspection: true`.
 
-**Recording completeness.** The injected record node writes to disk, so a producer burst or a stalled write can outrun it, and the messages it could not take are dropped before the writer sees them. `--queue-size` is how much slack each recorded topic gets; the depth also sizes the node's zenoh ingress channel, which is what zero-copy payloads (>=4 KB) actually overflow. Raise it to ride out longer stalls, at the cost of the memory the buffered payloads hold -- peak resident is roughly `2 x queue_size x payload size` per topic (the per-input scheduler queue and the shared ingress channel can each hold a full depth), which is a lot for video frames. For payloads at or above the zero-copy threshold, a buffered message also pins its shared-memory region: once a stalled recorder holds more than the producer's pool (`DORA_NODE_SHM_POOL_SIZE`, 8 MiB by default) can spare, that producer falls back to heap copies for all its consumers.
+**Recording completeness.** The injected record node writes to disk, so a producer burst or a stalled write can outrun it, and the messages it could not take are dropped before the writer sees them. `--queue-size` is how much slack each recorded topic gets; zero-copy payloads (>=4 KB) are limited to that depth from the moment they arrive, and the depth also sizes the node's zenoh ingress channel. Raise it to ride out longer stalls, at the cost of the memory the buffered payloads hold -- peak resident is roughly `queue_size x payload size` per topic, which is a lot for video frames. For payloads at or above the zero-copy threshold, a buffered message also pins its shared-memory region: once a stalled recorder holds more than the producer's pool (`DORA_NODE_SHM_POOL_SIZE`, 8 MiB by default) can spare, that producer falls back to heap copies for all its consumers.
 
 Dropped messages are reported per topic when the run ends, and the summary says `INCOMPLETE`, so a short `.drec` is not mistaken for a whole one. A long capture also warns on stderr the first time it drops something. A clean run reports "no dropped messages detected" rather than "complete": producers publish with `CongestionControl::Drop`, so a message discarded in zenoh's egress never reaches the recorder's counters, and zero drops means nothing was lost on any path the recorder can see.
 
@@ -532,6 +532,12 @@ dora replay <FILE> [OPTIONS]
 | `--replace <NODE_IDS>` | all recorded | Comma-separated nodes to replace |
 | `--output-yaml <PATH>` | | Write modified YAML without running (dry run) |
 
+A recording that was not finished cleanly (a crash, or a second Ctrl-C in
+`dora record --proxy`) has no footer and may be missing its last messages; it
+is still replayed, with a warning on stderr. In a finished recording, a record
+length that runs past the end of the file fails the replay instead of silently
+ending it early.
+
 #### `dora recording export`
 
 Convert a recorded `.drec` file to MCAP (Apache Arrow IPC encoding by default; see `--format`). Sinks like Foxglove display plain arrow-ipc channels but do not render them natively.
@@ -546,6 +552,10 @@ dora recording export <RECORDING> [OPTIONS]
 | `-o, --output <PATH>` | `<RECORDING>` with the extension replaced (`capture.drec` → `capture.mcap`) | Output MCAP file path |
 | `--topics <TOPICS>` | all | Comma-separated `node/output` topics to export |
 | `--format <FORMAT>` | `arrow` | `arrow` copies payloads verbatim; `foxglove` writes image outputs in Foxglove's own schemas so Foxglove can display them |
+
+As with `dora replay`, a recording without a footer is exported with a
+warning on stderr, and a finished one whose record length runs past the end
+of the file fails the export.
 
 With the default `--format arrow`, payloads are remuxed verbatim, never decoded
 and re-encoded. Two limits worth knowing before you point a consumer at the
@@ -1446,6 +1456,8 @@ dora self update [--check-only]
 ```
 
 Downloads from GitHub releases (`dora-rs/dora`). TLS certificates are validated against the operating system's trust store; minimal images need `ca-certificates` installed.
+
+A CLI installed from the `dora-rs-cli` Python package is not replaced in place: `dora self update` stops and tells you to upgrade the package with the installer you used (`pip install -U dora-rs-cli`, `uv pip install -U dora-rs-cli`, `uv tool upgrade dora-rs-cli` or `pipx upgrade dora-rs-cli`), so the installer's record of the package stays correct. `--check-only` works the same for both installs and names that command when an update is available.
 
 #### `dora self uninstall`
 

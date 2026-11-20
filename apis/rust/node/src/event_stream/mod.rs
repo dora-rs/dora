@@ -21,8 +21,9 @@ use futures::{
     future::{Either, select},
 };
 use futures_timer::Delay;
-use scheduler::{NON_INPUT_EVENT_QUEUE_SIZE, Scheduler};
+use scheduler::{KeyedQueue, NON_INPUT_EVENT_QUEUE_SIZE, ParamKeyed, Scheduler};
 
+use self::arrival_bound::ZenohPayload;
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
     DaemonCommunicationWrapper, PatternError,
@@ -41,6 +42,7 @@ use eyre::{Context, eyre};
 
 pub use scheduler::Scheduler as EventScheduler;
 
+mod arrival_bound;
 mod data_conversion;
 mod event;
 /// Drop notifications for the daemon's opaque extension table.
@@ -53,7 +55,7 @@ mod scheduler;
 mod thread;
 
 /// Hand one zenoh-delivered event to the shared ingress channel, counting it as
-/// a drop if the channel is full.
+/// a drop if the channel is full. Returns whether the event was sent.
 ///
 /// The callback runs on zenoh's tokio IO worker, where `blocking_send` would
 /// panic, so the send is a `try_send` and a full channel means the payload is
@@ -72,10 +74,10 @@ fn send_or_count_ingress_drop(
     item: EventItem,
     input_id: &DataId,
     dropped: &AtomicU64,
-) {
+) -> bool {
     use tokio::sync::mpsc::error::TrySendError;
     match tx.try_send(item) {
-        Ok(()) => {}
+        Ok(()) => true,
         Err(TrySendError::Full(_)) => {
             // Rate-limit the log, but not on `drain_drop_counts()`: a formatted
             // `warn!` with a subscriber attached measures ~1.6 us against ~1.7 ns
@@ -104,10 +106,38 @@ fn send_or_count_ingress_drop(
                      node's input queue_sizes."
                 );
             }
+            false
         }
         Err(TrySendError::Closed(_)) => {
             // Normal shutdown: the receiver is gone, nothing to report.
+            false
         }
+    }
+}
+
+/// Hand one zenoh-delivered input to the shared ingress channel and, if it was
+/// sent, add it to its input's arrival bound (see `arrival_bound`).
+fn deliver_zenoh_input(
+    tx: &tokio::sync::mpsc::Sender<EventItem>,
+    bound: Option<&arrival_bound::ArrivalBound>,
+    input_id: &DataId,
+    metadata: dora_message::metadata::Metadata,
+    data: arrow::array::ArrayData,
+    dropped: &AtomicU64,
+) {
+    let (data, waiting) = match bound {
+        Some(bound) => bound.wrap(data, &metadata),
+        None => (ZenohPayload::Settled(data), None),
+    };
+    let item = EventItem::ZenohInput {
+        id: input_id.clone(),
+        metadata: Arc::new(metadata),
+        data,
+    };
+    if send_or_count_ingress_drop(tx, item, input_id, dropped)
+        && let (Some(bound), Some(waiting)) = (bound, waiting)
+    {
+        bound.admit(waiting);
     }
 }
 
@@ -245,7 +275,17 @@ pub struct EventStream {
     /// retention cannot grow without limit for a node that never reads its
     /// events, and per-input queue policy means the same thing whether or not a
     /// correlated receive touched the event (dora-rs/dora#3197).
-    pending_passthrough: std::collections::VecDeque<Event>,
+    ///
+    /// Parameter changes are not bounded but keyed: the buffer holds at most
+    /// one change per key, and a key is never pending here and in the
+    /// scheduler at the same time (see `add_event`).
+    pending_passthrough: KeyedQueue<Event>,
+    /// Nodes this stream has been told failed for good (`NodeFailed`, which the
+    /// daemon sends only for a node it will not restart), with their error, and
+    /// not restarted since (`NodeRestarted` removes the entry). Recorded as
+    /// events are produced, so a pattern-aware wait on a failed server ends at
+    /// once even when the caller's own loop already consumed the `NodeFailed`.
+    failed_servers: BTreeMap<NodeId, String>,
     /// Set to true after an `Event::Stop` has been delivered. Zenoh
     /// subscriber threads hold clones of the event channel sender, so
     /// the daemon thread's sender drop alone is not enough to close
@@ -543,6 +583,7 @@ impl EventStream {
         // Populated per subscribed input below and moved into `EventStream`, so
         // `drain_drop_counts` can read what the zenoh IO workers recorded.
         let mut ingress_drops: HashMap<DataId, Arc<AtomicU64>> = HashMap::new();
+        let stop_enqueued = Arc::new(std::sync::atomic::AtomicBool::new(false));
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
             use zenoh::qos::CongestionControl;
@@ -634,6 +675,12 @@ impl EventStream {
                     let input_id_cb = input_id.clone();
                     let ingress_drops_cb =
                         ingress_drops.entry(input_id.clone()).or_default().clone();
+                    let arrival_bound = arrival_bound::ArrivalBound::for_input(
+                        input_id.clone(),
+                        input,
+                        ingress_drops_cb.clone(),
+                        stop_enqueued.clone(),
+                    );
                     let decoder = decoder.clone();
                     let first_undecodable_cb = first_undecodable.clone();
                     let clock_cb = clock.clone();
@@ -810,14 +857,12 @@ impl EventStream {
                                             .lock()
                                             .unwrap_or_else(|p| p.into_inner()) = None;
                                     }
-                                    send_or_count_ingress_drop(
+                                    deliver_zenoh_input(
                                         &tx_cb,
-                                        EventItem::ZenohInput {
-                                            id: input_id_cb.clone(),
-                                            metadata: std::sync::Arc::new(metadata),
-                                            data,
-                                        },
+                                        arrival_bound.as_ref(),
                                         &input_id_cb,
+                                        metadata,
+                                        data,
                                         &ingress_drops_cb,
                                     );
                                 }));
@@ -881,7 +926,8 @@ impl EventStream {
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
+        let thread_handle =
+            thread::init(node_id.clone(), tx, channel, clock.clone(), stop_enqueued)?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
@@ -899,7 +945,8 @@ impl EventStream {
             use_scheduler,
             scheduler_maybe_nonempty: false,
             input_type_checks,
-            pending_passthrough: std::collections::VecDeque::new(),
+            pending_passthrough: KeyedQueue::default(),
+            failed_servers: BTreeMap::new(),
             stop_received: false,
             testing_shutdown,
         })
@@ -917,6 +964,11 @@ impl EventStream {
     /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// Pending parameter changes are coalesced per key: this method returns one
+    /// [`Event::ParamUpdate`] or [`Event::ParamDeleted`] per changed key, with the newest change.
+    /// Each key that had a pending change when [`Event::Stop`] arrived is returned before `Stop`.
+    /// See the [`EventScheduler`] documentation for the order of these events.
     ///
     /// If you want to receive the events in their original chronological order, use the
     /// asynchronous [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
@@ -967,6 +1019,11 @@ impl EventStream {
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
     ///
+    /// Pending parameter changes are coalesced per key: this method returns one
+    /// [`Event::ParamUpdate`] or [`Event::ParamDeleted`] per changed key, with the newest change.
+    /// Each key that had a pending change when [`Event::Stop`] arrived is returned before `Stop`.
+    /// See the [`EventScheduler`] documentation for the order of these events.
+    ///
     /// If you want to receive the events in their original chronological order, use the
     /// asynchronous [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
@@ -983,6 +1040,11 @@ impl EventStream {
     /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// Pending parameter changes are coalesced per key: this method returns one
+    /// [`Event::ParamUpdate`] or [`Event::ParamDeleted`] per changed key, with the newest change.
+    /// Each key that had a pending change when [`Event::Stop`] arrived is returned before `Stop`.
+    /// See the [`EventScheduler`] documentation for the order of these events.
     ///
     /// If you want to receive the events in their original chronological order, use the
     /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
@@ -1008,7 +1070,7 @@ impl EventStream {
         if !self.pending_passthrough.is_empty() {
             self.absorb_ready_events();
         }
-        self.pending_passthrough.pop_front()
+        self.pending_passthrough.pop_first_ready(|_| true)
     }
 
     /// Move the events already waiting in `receiver` into the scheduler without
@@ -1061,8 +1123,7 @@ impl EventStream {
             return self.pop_scheduled(true);
         }
         let event = if !self.use_scheduler {
-            self.receiver
-                .recv()
+            self.recv_settled()
                 .await
                 .inspect(|item| self.record_or_poison(item))
                 .map(Self::convert_event_item)
@@ -1081,16 +1142,28 @@ impl EventStream {
             // previous "block until a retained event arrives" behavior while
             // checking `is_empty()` only twice in the common case instead of
             // once per drained event.
-            while self.scheduler.is_empty() {
-                match self.receiver.recv().await {
-                    Some(event) => self.add_event(event),
-                    None => break,
+            //
+            // The scheduler can also hold only messages whose payloads a newer
+            // arrival released after the drain. That arrival is still on its
+            // way through the channel, so go back to waiting for it.
+            let mut closed = false;
+            loop {
+                while !closed && self.scheduler.is_empty() {
+                    match self.receiver.recv().await {
+                        Some(event) => self.add_event(event),
+                        None => closed = true,
+                    }
+                }
+                while let Ok(event) = self.receiver.try_recv() {
+                    self.add_event(event);
+                }
+                if let Some(event) = self.next_settled() {
+                    break Some(Self::convert_event_item(event));
+                }
+                if closed {
+                    break None;
                 }
             }
-            while let Ok(event) = self.receiver.try_recv() {
-                self.add_event(event);
-            }
-            self.scheduler.next().map(Self::convert_event_item)
         };
 
         if let Some(ref event) = event {
@@ -1106,7 +1179,7 @@ impl EventStream {
         if !self.use_scheduler {
             return None;
         }
-        while let Some(item) = self.scheduler.next() {
+        while let Some(item) = self.next_settled() {
             if inputs_only
                 && !matches!(
                     &item,
@@ -1131,8 +1204,9 @@ impl EventStream {
 
     /// Post-process an event just produced by `recv_async` / `poll_next`: run
     /// the one-shot, first-message input type check and update the
-    /// stop-tracking flag. Shared by both receive paths so they cannot drift —
-    /// the two paths must stay in lockstep (dora-rs/adora#172, #174).
+    /// stop-tracking flag and `failed_servers`. Shared by both receive paths
+    /// so they cannot drift — the two paths must stay in lockstep
+    /// (dora-rs/adora#172, #174).
     fn note_produced_event(&mut self, event: &Event) {
         // First-message type validation: check once per input, then remove.
         // `contains_key` short-circuits cheaply once the check is consumed, so
@@ -1176,8 +1250,20 @@ impl EventStream {
             }
         }
 
-        if matches!(event, Event::Stop(_)) {
-            self.stop_received = true;
+        match event {
+            Event::Stop(_) => self.stop_received = true,
+            Event::NodeFailed {
+                source_node_id,
+                error,
+                ..
+            } => {
+                self.failed_servers
+                    .insert(source_node_id.clone(), error.clone());
+            }
+            Event::NodeRestarted { id } => {
+                self.failed_servers.remove(id);
+            }
+            _ => {}
         }
     }
 
@@ -1197,10 +1283,14 @@ impl EventStream {
     /// `max(10 × queue_size, 100)`.
     /// This method returns a map from input ID to the number of messages dropped
     /// since the last call.
-    /// Drops are reported per input across both loss sites — the scheduler's
-    /// per-input eviction and the shared zenoh ingress channel — so a caller
-    /// does not have to know which transport a payload took to learn it was
-    /// lost (#3282).
+    /// Drops are reported per input across every loss site — the scheduler's
+    /// per-input eviction, the arrival bound on zenoh inputs waiting in the
+    /// node, and the shared ingress channel overflowing — so a caller does
+    /// not have to know which transport a payload took to learn it was lost
+    /// (#3282).
+    ///
+    /// Parameter changes are never dropped: pending changes of one key are coalesced into one
+    /// event (see [`EventScheduler`]), and this is not counted as a drop.
     pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64> {
         let mut counts = self.scheduler.drain_drop_counts();
         for (id, dropped) in &self.ingress_drops {
@@ -1220,8 +1310,57 @@ impl EventStream {
         if let Some(id) = scheduler::flush_target(&event) {
             self.flush_passthrough(id);
         }
+        // A key has at most one pending change, in the scheduler or in
+        // `pending_passthrough`. When the passthrough buffer holds the key,
+        // the newer change replaces it there and keeps its position, as in
+        // the scheduler (see `EventScheduler`).
+        if event
+            .param_key()
+            .is_some_and(|key| self.pending_passthrough.has_param(key))
+        {
+            self.pending_passthrough
+                .push(Self::convert_event_item(event));
+            return;
+        }
         self.scheduler.add_event(event);
         self.scheduler_maybe_nonempty = true;
+    }
+
+    /// The next event in the scheduler, skipping zenoh inputs that their
+    /// arrival bound released while they were queued.
+    fn next_settled(&mut self) -> Option<EventItem> {
+        loop {
+            if let Some(item) = self.scheduler.next()?.settle() {
+                return Some(item);
+            }
+        }
+    }
+
+    /// The next event off the ingress channel, skipping zenoh inputs that
+    /// their arrival bound released. `None` once the channel is closed.
+    async fn recv_settled(&mut self) -> Option<EventItem> {
+        loop {
+            if let Some(item) = self.receiver.recv().await?.settle() {
+                return Some(item);
+            }
+        }
+    }
+
+    /// [`recv_settled`](Self::recv_settled) for the `Stream` path.
+    fn poll_recv_settled(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<EventItem>> {
+        loop {
+            match self.receiver.poll_recv(cx) {
+                std::task::Poll::Ready(Some(item)) => {
+                    if let Some(item) = item.settle() {
+                        return std::task::Poll::Ready(Some(item));
+                    }
+                }
+                other => return other,
+            }
+        }
     }
 
     /// Record `event` to the optional `write_events_to` log. Every event taken
@@ -1303,22 +1442,26 @@ impl EventStream {
                 // bypass the daemon, so neither this recorder nor the daemon
                 // would otherwise capture them — silently dropping inputs from
                 // the `write_events_to` recording. Record them here too.
-                EventItem::ZenohInput { id, metadata, data } => {
-                    let array = arrow::array::make_array(data.clone());
-                    let mut event_json = convert_arrow_input_to_json(
-                        id,
-                        metadata,
-                        array,
-                        self.start_timestamp,
-                        false,
-                    )?;
-                    event_json.insert("type".into(), "Input".into());
-                    write_events_to.note_non_finite_params(insert_recorded_metadata(
-                        &mut event_json,
-                        &metadata.parameters,
-                    )?);
-                    Some(event_json.into())
-                }
+                // A released payload never reaches the node, so isn't recorded.
+                EventItem::ZenohInput { id, metadata, data } => match data.data() {
+                    None => None,
+                    Some(data) => {
+                        let array = arrow::array::make_array(data);
+                        let mut event_json = convert_arrow_input_to_json(
+                            id,
+                            metadata,
+                            array,
+                            self.start_timestamp,
+                            false,
+                        )?;
+                        event_json.insert("type".into(), "Input".into());
+                        write_events_to.note_non_finite_params(insert_recorded_metadata(
+                            &mut event_json,
+                            &metadata.parameters,
+                        )?);
+                        Some(event_json.into())
+                    }
+                },
                 _ => None,
             };
             if let Some(event_json) = event_json {
@@ -1342,6 +1485,11 @@ impl EventStream {
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
     ///
+    /// Pending parameter changes are coalesced per key: this method returns one
+    /// [`Event::ParamUpdate`] or [`Event::ParamDeleted`] per changed key, with the newest change.
+    /// Each key that had a pending change when [`Event::Stop`] arrived is returned before `Stop`.
+    /// See the [`EventScheduler`] documentation for the order of these events.
+    ///
     /// If you want to receive the events in their original chronological order, use the
     /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
@@ -1361,7 +1509,7 @@ impl EventStream {
     /// This method never blocks and is safe to use in asynchronous contexts.
     ///
     /// This method is equivalent to repeatedly calling [`try_recv`][Self::try_recv]. See its docs
-    /// for details on event reordering.
+    /// for details on event reordering and on parameter changes.
     pub fn drain(&mut self) -> Option<Vec<Event>> {
         let mut events = Vec::new();
         loop {
@@ -1392,6 +1540,11 @@ impl EventStream {
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
     ///
+    /// Pending parameter changes are coalesced per key: this method returns one
+    /// [`Event::ParamUpdate`] or [`Event::ParamDeleted`] per changed key, with the newest change.
+    /// Each key that had a pending change when [`Event::Stop`] arrived is returned before `Stop`.
+    /// See the [`EventScheduler`] documentation for the order of these events.
+    ///
     /// If you want to receive the events in their original chronological order, use the
     /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
@@ -1410,6 +1563,9 @@ impl EventStream {
     /// [`Event::Input`] as soon as it arrives. Non-matching events are
     /// buffered and replayed on the next call to `recv()` / `recv_async()`,
     /// so your main event loop does not lose intermediate events.
+    /// Buffered parameter changes stay coalesced per key, as described in the
+    /// [`EventScheduler`] documentation: a newer change of a buffered key
+    /// replaces the buffered change, and the buffer never drops them.
     ///
     /// Terminal conditions return a [`PatternError`]:
     ///
@@ -1420,7 +1576,17 @@ impl EventStream {
     /// - `StreamEnded` — the event stream closed (dataflow stopping)
     ///   before a response arrived. The terminal `Stop` event is still
     ///   returned to the caller's next `recv()`.
-    /// - `StreamError` — an upstream error event surfaced during the wait.
+    /// - `StreamError` — an upstream error event surfaced during the wait,
+    ///   or the expected server node failed (exited with an error and will
+    ///   not be restarted), so no reply can arrive. The server's
+    ///   [`Event::NodeFailed`] is still returned to the caller's next
+    ///   `recv()`, and later waits on the same server fail the same way
+    ///   until it restarts. `NodeFailed` is delivered only by the
+    ///   client's own daemon, so this covers a server on the same machine; a
+    ///   remote server's failure still ends the wait only at `timeout`. A
+    ///   reply already queued when the failure is seen is still returned, but
+    ///   one still in flight on the zenoh data plane when the daemon's
+    ///   `NodeFailed` arrives reaches the caller's loop as a plain input.
     ///
     /// A response that was already queued when the dataflow began stopping is
     /// still returned as `Ok`. The wait may have read the `Stop` while looking
@@ -1538,7 +1704,16 @@ impl EventStream {
     /// a bound here (see [`enforce_passthrough_bound`](Self::enforce_passthrough_bound))
     /// so the retention stays bounded and per-input policy means the same thing
     /// whether or not a correlated receive touched the event.
+    ///
+    /// Parameter changes are keyed instead, as in the scheduler: a change of a
+    /// key that is already buffered replaces the buffered change in place, so
+    /// the buffer holds at most one change per key. They are never dropped and
+    /// do not count against the control-event bound.
     fn buffer_passthrough(&mut self, event: Event) {
+        if event.param_key().is_some() {
+            self.pending_passthrough.push(event);
+            return;
+        }
         let (bucket, cap) = match &event {
             Event::Input { id, .. } => {
                 let id = id.clone();
@@ -1546,11 +1721,11 @@ impl EventStream {
                 (PassthroughBucket::Input(id), cap)
             }
             // Control events (`Reload`, a non-expected-server `NodeRestarted`,
-            // `ParamUpdate`, …) share one cap, mirroring the scheduler's single
+            // …) share one cap, mirroring the scheduler's single
             // `NON_INPUT_EVENT` queue. `Stop` is exempt from eviction below.
             _ => (PassthroughBucket::NonInput, NON_INPUT_EVENT_QUEUE_SIZE),
         };
-        self.pending_passthrough.push_back(event);
+        self.pending_passthrough.push(event);
         self.enforce_passthrough_bound(&bucket, cap);
     }
 
@@ -1565,14 +1740,14 @@ impl EventStream {
     fn flush_passthrough(&mut self, id: &DataId) {
         use dora_message::metadata::carries_pattern_correlation;
 
-        let before = self.pending_passthrough.len();
-        self.pending_passthrough.retain(|event| match event {
+        let before = self.pending_passthrough.events().len();
+        self.pending_passthrough.retain_events(|event| match event {
             Event::Input {
                 id: eid, metadata, ..
             } => eid != id || carries_pattern_correlation(&metadata.parameters),
             _ => true,
         });
-        let drained = before - self.pending_passthrough.len();
+        let drained = before - self.pending_passthrough.events().len();
         if drained > 0 {
             tracing::debug!(
                 "Flushed {drained} buffered passthrough event(s) for input `{id}` (flush signal)"
@@ -1599,6 +1774,7 @@ impl EventStream {
             (PassthroughBucket::Input(_), _) => false,
             // Non-input bucket: every non-input event counts (no correlation
             // concept applies); `Stop` is handled as eviction-immune below.
+            // Parameter changes are not in `events()`, so they never count.
             (PassthroughBucket::NonInput, event) => !matches!(event, Event::Input { .. }),
         };
         let correlated = |event: &Event| {
@@ -1611,7 +1787,7 @@ impl EventStream {
 
         if self
             .pending_passthrough
-            .iter()
+            .events()
             .filter(|e| in_bucket(e))
             .count()
             <= cap
@@ -1625,11 +1801,11 @@ impl EventStream {
         // (`DropCorrelatedLoud`).
         let evict_at = self
             .pending_passthrough
-            .iter()
+            .events()
             .position(|e| droppable(e) && !correlated(e))
-            .or_else(|| self.pending_passthrough.iter().position(droppable));
-        let Some(evict_at) = evict_at else {
-            // Only a `Stop` in the bucket (at most one) — nothing to drop.
+            .or_else(|| self.pending_passthrough.events().position(droppable));
+        // `None`: only a `Stop` in the bucket (at most one) — nothing to drop.
+        let Some(evicted) = evict_at.and_then(|i| self.pending_passthrough.remove_event(i)) else {
             return;
         };
 
@@ -1637,16 +1813,15 @@ impl EventStream {
             PassthroughBucket::Input(id) => self.scheduler.record_drop(id),
             PassthroughBucket::NonInput => self.scheduler.record_non_input_drop(),
         };
-        // Log before removing; the immutable borrow ends with the `match`.
         // Ordinary drops log on the scheduler's power-of-two cadence.
-        match self.pending_passthrough.get(evict_at) {
-            Some(Event::Input { id, metadata, .. })
+        match &evicted {
+            Event::Input { id, metadata, .. }
                 if carries_pattern_correlation(&metadata.parameters) =>
             {
                 scheduler::log_correlation_drop_params(id, &metadata.parameters);
             }
             _ if !should_warn_drop(drops) => {}
-            Some(Event::Input { id, .. }) => {
+            Event::Input { id, .. } => {
                 tracing::warn!(
                     input = %id,
                     drops,
@@ -1660,7 +1835,6 @@ impl EventStream {
                 );
             }
         }
-        self.pending_passthrough.remove(evict_at);
     }
 
     /// Core loop for the pattern-aware helpers. Waits up to `timeout`
@@ -1692,13 +1866,24 @@ impl EventStream {
         // `recv_from_stream`, and a buffered `NodeRestarted` was reported to
         // the caller when it was first seen, so it is left for the caller's
         // own event loop rather than re-surfaced here.
-        if let Some(pos) = self
+        let buffered_match = self
             .pending_passthrough
-            .iter()
-            .position(|event| is_match(event, needle))
-            && let Some(event) = self.pending_passthrough.remove(pos)
+            .events()
+            .position(|event| is_match(event, needle));
+        if let Some(event) =
+            buffered_match.and_then(|pos| self.pending_passthrough.remove_event(pos))
         {
             return Ok(event);
+        }
+        // A server failure is permanent, and the stream delivers its
+        // `NodeFailed` only once — possibly to the caller's own loop or an
+        // earlier wait — so check what has already been seen. A reply the
+        // server sent before failing may still be queued, though.
+        if let Some(error) = self.failed_servers.get(expected_server) {
+            let message = server_failed_message(expected_server, error);
+            return self
+                .take_queued_match(|event| is_match(event, needle))
+                .ok_or(PatternError::StreamError(message));
         }
 
         // Compute the wait deadline, clamping a `timeout` so large that the
@@ -1733,6 +1918,15 @@ impl EventStream {
                     self.buffer_passthrough(event);
                     return Err(PatternError::ServerRestarted(expected_server.to_string()));
                 }
+                CorrelationOutcome::ServerFailed(message) => {
+                    self.buffer_passthrough(event);
+                    // The scheduler serves control events ahead of queued
+                    // inputs, so a reply the server sent just before failing
+                    // can still be waiting behind its `NodeFailed`.
+                    return self
+                        .take_queued_match(|event| is_match(event, needle))
+                        .ok_or(PatternError::StreamError(message));
+                }
                 CorrelationOutcome::StreamError => {
                     if let Event::Error(err) = event {
                         return Err(PatternError::StreamError(err));
@@ -1744,6 +1938,35 @@ impl EventStream {
                 }
             }
         }
+    }
+}
+
+impl EventStream {
+    /// Without blocking, read every event already queued for this node and
+    /// return the first one matching `is_match`; the others are buffered for
+    /// the caller's own loop, in order, as the wait loop does.
+    ///
+    /// Used when the expected server is known to have failed: no new reply can
+    /// arrive, but one sent before the failure may be queued behind the
+    /// `NodeFailed`, which the scheduler serves first. Only the scheduler path
+    /// reorders; without it events arrive in send order, so the reply would
+    /// already have been read.
+    fn take_queued_match(&mut self, is_match: impl Fn(&Event) -> bool) -> Option<Event> {
+        if !self.use_scheduler {
+            return None;
+        }
+        self.absorb_ready_events();
+        // Once a `Stop` has been read — before this call or by this drain —
+        // keep to the post-`Stop` contract: only already-queued inputs may
+        // follow it, so trailing control events are discarded, exactly as
+        // `recv_from_stream` does.
+        while let Some(event) = self.pop_scheduled(self.stop_received) {
+            if is_match(&event) {
+                return Some(event);
+            }
+            self.buffer_passthrough(event);
+        }
+        None
     }
 }
 
@@ -1809,6 +2032,10 @@ enum CorrelationOutcome {
     Match,
     /// `Event::NodeRestarted { id }` where `id == expected_server`.
     ServerRestarted,
+    /// `Event::NodeFailed { source_node_id }` where `source_node_id ==
+    /// expected_server`: the server exited with an error and the daemon will
+    /// not restart it, so the correlated reply can never arrive.
+    ServerFailed(String),
     /// `Event::Error(_)` — the stream surfaced an error.
     StreamError,
     /// Unrelated event, or a `Stop` (see `wait_for_correlation`) — buffer it
@@ -1829,19 +2056,41 @@ where
     }
     match event {
         Event::NodeRestarted { id } if id == expected_server => CorrelationOutcome::ServerRestarted,
+        Event::NodeFailed {
+            source_node_id,
+            error,
+            ..
+        } if source_node_id == expected_server => {
+            CorrelationOutcome::ServerFailed(server_failed_message(expected_server, error))
+        }
         Event::Error(_) => CorrelationOutcome::StreamError,
         _ => CorrelationOutcome::Passthrough,
     }
+}
+
+/// The [`PatternError::StreamError`] message for a wait whose expected server
+/// failed.
+fn server_failed_message(server: &NodeId, error: &str) -> String {
+    format!("server `{server}` failed: {error}")
 }
 
 /// Which bound a buffered passthrough event counts against.
 enum PassthroughBucket {
     /// An `Event::Input`, bounded by its input's effective `queue_size`.
     Input(DataId),
-    /// Any non-input control event, bounded — like the scheduler's single
-    /// `NON_INPUT_EVENT` queue — by
+    /// Any non-input control event other than a parameter change, bounded —
+    /// like the scheduler's single `NON_INPUT_EVENT` queue — by
     /// [`NON_INPUT_EVENT_QUEUE_SIZE`](scheduler::NON_INPUT_EVENT_QUEUE_SIZE).
     NonInput,
+}
+
+impl ParamKeyed for Event {
+    fn param_key(&self) -> Option<&str> {
+        match self {
+            Event::ParamUpdate { key, .. } | Event::ParamDeleted { key } => Some(key),
+            _ => None,
+        }
+    }
 }
 
 impl EventStream {
@@ -1903,7 +2152,7 @@ impl EventStream {
                     id,
                     metadata,
                     // Already decoded in the subscriber callback (receipt order).
-                    data: dora_arrow_convert::internal::from_array_data(data),
+                    data: dora_arrow_convert::internal::from_array_data(data.into_settled_data()),
                 }
             }
 
@@ -2192,7 +2441,7 @@ impl Stream for EventStream {
             self.scheduler_maybe_nonempty = false;
         }
 
-        let poll = self.receiver.poll_recv(cx);
+        let poll = self.poll_recv_settled(cx);
         // This path bypasses `add_event`, so record the event here — otherwise
         // a node reading with `StreamExt::next()` writes an empty `events`
         // array that is still marked `clean`.
@@ -2407,7 +2656,7 @@ impl EventStream {
     /// verify that `is_empty`, `recv_async`, and `Stream::poll_next` all
     /// drain it correctly (dora-rs/adora#172).
     fn push_passthrough_for_testing(&mut self, event: Event) {
-        self.pending_passthrough.push_back(event);
+        self.pending_passthrough.push(event);
     }
 
     /// Test-only: buffer an empty input directly in the scheduler and force
@@ -2443,18 +2692,23 @@ impl EventStream {
     /// and force scheduler mode, to verify the post-Stop drain discards trailing
     /// control events instead of re-delivering a second `Stop` (dora-rs/dora#2027).
     fn push_scheduler_stop_for_testing(&mut self) {
+        self.push_scheduler_event_for_testing(dora_message::daemon_to_node::NodeEvent::Stop);
+    }
+
+    /// Test-only: queue an arbitrary daemon event on the scheduler path.
+    fn push_scheduler_event_for_testing(&mut self, event: dora_message::daemon_to_node::NodeEvent) {
         use crate::event_stream::thread::EventItem;
-        use dora_message::daemon_to_node::NodeEvent;
         self.use_scheduler = true;
-        self.add_event(EventItem::NodeEvent {
-            event: NodeEvent::Stop,
-        });
+        self.add_event(EventItem::NodeEvent { event });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod param_state;
+    mod param_state_cost;
 
     fn input_with_queue_size(queue_size: usize) -> Input {
         serde_yaml::from_str(&format!("source: a/out\nqueue_size: {queue_size}\n"))
@@ -2887,6 +3141,36 @@ mod tests {
     }
 
     #[test]
+    fn classify_expected_server_failure_returns_server_failed() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::NodeFailed {
+            affected_input_ids: vec![DataId::from("response".to_string())],
+            error: "exited with code 1".to_string(),
+            source_node_id: server.clone(),
+        };
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::ServerFailed(
+                "server `calc` failed: exited with code 1".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn classify_unrelated_node_failure_is_passthrough() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::NodeFailed {
+            affected_input_ids: vec![DataId::from("sensor".to_string())],
+            error: "exited with code 1".to_string(),
+            source_node_id: NodeId::from("other".to_string()),
+        };
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
     fn classify_stop_is_passthrough() {
         let server = NodeId::from("calc".to_string());
         let event = Event::Stop(StopCause::Manual);
@@ -3270,10 +3554,10 @@ mod tests {
             EventItem::ZenohInput {
                 id: "zenoh".parse().unwrap(),
                 metadata,
-                data: {
+                data: ZenohPayload::Settled({
                     use arrow::array::Array;
                     arrow::array::Int32Array::from(vec![1]).into_data()
-                },
+                }),
             },
             EventItem::NodeEvent {
                 event: NodeEvent::Stop,
@@ -3509,10 +3793,10 @@ mod tests {
                 dora_core::uhlc::HLC::default().new_timestamp(),
                 params,
             )),
-            data: {
+            data: ZenohPayload::Settled({
                 use arrow::array::Array;
                 arrow::array::Int32Array::from(vec![3]).into_data()
-            },
+            }),
         })
         .unwrap();
         drop(tx);
@@ -3871,6 +4155,170 @@ mod tests {
         assert!(events.recv().is_none());
     }
 
+    /// A wait must end as soon as the expected server is reported failed: the
+    /// daemon sends `NodeFailed` only for a node it will not restart, so no
+    /// reply can follow. Waiting on for the timeout instead would never end
+    /// with `Duration::MAX` while any other input keeps the stream open.
+    #[test]
+    fn recv_service_response_ends_when_expected_server_fails() {
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_event_for_testing(calc_failed());
+
+        let server = NodeId::from("calc".to_string());
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &server,
+            Duration::from_secs(5),
+        ));
+        match response {
+            Err(PatternError::StreamError(msg)) => {
+                assert!(msg.contains("`calc` failed"), "unexpected message: {msg}");
+                assert!(
+                    msg.contains("exited with code 1"),
+                    "unexpected message: {msg}"
+                );
+            }
+            other => panic!("expected StreamError for the failed server, got {other:?}"),
+        }
+
+        // The `NodeFailed` still reaches the caller's own loop.
+        assert!(matches!(
+            events.recv(),
+            Some(Event::NodeFailed { source_node_id, .. }) if source_node_id.as_ref() == "calc"
+        ));
+    }
+
+    /// A reply the server sent just before it
+    /// failed is queued behind the `NodeFailed`, which the scheduler serves
+    /// first. The wait must still return that reply — now, and on a later
+    /// call — rather than report the failure.
+    #[test]
+    fn recv_service_response_returns_a_reply_queued_before_the_failure() {
+        let calc = NodeId::from("calc".to_string());
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_input_with_params_for_testing("response", request_id_params("req-1"));
+        events.push_scheduler_input_with_params_for_testing("response", request_id_params("req-2"));
+        events.push_scheduler_event_for_testing(calc_failed());
+
+        let first = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&first, Ok(Event::Input { id, .. }) if id.as_str() == "response"),
+            "expected the reply queued before the failure, got {first:?}"
+        );
+        // `req-2`'s reply was buffered while looking; the server is known to
+        // have failed, but the buffered reply still wins.
+        let second = futures::executor::block_on(events.recv_service_response(
+            "req-2",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&second, Ok(Event::Input { .. })),
+            "expected the buffered req-2 reply, got {second:?}"
+        );
+        // With no reply left, the failure is reported.
+        let third = futures::executor::block_on(events.recv_service_response(
+            "req-3",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&third, Err(PatternError::StreamError(_))),
+            "expected StreamError once no reply is queued, got {third:?}"
+        );
+        // The `NodeFailed` itself still reaches the caller's loop.
+        assert!(matches!(events.recv(), Some(Event::NodeFailed { .. })));
+    }
+
+    /// Draining the queue after a server failure must keep
+    /// the post-`Stop` contract — one `Stop`, then only already-queued inputs,
+    /// never a second `Stop` or other control events.
+    #[test]
+    fn server_failure_drain_delivers_nothing_but_inputs_after_stop() {
+        use dora_message::daemon_to_node::NodeEvent;
+        let calc = NodeId::from("calc".to_string());
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_event_for_testing(calc_failed());
+        events.push_scheduler_event_for_testing(NodeEvent::Stop);
+        events.push_scheduler_event_for_testing(NodeEvent::Stop);
+
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&response, Err(PatternError::StreamError(_))),
+            "expected StreamError for the failed server, got {response:?}"
+        );
+
+        let mut rest = Vec::new();
+        while let Some(event) = events.recv() {
+            rest.push(event);
+        }
+        let stops = rest.iter().filter(|e| matches!(e, Event::Stop(_))).count();
+        assert_eq!(stops, 1, "exactly one Stop must be delivered, got {rest:?}");
+        let after_stop = rest
+            .iter()
+            .skip_while(|e| !matches!(e, Event::Stop(_)))
+            .skip(1)
+            .filter(|e| !matches!(e, Event::Input { .. }))
+            .count();
+        assert_eq!(after_stop, 0, "only inputs may follow Stop, got {rest:?}");
+    }
+
+    fn calc_failed() -> dora_message::daemon_to_node::NodeEvent {
+        dora_message::daemon_to_node::NodeEvent::NodeFailed {
+            affected_input_ids: vec![DataId::from("response".to_string())],
+            error: "exited with code 1".to_string(),
+            source_node_id: NodeId::from("calc".to_string()),
+        }
+    }
+
+    /// A server failure already seen — here consumed by the caller's own loop —
+    /// must still end a later wait on that server: the stream delivers the
+    /// `NodeFailed` only once. A later restart of the server clears it.
+    #[test]
+    fn recv_service_response_remembers_a_server_failure_seen_earlier() {
+        let calc = NodeId::from("calc".to_string());
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_event_for_testing(calc_failed());
+        assert!(matches!(events.recv(), Some(Event::NodeFailed { .. })));
+
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &calc,
+            Duration::from_secs(5),
+        ));
+        assert!(
+            matches!(&response, Err(PatternError::StreamError(msg)) if msg.contains("`calc` failed")),
+            "expected StreamError for the already-failed server, got {response:?}"
+        );
+
+        // Fresh stream: the testing input's own `Stop` may follow the first
+        // wait, and nothing is read after `Stop`.
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_event_for_testing(calc_failed());
+        events.push_scheduler_event_for_testing(
+            dora_message::daemon_to_node::NodeEvent::NodeRestarted { id: calc.clone() },
+        );
+        assert!(matches!(events.recv(), Some(Event::NodeFailed { .. })));
+        assert!(matches!(events.recv(), Some(Event::NodeRestarted { .. })));
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &calc,
+            Duration::from_millis(200),
+        ));
+        assert!(
+            !matches!(&response, Err(PatternError::StreamError(_))),
+            "a restart after the failure must clear it, got {response:?}"
+        );
+    }
+
     /// After a `Stop` event is delivered, subsequent `recv` calls must
     /// return `None` so the node can exit cleanly even when zenoh
     /// subscriber threads still hold clones of the event channel
@@ -4015,10 +4463,10 @@ mod tests {
             metadata: std::sync::Arc::new(Metadata::new(
                 dora_core::uhlc::HLC::default().new_timestamp(),
             )),
-            data: {
+            data: ZenohPayload::Settled({
                 use arrow::array::Array;
                 arrow::array::Int32Array::from(vec![1]).into_data()
-            },
+            }),
         });
 
         let drained = events.recv();
@@ -4233,10 +4681,10 @@ mod tests {
         let zenoh_item = EventItem::ZenohInput {
             id: DataId::from("in".to_string()),
             metadata: Arc::new(metadata.clone()),
-            data: {
+            data: ZenohPayload::Settled({
                 use arrow::array::Array;
                 arrow::array::Int32Array::from(vec![1]).into_data()
-            },
+            }),
         };
         let Event::Input {
             metadata: user_metadata,
@@ -4386,6 +4834,296 @@ mod tests {
         );
     }
 
+    // ---- arrival bound: zenoh inputs held to queue_size from arrival ----
+
+    /// An `EventStream` that reads a `capacity`-deep channel the test feeds
+    /// through `deliver_zenoh_input`, with `input` held to `queue_size` on
+    /// arrival and in the scheduler, as `init` configures both.
+    fn stream_with_arrival_bound(
+        input: &DataId,
+        queue_size: usize,
+        capacity: usize,
+    ) -> (
+        crate::DoraNode,
+        EventStream,
+        tokio::sync::mpsc::Sender<EventItem>,
+        arrival_bound::ArrivalBound,
+    ) {
+        let (node, mut events) = test_event_stream();
+        let _ = events.recv(); // drain the initial Stop
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        events.receiver = rx;
+        events.stop_received = false;
+        events.use_scheduler = true;
+        events.scheduler = Scheduler::with_policies(
+            HashMap::from([(input.clone(), (queue_size, VecDeque::new()))]),
+            HashMap::new(),
+        );
+        let dropped = events
+            .ingress_drops
+            .entry(input.clone())
+            .or_default()
+            .clone();
+        let bound = arrival_bound::ArrivalBound::for_input(
+            input.clone(),
+            &input_with_queue_size(queue_size),
+            dropped,
+            Arc::default(),
+        )
+        .unwrap();
+        (node, events, tx, bound)
+    }
+
+    fn arrive(
+        events: &EventStream,
+        tx: &tokio::sync::mpsc::Sender<EventItem>,
+        bound: &arrival_bound::ArrivalBound,
+        id: &DataId,
+        value: i32,
+        params: MetadataParameters,
+    ) {
+        use arrow::array::Array;
+        deliver_zenoh_input(
+            tx,
+            Some(bound),
+            id,
+            Metadata::from_parameters(uhlc::HLC::default().new_timestamp(), params),
+            arrow::array::Int32Array::from(vec![value]).into_data(),
+            &events.ingress_drops[id],
+        );
+    }
+
+    /// Sends a daemon event the way the event thread forwards it.
+    fn forward(
+        tx: &tokio::sync::mpsc::Sender<EventItem>,
+        bound: &arrival_bound::ArrivalBound,
+        event: NodeEvent,
+    ) {
+        thread::note_stream_end(&event, bound.stop_enqueued());
+        tx.try_send(EventItem::NodeEvent { event }).unwrap();
+    }
+
+    /// The `Int32` value of each event `received` on `input`, `None` for any
+    /// other payload.
+    fn input_values(received: &[Event], input: &DataId) -> Vec<Option<i32>> {
+        received
+            .iter()
+            .filter_map(|event| match event {
+                Event::Input { id, data, .. } if id == input => Some(i32::try_from(data).ok()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn receive_with_recv(events: &mut EventStream) -> Vec<Event> {
+        std::iter::from_fn(|| events.recv()).collect()
+    }
+
+    fn receive_with_stream(events: &mut EventStream) -> Vec<Event> {
+        std::iter::from_fn(|| futures::executor::block_on(futures::StreamExt::next(events)))
+            .collect()
+    }
+
+    /// A node that falls behind gets the newest `queue_size` messages of an
+    /// input; the older ones were released while they waited, are never
+    /// delivered on either read path, and count as drops. Other inputs are
+    /// untouched.
+    #[test]
+    fn inputs_released_on_arrival_are_skipped() {
+        for receive_all in [receive_with_recv, receive_with_stream] {
+            let cam = DataId::from("cam".to_string());
+            let (_node, mut events, tx, bound) = stream_with_arrival_bound(&cam, 2, 16);
+            let other = DataId::from("other".to_string());
+            events.ingress_drops.insert(other.clone(), Arc::default());
+            let unbounded = arrival_bound::ArrivalBound::for_input(
+                other.clone(),
+                &input_with_queue_size(10),
+                Arc::default(),
+                Arc::default(),
+            )
+            .unwrap();
+
+            for value in 1..=5 {
+                arrive(&events, &tx, &bound, &cam, value, MetadataParameters::new());
+                arrive(
+                    &events,
+                    &tx,
+                    &unbounded,
+                    &other,
+                    value,
+                    MetadataParameters::new(),
+                );
+            }
+            drop(tx);
+
+            let received = receive_all(&mut events);
+            assert_eq!(input_values(&received, &cam), [Some(4), Some(5)]);
+            assert_eq!(
+                input_values(&received, &other),
+                (1..=5).map(Some).collect::<Vec<_>>()
+            );
+            assert_eq!(events.drain_drop_counts().get(&cam), Some(&3));
+        }
+    }
+
+    /// A message the full channel turns away doesn't push out one that is
+    /// already waiting.
+    #[test]
+    fn an_arrival_dropped_at_a_full_channel_releases_nothing() {
+        let cam = DataId::from("cam".to_string());
+        let (_node, mut events, tx, bound) = stream_with_arrival_bound(&cam, 2, 2);
+        for value in 1..=3 {
+            arrive(&events, &tx, &bound, &cam, value, MetadataParameters::new());
+        }
+        drop(tx);
+
+        let received = receive_with_recv(&mut events);
+        assert_eq!(input_values(&received, &cam), [Some(1), Some(2)]);
+        assert_eq!(events.drain_drop_counts().get(&cam), Some(&1));
+    }
+
+    /// The node reads nothing that arrives after `Stop`, so a message behind
+    /// `Stop` doesn't release the one ahead of it, which the `Stream` path
+    /// still delivers.
+    #[test]
+    fn arrivals_behind_stop_release_nothing() {
+        for end in [NodeEvent::Stop, NodeEvent::AllInputsClosed] {
+            let cam = DataId::from("cam".to_string());
+            let (_node, mut events, tx, bound) = stream_with_arrival_bound(&cam, 1, 16);
+            arrive(&events, &tx, &bound, &cam, 1, MetadataParameters::new());
+            forward(&tx, &bound, end);
+            arrive(&events, &tx, &bound, &cam, 2, MetadataParameters::new());
+            drop(tx);
+
+            let received = receive_with_stream(&mut events);
+            assert_eq!(input_values(&received, &cam), [Some(1)]);
+            assert_eq!(events.drain_drop_counts().get(&cam), None);
+        }
+    }
+
+    /// The bound covers messages the node already moved into the scheduler:
+    /// newer arrivals release them there, every read path skips them, and each
+    /// counts as one drop, not a second one when the scheduler evicts it.
+    #[test]
+    fn inputs_released_while_queued_are_skipped_and_counted_once() {
+        for receive_all in [receive_with_recv, receive_with_stream] {
+            let cam = DataId::from("cam".to_string());
+            let (_node, mut events, tx, bound) = stream_with_arrival_bound(&cam, 2, 16);
+            arrive(&events, &tx, &bound, &cam, 1, MetadataParameters::new());
+            arrive(&events, &tx, &bound, &cam, 2, MetadataParameters::new());
+            events.absorb_ready_events();
+            arrive(&events, &tx, &bound, &cam, 3, MetadataParameters::new());
+            arrive(&events, &tx, &bound, &cam, 4, MetadataParameters::new());
+            drop(tx);
+
+            let received = receive_all(&mut events);
+            assert_eq!(input_values(&received, &cam), [Some(3), Some(4)]);
+            assert_eq!(events.drain_drop_counts().get(&cam), Some(&2));
+        }
+    }
+
+    /// A newer arrival can release the only queued message right after `recv`
+    /// drained the channel, so `recv` finds nothing to deliver. It waits for
+    /// that arrival rather than reporting the stream as closed.
+    #[test]
+    fn recv_waits_when_every_queued_message_was_released() {
+        use arrow::array::Array;
+        let cam = DataId::from("cam".to_string());
+        let (_node, mut events, tx, bound) = stream_with_arrival_bound(&cam, 1, 16);
+        arrive(&events, &tx, &bound, &cam, 1, MetadataParameters::new());
+        events.absorb_ready_events();
+
+        // Message 2 releases message 1 but reaches the channel only later, as
+        // when its callback runs between the drain and the pop.
+        let metadata = Metadata::new(uhlc::HLC::default().new_timestamp());
+        let (data, waiting) = bound.wrap(
+            arrow::array::Int32Array::from(vec![2]).into_data(),
+            &metadata,
+        );
+        bound.admit(waiting.unwrap());
+
+        let waited = events.recv_timeout(Duration::from_millis(100));
+        assert!(matches!(waited, Some(Event::Error(_))), "got {waited:?}");
+
+        tx.try_send(EventItem::ZenohInput {
+            id: cam.clone(),
+            metadata: Arc::new(metadata),
+            data,
+        })
+        .unwrap();
+        drop(tx);
+        let received = receive_with_recv(&mut events);
+        assert_eq!(input_values(&received, &cam), [Some(2)]);
+    }
+
+    /// An input queued when `Stop` is delivered is still delivered after it:
+    /// the arrivals behind `Stop` don't release it.
+    #[test]
+    fn inputs_queued_before_stop_are_delivered_after_it() {
+        let cam = DataId::from("cam".to_string());
+        let (_node, mut events, tx, bound) = stream_with_arrival_bound(&cam, 1, 16);
+        arrive(&events, &tx, &bound, &cam, 1, MetadataParameters::new());
+        forward(&tx, &bound, NodeEvent::Stop);
+        assert!(matches!(events.recv(), Some(Event::Stop(_))));
+
+        arrive(&events, &tx, &bound, &cam, 2, MetadataParameters::new());
+        drop(tx);
+        let received = receive_with_recv(&mut events);
+        assert_eq!(input_values(&received, &cam), [Some(1)]);
+    }
+
+    /// A released `flush: true` chunk still flushes, on both read paths: the
+    /// stale chunks that a pattern-aware wait buffered are discarded, not
+    /// delivered.
+    #[test]
+    fn a_released_flush_still_flushes() {
+        for receive_all in [receive_with_recv, receive_with_stream] {
+            let audio = DataId::from("audio".to_string());
+            let (_node, mut events, tx, bound) = stream_with_arrival_bound(&audio, 1, 16);
+            events.buffer_passthrough(passthrough_input(&audio, None));
+
+            let mut flush = MetadataParameters::new();
+            flush.insert(dora_message::metadata::FLUSH.into(), Parameter::Bool(true));
+            arrive(&events, &tx, &bound, &audio, 1, flush);
+            arrive(&events, &tx, &bound, &audio, 2, MetadataParameters::new());
+            drop(tx);
+
+            let received = receive_all(&mut events);
+            assert_eq!(
+                input_values(&received, &audio),
+                [Some(2)],
+                "got {received:?}"
+            );
+        }
+    }
+
+    /// A released `flush: true` chunk flushes the stale chunks queued in the
+    /// scheduler too, so they are discarded rather than counted as drops when
+    /// newer chunks evict them.
+    #[test]
+    fn a_released_flush_flushes_the_queue() {
+        let audio = DataId::from("audio".to_string());
+        let (_node, mut events, tx, bound) = stream_with_arrival_bound(&audio, 1, 16);
+        events.add_event(EventItem::ZenohInput {
+            id: audio.clone(),
+            metadata: Arc::new(Metadata::new(uhlc::HLC::default().new_timestamp())),
+            data: ZenohPayload::Settled({
+                use arrow::array::Array;
+                arrow::array::Int32Array::from(vec![0]).into_data()
+            }),
+        });
+
+        let mut flush = MetadataParameters::new();
+        flush.insert(dora_message::metadata::FLUSH.into(), Parameter::Bool(true));
+        arrive(&events, &tx, &bound, &audio, 1, flush);
+        arrive(&events, &tx, &bound, &audio, 2, MetadataParameters::new());
+        drop(tx);
+
+        let received = receive_with_recv(&mut events);
+        assert_eq!(input_values(&received, &audio), [Some(2)]);
+        assert_eq!(events.drain_drop_counts().get(&audio), Some(&1));
+    }
+
     // ---- #3282: zenoh-path ingress drops must reach drain_drop_counts() ----
 
     fn zenoh_item(id: &str) -> EventItem {
@@ -4394,7 +5132,9 @@ mod tests {
         EventItem::ZenohInput {
             id: DataId::from(id.to_string()),
             metadata: std::sync::Arc::new(Metadata::new(ts)),
-            data: dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+            data: ZenohPayload::Settled(
+                dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+            ),
         }
     }
 

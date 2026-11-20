@@ -303,7 +303,12 @@ in §2 and §3 above). They:
 1. Take a `timeout` so waits are bounded.
 2. Watch for `NodeRestarted { id: expected_server }` and return
    `PatternError::ServerRestarted` so you can retry against the new
-   instance without hanging.
+   instance without hanging. If the server instead fails for good (exits
+   with an error and has no restart policy left), the daemon emits
+   `NodeFailed { source_node_id: expected_server, .. }` and the wait ends
+   with `PatternError::StreamError` naming the failed server. (`NodeFailed`
+   comes from the client's own daemon, so this covers a server on the same
+   machine; a remote server's failure still ends the wait at `timeout`.)
 3. Buffer non-matching events so your main event loop keeps working.
 
 Alternatively, handle the fault manually:

@@ -4,6 +4,8 @@ nodes:
   - id: camera
     # a normal node you write yourself
     path: camera.py
+    inputs:
+      tick: dora/timer/hz/10
     outputs:
       - image
     output_types:

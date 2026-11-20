@@ -141,6 +141,7 @@ fn run_export(args: Export) -> eyre::Result<()> {
                 return Err(err);
             }
         };
+    super::warn_if_unfinished(&reader, &args.input);
     fs::rename(&tmp_path, &output).wrap_err_with(|| {
         eyre!(
             "failed to move the finished export into `{output}` (left as `{}`)",

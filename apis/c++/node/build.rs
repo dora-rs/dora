@@ -48,17 +48,21 @@ fn main() {
     std::fs::create_dir(&install_dir).unwrap();
 
     std::fs::copy(
-        src_dir.join("lib.rs.h"),
+        cxxbridge_out(&format!("include/{PACKAGE}/src/lib.rs.h")),
         install_dir.join("dora-node-api.h"),
     )
     .unwrap();
     std::fs::copy(
-        src_dir.join("lib.rs.cc"),
+        cxxbridge_out(&format!("sources/{PACKAGE}/src/lib.rs.cc")),
         install_dir.join("dora-node-api.cc"),
     )
     .unwrap();
 
-    std::fs::copy(src_dir.join("../../rust/cxx.h"), install_dir.join("cxx.h")).unwrap();
+    std::fs::copy(
+        cxxbridge_out("include/rust/cxx.h"),
+        install_dir.join("cxx.h"),
+    )
+    .unwrap();
 
     #[cfg(feature = "ros2-bridge")]
     ros2::generate_ros2_message_header(&install_dir);
@@ -84,8 +88,8 @@ fn main() {
 
     generate_config_cmake(&cmake_dir, &target);
     generate_config_version_cmake(&cmake_dir, version);
-    copy_cxx_header(&src_dir, &include_dir);
-    copy_cxx_source(&src_dir, &src_cmake_dir);
+    copy_cxx_header(&include_dir);
+    copy_cxx_source(&src_cmake_dir);
 
     // to avoid unnecessary `mut` warning
     bridge_files.clear();
@@ -120,14 +124,14 @@ fn generate_config_version_cmake(cmake_dir: &Path, version: &str) {
     .expect("failed to write ConfigVersion.cmake");
 }
 
-fn copy_cxx_header(src_dir: &Path, include_dir: &Path) {
-    let header_src = src_dir.join("lib.rs.h");
+fn copy_cxx_header(include_dir: &Path) {
+    let header_src = cxxbridge_out(&format!("include/{PACKAGE}/src/lib.rs.h"));
     let header_dst = include_dir.join("dora-node-api.h");
     std::fs::copy(&header_src, &header_dst).expect("failed to copy cxx header");
 }
 
-fn copy_cxx_source(src_dir: &Path, src_cmake_dir: &Path) {
-    let source_src = src_dir.join("lib.rs.cc");
+fn copy_cxx_source(src_cmake_dir: &Path) {
+    let source_src = cxxbridge_out(&format!("sources/{PACKAGE}/src/lib.rs.cc"));
     let source_dst = src_cmake_dir.join("dora-node-api.cc");
     std::fs::copy(&source_src, &source_dst).expect("failed to copy cxx source");
 }
@@ -278,4 +282,14 @@ mod ros2 {
 
         copy_dir_all(&header_path, &target_path).unwrap();
     }
+}
+
+/// A file cxx-build generated under `OUT_DIR/cxxbridge`. Read it there rather
+/// than through `target/cxxbridge/<crate>/src`: those are relative symlinks
+/// into `OUT_DIR`, and Windows can't resolve them when `OUT_DIR` mixes `\`
+/// and `/`, as cargo 1.100's does.
+fn cxxbridge_out(path: &str) -> PathBuf {
+    PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"))
+        .join("cxxbridge")
+        .join(path)
 }

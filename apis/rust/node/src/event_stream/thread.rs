@@ -5,9 +5,16 @@ use dora_message::{
 };
 use eyre::eyre;
 use flume::RecvTimeoutError;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::mpsc;
 
+use super::arrival_bound::ZenohPayload;
 use crate::daemon_connection::DaemonChannel;
 
 pub fn init(
@@ -15,9 +22,11 @@ pub fn init(
     tx: mpsc::Sender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    stop_enqueued: Arc<AtomicBool>,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
-    let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock));
+    let join_handle =
+        std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock, stop_enqueued));
     Ok(EventStreamThreadHandle::new(node_id, join_handle))
 }
 
@@ -35,14 +44,28 @@ pub enum EventItem {
     /// scheduler reorders/drops events. For SHM payloads the decoded array still
     /// aliases the zenoh buffer (the decoder wraps it via
     /// `Buffer::from_custom_allocation`), so this stays zero-copy
-    /// (dora-rs/adora#132).
+    /// (dora-rs/adora#132). The input's arrival bound may release the payload
+    /// while the message waits in the node (see `arrival_bound`).
     ZenohInput {
         id: dora_core::config::DataId,
         metadata: std::sync::Arc<dora_message::metadata::Metadata>,
-        data: arrow::array::ArrayData,
+        data: ZenohPayload,
     },
     FatalError(eyre::Report),
     TimeoutError(eyre::Report),
+}
+
+impl EventItem {
+    /// Takes the event for delivery or eviction. Returns `None` for a zenoh
+    /// input whose payload was already released.
+    pub(crate) fn settle(self) -> Option<Self> {
+        match self {
+            EventItem::ZenohInput { id, metadata, data } => data
+                .settle()
+                .map(|data| EventItem::ZenohInput { id, metadata, data }),
+            other => Some(other),
+        }
+    }
 }
 
 pub struct EventStreamThreadHandle {
@@ -92,12 +115,13 @@ impl Drop for EventStreamThreadHandle {
     }
 }
 
-#[tracing::instrument(skip(tx, channel, clock))]
+#[tracing::instrument(skip(tx, channel, clock, stop_enqueued))]
 fn event_stream_loop(
     node_id: NodeId,
     tx: mpsc::Sender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    stop_enqueued: Arc<AtomicBool>,
 ) {
     let mut tx = Some(tx);
     let mut close_tx = false;
@@ -152,6 +176,10 @@ fn event_stream_loop(
                 continue;
             }
 
+            // Before sending, so that zenoh inputs that land behind it
+            // release nothing (see `ArrivalBound`).
+            note_stream_end(&inner, &stop_enqueued);
+
             if let Some(tx) = tx.as_ref() {
                 // `blocking_send` is used because this function runs on a
                 // dedicated `std::thread` (not a tokio worker). Using
@@ -187,5 +215,13 @@ fn event_stream_loop(
             _ => unreachable!(),
         };
         tracing::error!("failed to report fatal EventStream error: {err:?}");
+    }
+}
+
+/// Sets `stop_enqueued` if `event` ends the stream: `Stop`, or
+/// `AllInputsClosed`, which the node receives as a `Stop` too.
+pub(super) fn note_stream_end(event: &NodeEvent, stop_enqueued: &AtomicBool) {
+    if matches!(event, NodeEvent::Stop | NodeEvent::AllInputsClosed) {
+        stop_enqueued.store(true, Ordering::SeqCst);
     }
 }

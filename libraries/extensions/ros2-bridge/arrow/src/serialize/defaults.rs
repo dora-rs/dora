@@ -264,9 +264,11 @@ fn list_default_values(
     messages: &HashMap<String, HashMap<String, Message>>,
     size: Option<usize>,
 ) -> Result<ArrayData> {
-    let defaults = match &m.default.as_deref() {
-        Some([]) => eyre::bail!("empty default value not supported"),
-        Some(defaults) => {
+    let defaults = match m.default.as_deref() {
+        // `int32[] x []` (an explicit empty default, #4163) means the same as
+        // no default: the sequence is empty. For `T[N]` the parser only lets
+        // `[]` through when `N == 0`, where that is also the right answer.
+        Some(defaults) if !defaults.is_empty() => {
             let raw_array: Vec<Arc<dyn Array>> = defaults
                 .iter()
                 .map(|default| {
@@ -296,7 +298,7 @@ fn list_default_values(
             let list = ListArray::new(field, offsets, default_values, None);
             list.to_data()
         }
-        None => {
+        _ => {
             let size = size.unwrap_or(1);
             let default_nested_type =
                 default_for_nestable_type(value_type, package_name, messages, size)?;
@@ -529,6 +531,37 @@ mod tests {
             0,
             "omitted unbounded sequence must default to empty"
         );
+    }
+
+    /// #4163: an explicit empty default (`int32[] x []`, `uint8[<=4] y []`)
+    /// defaults to the empty sequence, like no default at all. It used to fail
+    /// with "empty default value not supported", which broke publishing any
+    /// message that omits such a field.
+    #[test]
+    fn explicit_empty_sequence_default_is_empty() {
+        use dora_ros2_bridge_msg_gen::types::primitives::BasicType;
+        let messages = HashMap::new();
+        for mut member in [
+            sequence_member(NestableType::BasicType(BasicType::I32)),
+            bounded_sequence_member(NestableType::BasicType(BasicType::U8), 4),
+        ] {
+            member.default = Some(Vec::new());
+            let data = default_for_member(&member, "test_pkg", &messages).unwrap();
+            let list = make_array(data);
+            let list = list.as_list::<i32>();
+            assert_eq!(list.len(), 1, "sequence default is a single-element list");
+            assert_eq!(list.value(0).len(), 0, "`[]` default must be empty");
+        }
+        // The same through the `.msg` parser.
+        for line in ["int32[] x []", "string[] y []", "uint8[<=4] z []"] {
+            let member = dora_ros2_bridge_msg_gen::parser::member::member_def(line).unwrap();
+            let data = default_for_member(&member, "test_pkg", &messages).unwrap();
+            assert_eq!(
+                make_array(data).as_list::<i32>().value(0).len(),
+                0,
+                "{line}"
+            );
+        }
     }
 
     /// #3499: an omitted `BoundedSequence` (`uint8[<=4]`) must default to an

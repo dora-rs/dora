@@ -3,16 +3,17 @@ use dora_node_api::{
     merged::{MergeExternal, MergedEvent},
 };
 use dora_ros2_bridge::{
-    messages::example_interfaces::action::{Fibonacci, FibonacciFeedback, FibonacciResult},
+    messages::example_interfaces::action::{FibonacciFeedback, FibonacciGoal, FibonacciResult},
     ros2_client::{
         self, NodeOptions,
         action::{ActionServerQosPolicies, AsyncActionServer, GoalEndStatus},
     },
-    rustdds::{self, policy},
 };
 use eyre::{Context, eyre};
 use futures::task::SpawnExt;
 use std::{sync::Arc, time::Duration};
+
+type FibonacciServer = AsyncActionServer<FibonacciGoal, FibonacciResult, FibonacciFeedback>;
 
 fn main() -> eyre::Result<()> {
     let mut ros_node = init_ros_node()?;
@@ -90,7 +91,7 @@ fn main() -> eyre::Result<()> {
 
 /// Handle exactly one goal: accept it, compute the Fibonacci sequence while
 /// publishing feedback, then send the final result. Returns the goal's `order`.
-async fn serve_one_goal(server: &AsyncActionServer<Fibonacci>) -> eyre::Result<i32> {
+async fn serve_one_goal(server: &FibonacciServer) -> eyre::Result<i32> {
     let new_goal = server
         .receive_new_goal()
         .await
@@ -154,26 +155,24 @@ fn init_ros_node() -> eyre::Result<ros2_client::Node> {
         .map_err(|e| eyre::eyre!("failed to create ros2 node: {e:?}"))
 }
 
-fn create_action_server(
-    ros_node: &mut ros2_client::Node,
-) -> eyre::Result<AsyncActionServer<Fibonacci>> {
+fn create_action_server(ros_node: &mut ros2_client::Node) -> eyre::Result<FibonacciServer> {
     let action_qos = {
-        let service_qos = rustdds::QosPolicyBuilder::new()
-            .reliability(policy::Reliability::Reliable {
-                max_blocking_time: rustdds::Duration::from_millis(100),
-            })
-            .history(policy::History::KeepLast { depth: 1 })
-            .build();
+        // Reliable (waiting up to 100 ms when the send window is full), keep-last 1.
+        let service_qos = ros2_client::QosProfile::publisher_default();
         ActionServerQosPolicies {
             goal_service: service_qos.clone(),
             result_service: service_qos.clone(),
             cancel_service: service_qos.clone(),
             feedback_publisher: service_qos.clone(),
-            status_publisher: service_qos,
+            // rcl action clients subscribe to the status transient-local.
+            status_publisher: ros2_client::QosProfile {
+                durability: ros2_client::qos::Durability::TransientLocal,
+                ..service_qos
+            },
         }
     };
     let server = ros_node
-        .create_action_server::<Fibonacci>(
+        .create_action_server::<FibonacciGoal, FibonacciResult, FibonacciFeedback>(
             ros2_client::ServiceMapping::Enhanced,
             &ros2_client::Name::new("/", "fibonacci").unwrap(),
             &ros2_client::ActionTypeName::new("example_interfaces", "Fibonacci"),

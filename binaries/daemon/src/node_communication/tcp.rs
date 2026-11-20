@@ -144,9 +144,21 @@ impl Connection for TcpConnection {
                 Err(err) => {
                     // The whole frame was consumed, so the stream is still
                     // aligned. A node built against the same `dora-message`
-                    // never sends an undecodable frame: this is a newer node
-                    // sending a `DaemonRequest` variant this daemon predates.
-                    // Every such variant expects a binary reply (the rule on
+                    // never sends an undecodable frame: this is a newer node,
+                    // sending either a `DaemonRequest` variant this daemon
+                    // predates or a known variant whose payload uses a newer
+                    // type (e.g. a new metadata `Parameter` kind).
+                    if !DaemonRequest::frame_expects_reply(&raw) {
+                        // `SendMessage` / `OutputSent`: the node reads no reply,
+                        // so answering would shift every later request/reply
+                        // pair on this connection by one. Drop the frame.
+                        tracing::warn!(
+                            "dropping an output message this daemon cannot decode \
+                             (is the node newer than this daemon?): {err}"
+                        );
+                        continue;
+                    }
+                    // Every other request expects a reply (the rule on
                     // `DaemonRequest`), and the node blocks on it with no
                     // timeout, so answer with an error and keep serving the
                     // connection. Skipping the frame would hang the node.
@@ -251,6 +263,61 @@ mod tests {
         assert!(
             matches!(&reply, DaemonReply::Result(Err(msg)) if msg.contains("unsupported request")),
             "expected an error reply, got {reply:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn undecodable_send_message_gets_no_reply() {
+        use tokio::io::AsyncReadExt;
+
+        let (mut conn, mut client) = connected_pair().await;
+        // A valid `SendMessage` tag followed by a payload this daemon cannot
+        // decode, as from a newer node using a new metadata parameter kind.
+        let mut body = dora_message::encode(&Timestamped {
+            inner: DaemonRequest::SendMessage {
+                output_id: "out".to_string().into(),
+                metadata: dora_message::metadata::Metadata::new(HLC::default().new_timestamp()),
+                data: None,
+            },
+            timestamp: HLC::default().new_timestamp(),
+        })
+        .unwrap();
+        // Keep the tag, the output id's length (3) and its first byte, then
+        // corrupt the rest: invalid UTF-8 in the id fails the decode.
+        body.truncate(3);
+        body.extend_from_slice(&[0xFF; 8]);
+        let valid = dora_message::encode(&Timestamped {
+            inner: DaemonRequest::Subscribe,
+            timestamp: HLC::default().new_timestamp(),
+        })
+        .unwrap();
+        for frame in [&body, &valid] {
+            client
+                .write_all(&(frame.len() as u64).to_le_bytes())
+                .await
+                .unwrap();
+            client.write_all(frame).await.unwrap();
+        }
+
+        let received = conn.receive_message().await.unwrap();
+        assert!(
+            matches!(
+                received.as_ref().map(|m| &m.inner),
+                Some(DaemonRequest::Subscribe)
+            ),
+            "the connection must stay usable after an undecodable output, got {received:?}"
+        );
+        // The node reads no reply for `SendMessage`, so none may be written:
+        // it would be taken as the reply to the node's next request.
+        let mut byte = [0; 1];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            client.read(&mut byte),
+        )
+        .await;
+        assert!(
+            read.is_err(),
+            "the daemon must not reply to an undecodable SendMessage, got {read:?}"
         );
     }
 }

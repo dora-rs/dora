@@ -1,0 +1,45 @@
+# ROS 2 side of the DDS interop matrix (scripts/ros2-dds-interop.sh).
+#
+# Same digest-pinned base images and apt options as
+# docker-compose.ros2-zenoh.yml, and packages are left unpinned for the same
+# reason: an exact apt pin stops resolving as soon as upstream publishes a new
+# build. The script records the RMW versions that land. Fast-DDS ships in
+# ros-base; CycloneDDS is installed here. Host networking lets DDS multicast
+# discovery reach the dora processes running on the host. No router is needed,
+# so the container just idles while the script `exec`s rclpy peers into it.
+x-apt-opts: &apt-opts >-
+  -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+
+services:
+  humble-dds:
+    profiles: [humble]
+    image: ros:humble-ros-base@sha256:afb40d6be65331c20a114d4e229a7ef099fed1b17bf6370daee193514b32aa16
+    environment: { APT_OPTS: *apt-opts }
+    network_mode: host
+    command: >-
+      bash -lc 'apt-get $$APT_OPTS update && apt-get $$APT_OPTS install -y --no-install-recommends
+      ros-humble-rclpy ros-humble-example-interfaces ros-humble-rmw-cyclonedds-cpp &&
+      touch /tmp/ready && exec sleep infinity'
+    healthcheck:
+      test: [CMD-SHELL, "test -f /tmp/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    volumes:
+      - .:/workspace:ro
+  kilted-dds:
+    profiles: [kilted]
+    image: ros:kilted-ros-base@sha256:5a91562b35fe8ce33082df7221ec564c0172ae9b242352a45562deb1ddbf2702
+    environment: { APT_OPTS: *apt-opts }
+    network_mode: host
+    command: >-
+      bash -lc 'apt-get $$APT_OPTS update && apt-get $$APT_OPTS install -y --no-install-recommends
+      ros-kilted-rclpy ros-kilted-example-interfaces ros-kilted-rmw-cyclonedds-cpp &&
+      touch /tmp/ready && exec sleep infinity'
+    healthcheck:
+      test: [CMD-SHELL, "test -f /tmp/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    volumes:
+      - .:/workspace:ro

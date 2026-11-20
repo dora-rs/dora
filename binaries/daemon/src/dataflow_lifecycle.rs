@@ -5,7 +5,7 @@ use crate::spawn::Spawner;
 use crate::{
     CoreNodeKindExt, Daemon, DebugSchemaCache, Event, InputDeadline, OutputId, RunningDataflow,
     STDERR_LOG_LINES_MAX, node_inputs, output_routing, prepare_debug_topic_frame,
-    retain_debug_schema, spawn,
+    retain_published_schema, spawn,
 };
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
@@ -224,11 +224,7 @@ impl Daemon {
             .try_clone()
             .await
             .context("failed to clone logger")?;
-        let mut dataflow = RunningDataflow::new(
-            dataflow_id,
-            self.daemon_id.clone(),
-            dataflow_descriptor.clone(),
-        );
+        let mut dataflow = RunningDataflow::new(dataflow_id, dataflow_descriptor.clone());
         // Read from the descriptor, which is the one copy that survives
         // everything a dataflow outlives: auto-recovery re-spawn,
         // coordinator restart with state reconstruction, and `dora
@@ -246,8 +242,12 @@ impl Daemon {
         // daemons running the rest of the dataflow, then build the dial lists.
         // The trade has to finish before any node spawns — a node's zenoh
         // session reads its dial list once at startup and never again.
-        let listeners =
-            crate::spawn::reserve_node_listeners(&nodes, &spawn_nodes, self.zenoh_routable_addr);
+        let listeners = crate::spawn::reserve_node_listeners(
+            &nodes,
+            &spawn_nodes,
+            self.zenoh_routable_addr,
+            &crate::running_dataflow::planned_zenoh_endpoints(self.running.values()),
+        );
         // Started here but awaited below, so its bounded wait overlaps the
         // build metadata and working-directory work in between rather than
         // stalling the event loop on its own. Same reason the memory-pool
@@ -280,6 +280,11 @@ impl Daemon {
         }
         self.working_dir
             .insert(dataflow_id, base_working_dir.clone());
+        // Before this dataflow joins `running`, whose own plan the spawner
+        // reads from `zenoh_peering` (#4242).
+        let planned_zenoh_endpoints = Arc::new(crate::running_dataflow::planned_zenoh_endpoints(
+            self.running.values(),
+        ));
         let dataflow = self.running.entry(dataflow_id).or_insert(dataflow);
 
         let mut stopped = Vec::new();
@@ -426,10 +431,8 @@ impl Daemon {
                             .history(HistoryConfig::default().detect_late_publishers())
                             .callback(move |sample| {
                                 let bytes = sample.payload().to_bytes();
-                                let hash = dora_message::metadata::fnv1a(&bytes);
-                                retain_debug_schema(
+                                retain_published_schema(
                                     &mut cache.lock().unwrap_or_else(|e| e.into_inner()),
-                                    hash,
                                     &bytes,
                                 );
                             })
@@ -546,6 +549,7 @@ impl Daemon {
             shutdown: dataflow.listener_shutdown_rx.clone(),
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
             zenoh_peering: dataflow.zenoh_peering.clone(),
+            planned_zenoh_endpoints,
             disable_multicast: self.disable_multicast,
             machine_id: self.machine_id.clone(),
             bind_nodes_to_parent: self.bind_nodes_to_parent,
@@ -585,6 +589,7 @@ impl Daemon {
             let mut logger = logger.reborrow().for_node(node.id.clone());
             let local = spawn_nodes.contains(&node.id);
             if local {
+                dataflow.runtime_params.entry(node.id.clone()).or_default();
                 let dynamic_node = node.kind.dynamic();
                 if dynamic_node {
                     dataflow.dynamic_nodes.insert(node.id.clone());

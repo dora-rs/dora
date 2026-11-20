@@ -166,6 +166,12 @@ inputs:
 | `queue_policy` | string | `drop_oldest` | `drop_oldest`: drops oldest message when full. `backpressure`: buffers up to 10x `queue_size` without dropping (drops with ERROR log at hard cap) |
 | `input_timeout` | float | -- | Circuit breaker timeout in seconds. If no message arrives within this period, the daemon closes the input and the node receives an `InputClosed` event for graceful degradation |
 
+On the direct zenoh path, `queue_size` applies from the moment a message
+arrives: when a `drop_oldest` input has more than `queue_size` messages waiting
+in the receiver, in its ingress channel or its input queue, the oldest is
+discarded and counted as a drop. That releases its shared-memory buffer, so a
+receiver that falls behind cannot exhaust its producer's pool.
+
 A `backpressure` input keeps its producer's output on the daemon path instead
 of the direct zenoh path. The direct path's callback drops at the receiver's
 shared ingress channel when that channel is full, so a timer or a busier input
@@ -186,7 +192,12 @@ for 60 seconds (wedged, or blocked on its own producer in a backpressure cycle)
 stops holding the producer, which then loses that message, and every further
 message to that receiver's full channel is dropped the same way, without
 another 60-second hold, until the receiver has drained its channel to at least
-half empty. The routing applies to the producer's entire output, so every
+half empty. From the first such drop on, delivery to all of that receiver's
+`backpressure` inputs is best effort:
+a receiver that resumes but stays slower than its producer may never get its
+channel back to half empty, since the producer, no longer held, keeps it full,
+and then every message beyond the receiver's rate is dropped and counted for as
+long as both keep running. The routing applies to the producer's entire output, so every
 consumer of that output leaves the zero-copy path, and the daemon path carries
 the 64 MiB per-message limit. A producer learns its routing when it starts, so
 `dora node add` and `dora node replace` refuse a `backpressure` input whose
@@ -404,7 +415,7 @@ Pin a node's process to specific CPU cores (Linux only, ignored on other platfor
     sensor: sensor/data
 ```
 
-The daemon applies `sched_setaffinity` before exec. Core indices must be less than the system's `CPU_SETSIZE` (typically 1024). Out-of-range cores are skipped with a warning.
+The daemon applies `sched_setaffinity` before exec and reads the mask back. If the node cannot run on exactly the listed cores, it does not start, and the error names the node and its `cpu_affinity`. That happens for an empty list, a core at or above `CPU_SETSIZE` (typically 1024), and a core that is offline, missing, or outside the daemon's cpuset.
 
 ### Deployment
 
@@ -423,7 +434,7 @@ Assign nodes to specific machines using `deploy`:
     machine: gpu-server
     labels:
       gpu: "true"
-    distribute: scp
+    distribute: local
   path: ./target/debug/inference
   inputs:
     frames: camera-driver/frames
@@ -434,7 +445,7 @@ Assign nodes to specific machines using `deploy`:
 | `machine` | string | -- | Target machine/daemon ID. The coordinator routes the node to the daemon registered with this ID |
 | `working_dir` | string | -- | Working directory on the target machine |
 | `labels` | object | -- | Key-value labels for scheduling. The coordinator matches these against labels reported by each daemon at registration |
-| `distribute` | string | `local` | How built binaries reach the target daemon: **`local`** -- each daemon builds from source independently; **`scp`** -- CLI pushes the built binary via SSH/SCP before spawn; **`http`** -- daemon pulls the binary from the coordinator's HTTP artifact store |
+| `distribute` | string | `local` | Configured build steps run on the target machine. Prebuilt binaries must already exist there. The values `scp` and `http` are accepted for compatibility and use the same behavior as `local`. |
 
 When nodes are on different machines, communication automatically switches from shared memory to Zenoh pub/sub.
 

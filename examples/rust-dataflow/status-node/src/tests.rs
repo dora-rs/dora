@@ -178,3 +178,55 @@ fn test_non_uint64_random_input_errors() -> eyre::Result<()> {
 
     Ok(())
 }
+
+/// The event scheduler yields non-input events first, so in a real
+/// dataflow `InputClosed` can come back before the last `random` inputs
+/// that were already queued (see the `EventScheduler` docs). Integration
+/// testing doesn't use the scheduler, so this feeds the events in the order
+/// the scheduler yields them. Exiting on the close must not drop the values
+/// behind it: every one the producer sent has to be forwarded (#4110).
+///
+/// The scheduler only puts `InputClosed` ahead of inputs it has already
+/// buffered, so in a real run those values are queued when the node sees the
+/// close. The testing daemon hands out one event per request instead, so the
+/// test waits for the node's event thread to fetch them all before running.
+#[test]
+fn test_random_inputs_queued_behind_input_closed_are_forwarded() -> eyre::Result<()> {
+    let mut events = vec![TimedIncomingEvent {
+        time_offset_secs: 0.0,
+        event: IncomingEvent::InputClosed {
+            id: "random".into(),
+        },
+    }];
+    events.extend((0..20).map(|value| random_input(0.0, value)));
+    let inputs = dora_node_api::integration_testing::TestingInput::Input(
+        IntegrationTestInput::new("rust-status-node".parse().unwrap(), events),
+    );
+
+    let (tx, mut rx) = dora_node_api::integration_testing::output_channel();
+    let testing_output = dora_node_api::integration_testing::TestingOutput::ToChannel(tx);
+    let (node, events) = DoraNode::init_testing(inputs, testing_output, Default::default())?;
+    // All 21 events are due at offset 0; this is ample time to buffer them.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+
+    crate::run(node, events)?;
+
+    let outputs = dora_node_api::integration_testing::drain_outputs(&mut rx);
+    let forwarded: Vec<_> = outputs
+        .iter()
+        .map(|output| output["data"].clone())
+        .collect();
+    let expected: Vec<_> = (0..20u64)
+        .map(|value| {
+            serde_json::json!([format!(
+                "operator received random value {value:#x} after 0 ticks"
+            )])
+        })
+        .collect();
+    assert_eq!(
+        forwarded, expected,
+        "every `random` value queued behind `InputClosed` is forwarded, in order"
+    );
+
+    Ok(())
+}

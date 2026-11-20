@@ -19,9 +19,8 @@ See the [top-level README](../README.md) for the capability×language matrix and
 | `action-server`  | `python-ros2-dataflow-action-server`  | no (dora server + client)¹  |
 | `turtle`         | `python-ros2-dataflow`                | yes (`turtlesim`)           |
 
-¹ A dora-hosted action server is not discoverable by a real `rcl` client
-([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)), so the
-`action-server` example pairs a dora server with a dora client. The Python
+¹ The `action-server` example pairs a dora server with a dora client so it runs
+without a ROS 2 peer; a real `rcl` client can call the server too. The Python
 action client/server *do* support cancellation. See
 [`docs/ros2-bridge.md`](../../../docs/ros2-bridge.md).
 

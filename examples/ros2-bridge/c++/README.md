@@ -27,9 +27,8 @@ once and requires a result for every one. Before the fix the generated client
 spawned a result receiver per goal, and those receivers stole each other's
 `GetResult` responses, so concurrent goals lost results.
 
-¹ A dora-hosted action server is not discoverable by a real `rcl` client
-([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)), so the
-`action-server` example pairs a dora C++ server with a dora C++ client. The
+¹ The `action-server` example pairs a dora C++ server with a dora C++ client so
+it runs without a ROS 2 peer; a real `rcl` client can call the server too. The
 deferred `get_result` round-trip is flaky in upstream `ros2-client`/`rustdds`
 (it repeatedly hung the x86 nightly job and stalls on the arm64 dev harness), so
 the action examples are **not run in nightly CI** — validate them with

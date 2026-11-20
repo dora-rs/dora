@@ -80,7 +80,7 @@ pub mod bench_support {
         Vec<mpsc::Receiver<Timestamped<NodeEvent>>>,
     ) {
         let descriptor = dora_message::descriptor::Descriptor::new(vec![]);
-        let mut df = RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor);
+        let mut df = RunningDataflow::new(Uuid::nil(), descriptor);
 
         let sender_id: NodeId = "sender".to_string().into();
         let output_id: DataId = "output".to_string().into();
@@ -170,7 +170,9 @@ mod test_tracing;
 mod tests;
 mod zenoh_bind;
 
-pub(crate) use debug_topic::{DebugSchemaCache, prepare_debug_topic_frame, retain_debug_schema};
+pub(crate) use dora_core::debug_topic::{
+    DebugSchemaCache, prepare_debug_topic_frame, retain_published_schema,
+};
 pub(crate) use event_types::{
     CONTROL_EVENT_HEADROOM, DaemonNodeEvent, DoraEvent, Event, GAVE_UP_RECOVERY_ROOM,
     InterDaemonEvent, NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound,
@@ -183,8 +185,8 @@ pub(crate) use local_delivery::{
 };
 pub(crate) use metrics::{METRICS_INTERVAL, MetricsState};
 pub(crate) use node_exit::{
-    finish_drain_grace, health_check_should_kill, is_sigkill_like_exit, is_sigterm_like_exit,
-    startup_timeout_should_kill,
+    finish_drain_grace, health_check_should_kill, health_check_silence_since, is_sigkill_like_exit,
+    is_sigterm_like_exit, startup_timeout_should_kill,
 };
 pub(crate) use running_dataflow::{
     FinishDataflowWhen, InputDeadline, ProcessHandle, ProcessOperation, RunningDataflow,

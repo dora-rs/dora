@@ -12,7 +12,7 @@ pub mod output;
 pub mod session;
 mod template;
 mod ws_client;
-pub use ws_client::WsSession;
+pub use ws_client::{TopicBufferLimits, WsSession};
 
 pub use command::{BuildConfig, build};
 pub use command::{Executable, Run as RunCommand, run};

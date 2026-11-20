@@ -545,26 +545,26 @@ pub(crate) fn remove_cross_pool_shmem(shmem_name: &str) {
     }
 }
 
-/// Unlink the `/dev/shm` segment a cross-machine pool resolves to under
-/// `machine_id`, returning whether the name could be derived.
+/// Forget `shared_memory_id` (of `dataflow_id`) as a cross-machine pool
+/// and unlink the mirror segment this daemon created for it, returning
+/// the removed entry.
 ///
-/// Used by the free paths that only know the pool id. Paths that hold
-/// the name the segment was created under should unlink that instead —
-/// see `cross_pool_shmem_name`'s own warning: "create, write, and the
-/// free paths must agree or a mirror leaks under a name nobody unlinks."
-pub(crate) fn unlink_cross_pool_segment(
-    machine_id: &str,
+/// Only the name recorded in [`crate::CrossPoolEntry::mirror_shmem_name`] is
+/// unlinked, never a re-derived one: on the origin daemon the derived
+/// `dora_pool_{machine}_{dataflow}_{node}_{n}` name is the sender node's
+/// own live, auto-named local segment, and without an entry the id may
+/// name a purely local pool of this daemon (#4241). The origin side
+/// (`None`) and an unknown pool unlink nothing.
+pub(crate) fn release_cross_pool_entry(
+    tensor_pool: &TensorPoolManager,
     dataflow_id: &str,
     shared_memory_id: &str,
-) -> bool {
-    let Some(shmem_name) =
-        TensorPoolManager::cross_pool_shmem_name(machine_id, dataflow_id, shared_memory_id)
-    else {
-        tracing::warn!("memory pool: invalid pool id {shared_memory_id}, cannot unlink mirror");
-        return false;
-    };
-    remove_cross_pool_shmem(&shmem_name);
-    true
+) -> Option<crate::CrossPoolEntry> {
+    let entry = tensor_pool.unregister_cross_pool(dataflow_id, shared_memory_id)?;
+    if let Some(name) = &entry.mirror_shmem_name {
+        remove_cross_pool_shmem(name);
+    }
+    Some(entry)
 }
 
 #[cfg(test)]

@@ -7,6 +7,9 @@ from example_interfaces.action import Fibonacci
 
 p = argparse.ArgumentParser()
 p.add_argument("role", choices=["client", "server"])
+# Client only: send a plain goal and require SUCCEEDED instead of canceling it,
+# for servers that do not handle cancel (the YAML bridge on DDS, see #4205).
+p.add_argument("--no-cancel", action="store_true")
 a = p.parse_args()
 rclpy.init()
 n = rclpy.create_node("dora_zenoh_action_peer")
@@ -41,15 +44,21 @@ else:
     goal = sent.result()
     if goal is None or not goal.accepted:
         raise SystemExit("goal rejected or timed out")
-    canceled = goal.cancel_goal_async()
-    rclpy.spin_until_future_complete(n, canceled, timeout_sec=20)
-    cancel_response = canceled.result()
-    if cancel_response is None or not cancel_response.goals_canceling:
-        raise SystemExit("cancel rejected or timed out")
+    if not a.no_cancel:
+        canceled = goal.cancel_goal_async()
+        rclpy.spin_until_future_complete(n, canceled, timeout_sec=20)
+        cancel_response = canceled.result()
+        if cancel_response is None or not cancel_response.goals_canceling:
+            raise SystemExit("cancel rejected or timed out")
     result = goal.get_result_async()
     rclpy.spin_until_future_complete(n, result, timeout_sec=30)
     value = result.result()
-    if value is None or value.status != 5:
+    if a.no_cancel:
+        # Status 4 is SUCCEEDED. The sequence is only checked for being
+        # non-empty: servers differ in the Fibonacci convention they use.
+        if value is None or value.status != 4 or not value.result.sequence:
+            raise SystemExit(f"plain action result mismatch or timeout: {value!r}")
+    elif value is None or value.status != 5:
         raise SystemExit("canceled action result mismatch or timeout")
     print(json.dumps({"event": "PASS", "role": a.role}), flush=True)
 n.destroy_node()

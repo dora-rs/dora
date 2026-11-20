@@ -24,6 +24,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
+          # One cache per runner image (ImageOS, e.g. ubuntu24): a build
+          # restored on another image can link libraries it lacks.
+          env-vars: ImageOS
           cache-on-failure: true
 
       # Schemas only, deliberately. `binaries/cli/cli-surface.txt` is the same

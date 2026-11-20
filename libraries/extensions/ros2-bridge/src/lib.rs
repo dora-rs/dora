@@ -8,7 +8,8 @@ pub mod prelude {
     pub use futures;
     pub use futures_timer;
     pub use ros2_client;
-    pub use rustdds;
+    // The RustDDS that `ros2-client` itself uses, so the two never diverge.
+    pub use ros2_client::dds::rustdds;
     pub use tracing;
 }
 

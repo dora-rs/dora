@@ -1,8 +1,7 @@
 use dora_node_api::{self, DoraNode, Event};
 use dora_ros2_bridge::{
     messages::std_msgs::msg::String as Ros2String,
-    ros2_client::{self, NodeOptions, ros2},
-    rustdds::{self, policy},
+    ros2_client::{self, NodeOptions},
 };
 use eyre::{Context, eyre};
 use futures::task::SpawnExt;
@@ -74,18 +73,9 @@ fn init_ros_node() -> eyre::Result<ros2_client::Node> {
 fn create_publisher(
     ros_node: &mut ros2_client::Node,
 ) -> eyre::Result<ros2_client::Publisher<Ros2String>> {
-    let topic_qos: rustdds::QosPolicies = {
-        rustdds::QosPolicyBuilder::new()
-            .durability(policy::Durability::Volatile)
-            .liveliness(policy::Liveliness::Automatic {
-                lease_duration: ros2::Duration::INFINITE,
-            })
-            .reliability(policy::Reliability::Reliable {
-                max_blocking_time: ros2::Duration::from_millis(100),
-            })
-            .history(policy::History::KeepLast { depth: 1 })
-            .build()
-    };
+    // Volatile, automatic liveliness, reliable (waiting up to 100 ms when the
+    // send window is full), keep-last 1.
+    let topic_qos = ros2_client::QosProfile::publisher_default();
 
     let topic = ros_node
         .create_topic(

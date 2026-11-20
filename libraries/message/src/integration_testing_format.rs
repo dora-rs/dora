@@ -260,13 +260,55 @@ pub enum IncomingEvent {
     Input {
         id: DataId,
         metadata: Option<MetadataParameters>,
-        #[serde(flatten)]
+        /// The input payload, given inline as the keys of [`InputData`].
+        ///
+        /// Absent when the event carries none of those keys. Keys of
+        /// [`InputData`] that do not form a valid value are an error rather
+        /// than an input without data.
+        #[serde(flatten, deserialize_with = "deserialize_flattened_input_data")]
         data: Option<Box<InputData>>,
     },
     InputClosed {
         id: DataId,
     },
     AllInputsClosed,
+}
+
+/// The keys of [`InputData`]'s variants, as they appear flattened into an
+/// [`IncomingEvent::Input`].
+const INPUT_DATA_KEYS: &[&str] = &["data", "data_type", "path", "batch_index", "column"];
+
+/// Deserializes the flattened `data` of [`IncomingEvent::Input`].
+///
+/// serde's own handling of a flattened `Option` discards the error of the
+/// inner type and yields `None`, so an invalid `batch_index` or a `path`
+/// next to a mistyped key would silently turn into an input without a
+/// payload. Instead, an event that carries none of the [`InputData`] keys
+/// has no data, and one that carries any of them must parse. Other keys
+/// are ignored, as they are everywhere else in this format.
+fn deserialize_flattened_input_data<'de, D>(
+    deserializer: D,
+) -> Result<Option<Box<InputData>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::{Deserialize, de::Error};
+
+    let mut rest = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
+    rest.retain(|key, _| INPUT_DATA_KEYS.contains(&key.as_str()));
+    if rest.is_empty() {
+        return Ok(None);
+    }
+    let keys = rest.keys().cloned().collect::<Vec<_>>();
+    InputData::deserialize(serde_json::Value::Object(rest))
+        .map(|data| Some(Box::new(data)))
+        .map_err(|err| {
+            D::Error::custom(format!(
+                "invalid input data (keys {keys:?}): expected either `data` \
+                 (with optional `data_type`) or `path` (with optional \
+                 `batch_index` and `column`): {err}"
+            ))
+        })
 }
 
 /// Represents the data of an incoming input event for integration testing.
@@ -314,6 +356,109 @@ pub enum InputData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_event(json: &str) -> Result<IncomingEvent, serde_json::Error> {
+        serde_json::from_str::<TimedIncomingEvent>(json).map(|e| e.event)
+    }
+
+    #[test]
+    fn input_without_data_keys_has_no_data() {
+        let event = parse_event(r#"{"time_offset_secs":0.1,"type":"Input","id":"in"}"#)
+            .expect("an input without data is valid");
+        assert_eq!(
+            event,
+            IncomingEvent::Input {
+                id: "in".to_owned().into(),
+                metadata: None,
+                data: None,
+            }
+        );
+    }
+
+    /// [`INPUT_DATA_KEYS`] must name every field of [`InputData`]: a field
+    /// missing from it would be filtered out before parsing.
+    #[test]
+    fn input_data_keys_cover_every_input_data_field() {
+        for data in [
+            InputData::JsonObject {
+                data: serde_json::json!([1]),
+                data_type: Some(serde_json::json!("Int32")),
+            },
+            InputData::ArrowFile {
+                path: "x.arrow".into(),
+                batch_index: 1,
+                column: Some("c".into()),
+            },
+        ] {
+            let serde_json::Value::Object(fields) = serde_json::to_value(&data).unwrap() else {
+                panic!("InputData serializes as an object");
+            };
+            for key in fields.keys() {
+                assert!(INPUT_DATA_KEYS.contains(&key.as_str()), "`{key}` missing");
+            }
+        }
+    }
+
+    /// Keys outside [`InputData`] (comments, fields of a newer recorder)
+    /// are ignored, as they were before.
+    #[test]
+    fn input_with_only_unknown_keys_has_no_data() {
+        let event =
+            parse_event(r#"{"time_offset_secs":0.1,"type":"Input","id":"in","comment":"tick"}"#)
+                .expect("unknown keys are ignored");
+        assert!(matches!(event, IncomingEvent::Input { data: None, .. }));
+    }
+
+    #[test]
+    fn input_data_variants_still_parse() {
+        let event = parse_event(
+            r#"{"time_offset_secs":0,"type":"Input","id":"in","data":[1,2],"metadata":{}}"#,
+        )
+        .expect("inline JSON data");
+        let IncomingEvent::Input { data, metadata, .. } = event else {
+            panic!("expected an input, got {event:?}");
+        };
+        assert!(metadata.is_some());
+        assert!(matches!(
+            data.as_deref(),
+            Some(InputData::JsonObject { .. })
+        ));
+
+        let event = parse_event(
+            r#"{"time_offset_secs":0,"type":"Input","id":"in","path":"x.arrow","batch_index":2}"#,
+        )
+        .expect("Arrow file data");
+        let IncomingEvent::Input { data, .. } = event else {
+            panic!("expected an input, got {event:?}");
+        };
+        assert_eq!(
+            data.as_deref(),
+            Some(&InputData::ArrowFile {
+                path: "x.arrow".into(),
+                batch_index: 2,
+                column: None,
+            })
+        );
+    }
+
+    /// serde turns any error inside a flattened `Option` into `None`, so
+    /// these used to load as inputs without a payload.
+    #[test]
+    fn malformed_input_data_is_an_error() {
+        for json in [
+            r#"{"time_offset_secs":0,"type":"Input","id":"in","path":"x.arrow","batch_index":-1}"#,
+            r#"{"time_offset_secs":0,"type":"Input","id":"in","path":"x.arrow","batch_index":"2"}"#,
+            // `path` is missing, so the other Arrow file keys match nothing.
+            r#"{"time_offset_secs":0,"type":"Input","id":"in","pth":"x.arrow","batch_index":1}"#,
+            r#"{"time_offset_secs":0,"type":"Input","id":"in","data_type":"Int32"}"#,
+        ] {
+            let err = parse_event(json).expect_err(json);
+            assert!(
+                err.to_string().contains("invalid input data"),
+                "{json}: {err}"
+            );
+        }
+    }
 
     /// Pre-#1857 recordings and hand-authored fixtures have no
     /// `recording_status` field. They must continue to deserialize

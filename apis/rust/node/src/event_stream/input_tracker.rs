@@ -88,17 +88,17 @@ impl InputTracker {
     pub fn process_event(&mut self, event: &Event) -> bool {
         match event {
             Event::Input { id, data, .. } => {
-                self.states.insert(id.clone(), InputState::Healthy);
-                self.cache.insert(id.clone(), data.clone());
+                upsert(&mut self.states, id, InputState::Healthy);
+                upsert(&mut self.cache, id, data.clone());
                 true
             }
             Event::InputClosed { id } => {
-                self.states.insert(id.clone(), InputState::Closed);
+                upsert(&mut self.states, id, InputState::Closed);
                 // Cache preserved -- node can still read last_value
                 true
             }
             Event::InputRecovered { id } => {
-                self.states.insert(id.clone(), InputState::Healthy);
+                upsert(&mut self.states, id, InputState::Healthy);
                 true
             }
             Event::NodeRestarted { .. } => {
@@ -142,6 +142,20 @@ impl InputTracker {
     }
 }
 
+/// Set `map[id] = value`, cloning `id` only for an input not seen before.
+///
+/// `process_event` runs once per received event and an input's key is
+/// almost always present already, so `HashMap::insert(id.clone(), ..)` would
+/// allocate (and drop) a copy of the `DataId` string on every message.
+fn upsert<V>(map: &mut HashMap<DataId, V>, id: &DataId, value: V) {
+    match map.get_mut(id) {
+        Some(slot) => *slot = value,
+        None => {
+            map.insert(id.clone(), value);
+        }
+    }
+}
+
 impl Default for InputTracker {
     fn default() -> Self {
         Self::new()
@@ -178,6 +192,22 @@ mod tests {
         assert_eq!(t.state(&"a".into()), Some(InputState::Healthy));
         assert!(!t.is_closed(&"a".into()));
         assert!(t.last_value(&"a".into()).is_some());
+    }
+
+    #[test]
+    fn repeated_input_replaces_state_and_cached_value() {
+        let mut t = InputTracker::new();
+        t.process_event(&make_input("a", empty_data()));
+        t.process_event(&Event::InputClosed { id: "a".into() });
+        let newer = dora_arrow_convert::internal::from_array_ref(std::sync::Arc::new(
+            arrow::array::Int32Array::from(vec![1, 2, 3]),
+        ));
+        t.process_event(&make_input("a", newer));
+
+        assert_eq!(t.state(&"a".into()), Some(InputState::Healthy));
+        assert_eq!(t.last_value(&"a".into()).map(DoraArray::len), Some(3));
+        assert_eq!(t.states.len(), 1);
+        assert_eq!(t.cache.len(), 1);
     }
 
     #[test]

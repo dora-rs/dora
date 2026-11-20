@@ -12,7 +12,6 @@ use dora_core::{
     uhlc::HLC,
 };
 use dora_message::{
-    common::DaemonId,
     daemon_to_node::{NodeConfig, NodeEvent},
     descriptor::RestartPolicy,
     metadata::{self},
@@ -297,6 +296,20 @@ pub struct LogSubscriber {
     pub filter: dora_message::config::LogSubscriptionFilter,
 }
 
+/// Every Zenoh listen endpoint planned by `dataflows`. A planned port is
+/// only probed free, not held, until its node binds it, so a node IPC
+/// listener of *any* dataflow on this daemon must stay off it (#4107,
+/// #4242).
+pub(crate) fn planned_zenoh_endpoints<'a>(
+    dataflows: impl IntoIterator<Item = &'a RunningDataflow>,
+) -> BTreeSet<String> {
+    dataflows
+        .into_iter()
+        .flat_map(|dataflow| dataflow.zenoh_peering.values())
+        .flat_map(|peering| peering.listen.iter().cloned())
+        .collect()
+}
+
 pub struct RunningDataflow {
     pub(crate) id: uuid::Uuid,
     pub(crate) descriptor: Descriptor,
@@ -312,7 +325,15 @@ pub struct RunningDataflow {
     pub(crate) endpoint_exchange: Option<crate::spawn::endpoint_exchange::ExchangeHandle>,
     pub(crate) pending_nodes: PendingNodes,
     pub(crate) dataflow_started: bool,
+    /// When `start()` first released the startup barrier, on the clock the
+    /// health check uses. A node is silent while it waits at the barrier, so
+    /// its liveness is measured from here, not from its last request.
+    pub(crate) started_at_millis: u64,
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
+    /// One entry per locally assigned node, from spawn/add through removal.
+    /// Delayed coordinator writes may update a slot, but cannot recreate it.
+    /// Restarts and replacements retain its latest persisted runtime values.
+    pub(crate) runtime_params: BTreeMap<NodeId, BTreeMap<String, Arc<[u8]>>>,
     /// Per-node pending message counters (incremented on send, decremented on recv)
     pub(crate) pending_messages: HashMap<NodeId, Arc<AtomicU64>>,
     /// Per-node "the listener took something out of the subscribe channel"
@@ -485,20 +506,18 @@ impl RunningDataflow {
         self.debug_watched_outputs.clear();
     }
 
-    pub(crate) fn new(
-        dataflow_id: uuid::Uuid,
-        daemon_id: DaemonId,
-        dataflow_descriptor: Descriptor,
-    ) -> RunningDataflow {
+    pub(crate) fn new(dataflow_id: uuid::Uuid, dataflow_descriptor: Descriptor) -> RunningDataflow {
         let (finished_tx, _) = broadcast::channel(1);
         let (listener_shutdown_tx, listener_shutdown_rx) = tokio::sync::watch::channel(false);
         Self {
             id: dataflow_id,
             zenoh_peering: Arc::new(BTreeMap::new()),
             endpoint_exchange: None,
-            pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
+            pending_nodes: PendingNodes::new(dataflow_id),
             dataflow_started: false,
+            started_at_millis: 0,
             subscribe_channels: HashMap::new(),
+            runtime_params: BTreeMap::new(),
             pending_messages: HashMap::new(),
             drain_signals: HashMap::new(),
             remote_backpressured_outputs: BTreeSet::new(),
@@ -755,6 +774,12 @@ impl RunningDataflow {
         // the readiness path spawn the tasks". Setting it at only one call site
         // (as before) left it `false` for the entire life of a distributed
         // dataflow, silently starving timer inputs on nodes added later.
+        // `start()` runs again from `AddNode` once the dataflow is running;
+        // re-stamping there would reset every node's silence clock and keep
+        // sparing a hung node, so only the first release is recorded.
+        if !self.dataflow_started {
+            self.started_at_millis = crate::node_communication::current_millis();
+        }
         self.dataflow_started = true;
 
         Ok(())
@@ -1804,11 +1829,7 @@ mod tests {
     /// data inputs recorded in `data_inputs` — mirroring what the daemon
     /// does when it registers a node's inputs.
     fn dataflow_with_node(node_id: &str, inputs: &[(&str, bool)]) -> RunningDataflow {
-        let mut df = RunningDataflow::new(
-            uuid::Uuid::nil(),
-            DaemonId::new(None),
-            descriptor_with_node(node_id, inputs),
-        );
+        let mut df = RunningDataflow::new(uuid::Uuid::nil(), descriptor_with_node(node_id, inputs));
         register_inputs(&mut df, node_id, inputs);
         df
     }
@@ -2056,7 +2077,7 @@ mod tests {
              which is exactly why the descriptor cannot answer this question"
         );
 
-        let mut df = RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), descriptor);
+        let mut df = RunningDataflow::new(uuid::Uuid::nil(), descriptor);
         // The daemon registers the flattened `op/data` input.
         register_inputs(&mut df, "sink", &[("op/data", false)]);
         df.timers_gate_drain = false;
@@ -2089,7 +2110,7 @@ mod tests {
                             data: source/op/data\n";
         let descriptor: Descriptor = serde_yaml::from_str(yaml).expect("parse");
         let node: NodeId = "sink".to_string().into();
-        let mut df = RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), descriptor);
+        let mut df = RunningDataflow::new(uuid::Uuid::nil(), descriptor);
         register_inputs(&mut df, "sink", &[("op/data", false)]);
         df.timers_gate_drain = false;
 
@@ -2202,8 +2223,7 @@ mod tests {
 
     #[test]
     fn propagate_node_failed_keeps_idle_receiver_counter_consistent() {
-        let mut df =
-            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let mut df = RunningDataflow::new(uuid::Uuid::nil(), empty_descriptor());
         let failed = node_id("source");
         let receiver = node_id("sink");
 
@@ -2475,8 +2495,7 @@ mod tests {
 
     #[test]
     fn unrelated_remote_output_does_not_disable_local_straggler_watchdog() {
-        let mut df =
-            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let mut df = RunningDataflow::new(uuid::Uuid::nil(), empty_descriptor());
         let local_stuck = node_id("local_stuck");
         let remote_producer = node_id("remote_producer");
         let now = 10_000;
@@ -2512,8 +2531,7 @@ mod tests {
 
     #[test]
     fn remote_output_producer_keeps_local_consumer_from_escalating() {
-        let mut df =
-            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let mut df = RunningDataflow::new(uuid::Uuid::nil(), empty_descriptor());
         let producer = node_id("producer");
         let local_consumer = node_id("local_consumer");
         let unrelated_stuck = node_id("unrelated_stuck");
@@ -2589,8 +2607,7 @@ mod tests {
 
     #[test]
     fn remote_output_producer_protects_multi_hop_local_consumers() {
-        let mut df =
-            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let mut df = RunningDataflow::new(uuid::Uuid::nil(), empty_descriptor());
         let producer = node_id("producer");
         let middle = node_id("middle");
         let leaf = node_id("leaf");
@@ -2678,8 +2695,7 @@ mod tests {
 
     #[test]
     fn inbound_remote_source_keeps_local_consumer_from_escalating() {
-        let mut df =
-            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let mut df = RunningDataflow::new(uuid::Uuid::nil(), empty_descriptor());
         let remote_source = node_id("remote_source");
         let inbound_consumer = node_id("inbound_consumer");
         let unrelated_stuck = node_id("unrelated_stuck");

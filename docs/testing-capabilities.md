@@ -130,6 +130,7 @@ Known gap: `dora self update` destructive swap path (tracked in
 | `restart_window` counter reset | `restart_window_resets_restart_counter` | PR | Contract |
 | `input_timeout` delivers `InputClosed` | `input_timeout_delivers_input_closed_to_downstream` | PR | Contract |
 | `health_check_timeout` SIGKILLs unresponsive node | `health_check_timeout_sigkills_unresponsive_node` | PR | Contract |
+| `health_check_timeout` spares a node parked at the startup barrier | `health_check_timeout_spares_node_parked_at_startup_barrier` | PR | Contract |
 | `startup_timeout` SIGKILLs hung node before init | `node_killed_on_startup_timeout_unwedges_dataflow` | PR | Contract |
 | `NodeRestarted` delivery to downstream | `node_restarted_is_delivered_to_downstream` | PR | Contract |
 | `InputRecovered` delivery after break | `input_recovered_is_delivered_after_broken_input_receives_data` | PR | Contract |
@@ -152,6 +153,8 @@ Known gap: `dora self update` destructive swap path (tracked in
 | Running → Recovering transition on coord restart | `state-reconstruction-smoke` | Nightly | Contract |
 | Daemon auto-reconnect after coord freeze | `daemon-reconnect-smoke` (Linux only) | Nightly | Contract |
 | Full reconciliation back to Running post-restart | no automated coverage | — | Gap (aspirational per `state-reconstruction-smoke` docstring) |
+| Damaged store file is rejected, never served with altered records | `damaged_store_is_rejected_or_reads_back_intact` + siblings in `redb_store.rs`; `e2e_up_reports_corrupt_coordinator_store` | PR | Contract |
+| Param writes stay atomic and acknowledged ones survive a SIGKILL of the writing process | `sigkill_during_param_writes_keeps_every_acked_write` (`libraries/coordinator-store/tests/sigkill_during_writes.rs`) | PR | Contract |
 
 ## Cross-language interop
 

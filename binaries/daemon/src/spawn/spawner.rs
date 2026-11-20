@@ -329,17 +329,50 @@ pub struct NodeZenohPeering {
 /// consumer points it at its *own* loopback, which is the silent-partition
 /// failure this planning exists to prevent. Either way the edge falls back to
 /// the daemon path, which is where it lives today.
+///
+/// `planned` holds the endpoints the other dataflows on this daemon have
+/// planned. They are as unbound as this dataflow's own until their nodes
+/// start, so a probe that returns one of them is retried (#4242).
 pub fn reserve_node_listeners(
     nodes: &BTreeMap<NodeId, ResolvedNode>,
     local_nodes: &BTreeSet<NodeId>,
     routable_addr: Option<IpAddr>,
+    planned: &BTreeSet<String>,
 ) -> BTreeMap<NodeId, NodeListeners> {
-    reserve_node_listeners_with(
-        nodes,
-        local_nodes,
-        routable_addr,
-        dora_core::topics::reserve_zenoh_endpoint,
-    )
+    reserve_node_listeners_with(nodes, local_nodes, routable_addr, |addr| {
+        reserve_unplanned(
+            addr,
+            |endpoint| planned.contains(endpoint),
+            dora_core::topics::reserve_zenoh_endpoint,
+        )
+    })
+}
+
+/// How often [`reserve_unplanned`] probes before giving up.
+const UNPLANNED_RESERVE_ATTEMPTS: usize = 16;
+
+/// Probes a free port with `reserve` until it returns an endpoint that
+/// `is_planned` rejects no longer. A planned endpoint is only probed free,
+/// not held, until its node binds it, so the OS can hand it out again
+/// (#4107, #4242).
+pub(crate) fn reserve_unplanned(
+    addr: IpAddr,
+    is_planned: impl Fn(&str) -> bool,
+    reserve: impl Fn(IpAddr) -> std::io::Result<String>,
+) -> std::io::Result<String> {
+    for _ in 0..UNPLANNED_RESERVE_ATTEMPTS {
+        let endpoint = reserve(addr)?;
+        if !is_planned(&endpoint) {
+            return Ok(endpoint);
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AddrInUse,
+        format!(
+            "{UNPLANNED_RESERVE_ATTEMPTS} probed ports on {addr} were all planned \
+             for another node's zenoh listener"
+        ),
+    ))
 }
 
 /// [`reserve_node_listeners`] with the port reservation injected.
@@ -600,6 +633,12 @@ pub struct Spawner {
     /// Per-node listener + dial-list, so the node↔node links the dataflow needs
     /// are established deterministically. See [`build_peering_plan`].
     pub zenoh_peering: Arc<BTreeMap<NodeId, NodeZenohPeering>>,
+    /// Zenoh listen endpoints planned by the dataflows running on this daemon
+    /// when this spawner was built (see
+    /// [`planned_zenoh_endpoints`](crate::running_dataflow::planned_zenoh_endpoints)).
+    /// The spawner is used within one daemon event, so no other dataflow can
+    /// be planned before its listeners are bound.
+    pub planned_zenoh_endpoints: Arc<BTreeSet<String>>,
     /// Whether this daemon runs without multicast scouting, so spawned nodes
     /// should too (see [`DORA_ZENOH_MULTICAST_ENV`]). Mixing modes leaves a
     /// node scouting for a daemon that no longer answers.
@@ -620,6 +659,18 @@ pub struct Spawner {
 }
 
 impl Spawner {
+    /// The Zenoh endpoints a node IPC listener must not take: every node's
+    /// listeners, not just this node's, and those of every other dataflow on
+    /// this daemon too, since none of the advertised ports may be claimed
+    /// while their producer processes are still starting (#4107, #4242).
+    fn reserved_zenoh_endpoints(&self) -> BTreeSet<String> {
+        self.zenoh_peering
+            .values()
+            .flat_map(|peering| peering.listen.iter().cloned())
+            .chain(self.planned_zenoh_endpoints.iter().cloned())
+            .collect()
+    }
+
     fn maybe_inject_machine_id(&self, command: Command) -> Command {
         let command = match &self.machine_id {
             Some(machine_id) => command.env("DORA_MACHINE_ID", machine_id),
@@ -757,6 +808,7 @@ impl Spawner {
         // closes the listener instead of leaking it until dataflow end
         // (dora-rs/dora#2988 review, finding 3).
         let (listener_shutdown, node_shutdown_rx) = tokio::sync::watch::channel(false);
+        let reserved_zenoh_endpoints = self.reserved_zenoh_endpoints();
         let daemon_communication = spawn_listener_loop(
             &dataflow_id,
             &node_id,
@@ -770,6 +822,7 @@ impl Spawner {
                 outputs: backpressured_outputs,
                 ft_stats: self.ft_stats.clone(),
             }),
+            &reserved_zenoh_endpoints,
         )
         .await?;
 
@@ -975,6 +1028,7 @@ mod tests {
             // Empty: exercises the daemon-endpoint fallback arm, which is the
             // one a node without its own peering plan takes.
             zenoh_peering: Arc::new(BTreeMap::new()),
+            planned_zenoh_endpoints: Arc::default(),
             disable_multicast,
             machine_id: None,
             // The `dora up` shape: a long-lived daemon whose nodes outlive it.
@@ -1013,6 +1067,71 @@ mod tests {
             Some(Some(OsString::from("tcp/10.0.0.2:41001"))),
             "the routable endpoint belongs in the extra var"
         );
+    }
+
+    /// A node IPC listener must stay off this dataflow's planned Zenoh ports
+    /// and off those another dataflow on the daemon has planned but whose
+    /// nodes may not have bound them yet (#4107, #4242).
+    #[test]
+    fn reserved_endpoints_include_other_dataflows_plans() {
+        let mut spawner = spawner_for(None, false);
+        spawner.zenoh_peering = Arc::new(BTreeMap::from([(
+            node("sink"),
+            NodeZenohPeering {
+                listen: vec!["tcp/127.0.0.1:41000".into()],
+                connect: Vec::new(),
+                routable: false,
+            },
+        )]));
+        spawner.planned_zenoh_endpoints = Arc::new(BTreeSet::from([
+            "tcp/127.0.0.1:41000".to_owned(),
+            "tcp/127.0.0.1:42000".to_owned(),
+        ]));
+
+        assert_eq!(
+            spawner.reserved_zenoh_endpoints(),
+            BTreeSet::from([
+                "tcp/127.0.0.1:41000".to_owned(),
+                "tcp/127.0.0.1:42000".to_owned(),
+            ])
+        );
+    }
+
+    /// A probe that returns a port another dataflow on this daemon has planned
+    /// but not yet bound is retried, so two plans never share a port (#4242).
+    #[test]
+    fn reserve_unplanned_skips_endpoints_planned_elsewhere() {
+        let planned = BTreeSet::from(["tcp/127.0.0.1:41000".to_owned()]);
+        let probes = std::cell::Cell::new(0);
+        // The OS hands back the planned port first, then a free one.
+        let reserve = |addr: IpAddr| {
+            let port = [41000, 41001][probes.get()];
+            probes.set(probes.get() + 1);
+            Ok(dora_core::topics::zenoh_endpoint(addr, port))
+        };
+
+        let endpoint = reserve_unplanned(
+            dora_core::topics::LOCALHOST,
+            |endpoint| planned.contains(endpoint),
+            reserve,
+        )
+        .unwrap();
+        assert_eq!(endpoint, "tcp/127.0.0.1:41001");
+        assert_eq!(probes.get(), 2);
+    }
+
+    /// When every probe lands on a planned port the reservation fails, which
+    /// the planner turns into its gossip fallback for that node, instead of
+    /// handing out a port that is already promised.
+    #[test]
+    fn reserve_unplanned_gives_up_rather_than_reuse_a_planned_endpoint() {
+        let error = reserve_unplanned(
+            dora_core::topics::LOCALHOST,
+            |_| true,
+            |addr| Ok(dora_core::topics::zenoh_endpoint(addr, 41000)),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
     }
 
     /// The common case — no remote consumer — must not set the extra variable

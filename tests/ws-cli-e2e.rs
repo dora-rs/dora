@@ -70,6 +70,18 @@ fn start_coordinator_background_with_store(store: Arc<dyn CoordinatorStore>) -> 
     port
 }
 
+#[tokio::test]
+async fn removed_artifact_endpoint_returns_not_found() {
+    let port = start_coordinator_background();
+    // An invalid build ID used to reach the handler and return 400.
+    let url = format!("ws://127.0.0.1:{port}/api/artifacts/invalid/node");
+    let err = tokio_tungstenite::connect_async(url).await.unwrap_err();
+    let tokio_tungstenite::tungstenite::Error::Http(response) = err else {
+        panic!("expected an HTTP response, got {err}");
+    };
+    assert_eq!(response.status().as_u16(), 404);
+}
+
 fn seed_dataflow_record(store: &dyn CoordinatorStore, dataflow_id: uuid::Uuid, node_ids: &[&str]) {
     let descriptor_json = serde_json::json!({
         "nodes": node_ids.iter().map(|id| serde_json::json!({ "id": id })).collect::<Vec<_>>()
@@ -189,6 +201,25 @@ impl CoordinatorStore for FailingListStore {
         key: &str,
     ) -> eyre::Result<()> {
         self.inner.delete_node_param(dataflow_id, node_id, key)
+    }
+
+    fn list_node_param_tombstones(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> eyre::Result<Vec<(String, Uuid)>> {
+        self.inner.list_node_param_tombstones(dataflow_id, node_id)
+    }
+
+    fn clear_node_param_tombstone(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        token: Uuid,
+    ) -> eyre::Result<()> {
+        self.inner
+            .clear_node_param_tombstone(dataflow_id, node_id, key, token)
     }
 }
 
@@ -508,6 +539,7 @@ fn cli_topic_subscription_receives_binary_frames_immediately_after_subscribe_ack
         .subscribe_topics(
             Uuid::new_v4(),
             vec![("node".to_string().into(), "output".to_string().into())],
+            dora_cli::TopicBufferLimits::LIVE,
         )
         .expect("subscribe topics");
 
@@ -1091,6 +1123,15 @@ mod real_dataflow {
         txn.commit().expect("commit incompatible store");
     }
 
+    /// A default store the coordinator must reject as damaged: redb reads
+    /// the header first and finds no magic number.
+    fn write_corrupt_coordinator_store(home: &Path) {
+        let path = home.join(".dora").join("coordinator.redb");
+        std::fs::create_dir_all(path.parent().expect("store parent"))
+            .expect("create store directory");
+        std::fs::write(path, [0x5A_u8; 8192]).expect("write damaged store");
+    }
+
     fn unused_port() -> u16 {
         std::net::TcpListener::bind(("127.0.0.1", 0))
             .expect("bind ephemeral port")
@@ -1204,6 +1245,33 @@ mod real_dataflow {
         );
         assert!(
             stderr.contains("redb schema version mismatch"),
+            "coordinator startup error was not surfaced; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("dora up --recreate-store"),
+            "recovery hint was not surfaced; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
+
+    /// A damaged default store must fail `dora up` with the store's own
+    /// diagnosis and the same `--recreate-store` recovery a schema mismatch
+    /// gets, since the fix is the same: archive the file and start fresh.
+    #[test]
+    fn e2e_up_reports_corrupt_coordinator_store() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        write_corrupt_coordinator_store(home.path());
+
+        let (status, stdout, stderr) =
+            run_dora_isolated(&dora, home.path(), unused_port(), &["up"]);
+
+        assert!(
+            !status.success(),
+            "dora up unexpectedly succeeded; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("redb store is corrupt"),
             "coordinator startup error was not surfaced; stdout:\n{stdout}\nstderr:\n{stderr}"
         );
         assert!(

@@ -42,7 +42,9 @@ pub enum PatternError {
     /// correlated reply arrived.
     #[error("event stream ended before pattern reply arrived")]
     StreamEnded,
-    /// The event stream surfaced an error while waiting.
+    /// The event stream surfaced an error while waiting, or the expected
+    /// server failed (exited with an error and will not be restarted), so no
+    /// reply can arrive. The message names the server in the latter case.
     #[error("pattern wait failed: {0}")]
     StreamError(String),
 }

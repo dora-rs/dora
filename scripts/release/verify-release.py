@@ -277,9 +277,18 @@ def check_github_release(report: Report, version: str, repo: str) -> None:
     assets = {asset["name"] for asset in data["assets"]}
     for name in REQUIRED_CLI_ASSETS:
         report.check(name in assets, f"GitHub: {name}")
+    # CLIs before 1.2 take the first asset whose name contains their target
+    # triple when they self update (newer ones match `dora-cli-`). Keep the
+    # CLI archive first, so those older installs can still update.
+    for target in C_CPP_TARGETS:
+        first = next((a["name"] for a in data["assets"] if target in a["name"]), None)
+        report.check(
+            first is not None and first.startswith(f"dora-cli-{target}"),
+            f"GitHub: first {target} asset is the CLI ({first})",
+        )
     for target in C_CPP_TARGETS:
         for flavor in ("c", "cpp"):
-            prefix = f"dora-{flavor}-libraries-{target}"
+            prefix = f"dora-libraries-{flavor}-{target}"
             report.check(
                 any(name.startswith(prefix) for name in assets),
                 f"GitHub: {prefix}.*",

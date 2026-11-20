@@ -144,6 +144,65 @@ mod runtime_type_check_tests {
 /// value (overridable via `DORA_ZERO_COPY_THRESHOLD`).
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
+/// Upper bound for a `DORA_ZERO_COPY_THRESHOLD` override.
+///
+/// Every payload below the threshold is published with an express heap `put`,
+/// which has to fit a single zenoh batch: `batch_size` is a `u16`, so a batch
+/// is at most 64 KiB, and a larger express message is fragmented and silently
+/// dropped (dora-rs/dora#2366). A threshold above this bound would send
+/// mid-size payloads down that lossy path instead of SHM or the daemon, so the
+/// override is clamped here. The remaining room in the batch is left for the
+/// metadata attachment and the transport headers. The bound assumes zenoh's
+/// default (and largest) batch size; a `ZENOH_CONFIG_PATH` that lowers
+/// `batch_size` lowers the safe threshold with it.
+const MAX_ZERO_COPY_THRESHOLD: usize = 32 * 1024;
+
+/// Parse a `DORA_ZERO_COPY_THRESHOLD` override, falling back to
+/// [`ZERO_COPY_THRESHOLD`] when it is absent or invalid and clamping it to
+/// [`MAX_ZERO_COPY_THRESHOLD`].
+fn parse_zero_copy_threshold(raw: Option<&str>) -> usize {
+    let Some(raw) = raw else {
+        return ZERO_COPY_THRESHOLD;
+    };
+    match raw.trim().parse::<usize>() {
+        Ok(value) if value > MAX_ZERO_COPY_THRESHOLD => {
+            tracing::warn!(
+                "DORA_ZERO_COPY_THRESHOLD={value} exceeds the {MAX_ZERO_COPY_THRESHOLD}-byte \
+                 maximum (larger heap-published payloads would not fit one zenoh batch \
+                 and be dropped); using {MAX_ZERO_COPY_THRESHOLD}"
+            );
+            MAX_ZERO_COPY_THRESHOLD
+        }
+        Ok(value) => value,
+        Err(err) => {
+            tracing::warn!(
+                "invalid DORA_ZERO_COPY_THRESHOLD={raw:?} ({err}); \
+                 using default {ZERO_COPY_THRESHOLD}"
+            );
+            ZERO_COPY_THRESHOLD
+        }
+    }
+}
+
+/// Parse a `DORA_NODE_SHM_POOL_SIZE` override with the same grammar as the
+/// per-node `shared_memory_pool_size` YAML key (`134217728`, `128MB`, ...).
+///
+/// Returns `None` when the variable is absent or invalid, so the built-in
+/// default applies; an invalid value is logged rather than dropped silently,
+/// since the variable exists to raise the pool for large payloads.
+fn parse_shm_pool_size(raw: Option<&str>) -> Option<usize> {
+    let raw = raw?;
+    match raw.parse::<dora_message::config::ByteSize>() {
+        Ok(size) => Some(size.as_bytes()),
+        Err(err) => {
+            tracing::warn!(
+                "invalid DORA_NODE_SHM_POOL_SIZE={raw:?} ({err}); using the default pool size"
+            );
+            None
+        }
+    }
+}
+
 /// How many large outbound sends are traced hop-by-hop
 /// (dora-rs/dora#2742 diagnostic; see [`DoraNode::send_output_sample`]).
 ///
@@ -1250,9 +1309,7 @@ impl DoraNode {
             .shared_memory_pool_size
             .map(|bs| bs.as_bytes())
             .or_else(|| {
-                std::env::var("DORA_NODE_SHM_POOL_SIZE")
-                    .ok()
-                    .and_then(|s| s.parse::<usize>().ok())
+                parse_shm_pool_size(std::env::var("DORA_NODE_SHM_POOL_SIZE").ok().as_deref())
             })
             // 8 MB default — kept deliberately small so the pool fits a
             // constrained `/dev/shm` (Docker/Kubernetes commonly cap it at
@@ -1267,10 +1324,8 @@ impl DoraNode {
             // `shared_memory_pool_size` / `DORA_NODE_SHM_POOL_SIZE`) to keep more
             // large outputs zero-copy.
             .unwrap_or(8 * 1024 * 1024);
-        let zenoh_zero_copy_threshold = std::env::var("DORA_ZERO_COPY_THRESHOLD")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(ZERO_COPY_THRESHOLD);
+        let zenoh_zero_copy_threshold =
+            parse_zero_copy_threshold(std::env::var("DORA_ZERO_COPY_THRESHOLD").ok().as_deref());
         let (zenoh_session, zenoh_shm_provider, owned_runtime) = if !is_standard_mode {
             (None, None, None)
         } else {
@@ -1811,7 +1866,7 @@ impl DoraNode {
             }
         }
 
-        let metadata = Metadata::from_parameters(self.clock.new_timestamp(), parameters);
+        let mut metadata = Metadata::from_parameters(self.clock.new_timestamp(), parameters);
 
         let finalized = sample.map(|sample| sample.finalize());
 
@@ -1866,7 +1921,7 @@ impl DoraNode {
                          (dora-rs/dora#2742 diagnostic)"
                     );
                 }
-                match self.zenoh_publish(&output_id, &metadata, finalized, diag) {
+                match self.zenoh_publish(&output_id, &mut metadata, finalized, diag) {
                     Ok(PublishOutcome::Published) => Delivery::Zenoh,
                     Ok(PublishOutcome::NotPublished(sample)) => {
                         Delivery::Daemon(Some(sample.into_data_message()))
@@ -2009,7 +2064,7 @@ impl DoraNode {
     fn zenoh_publish(
         &mut self,
         output_id: &DataId,
-        metadata: &Metadata,
+        metadata: &mut Metadata,
         finalized: FinalizedSample,
         diag: bool,
     ) -> eyre::Result<PublishOutcome> {
@@ -2041,7 +2096,9 @@ impl DoraNode {
         // on the paths that actually attach the full metadata. Returns `None`
         // (after logging) on an encode failure so the caller can fall back to
         // the daemon path.
-        let encode_metadata = || match dora_message::encode(metadata) {
+        // Takes the metadata as an argument (rather than capturing it) so the
+        // schema-once path below can borrow it mutably in between.
+        let encode_metadata = |metadata: &Metadata| match dora_message::encode(metadata) {
             Ok(bytes) => Some(bytes),
             Err(e) => {
                 tracing::warn!(output = %output_id, "failed to serialize metadata ({e}); falling back to daemon path");
@@ -2065,7 +2122,7 @@ impl DoraNode {
             // the deliberate, accepted trade-off for the zero-copy large-output
             // path, not an oversight.
             FinalizedSample::Shm(sbuf) => {
-                let Some(metadata_bytes) = encode_metadata() else {
+                let Some(metadata_bytes) = encode_metadata(metadata) else {
                     return Ok(PublishOutcome::NotPublished(FinalizedSample::Shm(sbuf)));
                 };
                 if diag {
@@ -2123,7 +2180,7 @@ impl DoraNode {
                             // over-allocated. Fall through to the reliable
                             // daemon path instead of risking that panic.
                             if sbuf.as_mut().len() == avec.len() {
-                                let Some(metadata_bytes) = encode_metadata() else {
+                                let Some(metadata_bytes) = encode_metadata(metadata) else {
                                     return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(
                                         avec,
                                     )));
@@ -2221,7 +2278,7 @@ impl DoraNode {
                         &self.id,
                         output_id,
                         &avec,
-                        metadata,
+                        &mut *metadata,
                     )
                 } else {
                     None
@@ -2246,7 +2303,7 @@ impl DoraNode {
                         attachment,
                     } => (payload, attachment.into()),
                     ZenohPutChoice::FullStream => {
-                        let Some(bytes) = encode_metadata() else {
+                        let Some(bytes) = encode_metadata(metadata) else {
                             return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)));
                         };
                         (&avec[..], bytes.into())
@@ -2297,7 +2354,8 @@ impl DoraNode {
     /// Outputs whose raw payload is at least this many bytes are published via
     /// zenoh shared memory (zero-copy for local subscribers); smaller outputs
     /// are published via zenoh with a heap-buffered put. Configured via the
-    /// `DORA_ZERO_COPY_THRESHOLD` env var, defaulting to
+    /// `DORA_ZERO_COPY_THRESHOLD` env var (at most 32 KiB, so a heap-published
+    /// payload still fits one zenoh batch), defaulting to
     /// [`ZERO_COPY_THRESHOLD`].
     pub fn zero_copy_threshold(&self) -> usize {
         self.sample_allocator.zero_copy_threshold
@@ -3355,12 +3413,12 @@ fn publish_schema_once(
     node_id: &NodeId,
     output_id: &DataId,
     full_stream: &[u8],
-    base_metadata: &Metadata,
+    metadata: &mut Metadata,
 ) -> Option<Vec<u8>> {
     let state = schema_state.get(output_id);
     let known = state.map(|state| (state.published_hash, &*state.published_schema));
     let (hash, schema_bytes) =
-        arrow_utils::ipc_encode::schema_block_and_hash_reusing(full_stream, known)?;
+        dora_core::schema_once::schema_block_and_hash_reusing(full_stream, known)?;
 
     let now = Instant::now();
     let decision = schema_once_decision(state, hash, now);
@@ -3404,12 +3462,20 @@ fn publish_schema_once(
         SchemaOnceDecision::SendSchemaLessBatch => {
             tracing::debug!(output = %output_id, hash, "sending schema-less batch with SCHEMA_HASH");
             // Every batch carries the schema hash so the receiver can match it
-            // to the primed decoder (and detect a schema change).
-            let mut metadata = base_metadata.clone();
-            metadata
+            // to the primed decoder (and detect a schema change). Tag the
+            // caller's metadata in place for the encode and untag it after,
+            // instead of deep-cloning the whole parameter map per message on
+            // this, the highest-rate path: the caller still reports the same
+            // metadata to the daemon, which must not see the internal key.
+            // `send_output_sample_unchecked` strips any user-supplied
+            // `SCHEMA_HASH` up front, so there is no previous value to restore.
+            let previous = metadata
                 .parameters
                 .insert(SCHEMA_HASH.to_string(), Parameter::Integer(hash as i64));
-            dora_message::encode(&metadata).ok()
+            debug_assert!(previous.is_none(), "caller must strip SCHEMA_HASH");
+            let encoded = dora_message::encode(&*metadata).ok();
+            metadata.parameters.remove(SCHEMA_HASH);
+            encoded
         }
     }
 }
@@ -3754,6 +3820,38 @@ mod tests {
         IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
         integration_testing_format::{IncomingEvent, TimedIncomingEvent},
     };
+
+    #[test]
+    fn shm_pool_size_override_accepts_the_yaml_grammar() {
+        assert_eq!(parse_shm_pool_size(None), None);
+        assert_eq!(parse_shm_pool_size(Some("4096")), Some(4096));
+        assert_eq!(parse_shm_pool_size(Some(" 134217728 ")), Some(128 << 20));
+        assert_eq!(parse_shm_pool_size(Some("128MB")), Some(128 << 20));
+        assert_eq!(parse_shm_pool_size(Some("64 KB")), Some(64 << 10));
+        assert_eq!(parse_shm_pool_size(Some("junk")), None);
+        assert_eq!(parse_shm_pool_size(Some("-1MB")), None);
+    }
+
+    #[test]
+    fn zero_copy_threshold_override_is_parsed_and_clamped() {
+        assert_eq!(parse_zero_copy_threshold(None), ZERO_COPY_THRESHOLD);
+        assert_eq!(parse_zero_copy_threshold(Some(" 8192 ")), 8192);
+        assert_eq!(parse_zero_copy_threshold(Some("0")), 0);
+        assert_eq!(
+            parse_zero_copy_threshold(Some("not-a-number")),
+            ZERO_COPY_THRESHOLD
+        );
+        assert_eq!(
+            parse_zero_copy_threshold(Some(&MAX_ZERO_COPY_THRESHOLD.to_string())),
+            MAX_ZERO_COPY_THRESHOLD
+        );
+        // A threshold above one zenoh batch would send mid-size payloads
+        // through the fragmenting express heap put, where they are dropped.
+        assert_eq!(
+            parse_zero_copy_threshold(Some("1048576")),
+            MAX_ZERO_COPY_THRESHOLD
+        );
+    }
 
     fn required_acker(node: &str, input: &str) -> dora_message::daemon_to_node::RequiredAcker {
         dora_message::daemon_to_node::RequiredAcker {
@@ -4560,7 +4658,11 @@ mod tests {
         let dataflow_id = DataflowId::new_v4();
         let node_id = NodeId::from("node".to_string());
         let output_id = DataId::from("out".to_string());
-        let metadata = Metadata::new(uhlc::HLC::default().new_timestamp());
+        let mut metadata = Metadata::new(uhlc::HLC::default().new_timestamp());
+        metadata
+            .parameters
+            .insert("frame".to_string(), Parameter::Integer(3));
+        let original = metadata.clone();
         let encode = |array: arrow::array::ArrayRef| {
             arrow_utils::encode_arrow_ipc_data(&array.to_data()).unwrap()
         };
@@ -4575,7 +4677,7 @@ mod tests {
                 &node_id,
                 &output_id,
                 stream,
-                &metadata,
+                &mut metadata,
             )
         };
 
@@ -4595,11 +4697,21 @@ mod tests {
             sent.parameters.get(SCHEMA_HASH),
             Some(&Parameter::Integer(marker as i64))
         );
+        assert_eq!(
+            sent.parameters.get("frame"),
+            Some(&Parameter::Integer(3)),
+            "the attachment carries the caller's parameters"
+        );
 
         // A different schema is hashed and published again.
         assert!(publish(&bytes, &mut state).is_none());
         let (bytes_hash, _) = arrow_utils::ipc_encode::schema_block_and_hash(&bytes).unwrap();
         assert_eq!(state[&output_id].published_hash, bytes_hash);
+
+        // The schema hash is tagged onto the caller's metadata only for the
+        // encode: the caller reports the same metadata to the daemon next, so
+        // it must come back without the internal key.
+        assert_eq!(metadata, original);
     }
 
     #[test]

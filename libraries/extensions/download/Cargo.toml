@@ -28,5 +28,6 @@ tokio = { workspace = true, features = [
     "macros",
     "net",
     "rt",
+    "sync",
     "time",
 ] }

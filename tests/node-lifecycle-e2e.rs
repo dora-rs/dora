@@ -604,6 +604,18 @@ fn lifecycle_python_dynamic_add_remove() {
 }
 
 #[test]
+fn lifecycle_python_runtime_params_survive_node_restarts() {
+    ensure_cli_built();
+    let python = dora_core::get_python_path().expect("locate the Python node environment");
+    let test = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/param_replay/test_replay.py");
+    let (ok, stdout, stderr) = run_capture(
+        Command::new(python).arg(test).arg(dora_bin()),
+        "runtime param replay",
+    );
+    assert!(ok, "{stdout}\n{stderr}");
+}
+
+#[test]
 fn lifecycle_rust_dynamic_add_remove() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let dataflow = Path::new(manifest_dir).join("examples/rust-dynamic-add-remove/dataflow.yml");

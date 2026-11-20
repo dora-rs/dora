@@ -8,14 +8,23 @@
 # Taking whatever the index currently serves is also what a user gets. The
 # version that lands is recorded, and floored, by the interop script; the base
 # images stay digest-pinned, so the ROS core underneath does not move.
+#
+# A stalled mirror connection is the other way the boot dies: `apt-get update`
+# waits on it until the health wait runs out. So apt gives up on a silent
+# connection after 30s and retries each download a few times, and `update`
+# runs without `-qq`, so the dumped container log names the source it was
+# stuck on.
+x-apt-opts: &apt-opts >-
+  -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+
 services:
   humble-router:
     profiles: [humble]
     image: ros:humble-ros-base@sha256:afb40d6be65331c20a114d4e229a7ef099fed1b17bf6370daee193514b32aa16
-    environment: { RMW_IMPLEMENTATION: rmw_zenoh_cpp }
+    environment: { RMW_IMPLEMENTATION: rmw_zenoh_cpp, APT_OPTS: *apt-opts }
     network_mode: host
     command: >-
-      bash -lc 'apt-get update -qq && apt-get install -y --no-install-recommends
+      bash -lc 'apt-get $$APT_OPTS update && apt-get $$APT_OPTS install -y --no-install-recommends
       ros-humble-rmw-zenoh-cpp ros-humble-rclpy ros-humble-example-interfaces &&
       source /opt/ros/humble/setup.bash && ros2 run rmw_zenoh_cpp rmw_zenohd'
     healthcheck:
@@ -28,10 +37,10 @@ services:
   kilted-router:
     profiles: [kilted]
     image: ros:kilted-ros-base@sha256:5a91562b35fe8ce33082df7221ec564c0172ae9b242352a45562deb1ddbf2702
-    environment: { RMW_IMPLEMENTATION: rmw_zenoh_cpp }
+    environment: { RMW_IMPLEMENTATION: rmw_zenoh_cpp, APT_OPTS: *apt-opts }
     network_mode: host
     command: >-
-      bash -lc 'apt-get update -qq && apt-get install -y --no-install-recommends
+      bash -lc 'apt-get $$APT_OPTS update && apt-get $$APT_OPTS install -y --no-install-recommends
       ros-kilted-rmw-zenoh-cpp ros-kilted-rclpy ros-kilted-example-interfaces &&
       source /opt/ros/kilted/setup.bash && ros2 run rmw_zenoh_cpp rmw_zenohd'
     healthcheck:

@@ -33,9 +33,12 @@ fn dora_bin() -> PathBuf {
     bin
 }
 
+/// Run fixture git commands the way dora runs its own: without an inherited
+/// `GIT_DIR`, `GIT_INDEX_FILE` and the like. git exports those to hooks, so a
+/// plain `git` here would commit into the developer's repository when the
+/// tests run from one.
 fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
-        .current_dir(dir)
+    let status = dora_hub_client::transport::git_command(Some(dir))
         .args([
             "-c",
             "user.email=t@dora.rs",
@@ -48,6 +51,16 @@ fn git(dir: &Path, args: &[&str]) {
         .status()
         .expect("run git");
     assert!(status.success(), "git {args:?} failed");
+}
+
+/// The commit `HEAD` points at in the fixture repository `dir`.
+fn git_head(dir: &Path) -> String {
+    let output = dora_hub_client::transport::git_command(Some(dir))
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("run git");
+    assert!(output.status.success(), "git rev-parse HEAD failed");
+    String::from_utf8(output.stdout).unwrap().trim().to_string()
 }
 
 fn write(path: &Path, content: &str) {
@@ -89,17 +102,7 @@ fn build_fixture() -> Fixture {
     git(&src, &["init", "--quiet", "-b", "main"]);
     git(&src, &["add", "."]);
     git(&src, &["commit", "--quiet", "-m", "init"]);
-    let commit = String::from_utf8(
-        Command::new("git")
-            .current_dir(&src)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap()
-    .trim()
-    .to_string();
+    let commit = git_head(&src);
     // allow blobless clone over the local transport
     git(&src, &["config", "uploadpack.allowFilter", "true"]);
 
@@ -799,17 +802,7 @@ fn hub_publish_dry_run_ignores_an_inherited_git_dir() {
     let fixture = build_fixture();
     let src = fixture.root.join("source");
     let checkout = src.join("node-hub/hello");
-    let node_commit = String::from_utf8(
-        Command::new("git")
-            .current_dir(&src)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap()
-    .trim()
-    .to_string();
+    let node_commit = git_head(&src);
 
     // Another repository, with a different HEAD, that `GIT_DIR` points at.
     let other = fixture.root.join("other");

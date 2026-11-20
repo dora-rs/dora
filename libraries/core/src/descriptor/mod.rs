@@ -18,6 +18,7 @@ pub use dora_message::descriptor::{
     OperatorSource, PythonSource, RUNTIME_PYTHON, RUNTIME_SHARED_LIBRARY, RUNTIME_WASM,
     ResolvedNode, RmwZenohCompatibility, Ros2BridgeConfig, Ros2Direction, Ros2QosConfig,
     Ros2TopicConfig, Ros2TransportConfig, RuntimeNode, SHELL_SOURCE, SingleOperatorDefinition,
+    descriptor_for_display,
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
@@ -493,6 +494,7 @@ impl DescriptorExt for Descriptor {
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor> {
         let descriptor: Descriptor =
             serde_yaml::from_slice(&buf).context("failed to parse given descriptor")?;
+        reject_duplicate_keys(&buf).context("failed to parse given descriptor")?;
         // A dataflow file must not set the internal `path_fallback`. Checked
         // here, not in expansion: the daemon also expands a descriptor that
         // was expanded already (`dora build`'s session), which carries it.
@@ -544,6 +546,34 @@ fn merge_env(
     };
     // Normalize an empty result to `None` regardless of which side was empty.
     (!merged.is_empty()).then_some(merged)
+}
+
+/// Fail if any YAML mapping in `buf` repeats a key.
+///
+/// YAML forbids duplicate keys, but `serde_yaml`'s typed deserializer hands a
+/// repeated key to a map field (`inputs`, `env`, ...) as a second insert, so
+/// the last entry silently wins: a copy-pasted `image:` input line would drop
+/// the first subscription without any error. `serde_yaml::Value` does reject
+/// them, naming the key and its location, so parse `buf` into it as a check.
+/// Struct fields already reject duplicates on their own, so this only adds
+/// errors for map-valued fields.
+///
+/// [`DescriptorExt::parse`], module loading, node manifests and user type
+/// files call this already; call it when deserializing other YAML that users
+/// write (such as a single node) directly.
+///
+/// ```
+/// use dora_core::descriptor::reject_duplicate_keys;
+///
+/// let yaml = b"id: sink\npath: ./sink\ninputs:\n  image: cam/img\n  image: dora/timer/millis/20\n";
+/// let err = reject_duplicate_keys(yaml).unwrap_err();
+/// assert!(err.to_string().contains(r#"duplicate entry with key "image""#));
+///
+/// reject_duplicate_keys(b"id: sink\npath: ./sink\n").unwrap();
+/// ```
+pub fn reject_duplicate_keys(buf: &[u8]) -> eyre::Result<()> {
+    serde_yaml::from_slice::<serde_yaml::Value>(buf)?;
+    Ok(())
 }
 
 /// Async counterpart of [`DescriptorExt::blocking_read`]: read a descriptor
@@ -600,9 +630,10 @@ pub fn source_is_url(source: &str) -> bool {
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     let path = with_exe_extension(source);
 
-    // Search path within current working directory.
+    // Search path within current working directory. A folder that cannot be
+    // spawned must not shadow the uv/`$PATH` lookup (see `is_spawnable`).
     let joined = working_dir.join(&path);
-    if joined.exists() {
+    if is_spawnable(&joined) {
         absolutize_preserving_symlinks(&joined)
     // Otherwise resolve against the `uv`-managed environment first (when `uv`
     // is available), then fall back to the system `$PATH`.
@@ -613,6 +644,17 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     } else {
         bail!("Could not find source path {}", path.display())
     }
+}
+
+/// Whether a node path found on disk can be spawned.
+///
+/// A folder named like the executable (often a Python package's source, next
+/// to the console script that `pip install -e` puts on `$PATH`) cannot be, so
+/// it must not count as found. The exception is a folder with a
+/// `__main__.py`: under `--uv` it is spawned as `uv run <folder>`, which runs
+/// that file.
+fn is_spawnable(path: &Path) -> bool {
+    path.is_file() || path.join("__main__.py").is_file()
 }
 
 /// `source` with the platform's executable extension when it has none.
@@ -709,7 +751,7 @@ pub fn resolve_path_confined(
 
     // a file within the node's working dir (e.g. target/release/<bin>)
     let candidate = working_dir.join(&path);
-    if candidate.exists() {
+    if is_spawnable(&candidate) {
         return confine(&candidate, working_dir);
     }
 
@@ -1476,6 +1518,41 @@ nodes:
         );
     }
 
+    /// A folder named like the executable is not the executable: on Unix
+    /// (`EXE_EXTENSION` is empty) the source folder `talker` of a package
+    /// whose console script is `talker` used to resolve to the folder, and
+    /// spawn then failed with EACCES instead of finding the script.
+    #[test]
+    fn resolve_path_skips_a_directory_with_the_executable_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let name = format!(
+            "dora-dir-not-exe-regression{}",
+            std::env::consts::EXE_SUFFIX
+        );
+        std::fs::create_dir(tmp.path().join(&name)).unwrap();
+
+        let result = resolve_path(&name, tmp.path());
+        assert!(
+            result.is_err(),
+            "a directory must not resolve (nothing on uv/$PATH matches this \
+             name either), got {result:?}"
+        );
+    }
+
+    /// A folder with a `__main__.py` is still a node path: under `--uv` it is
+    /// spawned as `uv run <folder>`, which runs that file.
+    #[test]
+    fn resolve_path_keeps_a_directory_with_a_main_py() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let name = format!("dora-main-py-dir{}", std::env::consts::EXE_SUFFIX);
+        let dir = tmp.path().join(&name);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("__main__.py"), "").unwrap();
+
+        let resolved = resolve_path(&name, tmp.path()).unwrap();
+        assert_eq!(resolved, absolutize_preserving_symlinks(&dir).unwrap());
+    }
+
     /// `path_fallback` is internal, so a dataflow file must not set it, with
     /// or without modules. Only reading a file checks this: a descriptor that
     /// expansion already filled in (`dora build`'s session) keeps it.
@@ -1494,6 +1571,36 @@ nodes:
             );
         }
         Descriptor::parse(b"nodes:\n  - id: x\n    path: tool\n".to_vec()).unwrap();
+    }
+
+    /// A repeated key in a map-valued field (`inputs`, `env`) must be an
+    /// error. The typed deserializer would keep only the last entry, so a
+    /// copy-pasted input line silently dropped the first subscription.
+    #[test]
+    fn a_dataflow_file_cannot_repeat_a_map_key() {
+        for (yaml, key) in [
+            (
+                "nodes:\n  - id: x\n    path: tool\n    inputs:\n      image: cam/img\n      image: dora/timer/millis/20\n",
+                "image",
+            ),
+            (
+                "nodes:\n  - id: x\n    path: tool\n    env:\n      A: \"1\"\n      A: \"2\"\n",
+                "A",
+            ),
+        ] {
+            let err = Descriptor::parse(yaml.as_bytes().to_vec()).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains(&format!("duplicate entry with key \"{key}\"")),
+                "{yaml}: {msg}"
+            );
+        }
+        let ok = Descriptor::parse(
+            b"nodes:\n  - id: x\n    path: tool\n    inputs:\n      a: dora/timer/millis/20\n      b: dora/timer/millis/30\n"
+                .to_vec(),
+        )
+        .unwrap();
+        assert_eq!(ok.nodes[0].inputs.len(), 2);
     }
 
     #[test]
@@ -1631,6 +1738,40 @@ nodes:
         let resolved =
             resolve_path_confined(exe, tmp.path().join("empty").as_path(), Some(&env_dir));
         assert!(resolved.is_ok(), "{resolved:?}");
+    }
+
+    /// Like [`resolve_path`], a folder named like the entrypoint (often the
+    /// package source next to its console script) cannot be spawned, so it
+    /// must fail resolution with the "could not find" error instead of
+    /// resolving and failing at spawn with `Permission denied`.
+    #[test]
+    fn resolve_path_confined_skips_a_directory_with_the_entrypoint_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let name = format!("talker{}", std::env::consts::EXE_SUFFIX);
+        std::fs::create_dir(tmp.path().join(&name)).unwrap();
+        let env_dir = tmp.path().join("env");
+        std::fs::create_dir_all(env_dir.join(if cfg!(windows) { "Scripts" } else { "bin" }))
+            .unwrap();
+
+        let err = resolve_path_confined(&name, tmp.path(), Some(&env_dir)).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("could not find"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// A folder with a `__main__.py` still resolves, as it does for
+    /// [`resolve_path`]: under `--uv` it is spawned as `uv run <folder>`.
+    #[test]
+    fn resolve_path_confined_keeps_a_directory_with_a_main_py() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let name = format!("talker{}", std::env::consts::EXE_SUFFIX);
+        let dir = tmp.path().join(&name);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("__main__.py"), "").unwrap();
+
+        let resolved = resolve_path_confined(&name, tmp.path(), None).unwrap();
+        assert_eq!(resolved, dir.canonicalize().unwrap());
     }
 
     #[cfg(unix)]

@@ -12,16 +12,13 @@ fn main() -> eyre::Result<()> {
 
     // Build the Dora C++ node library and copy its generated glue.
     build_package("dora-node-api-cxx")?;
-    let node_cxxbridge = target
-        .join("cxxbridge")
-        .join("dora-node-api-cxx")
-        .join("src");
+    let node_cxxbridge = target.join("cxxbridge").join("dora-node-api-cxx");
     std::fs::copy(
-        node_cxxbridge.join("lib.rs.cc"),
+        node_cxxbridge.join("src/dora-node-api.cc"),
         build_dir.join("node-bridge.cc"),
     )?;
     std::fs::copy(
-        node_cxxbridge.join("lib.rs.h"),
+        node_cxxbridge.join("include/dora-node-api.h"),
         build_dir.join("dora-node-api.h"),
     )?;
 

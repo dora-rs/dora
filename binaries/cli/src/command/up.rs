@@ -399,11 +399,21 @@ pub(crate) fn wait_for_coordinator_start(
                 message.push('\n');
                 message.push_str(&stderr);
             }
-            if stderr.contains(dora_coordinator::dora_coordinator_store::SCHEMA_MISMATCH_MARKER) {
-                message.push_str(
-                    "\n\n  hint: run `dora up --recreate-store` to archive the incompatible \
+            use dora_coordinator::dora_coordinator_store::{
+                SCHEMA_MISMATCH_MARKER, STORE_CORRUPT_MARKER,
+            };
+            // Both are recovered the same way: archive the file, start fresh.
+            let unusable_store = [
+                (SCHEMA_MISMATCH_MARKER, "incompatible"),
+                (STORE_CORRUPT_MARKER, "damaged"),
+            ]
+            .into_iter()
+            .find(|(marker, _)| stderr.contains(marker));
+            if let Some((_, kind)) = unusable_store {
+                message.push_str(&format!(
+                    "\n\n  hint: run `dora up --recreate-store` to archive the {kind} \
                      store and create a fresh one",
-                );
+                ));
             }
             bail!(message);
         }

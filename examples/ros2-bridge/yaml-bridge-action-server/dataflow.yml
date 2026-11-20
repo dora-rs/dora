@@ -3,7 +3,9 @@
 # Demonstrates using the YAML ROS2 bridge as an action SERVER.
 # The bridge receives Fibonacci goals from ROS2 clients, forwards them
 # to the handler node (pure Arrow data, no ROS2 deps), which computes
-# the sequence with feedback and returns the result.
+# the sequence one step per tick with feedback and returns the result.
+# Cancel requests from ROS2 clients reach the handler on `cancel`; without
+# that output the bridge rejects them.
 #
 # Prerequisites:
 #   - ROS2 environment sourced (AMENT_PREFIX_PATH set)
@@ -24,12 +26,15 @@ nodes:
       result: handler/result
     outputs:
       - goal
+      - cancel
 
   - id: handler
     build: cargo build -p yaml-bridge-action-server-handler
     path: ../../../target/debug/yaml-bridge-action-server-handler
     inputs:
       goal: fib_server/goal
+      cancel: fib_server/cancel
+      tick: dora/timer/millis/250
     outputs:
       - feedback
       - result

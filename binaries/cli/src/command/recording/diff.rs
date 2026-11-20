@@ -101,14 +101,9 @@ fn read_file(path: &str) -> eyre::Result<Outputs> {
         .wrap_err_with(|| eyre!("failed to read the header of recording `{path}`"))?;
     let outputs =
         read_outputs(&mut reader).wrap_err_with(|| eyre!("failed to read recording `{path}`"))?;
-    // The reader ends an unfinished recording early without an error, so its
-    // missing last messages show up below only as a count difference; say why.
-    if !reader.reached_footer() {
-        eprintln!(
-            "warning: recording `{path}` has no footer: it was not finished cleanly \
-             (a crash or a second Ctrl-C) and may be missing its last messages"
-        );
-    }
+    // An unfinished recording's missing last messages show up below only as a
+    // count difference; say why.
+    super::warn_if_unfinished(&reader, path);
     Ok(outputs)
 }
 

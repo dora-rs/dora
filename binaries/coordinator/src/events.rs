@@ -93,6 +93,15 @@ pub enum Event {
         node_id: NodeId,
         clean_stop: bool,
     },
+    /// The daemon's answer (or the failure to get one) for the topology change
+    /// in flight on a dataflow is ready, sent by the task that waited for it so
+    /// the event loop does not (see `topology_lane`). The answer itself stays
+    /// with the change, where a disconnect handled before this event can still
+    /// commit it (#4161). `change_id` tells a stale answer from the current one.
+    TopologyReply {
+        dataflow_id: Uuid,
+        change_id: Uuid,
+    },
 }
 
 impl Event {
@@ -123,6 +132,7 @@ impl Event {
             Event::DaemonStatusReport { .. } => "DaemonStatusReport",
             Event::DaemonStateCatchUpAck { .. } => "DaemonStateCatchUpAck",
             Event::DaemonNodeStopped { .. } => "DaemonNodeStopped",
+            Event::TopologyReply { .. } => "TopologyReply",
         }
     }
 }

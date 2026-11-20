@@ -25,6 +25,15 @@ pub use in_memory::InMemoryStore;
 /// `tests/ws-cli-e2e.rs::e2e_up_reports_incompatible_coordinator_store`).
 pub const SCHEMA_MISMATCH_MARKER: &str = "redb schema version mismatch";
 
+/// Marker prefix of the error produced by `RedbStore::open` when the store
+/// file is damaged: redb's integrity check fails, the file is cut short, or
+/// it is not a redb database at all. Recovery is the same as for
+/// [`SCHEMA_MISMATCH_MARKER`] -- archive the file and start fresh -- so
+/// `dora up` matches this string too and suggests `--recreate-store`. Any
+/// rewording must update both sites together (covered end-to-end by
+/// `tests/ws-cli-e2e.rs::e2e_up_reports_corrupt_coordinator_store`).
+pub const STORE_CORRUPT_MARKER: &str = "redb store is corrupt";
+
 /// Maximum allowed length for a param key (bytes).
 pub const MAX_PARAM_KEY_BYTES: usize = 256;
 /// Maximum allowed size for a serialized param value (bytes).
@@ -214,7 +223,7 @@ pub trait CoordinatorStore: Send + Sync {
     fn get_dataflow(&self, uuid: &Uuid) -> Result<Option<DataflowRecord>>;
     fn list_dataflows(&self) -> Result<Vec<DataflowRecord>>;
     /// Delete a dataflow record. Cascades to every `put_node_param`
-    /// row that belongs to the same `uuid` so callers (e.g.
+    /// row and param tombstone that belongs to the same `uuid` so callers (e.g.
     /// `dora clean`) don't have to walk node params separately and
     /// orphan param rows can't accumulate in long-lived stores.
     ///
@@ -239,6 +248,7 @@ pub trait CoordinatorStore: Send + Sync {
     /// Set a runtime parameter for a node in a dataflow.
     ///
     /// Enforces `MAX_PARAM_KEY_BYTES` and `MAX_PARAM_VALUE_BYTES` limits.
+    /// Clears the key's tombstone, if any, in the same atomic step.
     fn put_node_param(
         &self,
         dataflow_id: &Uuid,
@@ -263,5 +273,99 @@ pub trait CoordinatorStore: Send + Sync {
     ) -> Result<Vec<(String, Vec<u8>)>>;
 
     /// Delete a single runtime parameter.
+    ///
+    /// If the key was set, a tombstone for it is recorded in the same atomic
+    /// step, with a fresh token, so a full param replay can tell a daemon that
+    /// missed the delete to remove the key from its node. A tombstone lasts
+    /// until a replay delivers the delete (`clear_node_param_tombstone`), the
+    /// key is set again, or the dataflow is deleted. A key that was never set
+    /// gets none (no node can have it), and deleting an already deleted key
+    /// keeps its tombstone and token.
     fn delete_node_param(&self, dataflow_id: &Uuid, node_id: &NodeId, key: &str) -> Result<()>;
+
+    /// List the tombstoned param keys of a node with their tokens (see
+    /// `delete_node_param`).
+    fn list_node_param_tombstones(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> Result<Vec<(String, Uuid)>>;
+
+    /// Remove a tombstone, but only if it still has `token`: one written
+    /// since the token was listed (the key was set and deleted again) stays.
+    fn clear_node_param_tombstone(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        token: Uuid,
+    ) -> Result<()>;
+}
+
+/// Tombstone behavior every backend must share, run from each backend's tests.
+#[cfg(test)]
+pub(crate) mod tombstone_tests {
+    use super::*;
+
+    pub(crate) fn tombstoned_keys(
+        store: &dyn CoordinatorStore,
+        df: &Uuid,
+        node: &NodeId,
+    ) -> Vec<String> {
+        store
+            .list_node_param_tombstones(df, node)
+            .unwrap()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect()
+    }
+
+    /// A tombstone is cleared only with the token it was listed with: one
+    /// written by a later delete of the same key survives a stale clear.
+    pub(crate) fn clear_matches_only_its_token(store: &dyn CoordinatorStore) {
+        let df = Uuid::new_v4();
+        let node: NodeId = "sensor".to_string().into();
+        let token = |store: &dyn CoordinatorStore| {
+            let tombstones = store.list_node_param_tombstones(&df, &node).unwrap();
+            assert_eq!(tombstones.len(), 1, "{tombstones:?}");
+            tombstones[0].1
+        };
+        store.put_node_param(&df, &node, "gain", b"1").unwrap();
+        store.delete_node_param(&df, &node, "gain").unwrap();
+        let first = token(store);
+        store.delete_node_param(&df, &node, "gain").unwrap();
+        assert_eq!(token(store), first, "re-deleting keeps the token");
+
+        store.put_node_param(&df, &node, "gain", b"2").unwrap();
+        store.delete_node_param(&df, &node, "gain").unwrap();
+        let second = token(store);
+        assert_ne!(second, first, "a new delete gets a new token");
+        store
+            .clear_node_param_tombstone(&df, &node, "gain", first)
+            .unwrap();
+        assert_eq!(token(store), second, "a stale clear is a no-op");
+
+        store
+            .clear_node_param_tombstone(&df, &node, "gain", second)
+            .unwrap();
+        assert!(tombstoned_keys(store, &df, &node).is_empty());
+    }
+
+    /// Deleting a set key tombstones it, deleting a key that was never set
+    /// does not, and setting the key again clears the tombstone.
+    pub(crate) fn delete_records_a_tombstone_that_put_clears(store: &dyn CoordinatorStore) {
+        let df = Uuid::new_v4();
+        let node: NodeId = "sensor".to_string().into();
+        let other: NodeId = "sensor2".to_string().into();
+        store.put_node_param(&df, &node, "gain", b"1").unwrap();
+        store.put_node_param(&df, &other, "gain", b"1").unwrap();
+
+        store.delete_node_param(&df, &node, "gain").unwrap();
+        store.delete_node_param(&df, &node, "never_set").unwrap();
+        assert_eq!(tombstoned_keys(store, &df, &node), vec!["gain".to_string()]);
+        assert!(tombstoned_keys(store, &df, &other).is_empty());
+
+        store.put_node_param(&df, &node, "gain", b"2").unwrap();
+        assert!(tombstoned_keys(store, &df, &node).is_empty());
+    }
 }

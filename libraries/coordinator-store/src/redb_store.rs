@@ -16,6 +16,16 @@ const BUILDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("builds");
 /// Node params table. Key: `"{uuid}\0{node_id}\0{param_key}"` (see
 /// [`make_param_key`]), Value: the caller's opaque param bytes.
 const NODE_PARAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("node_params");
+/// Deleted node params (see `CoordinatorStore::delete_node_param`), keyed
+/// like [`NODE_PARAMS`], Value: the tombstone's token. `open` creates the
+/// table in a store that predates it, and a binary that does not know it
+/// leaves it alone, so adding it needs no [`SCHEMA_VERSION`] bump. Such a
+/// binary neither clears a tombstone on `put_node_param` nor cascades it on
+/// `delete_dataflow`: the replay re-checks the param row before sending a
+/// delete, which keeps a stale tombstone harmless, and the rows of a deleted
+/// dataflow are never read again.
+const NODE_PARAM_TOMBSTONES: TableDefinition<&str, u128> =
+    TableDefinition::new("node_param_tombstones");
 
 /// Bump this when the serialization format of any stored record changes.
 ///
@@ -36,11 +46,19 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// the start, closing the TOCTOU window between creation and `set_permissions`.
 #[cfg(unix)]
 fn with_restrictive_umask<T>(f: impl FnOnce() -> T) -> T {
-    // SAFETY: umask is always safe to call and has no undefined behavior.
-    let old = unsafe { libc::umask(0o077) };
-    let result = f();
-    unsafe { libc::umask(old) };
-    result
+    /// Restores the umask on drop, so a panic inside `f` (redb can panic on a
+    /// damaged file, see [`RedbStore::open`]) does not leave the process with
+    /// the restrictive one.
+    struct Restore(libc::mode_t);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // SAFETY: umask is always safe to call and has no undefined behavior.
+            unsafe { libc::umask(self.0) };
+        }
+    }
+    // SAFETY: as above.
+    let _restore = Restore(unsafe { libc::umask(0o077) });
+    f()
 }
 
 #[cfg(not(unix))]
@@ -62,28 +80,22 @@ impl RedbStore {
     /// On first open, writes the current [`SCHEMA_VERSION`] into a `meta`
     /// table. On subsequent opens, validates that the stored version matches
     /// the compiled-in version and returns an error if they differ.
+    ///
+    /// The file is verified before any record is read. redb checks its page
+    /// checksums only while repairing a file that was not closed cleanly, so
+    /// a file damaged after a clean close (bit rot, a partial copy, an edit)
+    /// would otherwise open without complaint and serve whatever the damaged
+    /// pages decode to: altered records, missing records, or a panic inside
+    /// redb. A damaged file is rejected with an error that carries
+    /// [`crate::STORE_CORRUPT_MARKER`]. The one exception is damage redb can
+    /// repair by falling back to the previous commit: the store then opens
+    /// without its last write, and a warning is logged.
     pub fn open(path: &Path) -> Result<Self> {
-        let db = match with_restrictive_umask(|| Database::create(path)) {
-            Ok(db) => db,
-            // redb 3 dropped the v2 on-disk format, so a store written by a
-            // dora built against redb 2.x cannot be read at all (#2449). redb
-            // reports this as a bare "Manual upgrade required", which tells the
-            // user nothing about how to recover, so translate it into the same
-            // marked error a schema bump produces -- `dora up` matches the
-            // marker to suggest `--recreate-store`, which archives the old file
-            // rather than deleting it.
-            Err(redb::DatabaseError::UpgradeRequired(version)) => {
-                return Err(eyre!(
-                    "{marker}: database at `{path}` uses the redb v{version} file format, \
-                     which this binary cannot read. \
-                     Move the file aside and restart to create a fresh database, \
-                     or use `--store memory` to bypass persistence.",
-                    marker = crate::SCHEMA_MISMATCH_MARKER,
-                    path = path.display()
-                ));
-            }
-            Err(err) => return Err(err).wrap_err("failed to open redb database"),
-        };
+        let db = open_verified(path, || {
+            let mut db = with_restrictive_umask(|| Database::create(path))?;
+            let intact = db.check_integrity()?;
+            Ok((db, intact))
+        })?;
 
         // Restrict file permissions to owner-only on Unix.
         // NOTE: On Windows, file permissions are governed by ACLs and not
@@ -130,10 +142,97 @@ impl RedbStore {
             .wrap_err("failed to create builds table")?;
         txn.open_table(NODE_PARAMS)
             .wrap_err("failed to create node_params table")?;
+        txn.open_table(NODE_PARAM_TOMBSTONES)
+            .wrap_err("failed to create node_param_tombstones table")?;
         txn.commit().wrap_err("failed to commit table creation")?;
 
         Ok(Self { db })
     }
+}
+
+/// Turns the outcome of opening and integrity-checking the file at `path`
+/// into the store's errors. `open_and_check` returns the database and whether
+/// it passed the check without needing a repair.
+///
+/// It is a parameter so the panic arm can be tested directly: which damage
+/// makes redb panic rather than return an error depends on the redb version.
+fn open_verified(
+    path: &Path,
+    open_and_check: impl FnOnce() -> Result<(Database, bool), redb::DatabaseError>
+    + std::panic::UnwindSafe,
+) -> Result<Database> {
+    // redb indexes into a damaged header or page without bounds checks in
+    // several places, so reading a damaged file can panic it. Only this step
+    // reads the file before it has been verified, so only it is caught: the
+    // panic message still reaches stderr through the panic hook, but the
+    // coordinator exits with the same error, and the same recovery advice, as
+    // for damage that redb reports properly.
+    let opened = match std::panic::catch_unwind(open_and_check) {
+        Ok(opened) => opened,
+        Err(panic) => {
+            let message = panic
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied())
+                .unwrap_or("no panic message");
+            return Err(corrupt_store_error(
+                path,
+                &format!("redb panicked: {message}"),
+            ));
+        }
+    };
+    match opened {
+        Ok((db, true)) => Ok(db),
+        Ok((db, false)) => {
+            tracing::warn!(
+                "coordinator store `{}` failed redb's integrity check and was repaired; \
+                 its most recent write may have been rolled back",
+                path.display()
+            );
+            Ok(db)
+        }
+        // redb 3 dropped the v2 on-disk format, so a store written by a
+        // dora built against redb 2.x cannot be read at all (#2449). redb
+        // reports this as a bare "Manual upgrade required", which tells the
+        // user nothing about how to recover, so translate it into the same
+        // marked error a schema bump produces -- `dora up` matches the
+        // marker to suggest `--recreate-store`, which archives the old file
+        // rather than deleting it.
+        Err(redb::DatabaseError::UpgradeRequired(version)) => Err(eyre!(
+            "{marker}: database at `{path}` uses the redb v{version} file format, \
+             which this binary cannot read. \
+             Move the file aside and restart to create a fresh database, \
+             or use `--store memory` to bypass persistence.",
+            marker = crate::SCHEMA_MISMATCH_MARKER,
+            path = path.display()
+        )),
+        Err(err) if is_corruption(&err) => Err(corrupt_store_error(path, &err.to_string())),
+        Err(err) => Err(err).wrap_err("failed to open redb database"),
+    }
+}
+
+/// Whether `err` says the file itself is damaged, as opposed to unavailable
+/// (permissions, a lock held by another process, a failing read).
+fn is_corruption(err: &redb::DatabaseError) -> bool {
+    match err {
+        redb::DatabaseError::Storage(redb::StorageError::Corrupted(_)) => true,
+        // A header that is cut short, or that lacks redb's magic number.
+        redb::DatabaseError::Storage(redb::StorageError::Io(io)) => matches!(
+            io.kind(),
+            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::InvalidData
+        ),
+        _ => false,
+    }
+}
+
+fn corrupt_store_error(path: &Path, detail: &str) -> eyre::Report {
+    eyre!(
+        "{marker}: database at `{path}` is damaged or is not a redb database ({detail}). \
+         Move the file aside and restart to create a fresh database, \
+         or use `--store memory` to bypass persistence.",
+        marker = crate::STORE_CORRUPT_MARKER,
+        path = path.display()
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -297,6 +396,8 @@ impl CoordinatorStore for RedbStore {
             // Bounded range: an open-ended `start..` would make `retain_in`
             // visit every row of every dataflow sorted after this one.
             params.retain_in(param_start.as_str()..param_end.as_str(), |_, _| false)?;
+            let mut tombstones = txn.open_table(NODE_PARAM_TOMBSTONES)?;
+            tombstones.retain_in(param_start.as_str()..param_end.as_str(), |_, _| false)?;
         }
         txn.commit()?;
         Ok(())
@@ -369,6 +470,8 @@ impl CoordinatorStore for RedbStore {
         {
             let mut table = txn.open_table(NODE_PARAMS)?;
             table.insert(param_key.as_str(), value)?;
+            txn.open_table(NODE_PARAM_TOMBSTONES)?
+                .remove(param_key.as_str())?;
         }
         txn.commit()?;
         Ok(())
@@ -418,9 +521,55 @@ impl CoordinatorStore for RedbStore {
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(NODE_PARAMS)?;
-            table.remove(param_key.as_str())?;
+            if table.remove(param_key.as_str())?.is_some() {
+                txn.open_table(NODE_PARAM_TOMBSTONES)?
+                    .insert(param_key.as_str(), Uuid::now_v7().as_u128())?;
+            }
         }
         txn.commit()?;
+        Ok(())
+    }
+
+    fn list_node_param_tombstones(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> Result<Vec<(String, Uuid)>> {
+        let prefix = make_param_prefix(dataflow_id, node_id)?;
+        let txn = self.db.begin_read()?;
+        let table = txn.open_table(NODE_PARAM_TOMBSTONES)?;
+        let mut result = Vec::new();
+        for entry in table.range(prefix.as_str()..)? {
+            let (key, token) = entry?;
+            match key.value().strip_prefix(&prefix) {
+                Some(param_key) => {
+                    result.push((param_key.to_string(), Uuid::from_u128(token.value())))
+                }
+                None => break,
+            }
+        }
+        Ok(result)
+    }
+
+    fn clear_node_param_tombstone(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        token: Uuid,
+    ) -> Result<()> {
+        let param_key = make_param_key(dataflow_id, node_id, key)?;
+        let txn = self.db.begin_write()?;
+        let matches = {
+            let mut table = txn.open_table(NODE_PARAM_TOMBSTONES)?;
+            let current = table.get(param_key.as_str())?.map(|t| t.value());
+            current == Some(token.as_u128()) && table.remove(param_key.as_str())?.is_some()
+        };
+        if matches {
+            txn.commit()?;
+        } else {
+            txn.abort()?;
+        }
         Ok(())
     }
 }
@@ -813,6 +962,79 @@ mod tests {
         assert_eq!(store.list_node_params(&df, &node).unwrap().len(), 1);
     }
 
+    /// A tombstone is cleared only with the token it was listed with.
+    #[test]
+    fn param_tombstone_clear_matches_only_its_token() {
+        crate::tombstone_tests::clear_matches_only_its_token(&temp_store().0);
+    }
+
+    #[test]
+    fn param_delete_records_a_tombstone_that_put_clears() {
+        crate::tombstone_tests::delete_records_a_tombstone_that_put_clears(&temp_store().0);
+    }
+
+    /// A tombstone outlives a coordinator restart, so the replay after it
+    /// still deletes the key.
+    #[test]
+    fn param_tombstone_survives_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tombstone.redb");
+        let df = Uuid::new_v4();
+        let node: NodeId = "sensor".to_string().into();
+        {
+            let store = RedbStore::open(&path).unwrap();
+            store.put_node_param(&df, &node, "gain", b"1").unwrap();
+            store.delete_node_param(&df, &node, "gain").unwrap();
+        }
+        let store = RedbStore::open(&path).unwrap();
+        assert_eq!(
+            crate::tombstone_tests::tombstoned_keys(&store, &df, &node),
+            vec!["gain".to_string()]
+        );
+    }
+
+    /// A store written before the tombstone table existed opens without a
+    /// schema bump, keeps its params, and records tombstones from then on.
+    #[test]
+    fn store_without_tombstone_table_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pre-tombstone.redb");
+        let df = Uuid::new_v4();
+        let node: NodeId = "sensor".to_string().into();
+        {
+            let db = Database::create(&path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                txn.open_table(META)
+                    .unwrap()
+                    .insert(SCHEMA_VERSION_KEY, SCHEMA_VERSION)
+                    .unwrap();
+                txn.open_table(DAEMONS).unwrap();
+                txn.open_table(DATAFLOWS).unwrap();
+                txn.open_table(BUILDS).unwrap();
+                txn.open_table(NODE_PARAMS)
+                    .unwrap()
+                    .insert(
+                        make_param_key(&df, &node, "gain").unwrap().as_str(),
+                        b"1".as_slice(),
+                    )
+                    .unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        let store = RedbStore::open(&path).unwrap();
+        assert_eq!(
+            store.get_node_param(&df, &node, "gain").unwrap(),
+            Some(b"1".to_vec())
+        );
+        store.delete_node_param(&df, &node, "gain").unwrap();
+        assert_eq!(
+            crate::tombstone_tests::tombstoned_keys(&store, &df, &node),
+            vec!["gain".to_string()]
+        );
+    }
+
     #[test]
     fn schema_version_mismatch_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
@@ -891,6 +1113,258 @@ mod tests {
             msg.contains("file format"),
             "expected a file-format diagnostic naming the incompatible format, got: {msg}"
         );
+    }
+
+    /// Everything `populate_for_damage_tests` wrote, in a comparable form.
+    #[derive(Debug, PartialEq, Eq)]
+    struct StoreContents {
+        daemons: Vec<String>,
+        dataflows: Vec<String>,
+        builds: Vec<String>,
+        params: Vec<(String, Vec<u8>)>,
+    }
+
+    const DAMAGE_TEST_NODE: &str = "camera";
+
+    fn damage_test_dataflow_id() -> Uuid {
+        Uuid::from_u128(1)
+    }
+
+    /// Fills a fresh store with every record type and closes it cleanly.
+    fn populate_for_damage_tests(path: &Path) -> StoreContents {
+        let store = RedbStore::open(path).unwrap();
+        store
+            .register_daemon(DaemonInfo {
+                daemon_id: DaemonId::new(Some("machine-1".into())),
+                machine_id: Some("machine-1".into()),
+                labels: Default::default(),
+            })
+            .unwrap();
+        for i in 1..=4u128 {
+            store
+                .put_dataflow(&DataflowRecord {
+                    uuid: Uuid::from_u128(i),
+                    name: Some(format!("flow-{i}")),
+                    descriptor_json: format!("nodes: [{}]", "{id: n, path: /bin/n},".repeat(40)),
+                    status: crate::DataflowStatus::Running,
+                    daemon_ids: vec![],
+                    generation: i as u64,
+                    created_at: 1,
+                    updated_at: 2,
+                    node_to_daemon: Default::default(),
+                    uv: false,
+                    ready_barrier_released: true,
+                    barrier_exited_before_subscribe: Vec::new(),
+                })
+                .unwrap();
+            store
+                .put_build(&BuildRecord {
+                    build_id: Uuid::from_u128(i),
+                    status: crate::BuildStatus::Succeeded,
+                    errors: vec![],
+                    created_at: 1,
+                    updated_at: 2,
+                })
+                .unwrap();
+        }
+        let node: NodeId = DAMAGE_TEST_NODE.to_string().into();
+        for i in 0..12usize {
+            let value = vec![i as u8 + 1; 64 + i * 150];
+            store
+                .put_node_param(
+                    &damage_test_dataflow_id(),
+                    &node,
+                    &format!("p{i:02}"),
+                    &value,
+                )
+                .unwrap();
+        }
+        read_contents(&store).unwrap()
+    }
+
+    fn read_contents(store: &RedbStore) -> Result<StoreContents> {
+        fn debug_sorted<T: std::fmt::Debug>(records: Vec<T>) -> Vec<String> {
+            let mut out: Vec<String> = records.iter().map(|r| format!("{r:?}")).collect();
+            out.sort();
+            out
+        }
+        let node: NodeId = DAMAGE_TEST_NODE.to_string().into();
+        Ok(StoreContents {
+            daemons: debug_sorted(store.list_daemons()?),
+            dataflows: debug_sorted(store.list_dataflows()?),
+            builds: debug_sorted(store.list_builds()?),
+            params: store.list_node_params(&damage_test_dataflow_id(), &node)?,
+        })
+    }
+
+    fn assert_reported_as_corrupt(path: &Path) {
+        let Err(err) = RedbStore::open(path) else {
+            panic!("a damaged store must be rejected");
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(crate::STORE_CORRUPT_MARKER),
+            "a damaged store must be reported with the `{}` marker so `dora up` \
+             can offer `--recreate-store`, got: {msg}",
+            crate::STORE_CORRUPT_MARKER
+        );
+        assert!(
+            msg.contains(&path.display().to_string()),
+            "the error must name the damaged file, got: {msg}"
+        );
+    }
+
+    /// A store file damaged after a clean close must never be served as if it
+    /// were intact (scenario 3.3 of `docs/plan-fault-injection.md`).
+    ///
+    /// redb verifies page checksums only while repairing after an unclean
+    /// shutdown. Without the integrity check in `RedbStore::open`, about a
+    /// third of the windows below open fine and return altered or missing
+    /// records, and a few panic inside redb. The invariant: every open either
+    /// fails with the corrupt marker, or reads back exactly what was written.
+    #[test]
+    fn damaged_store_is_rejected_or_reads_back_intact() {
+        const WINDOW: usize = 64;
+        const WINDOWS_PER_MODE: usize = 40;
+
+        let dir = tempfile::tempdir().unwrap();
+        let original = dir.path().join("original.redb");
+        let written = populate_for_damage_tests(&original);
+        let pristine = std::fs::read(&original).unwrap();
+
+        // xorshift64: fixed seed, so a failure names a reproducible window.
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        let (mut rejected, mut intact) = (0, 0);
+        for random_fill in [true, false] {
+            for i in 0..WINDOWS_PER_MODE {
+                // Sweep the whole file, with a random offset inside each step.
+                let step = pristine.len() / WINDOWS_PER_MODE;
+                let offset = (i * step + next() as usize % step).min(pristine.len() - WINDOW);
+                let mut damaged = pristine.clone();
+                for byte in &mut damaged[offset..offset + WINDOW] {
+                    *byte = if random_fill { next() as u8 } else { 0 };
+                }
+                let path = dir.path().join("damaged.redb");
+                std::fs::write(&path, &damaged).unwrap();
+
+                let case = format!("window at byte {offset}, random_fill={random_fill}");
+                let opened = std::panic::catch_unwind(|| RedbStore::open(&path))
+                    .unwrap_or_else(|_| panic!("opening a damaged store panicked ({case})"));
+                match opened {
+                    Err(err) => {
+                        let msg = format!("{err:#}");
+                        assert!(
+                            msg.contains(crate::STORE_CORRUPT_MARKER),
+                            "damage must be reported with the corrupt marker ({case}), got: {msg}"
+                        );
+                        rejected += 1;
+                    }
+                    Ok(store) => {
+                        let read = read_contents(&store)
+                            .unwrap_or_else(|err| panic!("read failed ({case}): {err:#}"));
+                        assert_eq!(
+                            read, written,
+                            "a store that opened must hold exactly what was written ({case})"
+                        );
+                        intact += 1;
+                    }
+                }
+            }
+        }
+        // Guards the sweep itself: if it stopped reaching used pages (or free
+        // ones), every case would take the same arm and prove nothing.
+        assert!(
+            rejected > 0 && intact > 0,
+            "the sweep must both hit and miss used pages; rejected={rejected}, intact={intact}"
+        );
+    }
+
+    /// The smallest form of the bug: 64 damaged bytes inside one stored param
+    /// value. Without the integrity check the store opens and `get_node_param`
+    /// returns the damaged bytes.
+    #[test]
+    fn damaged_param_value_is_reported_as_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("damaged-value.redb");
+        let node: NodeId = DAMAGE_TEST_NODE.to_string().into();
+        {
+            let store = RedbStore::open(&path).unwrap();
+            store
+                .put_node_param(&damage_test_dataflow_id(), &node, "gain", &[7u8; 4000])
+                .unwrap();
+        }
+
+        let mut bytes = std::fs::read(&path).unwrap();
+        let value_start = bytes
+            .windows(64)
+            .position(|window| window == [7u8; 64])
+            .expect("the stored value must be in the file");
+        bytes[value_start + 100..value_start + 164].fill(9);
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert_reported_as_corrupt(&path);
+    }
+
+    /// A panic while redb reads the unverified file must surface as the
+    /// corrupt-store error, not take the coordinator down without it.
+    #[test]
+    fn redb_panic_while_opening_is_reported_as_corrupt() {
+        let path = Path::new("/store/that/is/never/opened.redb");
+        let Err(err) = open_verified(path, || panic!("index out of bounds")) else {
+            panic!("a panic while opening must be an error");
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(crate::STORE_CORRUPT_MARKER)
+                && msg.contains("redb panicked: index out of bounds")
+                && msg.contains("/store/that/is/never/opened.redb"),
+            "expected the corrupt marker, the panic message and the path, got: {msg}"
+        );
+    }
+
+    /// The same through a real file. With redb 4.4 this window in the header
+    /// makes redb panic with "entered unreachable code"; a version that
+    /// returns an error for it instead takes the other arm, and the outcome
+    /// asserted here is the same.
+    #[test]
+    fn damaged_header_is_reported_as_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("damaged-header.redb");
+        populate_for_damage_tests(&path);
+
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[4040..4104].fill(0);
+        std::fs::write(&path, &bytes).unwrap();
+
+        assert_reported_as_corrupt(&path);
+    }
+
+    #[test]
+    fn truncated_store_is_reported_as_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncated.redb");
+        populate_for_damage_tests(&path);
+
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+
+        assert_reported_as_corrupt(&path);
+    }
+
+    #[test]
+    fn file_that_is_not_a_redb_database_is_reported_as_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("not-redb.redb");
+        std::fs::write(&path, vec![0x5A; 8192]).unwrap();
+
+        assert_reported_as_corrupt(&path);
     }
 
     // --- Focused tests for redb_store edge cases (added 2026-04-08) ---
@@ -1177,8 +1651,20 @@ mod tests {
         store.put_node_param(&df_a, &node, "k1", b"a1").unwrap();
         store.put_node_param(&df_a, &node, "k2", b"a2").unwrap();
         store.put_node_param(&df_b, &node, "k1", b"b1").unwrap();
+        store.delete_node_param(&df_a, &node, "k2").unwrap();
+        store.put_node_param(&df_b, &node, "k2", b"b2").unwrap();
+        store.delete_node_param(&df_b, &node, "k2").unwrap();
 
         store.delete_dataflow(&df_a).unwrap();
+
+        assert!(
+            crate::tombstone_tests::tombstoned_keys(&store, &df_a, &node).is_empty(),
+            "tombstones for cleaned dataflow must be removed"
+        );
+        assert_eq!(
+            crate::tombstone_tests::tombstoned_keys(&store, &df_b, &node),
+            vec!["k2".to_string()]
+        );
 
         assert!(
             store.list_node_params(&df_a, &node).unwrap().is_empty(),

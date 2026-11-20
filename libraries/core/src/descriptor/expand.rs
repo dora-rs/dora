@@ -1501,8 +1501,11 @@ fn load_module_file(path: &Path) -> eyre::Result<ModuleFile> {
             path.display()
         );
     }
-    serde_yaml::from_slice(&buf)
-        .with_context(|| format!("failed to parse module file: {}", path.display()))
+    let module = serde_yaml::from_slice(&buf)
+        .with_context(|| format!("failed to parse module file: {}", path.display()))?;
+    super::reject_duplicate_keys(&buf)
+        .with_context(|| format!("failed to parse module file: {}", path.display()))?;
+    Ok(module)
 }
 
 #[cfg(test)]
@@ -2022,6 +2025,51 @@ nodes:
         assert!(msg.contains("duplicate"), "got: {msg}");
         assert!(msg.contains("inputs"), "got: {msg}");
         assert!(msg.contains("data"), "got: {msg}");
+    }
+
+    /// A module file is YAML too: a repeated `inputs:` key inside one of its
+    /// nodes must fail instead of silently keeping only the last mapping.
+    #[test]
+    fn expand_rejects_duplicate_keys_in_module_file() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "dup_key_module.yml",
+            r#"
+module:
+  name: dup_key
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: inner
+    path: inner.py
+    inputs:
+      x: _mod/data
+      x: dora/timer/millis/20
+    outputs:
+      - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: dup_key_module.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let msg = format!("{:#}", expand_modules(&desc, base).unwrap_err());
+        assert!(msg.contains("failed to parse module file"), "got: {msg}");
+        assert!(msg.contains("duplicate entry with key \"x\""), "got: {msg}");
     }
 
     #[test]

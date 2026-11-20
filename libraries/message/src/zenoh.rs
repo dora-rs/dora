@@ -21,8 +21,16 @@ pub fn zenoh_endpoint_is_loopback(endpoint: &str) -> bool {
             .rsplit_once(':')
             .map_or(address, |(host, _port)| host),
     };
+    // Host names are case-insensitive (RFC 4343), and a trailing dot only
+    // marks the name as fully qualified, so `LOCALHOST` and `localhost.` name
+    // loopback just like `localhost`.
+    let is_localhost = |host: &str| {
+        host.strip_suffix('.')
+            .unwrap_or(host)
+            .eq_ignore_ascii_case("localhost")
+    };
     host.parse::<IpAddr>()
-        .map_or(host == "localhost", |ip| ip.to_canonical().is_loopback())
+        .map_or_else(|_| is_localhost(host), |ip| ip.to_canonical().is_loopback())
 }
 
 #[cfg(test)]
@@ -40,6 +48,9 @@ mod tests {
             "tcp/[::1]:5456?prio=high#iface=lo",
             "tcp/[::ffff:127.0.0.1]:5456",
             "tcp/localhost:5456",
+            "tcp/LOCALHOST:5456",
+            "tcp/Localhost:5456",
+            "tcp/localhost.:5456",
             "udp/127.1.2.3:1",
         ] {
             assert!(zenoh_endpoint_is_loopback(endpoint), "{endpoint}");

@@ -75,13 +75,45 @@ fn with_noisy_crates_off(mut filter: EnvFilter) -> EnvFilter {
 /// merely contains the name elsewhere (e.g. `my_dora_daemon=info`) does not
 /// match.
 fn env_configures_target(env_log: &str, target: &str) -> bool {
-    env_log.split(',').any(|directive| {
-        // The bare target name is everything up to the first `=` (level) or `[`
-        // (span filter); trim surrounding whitespace so we compare the crate/
-        // module path itself.
-        let name = directive.split(['=', '[']).next().unwrap_or("").trim();
-        name.starts_with(target)
-    })
+    env_log
+        .split(',')
+        .any(|directive| directive_name(directive).starts_with(target))
+}
+
+/// The bare target name of one `RUST_LOG` directive: everything up to the
+/// first `=` (level) or `[` (span filter), with surrounding whitespace
+/// trimmed so we compare the crate/module path itself. Empty for a global
+/// level like `info`.
+fn directive_name(directive: &str) -> &str {
+    directive.split(['=', '[']).next().unwrap_or("").trim()
+}
+
+/// The `RUST_LOG` directive *broader* than `target` that governs it, e.g.
+/// `dora=error` for `dora_daemon`, rewritten to apply to `target` alone
+/// (`dora_daemon=error`).
+///
+/// `tracing-subscriber` matches directive targets by string prefix and lets
+/// the longest matching one win, so this picks the longest valid directive
+/// whose target is a prefix of `target`. `None` if that directive names
+/// `target` itself ([`env_configures_target`] forwards it as is) or if there
+/// is none. A global level (`info`) has no target and does not count, nor
+/// does a span-scoped directive (`dora[span]=error`), which only applies
+/// inside that span, nor one that does not parse, which `RUST_LOG` ignores.
+fn broader_directive_for(env_log: &str, target: &str) -> Option<Directive> {
+    let (name, level) = env_log
+        .split(',')
+        .filter(|d| !d.contains('[') && d.trim().parse::<Directive>().is_ok())
+        .map(|d| (directive_name(d), d.split_once('=').map(|(_, l)| l.trim())))
+        .filter(|(name, _)| !name.is_empty() && target.starts_with(name))
+        .max_by_key(|(name, _)| name.len())?;
+    if name == target {
+        return None;
+    }
+    let scoped = match level {
+        Some(level) => format!("{target}={level}"),
+        None => target.to_owned(),
+    };
+    scoped.parse().ok()
 }
 
 /// Add the hard-coded `default` directive for `target` to `filter`, followed
@@ -95,13 +127,21 @@ fn env_configures_target(env_log: &str, target: &str) -> bool {
 /// `filter` falls back to its global level. A `RUST_LOG=zenoh=error` meant to
 /// quiet zenoh would then let zenoh through at `info`, louder than the
 /// `zenoh=warn` default.
+///
+/// A broader directive such as `RUST_LOG=dora=error` replaces the default
+/// instead (see [`broader_directive_for`]): forwarded as is, it would lose to
+/// the more specific `dora_daemon=info` and still let `dora_daemon` info
+/// through. It is scoped to `target` so it does not change how this filter
+/// treats the other crates it covers.
 fn with_target_default(
     filter: EnvFilter,
     env_log: &str,
     target: &str,
     default: &'static str,
 ) -> EnvFilter {
-    let mut filter = filter.add_directive(directive(default));
+    let mut filter = filter.add_directive(
+        broader_directive_for(env_log, target).unwrap_or_else(|| directive(default)),
+    );
     for user_directive in env_log
         .split(',')
         .filter(|d| env_configures_target(d, target))
@@ -400,7 +440,8 @@ fn log_file_path(out_dir: &Path, file_name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        EnvFilter, Layer, env_configures_target, log_file_path, stdout_filter, subscriber_builder,
+        EnvFilter, Layer, broader_directive_for, env_configures_target, log_file_path,
+        stdout_filter, subscriber_builder,
     };
     use std::path::Path;
     use tracing::Level;
@@ -456,6 +497,17 @@ mod tests {
             "zenoh",
             Level::WARN
         ));
+        // A broader directive covering the default's target quiets it too,
+        // instead of losing to the more specific default.
+        assert!(!stdout_enabled!("dora=error", "dora_daemon", Level::INFO));
+        assert!(!stdout_enabled!("dora=error", "dora_core", Level::WARN));
+        assert!(stdout_enabled!("dora=error", "dora_daemon", Level::ERROR));
+        assert!(!stdout_enabled!("zen=error", "zenoh", Level::WARN));
+        // A global level or an unknown level is not a broader directive: the
+        // defaults stay.
+        assert!(stdout_enabled!("error", "dora_daemon", Level::INFO));
+        assert!(!stdout_enabled!("error", "zenoh", Level::INFO));
+        assert!(!stdout_enabled!("zen=loud", "zenoh", Level::INFO));
         // Raising verbosity still works.
         assert!(stdout_enabled!("zenoh=debug", "zenoh", Level::DEBUG));
         assert!(stdout_enabled!(
@@ -554,5 +606,36 @@ mod tests {
         assert!(!env_configures_target("azenoh=trace", "zenoh"));
         assert!(!env_configures_target("info", "zenoh"));
         assert!(!env_configures_target("", "zenoh"));
+    }
+
+    #[test]
+    fn broader_directive_is_scoped_to_the_target() {
+        let broader =
+            |env_log| broader_directive_for(env_log, "dora_daemon").map(|d| d.to_string());
+        assert_eq!(broader("dora=error").as_deref(), Some("dora_daemon=error"));
+        assert_eq!(
+            broader("info,dora=warn").as_deref(),
+            Some("dora_daemon=warn")
+        );
+        assert_eq!(broader("dora").as_deref(), Some("dora_daemon=trace"));
+        // the most specific covering directive wins, as in tracing-subscriber
+        assert_eq!(
+            broader("dora_d=debug,dora=error").as_deref(),
+            Some("dora_daemon=debug")
+        );
+        assert_eq!(broader("dora=error,dora_daemon=info"), None);
+        // not broader: the target itself, a submodule, an unrelated crate, a
+        // global level, a span-scoped or an invalid directive
+        for env_log in [
+            "dora_daemon=error",
+            "dora_daemon::spawn=error",
+            "dorabot=error",
+            "info",
+            "",
+            "dora[span]=error",
+            "dora=loud",
+        ] {
+            assert_eq!(broader(env_log), None, "{env_log}");
+        }
     }
 }

@@ -1,0 +1,22 @@
+# Known failures of the ROS 2 DDS interop matrix (scripts/ros2-dds-interop.sh).
+#
+# One cell per line:  <distro|*> <rmw|*> <case> #<issue> [flaky]  # reason
+#
+# A listed cell that fails reports XFAIL and keeps the job green; a listed
+# cell that passes reports XPASS and fails the job, so the entry gets removed
+# together with the fix. `flaky` marks a timing-dependent bug: such a cell may
+# pass or fail without failing the job. Every entry must name an open issue.
+# Unknown distros, RMWs or case names are rejected, so a typo cannot hide a
+# cell.
+
+# [19.07] #4213: Python DDS clients can lose their first request/goal to discovery.
+# This is a timing race, so every #4213 cell is `flaky`, including those that
+# failed in every local run: runner timing differs, and an XPASS there would
+# fail the job for something that is not a regression.
+humble rmw_fastrtps_cpp action-client #4213 flaky  # 3 pass / 1 fail in 4 local runs
+humble rmw_cyclonedds_cpp action-client #4213 flaky  # failed 4/4 locally
+kilted * action-client #4213 flaky  # failed 4/4 locally on both RMWs
+humble rmw_cyclonedds_cpp service-client #4213 flaky  # failed 4/4 locally
+kilted rmw_cyclonedds_cpp service-client #4213 flaky  # 1 pass / 3 fail in 4 local runs
+* rmw_cyclonedds_cpp parameters #4215  # [19.09] ros2-client serves parameter services with ServiceMapping::Enhanced only
+kilted * rosout #4216  # [19.10] DDS endpoints carry no REP-2016 type hash (INVALID on Iron and later)

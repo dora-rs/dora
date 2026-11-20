@@ -564,6 +564,85 @@ async fn health_check_timeout_sigkills_unresponsive_node() {
     );
 }
 
+/// A node parked at the startup barrier is not killed by its health check (#4198).
+///
+/// The daemon answers a node's subscribe only once every node of the
+/// dataflow, on every daemon, has subscribed. A parked node sends nothing
+/// while it waits, so a watchdog that measured silence from its last
+/// request would SIGKILL it once `health_check_timeout` passed. On a
+/// multi-machine dataflow, one slow node on another machine was enough to
+/// kill the nodes that started first.
+///
+/// Fixture: two `stop-delay-node`s (`health-check-startup-barrier.yml`).
+/// `early` has `health_check_timeout: 1.0` and subscribes at once; `late`
+/// sleeps 5 s before creating its node. `early` writes how long its
+/// `init_from_env` took to its ready file, which shows it really was
+/// parked for longer than the timeout. After the barrier releases, a
+/// 100 ms timer keeps both nodes active until `stop_after`.
+#[tokio::test(flavor = "multi_thread")]
+async fn health_check_timeout_spares_node_parked_at_startup_barrier() {
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "stop-delay-node"])
+        .status()
+        .expect("failed to build stop-delay-node");
+    assert!(status.success(), "stop-delay-node build failed");
+
+    let ready = Path::new("/tmp/dora-health-check-startup-barrier.ready");
+    let _ = std::fs::remove_file(ready);
+
+    let dataflow_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/dataflows/health-check-startup-barrier.yml");
+
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        // The barrier releases at ~5 s; 8 s leaves several health-check
+        // timeouts of post-start running before `Stop`.
+        Some(Duration::from_secs(8)),
+        false,
+        None,
+        None,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete");
+    for (id, r) in &dr.node_results {
+        eprintln!("  {id}: {r:?}");
+    }
+    for id in ["early", "late"] {
+        let node_result = dr
+            .node_results
+            .get(&id.to_string().into())
+            .unwrap_or_else(|| panic!("{id} should be in node_results"));
+        assert!(
+            node_result.is_ok(),
+            "`{id}` should have exited cleanly on `Stop`, got {node_result:?} \
+             (Signal(9) means the health check killed it at the startup barrier)"
+        );
+    }
+
+    // Without a wait longer than the timeout, the test would pass without
+    // exercising the barrier at all.
+    let contents = std::fs::read_to_string(ready)
+        .expect("`early` should have written its ready file once init returned");
+    let _ = std::fs::remove_file(ready);
+    let init_ms: u64 = contents
+        .lines()
+        .find_map(|line| line.strip_prefix("init_ms="))
+        .and_then(|ms| ms.parse().ok())
+        .unwrap_or_else(|| panic!("ready file has no `init_ms=` line: {contents:?}"));
+    assert!(
+        init_ms > 2_000,
+        "`early` was parked for only {init_ms} ms, not well past its 1 s \
+         health_check_timeout; the test did not exercise the barrier"
+    );
+}
+
 /// A node hanging before init_from_env is killed on startup_timeout (#3022).
 #[tokio::test(flavor = "multi_thread")]
 async fn node_killed_on_startup_timeout_unwedges_dataflow() {
