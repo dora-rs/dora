@@ -288,8 +288,9 @@ pub fn is_empty(&self) -> bool
 //     happen at `queue_size`; for `backpressure` inputs at 10x `queue_size`
 //     (hard safety cap).
 //   - A `drop_oldest` input's messages on the direct zero-copy path while
-//     they wait in the shared zenoh ingress channel: past `queue_size`, the
-//     oldest is discarded as a new one arrives.
+//     they wait in the node, in the shared zenoh ingress channel or the
+//     scheduler: past `queue_size`, the oldest is discarded as a new one
+//     arrives.
 //   - That channel itself, which a payload on the direct path overflows
 //     before the per-input policy ever applies. It is sized from the *sum*
 //     of the node's input `queue_size`s (floor 64), so raising any input's
