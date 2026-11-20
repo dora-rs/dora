@@ -14,7 +14,7 @@ Dora provides built-in fault tolerance for robotic and AI dataflows. Nodes can a
 | InputTracker API | Rust nodes | `dora_node_api::InputTracker` |
 | Observability | Daemon-wide | Atomic counters logged periodically |
 | Distributed health | Multi-daemon | Coordinator heartbeat monitoring |
-| Coordinator state persistence | Coordinator | `--store redb` (requires `redb-backend` feature) |
+| Coordinator state persistence | Coordinator | `--store redb` (the default; `--store memory` turns it off) |
 
 ---
 
@@ -411,9 +411,9 @@ Currently this is informational. Future work may include automatic migration of 
 
 ## Coordinator State Persistence
 
-By default the coordinator holds all state in memory. If the coordinator process crashes or is restarted, all knowledge of running dataflows is lost -- daemons continue running but become orphaned, and users must manually re-run dataflows.
+A coordinator that holds its state only in memory (`--store memory`) forgets every dataflow when it crashes or restarts: the daemons keep their nodes running, but the restarted coordinator cannot list, stop or reconcile them.
 
-The **redb store backend** solves this by persisting coordinator state to a single file on disk using [redb](https://docs.rs/redb), a pure-Rust embedded key-value store with copy-on-write B-trees that are crash-safe by design.
+The **redb store backend**, which the coordinator uses by default, solves this by persisting coordinator state to a single file on disk using [redb](https://docs.rs/redb), a pure-Rust embedded key-value store with copy-on-write B-trees that are crash-safe by design.
 
 ### Design: Stateless Coordinator with Stateful Backend
 
@@ -425,25 +425,25 @@ Coordinator (stateless process)
     v
 CoordinatorStore trait
     |
-    +-- InMemoryStore (default, no persistence)
-    +-- RedbStore     (persists to ~/.dora/coordinator.redb)
+    +-- InMemoryStore (--store memory, no persistence)
+    +-- RedbStore     (default, persists to ~/.dora/coordinator.redb)
 ```
 
 This separation means:
-- The coordinator event loop never reads from the filesystem during normal operation (only at startup recovery)
+- The coordinator keeps its working state in memory. It reads the store at startup, on each heartbeat tick (the recovery timeout below), when it reconciles a reconnecting daemon's report, and for param requests
 - All state mutations are written to the store at well-defined persistence points
 - The store can be swapped without changing coordinator logic
 
 ### Enabling Persistence
 
 ```bash
-# Use default path (~/.dora/coordinator.redb)
+# Default: persist to ~/.dora/coordinator.redb (same as `dora coordinator`)
 dora coordinator --store redb
 
 # Use custom path
 dora coordinator --store redb:/path/to/coordinator.redb
 
-# Default: in-memory only (no persistence)
+# In-memory only (no persistence)
 dora coordinator --store memory
 ```
 
@@ -451,27 +451,35 @@ The `redb` backend requires the `redb-backend` Cargo feature, which is enabled i
 
 ### What Is Persisted
 
-The store tracks three record types:
-
 | Record | Key | Persisted Fields |
 |--------|-----|-----------------|
-| `DataflowRecord` | UUID (16 bytes) | uuid, name, descriptor (JSON), status, daemon IDs, generation counter, created/updated timestamps |
+| `DataflowRecord` | UUID (16 bytes) | uuid, name, descriptor (JSON), status, daemon IDs, node-to-daemon assignment, `uv` flag, whether the start barrier was released and which nodes exited before subscribing, generation counter, created/updated timestamps |
+| Node param | `"{dataflow uuid}\0{node id}\0{key}"` | the value bytes set with `dora param set` |
+| Param tombstone | same as node param | a token marking a deleted param, kept until a replay has told the node about the delete |
+| `DaemonInfo` | DaemonId (postcard) | daemon ID, machine ID, labels |
 | `BuildRecord` | UUID (16 bytes) | build ID, status, errors, created/updated timestamps |
-| `DaemonInfo` | DaemonId (postcard) | daemon ID, machine ID |
 
-Records are serialized with [postcard](https://docs.rs/postcard) for compact, fast encoding.
+Records are serialized with [postcard](https://docs.rs/postcard) for compact, fast encoding; param values are stored as given.
+
+The coordinator does not write `BuildRecord`s yet, so builds are not persisted. Daemon records do not survive a restart either: the coordinator clears them at startup, and each daemon registers again when it reconnects.
 
 ### Dataflow Status Lifecycle
 
 The coordinator persists dataflow status at every state transition:
 
 ```
-Start command     -->  Pending
-All daemons ready -->  Running
-Stop command      -->  Stopping
-All nodes finish  -->  Succeeded  or  Failed { error }
-Spawn failure     -->  Failed { error: "spawn failed: ..." }
+Start command                    -->  Pending
+All daemons spawned              -->  Running
+Stop command                     -->  Stopping
+All nodes finish                 -->  Succeeded  or  Failed { error }
+Spawn failure or spawn timeout   -->  Failed { error, terminal: true }
+Coordinator restart              -->  Recovering   (any non-final status)
+All its daemons disconnect       -->  Recovering
+A daemon reports it running      -->  Running      (from Recovering, Pending, or a non-terminal Failed)
+Still Recovering after 60 s      -->  Failed { error: "recovery timeout (60s): no daemon reconnected", terminal: true }
 ```
+
+`terminal: true` marks a verdict the coordinator has already given: a daemon that reports the dataflow as running later, even after another coordinator restart, cannot bring it back to `Running`.
 
 Each persist call increments the record's `generation` counter, providing a monotonic version for conflict detection.
 
@@ -485,21 +493,28 @@ The coordinator writes to the store at these moments in the event loop:
 4. **Stop requested** (`ControlRequest::Stop` or `StopByName`) -- updated to `Stopping`
 5. **All nodes finished** (`DataflowFinishedOnDaemon`) -- updated to `Succeeded` or `Failed` with per-node error details
 6. **Graceful shutdown** (Ctrl-C or `Destroy` command) -- all running dataflows marked `Stopping` before stop messages are sent
+7. **Start barrier released** (every node subscribed) -- the release and the nodes that exited before subscribing, so a daemon that missed the release gets it replayed after a restart
+8. **Runtime topology change** (`dora node add`, `remove`, `replace`) -- the record is rewritten with the new nodes, keeping its status
+9. **All daemons of a dataflow disconnected** -- updated to `Recovering`
+10. **Param set or deleted** (`dora param set`, `dora param delete`) -- written before the change is forwarded to the node
 
-If a store write fails, the coordinator logs a warning and continues operating with in-memory state. This prevents a store failure from blocking the dataflow lifecycle.
+If a dataflow record write fails, the coordinator logs a warning and continues operating with in-memory state. This prevents a store failure from blocking the dataflow lifecycle. A param write is different: if it fails, the request returns the error and the change is not forwarded.
 
 ### Startup Recovery
 
-When the coordinator starts with a redb store that contains data from a previous run, it performs recovery:
+Nodes do not stop when the coordinator does. Their daemon keeps them running and tries to reconnect every second. If no attempt succeeds for 30 seconds, the daemon gives up and exits. While it is disconnected, the inputs the daemon produces itself, such as timer ticks, pause until it reconnects ([#4123](https://github.com/dora-rs/dora/issues/4123)).
 
-1. Read all persisted dataflow records via `store.list_dataflows()`
-2. For any record with a non-terminal status (`Pending`, `Running`, `Stopping`):
-   - Mark it as `Failed { error: "coordinator restarted" }`
-   - Increment the generation counter
-   - Write the updated record back to the store
-3. Terminal records (`Succeeded`, `Failed`) are left unchanged
+When the coordinator starts on a store that holds data from a previous run:
 
-This ensures that stale dataflows from a crashed coordinator are not confused with actively running ones. The daemons that were running those dataflows will detect the coordinator disconnect independently.
+1. It clears the stored daemon records; daemons register again when they reconnect.
+2. Every dataflow record with a non-final status (`Pending`, `Running`, `Stopping`, `Recovering`) is marked `Recovering` and written back. `Succeeded` and `Failed` records are left unchanged.
+3. When a daemon reconnects, it reports the dataflows it is still running. The coordinator moves each reported `Recovering` record back to `Running` and rebuilds the dataflow from the record and the nodes the daemon reported, so `dora list`, `dora stop` and `dora logs` work for it again. A record that is `Succeeded`, or `Failed` with `terminal: true`, is not revived; the coordinator stops its nodes instead.
+4. The rebuilt dataflow gets its persisted params again: a daemon that missed the start barrier release gets the release and the params replayed, and a dataflow that runs on a single daemon gets its params replayed when that daemon reports. Params deleted while a daemon was away are removed from its nodes.
+5. A record no daemon has reported 60 seconds after it became `Recovering` is marked `Failed { error: "recovery timeout (60s): no daemon reconnected", terminal: true }`.
+
+The same `Recovering` path covers a running coordinator that loses every daemon of a dataflow (for example during a network partition): the record waits 60 seconds for a daemon to report it again.
+
+`dora list` shows only the dataflows the coordinator holds in memory: the running ones and the last 200 that finished since it started. It does not read the store. A `Recovering` record is not listed while it waits, a record that hits the recovery timeout is not listed at all, and dataflows that finished before a restart stay in the store file but no longer appear in `dora list`. `dora clean` deletes the finished and failed records from the store.
 
 ### Error Detail Preservation
 
@@ -519,7 +534,7 @@ The redb database includes a `meta` table with a `schema_version` key. On open:
 - If the stored version matches the binary's version, the database opens normally
 - If there is a mismatch, the database is rejected with an error
 
-This prevents silent data corruption when the serialization format of stored records changes between Dora versions. The current schema version is `1`.
+This prevents silent data corruption when the serialization format of stored records changes between Dora versions. The current version is `SCHEMA_VERSION` in `libraries/coordinator-store/src/redb_store.rs`. A store written with a different version is rejected with an error that names both versions. `dora up` adds a hint to rerun it with `--recreate-store`; `dora coordinator` run directly prints only the error (see [Migrating from 0.x](migration-from-0.x.md#the-coordinator-store)).
 
 ### Integrity Check
 
@@ -547,7 +562,7 @@ pub trait CoordinatorStore: Send + Sync {
 }
 ```
 
-The `RedbStore` implementation uses three redb tables (`daemons`, `dataflows`, `builds`) with UUID-based binary keys and postcard-serialized values. All operations are synchronous (redb is a synchronous library); the coordinator calls them directly from the async event loop since they are fast in-process operations.
+The `RedbStore` implementation uses six redb tables: `meta` (the schema version), `daemons`, `dataflows` and `builds` with binary keys and postcard-serialized values, and `node_params` and `node_param_tombstones` keyed by `"{dataflow uuid}\0{node id}\0{key}"`. All operations are synchronous (redb is a synchronous library); the coordinator calls them directly from the async event loop since they are fast in-process operations.
 
 A 64 MiB record-size limit is enforced symmetrically on both encode and decode, so a record can never be written that the reader would later refuse. postcard reads only from the slice it is handed and does not pre-allocate from a length prefix, so a corrupt row cannot drive a large allocation.
 
@@ -849,7 +864,7 @@ Machine C (daemon):                planner, actuator-driver
 
 ### 6. Coordinator Crash Recovery with redb Persistence
 
-A long-running multi-daemon deployment where the coordinator must survive restarts without losing track of dataflow history.
+A long-running multi-daemon deployment where the coordinator must survive restarts without stopping the dataflows that are running.
 
 ```bash
 # Start coordinator with persistent store
@@ -859,23 +874,22 @@ dora coordinator --store redb
 dora start examples/rust-dataflow/dataflow.yml --name my-pipeline --detach
 
 # Coordinator crashes or is killed (e.g., OOM, hardware failure)
-# ... time passes ...
+# ... the daemons keep the nodes running and retry the connection ...
 
-# Restart coordinator with the same store
+# Restart coordinator with the same store, within 30 seconds
 dora coordinator --store redb
 ```
 
 **What happens on restart:**
 
 1. Coordinator opens `~/.dora/coordinator.redb` and reads persisted dataflow records
-2. Finds `my-pipeline` with status `Running`
-3. Marks it as `Failed { error: "coordinator restarted" }`, increments generation
-4. Logs: `INFO recovering stale dataflow <uuid> ("my-pipeline") -> marking as Failed`
-5. `dora list` now shows `my-pipeline` with its final status and timestamps
-6. Daemons detect the coordinator disconnect independently and stop their nodes
-7. User can start a fresh dataflow -- the coordinator is fully operational
+2. Finds `my-pipeline` with status `Running`, marks it `Recovering` and increments generation
+3. Logs: `INFO coordinator restarted: dataflow <uuid> (Some("my-pipeline")) -> Recovering (waiting for daemon reconnect)`
+4. The daemons reconnect and report `my-pipeline` as running; the record goes back to `Running`
+5. `dora list`, `dora stop` and `dora logs` work for `my-pipeline` again, and its nodes kept their processes. Params set before the crash are replayed to the nodes
+6. If no daemon reports `my-pipeline` within 60 seconds, its record in the store is marked `Failed` with `recovery timeout (60s): no daemon reconnected`. `dora list` does not show it
 
-The key benefit: the coordinator retains a complete history of dataflow lifecycle events across restarts. Without `--store redb`, all state would be lost and the operator would have no record of what was running before the crash.
+The key benefit: a coordinator restart does not stop running dataflows. The records of finished dataflows also stay in the store file, but `dora list` does not show them after a restart. With `--store memory`, the restarted coordinator has no record of what was running before the crash.
 
 ### 7. Periodic Batch Job with Always-Restart
 
@@ -918,7 +932,7 @@ The node processes one batch, exits with code 0, waits 10s, then restarts to pro
 
 **Use `InputTracker` for critical paths**. When a node must keep running even with degraded inputs, use `InputTracker` to fall back to cached data. This is essential for sensor fusion, planning, and control nodes.
 
-**Use `--store redb` for production deployments**. The redb backend ensures the coordinator retains dataflow history across crashes and restarts. The in-memory default is fine for development but loses all state on exit. The redb file is small (proportional to the number of dataflow records) and adds negligible overhead.
+**Keep the default `redb` store in production**. It lets a restarted coordinator take back the dataflows that are still running and keeps their params. `--store memory` is fine for development but loses all state on exit. The redb file is small (proportional to the number of dataflow records) and adds negligible overhead.
 
 **Combine features for defense in depth**:
 - `restart_policy` + `restart_delay` -> recover from node crashes
