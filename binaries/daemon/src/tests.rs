@@ -1166,7 +1166,7 @@ fn dynamic_join_dials_both_local_producers_and_consumers() {
         );
     }
     let (_, plan) = df
-        .dynamic_node_config(&joining, Some("tcp/127.0.0.1:12000"))
+        .dynamic_node_config(&joining, Some("tcp/127.0.0.1:12000"), &BTreeSet::new())
         .unwrap();
     assert_eq!(
         plan.connect,
@@ -1177,12 +1177,41 @@ fn dynamic_join_dials_both_local_producers_and_consumers() {
         ]
     );
     assert!(plan.listen.starts_with("tcp/127.0.0.1:"));
-    let again = df.dynamic_node_config(&joining, None).unwrap().1;
+    let again = df
+        .dynamic_node_config(&joining, None, &BTreeSet::new())
+        .unwrap()
+        .1;
     assert_ne!(
         again.listen, plan.listen,
         "a restarted node must not inherit a port nothing held while it was down"
     );
     assert_eq!(df.zenoh_peering[&joining].listen, [again.listen]);
+}
+
+/// A planned Zenoh port is free until its node binds it, so the endpoints
+/// a node IPC listener must avoid come from every running dataflow, not just
+/// the one being spawned (#4242).
+#[test]
+fn planned_zenoh_endpoints_cover_every_running_dataflow() {
+    let plan = |port: u16| crate::spawn::NodeZenohPeering {
+        listen: vec![format!("tcp/127.0.0.1:{port}")],
+        connect: vec![],
+        routable: false,
+    };
+    let mut a = test_dataflow();
+    Arc::make_mut(&mut a.zenoh_peering).insert("a1".to_owned().into(), plan(13001));
+    let mut b = test_dataflow();
+    Arc::make_mut(&mut b.zenoh_peering).insert("b1".to_owned().into(), plan(13002));
+    Arc::make_mut(&mut b.zenoh_peering).insert("b2".to_owned().into(), plan(13003));
+
+    assert_eq!(
+        crate::running_dataflow::planned_zenoh_endpoints([&a, &b]),
+        BTreeSet::from([
+            "tcp/127.0.0.1:13001".to_owned(),
+            "tcp/127.0.0.1:13002".to_owned(),
+            "tcp/127.0.0.1:13003".to_owned(),
+        ])
+    );
 }
 
 #[test]
@@ -1197,8 +1226,14 @@ fn dynamic_join_publishes_listener_before_next_configuration_request() {
         df.running_nodes.insert(id.clone(), node);
     }
     add_input(&mut df, "b", "in", "a");
-    let first = df.dynamic_node_config(&a, None).unwrap().1;
-    let second = df.dynamic_node_config(&b, None).unwrap().1;
+    let first = df
+        .dynamic_node_config(&a, None, &BTreeSet::new())
+        .unwrap()
+        .1;
+    let second = df
+        .dynamic_node_config(&b, None, &BTreeSet::new())
+        .unwrap()
+        .1;
     assert_eq!(
         second.connect.as_slice(),
         std::slice::from_ref(&first.listen)
@@ -1206,7 +1241,10 @@ fn dynamic_join_publishes_listener_before_next_configuration_request() {
     assert_ne!(first.listen, second.listen);
     // Once both have asked, either order of reconnect has explicit endpoints.
     assert_eq!(
-        df.dynamic_node_config(&a, None).unwrap().1.connect,
+        df.dynamic_node_config(&a, None, &BTreeSet::new())
+            .unwrap()
+            .1
+            .connect,
         [second.listen]
     );
 }
@@ -1217,7 +1255,7 @@ fn dynamic_join_rejects_static_nodes_and_stopping_dataflows() {
     let id = NodeId::from("test".to_owned());
     df.running_nodes.insert(id.clone(), test_running_node());
     assert!(
-        df.dynamic_node_config(&id, None)
+        df.dynamic_node_config(&id, None, &BTreeSet::new())
             .unwrap_err()
             .to_string()
             .contains("not dynamic")
@@ -1226,7 +1264,7 @@ fn dynamic_join_rejects_static_nodes_and_stopping_dataflows() {
     df.running_nodes.get_mut(&id).unwrap().node_config.dynamic = true;
     df.stop_sent = true;
     assert!(
-        df.dynamic_node_config(&id, None)
+        df.dynamic_node_config(&id, None, &BTreeSet::new())
             .unwrap_err()
             .to_string()
             .contains("stopping")
@@ -1276,7 +1314,7 @@ fn dynamic_join_ignores_a_static_node_with_the_same_id_elsewhere() {
     let picked = dataflow_for_dynamic_node(&mut running, &camera).unwrap();
     assert!(
         picked
-            .dynamic_node_config(&camera, None)
+            .dynamic_node_config(&camera, None, &BTreeSet::new())
             .unwrap_err()
             .to_string()
             .contains("not dynamic")

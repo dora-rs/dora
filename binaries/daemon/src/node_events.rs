@@ -143,10 +143,18 @@ impl Daemon {
                 event: DynamicNodeEvent::NodeConfig { node_id },
                 reply_tx,
             } => {
+                // Every dataflow's plan, including this one's: its own listeners
+                // are also checked against its live `zenoh_peering`.
+                let planned =
+                    crate::running_dataflow::planned_zenoh_endpoints(self.running.values());
                 let node_config =
                     dataflow_for_dynamic_node(&mut self.running, &node_id).and_then(|dataflow| {
                         dataflow
-                            .dynamic_node_config(&node_id, self.zenoh_listen_endpoint.as_deref())
+                            .dynamic_node_config(
+                                &node_id,
+                                self.zenoh_listen_endpoint.as_deref(),
+                                &planned,
+                            )
                             .map_err(|err| {
                                 format!(
                                     "failed to get dynamic node config within given dataflow: {err}"
