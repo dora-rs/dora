@@ -2,7 +2,7 @@
 //! (issue #1703). Added dynamically at runtime via
 //! `dora node add --from-yaml filter-node.yml`. Counts inputs on
 //! the `input` edge and re-emits a `u64` running total on `output`,
-//! so the lifecycle harness can `dora node connect` it into the
+//! so the lifecycle harness can `dora node connect` its output into the
 //! pipeline and exercise the mapping path without needing arrow
 //! pass-through plumbing.
 
@@ -17,7 +17,9 @@ fn main() -> eyre::Result<()> {
         match event {
             Event::Input { id, metadata, .. } if id.as_str() == "input" => {
                 count = count.wrapping_add(1);
-                eprintln!("filter: received input {count}");
+                if count == 1 || count % 20 == 0 {
+                    eprintln!("filter: received input {count}");
+                }
                 node.send_output(output.clone(), metadata.parameters, count.into_arrow())?;
             }
             // Same selective-stop pattern as receiver: only exit on

@@ -1421,24 +1421,16 @@ fn backpressure_consumer_is_refused_only_for_an_unpinned_running_producer() {
 /// do not have corresponding Zenoh subscriptions established (issue #4063).
 #[test]
 fn check_add_mapping_refuses_direct_zenoh_and_non_running_sources() {
-    use dora_message::{daemon_to_node::OutputRouting, descriptor::Node};
+    use dora_message::daemon_to_node::OutputRouting;
     let mut df = test_dataflow();
     let src = NodeId::from("src".to_string());
     let sink = NodeId::from("sink".to_string());
     let val = DataId::from("val".to_string());
     let inp = DataId::from("inp".to_string());
 
-    // 1. Source not in descriptor (cross-daemon / unknown) -> Err with cross-daemon message
+    // 1. Source not running on this daemon (pending/exited/cross-daemon) -> Err
     let err = df.check_add_mapping(&src, &val, &sink, &inp).unwrap_err();
-    assert!(
-        err.contains("connecting across daemons is not supported at runtime"),
-        "{err}"
-    );
-
-    // 2. Source in descriptor but not running (pending or exited) -> Err with not currently running message
-    df.descriptor.nodes.push(Node::new(src.clone()));
-    let err = df.check_add_mapping(&src, &val, &sink, &inp).unwrap_err();
-    assert!(err.contains("not currently running"), "{err}");
+    assert!(err.contains("is not running on this daemon"), "{err}");
 
     // 3. Source running with unpinned output (may publish directly over Zenoh) -> Err
     let direct = BTreeMap::from([(val.clone(), OutputRouting::default())]);

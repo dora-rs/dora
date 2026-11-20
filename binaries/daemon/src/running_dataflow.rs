@@ -1227,18 +1227,12 @@ impl RunningDataflow {
             return Ok(());
         }
         let Some(producer) = self.running_nodes.get(source_node) else {
-            if self.descriptor.nodes.iter().any(|n| &n.id == source_node) {
-                return Err(format!(
-                    "Cannot connect {source_node}/{source_output} to {target_node}/{target_input} because \
-                     source node `{source_node}` is not currently running."
-                ));
-            } else {
-                return Err(format!(
-                    "Cannot connect {source_node}/{source_output} to {target_node}/{target_input}: \
-                     connecting across daemons is not supported at runtime; declare the input in the node \
-                     YAML when adding {target_node}."
-                ));
-            }
+            return Err(format!(
+                "Cannot connect {source_node}/{source_output} to {target_node}/{target_input}: \
+                 source node `{source_node}` is not running on this daemon (it has not started, has exited, \
+                 or runs on another machine, where runtime connect is not supported; declare the input in the \
+                 node YAML when adding {target_node})."
+            ));
         };
 
         let pinned = match &producer.node_config.output_routing {
