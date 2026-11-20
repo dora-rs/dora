@@ -3,29 +3,45 @@
 use std::{
     collections::BTreeMap,
     future::{Future, ready},
+    panic::AssertUnwindSafe,
     pin::pin,
     sync::{Arc, Mutex, MutexGuard, PoisonError, Weak},
-    task::Poll,
     time::Duration,
 };
 
 use arrow::array::{ArrayData, ArrayRef};
 use dora_message::metadata::MetadataParameters;
 use dora_node_api::Event;
-use dora_ros2_bridge::ros2_client::{self, service::RmwRequestId};
+use dora_ros2_bridge::{
+    ros2_client::{self, service::RmwRequestId},
+    transport::History,
+};
 use dora_ros2_bridge_arrow::{BridgeMessage, TypeInfo, TypeInfoGuard};
 use futures::{
     FutureExt, Stream, StreamExt,
     channel::oneshot,
     future::{Either, select},
-    stream::FuturesUnordered,
 };
 
 use crate::{DdsCallFailure, SERVICE_RESPONSE_TIMEOUT};
 
-/// How many service requests a YAML service client keeps in flight; the same
+/// The most service requests a YAML service client keeps in flight; the same
 /// bound as the YAML service server's pending requests.
 pub(crate) const MAX_IN_FLIGHT_REQUESTS: usize = crate::MAX_PENDING_REQUESTS;
+
+/// How many requests a YAML service client keeps in flight, for the history
+/// of its service QoS: its `keep_last` depth, at most
+/// [`MAX_IN_FLIGHT_REQUESTS`]. A KeepLast history holds that many samples, so
+/// more requests at once could push older requests out of a server's request
+/// history, or responses out of the bridge's own, before they are read.
+pub(crate) fn in_flight_limit(history: History) -> usize {
+    match history {
+        History::KeepAll => MAX_IN_FLIGHT_REQUESTS,
+        History::KeepLast { depth } => usize::try_from(depth)
+            .unwrap_or(0)
+            .clamp(1, MAX_IN_FLIGHT_REQUESTS),
+    }
+}
 
 /// Call a service for each of `requests` and hand every outcome to
 /// `respond`, with the parameters of the request it answers.
@@ -42,43 +58,14 @@ pub(crate) async fn drive_service_calls<P, D, T, F>(
 where
     F: Future<Output = T>,
 {
-    enum Step<R, O> {
-        Request(R),
-        Outcome(O),
-        RequestsEnded,
-        Done,
+    let outcomes = requests
+        .map(|(params, data)| call(data).map(move |outcome| (params, outcome)))
+        .buffer_unordered(limit);
+    let mut outcomes = pin!(outcomes);
+    while let Some((params, outcome)) = outcomes.next().await {
+        respond(params, outcome)?;
     }
-
-    let mut requests = pin!(requests);
-    let mut in_flight = FuturesUnordered::new();
-    let mut requests_ended = false;
-    loop {
-        let step = futures::future::poll_fn(|cx| {
-            if let Poll::Ready(Some(outcome)) = in_flight.poll_next_unpin(cx) {
-                return Poll::Ready(Step::Outcome(outcome));
-            }
-            if !requests_ended && in_flight.len() < limit {
-                match requests.as_mut().poll_next(cx) {
-                    Poll::Ready(Some(request)) => return Poll::Ready(Step::Request(request)),
-                    Poll::Ready(None) => return Poll::Ready(Step::RequestsEnded),
-                    Poll::Pending => {}
-                }
-            }
-            if requests_ended && in_flight.is_empty() {
-                return Poll::Ready(Step::Done);
-            }
-            Poll::Pending
-        })
-        .await;
-        match step {
-            Step::Request((params, data)) => {
-                in_flight.push(call(data).map(move |outcome| (params, outcome)));
-            }
-            Step::Outcome((params, outcome)) => respond(params, outcome)?,
-            Step::RequestsEnded => requests_ended = true,
-            Step::Done => return Ok(()),
-        }
-    }
+    Ok(())
 }
 
 /// The requests of a YAML service client: each input's parameters and data,
@@ -115,6 +102,13 @@ fn lock(waiting: &Mutex<Waiting>) -> MutexGuard<'_, Waiting> {
     waiting.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Record why the response pump stopped, and fail the calls waiting now.
+fn pump_stopped(waiting: &Mutex<Waiting>, error: String) {
+    let mut waiting = lock(waiting);
+    waiting.pump_error = Some(error);
+    waiting.senders.clear();
+}
+
 /// Concurrent calls on one DDS service client.
 ///
 /// `Client::async_receive_response(id)` takes the responses for other ids
@@ -139,7 +133,15 @@ impl DdsServiceCalls {
         std::thread::spawn(move || {
             let (client, waiting) = pump;
             let _guard = TypeInfoGuard::deserialize(response_type_info);
-            pump_responses(&client, &waiting);
+            // A panic while decoding a response must not leave every call
+            // waiting for its timeout: fail them, as a fatal read error does.
+            let pumped =
+                std::panic::catch_unwind(AssertUnwindSafe(|| pump_responses(&client, &waiting)));
+            if pumped.is_err()
+                && let Some(waiting) = waiting.upgrade()
+            {
+                pump_stopped(&waiting, "the response thread panicked".to_owned());
+            }
         });
         Self {
             client,
@@ -179,7 +181,10 @@ impl DdsServiceCalls {
             match select(rx, timeout).await {
                 Either::Left((Ok(response), _)) => Ok(response),
                 Either::Left((Err(oneshot::Canceled), _)) => Err(DdsCallFailure::PumpStopped(
-                    lock(&waiting).pump_error.clone().unwrap_or_default(),
+                    lock(&waiting)
+                        .pump_error
+                        .clone()
+                        .unwrap_or_else(|| "the response thread stopped".to_owned()),
                 )),
                 Either::Right(_) => {
                     lock(&waiting).senders.remove(&id);
@@ -207,17 +212,40 @@ fn pump_responses(client: &DdsClient, waiting: &Weak<Mutex<Waiting>>) {
             Err(error) => {
                 let failure = DdsCallFailure::Read(error);
                 if failure.is_fatal() {
-                    let mut waiting = lock(&waiting);
-                    waiting.pump_error = Some(failure.to_string());
-                    // Fails the calls waiting now.
-                    waiting.senders.clear();
+                    pump_stopped(&waiting, failure.to_string());
                     return;
                 }
+                // One undecodable response: the next may be waiting already.
                 tracing::warn!("failed to receive ROS2 service response: {failure}");
+                continue;
             }
         }
         drop(waiting);
         std::thread::sleep(RESPONSE_POLL_INTERVAL);
+    }
+}
+
+#[cfg(test)]
+mod in_flight_limit_tests {
+    use dora_ros2_bridge::transport::History;
+
+    use super::{MAX_IN_FLIGHT_REQUESTS, in_flight_limit};
+
+    #[test]
+    fn the_limit_is_the_service_history_depth() {
+        assert_eq!(in_flight_limit(History::KeepLast { depth: 10 }), 10);
+        assert_eq!(in_flight_limit(History::KeepLast { depth: 3 }), 3);
+    }
+
+    #[test]
+    fn the_limit_is_capped_and_never_zero() {
+        assert_eq!(
+            in_flight_limit(History::KeepLast { depth: 1000 }),
+            MAX_IN_FLIGHT_REQUESTS
+        );
+        assert_eq!(in_flight_limit(History::KeepAll), MAX_IN_FLIGHT_REQUESTS);
+        assert_eq!(in_flight_limit(History::KeepLast { depth: 0 }), 1);
+        assert_eq!(in_flight_limit(History::KeepLast { depth: -5 }), 1);
     }
 }
 

@@ -368,7 +368,7 @@ fn run_zenoh_service_mode(
             let (mut node, events) = DoraNode::init_from_env()?;
             futures::executor::block_on(service_client::drive_service_calls(
                 service_client::requests(events),
-                service_client::MAX_IN_FLIGHT_REQUESTS,
+                service_client_in_flight_limit(&config.qos),
                 |data| {
                     let request = serialize_raw_cdr(&TypedValue {
                         value: &data,
@@ -1678,7 +1678,12 @@ fn run_service_mode(
             // Wait for service availability
             wait_for_service(&client, &ros_node)?;
 
-            run_service_client(client, request_type_info, response_type_info)
+            run_service_client(
+                client,
+                service_client_in_flight_limit(&config.qos),
+                request_type_info,
+                response_type_info,
+            )
         }
         Ros2Role::Server => {
             let server = ros_node
@@ -1714,6 +1719,7 @@ const ACTION_RESULT_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn run_service_client(
     client: ros2_client::Client<BridgeMessage, BridgeMessage>,
+    limit: usize,
     request_type_info: TypeInfo<'static>,
     response_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
@@ -1725,7 +1731,7 @@ fn run_service_client(
     // bridge node.
     futures::executor::block_on(service_client::drive_service_calls(
         service_client::requests(dora_events),
-        service_client::MAX_IN_FLIGHT_REQUESTS,
+        limit,
         |data| calls.call(data.to_data()),
         |parameters, outcome| {
             let Some(response) = dds_call_or_warn(outcome, "ROS2 service call failed")? else {
@@ -3001,12 +3007,22 @@ fn resolve_topics(config: &Ros2BridgeConfig) -> eyre::Result<Vec<Ros2TopicConfig
 /// require reliable delivery, so `reliable` is always forced on and a
 /// best-effort configuration is ignored.
 fn service_or_action_qos(config: &Ros2QosConfig) -> ros2_client::QosProfile {
+    service_qos_config(config).to_dds_qos()
+}
+
+/// `config` as a service or action endpoint applies it: reliable, with a
+/// history of 10 unless configured.
+fn service_qos_config(config: &Ros2QosConfig) -> Ros2QosConfig {
     Ros2QosConfig {
         reliable: true,
         keep_last: config.keep_last.or(Some(10)),
         ..config.clone()
     }
-    .to_dds_qos()
+}
+
+/// How many requests a YAML service client with `config` keeps in flight.
+fn service_client_in_flight_limit(config: &Ros2QosConfig) -> usize {
+    service_client::in_flight_limit(service_qos_config(config).to_neutral_qos().history)
 }
 
 /// QoS for the service and action endpoints of a bridge config.
