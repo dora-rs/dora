@@ -42,6 +42,8 @@ use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{Context, ContextCompat, eyre};
 use futures::{StreamExt, task::SpawnExt};
 
+mod service_client;
+
 /// Maximum pending service requests before dropping new ones.
 const MAX_PENDING_REQUESTS: usize = 64;
 
@@ -64,6 +66,9 @@ enum DdsCallFailure {
     Write(ros2_client::WriteError<()>),
     Read(ros2_client::ReadError),
     TimedOut(Duration),
+    /// The thread that receives a service client's responses stopped on a
+    /// fatal read error, given here.
+    PumpStopped(String),
 }
 
 impl From<ros2_client::service::CallServiceError<()>> for DdsCallFailure {
@@ -81,6 +86,7 @@ impl std::fmt::Display for DdsCallFailure {
             Self::Write(e) => write!(f, "{e}"),
             Self::Read(e) => write!(f, "{e}"),
             Self::TimedOut(after) => write!(f, "timed out after {after:?}"),
+            Self::PumpStopped(error) => write!(f, "no longer receiving responses: {error}"),
         }
     }
 }
@@ -103,6 +109,7 @@ impl DdsCallFailure {
             }
             Self::Read(e) => matches!(e, ReadError::Poisoned { .. } | ReadError::Internal { .. }),
             Self::TimedOut(_) => false,
+            Self::PumpStopped(_) => true,
         }
     }
 }
@@ -359,42 +366,40 @@ fn run_zenoh_service_mode(
                 MAX_PENDING_REQUESTS,
             ))?;
             let (mut node, events) = DoraNode::init_from_env()?;
-            for event in futures::executor::block_on_stream(events) {
-                match event {
-                    Event::Input { data, .. } => {
-                        let Some(request) = value_or_warn(
-                            serialize_raw_cdr(&TypedValue {
-                                value: data.as_array(),
-                                type_info: &request_info,
-                            }),
+            futures::executor::block_on(service_client::drive_service_calls(
+                service_client::requests(events),
+                service_client::MAX_IN_FLIGHT_REQUESTS,
+                |data| {
+                    let request = serialize_raw_cdr(&TypedValue {
+                        value: &data,
+                        type_info: &request_info,
+                    });
+                    let client = &client;
+                    async move {
+                        let request = value_or_warn(
+                            request,
                             "dropping Zenoh service request that cannot be serialized",
-                        ) else {
-                            continue;
-                        };
-                        let Some(response) = value_or_warn(
-                            futures::executor::block_on(
-                                client.call(request, SERVICE_RESPONSE_TIMEOUT),
-                            ),
-                            "Zenoh service call failed",
-                        ) else {
-                            continue;
-                        };
-                        let Some(data) = value_or_warn(
-                            deserialize_raw_cdr(&response, response_info.clone(), 64 * 1024 * 1024),
-                            "invalid Zenoh service response",
-                        ) else {
-                            continue;
-                        };
-                        node.send_output(
-                            "response".into(),
-                            Default::default(),
-                            StructArray::from(data),
                         )?;
+                        value_or_warn(
+                            client.call(request, SERVICE_RESPONSE_TIMEOUT).await,
+                            "Zenoh service call failed",
+                        )
                     }
-                    Event::Stop(_) => break,
-                    _ => {}
-                }
-            }
+                },
+                |parameters, response| {
+                    let Some(response) = response else {
+                        return Ok(());
+                    };
+                    let Some(data) = value_or_warn(
+                        deserialize_raw_cdr(&response, response_info.clone(), 64 * 1024 * 1024),
+                        "invalid Zenoh service response",
+                    ) else {
+                        return Ok(());
+                    };
+                    node.send_output("response".into(), parameters, StructArray::from(data))?;
+                    Ok(())
+                },
+            ))?;
         }
         Ros2Role::Server => {
             let server = Arc::new(futures::executor::block_on(NodeServiceServer::declare(
@@ -1713,69 +1718,28 @@ fn run_service_client(
     response_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
     let (mut node, dora_events) = DoraNode::init_from_env()?;
+    let calls = service_client::DdsServiceCalls::new(client, request_type_info, response_type_info);
 
-    for event in futures::executor::block_on_stream(dora_events) {
-        match event {
-            Event::Input {
-                id: _,
-                metadata: _,
-                data,
-            } => {
-                let array_data = data.as_array().to_data();
-
-                // A failed or unanswered call fails only this request, as on
-                // the Zenoh transport: one slow or absent ROS2 server must not
-                // tear down the whole bridge node.
-                // Serialize request (guard clears thread-local on drop)
-                let _guard = TypeInfoGuard::serialize(request_type_info.clone());
-                let Some(req_id) = dds_call_or_warn(
-                    client
-                        .send_request(BridgeMessage(Some(array_data)))
-                        .map_err(DdsCallFailure::Write),
-                    "failed to send ROS2 service request",
-                )?
-                else {
-                    continue;
-                };
-
-                // Receive response with timeout
-                let _guard = TypeInfoGuard::deserialize(response_type_info.clone());
-                let Some(response) = dds_call_or_warn(
-                    futures::executor::block_on(async {
-                        let recv = client.async_receive_response(req_id);
-                        futures::pin_mut!(recv);
-                        let timeout = futures_timer::Delay::new(SERVICE_RESPONSE_TIMEOUT);
-                        match futures::future::select(recv, timeout).await {
-                            futures::future::Either::Left((result, _)) => {
-                                result.map_err(DdsCallFailure::Read)
-                            }
-                            futures::future::Either::Right(_) => {
-                                Err(DdsCallFailure::TimedOut(SERVICE_RESPONSE_TIMEOUT))
-                            }
-                        }
-                    }),
-                    "ROS2 service call failed",
-                )?
-                else {
-                    continue;
-                };
-
-                if let Some(resp_data) = response.0 {
-                    node.send_output(
-                        "response".into(),
-                        Default::default(),
-                        StructArray::from(resp_data),
-                    )?;
-                } else {
-                    tracing::warn!("service response contained no data");
+    // A failed or unanswered call fails only this request, as on the Zenoh
+    // transport: one slow or absent ROS2 server must not tear down the whole
+    // bridge node.
+    futures::executor::block_on(service_client::drive_service_calls(
+        service_client::requests(dora_events),
+        service_client::MAX_IN_FLIGHT_REQUESTS,
+        |data| calls.call(data.to_data()),
+        |parameters, outcome| {
+            let Some(response) = dds_call_or_warn(outcome, "ROS2 service call failed")? else {
+                return Ok(());
+            };
+            match response.0 {
+                Some(data) => {
+                    node.send_output("response".into(), parameters, StructArray::from(data))?
                 }
+                None => tracing::warn!("service response contained no data"),
             }
-            Event::Stop(_) => break,
-            _ => {}
-        }
-    }
-
-    Ok(())
+            Ok(())
+        },
+    ))
 }
 
 fn run_service_server(
@@ -3151,6 +3115,9 @@ mod dds_call_failure_tests {
             DdsCallFailure::Read(ReadError::Poisoned {
                 reason: "rtps thread panicked".into(),
             }),
+            // The service client's response pump stopped on one of the above:
+            // no call on that client can be answered any more.
+            DdsCallFailure::PumpStopped("rtps thread panicked".into()),
         ];
         for failure in fatal {
             assert!(failure.is_fatal(), "{failure:?} must end the bridge");
