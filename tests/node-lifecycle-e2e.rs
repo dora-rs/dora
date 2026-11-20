@@ -461,6 +461,27 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
         "connect 2 missing success line:\n{stdout}"
     );
 
+    // Verify that data is actually delivered: the filter node receives input and processes it (#4063).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut delivered = false;
+    let mut last_log = String::new();
+    while std::time::Instant::now() < deadline {
+        let (ok, stdout, _) = run_capture(
+            Command::new(&dora).args(["logs", name, "--node", "filter"]),
+            "dora logs filter",
+        );
+        if ok && (stdout.contains("passed") || stdout.contains("received input")) {
+            delivered = true;
+            break;
+        }
+        last_log = stdout;
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        delivered,
+        "filter node did not receive or process input within 10s;\nlast logs:\n{last_log}"
+    );
+
     // --- 6. dora node disconnect ----------------------------------------
     let (ok, stdout, stderr) = run_capture(
         Command::new(&dora).args([

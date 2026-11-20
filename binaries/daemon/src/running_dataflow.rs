@@ -1210,8 +1210,9 @@ impl RunningDataflow {
     /// 1. It is already present in `mappings` (idempotent retry).
     /// 2. The source node is running locally and its output is pinned to `daemon_only`
     ///    (or legacy unconfigured routing, which stays on the daemon path).
-    /// 3. The source node is on another daemon and forwarding for that output was already
-    ///    established in `open_external_mappings`.
+    ///
+    /// Edges from non-running local nodes and cross-daemon edges are refused with
+    /// clear, actionable errors.
     pub(crate) fn check_add_mapping(
         &self,
         source_node: &NodeId,
@@ -1225,23 +1226,30 @@ impl RunningDataflow {
         {
             return Ok(());
         }
-        if let Some(producer) = self.running_nodes.get(source_node) {
-            let pinned = match &producer.node_config.output_routing {
-                None => true,
-                Some(routing) => routing.get(source_output).is_some_and(|r| r.daemon_only),
-            };
-            if !pinned {
+        let Some(producer) = self.running_nodes.get(source_node) else {
+            if self.descriptor.nodes.iter().any(|n| &n.id == source_node) {
                 return Err(format!(
                     "Cannot connect {source_node}/{source_output} to {target_node}/{target_input} because \
-                     {source_node}/{source_output} may publish directly over Zenoh. \
-                     Declare input: {source_node}/{source_output} in the node YAML when adding {target_node}."
+                     source node `{source_node}` is not currently running."
+                ));
+            } else {
+                return Err(format!(
+                    "Cannot connect {source_node}/{source_output} to {target_node}/{target_input}: \
+                     connecting across daemons is not supported at runtime; declare the input in the node \
+                     YAML when adding {target_node}."
                 ));
             }
-        } else if !self.open_external_mappings.contains(&output_id) {
+        };
+
+        let pinned = match &producer.node_config.output_routing {
+            None => true,
+            Some(routing) => routing.get(source_output).is_some_and(|r| r.daemon_only),
+        };
+        if !pinned {
             return Err(format!(
                 "Cannot connect {source_node}/{source_output} to {target_node}/{target_input} because \
-                 source node `{source_node}` is not running locally and output `{source_output}` is not \
-                 configured for cross-daemon delivery."
+                 {source_node}/{source_output} may publish directly over Zenoh. \
+                 Declare input: {source_node}/{source_output} in the node YAML when adding {target_node}."
             ));
         }
         Ok(())

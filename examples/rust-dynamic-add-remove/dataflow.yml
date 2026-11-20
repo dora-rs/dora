@@ -10,7 +10,6 @@
 #
 # Add a filter dynamically:
 #   dora node add --from-yaml filter-node.yml --dataflow <name>
-#   dora node connect <name> sender/value filter/input
 #   dora node connect <name> filter/output receiver/filtered
 
 nodes:

@@ -17,6 +17,7 @@ fn main() -> eyre::Result<()> {
         match event {
             Event::Input { id, metadata, .. } if id.as_str() == "input" => {
                 count = count.wrapping_add(1);
+                eprintln!("filter: received input {count}");
                 node.send_output(output.clone(), metadata.parameters, count.into_arrow())?;
             }
             // Same selective-stop pattern as receiver: only exit on
