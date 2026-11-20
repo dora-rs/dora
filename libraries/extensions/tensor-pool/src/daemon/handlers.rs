@@ -197,9 +197,6 @@ impl PoolState {
                 // Pool creation happens inside spawn (creation is millisecond-scale but publishing may Block)
                 let tensor_pool = self.tensor_pool.clone();
                 let shm_provider = self.shm_provider.clone();
-                let generations = self.mirror_generations.clone();
-                let generation =
-                    note_mirror_register(&generations, dataflow_id, &shared_memory_id).await;
                 // Replicate the pool descriptor into the local extension
                 // table before the mirror creation task runs, so a
                 // receiver's daemon query resolves it from the first
@@ -269,6 +266,11 @@ impl PoolState {
                             None
                         }
                     });
+                // Noted only once the register passed validation, so a
+                // rejected one leaves no entry behind.
+                let generations = self.mirror_generations.clone();
+                let generation =
+                    note_mirror_register(&generations, dataflow_id, &shared_memory_id).await;
                 tokio::spawn(async move {
                     // Only the latest `Register` for this pool may build its
                     // mirror. A task that a later `Free` (an origin giving up
@@ -283,7 +285,7 @@ impl PoolState {
                     // registered, so a `Free` or `Register` handled meanwhile
                     // waits (millisecond-scale, without blocking the event loop
                     // thread) and then finds the entry.
-                    let generation_guard = generations.lock().await;
+                    let mut generation_guard = generations.lock().await;
                     let current = generation_guard
                         .current
                         .get(&(dataflow_id, shared_memory_id.clone()))
@@ -337,6 +339,14 @@ impl PoolState {
                             origin_machine_id.clone(),
                             mirror_shmem_name.clone(),
                         );
+                    } else {
+                        // No mirror, and after the nack the origin keeps no
+                        // entry, so no `Free` will come to remove this one.
+                        // Still this task's own generation: the lock has
+                        // been held since the check above.
+                        generation_guard
+                            .current
+                            .remove(&(dataflow_id, shared_memory_id.clone()));
                     }
                     drop(generation_guard);
                     if ok {

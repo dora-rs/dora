@@ -2089,7 +2089,8 @@ mod register_timeout_tests {
     }
 
     /// The register generations hold only pools that are registered: a
-    /// `Free` removes the pool's entry, and a `Free` that arrives after the
+    /// `Free` removes the pool's entry, a register that builds no mirror
+    /// leaves none, and a `Free` that arrives after the
     /// dataflow was cleaned up adds none, so the table does not grow with
     /// the pools a long-running dataflow registers and frees.
     #[allow(clippy::await_holding_lock)]
@@ -2141,6 +2142,32 @@ mod register_timeout_tests {
                 TensorPoolManager::cross_pool_shmem_name("B", &df.to_string(), &pool).unwrap()
             );
             let _ = std::fs::remove_file(segment);
+        }
+
+        // Registers that never produce a mirror leave nothing behind either:
+        // one rejected for its pool id, and one whose creation fails (here
+        // over the 1 GiB cap). After the nack no `Free` would come.
+        for (pool, size) in [("pool_!_1", 4096), ("pool_sender_big", (1 << 30) + 1)] {
+            let register = deliver(PeerMessage::Register {
+                origin_machine_id: "A".to_string(),
+                shared_memory_id: pool.to_string(),
+                shmem_name: "dora_test_no_such_sender_segment".to_string(),
+                size,
+                dtype: "uint8".to_string(),
+                shape: vec![size as i64],
+                device: "cpu".to_string(),
+            });
+            state
+                .handle_extension_message(&mut mirror, df, NAMESPACE.to_string(), None, register)
+                .await
+                .unwrap();
+            // Let a creation task, if any, run to its nack.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            assert_eq!(
+                entries(&state).await,
+                0,
+                "a register that built no mirror ({pool}) left an entry"
+            );
         }
 
         state.cleanup_dataflow(df).await;
