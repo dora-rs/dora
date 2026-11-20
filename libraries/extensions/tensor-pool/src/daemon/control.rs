@@ -136,26 +136,20 @@ pub(crate) async fn publish_pool_message(
     Ok(())
 }
 
-/// Release a cross-machine pool from the freeing daemon: unlink this
-/// machine's mirror (self-machine-qualified name; on the origin daemon
-/// the unlink is a harmless NotFound no-op) and publish a targeted
-/// `FreePool` so the peer drops its tracking entry. The publish is
-/// Remote-only — the initiator never receives its own echo, so it must
-/// unlink its own mirror here. The caller has already removed the
-/// cross_pools entry and passes the recorded peer (the pool's other
-/// machine) as the free target.
-pub(crate) async fn release_cross_pool(
+/// Tell the pool's other machine that the freeing daemon released a
+/// cross-machine pool: a targeted `FreePool` so the peer drops its
+/// tracking entry (and, on the mirror side, its segment). The publish is
+/// Remote-only — the initiator never receives its own echo — so the
+/// caller must already have released its own side with
+/// [`release_cross_pool_entry`], whose entry names the peer.
+pub(crate) async fn publish_cross_pool_free(
     session: &zenoh::Session,
     clock: &Arc<HLC>,
     dataflow_id: &Uuid,
-    machine_id: &str,
     peer_machine_id: &str,
     shared_memory_id: &str,
     shm_provider: Option<&ShmProvider<PosixShmProviderBackend>>,
 ) {
-    if !unlink_cross_pool_segment(machine_id, &dataflow_id.to_string(), shared_memory_id) {
-        return;
-    }
     tracing::info!("memory pool: forwarding free of {shared_memory_id} to peer {peer_machine_id}");
     if let Err(e) = publish_pool_message(
         session,
