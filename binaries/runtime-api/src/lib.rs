@@ -131,7 +131,7 @@ pub fn main(runner: impl OperatorRunner) -> eyre::Result<()> {
             &node_id,
             operator_definition,
             incoming_events,
-            RuntimeHandle::new(operator_events_tx, allocator),
+            RuntimeHandle::new(operator_id.clone(), operator_events_tx, allocator),
             init_done_tx,
             &dataflow_descriptor,
         )
