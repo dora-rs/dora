@@ -1555,21 +1555,19 @@ mod tests {
     }
 
     fn service_config(role: Ros2Role) -> Ros2BridgeConfig {
-        Ros2BridgeConfig {
-            service: Some("/add_two_ints".into()),
-            service_type: Some("example_interfaces/AddTwoInts".into()),
-            role: Some(role),
-            ..Default::default()
-        }
+        let mut config = Ros2BridgeConfig::default();
+        config.service = Some("/add_two_ints".into());
+        config.service_type = Some("example_interfaces/AddTwoInts".into());
+        config.role = Some(role);
+        config
     }
 
     fn action_config(role: Ros2Role) -> Ros2BridgeConfig {
-        Ros2BridgeConfig {
-            action: Some("/navigate".into()),
-            action_type: Some("nav2_msgs/NavigateToPose".into()),
-            role: Some(role),
-            ..Default::default()
-        }
+        let mut config = Ros2BridgeConfig::default();
+        config.action = Some("/navigate".into());
+        config.action_type = Some("nav2_msgs/NavigateToPose".into());
+        config.role = Some(role);
+        config
     }
 
     fn runtime_node() -> ResolvedNode {
@@ -2195,15 +2193,14 @@ nodes:
 
     #[test]
     fn validate_rejects_empty_ros2_zenoh_config_uri() {
-        let config = Ros2BridgeConfig {
-            transport: Ros2TransportConfig::Zenoh {
-                compatibility: RmwZenohCompatibility::Humble,
-                config_uri: Some(PathBuf::new()),
-            },
-            topic: Some("/t".into()),
-            message_type: Some("a/B".into()),
-            ..Default::default()
+        let mut config = Ros2BridgeConfig::default();
+        config.transport = Ros2TransportConfig::Zenoh {
+            compatibility: RmwZenohCompatibility::Humble,
+            config_uri: Some(PathBuf::new()),
         };
+        config.topic = Some("/t".into());
+        config.message_type = Some("a/B".into());
+
         let err = validate_ros2_config(
             &NodeId::from("n".to_owned()),
             &config,
@@ -2215,12 +2212,11 @@ nodes:
     }
 
     fn single_topic_config(topic: &str, direction: Ros2Direction) -> Ros2BridgeConfig {
-        Ros2BridgeConfig {
-            topic: Some(topic.into()),
-            message_type: Some("turtlesim/Pose".into()),
-            direction,
-            ..Default::default()
-        }
+        let mut config = Ros2BridgeConfig::default();
+        config.topic = Some(topic.into());
+        config.message_type = Some("turtlesim/Pose".into());
+        config.direction = direction;
+        config
     }
 
     /// Single-topic mode binds to the node's declared port, so a name that has
@@ -2267,17 +2263,15 @@ nodes:
         // A subscribe topic mapped to an output the node never declares would
         // pass validation and then silently drop every message at runtime
         // (`DoraNode::send_output` ignores unknown output ids).
-        let config = Ros2BridgeConfig {
-            topics: Some(vec![Ros2TopicConfig {
-                topic: "/scan".into(),
-                message_type: "sensor_msgs/LaserScan".into(),
-                direction: Ros2Direction::Subscribe,
-                output: Some("typo_out".into()),
-                input: None,
-                qos: None,
-            }]),
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.topics = Some(vec![{
+            let mut topic_config =
+                Ros2TopicConfig::new("/scan".into(), "sensor_msgs/LaserScan".into());
+            topic_config.direction = Ros2Direction::Subscribe;
+            topic_config.output = Some("typo_out".into());
+            topic_config
+        }]);
+
         let err = validate_ros2_config(
             &NodeId::from("n".to_owned()),
             &config,
@@ -2294,17 +2288,15 @@ nodes:
 
     #[test]
     fn validate_multi_topic_rejects_undeclared_publish_input() {
-        let config = Ros2BridgeConfig {
-            topics: Some(vec![Ros2TopicConfig {
-                topic: "/cmd_vel".into(),
-                message_type: "geometry_msgs/Twist".into(),
-                direction: Ros2Direction::Publish,
-                output: None,
-                input: Some("typo_in".into()),
-                qos: None,
-            }]),
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.topics = Some(vec![{
+            let mut topic_config =
+                Ros2TopicConfig::new("/cmd_vel".into(), "geometry_msgs/Twist".into());
+            topic_config.direction = Ros2Direction::Publish;
+            topic_config.input = Some("typo_in".into());
+            topic_config
+        }]);
+
         let err = validate_ros2_config(
             &NodeId::from("n".to_owned()),
             &config,
@@ -2324,17 +2316,14 @@ nodes:
         // No explicit `output:` — the bridge derives the output id from the
         // topic name (`/scan` -> `scan`). A derived id that is not a declared
         // output silently drops every message, so validation must reject it.
-        let config = Ros2BridgeConfig {
-            topics: Some(vec![Ros2TopicConfig {
-                topic: "/scan".into(),
-                message_type: "sensor_msgs/LaserScan".into(),
-                direction: Ros2Direction::Subscribe,
-                output: None,
-                input: None,
-                qos: None,
-            }]),
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.topics = Some(vec![{
+            let mut topic_config =
+                Ros2TopicConfig::new("/scan".into(), "sensor_msgs/LaserScan".into());
+            topic_config.direction = Ros2Direction::Subscribe;
+            topic_config
+        }]);
+
         let err = validate_ros2_config(
             &NodeId::from("n".to_owned()),
             &config,
@@ -2352,17 +2341,14 @@ nodes:
     #[test]
     fn validate_multi_topic_accepts_derived_output() {
         // The topic-derived id (`/scan` -> `scan`) matches a declared output.
-        let config = Ros2BridgeConfig {
-            topics: Some(vec![Ros2TopicConfig {
-                topic: "/scan".into(),
-                message_type: "sensor_msgs/LaserScan".into(),
-                direction: Ros2Direction::Subscribe,
-                output: None,
-                input: None,
-                qos: None,
-            }]),
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.topics = Some(vec![{
+            let mut topic_config =
+                Ros2TopicConfig::new("/scan".into(), "sensor_msgs/LaserScan".into());
+            topic_config.direction = Ros2Direction::Subscribe;
+            topic_config
+        }]);
+
         validate_ros2_config(
             &NodeId::from("n".to_owned()),
             &config,
@@ -2374,27 +2360,24 @@ nodes:
 
     #[test]
     fn validate_multi_topic_accepts_declared_ports() {
-        let config = Ros2BridgeConfig {
-            topics: Some(vec![
-                Ros2TopicConfig {
-                    topic: "/scan".into(),
-                    message_type: "sensor_msgs/LaserScan".into(),
-                    direction: Ros2Direction::Subscribe,
-                    output: Some("scan".into()),
-                    input: None,
-                    qos: None,
-                },
-                Ros2TopicConfig {
-                    topic: "/cmd_vel".into(),
-                    message_type: "geometry_msgs/Twist".into(),
-                    direction: Ros2Direction::Publish,
-                    output: None,
-                    input: Some("cmd".into()),
-                    qos: None,
-                },
-            ]),
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.topics = Some(vec![
+            {
+                let mut topic_config =
+                    Ros2TopicConfig::new("/scan".into(), "sensor_msgs/LaserScan".into());
+                topic_config.direction = Ros2Direction::Subscribe;
+                topic_config.output = Some("scan".into());
+                topic_config
+            },
+            {
+                let mut topic_config =
+                    Ros2TopicConfig::new("/cmd_vel".into(), "geometry_msgs/Twist".into());
+                topic_config.direction = Ros2Direction::Publish;
+                topic_config.input = Some("cmd".into());
+                topic_config
+            },
+        ]);
+
         validate_ros2_config(
             &NodeId::from("n".to_owned()),
             &config,
@@ -2406,14 +2389,13 @@ nodes:
 
     #[test]
     fn validate_multiple_modes() {
-        let config = Ros2BridgeConfig {
-            topic: Some("/t".into()),
-            service: Some("/s".into()),
-            message_type: Some("a/B".into()),
-            service_type: Some("a/B".into()),
-            role: Some(Ros2Role::Client),
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.topic = Some("/t".into());
+        config.service = Some("/s".into());
+        config.message_type = Some("a/B".into());
+        config.service_type = Some("a/B".into());
+        config.role = Some(Ros2Role::Client);
+
         let err = validate_ros2_config(
             &NodeId::from("n".to_owned()),
             &config,
@@ -2436,11 +2418,10 @@ nodes:
 
     #[test]
     fn validate_service_client_missing_service_type() {
-        let config = Ros2BridgeConfig {
-            service: Some("/svc".into()),
-            role: Some(Ros2Role::Client),
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.service = Some("/svc".into());
+        config.role = Some(Ros2Role::Client);
+
         let mut inputs = BTreeMap::new();
         inputs.insert(DataId::from("request".to_owned()), dummy_input());
         let mut outputs = BTreeSet::new();
@@ -2452,11 +2433,10 @@ nodes:
 
     #[test]
     fn validate_service_client_missing_role() {
-        let config = Ros2BridgeConfig {
-            service: Some("/svc".into()),
-            service_type: Some("a/B".into()),
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.service = Some("/svc".into());
+        config.service_type = Some("a/B".into());
+
         let mut inputs = BTreeMap::new();
         inputs.insert(DataId::from("request".to_owned()), dummy_input());
         let mut outputs = BTreeSet::new();
@@ -2549,11 +2529,10 @@ nodes:
 
     #[test]
     fn validate_action_client_missing_action_type() {
-        let config = Ros2BridgeConfig {
-            action: Some("/nav".into()),
-            role: Some(Ros2Role::Client),
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.action = Some("/nav".into());
+        config.role = Some(Ros2Role::Client);
+
         let mut inputs = BTreeMap::new();
         inputs.insert(DataId::from("goal".to_owned()), dummy_input());
         let mut outputs = BTreeSet::new();
@@ -2635,12 +2614,11 @@ nodes:
 
     #[test]
     fn validate_bad_type_format() {
-        let config = Ros2BridgeConfig {
-            service: Some("/svc".into()),
-            service_type: Some("invalid_no_slash".into()),
-            role: Some(Ros2Role::Client),
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.service = Some("/svc".into());
+        config.service_type = Some("invalid_no_slash".into());
+        config.role = Some(Ros2Role::Client);
+
         let mut inputs = BTreeMap::new();
         inputs.insert(DataId::from("request".to_owned()), dummy_input());
         let mut outputs = BTreeSet::new();
@@ -2652,12 +2630,11 @@ nodes:
 
     #[test]
     fn validate_type_rejects_special_chars() {
-        let config = Ros2BridgeConfig {
-            service: Some("/svc".into()),
-            service_type: Some("pkg-bad/Evil".into()),
-            role: Some(Ros2Role::Client),
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.service = Some("/svc".into());
+        config.service_type = Some("pkg-bad/Evil".into());
+        config.role = Some(Ros2Role::Client);
+
         let mut inputs = BTreeMap::new();
         inputs.insert(DataId::from("request".to_owned()), dummy_input());
         let mut outputs = BTreeSet::new();
@@ -2732,16 +2709,12 @@ nodes:
 
     #[test]
     fn validate_qos_bad_durability() {
-        let config = Ros2BridgeConfig {
-            service: Some("/svc".into()),
-            service_type: Some("a/B".into()),
-            role: Some(Ros2Role::Client),
-            qos: dora_message::descriptor::Ros2QosConfig {
-                durability: Some("persistent".into()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.service = Some("/svc".into());
+        config.service_type = Some("a/B".into());
+        config.role = Some(Ros2Role::Client);
+        config.qos.durability = Some("persistent".into());
+
         let mut inputs = BTreeMap::new();
         inputs.insert(DataId::from("request".to_owned()), dummy_input());
         let mut outputs = BTreeSet::new();
@@ -2753,16 +2726,12 @@ nodes:
 
     #[test]
     fn validate_qos_keep_last_out_of_range() {
-        let config = Ros2BridgeConfig {
-            service: Some("/svc".into()),
-            service_type: Some("a/B".into()),
-            role: Some(Ros2Role::Client),
-            qos: dora_message::descriptor::Ros2QosConfig {
-                keep_last: Some(100_000),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.service = Some("/svc".into());
+        config.service_type = Some("a/B".into());
+        config.role = Some(Ros2Role::Client);
+        config.qos.keep_last = Some(100_000);
+
         let mut inputs = BTreeMap::new();
         inputs.insert(DataId::from("request".to_owned()), dummy_input());
         let mut outputs = BTreeSet::new();
@@ -3178,16 +3147,12 @@ nodes:
 
     #[test]
     fn validate_qos_negative_lease_duration() {
-        let config = Ros2BridgeConfig {
-            service: Some("/svc".into()),
-            service_type: Some("a/B".into()),
-            role: Some(Ros2Role::Client),
-            qos: dora_message::descriptor::Ros2QosConfig {
-                lease_duration: Some(-1.0),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.service = Some("/svc".into());
+        config.service_type = Some("a/B".into());
+        config.role = Some(Ros2Role::Client);
+        config.qos.lease_duration = Some(-1.0);
+
         let mut inputs = BTreeMap::new();
         inputs.insert(DataId::from("request".to_owned()), dummy_input());
         let mut outputs = BTreeSet::new();
@@ -3203,12 +3168,11 @@ nodes:
     /// fields must be rejected at descriptor validation instead.
     #[test]
     fn validate_qos_overflowing_durations_are_rejected() {
-        let base = Ros2BridgeConfig {
-            service: Some("/svc".into()),
-            service_type: Some("a/B".into()),
-            role: Some(Ros2Role::Client),
-            ..Default::default()
-        };
+        let mut base = Ros2BridgeConfig::default();
+        base.service = Some("/svc".into());
+        base.service_type = Some("a/B".into());
+        base.role = Some(Ros2Role::Client);
+
         let mut inputs = BTreeMap::new();
         inputs.insert(DataId::from("request".to_owned()), dummy_input());
         let mut outputs = BTreeSet::new();
@@ -3216,26 +3180,21 @@ nodes:
 
         // `1e300` seconds is finite and positive but far beyond `Duration::MAX`.
         for (field, qos) in [
-            (
-                "lease_duration",
-                dora_message::descriptor::Ros2QosConfig {
-                    lease_duration: Some(1e300),
-                    ..Default::default()
-                },
-            ),
-            (
-                "max_blocking_time",
-                dora_message::descriptor::Ros2QosConfig {
-                    reliable: true,
-                    max_blocking_time: Some(1e300),
-                    ..Default::default()
-                },
-            ),
+            ("lease_duration", {
+                let mut qos = dora_message::descriptor::Ros2QosConfig::default();
+                qos.lease_duration = Some(1e300);
+                qos
+            }),
+            ("max_blocking_time", {
+                let mut qos = dora_message::descriptor::Ros2QosConfig::default();
+                qos.reliable = true;
+                qos.max_blocking_time = Some(1e300);
+                qos
+            }),
         ] {
-            let config = Ros2BridgeConfig {
-                qos,
-                ..base.clone()
-            };
+            let mut config = base.clone();
+            config.qos = qos;
+
             let err =
                 validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
                     .unwrap_err();

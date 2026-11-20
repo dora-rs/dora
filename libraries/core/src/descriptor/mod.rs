@@ -401,16 +401,13 @@ pub(crate) fn resolve_ros2_single_topic<'a>(
     let mut resolved = config.clone();
     resolved.topic = None;
     resolved.message_type = None;
-    resolved.topics = Some(vec![Ros2TopicConfig {
-        topic: topic.clone(),
-        message_type: message_type.clone(),
-        direction: config.direction.clone(),
-        output,
-        input,
-        // Per-topic QoS unset, so the topic inherits the bridge-level `qos`
-        // the single-topic form already carries.
-        qos: None,
-    }]);
+    // Per-topic QoS stays unset, so the topic inherits the bridge-level `qos`
+    // the single-topic form already carries.
+    let mut resolved_topic = Ros2TopicConfig::new(topic.clone(), message_type.clone());
+    resolved_topic.direction = config.direction.clone();
+    resolved_topic.output = output;
+    resolved_topic.input = input;
+    resolved.topics = Some(vec![resolved_topic]);
     Ok(Cow::Owned(resolved))
 }
 
