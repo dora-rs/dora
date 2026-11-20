@@ -95,16 +95,21 @@ module:
   inputs: [image]
   outputs: [result]
 
-build: pip install -r requirements.txt
+build: pip install -r "$MODULE_DIR/requirements.txt"
 
 nodes:
   - id: model
     path: model.py
+    args: --weights "$MODULE_DIR/model weights.bin"
+    env:
+      CONFIG: "$MODULE_DIR/config.yaml"
     inputs:
       image: _mod/image
     outputs:
       - result
 ```
+
+In a module's `args:`, `build:`, and string `env:` values, `$MODULE_DIR` expands to the directory of the module file, relative to the top-level dataflow directory. For nested modules, each reference uses the file where it was written. Expansion leaves the working directory alone. Quote paths in arguments and build commands when they may contain spaces.
 
 ## Using Modules
 

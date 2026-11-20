@@ -5094,7 +5094,7 @@ msgid ""
 "The `id` field is optional for single operators (defaults to the node `id`):"
 msgstr ""
 
-#: src/concepts/dataflow-yaml.md:359 src/concepts/modules.md:95
+#: src/concepts/dataflow-yaml.md:359
 #: src/operations/cli.md:211
 msgid "pip install -r requirements.txt"
 msgstr ""
@@ -6487,6 +6487,31 @@ msgstr ""
 
 #: src/concepts/modules.md:101
 msgid "_mod/image"
+msgstr ""
+
+#: src/concepts/modules.md:98
+msgid "pip install -r \"$MODULE_DIR/requirements.txt\""
+msgstr ""
+
+#: src/concepts/modules.md:103
+msgid "--weights \"$MODULE_DIR/model weights.bin\""
+msgstr ""
+
+#: src/concepts/modules.md:105
+msgid "CONFIG"
+msgstr ""
+
+#: src/concepts/modules.md:105
+msgid "\"$MODULE_DIR/config.yaml\""
+msgstr ""
+
+#: src/concepts/modules.md:112
+msgid ""
+"In a module's `args:`, `build:`, and string `env:` values, `$MODULE_DIR` "
+"expands to the directory of the module file, relative to the top-level "
+"dataflow directory. For nested modules, each reference uses the file where "
+"it was written. Expansion leaves the working directory alone. Quote paths in "
+"arguments and build commands when they may contain spaces."
 msgstr ""
 
 #: src/concepts/modules.md:106
