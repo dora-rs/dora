@@ -1,0 +1,31 @@
+# Action Server Dataflow over native Zenoh (rmw_zenoh)
+#
+# The same as dataflow.yml, but the bridge talks to ROS2 nodes that use
+# rmw_zenoh_cpp through a running `rmw_zenohd` router.
+#
+# Usage:
+#   ros2 run rmw_zenoh_cpp rmw_zenohd   # in a sourced ROS2 environment
+#   dora run dataflow-zenoh.yml
+
+nodes:
+  - id: fib_server
+    ros2:
+      transport:
+        kind: zenoh
+        compatibility: humble
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
+      role: server
+    inputs:
+      feedback: handler/feedback
+      result: handler/result
+    outputs: [goal, cancel]
+
+  - id: handler
+    build: cargo build -p yaml-bridge-action-server-handler
+    path: ../../../target/debug/yaml-bridge-action-server-handler
+    inputs:
+      goal: fib_server/goal
+      cancel: fib_server/cancel
+      tick: dora/timer/millis/250
+    outputs: [feedback, result]

@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap},
+    collections::{HashMap, HashSet},
     path::Path,
     sync::Arc,
     time::Duration,
@@ -869,6 +869,160 @@ struct CancelGoalRequestWire {
     goal_info: ros2_client::action::GoalInfo,
 }
 
+/// The output a YAML action server forwards cancel requests on, if the
+/// dataflow declares it (#4234). Its events carry the goal's `goal_id`.
+const CANCEL_OUTPUT: &str = "cancel";
+
+/// Which goals each DDS cancel request cancels.
+///
+/// A goal is *pending* from just before the client is told it is accepted until
+/// the handler gets it. A client may cancel as soon as the accept arrives,
+/// before the main loop has seen the goal, so a request that names a pending
+/// goal waits for it instead of being answered without it.
+struct DdsCancels<H> {
+    cancel_output: bool,
+    pending: HashSet<String>,
+    /// Goals the handler has been told to cancel, until they end: a goal is
+    /// forwarded once even if several requests name it, as rcl skips goals
+    /// that are already canceling.
+    canceling: HashSet<String>,
+    waiting: Vec<CancelAnswer<H>>,
+}
+
+/// A cancel request to answer now: the handle and the goals it cancels (none
+/// means rejected).
+type CancelAnswer<H> = (H, Vec<ros2_client::action::GoalId>);
+
+impl<H> DdsCancels<H> {
+    fn new(cancel_output: bool) -> Self {
+        Self {
+            cancel_output,
+            pending: HashSet::new(),
+            canceling: HashSet::new(),
+            waiting: Vec::new(),
+        }
+    }
+
+    /// The goal `goal_id` is about to be accepted.
+    fn goal_pending(&mut self, goal_id: &str) {
+        if self.cancel_output {
+            self.pending.insert(goal_id.to_owned());
+        }
+    }
+
+    /// A cancel request for `goals` (the goals ros2-client selected), or
+    /// `None` while one of them is pending.
+    fn request(
+        &mut self,
+        handle: H,
+        goals: Vec<ros2_client::action::GoalId>,
+        running: impl Fn(&str) -> bool,
+    ) -> Option<CancelAnswer<H>> {
+        if self.names_pending(&goals) {
+            self.waiting.push((handle, goals));
+            return None;
+        }
+        Some(self.answer(handle, goals, &running))
+    }
+
+    /// The pending goal `goal_id` reached the handler (`running` says so) or
+    /// was dropped: the waiting requests that can be answered now.
+    fn goal_settled(
+        &mut self,
+        goal_id: &str,
+        running: impl Fn(&str) -> bool,
+    ) -> Vec<CancelAnswer<H>> {
+        if !self.pending.remove(goal_id) {
+            return Vec::new();
+        }
+        let (waiting, ready): (Vec<_>, Vec<_>) = std::mem::take(&mut self.waiting)
+            .into_iter()
+            .partition(|(_, goals)| self.names_pending(goals));
+        self.waiting = waiting;
+        ready
+            .into_iter()
+            .map(|(handle, goals)| self.answer(handle, goals, &running))
+            .collect()
+    }
+
+    fn names_pending(&self, goals: &[ros2_client::action::GoalId]) -> bool {
+        goals
+            .iter()
+            .any(|goal| self.pending.contains(&goal.uuid.to_string()))
+    }
+
+    /// The goal `goal_id` ended (result sent or aborted).
+    fn goal_ended(&mut self, goal_id: &str) {
+        self.canceling.remove(goal_id);
+    }
+
+    /// Without a `cancel` output nothing could act on a cancel, so none;
+    /// otherwise the running goals that are not canceling yet.
+    fn answer(
+        &mut self,
+        handle: H,
+        goals: Vec<ros2_client::action::GoalId>,
+        running: &impl Fn(&str) -> bool,
+    ) -> CancelAnswer<H> {
+        if !self.cancel_output {
+            return (handle, Vec::new());
+        }
+        let canceling = goals
+            .into_iter()
+            .filter(|goal| {
+                let key = goal.uuid.to_string();
+                running(&key) && self.canceling.insert(key)
+            })
+            .collect();
+        (handle, canceling)
+    }
+}
+
+/// The answer of a native-Zenoh action server to a cancel request. Without a
+/// `cancel` output it is rejected and no goal changes, since nothing could act
+/// on it; otherwise the goals are selected as rcl does.
+fn zenoh_cancel<'a>(
+    goals: impl IntoIterator<Item = &'a mut ZenohServerGoal>,
+    requested: &ros2_client::action::GoalInfo,
+    cancel_output: bool,
+) -> (
+    Vec<ros2_client::action::GoalInfo>,
+    ros2_client::action_msgs::CancelGoalResponseEnum,
+) {
+    if !cancel_output {
+        return (
+            Vec::new(),
+            ros2_client::action_msgs::CancelGoalResponseEnum::Rejected,
+        );
+    }
+    process_cancel_request(goals, requested)
+}
+
+/// Whether the node declares the [`CANCEL_OUTPUT`].
+fn declares_cancel_output(node: &DoraNode) -> bool {
+    node.node_config().outputs.contains(CANCEL_OUTPUT)
+}
+
+/// Metadata naming the goal an action server output is about: the handler
+/// correlates `goal`, `cancel`, `feedback` and `result` by it.
+fn goal_parameters(goal_id: &str) -> dora_message::metadata::MetadataParameters {
+    let mut parameters = dora_message::metadata::MetadataParameters::default();
+    parameters.insert(GOAL_ID.to_string(), Parameter::String(goal_id.to_owned()));
+    parameters
+}
+
+/// Tell the handler that the goal `goal_id` is being canceled.
+fn send_cancel(node: &mut DoraNode, goal_id: &str) {
+    let parameters = goal_parameters(goal_id);
+    if let Err(e) = node.send_output(
+        CANCEL_OUTPUT.into(),
+        parameters,
+        arrow::array::NullArray::new(0),
+    ) {
+        tracing::warn!("failed to forward the cancel of goal {goal_id} to the handler: {e}");
+    }
+}
+
 /// Map a result message's `goal_status` metadata parameter to a terminal
 /// [`GoalStatusEnum`](ros2_client::action::GoalStatusEnum) for the Zenoh action
 /// server.
@@ -906,6 +1060,7 @@ fn run_zenoh_action_server(
 
     let server = Arc::new(server);
     let (mut node, events) = DoraNode::init_from_env()?;
+    let cancel_output = declares_cancel_output(&node);
     let (tx, rx) = flume::bounded(MAX_CONCURRENT_GOALS * 4);
     for kind in 0..3 {
         let server = server.clone();
@@ -979,9 +1134,11 @@ fn run_zenoh_action_server(
                             result_requests: Vec::new(),
                         },
                     )?;
-                    let mut metadata = dora_message::metadata::MetadataParameters::default();
-                    metadata.insert(GOAL_ID.into(), Parameter::String(key));
-                    node.send_output("goal".into(), metadata, StructArray::from(data))?;
+                    node.send_output(
+                        "goal".into(),
+                        goal_parameters(&key),
+                        StructArray::from(data),
+                    )?;
                     publish_zenoh_status(&server, &goals)?;
                 }
             }
@@ -1049,9 +1206,10 @@ fn run_zenoh_action_server(
                     }
                     continue;
                 };
-                let (goals_canceling, return_code) = process_cancel_request(
+                let (goals_canceling, return_code) = zenoh_cancel(
                     goals.iter_mut().map(|(_, goal)| goal),
                     &decoded.goal_info,
+                    cancel_output,
                 );
                 let response = CancelGoalResponse {
                     return_code,
@@ -1064,6 +1222,9 @@ fn run_zenoh_action_server(
                     tracing::warn!("failed to reply to Zenoh cancel-goal request: {error}");
                 }
                 publish_zenoh_status(&server, &goals)?;
+                for goal in &response.goals_canceling {
+                    send_cancel(&mut node, &goal.goal_id.uuid.to_string());
+                }
             }
             MergedEvent::Dora(Event::Input { id, metadata, data }) => {
                 let Some(goal_key) =
@@ -1784,6 +1945,13 @@ enum ServerEvent {
         goal_id: String,
         handle: ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
     },
+    /// A ROS2 client asks to cancel goals.
+    Cancel(ros2_client::action::CancelHandle),
+    /// A goal is about to be accepted: sent before the client learns it is,
+    /// so that its cancel requests come after this.
+    Pending(String),
+    /// A pending goal failed to start and will not reach the main loop.
+    Dropped(String),
 }
 
 fn run_action_server(
@@ -1793,6 +1961,7 @@ fn run_action_server(
     feedback_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
     let (mut node, dora_events) = DoraNode::init_from_env()?;
+    let cancel_output = declares_cancel_output(&node);
     let server = Arc::new(server);
 
     // Map goal_id -> ExecutingGoalHandle for dispatching feedback/result
@@ -1805,6 +1974,7 @@ fn run_action_server(
     // Bounded to provide backpressure: if the main loop can't keep up,
     // the receive thread will block.
     let (tx, rx) = flume::bounded::<ServerEvent>(MAX_CONCURRENT_GOALS * 2);
+    let cancel_tx = tx.clone();
 
     // Background thread: receive goals from ROS2 clients, auto-accept and
     // start executing, then forward to the main loop.
@@ -1822,11 +1992,16 @@ fn run_action_server(
                 };
 
                 let goal_data = server_ref.get_new_goal(new_goal_handle.clone());
+                let pending_id = new_goal_handle.goal_id().uuid.to_string();
+                if tx.send(ServerEvent::Pending(pending_id.clone())).is_err() {
+                    break;
+                }
 
                 let accepted = match server_ref.accept_goal(new_goal_handle).await {
                     Ok(h) => h,
                     Err(e) => {
                         tracing::warn!("failed to accept goal: {e:?}");
+                        let _ = tx.send(ServerEvent::Dropped(pending_id));
                         continue;
                     }
                 };
@@ -1835,6 +2010,7 @@ fn run_action_server(
                     Ok(h) => h,
                     Err(e) => {
                         tracing::warn!("failed to start executing goal: {e:?}");
+                        let _ = tx.send(ServerEvent::Dropped(pending_id));
                         continue;
                     }
                 };
@@ -1866,6 +2042,26 @@ fn run_action_server(
             }
         });
     });
+
+    // Background thread: receive cancel requests and pass them to the main
+    // loop, which knows which goals the handler runs.
+    let server_ref = server.clone();
+    std::thread::spawn(move || {
+        futures::executor::block_on(async {
+            loop {
+                match server_ref.receive_cancel_request().await {
+                    Ok(handle) => {
+                        if cancel_tx.send(ServerEvent::Cancel(handle)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => tracing::warn!("failed to receive cancel request: {e:?}"),
+                }
+            }
+        });
+    });
+
+    let mut cancels = DdsCancels::new(cancel_output);
 
     let rx_stream = rx.into_stream();
     let merged = dora_events.merge_external(Box::pin(rx_stream));
@@ -1900,6 +2096,7 @@ fn run_action_server(
                     }
                     "result" => {
                         if let Some(handle) = executing_goals.remove(&goal_id) {
+                            cancels.goal_ended(&goal_id);
                             let array_data = data.as_array().to_data();
                             let status = match get_string_param(&metadata.parameters, GOAL_STATUS) {
                                 Some(s) => match s {
@@ -1952,40 +2149,81 @@ fn run_action_server(
             }
             MergedEvent::Dora(Event::Stop(_)) => break,
             MergedEvent::Dora(_) => {}
-            MergedEvent::External(server_event) => match server_event {
-                ServerEvent::AbortGoal { goal_id, handle } => {
-                    abort_executing_goal(&server, &result_type_info, handle, &goal_id);
-                }
-                ServerEvent::NewGoal {
-                    goal_id,
-                    handle,
-                    data,
-                } => {
-                    if executing_goals.len() >= MAX_CONCURRENT_GOALS {
-                        tracing::warn!(
-                            "max concurrent goals ({MAX_CONCURRENT_GOALS}) reached, \
-                             aborting goal {goal_id}"
-                        );
-                        abort_executing_goal(&server, &result_type_info, handle, &goal_id);
-                        continue;
+            MergedEvent::External(server_event) => {
+                // The pending goal that reached the handler or was dropped, if any.
+                let settled = match server_event {
+                    ServerEvent::Pending(goal_id) => {
+                        cancels.goal_pending(&goal_id);
+                        None
                     }
-
-                    let mut parameters = BTreeMap::new();
-                    parameters.insert(GOAL_ID.to_string(), Parameter::String(goal_id.clone()));
-                    if let Err(e) =
-                        node.send_output("goal".into(), parameters, StructArray::from(data))
+                    ServerEvent::Dropped(goal_id) => Some(goal_id),
+                    ServerEvent::AbortGoal { goal_id, handle } => {
+                        abort_executing_goal(&server, &result_type_info, handle, &goal_id);
+                        Some(goal_id)
+                    }
+                    ServerEvent::Cancel(handle) => {
+                        let goals = handle.goals().collect();
+                        if let Some(answer) = cancels
+                            .request(handle, goals, |goal| executing_goals.contains_key(goal))
+                        {
+                            answer_cancel(&server, &mut node, answer);
+                        }
+                        None
+                    }
+                    ServerEvent::NewGoal {
+                        goal_id,
+                        handle,
+                        data,
+                    } => {
+                        if executing_goals.len() >= MAX_CONCURRENT_GOALS {
+                            tracing::warn!(
+                                "max concurrent goals ({MAX_CONCURRENT_GOALS}) reached, \
+                                 aborting goal {goal_id}"
+                            );
+                            abort_executing_goal(&server, &result_type_info, handle, &goal_id);
+                        } else if let Err(e) = node.send_output(
+                            "goal".into(),
+                            goal_parameters(&goal_id),
+                            StructArray::from(data),
+                        ) {
+                            tracing::warn!("failed to send goal {goal_id} to handler: {e}");
+                            abort_executing_goal(&server, &result_type_info, handle, &goal_id);
+                        } else {
+                            executing_goals.insert(goal_id.clone(), handle)?;
+                        }
+                        Some(goal_id)
+                    }
+                };
+                // Answer the cancel requests that waited for it.
+                if let Some(goal_id) = settled {
+                    for answer in
+                        cancels.goal_settled(&goal_id, |goal| executing_goals.contains_key(goal))
                     {
-                        tracing::warn!("failed to send goal {goal_id} to handler: {e}");
-                        abort_executing_goal(&server, &result_type_info, handle, &goal_id);
-                        continue;
+                        answer_cancel(&server, &mut node, answer);
                     }
-                    executing_goals.insert(goal_id, handle)?;
                 }
-            },
+            }
         }
     }
 
     Ok(())
+}
+
+/// Answer a DDS cancel request and tell the handler about each goal it
+/// cancels. An empty list answers the client with Rejected.
+fn answer_cancel(
+    server: &ros2_client::action::AsyncActionServer<BridgeMessage, BridgeMessage, BridgeMessage>,
+    node: &mut DoraNode,
+    (handle, goals): CancelAnswer<ros2_client::action::CancelHandle>,
+) {
+    if let Err(e) = futures::executor::block_on(
+        server.respond_to_cancel_requests(&handle, goals.iter().copied()),
+    ) {
+        tracing::warn!("failed to answer a cancel request: {e:?}");
+    }
+    for goal in &goals {
+        send_cancel(node, &goal.uuid.to_string());
+    }
 }
 
 /// Send an Aborted result response for an executing goal so the ROS2 client
@@ -2653,7 +2891,7 @@ mod zenoh_cancel_tests {
     use super::ros2_client::action::{GoalId, GoalInfo, GoalStatusEnum};
     use super::ros2_client::action_msgs::CancelGoalResponseEnum;
     use super::ros2_client::builtin_interfaces::Time;
-    use super::{ZenohServerGoal, process_cancel_request};
+    use super::{DdsCancels, ZenohServerGoal, process_cancel_request, zenoh_cancel};
 
     fn goal(status: GoalStatusEnum) -> ZenohServerGoal {
         ZenohServerGoal {
@@ -2683,6 +2921,132 @@ mod zenoh_cancel_tests {
         requested: GoalInfo,
     ) -> (Vec<GoalInfo>, CancelGoalResponseEnum) {
         process_cancel_request(goals.iter_mut(), &requested)
+    }
+
+    #[test]
+    fn without_a_cancel_output_a_zenoh_cancel_is_rejected_and_no_goal_changes() {
+        let mut goals = [
+            goal(GoalStatusEnum::Executing),
+            goal(GoalStatusEnum::Accepted),
+        ];
+        let (targets, code) = zenoh_cancel(goals.iter_mut(), &all(), false);
+        assert!(targets.is_empty());
+        assert_eq!(code, CancelGoalResponseEnum::Rejected);
+        assert_eq!(goals[0].status, GoalStatusEnum::Executing);
+        assert_eq!(goals[1].status, GoalStatusEnum::Accepted);
+    }
+
+    #[test]
+    fn with_a_cancel_output_a_zenoh_cancel_selects_as_before() {
+        let mut goals = [goal(GoalStatusEnum::Executing)];
+        let (targets, code) = zenoh_cancel(goals.iter_mut(), &all(), true);
+        assert_eq!(targets.len(), 1);
+        assert_eq!(code, CancelGoalResponseEnum::None);
+        assert_eq!(goals[0].status, GoalStatusEnum::Canceling);
+    }
+
+    fn key(goal: GoalId) -> String {
+        goal.uuid.to_string()
+    }
+
+    fn uuids(goals: &[GoalId]) -> Vec<String> {
+        goals.iter().map(|goal| key(*goal)).collect()
+    }
+
+    #[test]
+    fn without_a_cancel_output_no_dds_goal_is_canceled() {
+        let goal = GoalId::new_random();
+        let mut cancels = DdsCancels::new(false);
+        cancels.goal_pending(&key(goal));
+        let (_, canceled) = cancels.request((), vec![goal], |_| true).unwrap();
+        assert!(canceled.is_empty());
+    }
+
+    #[test]
+    fn only_goals_the_handler_runs_are_canceled() {
+        let [running, unknown] = [GoalId::new_random(), GoalId::new_random()];
+        let mut cancels = DdsCancels::new(true);
+        let (_, canceled) = cancels
+            .request((), vec![running, unknown], |goal| goal == key(running))
+            .unwrap();
+        assert_eq!(uuids(&canceled), [key(running)]);
+    }
+
+    // The client may cancel as soon as it is told the goal is accepted, before
+    // the goal reaches the handler.
+    #[test]
+    fn a_cancel_for_a_goal_not_yet_running_waits_for_it() {
+        let goal = GoalId::new_random();
+        let mut cancels = DdsCancels::new(true);
+        cancels.goal_pending(&key(goal));
+        assert!(cancels.request("req", vec![goal], |_| false).is_none());
+        let answers = cancels.goal_settled(&key(goal), |g| g == key(goal));
+        assert_eq!(answers.len(), 1);
+        assert_eq!(answers[0].0, "req");
+        assert_eq!(uuids(&answers[0].1), [key(goal)]);
+    }
+
+    #[test]
+    fn a_dropped_pending_goal_releases_its_cancel_with_nothing_canceled() {
+        let goal = GoalId::new_random();
+        let mut cancels = DdsCancels::new(true);
+        cancels.goal_pending(&key(goal));
+        assert!(cancels.request((), vec![goal], |_| false).is_none());
+        let answers = cancels.goal_settled(&key(goal), |_| false);
+        assert_eq!(answers.len(), 1);
+        assert!(answers[0].1.is_empty());
+    }
+
+    #[test]
+    fn a_cancel_waits_for_every_pending_goal_it_names() {
+        let [first, second] = [GoalId::new_random(), GoalId::new_random()];
+        let mut cancels = DdsCancels::new(true);
+        cancels.goal_pending(&key(first));
+        cancels.goal_pending(&key(second));
+        assert!(
+            cancels
+                .request((), vec![first, second], |_| false)
+                .is_none()
+        );
+        assert!(cancels.goal_settled(&key(first), |_| true).is_empty());
+        let answers = cancels.goal_settled(&key(second), |_| true);
+        assert_eq!(uuids(&answers[0].1), [key(first), key(second)]);
+    }
+
+    // The main loop answers with the goals the handler runs, whatever became
+    // of the pending one.
+    #[test]
+    fn a_dropped_pending_goal_still_cancels_the_running_ones_of_its_request() {
+        let [pending, running] = [GoalId::new_random(), GoalId::new_random()];
+        let mut cancels = DdsCancels::new(true);
+        cancels.goal_pending(&key(pending));
+        assert!(
+            cancels
+                .request((), vec![pending, running], |g| g == key(running))
+                .is_none()
+        );
+        let answers = cancels.goal_settled(&key(pending), |g| g == key(running));
+        assert_eq!(uuids(&answers[0].1), [key(running)]);
+    }
+
+    #[test]
+    fn a_goal_is_forwarded_to_cancel_once_until_it_ends() {
+        let goal = GoalId::new_random();
+        let mut cancels = DdsCancels::new(true);
+        let (_, first) = cancels.request((), vec![goal], |_| true).unwrap();
+        let (_, again) = cancels.request((), vec![goal], |_| true).unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(again.is_empty());
+        cancels.goal_ended(&key(goal));
+        let (_, after_end) = cancels.request((), vec![goal], |_| true).unwrap();
+        assert_eq!(after_end.len(), 1);
+    }
+
+    #[test]
+    fn settling_a_goal_that_was_not_pending_answers_nothing() {
+        let goal = GoalId::new_random();
+        let mut cancels: DdsCancels<()> = DdsCancels::new(true);
+        assert!(cancels.goal_settled(&key(goal), |_| true).is_empty());
     }
 
     #[test]
