@@ -271,8 +271,10 @@ pub type ActionServerPump = BoxFuture<'static, ()>;
 /// result requests can wait on an unfinished goal across all clients; once
 /// that many are waiting, a new request displaces an older one from a
 /// client that already has more than one pending, answering the displaced
-/// request early with `STATUS_UNKNOWN`. A request is refused with a service
-/// error only once every slot is a different client's single request.
+/// request early with `STATUS_UNKNOWN`. Once every slot is a different
+/// client's single request, the new request itself is answered at once with
+/// `STATUS_UNKNOWN` instead, never with a service error, which
+/// `rmw_zenoh_cpp` clients drop unread.
 pub struct TypedActionServer<G, R, F> {
     shared: Arc<Shared>,
     goals: flume::Receiver<(GoalId, G)>,
@@ -319,7 +321,8 @@ enum WaiterAdmission {
     Replaced(RequestId),
     /// The goal was full and every pending request belonged to a different
     /// client, each with only that one, so there was nothing to displace
-    /// without cutting off a client that had made a single call.
+    /// without cutting off a client that had made a single call. The caller
+    /// answers the new request itself with `STATUS_UNKNOWN`.
     Rejected,
 }
 
@@ -614,16 +617,17 @@ impl Shared {
                         return Ok(());
                     }
                     WaiterAdmission::Rejected => {
-                        self.endpoints
-                            .get_result
-                            .reject(
-                                request.id,
-                                &format!(
-                                    "result waiter limit of {MAX_RESULT_WAITERS_PER_GOAL} reached for this goal"
-                                ),
-                            )
-                            .await?;
-                        return Ok(());
+                        // A normal `STATUS_UNKNOWN` reply for the same
+                        // reason as above: an error reply never reaches an
+                        // `rmw_zenoh_cpp` client, whose call would then hang
+                        // (#4244). The warning is where the cap shows.
+                        tracing::warn!(
+                            "Zenoh action server: result waiter limit of \
+                             {MAX_RESULT_WAITERS_PER_GOAL} reached for goal \
+                             {goal_id:?}; answering a get_result request early \
+                             with STATUS_UNKNOWN"
+                        );
+                        &self.unknown_response
                     }
                 },
             },
