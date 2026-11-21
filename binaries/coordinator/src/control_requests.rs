@@ -883,24 +883,32 @@ impl Coordinator {
 
         // A dataflow that finished before a coordinator restart, or that the
         // recovery timeout failed, exists only in the store: startup recovery
-        // and the timeout write the record but put nothing in memory. List it
-        // the way `dora clean` sees it, so `list` shows what `clean` removes.
+        // and the timeout write the record but put nothing in memory. The same
+        // goes for a finished dataflow the `MAX_DATAFLOW_RESULTS` cap evicted
+        // from `dataflow_results`. List them the way `dora clean` sees them, so
+        // `list` shows what `clean` removes: finished records stay listed until
+        // `dora clean` deletes them, they are not capped. They are ordered
+        // oldest first by `updated_at`, so the default output stays
+        // chronological.
         match self.store.list_dataflows() {
-            Ok(records) => entries.extend(records.into_iter().filter_map(|record| {
-                if self.running_dataflows.contains_key(&record.uuid)
-                    || self.dataflow_results.contains_key(&record.uuid)
-                {
-                    return None;
-                }
-                let status = stored_final_status(&record.status)?;
-                Some(DataflowListEntry {
-                    id: DataflowIdAndName {
-                        uuid: record.uuid,
-                        name: record.name,
-                    },
-                    status,
-                })
-            })),
+            Ok(mut records) => {
+                records.sort_by_key(|record| (record.updated_at, record.uuid));
+                entries.extend(records.into_iter().filter_map(|record| {
+                    if self.running_dataflows.contains_key(&record.uuid)
+                        || self.dataflow_results.contains_key(&record.uuid)
+                    {
+                        return None;
+                    }
+                    let status = stored_final_status(&record.status)?;
+                    Some(DataflowListEntry {
+                        id: DataflowIdAndName {
+                            uuid: record.uuid,
+                            name: record.name,
+                        },
+                        status,
+                    })
+                }));
+            }
             Err(e) => tracing::warn!("dora list: failed to read persisted dataflows: {e}"),
         }
 

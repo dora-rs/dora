@@ -8001,6 +8001,32 @@ async fn list_shows_finished_dataflows_that_exist_only_in_the_store() {
     );
 }
 
+/// Store-only entries are listed after the in-memory ones, oldest first, so the
+/// default `dora list` output stays chronological. The store hands records back
+/// in uuid order, which is unrelated to when they finished.
+#[tokio::test]
+async fn list_orders_store_only_dataflows_by_update_time() {
+    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+    let mut by_age = Vec::new();
+    for updated_at in 1..=8u64 {
+        let mut record = recovering_record(DataflowId::from(Uuid::new_v4()), BTreeMap::new());
+        record.status = StoreDataflowStatus::Succeeded;
+        record.updated_at = updated_at;
+        store.put_dataflow(&record).expect("seed record");
+        by_age.push(record.uuid);
+    }
+    let mut coordinator = coordinator_with_store(store);
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    coordinator.handle_list(tx).await.expect("handle list");
+    let reply = rx.await.expect("list reply").expect("list ok");
+    let ControlRequestReply::DataflowList(list) = reply else {
+        panic!("expected a dataflow list, got {reply:?}");
+    };
+    let listed: Vec<Uuid> = list.0.iter().map(|entry| entry.id.uuid).collect();
+    assert_eq!(listed, by_age);
+}
+
 /// `Recovering` can also mean every daemon dropped while some were still
 /// running. A report that covers only part of the dataflow must not finalize
 /// it, or the daemon that has not reported yet is stopped as an orphan even
