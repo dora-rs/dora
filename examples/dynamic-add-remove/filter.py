@@ -26,7 +26,7 @@ def main():
             else:
                 dropped += len(values)
 
-            if (passed + dropped) % 20 == 0:
+            if (passed + dropped) % 20 == 0 or (passed + dropped) == 1:
                 logging.info("Filter: %d passed, %d dropped", passed, dropped)
         elif event["type"] == "STOP":
             break

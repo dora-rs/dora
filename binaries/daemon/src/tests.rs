@@ -1454,6 +1454,148 @@ fn backpressure_consumer_is_refused_only_for_an_unpinned_running_producer() {
     );
 }
 
+/// Runtime edge wiring (`dora node connect`) refuses edges whose producer
+/// can publish directly over Zenoh because dynamically added consumers
+/// do not have corresponding Zenoh subscriptions established (issue #4063).
+#[test]
+fn check_add_mapping_refuses_direct_zenoh_and_non_running_sources() {
+    use dora_message::daemon_to_node::OutputRouting;
+    let mut df = test_dataflow();
+    let src = NodeId::from("src".to_string());
+    let sink = NodeId::from("sink".to_string());
+    let val = DataId::from("val".to_string());
+    let inp = DataId::from("inp".to_string());
+
+    // 1. Source not running on this daemon (pending/exited/cross-daemon) -> Err
+    let err = df.check_add_mapping(&src, &val, &sink, &inp).unwrap_err();
+    assert!(err.contains("is not running on this daemon"), "{err}");
+
+    // 3. Source running with unpinned output (may publish directly over Zenoh) -> Err
+    let direct = BTreeMap::from([(val.clone(), OutputRouting::default())]);
+    df.running_nodes.insert(
+        src.clone(),
+        running_node_with(BTreeMap::new(), Some(direct)),
+    );
+    let err = df.check_add_mapping(&src, &val, &sink, &inp).unwrap_err();
+    assert!(err.contains("may publish directly over Zenoh"), "{err}");
+
+    // 4. Source running with pinned daemon_only output -> Ok
+    let pinned = BTreeMap::from([(
+        val.clone(),
+        OutputRouting {
+            daemon_only: true,
+            ..Default::default()
+        },
+    )]);
+    df.running_nodes.insert(
+        src.clone(),
+        running_node_with(BTreeMap::new(), Some(pinned)),
+    );
+    assert!(df.check_add_mapping(&src, &val, &sink, &inp).is_ok());
+
+    // 5. Source running with no routing table (legacy unconfigured) -> Ok
+    df.running_nodes
+        .insert(src.clone(), running_node_with(BTreeMap::new(), None));
+    assert!(df.check_add_mapping(&src, &val, &sink, &inp).is_ok());
+
+    // 6. Edge already in mappings (idempotent retry) -> Ok even if unpinned
+    let direct = BTreeMap::from([(val.clone(), OutputRouting::default())]);
+    df.running_nodes.insert(
+        src.clone(),
+        running_node_with(BTreeMap::new(), Some(direct)),
+    );
+    df.mappings
+        .entry(OutputId(src.clone(), val.clone()))
+        .or_default()
+        .insert((sink.clone(), inp.clone()));
+    assert!(df.check_add_mapping(&src, &val, &sink, &inp).is_ok());
+}
+
+/// Covers the `DaemonCoordinatorEvent::AddMapping` handler wiring on the daemon event loop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn add_mapping_coordinator_event_wiring() {
+    use dora_message::{
+        coordinator_to_daemon::DaemonCoordinatorEvent,
+        daemon_to_coordinator::DaemonCoordinatorReply, daemon_to_node::OutputRouting,
+    };
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+    let dataflow_id = Uuid::new_v4();
+    let mut df = test_dataflow();
+
+    let src = NodeId::from("src".to_string());
+    let sink = NodeId::from("sink".to_string());
+    let val = DataId::from("val".to_string());
+    let inp = DataId::from("inp".to_string());
+
+    // Producer with unpinned direct-capable output
+    let direct = BTreeMap::from([(val.clone(), OutputRouting::default())]);
+    df.running_nodes.insert(
+        src.clone(),
+        running_node_with(BTreeMap::new(), Some(direct)),
+    );
+    daemon.running.insert(dataflow_id, df);
+
+    // 1. Should reject unpinned output via AddMappingResult(Err(...))
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _ = daemon
+        .handle_coordinator_event(
+            DaemonCoordinatorEvent::AddMapping {
+                dataflow_id,
+                source_node: src.clone(),
+                source_output: val.clone(),
+                target_node: sink.clone(),
+                target_input: inp.clone(),
+            },
+            reply_tx,
+        )
+        .await
+        .expect("AddMapping must not fail the daemon loop");
+    match reply_rx.await.expect("a reply must be sent") {
+        Some(DaemonCoordinatorReply::AddMappingResult(Err(err))) => {
+            assert!(err.contains("may publish directly over Zenoh"), "{err}");
+        }
+        other => panic!("expected AddMapping error for direct output, got {other:?}"),
+    }
+
+    // 2. Repin output to daemon_only -> Should succeed with AddMappingResult(Ok(()))
+    let pinned = BTreeMap::from([(
+        val.clone(),
+        OutputRouting {
+            daemon_only: true,
+            ..Default::default()
+        },
+    )]);
+    daemon
+        .running
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .running_nodes
+        .insert(
+            src.clone(),
+            running_node_with(BTreeMap::new(), Some(pinned)),
+        );
+
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _ = daemon
+        .handle_coordinator_event(
+            DaemonCoordinatorEvent::AddMapping {
+                dataflow_id,
+                source_node: src.clone(),
+                source_output: val.clone(),
+                target_node: sink.clone(),
+                target_input: inp.clone(),
+            },
+            reply_tx,
+        )
+        .await
+        .expect("AddMapping must not fail the daemon loop");
+    match reply_rx.await.expect("a reply must be sent") {
+        Some(DaemonCoordinatorReply::AddMappingResult(Ok(()))) => {}
+        other => panic!("expected AddMapping success for pinned output, got {other:?}"),
+    }
+}
+
 /// dora-rs/dora#2988 review, finding 1 (still upheld) and dora-rs/dora#2997:
 /// the Event::Node gate accepts only the entry's own lineage — its current
 /// generation or the successor its own restart loop announced into

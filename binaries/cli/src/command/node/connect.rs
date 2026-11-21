@@ -9,7 +9,7 @@ use eyre::{Context, bail};
 /// Connect two nodes in a running dataflow (add a mapping).
 ///
 /// Example:
-///   dora node connect -d demo sender/value filter/input
+///   dora node connect -d demo filter/output receiver/filtered
 #[derive(Debug, clap::Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Connect {
