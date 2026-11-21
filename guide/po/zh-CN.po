@@ -5185,7 +5185,7 @@ msgid ""
 "The `id` field is optional for single operators (defaults to the node `id`):"
 msgstr ""
 
-#: src/concepts/dataflow-yaml.md:359 src/concepts/modules.md:95
+#: src/concepts/dataflow-yaml.md:359
 #: src/operations/cli.md:211
 msgid "pip install -r requirements.txt"
 msgstr ""
@@ -6585,6 +6585,33 @@ msgstr ""
 #: src/concepts/modules.md:101
 msgid "_mod/image"
 msgstr ""
+
+#: src/concepts/modules.md:98
+msgid "pip install -r \"$MODULE_DIR/requirements.txt\""
+msgstr ""
+
+#: src/concepts/modules.md:103
+msgid "--weights \"$MODULE_DIR/model weights.bin\""
+msgstr ""
+
+#: src/concepts/modules.md:105
+msgid "CONFIG"
+msgstr ""
+
+#: src/concepts/modules.md:105
+msgid "\"$MODULE_DIR/config.yaml\""
+msgstr ""
+
+#: src/concepts/modules.md:112
+msgid ""
+"In a module's `args:`, `build:`, and string `env:` values, `$MODULE_DIR` "
+"expands to the canonical absolute path of the directory containing the "
+"declaring module file. Dora resolves symlinks during expansion, so the path "
+"is independent of the node's working directory. In a nested module, the "
+"token refers to that module's own directory. A remote daemon must be able to "
+"access the referenced files at the same absolute paths. Quote paths in "
+"arguments and build commands when they may contain spaces."
+msgstr "在模块的 `args:`、`build:` 和字符串类型的 `env:` 值中，`$MODULE_DIR` 会展开为声明该引用的模块文件所在目录的规范化绝对路径。Dora 在展开时解析符号链接，因此该路径与节点的工作目录无关。在嵌套模块中，此标记指向该模块自己的目录。远程守护进程必须能够通过相同的绝对路径访问所引用的文件。参数和构建命令中的路径可能包含空格时，请用引号将路径括起来。"
 
 #: src/concepts/modules.md:106
 msgid "Using Modules"

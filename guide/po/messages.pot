@@ -5094,7 +5094,7 @@ msgid ""
 "The `id` field is optional for single operators (defaults to the node `id`):"
 msgstr ""
 
-#: src/concepts/dataflow-yaml.md:359 src/concepts/modules.md:95
+#: src/concepts/dataflow-yaml.md:359
 #: src/operations/cli.md:211
 msgid "pip install -r requirements.txt"
 msgstr ""
@@ -6487,6 +6487,33 @@ msgstr ""
 
 #: src/concepts/modules.md:101
 msgid "_mod/image"
+msgstr ""
+
+#: src/concepts/modules.md:98
+msgid "pip install -r \"$MODULE_DIR/requirements.txt\""
+msgstr ""
+
+#: src/concepts/modules.md:103
+msgid "--weights \"$MODULE_DIR/model weights.bin\""
+msgstr ""
+
+#: src/concepts/modules.md:105
+msgid "CONFIG"
+msgstr ""
+
+#: src/concepts/modules.md:105
+msgid "\"$MODULE_DIR/config.yaml\""
+msgstr ""
+
+#: src/concepts/modules.md:112
+msgid ""
+"In a module's `args:`, `build:`, and string `env:` values, `$MODULE_DIR` "
+"expands to the canonical absolute path of the directory containing the "
+"declaring module file. Dora resolves symlinks during expansion, so the path "
+"is independent of the node's working directory. In a nested module, the "
+"token refers to that module's own directory. A remote daemon must be able to "
+"access the referenced files at the same absolute paths. Quote paths in "
+"arguments and build commands when they may contain spaces."
 msgstr ""
 
 #: src/concepts/modules.md:106
