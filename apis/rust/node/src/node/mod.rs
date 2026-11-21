@@ -3071,6 +3071,15 @@ impl SampleAllocator {
         data_len: usize,
         direct: bool,
     ) -> NodeResult<DataSample> {
+        Ok(self
+            .try_allocate_shm(data_len, direct)
+            .unwrap_or_else(|| AVec::__from_elem(128, 0, data_len).into()))
+    }
+
+    /// The shared-memory half of [`allocate_for_path`](Self::allocate_for_path):
+    /// an SHM sample of `data_len` bytes when that path would use one, `None`
+    /// when the sample belongs on the heap.
+    fn try_allocate_shm(&self, data_len: usize, direct: bool) -> Option<DataSample> {
         if direct
             && data_len >= self.zero_copy_threshold
             && let Some(provider) = &self.shm_provider
@@ -3095,7 +3104,7 @@ impl SampleAllocator {
                     // back to heap rather than expose or publish an oversized
                     // slice (`DataSample` has no length cap of its own).
                     if sbuf.as_ref().len() == data_len {
-                        return Ok(DataSample {
+                        return Some(DataSample {
                             storage: SampleStorage::Shm(sbuf),
                         });
                     }
@@ -3111,8 +3120,7 @@ impl SampleAllocator {
             }
         }
 
-        let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
-        Ok(avec.into())
+        None
     }
 
     /// Encodes `array` as a complete Arrow IPC stream into a freshly allocated
@@ -3172,9 +3180,14 @@ impl SampleAllocator {
             None => {
                 let bytes = ipc_encode::encode_ipc_to_vec_data(array)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e:#}")))?;
-                let mut sample = self.allocate_for_path(bytes.len(), direct)?;
-                sample.copy_from_slice(&bytes);
-                sample
+                match self.try_allocate_shm(bytes.len(), direct) {
+                    Some(mut sample) => {
+                        sample.copy_from_slice(&bytes);
+                        sample
+                    }
+                    // One copy, without zero-filling the buffer first.
+                    None => AVec::from_slice(128, &bytes).into(),
+                }
             }
         };
         Ok(EncodedSample {
@@ -4983,6 +4996,33 @@ mod operator_boundary_tests {
             .expect("the sample must be a well-formed Arrow IPC stream");
 
         assert_eq!(decoded, array);
+    }
+
+    /// A type the hand-rolled fast path doesn't cover (a dictionary array)
+    /// goes through the official IPC writer and is copied into the heap
+    /// sample as is, on both delivery paths.
+    #[test]
+    fn fallback_encoded_sample_holds_the_writer_output() {
+        use arrow::array::{Array, DictionaryArray};
+        use arrow::datatypes::Int32Type;
+
+        let dict: DictionaryArray<Int32Type> = vec!["a", "b", "a", "c"].into_iter().collect();
+        let data = dict.to_data();
+        assert!(
+            ipc_encode::PreparedIpc::from_data(&data).is_none(),
+            "dictionaries must take the fallback path for this test"
+        );
+        let expected = ipc_encode::encode_ipc_to_vec_data(&data).unwrap();
+
+        let allocator = SampleAllocator::heap();
+        for direct in [true, false] {
+            let encoded = allocator.encode_arrow_data_for_path(&data, direct).unwrap();
+            assert!(matches!(encoded.sample.storage, SampleStorage::Heap(_)));
+            assert_eq!(&*encoded.sample, expected.as_slice(), "direct={direct}");
+            let decoded = crate::arrow_utils::decode_arrow_ipc(&encoded.sample).unwrap();
+            let decoded = dora_arrow_convert::internal::array_ref(&decoded).to_data();
+            assert_eq!(decoded, data, "direct={direct}");
+        }
     }
 
     /// A sample bound for the daemon path must come from the heap even when an
