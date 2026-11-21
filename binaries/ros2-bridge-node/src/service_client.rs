@@ -23,6 +23,8 @@ use futures::{
     future::{Either, select},
 };
 
+use eyre::Context;
+
 use crate::{DdsCallFailure, SERVICE_RESPONSE_TIMEOUT};
 
 /// The most service requests a YAML service client keeps in flight; the same
@@ -47,8 +49,11 @@ pub(crate) fn in_flight_limit(history: History) -> usize {
 /// `respond`, with the parameters of the request it answers.
 ///
 /// At most `limit` calls are in flight: while that many are, the next request
-/// is not read. Outcomes come in completion order. Returns once `requests` has
-/// ended and every call has finished, or with the first error of `respond`.
+/// is not read. Outcomes come in request order, as with one call at a time, so
+/// a dataflow that pairs responses with requests by position keeps working; a
+/// call that finished early waits, holding its slot, for the calls before it.
+/// Returns once `requests` has ended and every call has finished, or with the
+/// first error of `respond`.
 pub(crate) async fn drive_service_calls<P, D, T, F>(
     requests: impl Stream<Item = (P, D)>,
     limit: usize,
@@ -60,7 +65,7 @@ where
 {
     let outcomes = requests
         .map(|(params, data)| call(data).map(move |outcome| (params, outcome)))
-        .buffer_unordered(limit);
+        .buffered(limit);
     let mut outcomes = pin!(outcomes);
     while let Some((params, outcome)) = outcomes.next().await {
         respond(params, outcome)?;
@@ -68,8 +73,30 @@ where
     Ok(())
 }
 
-/// The requests of a YAML service client: each input's parameters and data,
-/// until the dataflow stops the node.
+/// The parameters a response carries: those of its request, minus the keys
+/// that steer how dora delivers a message rather than describe it.
+///
+/// Copying `flush`, for one, would make the requester's input queue drop the
+/// responses waiting behind this one. Keys starting with `_` are dora's own.
+fn response_parameters(mut request: MetadataParameters) -> MetadataParameters {
+    use dora_message::metadata::{FIN, FLUSH, OPEN_TELEMETRY_CONTEXT, SEGMENT_ID, SEQ, SESSION_ID};
+    request.retain(|key, _| {
+        !key.starts_with('_')
+            && ![
+                FLUSH,
+                FIN,
+                SEQ,
+                SESSION_ID,
+                SEGMENT_ID,
+                OPEN_TELEMETRY_CONTEXT,
+            ]
+            .contains(&key.as_str())
+    });
+    request
+}
+
+/// The requests of a YAML service client: each input's data and the
+/// parameters its response will carry, until the dataflow stops the node.
 pub(crate) fn requests(
     events: impl Stream<Item = Event>,
 ) -> impl Stream<Item = (MetadataParameters, ArrayRef)> {
@@ -77,9 +104,10 @@ pub(crate) fn requests(
         .take_while(|event| ready(!matches!(event, Event::Stop(_))))
         .filter_map(|event| {
             ready(match event {
-                Event::Input { metadata, data, .. } => {
-                    Some((metadata.parameters, data.as_array().clone()))
-                }
+                Event::Input { metadata, data, .. } => Some((
+                    response_parameters(metadata.parameters),
+                    data.as_array().clone(),
+                )),
                 _ => None,
             })
         })
@@ -87,8 +115,9 @@ pub(crate) fn requests(
 
 type DdsClient = ros2_client::Client<BridgeMessage, BridgeMessage>;
 
-/// How often the response pump looks for new responses when there were none.
-const RESPONSE_POLL_INTERVAL: Duration = Duration::from_millis(2);
+/// The pump's `mio` tokens: responses to read, or the calls were dropped.
+const RESPONSES: mio::Token = mio::Token(0);
+const DROPPED: mio::Token = mio::Token(1);
 
 /// The requests a DDS service client has sent and not had answered yet.
 #[derive(Default)]
@@ -96,6 +125,41 @@ struct Waiting {
     senders: BTreeMap<RmwRequestId, oneshot::Sender<BridgeMessage>>,
     /// Why the response pump stopped, once it has: no response comes after.
     pump_error: Option<String>,
+}
+
+impl Waiting {
+    /// Hand `response` to the request `id`; `false` if none waits for it.
+    fn deliver(&mut self, id: RmwRequestId, response: BridgeMessage) -> bool {
+        match self.senders.remove(&id) {
+            Some(tx) => {
+                let _ = tx.send(response);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Wait for the response to request `id`, for at most `timeout`.
+async fn await_response(
+    waiting: Arc<Mutex<Waiting>>,
+    id: RmwRequestId,
+    response: oneshot::Receiver<BridgeMessage>,
+    timeout: Duration,
+) -> Result<BridgeMessage, DdsCallFailure> {
+    match select(response, futures_timer::Delay::new(timeout)).await {
+        Either::Left((Ok(response), _)) => Ok(response),
+        Either::Left((Err(oneshot::Canceled), _)) => Err(DdsCallFailure::PumpStopped(
+            lock(&waiting)
+                .pump_error
+                .clone()
+                .unwrap_or_else(|| "the response thread stopped".to_owned()),
+        )),
+        Either::Right(_) => {
+            lock(&waiting).senders.remove(&id);
+            Err(DdsCallFailure::TimedOut(timeout))
+        }
+    }
 }
 
 fn lock(waiting: &Mutex<Waiting>) -> MutexGuard<'_, Waiting> {
@@ -114,19 +178,34 @@ fn pump_stopped(waiting: &Mutex<Waiting>, error: String) {
 /// `Client::async_receive_response(id)` takes the responses for other ids
 /// and drops them, so receivers for concurrent requests would steal each
 /// other's responses (as in dora-rs/dora#1970). A single pump thread reads
-/// every response instead and hands it to the request waiting for it.
+/// every response instead and hands it to the request waiting for it. It
+/// sleeps in `mio` until the client's response reader has data.
 pub(crate) struct DdsServiceCalls {
     client: Arc<DdsClient>,
     waiting: Arc<Mutex<Waiting>>,
     request_type_info: TypeInfo<'static>,
+    /// Ends the pump when the calls are dropped.
+    stop_pump: mio::Waker,
+}
+
+impl Drop for DdsServiceCalls {
+    fn drop(&mut self) {
+        let _ = self.stop_pump.wake();
+    }
 }
 
 impl DdsServiceCalls {
     pub(crate) fn new(
-        client: DdsClient,
+        mut client: DdsClient,
         request_type_info: TypeInfo<'static>,
         response_type_info: TypeInfo<'static>,
-    ) -> Self {
+    ) -> eyre::Result<Self> {
+        let poll = mio::Poll::new().context("failed to create the service response poll")?;
+        poll.registry()
+            .register(&mut client, RESPONSES, mio::Interest::READABLE)
+            .context("failed to watch the service response reader")?;
+        let stop_pump = mio::Waker::new(poll.registry(), DROPPED)
+            .context("failed to create the service response waker")?;
         let client = Arc::new(client);
         let waiting = Arc::new(Mutex::new(Waiting::default()));
         let pump = (client.clone(), Arc::downgrade(&waiting));
@@ -135,19 +214,21 @@ impl DdsServiceCalls {
             let _guard = TypeInfoGuard::deserialize(response_type_info);
             // A panic while decoding a response must not leave every call
             // waiting for its timeout: fail them, as a fatal read error does.
-            let pumped =
-                std::panic::catch_unwind(AssertUnwindSafe(|| pump_responses(&client, &waiting)));
+            let pumped = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                pump_responses(&client, &waiting, poll)
+            }));
             if pumped.is_err()
                 && let Some(waiting) = waiting.upgrade()
             {
                 pump_stopped(&waiting, "the response thread panicked".to_owned());
             }
         });
-        Self {
+        Ok(Self {
             client,
             waiting,
             request_type_info,
-        }
+            stop_pump,
+        })
     }
 
     /// Send a request and wait for its response, for at most
@@ -175,53 +256,168 @@ impl DdsServiceCalls {
             }
         };
         let waiting = self.waiting.clone();
-        async move {
-            let id = sent?;
-            let timeout = futures_timer::Delay::new(SERVICE_RESPONSE_TIMEOUT);
-            match select(rx, timeout).await {
-                Either::Left((Ok(response), _)) => Ok(response),
-                Either::Left((Err(oneshot::Canceled), _)) => Err(DdsCallFailure::PumpStopped(
-                    lock(&waiting)
-                        .pump_error
-                        .clone()
-                        .unwrap_or_else(|| "the response thread stopped".to_owned()),
-                )),
-                Either::Right(_) => {
-                    lock(&waiting).senders.remove(&id);
-                    Err(DdsCallFailure::TimedOut(SERVICE_RESPONSE_TIMEOUT))
-                }
-            }
-        }
+        async move { await_response(waiting, sent?, rx, SERVICE_RESPONSE_TIMEOUT).await }
     }
 }
 
 /// Hand each response to the request waiting for it, until the
 /// [`DdsServiceCalls`] is dropped or reading fails for good.
-fn pump_responses(client: &DdsClient, waiting: &Weak<Mutex<Waiting>>) {
-    while let Some(waiting) = waiting.upgrade() {
-        match client.receive_response() {
-            // A response nobody waits for timed out already, or answers
-            // another client of the same service.
-            Ok(Some((id, response))) => {
-                if let Some(tx) = lock(&waiting).senders.remove(&id) {
-                    let _ = tx.send(response);
+fn pump_responses(client: &DdsClient, calls: &Weak<Mutex<Waiting>>, mut poll: mio::Poll) {
+    let mut events = mio::Events::with_capacity(4);
+    loop {
+        let Some(waiting) = calls.upgrade() else {
+            return;
+        };
+        // Everything that has arrived; `receive_response` also resets the
+        // reader's readiness, so data that comes after it wakes the poll.
+        loop {
+            match client.receive_response() {
+                // A response nobody waits for timed out already, or answers
+                // another client of the same service.
+                Ok(Some((id, response))) => {
+                    lock(&waiting).deliver(id, response);
                 }
-                continue;
-            }
-            Ok(None) => {}
-            Err(error) => {
-                let failure = DdsCallFailure::Read(error);
-                if failure.is_fatal() {
-                    pump_stopped(&waiting, failure.to_string());
-                    return;
+                Ok(None) => break,
+                Err(error) => {
+                    let failure = DdsCallFailure::Read(error);
+                    if failure.is_fatal() {
+                        pump_stopped(&waiting, failure.to_string());
+                        return;
+                    }
+                    // One undecodable response: the next may be waiting already.
+                    tracing::warn!("failed to receive ROS2 service response: {failure}");
                 }
-                // One undecodable response: the next may be waiting already.
-                tracing::warn!("failed to receive ROS2 service response: {failure}");
-                continue;
             }
         }
         drop(waiting);
-        std::thread::sleep(RESPONSE_POLL_INTERVAL);
+        match poll.poll(&mut events, None) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                if let Some(waiting) = calls.upgrade() {
+                    pump_stopped(&waiting, format!("waiting for responses failed: {error}"));
+                }
+                return;
+            }
+        }
+        if events.iter().any(|event| event.token() == DROPPED) {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod waiting_tests {
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    use dora_ros2_bridge::ros2_client::service::RmwRequestId;
+    use dora_ros2_bridge_arrow::BridgeMessage;
+    use futures::{channel::oneshot, executor::block_on};
+
+    use super::{Waiting, await_response, lock, pump_stopped};
+    use crate::DdsCallFailure;
+
+    fn id(sequence_number: i64) -> RmwRequestId {
+        RmwRequestId {
+            sequence_number,
+            ..Default::default()
+        }
+    }
+
+    /// Register request `n` as the client does, returning its receiver.
+    fn register(waiting: &Mutex<Waiting>, n: i64) -> oneshot::Receiver<BridgeMessage> {
+        let (tx, rx) = oneshot::channel();
+        lock(waiting).senders.insert(id(n), tx);
+        rx
+    }
+
+    const LONG: Duration = Duration::from_secs(30);
+
+    #[test]
+    fn a_response_reaches_the_request_with_its_id() {
+        let waiting = Arc::new(Mutex::new(Waiting::default()));
+        let first = register(&waiting, 1);
+        let second = register(&waiting, 2);
+        assert!(lock(&waiting).deliver(id(2), BridgeMessage(None)));
+        assert!(block_on(await_response(waiting.clone(), id(2), second, LONG)).is_ok());
+        // The other request is still waiting for its own response.
+        assert_eq!(lock(&waiting).senders.len(), 1);
+        assert!(lock(&waiting).deliver(id(1), BridgeMessage(None)));
+        assert!(block_on(await_response(waiting.clone(), id(1), first, LONG)).is_ok());
+    }
+
+    #[test]
+    fn a_response_nobody_waits_for_is_dropped() {
+        let waiting = Arc::new(Mutex::new(Waiting::default()));
+        let _first = register(&waiting, 1);
+        assert!(!lock(&waiting).deliver(id(7), BridgeMessage(None)));
+        assert_eq!(lock(&waiting).senders.len(), 1);
+    }
+
+    #[test]
+    fn a_timed_out_request_is_forgotten() {
+        let waiting = Arc::new(Mutex::new(Waiting::default()));
+        let rx = register(&waiting, 1);
+        let outcome = block_on(await_response(
+            waiting.clone(),
+            id(1),
+            rx,
+            Duration::from_millis(10),
+        ));
+        assert!(matches!(outcome, Err(DdsCallFailure::TimedOut(_))));
+        assert!(lock(&waiting).senders.is_empty());
+        // Its late response finds nobody.
+        assert!(!lock(&waiting).deliver(id(1), BridgeMessage(None)));
+    }
+
+    #[test]
+    fn a_stopped_pump_fails_the_waiting_requests_with_its_error() {
+        let waiting = Arc::new(Mutex::new(Waiting::default()));
+        let rx = register(&waiting, 1);
+        pump_stopped(&waiting, "rtps thread panicked".to_owned());
+        let outcome = block_on(await_response(waiting.clone(), id(1), rx, LONG));
+        match outcome {
+            Err(DdsCallFailure::PumpStopped(error)) => assert_eq!(error, "rtps thread panicked"),
+            other => panic!("expected PumpStopped, got {other:?}"),
+        }
+        assert!(lock(&waiting).pump_error.is_some());
+    }
+}
+
+#[cfg(test)]
+mod response_parameters_tests {
+    use dora_message::metadata::{
+        FIN, FLUSH, FRAMING, MetadataParameters, OPEN_TELEMETRY_CONTEXT, Parameter, REQUEST_ID,
+        SEGMENT_ID, SEQ, SESSION_ID,
+    };
+
+    use super::response_parameters;
+
+    #[test]
+    fn a_response_keeps_the_request_ids_and_drops_delivery_keys() {
+        let mut request = MetadataParameters::default();
+        request.insert("request_number".into(), Parameter::Integer(7));
+        request.insert(REQUEST_ID.into(), Parameter::String("r".into()));
+        for key in [FLUSH, FIN] {
+            request.insert(key.into(), Parameter::Bool(true));
+        }
+        for key in [
+            SESSION_ID,
+            SEGMENT_ID,
+            OPEN_TELEMETRY_CONTEXT,
+            FRAMING,
+            "__dora_x",
+        ] {
+            request.insert(key.into(), Parameter::String("x".into()));
+        }
+        request.insert(SEQ.into(), Parameter::Integer(3));
+
+        let response = response_parameters(request);
+        let keys: Vec<&str> = response.keys().map(String::as_str).collect();
+        assert_eq!(keys, vec![REQUEST_ID, "request_number"]);
     }
 }
 
@@ -343,13 +539,16 @@ mod tests {
     }
 
     #[test]
-    fn outcomes_come_in_completion_order_with_their_request_parameters() {
+    fn outcomes_come_in_request_order_with_their_request_parameters() {
         let mut h = Harness::new(vec![("a", 1), ("b", 2), ("c", 3)], 8);
         h.run();
+        // Answered out of order: each waits for the requests before it.
         h.complete(3, 30);
+        assert!(h.responses.borrow().is_empty());
         h.complete(1, 10);
+        assert_eq!(*h.responses.borrow(), vec![("a", 10)]);
         h.complete(2, 20);
-        assert_eq!(*h.responses.borrow(), vec![("c", 30), ("a", 10), ("b", 20)]);
+        assert_eq!(*h.responses.borrow(), vec![("a", 10), ("b", 20), ("c", 30)]);
     }
 
     #[test]
@@ -357,10 +556,13 @@ mod tests {
         let mut h = Harness::new(vec![("a", 1), ("b", 2), ("c", 3), ("d", 4)], 2);
         h.run();
         assert_eq!(h.started(), vec![1, 2]);
-        h.complete(2, 20);
-        assert_eq!(h.started(), vec![1, 3]);
         h.complete(1, 10);
-        assert_eq!(h.started(), vec![3, 4]);
+        assert_eq!(h.started(), vec![2, 3]);
+        // A finished call keeps its slot until the calls before it are out.
+        h.complete(3, 30);
+        assert_eq!(h.started(), vec![2]);
+        h.complete(2, 20);
+        assert_eq!(h.started(), vec![4]);
     }
 
     #[test]

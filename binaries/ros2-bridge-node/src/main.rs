@@ -1724,7 +1724,8 @@ fn run_service_client(
     response_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
     let (mut node, dora_events) = DoraNode::init_from_env()?;
-    let calls = service_client::DdsServiceCalls::new(client, request_type_info, response_type_info);
+    let calls =
+        service_client::DdsServiceCalls::new(client, request_type_info, response_type_info)?;
 
     // A failed or unanswered call fails only this request, as on the Zenoh
     // transport: one slow or absent ROS2 server must not tear down the whole

@@ -4,9 +4,9 @@
 //! through the declarative ROS2 service bridge, and prints the response.
 //! No ROS2 dependencies needed -- the bridge handles all ROS2 communication.
 //!
-//! Requests can be answered out of order, since the bridge keeps several in
-//! flight. Each request carries a `request_number` metadata parameter, which
-//! the bridge copies onto its response, so the requester can tell which
+//! The bridge keeps several requests in flight and returns the responses in
+//! request order. Each request carries a `request_number` metadata parameter,
+//! which the bridge copies onto its response, so the requester can check which
 //! request a response answers.
 
 use std::sync::Arc;

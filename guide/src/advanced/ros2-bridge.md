@@ -289,12 +289,22 @@ Requests do not wait for each other: the bridge keeps as many in flight as
 the service QoS history holds (`keep_last`, 10 by default, at most 64; 64 with
 `keep_all`), and reads the next input only when fewer are outstanding. More at
 once could push requests out of a server's request history, or responses out
-of the bridge's own, before they are read. Each request has its own 30 s
-timeout; a request that fails or times out is dropped with a warning and does
-not hold up the others. Only a failure of the DDS participant itself, which
-cannot be recovered, ends the bridge and with it every request in flight. Responses come out in the order the server answers,
-which need not be the order of the requests. To match them, put an id in the
-request's metadata parameters and read it back from the response:
+of the bridge's own, before they are read. Set `qos.keep_last: 1` to send one
+request at a time, as before; that also sets the history depth of the service
+endpoints.
+
+Responses come out in the order of the requests, as before: a response that
+arrives early waits for the ones before it. Each request has its own 30 s
+timeout; a request that fails or times out is dropped with a warning and the
+next response goes out in its place, so pairing responses with requests by
+position drifts after a failure. Only a failure of the DDS participant itself,
+which cannot be recovered, ends the bridge and with it every request in flight.
+
+Each response carries the metadata parameters of the request it answers,
+except those that steer delivery: `flush`, `seq`, `fin`, `session_id`,
+`segment_id`, the tracing context and dora's own `_`-prefixed keys. To match
+responses to requests reliably, put an id in the request's parameters and read
+it back from the response:
 
 ```rust
 // requester: number each request
