@@ -1554,6 +1554,29 @@ jobs:
           Remove-Item "C:\Android" -Force -Recurse
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse
           Remove-Item "C:\hostedtoolcache\windows\CodeQL" -Force -Recurse
+      # The C/C++ examples build with `clang++` from PATH, which on
+      # windows-latest is the standalone LLVM in C:\Program Files\LLVM. The
+      # MSVC STL rejects a clang older than the one it was released with
+      # (STL1000): when the image moved to MSVC 14.52, which wants Clang 22,
+      # while that LLVM stayed at 20, every C++ example failed (#4254). Put
+      # the clang that Visual Studio bundles first on PATH, since it always
+      # matches its STL, and upgrade the standalone LLVM only if VS has none.
+      - name: Use a Clang that matches the MSVC STL (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $bundled = if ($vs) { Join-Path $vs 'VC\Tools\Llvm\x64\bin' }
+          if ($bundled -and (Test-Path (Join-Path $bundled 'clang++.exe'))) {
+            Add-Content -Path $env:GITHUB_PATH -Value $bundled
+            $env:PATH = "$bundled;$env:PATH"
+          } else {
+            Write-Host "Visual Studio bundles no clang; upgrading the standalone LLVM"
+            choco upgrade llvm -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          (Get-Command clang++).Source
+          clang++ --version
       # Examples call dora_cli as a library (via `examples/*/run.rs`) but the
       # daemon still spawns runtime nodes as child processes via
       # `which::which("dora")`. Build the CLI binary and add it to PATH so
