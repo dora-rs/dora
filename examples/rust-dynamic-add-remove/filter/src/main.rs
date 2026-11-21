@@ -17,7 +17,7 @@ fn main() -> eyre::Result<()> {
         match event {
             Event::Input { id, metadata, .. } if id.as_str() == "input" => {
                 count = count.wrapping_add(1);
-                if count == 1 || count % 20 == 0 {
+                if count == 1 || count.is_multiple_of(20) {
                     eprintln!("filter: received input {count}");
                 }
                 node.send_output(output.clone(), metadata.parameters, count.into_arrow())?;
