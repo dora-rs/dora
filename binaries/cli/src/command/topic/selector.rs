@@ -102,15 +102,36 @@ pub(crate) fn public_topic_output_id(node: &Node, wire_output: &DataId) -> DataI
 /// / `operators[].config.inputs` -- so iterating `node.inputs` alone leaves
 /// every operator-node consumer out of the subscriber listing
 /// (dora-rs/dora#2893).
-pub(crate) fn node_topic_inputs(node: &Node) -> Vec<(&DataId, &Input)> {
-    let mut inputs: Vec<_> = node.inputs.iter().collect();
+///
+/// Inputs of multi-operator `operators:` nodes are qualified as
+/// `{operator.id}/{input_id}`, matching the `{operator.id}/{output_id}` scheme
+/// of [`node_topic_outputs`] (dora-rs/dora#4263). Single-`operator:` nodes and
+/// plain nodes remain unqualified.
+pub(crate) fn node_topic_inputs(node: &Node) -> Vec<(DataId, &Input)> {
+    let mut inputs: Vec<_> = node
+        .inputs
+        .iter()
+        .map(|(id, input)| (id.clone(), input))
+        .collect();
 
     if let Some(operator) = &node.operator {
-        inputs.extend(operator.config.inputs.iter());
+        inputs.extend(
+            operator
+                .config
+                .inputs
+                .iter()
+                .map(|(id, input)| (id.clone(), input)),
+        );
     }
     if let Some(runtime) = &node.operators {
         for operator in &runtime.operators {
-            inputs.extend(operator.config.inputs.iter());
+            inputs.extend(
+                operator
+                    .config
+                    .inputs
+                    .iter()
+                    .map(|(id, input)| (DataId::from(format!("{}/{}", operator.id, id)), input)),
+            );
         }
     }
 
@@ -435,6 +456,46 @@ nodes:
         );
     }
 
+    #[test]
+    fn node_topic_inputs_include_all_descriptor_node_kinds() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: standard
+    path: ./source
+    inputs:
+      status: source/status
+  - id: single
+    operator:
+      python: single.py
+      inputs:
+        image: source/image
+  - id: runtime
+    operators:
+      - id: op
+        python: runtime.py
+        inputs:
+          status: source/status
+",
+        )
+        .expect("valid descriptor");
+
+        let topics: Vec<String> = descriptor
+            .nodes
+            .iter()
+            .flat_map(|node| {
+                node_topic_inputs(node)
+                    .into_iter()
+                    .map(|(input, _)| format!("{}/{}", node.id, input))
+            })
+            .collect();
+
+        assert_eq!(
+            topics,
+            vec!["standard/status", "single/image", "runtime/op/status"]
+        );
+    }
+
     /// The public id the selector hands out and the wire id the daemon reports
     /// a frame under must round-trip, in both directions and for all three node
     /// kinds. Without this the two never meet for a single-`operator:` node:
@@ -564,7 +625,52 @@ nodes:
                 .expect("node in fixture");
             let inputs = node_topic_inputs(node);
             assert_eq!(inputs.len(), 1, "{id} should have one input");
-            assert_eq!(inputs[0].0.to_string(), "image", "{id}");
+            let expected = if id == "plot" { "op/image" } else { "image" };
+            assert_eq!(inputs[0].0.to_string(), expected, "{id}");
         }
+    }
+
+    /// In a multi-operator node, subscribers should be qualified by operator ID
+    /// so different operators subscribing to the same topic do not duplicate
+    /// or show ambiguous subscriber entries (dora-rs/dora#4263).
+    #[test]
+    fn multi_operator_node_subscribers_are_qualified_by_operator_id() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: camera
+    path: camera
+    outputs:
+      - frame
+  - id: runtime
+    operators:
+      - id: detector
+        python: detector.py
+        inputs:
+          image: camera/frame
+      - id: logger
+        python: logger.py
+        inputs:
+          image: camera/frame
+",
+        )
+        .expect("parse descriptor");
+
+        let runtime_node = descriptor
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "runtime")
+            .expect("node in fixture");
+
+        let mut subscribers: Vec<String> = node_topic_inputs(runtime_node)
+            .into_iter()
+            .map(|(input, _)| format!("{}/{}", runtime_node.id, input))
+            .collect();
+        subscribers.sort();
+
+        assert_eq!(
+            subscribers,
+            vec!["runtime/detector/image", "runtime/logger/image"]
+        );
     }
 }
