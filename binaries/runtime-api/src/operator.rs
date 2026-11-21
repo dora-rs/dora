@@ -58,12 +58,12 @@ impl RuntimeHandle {
             .allocator
             .get()
             .ok_or_else(|| eyre::eyre!("cannot send an output before the node is initialized"))?;
-        // A large output pinned to the daemon path must not get a
-        // shared-memory buffer: the node would copy it straight back out.
-        let encoded = allocator.encode_arrow_for_output(
-            &crate::operator_output_id(&self.operator_id, &output_id),
-            array,
-        )?;
+        // Name the output as the node knows it once, and both pick the
+        // sample's delivery path and send it under that one id: a large output
+        // pinned to the daemon path must not get a shared-memory buffer, which
+        // the node would copy straight back out.
+        let output_id = crate::operator_output_id(&self.operator_id, &output_id);
+        let encoded = allocator.encode_arrow_for_output(&output_id, array)?;
         self.events_tx
             .blocking_send(OperatorEvent::Output {
                 output_id,
@@ -129,6 +129,8 @@ pub type RunnerGuard = Option<Box<dyn Any>>;
 #[allow(clippy::large_enum_variant)]
 pub enum OperatorEvent {
     Output {
+        /// The node-level output id, `{operator}/{output}`: the id the node
+        /// sends the sample under, and the one `encoded` was allocated for.
         output_id: DataId,
         parameters: MetadataParameters,
         /// The payload, already IPC-encoded into a dora-owned sample **by the
@@ -225,7 +227,14 @@ mod tests {
         );
 
         match events_rx.try_recv().expect("an output event was queued") {
-            OperatorEvent::Output { encoded, .. } => {
+            OperatorEvent::Output {
+                output_id, encoded, ..
+            } => {
+                assert_eq!(
+                    output_id.as_str(),
+                    "op/out",
+                    "the event must carry the node-level id the sample was encoded for"
+                );
                 assert!(
                     encoded.as_bytes().len() > 4096,
                     "the sample must hold the encoded payload, not a reference to it"
