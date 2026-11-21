@@ -1,5 +1,5 @@
 use dora_core::{
-    config::{DataId, NodeId},
+    config::{DataId, NodeId, OperatorId},
     descriptor::{Descriptor, OperatorDefinition},
 };
 use dora_node_api::{DoraArray, EncodedSample, Event, MetadataParameters, SampleAllocator};
@@ -23,13 +23,21 @@ pub type SharedAllocator = Arc<OnceLock<SampleAllocator>>;
 pub struct RuntimeHandle {
     events_tx: Sender<OperatorEvent>,
     allocator: SharedAllocator,
+    /// The operator whose outputs this handle sends. The node knows them as
+    /// `{operator}/{output}`, which is what picks each output's delivery path.
+    operator_id: OperatorId,
 }
 
 impl RuntimeHandle {
-    pub fn new(events_tx: Sender<OperatorEvent>, allocator: SharedAllocator) -> Self {
+    pub fn new(
+        operator_id: OperatorId,
+        events_tx: Sender<OperatorEvent>,
+        allocator: SharedAllocator,
+    ) -> Self {
         Self {
             events_tx,
             allocator,
+            operator_id,
         }
     }
 
@@ -50,7 +58,12 @@ impl RuntimeHandle {
             .allocator
             .get()
             .ok_or_else(|| eyre::eyre!("cannot send an output before the node is initialized"))?;
-        let encoded = allocator.encode_arrow(array)?;
+        // Name the output as the node knows it once, and both pick the
+        // sample's delivery path and send it under that one id: a large output
+        // pinned to the daemon path must not get a shared-memory buffer, which
+        // the node would copy straight back out.
+        let output_id = crate::operator_output_id(&self.operator_id, &output_id);
+        let encoded = allocator.encode_arrow_for_output(&output_id, array)?;
         self.events_tx
             .blocking_send(OperatorEvent::Output {
                 output_id,
@@ -116,6 +129,8 @@ pub type RunnerGuard = Option<Box<dyn Any>>;
 #[allow(clippy::large_enum_variant)]
 pub enum OperatorEvent {
     Output {
+        /// The node-level output id, `{operator}/{output}`: the id the node
+        /// sends the sample under, and the one `encoded` was allocated for.
         output_id: DataId,
         parameters: MetadataParameters,
         /// The payload, already IPC-encoded into a dora-owned sample **by the
@@ -190,7 +205,11 @@ mod tests {
         allocator
             .set(SampleAllocator::heap())
             .expect("fresh OnceLock");
-        let handle = RuntimeHandle::new(events_tx, allocator);
+        let handle = RuntimeHandle::new(
+            dora_core::config::OperatorId::from("op".to_owned()),
+            events_tx,
+            allocator,
+        );
 
         handle
             .send_output(
@@ -208,7 +227,14 @@ mod tests {
         );
 
         match events_rx.try_recv().expect("an output event was queued") {
-            OperatorEvent::Output { encoded, .. } => {
+            OperatorEvent::Output {
+                output_id, encoded, ..
+            } => {
+                assert_eq!(
+                    output_id.as_str(),
+                    "op/out",
+                    "the event must carry the node-level id the sample was encoded for"
+                );
                 assert!(
                     encoded.as_bytes().len() > 4096,
                     "the sample must hold the encoded payload, not a reference to it"
@@ -223,7 +249,11 @@ mod tests {
     #[test]
     fn send_output_before_node_init_is_a_clear_error() {
         let (events_tx, _events_rx) = tokio::sync::mpsc::channel(1);
-        let handle = RuntimeHandle::new(events_tx, SharedAllocator::default());
+        let handle = RuntimeHandle::new(
+            dora_core::config::OperatorId::from("op".to_owned()),
+            events_tx,
+            SharedAllocator::default(),
+        );
         let array = dora_node_api::DoraArray::from_array(arrow::array::NullArray::new(1));
 
         let err = handle
