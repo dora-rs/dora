@@ -490,7 +490,7 @@ When the coordinator starts on a store that holds data from a previous run:
 
 The same `Recovering` path covers a running coordinator that loses every daemon of a dataflow (for example during a network partition): the record waits 60 seconds for a daemon to report it again.
 
-`dora list` shows only the dataflows the coordinator holds in memory: the running ones and the last 200 that finished since it started. It does not read the store. A `Recovering` record is not listed while it waits, a record that hits the recovery timeout is not listed at all, and dataflows that finished before a restart stay in the store file but no longer appear in `dora list`. `dora clean` deletes the finished and failed records from the store.
+`dora list` shows the running dataflows, the finished and failed dataflows the coordinator holds in memory (the last 200 since it started), and every `Succeeded` or `Failed` record in the store that is not in memory. That includes dataflows that finished before a restart and a record that hit the recovery timeout. The list of finished and failed dataflows is therefore bounded by `dora clean`, not by the 200-entry in-memory cap: records stay in the store, and in `dora list`, until `dora clean` deletes them. A `Recovering` record is not listed while it waits.
 
 ### Error Detail Preservation
 
@@ -863,9 +863,9 @@ dora coordinator --store redb
 3. Logs: `INFO coordinator restarted: dataflow <uuid> (Some("my-pipeline")) -> Recovering (waiting for daemon reconnect)`
 4. The daemons reconnect and report `my-pipeline` as running; the record goes back to `Running`
 5. `dora list`, `dora stop` and `dora logs` work for `my-pipeline` again, and its nodes kept their processes. Params set before the crash are replayed to the nodes
-6. If no daemon reports `my-pipeline` within 60 seconds, its record in the store is marked `Failed` with `recovery timeout (60s): no daemon reconnected`. `dora list` does not show it
+6. If no daemon reports `my-pipeline` within 60 seconds, its record in the store is marked `Failed` with `recovery timeout (60s): no daemon reconnected`. `dora list` shows it as `Failed` until `dora clean` removes it
 
-The key benefit: a coordinator restart does not stop running dataflows. The records of finished dataflows also stay in the store file, but `dora list` does not show them after a restart. With `--store memory`, the restarted coordinator has no record of what was running before the crash.
+The key benefit: a coordinator restart does not stop running dataflows. The records of finished dataflows also stay in the store file, and `dora list` keeps showing them after a restart until `dora clean` removes them. With `--store memory`, the restarted coordinator has no record of what was running before the crash.
 
 ### 7. Periodic Batch Job with Always-Restart
 
