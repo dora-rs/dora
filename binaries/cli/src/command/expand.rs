@@ -52,12 +52,22 @@ fn expanded_yaml(dataflow: &Path) -> eyre::Result<String> {
 mod tests {
     use super::*;
 
+    fn canonical_slash_path(path: &Path) -> String {
+        dunce::canonicalize(path)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace(std::path::MAIN_SEPARATOR, "/")
+    }
+
     #[test]
-    fn module_dir_reaches_the_same_file_from_different_dataflows() {
+    fn module_dir_reaches_the_same_file_from_different_dataflows_and_a_git_checkout() {
         let dir = tempfile::tempdir().unwrap();
         let nested = dir.path().join("flows");
         let module = nested.join("worker module");
         std::fs::create_dir_all(&module).unwrap();
+        let checkout = dir.path().join("git-checkout");
+        std::fs::create_dir(&checkout).unwrap();
         std::fs::write(module.join("config.txt"), "worker config").unwrap();
         let worker = module.join("worker.yml");
         std::fs::write(
@@ -66,7 +76,8 @@ mod tests {
   name: worker
 nodes:
   - id: worker
-    path: dynamic
+    git: https://example.org/worker.git
+    path: bin/worker
     build: 'prepare "$MODULE_DIR/config.txt"'
     args: '"$MODULE_DIR/config.txt" $MODULE_DIR_SUFFIX'
     env:
@@ -95,7 +106,7 @@ nodes:
                 .expand(base)
                 .unwrap();
             let node = &flat.nodes[0];
-            let file = format!("{prefix}/config.txt");
+            let file = canonical_slash_path(&module.join("config.txt"));
             assert_eq!(
                 node.args.as_ref().unwrap(),
                 &format!("\"{file}\" $MODULE_DIR_SUFFIX")
@@ -103,14 +114,29 @@ nodes:
             assert_eq!(node.build.as_ref().unwrap(), &format!("prepare \"{file}\""));
             let env = node.env.as_ref().unwrap();
             assert_eq!(env["CONFIG"].to_string(), file);
-            assert_eq!(
-                std::fs::read_to_string(base.join(file)).unwrap(),
-                "worker config"
-            );
+            let build = node
+                .build
+                .as_ref()
+                .unwrap()
+                .strip_prefix("prepare ")
+                .unwrap();
+            let arg = node
+                .args
+                .as_ref()
+                .unwrap()
+                .strip_suffix(" $MODULE_DIR_SUFFIX")
+                .unwrap();
+            let config = env["CONFIG"].to_string();
+            for path in [build.trim_matches('"'), arg.trim_matches('"'), &config] {
+                assert_eq!(
+                    std::fs::read_to_string(checkout.join(path)).unwrap(),
+                    "worker config"
+                );
+            }
             assert_eq!(env["LITERAL"].to_string(), "$MODULE_DIR");
             assert_eq!(
                 env["ADJACENT"].to_string(),
-                format!("{}{prefix}/config.txt", std::env::var("PATH").unwrap())
+                format!("{}{file}", std::env::var("PATH").unwrap())
             );
             assert_eq!(flat.nodes[1].args.as_deref(), Some("1.10"));
         }
@@ -142,6 +168,13 @@ nodes:
         .unwrap();
         let flat: Descriptor = serde_yaml::from_str(&expanded_yaml(&dataflow).unwrap()).unwrap();
         let script = flat.nodes[0].args.as_ref().unwrap();
+        assert_eq!(
+            script,
+            &format!(
+                "{}/../nodes/worker/script.py",
+                canonical_slash_path(&modules)
+            )
+        );
         assert_eq!(
             std::fs::read_to_string(dataflow_dir.join(script)).unwrap(),
             "worker script"
@@ -185,12 +218,19 @@ nodes:
         .unwrap();
         let flat: Descriptor = serde_yaml::from_str(&expanded_yaml(&dataflow).unwrap()).unwrap();
         let node = &flat.nodes[0];
+        let outer = canonical_slash_path(dir.path());
         assert_eq!(
-            node.build.as_deref(),
-            Some("prepare ./outer\nprepare child/inner")
+            node.build.as_ref().unwrap(),
+            &format!("prepare {outer}/outer\nprepare {outer}/child/inner")
         );
-        assert_eq!(node.args.as_deref(), Some("child/worker user/config"));
-        assert_eq!(node.env.as_ref().unwrap()["PARENT"].to_string(), "./parent");
+        assert_eq!(
+            node.args.as_ref().unwrap(),
+            &format!("{outer}/child/worker user/config")
+        );
+        assert_eq!(
+            node.env.as_ref().unwrap()["PARENT"].to_string(),
+            format!("{outer}/parent")
+        );
     }
 
     /// The output is a dataflow file the user can run, as on main, so it

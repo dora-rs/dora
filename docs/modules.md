@@ -109,7 +109,7 @@ nodes:
       - result
 ```
 
-In a module's `args:`, `build:`, and string `env:` values, `$MODULE_DIR` expands to the directory of the module file, relative to the top-level dataflow directory. For nested modules, each reference uses the file where it was written. Expansion leaves the working directory alone. Quote paths in arguments and build commands when they may contain spaces.
+In a module's `args:`, `build:`, and string `env:` values, `$MODULE_DIR` expands to the canonical absolute path of the directory containing the declaring module file. Dora resolves symlinks during expansion, so the path is independent of the node's working directory. In a nested module, the token refers to that module's own directory. A remote daemon must be able to access the referenced files at the same absolute paths. Quote paths in arguments and build commands when they may contain spaces.
 
 ## Using Modules
 

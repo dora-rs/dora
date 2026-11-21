@@ -1770,6 +1770,7 @@ thread_local! {
 
 /// Decode a module from the original YAML, resolving `$MODULE_DIR` in its
 /// environment strings alongside ordinary host variables.
+#[doc(hidden)]
 pub fn deserialize_module_yaml<'de, T: Deserialize<'de>>(
     yaml: &'de [u8],
     module_dir: &str,

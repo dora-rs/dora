@@ -718,15 +718,13 @@ fn expand_module_node(
         .parent()
         .expect("module file must have a parent directory");
 
-    let relative_dir = module_dir.strip_prefix(project_root)?;
-    let relative_dir = relative_dir
+    // Builds and nodes can run from a Git checkout or a custom working directory.
+    let physical_dir = canonical
+        .parent()
+        .ok_or_else(|| eyre::eyre!("module file has no parent: {}", canonical.display()))?
         .to_string_lossy()
         .replace(std::path::MAIN_SEPARATOR, "/");
-    let dir = if relative_dir.is_empty() {
-        "."
-    } else {
-        &relative_dir
-    };
+    let dir = physical_dir.as_str();
     let mut module_file = load_module_file(&canonical, dir)?;
     validate_module_header(&module_file.module)?;
     expand_build_dir(&mut module_file.build, dir);
