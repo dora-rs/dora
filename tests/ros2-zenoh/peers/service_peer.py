@@ -15,12 +15,17 @@ p.add_argument("--delay", type=float, default=0.0)
 # Server only: pass only once this many requests were being handled at the
 # same time, i.e. the client had that many in flight (#4258).
 p.add_argument("--expect-concurrent", type=int, default=1)
+# Server only: handle one request at a time, like an rclpy server on the
+# default executor, so later requests queue in the server (#4260).
+p.add_argument("--one-at-a-time", action="store_true")
+# Server only: pass only once this many requests were answered.
+p.add_argument("--expect-requests", type=int, default=1)
 a = p.parse_args()
 rclpy.init()
 n = rclpy.create_node("dora_zenoh_service_peer")
 if a.role == "server":
     lock = threading.Lock()
-    state = {"done": False, "active": 0, "peak": 0}
+    state = {"done": False, "active": 0, "peak": 0, "served": 0}
     def add(request, response):
         with lock:
             state["active"] += 1
@@ -29,17 +34,21 @@ if a.role == "server":
         response.sum = request.a + request.b
         with lock:
             state["active"] -= 1
-            if not state["done"] and state["peak"] >= a.expect_concurrent:
-                print(json.dumps({"event": "PASS", "sum": response.sum, "concurrent": state["peak"]}), flush=True)
+            state["served"] += 1
+            if (not state["done"] and state["peak"] >= a.expect_concurrent
+                    and state["served"] >= a.expect_requests):
+                print(json.dumps({"event": "PASS", "sum": response.sum, "concurrent": state["peak"],
+                                  "served": state["served"]}), flush=True)
                 state["done"] = True
         return response
     # Callbacks run in parallel, so a client with several requests in flight
-    # gets them handled at the same time.
-    n.create_service(AddTwoInts, "/add_two_ints", add, callback_group=ReentrantCallbackGroup())
+    # gets them handled at the same time; or one at a time, as rclpy's default.
+    group = None if a.one_at_a_time else ReentrantCallbackGroup()
+    n.create_service(AddTwoInts, "/add_two_ints", add, callback_group=group)
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(n)
     print(json.dumps({"event": "READY", "role": a.role}), flush=True)
-    end = n.get_clock().now().nanoseconds + 30_000_000_000
+    end = n.get_clock().now().nanoseconds + int((30 + a.delay * a.expect_requests) * 1e9)
     while not (state["done"] and state["active"] == 0) and n.get_clock().now().nanoseconds < end:
         executor.spin_once(timeout_sec=0.2)
     executor.shutdown()

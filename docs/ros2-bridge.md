@@ -221,8 +221,11 @@ request at a time, as before; that also sets the history depth of the service
 endpoints.
 
 Responses come out in the order of the requests, as before: a response that
-arrives early waits for the ones before it. Each request has its own 30 s
-timeout; a request that fails or times out is dropped with a warning and the
+arrives early waits for the ones before it. A request times out after 30 s for
+each request still unanswered ahead of it, plus 30 s for itself: a server that
+answers one request at a time keeps the later ones queued, and this way it can
+take up to 30 s per request, as with the sequential client, without any of them
+timing out. A request that fails or times out is dropped with a warning and the
 next response goes out in its place, so pairing responses with requests by
 position drifts after a failure. Only a failure of the DDS participant itself,
 which cannot be recovered, ends the bridge and with it every request in flight.
@@ -295,7 +298,7 @@ Responses can arrive in any order -- the bridge correlates them by `request_id`,
 | Behavior | Value |
 |----------|-------|
 | Service client: wait for availability | 10 retries, 2s each (20s total) |
-| Service client: response timeout | 30 seconds, per request |
+| Service client: response timeout | 30 seconds, plus 30 seconds per unanswered request ahead of it |
 | Service client: requests in flight | `qos.keep_last` (default 10), at most 64; 64 with `keep_all` |
 | Service server: pending request limit | 64 |
 

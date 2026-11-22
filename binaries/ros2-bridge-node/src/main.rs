@@ -369,7 +369,8 @@ fn run_zenoh_service_mode(
             futures::executor::block_on(service_client::drive_service_calls(
                 service_client::requests(events),
                 service_client_in_flight_limit(&config.qos),
-                |data| {
+                SERVICE_RESPONSE_TIMEOUT,
+                |data, timeout| {
                     let request = serialize_raw_cdr(&TypedValue {
                         value: &data,
                         type_info: &request_info,
@@ -381,7 +382,7 @@ fn run_zenoh_service_mode(
                             "dropping Zenoh service request that cannot be serialized",
                         )?;
                         value_or_warn(
-                            client.call(request, SERVICE_RESPONSE_TIMEOUT).await,
+                            client.call(request, timeout).await,
                             "Zenoh service call failed",
                         )
                     }
@@ -1733,7 +1734,8 @@ fn run_service_client(
     futures::executor::block_on(service_client::drive_service_calls(
         service_client::requests(dora_events),
         limit,
-        |data| calls.call(data.to_data()),
+        SERVICE_RESPONSE_TIMEOUT,
+        |data, timeout| calls.call(data.to_data(), timeout),
         |parameters, outcome| {
             let Some(response) = dds_call_or_warn(outcome, "ROS2 service call failed")? else {
                 return Ok(());

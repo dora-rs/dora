@@ -1,10 +1,12 @@
 //! The YAML service client: several requests in flight at once.
 
 use std::{
+    cell::Cell,
     collections::BTreeMap,
     future::{Future, ready},
     panic::AssertUnwindSafe,
     pin::pin,
+    rc::Rc,
     sync::{Arc, Mutex, MutexGuard, PoisonError, Weak},
     time::Duration,
 };
@@ -25,7 +27,7 @@ use futures::{
 
 use eyre::Context;
 
-use crate::{DdsCallFailure, SERVICE_RESPONSE_TIMEOUT};
+use crate::DdsCallFailure;
 
 /// The most service requests a YAML service client keeps in flight; the same
 /// bound as the YAML service server's pending requests.
@@ -48,6 +50,11 @@ pub(crate) fn in_flight_limit(history: History) -> usize {
 /// Call a service for each of `requests` and hand every outcome to
 /// `respond`, with the parameters of the request it answers.
 ///
+/// `call` gets `timeout` once for each call still unanswered ahead of it, plus
+/// once for itself. A server that answers one request at a time keeps the
+/// later ones queued, so a deadline counted from the send alone would expire
+/// requests it answers within `timeout` each, as the sequential client did.
+///
 /// At most `limit` calls are in flight: while that many are, the next request
 /// is not read. Outcomes come in request order, as with one call at a time, so
 /// a dataflow that pairs responses with requests by position keeps working; a
@@ -57,14 +64,27 @@ pub(crate) fn in_flight_limit(history: History) -> usize {
 pub(crate) async fn drive_service_calls<P, D, T, F>(
     requests: impl Stream<Item = (P, D)>,
     limit: usize,
-    mut call: impl FnMut(D) -> F,
+    timeout: Duration,
+    mut call: impl FnMut(D, Duration) -> F,
     mut respond: impl FnMut(P, T) -> eyre::Result<()>,
 ) -> eyre::Result<()>
 where
     F: Future<Output = T>,
 {
+    // Calls sent and not answered yet; a call answered early but still held
+    // for request order no longer queues anything behind it.
+    let unanswered = Rc::new(Cell::new(0_usize));
     let outcomes = requests
-        .map(|(params, data)| call(data).map(move |outcome| (params, outcome)))
+        .map(|(params, data)| {
+            let ahead = unanswered.get();
+            unanswered.set(ahead + 1);
+            let deadline = timeout.saturating_mul(u32::try_from(ahead + 1).unwrap_or(u32::MAX));
+            let unanswered = unanswered.clone();
+            call(data, deadline).map(move |outcome| {
+                unanswered.set(unanswered.get() - 1);
+                (params, outcome)
+            })
+        })
         .buffered(limit);
     let mut outcomes = pin!(outcomes);
     while let Some((params, outcome)) = outcomes.next().await {
@@ -231,11 +251,11 @@ impl DdsServiceCalls {
         })
     }
 
-    /// Send a request and wait for its response, for at most
-    /// [`SERVICE_RESPONSE_TIMEOUT`].
+    /// Send a request and wait for its response, for at most `timeout`.
     pub(crate) fn call(
         &self,
         data: ArrayData,
+        timeout: Duration,
     ) -> impl Future<Output = Result<BridgeMessage, DdsCallFailure>> + use<> {
         let (tx, rx) = oneshot::channel();
         // Registered under the lock before the pump can look the id up, so a
@@ -256,7 +276,7 @@ impl DdsServiceCalls {
             }
         };
         let waiting = self.waiting.clone();
-        async move { await_response(waiting, sent?, rx, SERVICE_RESPONSE_TIMEOUT).await }
+        async move { await_response(waiting, sent?, rx, timeout).await }
     }
 }
 
@@ -447,18 +467,21 @@ mod in_flight_limit_tests {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc};
+    use std::{cell::RefCell, rc::Rc, time::Duration};
 
     use futures::{channel::oneshot, executor::LocalPool, stream, task::LocalSpawnExt};
 
     use super::drive_service_calls;
 
-    type Started = Rc<RefCell<Vec<(u32, oneshot::Sender<u32>)>>>;
+    /// Each started call: its data, its timeout and the sender that completes it.
+    type Started = Rc<RefCell<Vec<(u32, Duration, oneshot::Sender<u32>)>>>;
+
+    const TIMEOUT: Duration = Duration::from_secs(30);
 
     /// A driver run on a local pool, with calls the test completes by hand.
     struct Harness {
         pool: LocalPool,
-        /// The data of each call started, with the sender that completes it.
+        /// The calls started and not completed yet.
         started: Started,
         /// `(parameters, outcome)` of each finished call, in order.
         responses: Rc<RefCell<Vec<(&'static str, u32)>>>,
@@ -478,9 +501,10 @@ mod tests {
                     let outcome = drive_service_calls(
                         stream::iter(requests),
                         limit,
-                        |data| {
+                        TIMEOUT,
+                        |data, timeout| {
                             let (tx, rx) = oneshot::channel();
-                            calls.borrow_mut().push((data, tx));
+                            calls.borrow_mut().push((data, timeout, tx));
                             async move { rx.await.unwrap_or(0) }
                         },
                         |params, outcome| {
@@ -508,7 +532,16 @@ mod tests {
             self.started
                 .borrow()
                 .iter()
-                .map(|(data, _)| *data)
+                .map(|(data, _, _)| *data)
+                .collect()
+        }
+
+        /// The timeout each started call got, in seconds.
+        fn timeouts(&self) -> Vec<(u32, u64)> {
+            self.started
+                .borrow()
+                .iter()
+                .map(|(data, timeout, _)| (*data, timeout.as_secs()))
                 .collect()
         }
 
@@ -518,9 +551,9 @@ mod tests {
                 .started
                 .borrow()
                 .iter()
-                .position(|(started, _)| *started == data)
+                .position(|(started, _, _)| *started == data)
                 .expect("call was started");
-            let (_, tx) = self.started.borrow_mut().remove(position);
+            let (_, _, tx) = self.started.borrow_mut().remove(position);
             let _ = tx.send(outcome);
             self.run();
         }
@@ -536,6 +569,21 @@ mod tests {
         h.run();
         assert_eq!(h.started(), vec![1, 2, 3]);
         assert!(h.responses.borrow().is_empty());
+    }
+
+    /// A server that answers one request at a time keeps the later ones
+    /// queued, so each call gets the timeout once for every call still
+    /// unanswered before it, plus once for itself.
+    #[test]
+    fn a_call_gets_one_timeout_per_unanswered_call_before_it() {
+        let mut h = Harness::new(vec![("a", 1), ("b", 2), ("c", 3), ("d", 4)], 3);
+        h.run();
+        assert_eq!(h.timeouts(), vec![(1, 30), (2, 60), (3, 90)]);
+        // Answered, but held for request order: no longer ahead of anything.
+        h.complete(3, 30);
+        h.complete(1, 10);
+        // Only call 2 is unanswered ahead of call 4.
+        assert_eq!(h.timeouts(), vec![(2, 60), (4, 60)]);
     }
 
     #[test]
@@ -589,7 +637,8 @@ mod tests {
                 let outcome = drive_service_calls(
                     stream::iter(vec![((), 1), ((), 2)]),
                     8,
-                    |data: u32| async move { data },
+                    TIMEOUT,
+                    |data: u32, _| async move { data },
                     |_, outcome: u32| {
                         if outcome == 1 {
                             eyre::bail!("fatal")
