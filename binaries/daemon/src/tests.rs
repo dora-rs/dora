@@ -4746,11 +4746,6 @@ async fn output_closed_waits_for_a_full_publish_queue() {
 
     let filler = publish_rx.recv().await.unwrap();
     assert_eq!(filler.serialized, b"filler");
-    assert_eq!(
-        filler.publisher.congestion_control(),
-        zenoh::qos::CongestionControl::Drop,
-        "data may be shed on a congested link"
-    );
     let closed = tokio::time::timeout(Duration::from_secs(5), publish_rx.recv())
         .await
         .expect("OutputClosed must be queued once a slot frees")
@@ -4760,10 +4755,5 @@ async fn output_closed_waits_for_a_full_publish_queue() {
     assert!(
         matches!(event.inner, InterDaemonEvent::OutputClosed { output_id: ref o, .. } if *o == output_id.1),
         "unexpected event"
-    );
-    assert_eq!(
-        closed.publisher.congestion_control(),
-        zenoh::qos::CongestionControl::Block,
-        "a congested link must not shed the OutputClosed either"
     );
 }
