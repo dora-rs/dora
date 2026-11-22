@@ -2379,6 +2379,7 @@ fn forget_node_bookkeeping_purges_only_that_node() {
             OutputId(node.clone(), output_m.clone()),
             BTreeSet::from([uuid::Uuid::new_v4()]),
         );
+        df.dynamic_nodes.insert(node.clone());
     }
 
     df.forget_node_bookkeeping(&node_a);
@@ -2397,6 +2398,10 @@ fn forget_node_bookkeeping_purges_only_that_node() {
     // `node_a` incarnation is classified by its own failure, not a stale
     // upstream cause (dora-rs/dora#2927).
     assert_eq!(df.cascading_error_causes.error_caused_by(&node_a), None);
+    // … and its dynamic-node marker, so a static re-add under the same id
+    // is not still treated as dynamic (refused by `dora node replace`,
+    // skipped as a required startup acker).
+    assert!(!df.dynamic_nodes.contains(&node_a));
     // … but NOT its debug-topic watchers. This cleanup runs on both the
     // `RemoveNode` and `ReplaceNode` paths, and neither re-registers a
     // watcher afterwards (only a fresh `StartTopicDebugStream` does). Since
@@ -2422,6 +2427,7 @@ fn forget_node_bookkeeping_purges_only_that_node() {
             .contains_key(&(node_b.clone(), input_x.clone()))
     );
     assert!(df.node_stderr_most_recent.contains_key(&node_b));
+    assert!(df.dynamic_nodes.contains(&node_b));
     assert_eq!(
         df.cascading_error_causes.error_caused_by(&node_b),
         Some(&upstream)
