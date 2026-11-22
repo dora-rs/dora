@@ -31,7 +31,6 @@ use crate::{
         DaemonChannel,
         node_integration_testing::{convert_arrow_input_to_json, convert_output_to_json},
     },
-    event_stream::data_conversion::RawData,
     node::{ZENOH_TEARDOWN_TIMEOUT, teardown_with_timeout},
 };
 use dora_core::{
@@ -40,6 +39,7 @@ use dora_core::{
 };
 use eyre::{Context, eyre};
 
+pub(crate) use data_conversion::shared_data_to_arrow_array;
 pub use scheduler::Scheduler as EventScheduler;
 
 mod arrival_bound;
@@ -2103,8 +2103,7 @@ impl EventStream {
                 NodeEvent::InputRecovered { id } => Event::InputRecovered { id },
                 NodeEvent::NodeRestarted { id } => Event::NodeRestarted { id },
                 NodeEvent::Input { id, metadata, data } => {
-                    let data_inner = data.map(Arc::unwrap_or_clone);
-                    let result = data_to_arrow_array(data_inner);
+                    let result = shared_data_to_arrow_array(data.as_ref());
                     match result {
                         Ok(data) => {
                             let mut metadata = Arc::unwrap_or_clone(metadata);
@@ -2398,10 +2397,7 @@ fn prime_in_band(
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
-    // `DataMessage` has a single infallible variant, so the conversion cannot
-    // fail; the only fallible step is `into_arrow_array`.
-    let raw_data = data.map_or(RawData::Empty, |DataMessage::Vec(v)| RawData::Vec(v));
-    raw_data.into_arrow_array().map(arrow::array::make_array)
+    shared_data_to_arrow_array(data.map(Arc::new).as_ref())
 }
 
 impl Stream for EventStream {

@@ -26,7 +26,7 @@ use eyre::{Context, ContextCompat};
 use crate::{
     arrow_utils::encode_arrow_ipc,
     daemon_connection::json_to_arrow::read_json_value_as_arrow,
-    event_stream::data_to_arrow_array,
+    event_stream::shared_data_to_arrow_array,
     integration_testing::{TestingInput, TestingOptions, TestingOutput},
 };
 
@@ -310,8 +310,8 @@ pub fn convert_output_to_json(
         start_timestamp,
         skip_output_time_offsets,
     );
-    if data.is_some() {
-        let data_array = data_to_arrow_array(data.clone().map(std::sync::Arc::unwrap_or_clone))
+    if let Some(data) = data {
+        let data_array = shared_data_to_arrow_array(Some(data))
             .context("failed to convert output to arrow array")?;
         append_arrow_array_json(&mut output, data_array)?;
     }
