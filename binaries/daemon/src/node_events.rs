@@ -93,9 +93,11 @@ pub(crate) enum RemoteDelivery {
     /// slow zenoh link never blocks the event loop.
     BestEffort,
     /// Wait for a free slot in a background task, for up to
-    /// [`RELIABLE_SEND_TIMEOUT`]. For control events such as `OutputClosed`,
-    /// which nothing re-sends: dropping one would leave the remote consumer's
-    /// input open until the dataflow is stopped.
+    /// [`RELIABLE_SEND_TIMEOUT`], and publish with
+    /// [`CongestionControl::Block`] so a congested link doesn't shed it
+    /// either. For control events such as `OutputClosed`, which nothing
+    /// re-sends: dropping one would leave the remote consumer's input open
+    /// until the dataflow is stopped.
     Reliable,
 }
 
@@ -103,6 +105,32 @@ pub(crate) enum RemoteDelivery {
 /// inter-daemon publish queue before it is given up on, so a wedged zenoh
 /// link cannot keep the waiting task alive forever.
 const RELIABLE_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Declare a publisher on the inter-daemon control topic of `output_id`.
+///
+/// Data uses [`CongestionControl::Drop`], so a congested link sheds samples
+/// instead of stalling the publish queue. A [`RemoteDelivery::Reliable`] event
+/// gets its own [`CongestionControl::Block`] publisher on the same topic, with
+/// the same priority and express flag so it stays in order behind the data;
+/// zenoh bounds the block by closing a link that stays congested
+/// (`wait_before_close`, 5 s by default).
+async fn declare_control_publisher(
+    session: &zenoh::Session,
+    dataflow_id: Uuid,
+    output_id: &OutputId,
+    congestion_control: CongestionControl,
+) -> eyre::Result<zenoh::pubsub::Publisher<'static>> {
+    let publish_topic = zenoh_daemon_control_topic(dataflow_id, &output_id.0, &output_id.1);
+    tracing::debug!("declaring control publisher on {publish_topic} ({congestion_control:?})");
+    session
+        .declare_publisher(publish_topic)
+        .congestion_control(congestion_control)
+        .express(true)
+        .priority(Priority::RealTime)
+        .await
+        .map_err(|err| eyre!(err))
+        .context("failed to create zenoh publisher")
+}
 
 /// The control publisher for `output_id`, declared on first use and cached
 /// per output. The cache is hit on every later message, so it is probed by
@@ -115,16 +143,9 @@ async fn control_publisher<'a>(
     output_id: &OutputId,
 ) -> eyre::Result<&'a ControlPublisher> {
     if !publishers.contains_key(output_id) {
-        let publish_topic = zenoh_daemon_control_topic(dataflow_id, &output_id.0, &output_id.1);
-        tracing::debug!("declaring control publisher on {publish_topic}");
-        let publisher = session
-            .declare_publisher(publish_topic)
-            .congestion_control(CongestionControl::Drop)
-            .express(true)
-            .priority(Priority::RealTime)
-            .await
-            .map_err(|err| eyre!(err))
-            .context("failed to create zenoh publisher")?;
+        let publisher =
+            declare_control_publisher(session, dataflow_id, output_id, CongestionControl::Drop)
+                .await?;
         let has_subscribers = Arc::new(AtomicBool::new(false));
         let flag = has_subscribers.clone();
         // Lives as long as the publisher; registered before the initial read
@@ -742,15 +763,27 @@ impl Daemon {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
 
-        let publisher = control_publisher(
-            &self.zenoh_session,
-            &mut dataflow.publishers,
-            dataflow.id,
-            output_id,
-        )
-        .await?
-        .publisher
-        .clone();
+        let publisher = match delivery {
+            RemoteDelivery::BestEffort => control_publisher(
+                &self.zenoh_session,
+                &mut dataflow.publishers,
+                dataflow.id,
+                output_id,
+            )
+            .await?
+            .publisher
+            .clone(),
+            // Sent at most once per output, so it is not worth caching.
+            RemoteDelivery::Reliable => Arc::new(
+                declare_control_publisher(
+                    &self.zenoh_session,
+                    dataflow.id,
+                    output_id,
+                    CongestionControl::Block,
+                )
+                .await?,
+            ),
+        };
         let payload_len = serialized_event.len() as u64;
 
         // Offload Zenoh I/O to the drain task — never blocks the event loop.
