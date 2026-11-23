@@ -142,7 +142,7 @@ mod test {
 
     #[test]
     fn non_finite_float_constants_are_accepted() {
-        // rosidl parses floats with Python's `float()`, which accepts
+        // `rosidl_adapter` parses floats with Python's `float()`, which takes
         // `nan` / `inf` / `infinity` in any case and with a sign (#4278).
         let tokens = |line: &str| {
             let c = constant_def(line).unwrap();

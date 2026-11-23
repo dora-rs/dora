@@ -28,9 +28,12 @@ fn validate_floating_point_literal(s: &str) -> IResult<&str, String> {
     map(
         alt((
             recognize_float,
-            // rosidl parses floats with Python's `float()`, which also takes
-            // these spellings (any case, optionally signed). Rust's
-            // `str::parse::<f32/f64>` accepts the same set (#4278).
+            // `rosidl_adapter` parses floats with Python's `float()`, which
+            // also takes these spellings (any case, optionally signed), and
+            // Rust's `str::parse::<f32/f64>` accepts the same set (#4278).
+            // Only that `.msg` stage of rosidl accepts them: the C and C++
+            // generators emit code that does not compile, so such a value
+            // cannot appear in a ROS 2 package and is only usable with dora.
             recognize(pair(
                 opt(one_of("+-")),
                 alt((

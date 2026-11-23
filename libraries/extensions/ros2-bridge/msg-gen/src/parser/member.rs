@@ -208,7 +208,8 @@ mod test {
     }
     #[test]
     fn non_finite_float_defaults_are_accepted() {
-        // rosidl accepts `nan` / `inf` defaults (Python `float()`) (#4278).
+        // `rosidl_adapter` accepts `nan` / `inf` defaults (Python `float()`)
+        // (#4278).
         let tokens = |line: &str| {
             let m = member_def(line).unwrap();
             let tokens = m.r#type.value_tokens(m.default.as_ref().unwrap());
