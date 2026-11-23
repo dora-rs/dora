@@ -119,7 +119,9 @@ impl BasicType {
             // A value out of the type's range (`float32 X=1e40`) parses to
             // infinity, which `Literal::f32_suffixed` panics on. rosidl accepts
             // such values and gives them infinity, so do the same (#4162).
+            // `nan` is a valid literal too (#4278) and panics there as well.
             Self::F32 => match value.parse::<f32>().unwrap() {
+                v if v.is_nan() => quote! { f32::NAN },
                 f32::INFINITY => quote! { f32::INFINITY },
                 f32::NEG_INFINITY => quote! { f32::NEG_INFINITY },
                 v => {
@@ -128,6 +130,7 @@ impl BasicType {
                 }
             },
             Self::F64 => match value.parse::<f64>().unwrap() {
+                v if v.is_nan() => quote! { f64::NAN },
                 f64::INFINITY => quote! { f64::INFINITY },
                 f64::NEG_INFINITY => quote! { f64::NEG_INFINITY },
                 v => {

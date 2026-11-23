@@ -25,7 +25,24 @@ where
 }
 
 fn validate_floating_point_literal(s: &str) -> IResult<&str, String> {
-    map(recognize_float, |v: &str| v.to_string()).parse(s)
+    map(
+        alt((
+            recognize_float,
+            // rosidl parses floats with Python's `float()`, which also takes
+            // these spellings (any case, optionally signed). Rust's
+            // `str::parse::<f32/f64>` accepts the same set (#4278).
+            recognize(pair(
+                opt(one_of("+-")),
+                alt((
+                    tag_no_case("infinity"),
+                    tag_no_case("inf"),
+                    tag_no_case("nan"),
+                )),
+            )),
+        )),
+        |v: &str| v.to_string(),
+    )
+    .parse(s)
 }
 
 fn validate_boolean_literal(s: &str) -> IResult<&str, String> {

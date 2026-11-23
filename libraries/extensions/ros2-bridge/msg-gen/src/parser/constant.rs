@@ -139,4 +139,27 @@ mod test {
         // In-range values are unchanged.
         assert_eq!(tokens("float64 OK=1.5e3"), "1500f64");
     }
+
+    #[test]
+    fn non_finite_float_constants_are_accepted() {
+        // rosidl parses floats with Python's `float()`, which accepts
+        // `nan` / `inf` / `infinity` in any case and with a sign (#4278).
+        let tokens = |line: &str| {
+            let c = constant_def(line).unwrap();
+            let tokens = c.r#type.value_tokens(&c.value);
+            quote::quote!(#tokens).to_string()
+        };
+        assert_eq!(tokens("float64 UNKNOWN=nan"), "f64 :: NAN");
+        assert_eq!(tokens("float32 UNKNOWN=NaN"), "f32 :: NAN");
+        assert_eq!(tokens("float64 BIG=inf"), "f64 :: INFINITY");
+        assert_eq!(tokens("float32 BIG=+Infinity"), "f32 :: INFINITY");
+        assert_eq!(tokens("float64 SMALL=-inf"), "f64 :: NEG_INFINITY");
+        assert_eq!(
+            tokens("float64[3] XS=[nan, inf, -INF]"),
+            "[f64 :: NAN , f64 :: INFINITY , f64 :: NEG_INFINITY ,]"
+        );
+        // A word that merely starts with `inf` is still not a float.
+        assert!(constant_def("float64 X=information").is_err());
+        assert!(constant_def("float64 X=nano").is_err());
+    }
 }

@@ -207,6 +207,27 @@ mod test {
         );
     }
     #[test]
+    fn non_finite_float_defaults_are_accepted() {
+        // rosidl accepts `nan` / `inf` defaults (Python `float()`) (#4278).
+        let tokens = |line: &str| {
+            let m = member_def(line).unwrap();
+            let tokens = m.r#type.value_tokens(m.default.as_ref().unwrap());
+            quote::quote!(#tokens).to_string()
+        };
+        assert_eq!(tokens("float32 range_max inf"), "f32 :: INFINITY");
+        assert_eq!(tokens("float64 x nan"), "f64 :: NAN");
+        assert_eq!(tokens("float64 x -Infinity"), "f64 :: NEG_INFINITY");
+        assert_eq!(
+            tokens("float64[] xs [nan, inf]"),
+            "vec ! [f64 :: NAN , f64 :: INFINITY ,]"
+        );
+        assert_eq!(
+            tokens("float32[2] xs [-inf, 1.5]"),
+            "[f32 :: NEG_INFINITY , 1.5f32 ,]"
+        );
+    }
+
+    #[test]
     fn quoted_string_default_keeps_surrounding_whitespace() -> Result<()> {
         // Quoting is the only way to keep leading/trailing whitespace in a
         // `.msg` value, so it must round-trip exactly (#4164).
