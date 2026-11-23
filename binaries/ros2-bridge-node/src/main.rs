@@ -366,11 +366,16 @@ fn run_zenoh_service_mode(
                 MAX_PENDING_REQUESTS,
             ))?;
             let (mut node, events) = DoraNode::init_from_env()?;
+            let limit = service_client_in_flight_limit(&config.qos);
+            // The driver gives up on unanswered calls; this only bounds a
+            // query it no longer waits for.
+            let backstop = SERVICE_RESPONSE_TIMEOUT
+                .saturating_mul(u32::try_from(limit + 1).unwrap_or(u32::MAX));
             futures::executor::block_on(service_client::drive_service_calls(
                 service_client::requests(events),
-                service_client_in_flight_limit(&config.qos),
+                limit,
                 SERVICE_RESPONSE_TIMEOUT,
-                |data, timeout| {
+                |data| {
                     let request = serialize_raw_cdr(&TypedValue {
                         value: &data,
                         type_info: &request_info,
@@ -382,13 +387,18 @@ fn run_zenoh_service_mode(
                             "dropping Zenoh service request that cannot be serialized",
                         )?;
                         value_or_warn(
-                            client.call(request, timeout).await,
+                            client.call(request, backstop).await,
                             "Zenoh service call failed",
                         )
                     }
                 },
                 |parameters, response| {
-                    let Some(response) = response else {
+                    let Some(response) = response.unwrap_or_else(|| {
+                        tracing::warn!(
+                            "Zenoh service call failed: no response for {SERVICE_RESPONSE_TIMEOUT:?}"
+                        );
+                        None
+                    }) else {
                         return Ok(());
                     };
                     let Some(data) = value_or_warn(
@@ -1735,8 +1745,11 @@ fn run_service_client(
         service_client::requests(dora_events),
         limit,
         SERVICE_RESPONSE_TIMEOUT,
-        |data, timeout| calls.call(data.to_data(), timeout),
+        |data| calls.call(data.to_data()),
         |parameters, outcome| {
+            // `None`: the server stopped answering and the call was given up.
+            let outcome =
+                outcome.unwrap_or(Err(DdsCallFailure::TimedOut(SERVICE_RESPONSE_TIMEOUT)));
             let Some(response) = dds_call_or_warn(outcome, "ROS2 service call failed")? else {
                 return Ok(());
             };

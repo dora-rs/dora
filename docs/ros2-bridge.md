@@ -221,13 +221,15 @@ request at a time, as before; that also sets the history depth of the service
 endpoints.
 
 Responses come out in the order of the requests, as before: a response that
-arrives early waits for the ones before it. A request times out after 30 s for
-each request still unanswered ahead of it, plus 30 s for itself: a server that
-answers one request at a time keeps the later ones queued, and this way it can
-take up to 30 s per request, as with the sequential client, without any of them
-timing out. A request that fails or times out is dropped with a warning and the
-next response goes out in its place, so pairing responses with requests by
-position drifts after a failure. Only a failure of the DDS participant itself,
+arrives early waits for the ones before it. The oldest unanswered request
+times out once 30 s have passed both since it was sent and since the server's
+last answer to any request. A server that answers one request at a time keeps
+answering, so the requests queued behind it never time out, as with the
+sequential client; a server that stops answering fails all of them about 30 s
+later; a single request it drops fails 30 s after the answers stop. A request
+that fails or times out is dropped with a warning and the next response goes
+out in its place, so pairing responses with requests by position drifts after
+a failure. Only a failure of the DDS participant itself,
 which cannot be recovered, ends the bridge and with it every request in flight.
 
 Each response carries the metadata parameters of the request it answers,
@@ -298,7 +300,7 @@ Responses can arrive in any order -- the bridge correlates them by `request_id`,
 | Behavior | Value |
 |----------|-------|
 | Service client: wait for availability | 10 retries, 2s each (20s total) |
-| Service client: response timeout | 30 seconds, plus 30 seconds per unanswered request ahead of it |
+| Service client: response timeout | 30 seconds without any answer, for the oldest unanswered request |
 | Service client: requests in flight | `qos.keep_last` (default 10), at most 64; 64 with `keep_all` |
 | Service server: pending request limit | 64 |
 

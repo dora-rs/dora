@@ -1,14 +1,15 @@
 //! The YAML service client: several requests in flight at once.
 
 use std::{
-    cell::Cell,
-    collections::BTreeMap,
+    cell::{Cell, RefCell},
+    collections::{BTreeMap, VecDeque},
     future::{Future, ready},
     panic::AssertUnwindSafe,
     pin::pin,
     rc::Rc,
     sync::{Arc, Mutex, MutexGuard, PoisonError, Weak},
-    time::Duration,
+    task::Poll,
+    time::{Duration, Instant},
 };
 
 use arrow::array::{ArrayData, ArrayRef};
@@ -22,8 +23,9 @@ use dora_ros2_bridge_arrow::{BridgeMessage, TypeInfo, TypeInfoGuard};
 use futures::{
     FutureExt, Stream, StreamExt,
     channel::oneshot,
-    future::{Either, select},
+    future::{self, AbortHandle, Abortable},
 };
+use futures_timer::Delay;
 
 use eyre::Context;
 
@@ -48,12 +50,15 @@ pub(crate) fn in_flight_limit(history: History) -> usize {
 }
 
 /// Call a service for each of `requests` and hand every outcome to
-/// `respond`, with the parameters of the request it answers.
+/// `respond`, with the parameters of the request it answers: what the call
+/// returned, or `None` when the server stopped answering and the call was
+/// given up.
 ///
-/// `call` gets `timeout` once for each call still unanswered ahead of it, plus
-/// once for itself. A server that answers one request at a time keeps the
-/// later ones queued, so a deadline counted from the send alone would expire
-/// requests it answers within `timeout` each, as the sequential client did.
+/// The oldest unanswered call is given up once `timeout` has passed both
+/// since it was sent and since the last answer to any call. A server that
+/// answers one request at a time keeps answering, so its queued requests never
+/// time out; a server that stops answering fails all of them about `timeout`
+/// later, and a single dropped request fails `timeout` after the answers stop.
 ///
 /// At most `limit` calls are in flight: while that many are, the next request
 /// is not read. Outcomes come in request order, as with one call at a time, so
@@ -65,32 +70,89 @@ pub(crate) async fn drive_service_calls<P, D, T, F>(
     requests: impl Stream<Item = (P, D)>,
     limit: usize,
     timeout: Duration,
-    mut call: impl FnMut(D, Duration) -> F,
-    mut respond: impl FnMut(P, T) -> eyre::Result<()>,
+    mut call: impl FnMut(D) -> F,
+    mut respond: impl FnMut(P, Option<T>) -> eyre::Result<()>,
 ) -> eyre::Result<()>
 where
     F: Future<Output = T>,
 {
-    // Calls sent and not answered yet; a call answered early but still held
-    // for request order no longer queues anything behind it.
-    let unanswered = Rc::new(Cell::new(0_usize));
+    /// A call not yet handed to `respond`, in request order.
+    struct Sent {
+        at: Instant,
+        give_up: AbortHandle,
+    }
+    let sent: Rc<RefCell<VecDeque<Sent>>> = Rc::default();
+    // When the last answer to any call arrived.
+    let last_answer: Rc<Cell<Option<Instant>>> = Rc::default();
+
     let outcomes = requests
         .map(|(params, data)| {
-            let ahead = unanswered.get();
-            unanswered.set(ahead + 1);
-            let deadline = timeout.saturating_mul(u32::try_from(ahead + 1).unwrap_or(u32::MAX));
-            let unanswered = unanswered.clone();
-            call(data, deadline).map(move |outcome| {
-                unanswered.set(unanswered.get() - 1);
-                (params, outcome)
+            let (give_up, registration) = AbortHandle::new_pair();
+            sent.borrow_mut().push_back(Sent {
+                at: Instant::now(),
+                give_up,
+            });
+            let last_answer = last_answer.clone();
+            Abortable::new(call(data), registration).map(move |outcome| {
+                if outcome.is_ok() {
+                    last_answer.set(Some(Instant::now()));
+                }
+                (params, outcome.ok())
             })
         })
         .buffered(limit);
     let mut outcomes = pin!(outcomes);
-    while let Some((params, outcome)) = outcomes.next().await {
-        respond(params, outcome)?;
+
+    // When the oldest unanswered call is due to be given up.
+    let deadline = || {
+        sent.borrow().front().map(|oldest| {
+            let since = last_answer
+                .get()
+                .map_or(oldest.at, |answer| answer.max(oldest.at));
+            since + timeout
+        })
+    };
+    enum Step<O> {
+        Outcome(Option<O>),
+        Due,
     }
-    Ok(())
+    // The timer for the current deadline, rebuilt when the deadline moves.
+    let mut timer: Option<(Instant, Delay)> = None;
+    loop {
+        let step = future::poll_fn(|cx| {
+            if let Poll::Ready(outcome) = outcomes.as_mut().poll_next(cx) {
+                return Poll::Ready(Step::Outcome(outcome));
+            }
+            // Polling the outcomes sends new calls and records answers, so
+            // the deadline is computed after it.
+            let Some(due) = deadline() else {
+                timer = None;
+                return Poll::Pending;
+            };
+            let delay = match &mut timer {
+                Some((at, delay)) if *at == due => delay,
+                _ => {
+                    let delay = Delay::new(due.saturating_duration_since(Instant::now()));
+                    &mut timer.insert((due, delay)).1
+                }
+            };
+            delay.poll_unpin(cx).map(|()| Step::Due)
+        })
+        .await;
+        match step {
+            Step::Outcome(Some((params, outcome))) => {
+                sent.borrow_mut().pop_front();
+                respond(params, outcome)?;
+            }
+            Step::Outcome(None) => return Ok(()),
+            Step::Due => {
+                timer = None;
+                if let Some(oldest) = sent.borrow().front() {
+                    oldest.give_up.abort();
+                }
+            }
+        }
+    }
 }
 
 /// The parameters a response carries: those of its request, minus the keys
@@ -160,26 +222,34 @@ impl Waiting {
     }
 }
 
-/// Wait for the response to request `id`, for at most `timeout`.
+/// Forgets a request when its call is given up before the response comes.
+struct Registered {
+    waiting: Arc<Mutex<Waiting>>,
+    id: RmwRequestId,
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        lock(&self.waiting).senders.remove(&self.id);
+    }
+}
+
+/// Wait for the response to request `id`. The caller decides when to give up
+/// by dropping the future, which forgets the request.
 async fn await_response(
     waiting: Arc<Mutex<Waiting>>,
     id: RmwRequestId,
     response: oneshot::Receiver<BridgeMessage>,
-    timeout: Duration,
 ) -> Result<BridgeMessage, DdsCallFailure> {
-    match select(response, futures_timer::Delay::new(timeout)).await {
-        Either::Left((Ok(response), _)) => Ok(response),
-        Either::Left((Err(oneshot::Canceled), _)) => Err(DdsCallFailure::PumpStopped(
-            lock(&waiting)
+    let registered = Registered { waiting, id };
+    response.await.map_err(|oneshot::Canceled| {
+        DdsCallFailure::PumpStopped(
+            lock(&registered.waiting)
                 .pump_error
                 .clone()
                 .unwrap_or_else(|| "the response thread stopped".to_owned()),
-        )),
-        Either::Right(_) => {
-            lock(&waiting).senders.remove(&id);
-            Err(DdsCallFailure::TimedOut(timeout))
-        }
-    }
+        )
+    })
 }
 
 fn lock(waiting: &Mutex<Waiting>) -> MutexGuard<'_, Waiting> {
@@ -251,11 +321,10 @@ impl DdsServiceCalls {
         })
     }
 
-    /// Send a request and wait for its response, for at most `timeout`.
+    /// Send a request and wait for its response, until the future is dropped.
     pub(crate) fn call(
         &self,
         data: ArrayData,
-        timeout: Duration,
     ) -> impl Future<Output = Result<BridgeMessage, DdsCallFailure>> + use<> {
         let (tx, rx) = oneshot::channel();
         // Registered under the lock before the pump can look the id up, so a
@@ -276,7 +345,7 @@ impl DdsServiceCalls {
             }
         };
         let waiting = self.waiting.clone();
-        async move { await_response(waiting, sent?, rx, timeout).await }
+        async move { await_response(waiting, sent?, rx).await }
     }
 }
 
@@ -327,15 +396,107 @@ fn pump_responses(client: &DdsClient, calls: &Weak<Mutex<Waiting>>, mut poll: mi
 }
 
 #[cfg(test)]
-mod waiting_tests {
+mod timeout_tests {
     use std::{
-        sync::{Arc, Mutex},
-        time::Duration,
+        future::Future,
+        time::{Duration, Instant},
     };
+
+    use futures::{
+        executor::block_on,
+        future::{self, Either, select},
+        stream,
+    };
+    use futures_timer::Delay;
+
+    use super::drive_service_calls;
+
+    const TIMEOUT: Duration = Duration::from_millis(200);
+
+    /// How a fake server answers call `n` (from 1): after this long, or never.
+    type Answer = Option<Duration>;
+
+    /// Run calls answered as `answers` says; the outcomes in order and the
+    /// time the driver took. Fails if it has not finished after 2 s.
+    fn run(answers: Vec<Answer>) -> (Vec<(usize, Option<usize>)>, Duration) {
+        let start = Instant::now();
+        let requests = stream::iter(
+            answers
+                .into_iter()
+                .enumerate()
+                .map(|(i, a)| (i + 1, (i + 1, a))),
+        );
+        let mut outcomes = Vec::new();
+        let driver = drive_service_calls(
+            requests,
+            8,
+            TIMEOUT,
+            |(n, answer): (usize, Answer)| -> std::pin::Pin<Box<dyn Future<Output = usize>>> {
+                match answer {
+                    Some(after) => Box::pin(async move {
+                        Delay::new(after).await;
+                        n
+                    }),
+                    None => Box::pin(future::pending()),
+                }
+            },
+            |n, outcome| {
+                outcomes.push((n, outcome));
+                Ok(())
+            },
+        );
+        let guard = Delay::new(Duration::from_secs(2));
+        match block_on(select(Box::pin(driver), guard)) {
+            Either::Left((result, _)) => result.expect("driver"),
+            Either::Right(_) => panic!("the driver did not finish within 2 s"),
+        }
+        (outcomes, start.elapsed())
+    }
+
+    #[test]
+    fn a_server_that_stops_answering_fails_every_call_after_one_timeout() {
+        let (outcomes, took) = run(vec![None, None, None]);
+        assert_eq!(outcomes, vec![(1, None), (2, None), (3, None)]);
+        // Not one timeout per call ahead: 3 x 200 ms would be 600 ms.
+        assert!(took >= TIMEOUT && took < TIMEOUT * 2, "took {took:?}");
+    }
+
+    #[test]
+    fn a_server_answering_one_at_a_time_is_never_cut_off() {
+        // Answers 150 ms apart: the last one 600 ms after its send, well past
+        // the timeout, but never 200 ms after the previous answer.
+        let answers = (1..=4)
+            .map(|n| Some(Duration::from_millis(150 * n)))
+            .collect();
+        let (outcomes, _) = run(answers);
+        assert_eq!(
+            outcomes,
+            vec![(1, Some(1)), (2, Some(2)), (3, Some(3)), (4, Some(4))]
+        );
+    }
+
+    #[test]
+    fn a_dropped_request_fails_one_timeout_after_the_answers_stop() {
+        let answers = vec![
+            Some(Duration::from_millis(20)),
+            None,
+            Some(Duration::from_millis(40)),
+        ];
+        let (outcomes, took) = run(answers);
+        // Call 3, answered early, still comes out after call 2.
+        assert_eq!(outcomes, vec![(1, Some(1)), (2, None), (3, Some(3))]);
+        // 200 ms after the last answer (40 ms), not after its own send.
+        assert!(took >= TIMEOUT && took < TIMEOUT * 2, "took {took:?}");
+    }
+}
+
+#[cfg(test)]
+mod waiting_tests {
+    use std::sync::{Arc, Mutex};
 
     use dora_ros2_bridge::ros2_client::service::RmwRequestId;
     use dora_ros2_bridge_arrow::BridgeMessage;
-    use futures::{channel::oneshot, executor::block_on};
+    use futures::{FutureExt, channel::oneshot, executor::block_on};
 
     use super::{Waiting, await_response, lock, pump_stopped};
     use crate::DdsCallFailure;
@@ -354,19 +515,17 @@ mod waiting_tests {
         rx
     }
 
-    const LONG: Duration = Duration::from_secs(30);
-
     #[test]
     fn a_response_reaches_the_request_with_its_id() {
         let waiting = Arc::new(Mutex::new(Waiting::default()));
         let first = register(&waiting, 1);
         let second = register(&waiting, 2);
         assert!(lock(&waiting).deliver(id(2), BridgeMessage(None)));
-        assert!(block_on(await_response(waiting.clone(), id(2), second, LONG)).is_ok());
+        assert!(block_on(await_response(waiting.clone(), id(2), second)).is_ok());
         // The other request is still waiting for its own response.
         assert_eq!(lock(&waiting).senders.len(), 1);
         assert!(lock(&waiting).deliver(id(1), BridgeMessage(None)));
-        assert!(block_on(await_response(waiting.clone(), id(1), first, LONG)).is_ok());
+        assert!(block_on(await_response(waiting.clone(), id(1), first)).is_ok());
     }
 
     #[test]
@@ -378,16 +537,13 @@ mod waiting_tests {
     }
 
     #[test]
-    fn a_timed_out_request_is_forgotten() {
+    fn a_request_given_up_is_forgotten() {
         let waiting = Arc::new(Mutex::new(Waiting::default()));
         let rx = register(&waiting, 1);
-        let outcome = block_on(await_response(
-            waiting.clone(),
-            id(1),
-            rx,
-            Duration::from_millis(10),
-        ));
-        assert!(matches!(outcome, Err(DdsCallFailure::TimedOut(_))));
+        let mut call = Box::pin(await_response(waiting.clone(), id(1), rx));
+        assert!((&mut call).now_or_never().is_none());
+        // The driver gives up on the call by dropping it.
+        drop(call);
         assert!(lock(&waiting).senders.is_empty());
         // Its late response finds nobody.
         assert!(!lock(&waiting).deliver(id(1), BridgeMessage(None)));
@@ -398,7 +554,7 @@ mod waiting_tests {
         let waiting = Arc::new(Mutex::new(Waiting::default()));
         let rx = register(&waiting, 1);
         pump_stopped(&waiting, "rtps thread panicked".to_owned());
-        let outcome = block_on(await_response(waiting.clone(), id(1), rx, LONG));
+        let outcome = block_on(await_response(waiting.clone(), id(1), rx));
         match outcome {
             Err(DdsCallFailure::PumpStopped(error)) => assert_eq!(error, "rtps thread panicked"),
             other => panic!("expected PumpStopped, got {other:?}"),
@@ -473,10 +629,11 @@ mod tests {
 
     use super::drive_service_calls;
 
-    /// Each started call: its data, its timeout and the sender that completes it.
-    type Started = Rc<RefCell<Vec<(u32, Duration, oneshot::Sender<u32>)>>>;
+    /// Each started call: its data and the sender that completes it.
+    type Started = Rc<RefCell<Vec<(u32, oneshot::Sender<u32>)>>>;
 
-    const TIMEOUT: Duration = Duration::from_secs(30);
+    /// Long enough that no call in these tests is given up.
+    const TIMEOUT: Duration = Duration::from_secs(3600);
 
     /// A driver run on a local pool, with calls the test completes by hand.
     struct Harness {
@@ -502,13 +659,15 @@ mod tests {
                         stream::iter(requests),
                         limit,
                         TIMEOUT,
-                        |data, timeout| {
+                        |data| {
                             let (tx, rx) = oneshot::channel();
-                            calls.borrow_mut().push((data, timeout, tx));
+                            calls.borrow_mut().push((data, tx));
                             async move { rx.await.unwrap_or(0) }
                         },
                         |params, outcome| {
-                            answers.borrow_mut().push((params, outcome));
+                            answers
+                                .borrow_mut()
+                                .push((params, outcome.expect("answered")));
                             Ok(())
                         },
                     )
@@ -532,16 +691,7 @@ mod tests {
             self.started
                 .borrow()
                 .iter()
-                .map(|(data, _, _)| *data)
-                .collect()
-        }
-
-        /// The timeout each started call got, in seconds.
-        fn timeouts(&self) -> Vec<(u32, u64)> {
-            self.started
-                .borrow()
-                .iter()
-                .map(|(data, timeout, _)| (*data, timeout.as_secs()))
+                .map(|(data, _)| *data)
                 .collect()
         }
 
@@ -551,9 +701,9 @@ mod tests {
                 .started
                 .borrow()
                 .iter()
-                .position(|(started, _, _)| *started == data)
+                .position(|(started, _)| *started == data)
                 .expect("call was started");
-            let (_, _, tx) = self.started.borrow_mut().remove(position);
+            let (_, tx) = self.started.borrow_mut().remove(position);
             let _ = tx.send(outcome);
             self.run();
         }
@@ -569,21 +719,6 @@ mod tests {
         h.run();
         assert_eq!(h.started(), vec![1, 2, 3]);
         assert!(h.responses.borrow().is_empty());
-    }
-
-    /// A server that answers one request at a time keeps the later ones
-    /// queued, so each call gets the timeout once for every call still
-    /// unanswered before it, plus once for itself.
-    #[test]
-    fn a_call_gets_one_timeout_per_unanswered_call_before_it() {
-        let mut h = Harness::new(vec![("a", 1), ("b", 2), ("c", 3), ("d", 4)], 3);
-        h.run();
-        assert_eq!(h.timeouts(), vec![(1, 30), (2, 60), (3, 90)]);
-        // Answered, but held for request order: no longer ahead of anything.
-        h.complete(3, 30);
-        h.complete(1, 10);
-        // Only call 2 is unanswered ahead of call 4.
-        assert_eq!(h.timeouts(), vec![(2, 60), (4, 60)]);
     }
 
     #[test]
@@ -638,9 +773,9 @@ mod tests {
                     stream::iter(vec![((), 1), ((), 2)]),
                     8,
                     TIMEOUT,
-                    |data: u32, _| async move { data },
-                    |_, outcome: u32| {
-                        if outcome == 1 {
+                    |data: u32| async move { data },
+                    |_, outcome: Option<u32>| {
+                        if outcome == Some(1) {
                             eyre::bail!("fatal")
                         }
                         Ok(())

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import threading
 import time
 import rclpy
@@ -20,13 +21,24 @@ p.add_argument("--expect-concurrent", type=int, default=1)
 p.add_argument("--one-at-a-time", action="store_true")
 # Server only: pass only once this many requests were answered.
 p.add_argument("--expect-requests", type=int, default=1)
+# Server only: never answer the requests whose `a` is in this range, e.g. 4-6,
+# as a server that drops them would (#4260).
+p.add_argument("--drop", default="")
 a = p.parse_args()
+dropped = range(0)
+if a.drop:
+    first, last = (int(x) for x in a.drop.split("-"))
+    dropped = range(first, last + 1)
 rclpy.init()
 n = rclpy.create_node("dora_zenoh_service_peer")
 if a.role == "server":
     lock = threading.Lock()
     state = {"done": False, "active": 0, "peak": 0, "served": 0}
     def add(request, response):
+        if request.a in dropped:
+            # Never answered: the peer exits with these still held.
+            while True:
+                time.sleep(1)
         with lock:
             state["active"] += 1
             state["peak"] = max(state["peak"], state["active"])
@@ -45,12 +57,16 @@ if a.role == "server":
     # gets them handled at the same time; or one at a time, as rclpy's default.
     group = None if a.one_at_a_time else ReentrantCallbackGroup()
     n.create_service(AddTwoInts, "/add_two_ints", add, callback_group=group)
-    executor = MultiThreadedExecutor(num_threads=4)
+    # Threads for the held requests too, so they do not block the others.
+    executor = MultiThreadedExecutor(num_threads=4 + len(dropped))
     executor.add_node(n)
     print(json.dumps({"event": "READY", "role": a.role}), flush=True)
     end = n.get_clock().now().nanoseconds + int((30 + a.delay * a.expect_requests) * 1e9)
     while not (state["done"] and state["active"] == 0) and n.get_clock().now().nanoseconds < end:
         executor.spin_once(timeout_sec=0.2)
+    if dropped:
+        # The held callbacks never return, so neither would a clean shutdown.
+        os._exit(0)
     executor.shutdown()
 else:
     client = n.create_client(AddTwoInts, "/add_two_ints")

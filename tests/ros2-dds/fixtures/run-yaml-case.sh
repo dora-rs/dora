@@ -17,6 +17,10 @@ case "$CASE" in
   # A server answering one request at a time in 6 s: request 7 waits ~35 s from
   # its send, past a 30 s deadline counted from the send alone (#4260).
   yaml-service-client-sequential) set -- yaml-bridge-service/dataflow-client.yml "service_peer.py server --one-at-a-time --delay 6 --expect-requests 7" client service /add_two_ints "Received response to request 7: sum = 77" ;;
+  # The server never answers requests 4-6 but answers the rest: they are given
+  # up ~30 s after the answers stop, so request 7 comes out within the minute
+  # instead of 30 s per request ahead of each (#4260).
+  yaml-service-client-dropped) set -- yaml-bridge-service/dataflow-client.yml "service_peer.py server --drop 4-6 --delay 0.5 --expect-requests 7" client service /add_two_ints "Received response to request 7: sum = 77" ;;
   yaml-service-client-concurrent) set -- yaml-bridge-service/dataflow-client.yml "service_peer.py server --delay 2.5 --expect-concurrent 2" client service /add_two_ints "Received response to request 2: sum = 22" ;;
   yaml-action-server) set -- yaml-bridge-action-server/dataflow.yml "action_peer.py client --no-cancel" server action /fibonacci "" ;;
   yaml-action-server-cancel) set -- yaml-bridge-action-server/dataflow.yml "action_peer.py client" server action /fibonacci "" ;;
