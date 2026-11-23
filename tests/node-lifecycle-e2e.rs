@@ -427,6 +427,9 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
         "direct-capable edge without declared subscription must be rejected; got ok={ok_refused}, stderr:\n{stderr_refused}"
     );
 
+    // The filter node declared `input: sender/value` in its YAML descriptor
+    // (`filter-node.yml`). Connecting it again tests idempotent retry of an
+    // already-wired edge (#4063).
     let (ok, stdout, stderr) = run_capture(
         Command::new(&dora).args([
             "node",
@@ -461,16 +464,17 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
         "connect 2 missing success line:\n{stdout}"
     );
 
-    // Verify that data is actually delivered: the filter node receives input and processes it (#4063).
+    // Verify that data is actually delivered: the receiver node consumes the
+    // runtime-connected `filtered` input from filter/output (#4063).
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut delivered = false;
     let mut last_log = String::new();
     while std::time::Instant::now() < deadline {
         let (ok, stdout, _) = run_capture(
-            Command::new(&dora).args(["logs", name, "--node", "filter"]),
-            "dora logs filter",
+            Command::new(&dora).args(["logs", name, "--node", "receiver"]),
+            "dora logs receiver",
         );
-        if ok && (stdout.contains("passed") || stdout.contains("received input")) {
+        if ok && stdout.contains("filtered") {
             delivered = true;
             break;
         }
@@ -479,7 +483,7 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
     }
     assert!(
         delivered,
-        "filter node did not receive or process input within 10s;\nlast logs:\n{last_log}"
+        "receiver node did not receive runtime-connected `filtered` input within 10s;\nlast logs:\n{last_log}"
     );
 
     // --- 6. dora node disconnect ----------------------------------------

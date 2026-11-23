@@ -1432,12 +1432,19 @@ fn check_add_mapping_refuses_direct_zenoh_and_non_running_sources() {
     let err = df.check_add_mapping(&src, &val, &sink, &inp).unwrap_err();
     assert!(err.contains("is not running on this daemon"), "{err}");
 
-    // 3. Source running with unpinned output (may publish directly over Zenoh) -> Err
+    // 2. Source running but output does not exist on producer -> Err
+    let missing_out = DataId::from("missing".to_string());
     let direct = BTreeMap::from([(val.clone(), OutputRouting::default())]);
     df.running_nodes.insert(
         src.clone(),
         running_node_with(BTreeMap::new(), Some(direct)),
     );
+    let err = df
+        .check_add_mapping(&src, &missing_out, &sink, &inp)
+        .unwrap_err();
+    assert!(err.contains("node `src` has no output `missing`"), "{err}");
+
+    // 3. Source running with unpinned output (may publish directly over Zenoh) -> Err
     let err = df.check_add_mapping(&src, &val, &sink, &inp).unwrap_err();
     assert!(err.contains("may publish directly over Zenoh"), "{err}");
 

@@ -29,13 +29,14 @@ int main() {
         DoraEventType ty = read_dora_event_type(event);
         if (ty == DoraEventType_Input) {
             count += 1;
-            if (count % 10 == 0) {
-                char *id_ptr;
-                std::size_t id_len;
-                read_dora_input_id(event, &id_ptr, &id_len);
+            char *id_ptr;
+            std::size_t id_len;
+            read_dora_input_id(event, &id_ptr, &id_len);
+            std::string id(id_ptr, id_len);
+            if (count % 10 == 0 || id == "filtered") {
                 std::cerr << "[cxx receiver] " << count
                           << " messages (latest input: "
-                          << std::string(id_ptr, id_len) << ")\n";
+                          << id << ")\n";
             }
         }
         free_dora_event(event);

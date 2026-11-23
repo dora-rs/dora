@@ -24,7 +24,7 @@ fn main() -> eyre::Result<()> {
         match event {
             Event::Input { id, .. } => {
                 count += 1;
-                if count.is_multiple_of(10) {
+                if count.is_multiple_of(10) || id.as_str() == "filtered" {
                     eprintln!("receiver: {} messages (latest input: {})", count, id);
                 }
             }

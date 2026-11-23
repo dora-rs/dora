@@ -139,6 +139,20 @@ impl RunningNode {
         }
     }
 
+    /// Whether `output` is pinned to daemon-only routing.
+    ///
+    /// Returns `None` if the node has a routing table and `output` is not in it
+    /// (the output does not exist on this node).
+    /// Returns `Some(true)` if the node has no routing table (legacy/unconfigured,
+    /// daemon delivers all outputs) or if the output is explicitly flagged `daemon_only`.
+    /// Returns `Some(false)` if the output exists but may publish directly over Zenoh.
+    pub(crate) fn output_daemon_only(&self, output: &DataId) -> Option<bool> {
+        match &self.node_config.output_routing {
+            None => Some(true),
+            Some(routing) => routing.get(output).map(|r| r.daemon_only),
+        }
+    }
+
     pub(crate) fn matches_generation(&self, generation: u64) -> bool {
         self.generation == generation
     }
@@ -1226,6 +1240,13 @@ impl RunningDataflow {
         {
             return Ok(());
         }
+        if source_node.as_ref() == "dora" {
+            return Err(format!(
+                "Cannot connect {source_node}/{source_output} to {target_node}/{target_input}: \
+                 built-in timer inputs cannot be connected at runtime; declare the input in the \
+                 node YAML when adding {target_node}."
+            ));
+        }
         let Some(producer) = self.running_nodes.get(source_node) else {
             return Err(format!(
                 "Cannot connect {source_node}/{source_output} to {target_node}/{target_input}: \
@@ -1235,16 +1256,21 @@ impl RunningDataflow {
             ));
         };
 
-        let pinned = match &producer.node_config.output_routing {
-            None => true,
-            Some(routing) => routing.get(source_output).is_some_and(|r| r.daemon_only),
-        };
-        if !pinned {
-            return Err(format!(
-                "Cannot connect {source_node}/{source_output} to {target_node}/{target_input} because \
-                 {source_node}/{source_output} may publish directly over Zenoh. \
-                 Declare input: {source_node}/{source_output} in the node YAML when adding {target_node}."
-            ));
+        match producer.output_daemon_only(source_output) {
+            None => {
+                return Err(format!(
+                    "Cannot connect {source_node}/{source_output} to {target_node}/{target_input}: \
+                     node `{source_node}` has no output `{source_output}`."
+                ));
+            }
+            Some(false) => {
+                return Err(format!(
+                    "Cannot connect {source_node}/{source_output} to {target_node}/{target_input} because \
+                     {source_node}/{source_output} may publish directly over Zenoh. \
+                     Declare input: {source_node}/{source_output} in the node YAML when adding {target_node}."
+                ));
+            }
+            Some(true) => {}
         }
         Ok(())
     }
@@ -1420,12 +1446,9 @@ impl RunningDataflow {
                 return None;
             }
             let producer = self.running_nodes.get(&mapping.source)?;
-            let pinned = match &producer.node_config.output_routing {
-                None => true,
-                Some(routing) => routing
-                    .get(&mapping.output)
-                    .is_some_and(|routing| routing.daemon_only),
-            };
+            let pinned = producer
+                .output_daemon_only(&mapping.output)
+                .unwrap_or(false);
             (!pinned).then(|| {
                 (
                     input_id.clone(),

@@ -33,12 +33,13 @@ inputs:
   tick: dora/timer/millis/300
 ```
 
-Upstream inputs from existing direct-capable outputs must be declared inline
-in the node YAML when adding the node so that Zenoh subscriptions are created
-at startup. `dora node connect` connects outputs of dynamically added nodes that
-are pinned to the daemon path. Timer inputs work either way, including on an
-interval that no already-running node subscribes to — adding the node
-starts a tick source for that interval.
+Upstream inputs from existing direct-capable outputs and built-in timer inputs
+(`dora/timer/...`) must be declared inline in the node YAML when adding the node.
+Zenoh subscriptions and timer intervals are created at startup. `dora node connect`
+connects outputs of dynamically added nodes that are pinned to the daemon path;
+it cannot connect built-in timer inputs at runtime. Timer inputs declared when
+adding the node work on any interval, including an interval that no already-running
+node subscribes to — adding the node starts a tick source for that interval.
 
 ## Examples
 

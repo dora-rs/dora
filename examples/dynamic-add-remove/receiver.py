@@ -14,7 +14,7 @@ def main():
             values = event["value"].to_pylist()
             input_id = event["id"]
             count += 1
-            if count % 10 == 0:
+            if count % 10 == 0 or input_id == "filtered":
                 logging.info("[%s] Received %d messages (latest: %s)", input_id, count, values)
         elif event["type"] == "STOP":
             break

@@ -1386,23 +1386,21 @@ impl Daemon {
                 // explicit `AddMappingResult` so the coordinator can pattern-
                 // match the outcome (same class as #1682's AddNodeResult).
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    match dataflow.check_add_mapping(
-                        &source_node,
-                        &source_output,
-                        &target_node,
-                        &target_input,
-                    ) {
-                        Ok(()) => {
+                    dataflow
+                        .check_add_mapping(
+                            &source_node,
+                            &source_output,
+                            &target_node,
+                            &target_input,
+                        )
+                        .map(|()| {
                             dataflow.add_mapping(
                                 source_node,
                                 source_output,
                                 target_node,
                                 target_input,
                             );
-                            Ok(())
-                        }
-                        Err(err) => Err(err),
-                    }
+                        })
                 } else {
                     Err(format!("no running dataflow with ID `{dataflow_id}`"))
                 };
