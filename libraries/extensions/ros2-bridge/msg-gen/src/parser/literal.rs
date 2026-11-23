@@ -160,11 +160,15 @@ fn quoted_string(quote: char) -> impl FnMut(&str) -> IResult<&str, String> {
     }
 }
 
-/// A scalar string value, quoted as a whole. rosidl does not tokenize it
-/// (`parse_primitive_value_string`): it strips the outer quotes, rejects a
-/// quote inside that is not preceded by a backslash, and replaces `\` + quote
-/// with the quote. So the last character always closes the string, and
-/// `"C:\\"` / `"C:\"` are valid (#4279).
+/// A scalar string value, quoted as a whole. Like `rosidl_adapter`'s
+/// `parse_primitive_value_string`, this does not tokenize: it strips the outer
+/// quotes, rejects a quote inside that is not preceded by a backslash, and
+/// replaces `\` + quote with the quote. So the last character always closes
+/// the string, and `"C:\\"` / `"C:\"` parse here (#4279).
+///
+/// Only that `.msg` stage of rosidl accepts a value ending in a backslash: the
+/// later `.idl` stage (`rosidl_parser`) rejects it, so such a value cannot
+/// appear in a ROS 2 package and is only usable with dora.
 fn whole_quoted_string(s: &str) -> Option<Result<String, ()>> {
     let s = s.trim();
     let quote = s.chars().next().filter(|c| matches!(c, '"' | '\''))?;
@@ -378,8 +382,9 @@ mod test {
     }
     #[test]
     fn quoted_scalar_string_follows_rosidl() -> Result<()> {
-        // The last character closes a scalar string, so it may end in a
-        // backslash; a backslash before a quote escapes it (#4279).
+        // As in `rosidl_adapter`, the last character closes a scalar string,
+        // so it may end in a backslash; a backslash before a quote escapes it
+        // (#4279).
         assert_eq!(string_literal(r#""C:\\""#)?, ("", r"C:\\".into()));
         assert_eq!(string_literal(r#""C:\""#)?, ("", r"C:\".into()));
         assert_eq!(string_literal(r"'a\\'")?, ("", r"a\\".into()));
@@ -388,7 +393,7 @@ mod test {
         assert_eq!(string_literal(r#""a\\b""#)?, ("", r"a\\b".into()));
         // The other quote kind needs no escape and keeps its backslash.
         assert_eq!(string_literal(r#""a\'b""#)?, ("", r"a\'b".into()));
-        // An unescaped inner quote is an error, as in rosidl.
+        // An unescaped inner quote is an error, as in `rosidl_adapter`.
         assert!(string_literal(r#""a"b""#).is_err());
         Ok(())
     }
