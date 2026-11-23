@@ -196,13 +196,12 @@ fn main() -> eyre::Result<()> {
             if entry.node_id != replay_node {
                 continue;
             }
-            // Wait out the pacing gap, watching for `Stop` while we do.
-            let gap = pacing_gap(pass_start.elapsed(), entry.timestamp_offset_nanos, speed);
-            if wait_out_gap(&mut events, gap) == Replay::Stop {
+            // Check for `Stop` on every entry, including the ones skipped
+            // below, which never reach the pacing wait before the send.
+            if poll_stop(&mut events) == Replay::Stop {
                 stopped = true;
                 break;
             }
-
             let timestamped: Timestamped<InterDaemonEvent> =
                 match Timestamped::deserialize_inter_daemon_event(entry.event_bytes) {
                     Ok(event) => event,
@@ -243,6 +242,16 @@ fn main() -> eyre::Result<()> {
                             continue;
                         }
                     };
+                    // Wait out the pacing gap, watching for `Stop` while we
+                    // do. Only now, after the payload is decoded: waiting
+                    // first would emit a large frame later than its due time
+                    // by however long its decode copy took, skewing it against
+                    // the small frames recorded alongside it.
+                    let gap = pacing_gap(pass_start.elapsed(), entry.timestamp_offset_nanos, speed);
+                    if wait_out_gap(&mut events, gap) == Replay::Stop {
+                        stopped = true;
+                        break;
+                    }
                     node.send_output(output_id, replay_parameters(metadata.parameters), array)
                         .wrap_err("failed to send replay output")?;
                     replayed += 1;

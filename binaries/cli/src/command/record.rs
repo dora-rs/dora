@@ -791,6 +791,9 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
 
         match data_rx.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(Ok(payload)) => {
+                // Stamp on arrival, before the parse and re-serialize below,
+                // so the offset doesn't grow with the payload's size.
+                let timestamp_offset_nanos = dora_recording::offset_since(start);
                 // The payload is already `Timestamped<InterDaemonEvent>` postcard bytes.
                 // Parse it to extract node_id and output_id for the recording entry.
                 let mut event = match Timestamped::deserialize_inter_daemon_event(&payload) {
@@ -820,7 +823,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                 let entry = RecordEntry {
                     node_id,
                     output_id,
-                    timestamp_offset_nanos: dora_recording::offset_since(start),
+                    timestamp_offset_nanos,
                     event_bytes,
                 };
                 writer.write_entry(&entry)?;
