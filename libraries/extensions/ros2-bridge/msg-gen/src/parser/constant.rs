@@ -145,7 +145,7 @@ mod test {
         // #4279: the closing quote after `\\` used to read as escaped.
         let c = constant_def(r#"string WIN_ROOT="C:\\""#).unwrap();
         assert_eq!(c.value, vec![r"C:\\".to_string()]);
-        let c = constant_def(r#"string[2] PATHS=["a\\", 'b']"#).unwrap();
-        assert_eq!(c.value, vec![r"a\\".to_string(), "b".to_string()]);
+        let c = constant_def(r#"string ESCAPED="a\\"b""#).unwrap();
+        assert_eq!(c.value, vec![r#"a\"b"#.to_string()]);
     }
 }

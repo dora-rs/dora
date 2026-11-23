@@ -136,10 +136,9 @@ pub fn get_string_literal_parser(
     }
 }
 
-/// A string in `quote` (`"` or `'`). An escaped quote (`\"` / `\'`) becomes
-/// the bare quote; every other backslash is kept verbatim, as in rosidl.
-/// `\\` is read as one unit, so a string may end in a backslash (`"C:\\"`)
-/// without its closing quote being taken as escaped (#4279).
+/// A quoted sequence element. As in rosidl's `find_matching_end_quote`, a
+/// backslash before the quote always escapes it, and `\"` / `\'` becomes the
+/// bare quote. Every other backslash is kept verbatim.
 fn quoted_string(quote: char) -> impl FnMut(&str) -> IResult<&str, String> {
     move |s| {
         // `\` + quote: both the escape sequence and the two characters
@@ -149,7 +148,6 @@ fn quoted_string(quote: char) -> impl FnMut(&str) -> IResult<&str, String> {
             char(quote),
             map(
                 many0(alt((
-                    tag(r"\\"),
                     value(&escaped_quote[1..], tag(escaped_quote)),
                     tag(r"\"),
                     recognize(is_not(escaped_quote)),
@@ -162,10 +160,38 @@ fn quoted_string(quote: char) -> impl FnMut(&str) -> IResult<&str, String> {
     }
 }
 
+/// A scalar string value, quoted as a whole. rosidl does not tokenize it
+/// (`parse_primitive_value_string`): it strips the outer quotes, rejects a
+/// quote inside that is not preceded by a backslash, and replaces `\` + quote
+/// with the quote. So the last character always closes the string, and
+/// `"C:\\"` / `"C:\"` are valid (#4279).
+fn whole_quoted_string(s: &str) -> Option<Result<String, ()>> {
+    let s = s.trim();
+    let quote = s.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+    let inner = s.strip_prefix(quote)?.strip_suffix(quote)?;
+    let escaped_quote = format!("\\{quote}");
+    let mut prev = None;
+    for c in inner.chars() {
+        if c == quote && prev != Some('\\') {
+            return Some(Err(()));
+        }
+        prev = Some(c);
+    }
+    Some(Ok(inner.replace(&escaped_quote, &quote.to_string())))
+}
+
 fn string_literal(s: &str) -> IResult<&str, String> {
+    match whole_quoted_string(s) {
+        Some(Ok(v)) => return Ok(("", v)),
+        Some(Err(())) => {
+            return Err(nom::Err::Error(nom::error::Error::new(
+                s,
+                nom::error::ErrorKind::Verify,
+            )));
+        }
+        None => {}
+    }
     alt((
-        quoted_string('"'),
-        quoted_string('\''),
         value("".to_string(), one_of(r#""'"#)),
         map(
             verify(recognize(many0(anychar)), |v: &str| {
@@ -351,17 +377,31 @@ mod test {
         Ok(())
     }
     #[test]
-    fn quoted_string_may_end_in_a_backslash() -> Result<()> {
-        // `\\` is one unit, so the quote after it still closes the string.
-        // Backslashes stay verbatim, as in rosidl (#4279).
+    fn quoted_scalar_string_follows_rosidl() -> Result<()> {
+        // The last character closes a scalar string, so it may end in a
+        // backslash; a backslash before a quote escapes it (#4279).
         assert_eq!(string_literal(r#""C:\\""#)?, ("", r"C:\\".into()));
+        assert_eq!(string_literal(r#""C:\""#)?, ("", r"C:\".into()));
         assert_eq!(string_literal(r"'a\\'")?, ("", r"a\\".into()));
+        assert_eq!(string_literal(r#""a\\"b""#)?, ("", r#"a\"b"#.into()));
         assert_eq!(string_literal(r#""a\\\"b""#)?, ("", r#"a\\"b"#.into()));
         assert_eq!(string_literal(r#""a\\b""#)?, ("", r"a\\b".into()));
+        // The other quote kind needs no escape and keeps its backslash.
+        assert_eq!(string_literal(r#""a\'b""#)?, ("", r"a\'b".into()));
+        // An unescaped inner quote is an error, as in rosidl.
+        assert!(string_literal(r#""a"b""#).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn quoted_sequence_element_follows_rosidl() -> Result<()> {
+        // rosidl's `find_matching_end_quote` treats any backslash + quote as
+        // escaped, so `"a\\"b"` is one element and `"a\\"` does not close.
         assert_eq!(
-            string_literal_sequence(r#"["a\\", 'b\\', c]"#)?.1,
-            vec![r"a\\", r"b\\", "c"]
+            string_literal_sequence(r#"["a\\"b", 'c']"#)?.1,
+            vec![r#"a\"b"#, "c"]
         );
+        assert!(string_literal_sequence(r#"["a\\", "b"]"#).is_err());
         Ok(())
     }
 

@@ -211,8 +211,13 @@ mod test {
         // #4279: `"C:\\"` is a complete quoted string.
         let result = member_def(r#"string root "C:\\""#)?;
         assert_eq!(result.default, Some(vec![r"C:\\".into()]));
-        let result = member_def(r#"string[] paths ["a\\", "b"]"#)?;
-        assert_eq!(result.default, Some(vec![r"a\\".into(), "b".into()]));
+        let result = member_def(r#"string root "C:\""#)?;
+        assert_eq!(result.default, Some(vec![r"C:\".into()]));
+        // A backslash before a quote still escapes it, as on `main`.
+        let result = member_def(r#"string a "a\\"b""#)?;
+        assert_eq!(result.default, Some(vec![r#"a\"b"#.into()]));
+        let result = member_def(r#"string[] a ["a\\"b"]"#)?;
+        assert_eq!(result.default, Some(vec![r#"a\"b"#.into()]));
         Ok(())
     }
 
