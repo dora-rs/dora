@@ -6,6 +6,7 @@ use dora_message::{
 
 use super::{CustomNode, ModuleBoundaries, ResolvedNode, RuntimeNode, SINGLE_OPERATOR_DEFAULT_ID};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Write as _,
     time::Duration,
@@ -28,8 +29,7 @@ pub fn visualize_nodes_with_boundaries(
 
     // Render module subgraphs first
     for (module_id, members) in &boundaries.modules {
-        // Sanitize ID for Mermaid (dots are invalid in subgraph IDs)
-        let safe_id = module_id.replace('.', "_");
+        let safe_id = mermaid_subgraph_id(module_id);
         writeln!(flowchart, "subgraph {safe_id} [{module_id}]").unwrap();
         for node in nodes.values() {
             let node_id_str: &str = node.id.as_ref();
@@ -104,14 +104,41 @@ fn collect_dora_nodes(
     }
 }
 
+/// The Mermaid id to emit for a dora node (or `node/operator`) id.
+///
+/// Mermaid lexes a lowercase `end` at a word boundary as the subgraph-closing
+/// keyword even where a node id is expected (its flowchart docs warn about
+/// this), so `end`, `end-effector`, or `end.x` would break the whole document.
+/// Those ids get a `___` prefix, and so does any id already starting with
+/// `___`, which keeps the mapping one-to-one (`___end` can't collide with
+/// `end`, nor a user node with the built-in `___dora___`). Labels keep the
+/// real id. Every declaration and edge must go through this so they match.
+fn mermaid_id(id: &str) -> Cow<'_, str> {
+    let lexes_as_end = id
+        .strip_prefix("end")
+        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'));
+    if lexes_as_end || id.starts_with("___") {
+        Cow::Owned(format!("___{id}"))
+    } else {
+        Cow::Borrowed(id)
+    }
+}
+
+/// The Mermaid id for a subgraph: dots are invalid in subgraph ids, so they
+/// become `_`, then [`mermaid_id`] applies.
+fn mermaid_subgraph_id(id: &str) -> String {
+    mermaid_id(&id.replace('.', "_")).into_owned()
+}
+
 /// Escape Mermaid-significant characters in free-form label text (e.g. a node
 /// `description`) so it stays well-formed inside a quoted Mermaid label.
 ///
-/// Node and data IDs are charset-validated to be Mermaid-safe, but a
-/// `description` is unrestricted, so a `"` (or `<`, `>`, `#`, `&`) would
-/// otherwise corrupt the generated diagram. Mermaid accepts HTML entity codes
-/// written with a leading `#` in place of `&`, so we emit those. `#` is escaped
-/// first so the entities we introduce are not re-processed.
+/// Node and data IDs are charset-validated (see [`mermaid_id`] for the
+/// keyword clash Mermaid still has), but a `description` is unrestricted, so a
+/// `"` (or `<`, `>`, `#`, `&`) would otherwise corrupt the generated diagram.
+/// Mermaid accepts HTML entity codes written with a leading `#` in place of
+/// `&`, so we emit those. `#` is escaped first so the entities we introduce
+/// are not re-processed.
 ///
 /// A raw newline is escaped last: the label is written into a single-line
 /// Mermaid statement, so a newline (e.g. from a YAML block-scalar
@@ -152,15 +179,16 @@ fn visualize_custom_node(
     node: &CustomNode,
     flowchart: &mut String,
 ) {
+    let id = mermaid_id(node_id.as_ref());
     if node.run_config.inputs.is_empty() {
         // source node
-        writeln!(flowchart, "  {node_id}[\\\"**{node_id}**{description}\"/]").unwrap();
+        writeln!(flowchart, "  {id}[\\\"**{node_id}**{description}\"/]").unwrap();
     } else if node.run_config.outputs.is_empty() {
         // sink node
-        writeln!(flowchart, "  {node_id}[/\"**{node_id}**{description}\"\\]").unwrap();
+        writeln!(flowchart, "  {id}[/\"**{node_id}**{description}\"\\]").unwrap();
     } else {
         // normal node
-        writeln!(flowchart, "  {node_id}[\"**{node_id}**{description}\"]").unwrap();
+        writeln!(flowchart, "  {id}[\"**{node_id}**{description}\"]").unwrap();
     }
 }
 
@@ -186,16 +214,18 @@ fn visualize_runtime_node(
         } else {
             format!("\"{node_id}{description}\"")
         };
+        // Node ids contain no `/`, so the node part alone decides the prefix.
+        let id = mermaid_id(node_id.as_ref());
         // single operator node
         if operator.config.inputs.is_empty() {
             // source node
-            writeln!(flowchart, "  {node_id}/{operator_id}[\\{label}/]").unwrap();
+            writeln!(flowchart, "  {id}/{operator_id}[\\{label}/]").unwrap();
         } else if operator.config.outputs.is_empty() {
             // sink node
-            writeln!(flowchart, "  {node_id}/{operator_id}[/{label}\\]").unwrap();
+            writeln!(flowchart, "  {id}/{operator_id}[/{label}\\]").unwrap();
         } else {
             // normal node
-            writeln!(flowchart, "  {node_id}/{operator_id}[{label}]").unwrap();
+            writeln!(flowchart, "  {id}/{operator_id}[{label}]").unwrap();
         }
     } else {
         // Sanitize the id for Mermaid the same way the module-subgraph path
@@ -206,7 +236,7 @@ fn visualize_runtime_node(
         // invalid Mermaid document for those nodes. The contained operator
         // nodes keep their raw `{node_id}/{operator_id}` ids (dots are valid in
         // node ids, only subgraph ids), so edges still line up.
-        let safe_id = node_id.as_ref().replace('.', "_");
+        let safe_id = mermaid_subgraph_id(node_id.as_ref());
         // Quote the subgraph title only when a description must be appended, so
         // a node without one keeps its previous unquoted title (same shape as
         // the single-operator `label` above).
@@ -218,15 +248,16 @@ fn visualize_runtime_node(
         writeln!(flowchart, "subgraph {safe_id} [{title}]").unwrap();
         for operator in operators {
             let operator_id = &operator.id;
+            let id = mermaid_id(node_id.as_ref());
             if operator.config.inputs.is_empty() {
                 // source operator
-                writeln!(flowchart, "  {node_id}/{operator_id}[\\{operator_id}/]").unwrap();
+                writeln!(flowchart, "  {id}/{operator_id}[\\{operator_id}/]").unwrap();
             } else if operator.config.outputs.is_empty() {
                 // sink operator
-                writeln!(flowchart, "  {node_id}/{operator_id}[/{operator_id}\\]").unwrap();
+                writeln!(flowchart, "  {id}/{operator_id}[/{operator_id}\\]").unwrap();
             } else {
                 // normal operator
-                writeln!(flowchart, "  {node_id}/{operator_id}[{operator_id}]").unwrap();
+                writeln!(flowchart, "  {id}/{operator_id}[{operator_id}]").unwrap();
             }
         }
         flowchart.push_str("end\n");
@@ -262,6 +293,7 @@ fn visualize_inputs(
     flowchart: &mut String,
     nodes: &HashMap<&NodeId, &ResolvedNode>,
 ) {
+    let target = &*mermaid_id(target);
     for (input_id, input) in inputs {
         match &input.mapping {
             mapping @ (InputMapping::Timer { .. } | InputMapping::Logs(_)) => {
@@ -298,6 +330,7 @@ fn visualize_user_mapping(
                     } else {
                         format!("{output} as {input_id}{type_label}")
                     };
+                    let source = mermaid_id(source.as_ref());
                     writeln!(flowchart, "  {source} -- {data} --> {target}").unwrap();
                     source_found = true;
                 }
@@ -318,6 +351,7 @@ fn visualize_user_mapping(
                     } else {
                         format!("{output} as {input_id}{type_label}")
                     };
+                    let source = mermaid_id(source.as_ref());
                     writeln!(flowchart, "  {source}/{operator_id} -- {data} --> {target}").unwrap();
                     source_found = true;
                 }
@@ -338,7 +372,7 @@ fn format_type_label(urn: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_mermaid_label, visualize_nodes_with_boundaries};
+    use super::{escape_mermaid_label, mermaid_id, visualize_nodes_with_boundaries};
     use crate::descriptor::{Descriptor, DescriptorExt, ModuleBoundaries};
 
     /// End-to-end guard through `visualize_nodes_with_boundaries`: a `"` in a
@@ -491,6 +525,81 @@ nodes:
             flowchart.contains(r#"subgraph pipeline ["pipeline<hr/>*Two stage*"]"#),
             "the subgraph title must carry the node description; got:\n{flowchart}"
         );
+    }
+
+    /// Mermaid lexes a lowercase `end` at a word boundary as the
+    /// subgraph-closing keyword, so a node id of `end`, `end-…`, or `end.…`
+    /// must not be emitted bare: neither where the node is declared nor where
+    /// an edge references it.
+    #[test]
+    fn node_ids_lexed_as_end_keyword_are_prefixed() {
+        let yaml = r#"
+nodes:
+  - id: end
+    path: ./source
+    outputs:
+      - o
+  - id: end-effector
+    path: ./sink
+    inputs:
+      i: end/o
+      arm: end.arm/stage1/mid
+  - id: end.arm
+    operators:
+      - id: stage1
+        python: s1.py
+        inputs:
+          tick: dora/timer/millis/100
+        outputs:
+          - mid
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let flowchart = visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
+
+        for expected in [
+            r#"  ___end[\"**end**"/]"#,
+            r#"  ___end-effector[/"**end-effector**"\]"#,
+            // `_` is a word character: `end_arm` is not the keyword.
+            "subgraph end_arm [end.arm]",
+            "  ___end.arm/stage1[stage1]",
+            "  ___end -- o as i --> ___end-effector",
+            "  ___end.arm/stage1 -- mid as arm --> ___end-effector",
+            "  dora/timer/millis/100 -- tick --> ___end.arm/stage1",
+        ] {
+            assert!(
+                flowchart.lines().any(|l| l == expected),
+                "missing line `{expected}`; got:\n{flowchart}"
+            );
+        }
+        // The only lines that may start with the bare keyword are the
+        // subgraph closings themselves.
+        for line in flowchart.lines() {
+            let line = line.trim_start();
+            assert!(
+                line == "end" || !line.starts_with("end"),
+                "line starts with a bare `end` id: `{line}`; got:\n{flowchart}"
+            );
+        }
+    }
+
+    #[test]
+    fn mermaid_id_only_prefixes_ids_lexed_as_end() {
+        for id in [
+            "end",
+            "end-effector",
+            "end.x",
+            "end/op",
+            "___end",
+            "___dora___",
+        ] {
+            assert_eq!(mermaid_id(id), format!("___{id}"), "{id}");
+        }
+        for id in [
+            "endpoint", "end_x", "End", "END", "legend", "camera", "a.end",
+        ] {
+            assert_eq!(mermaid_id(id), id, "{id}");
+        }
     }
 
     #[test]
