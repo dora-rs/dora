@@ -123,7 +123,7 @@ fn event_stream_loop(
     clock: Arc<uhlc::HLC>,
     stop_enqueued: Arc<AtomicBool>,
 ) {
-    let mut tx = Some(tx);
+    let tx = Some(tx);
     let mut close_tx = false;
 
     let result = 'outer: loop {
@@ -164,7 +164,7 @@ fn event_stream_loop(
             if let Err(err) = clock.update_with_timestamp(&timestamp) {
                 tracing::warn!("failed to update HLC: {err}");
             }
-            if matches!(inner, NodeEvent::AllInputsClosed) {
+            if matches!(inner, NodeEvent::Stop | NodeEvent::AllInputsClosed) {
                 close_tx = true;
             }
 
@@ -202,7 +202,7 @@ fn event_stream_loop(
             }
 
             if close_tx {
-                tx = None;
+                break 'outer Ok(());
             };
         }
     };
@@ -223,5 +223,124 @@ fn event_stream_loop(
 pub(super) fn note_stream_end(event: &NodeEvent, stop_enqueued: &AtomicBool) {
     if matches!(event, NodeEvent::Stop | NodeEvent::AllInputsClosed) {
         stop_enqueued.store(true, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dora_message::common::Timestamped;
+    use dora_message::daemon_to_node::{DaemonReply, NodeEvent};
+    use dora_message::node_to_daemon::DaemonRequest;
+    use std::time::Instant;
+
+    #[test]
+    fn event_stream_thread_exits_cleanly_on_all_inputs_closed() {
+        let (req_tx, mut req_rx) = tokio::sync::mpsc::channel(10);
+        let channel = DaemonChannel::IntegrationTestChannel(req_tx);
+        let clock = Arc::new(uhlc::HLC::default());
+        let stop_enqueued = Arc::new(AtomicBool::new(false));
+        let (tx, mut rx) = mpsc::channel(10);
+
+        let handle = init(
+            "test_node".to_string().into(),
+            tx,
+            channel,
+            clock.clone(),
+            stop_enqueued.clone(),
+        )
+        .expect("init handle");
+
+        // The thread should request NextEvent
+        let (req, reply_tx) = req_rx.blocking_recv().expect("receive NextEvent request");
+        assert!(matches!(req.inner, DaemonRequest::NextEvent));
+
+        // Reply with AllInputsClosed
+        reply_tx
+            .send(DaemonReply::NextEvents(vec![Timestamped {
+                inner: NodeEvent::AllInputsClosed,
+                timestamp: clock.new_timestamp(),
+            }]))
+            .expect("send reply");
+
+        // The user channel should receive AllInputsClosed
+        let event = rx.blocking_recv().expect("receive event item");
+        match event {
+            EventItem::NodeEvent {
+                event: NodeEvent::AllInputsClosed,
+            } => {}
+            other => panic!("expected AllInputsClosed, got {other:?}"),
+        }
+
+        // Drop the handle — this MUST join without timing out (1-second hang)
+        let start = Instant::now();
+        drop(handle);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "event stream thread took too long to drop ({elapsed:?}), likely hung waiting for NextEvent"
+        );
+
+        // Additionally, no subsequent NextEvent request should have been enqueued
+        assert!(
+            req_rx.try_recv().is_err(),
+            "unexpected NextEvent request enqueued after AllInputsClosed"
+        );
+    }
+
+    #[test]
+    fn event_stream_thread_exits_cleanly_on_stop() {
+        let (req_tx, mut req_rx) = tokio::sync::mpsc::channel(10);
+        let channel = DaemonChannel::IntegrationTestChannel(req_tx);
+        let clock = Arc::new(uhlc::HLC::default());
+        let stop_enqueued = Arc::new(AtomicBool::new(false));
+        let (tx, mut rx) = mpsc::channel(10);
+
+        let handle = init(
+            "test_node".to_string().into(),
+            tx,
+            channel,
+            clock.clone(),
+            stop_enqueued.clone(),
+        )
+        .expect("init handle");
+
+        // The thread should request NextEvent
+        let (req, reply_tx) = req_rx.blocking_recv().expect("receive NextEvent request");
+        assert!(matches!(req.inner, DaemonRequest::NextEvent));
+
+        // Reply with Stop
+        reply_tx
+            .send(DaemonReply::NextEvents(vec![Timestamped {
+                inner: NodeEvent::Stop,
+                timestamp: clock.new_timestamp(),
+            }]))
+            .expect("send reply");
+
+        // The user channel should receive Stop
+        let event = rx.blocking_recv().expect("receive event item");
+        match event {
+            EventItem::NodeEvent {
+                event: NodeEvent::Stop,
+            } => {}
+            other => panic!("expected Stop, got {other:?}"),
+        }
+
+        // Drop the handle — this MUST join without timing out (1-second hang)
+        let start = Instant::now();
+        drop(handle);
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "event stream thread took too long to drop ({elapsed:?}), likely hung waiting for NextEvent"
+        );
+
+        // Additionally, no subsequent NextEvent request should have been enqueued
+        assert!(
+            req_rx.try_recv().is_err(),
+            "unexpected NextEvent request enqueued after Stop"
+        );
     }
 }
