@@ -139,4 +139,13 @@ mod test {
         // In-range values are unchanged.
         assert_eq!(tokens("float64 OK=1.5e3"), "1500f64");
     }
+
+    #[test]
+    fn string_constants_may_end_in_a_backslash() {
+        // #4279: the closing quote after `\\` used to read as escaped.
+        let c = constant_def(r#"string WIN_ROOT="C:\\""#).unwrap();
+        assert_eq!(c.value, vec![r"C:\\".to_string()]);
+        let c = constant_def(r#"string[2] PATHS=["a\\", 'b']"#).unwrap();
+        assert_eq!(c.value, vec![r"a\\".to_string(), "b".to_string()]);
+    }
 }

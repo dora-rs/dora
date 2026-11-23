@@ -207,6 +207,16 @@ mod test {
         );
     }
     #[test]
+    fn string_defaults_may_end_in_a_backslash() -> Result<()> {
+        // #4279: `"C:\\"` is a complete quoted string.
+        let result = member_def(r#"string root "C:\\""#)?;
+        assert_eq!(result.default, Some(vec![r"C:\\".into()]));
+        let result = member_def(r#"string[] paths ["a\\", "b"]"#)?;
+        assert_eq!(result.default, Some(vec![r"a\\".into(), "b".into()]));
+        Ok(())
+    }
+
+    #[test]
     fn quoted_string_default_keeps_surrounding_whitespace() -> Result<()> {
         // Quoting is the only way to keep leading/trailing whitespace in a
         // `.msg` value, so it must round-trip exactly (#4164).

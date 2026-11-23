@@ -136,32 +136,36 @@ pub fn get_string_literal_parser(
     }
 }
 
+/// A string in `quote` (`"` or `'`). An escaped quote (`\"` / `\'`) becomes
+/// the bare quote; every other backslash is kept verbatim, as in rosidl.
+/// `\\` is read as one unit, so a string may end in a backslash (`"C:\\"`)
+/// without its closing quote being taken as escaped (#4279).
+fn quoted_string(quote: char) -> impl FnMut(&str) -> IResult<&str, String> {
+    move |s| {
+        // `\` + quote: both the escape sequence and the two characters
+        // a plain run of text stops at.
+        let escaped_quote = if quote == '"' { r#"\""# } else { r"\'" };
+        delimited(
+            char(quote),
+            map(
+                many0(alt((
+                    tag(r"\\"),
+                    value(&escaped_quote[1..], tag(escaped_quote)),
+                    tag(r"\"),
+                    recognize(is_not(escaped_quote)),
+                ))),
+                |v| v.concat(),
+            ),
+            char(quote),
+        )
+        .parse(s)
+    }
+}
+
 fn string_literal(s: &str) -> IResult<&str, String> {
     alt((
-        delimited(
-            char('"'),
-            map(
-                many0(alt((
-                    value(r#"""#, tag(r#"\""#)),
-                    tag(r#"\"#),
-                    recognize(is_not(r#"\""#)),
-                ))),
-                |v| v.join(""),
-            ),
-            char('"'),
-        ),
-        delimited(
-            char('\''),
-            map(
-                many0(alt((
-                    value("'", tag(r#"\'"#)),
-                    tag(r#"\"#),
-                    recognize(is_not(r#"\'"#)),
-                ))),
-                |v| v.join(""),
-            ),
-            char('\''),
-        ),
+        quoted_string('"'),
+        quoted_string('\''),
         value("".to_string(), one_of(r#""'"#)),
         map(
             verify(recognize(many0(anychar)), |v: &str| {
@@ -192,30 +196,8 @@ pub fn string_literal_sequence(s: &str) -> IResult<&str, Vec<String>> {
             delimited(
                 space0,
                 alt((
-                    delimited(
-                        char('"'),
-                        map(
-                            many0(alt((
-                                value(r#"""#, tag(r#"\""#)),
-                                tag(r#"\"#),
-                                recognize(is_not(r#"\""#)),
-                            ))),
-                            |v| v.join(""),
-                        ),
-                        char('"'),
-                    ),
-                    delimited(
-                        char('\''),
-                        map(
-                            many0(alt((
-                                value("'", tag(r#"\'"#)),
-                                tag(r#"\"#),
-                                recognize(is_not(r#"\'"#)),
-                            ))),
-                            |v| v.join(""),
-                        ),
-                        char('\''),
-                    ),
+                    quoted_string('"'),
+                    quoted_string('\''),
                     map(
                         recognize(pair(none_of("\"',"), opt(is_not(",")))),
                         |s: &str| s.trim().to_string(),
@@ -368,6 +350,21 @@ mod test {
         );
         Ok(())
     }
+    #[test]
+    fn quoted_string_may_end_in_a_backslash() -> Result<()> {
+        // `\\` is one unit, so the quote after it still closes the string.
+        // Backslashes stay verbatim, as in rosidl (#4279).
+        assert_eq!(string_literal(r#""C:\\""#)?, ("", r"C:\\".into()));
+        assert_eq!(string_literal(r"'a\\'")?, ("", r"a\\".into()));
+        assert_eq!(string_literal(r#""a\\\"b""#)?, ("", r#"a\\"b"#.into()));
+        assert_eq!(string_literal(r#""a\\b""#)?, ("", r"a\\b".into()));
+        assert_eq!(
+            string_literal_sequence(r#"["a\\", 'b\\', c]"#)?.1,
+            vec![r"a\\", r"b\\", "c"]
+        );
+        Ok(())
+    }
+
     #[test]
     fn parse_empty_sequences() -> Result<()> {
         // An empty list is a valid default for unbounded/bounded sequences (#4163).
