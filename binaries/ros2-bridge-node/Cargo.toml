@@ -29,6 +29,10 @@ eyre = { workspace = true }
 flume = "0.12"
 futures = { workspace = true }
 futures-timer = "3"
+# The YAML service client's response thread waits on the client's response
+# reader; ros2-client implements `mio::event::Source` for it with `mio_1`.
+mio = { version = "1", features = ["os-poll"] }
+ros2-client = { workspace = true, features = ["mio_1"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

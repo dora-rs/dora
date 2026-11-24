@@ -209,7 +209,49 @@ The bridge waits for the service to become available (up to 10 retries, 2 second
 1. Serializes the Arrow data as an `AddTwoInts_Request` CDR message
 2. Sends the request to the ROS2 service
 3. Waits for a response (30-second timeout)
-4. Deserializes the response into Arrow and sends it on the `response` output
+4. Deserializes the response into Arrow and sends it on the `response` output,
+   with the metadata parameters of the request input it answers
+
+Requests do not wait for each other: the bridge keeps as many in flight as
+the service QoS history holds (`keep_last`, 10 by default, at most 64; 64 with
+`keep_all`), and reads the next input only when fewer are outstanding. More at
+once could push requests out of a server's request history, or responses out
+of the bridge's own, before they are read. Set `qos.keep_last: 1` to send one
+request at a time, as before; that also sets the history depth of the service
+endpoints.
+
+Responses come out in the order of the requests, as before: a response that
+arrives early waits for the ones before it. The oldest unanswered request
+times out once 30 s have passed both since it was sent and since the server's
+last answer to any request. A server that answers one request at a time keeps
+answering, so the requests queued behind it never time out, as with the
+sequential client; a server that stops answering fails all of them about 30 s
+later; a single request it drops fails 30 s after the answers stop. A request
+that fails or times out is dropped with a warning and the next response goes
+out in its place, so pairing responses with requests by position drifts after
+a failure. Only a failure of the DDS participant itself,
+which cannot be recovered, ends the bridge and with it every request in flight.
+
+Each response carries the metadata parameters of the request it answers,
+except those that steer delivery: `flush`, `seq`, `fin`, `session_id`,
+`segment_id`, the tracing context and dora's own `_`-prefixed keys. To match
+responses to requests reliably, put an id in the request's parameters and read
+it back from the response:
+
+```rust
+// requester: number each request
+let mut parameters = MetadataParameters::default();
+parameters.insert("request_number".into(), Parameter::Integer(n));
+node.send_output("request".into(), parameters, request)?;
+
+// ... later, on the `response` input:
+let number = metadata.parameters.get("request_number");
+```
+
+The example requester in `examples/ros2-bridge/yaml-bridge-service/` does this.
+
+When the inputs close or the dataflow stops, the bridge waits for the
+requests already in flight before it exits.
 
 ### Service Server
 
@@ -258,7 +300,8 @@ Responses can arrive in any order -- the bridge correlates them by `request_id`,
 | Behavior | Value |
 |----------|-------|
 | Service client: wait for availability | 10 retries, 2s each (20s total) |
-| Service client: response timeout | 30 seconds |
+| Service client: response timeout | 30 seconds without any answer, for the oldest unanswered request |
+| Service client: requests in flight | `qos.keep_last` (default 10), at most 64; 64 with `keep_all` |
 | Service server: pending request limit | 64 |
 
 ---
@@ -1313,7 +1356,7 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 
 - **Action cancel needs a `cancel` output**: Without one, the YAML action server rejects ROS2 cancel requests (see [Canceling goals](#canceling-goals)).
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
-- **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
+- **Service client limits**: The YAML service client keeps at most `qos.keep_last` (default 10, at most 64) requests in flight, and its 30 s response timeout is not configurable.
 - **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable. On the DDS transport these channels additionally apply the override described in [Service and action QoS](#service-and-action-qos-dds-only); on the Zenoh transport ordinary service/action channels use the configured QoS as-is. On both transports the action status channel is always reliable and `transient_local` (see [Action status channel](#action-status-channel)).
 - **`AMENT_PREFIX_PATH` required**: The bridge fails at startup if no ROS2 message definitions are found.
 - **Max 64 topics**: Multi-topic mode supports at most 64 topics per bridge node.
