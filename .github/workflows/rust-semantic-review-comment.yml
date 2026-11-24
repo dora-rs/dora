@@ -31,4 +31,4 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: phil-opp/rust-semantic-review/comment@df39af20bbf153708944bafdd2910bd37e6665a0 # main, 2026-11-24
+      - uses: phil-opp/rust-semantic-review/comment@ce2cf3ffbbfe6a66a7ea8199ca3df2d05096de17 # main, 2026-11-24
