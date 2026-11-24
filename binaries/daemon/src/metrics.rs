@@ -408,6 +408,12 @@ pub(crate) async fn collect_and_send_metrics_bg(
 
             for node in &df.nodes {
                 if let Some(pid_arc) = node.pid.as_ref() {
+                    // Load `spawned_at` before `pid`: `spawn_inner` publishes
+                    // the PID first, so seeing a non-zero `spawned_at` here
+                    // guarantees the `pid` load below is that incarnation's
+                    // (or a later one's), never its predecessor's
+                    // (dora-rs/dora#4271).
+                    let spawned_at = node.spawned_at.load(atomic::Ordering::Acquire);
                     let pid = pid_arc.load(atomic::Ordering::Acquire);
                     let sys_pid = Pid::from_u32(pid);
                     // `pid` keeps the exited process's value while the node
@@ -422,7 +428,7 @@ pub(crate) async fn collect_and_send_metrics_bg(
                     // from a boot time read once per `System`, so after a
                     // wall-clock step (NTP on a board without an RTC) every
                     // live node would look recycled.
-                    if pid == 0 || node.spawned_at.load(atomic::Ordering::Acquire) == 0 {
+                    if pid == 0 || spawned_at == 0 {
                         continue;
                     }
                     if let Some((cpu_usage, memory_bytes, disk)) =
