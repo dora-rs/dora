@@ -2221,13 +2221,59 @@ impl Daemon {
     }
 }
 
-async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u8>> {
+/// Read a node's log for a `Logs` reply: the whole file for `tail` of
+/// `None`/`Some(0)`, else its last `tail` lines.
+///
+/// Gives up with [`io::ErrorKind::FileTooLarge`] as soon as more than
+/// `max_bytes` would be returned, instead of buffering a log of any size
+/// (a node without `max_log_size` grows it without bound) only for the reply
+/// to be rejected as too large afterwards.
+async fn read_node_log(
+    file: &mut File,
+    tail: Option<usize>,
+    max_bytes: usize,
+) -> io::Result<Vec<u8>> {
+    match tail {
+        None | Some(0) => {
+            let mut contents = vec![];
+            (&mut *file)
+                .take(max_bytes as u64 + 1)
+                .read_to_end(&mut contents)
+                .await?;
+            if contents.len() > max_bytes {
+                return Err(log_too_large(max_bytes));
+            }
+            Ok(contents)
+        }
+        Some(tail) => read_last_n_lines(file, tail, max_bytes).await,
+    }
+}
+
+fn log_too_large(max_bytes: usize) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::FileTooLarge,
+        format!(
+            "the requested log is too large for a daemon reply (over {max_bytes} bytes){}",
+            coordinator::LOGS_TOO_LARGE_HINT
+        ),
+    )
+}
+
+async fn read_last_n_lines(
+    file: &mut File,
+    mut tail: usize,
+    max_bytes: usize,
+) -> io::Result<Vec<u8>> {
     let mut pos = file.seek(io::SeekFrom::End(0)).await?;
 
     let mut output = VecDeque::<u8>::new();
     let mut extend_slice_to_start = |slice: &[u8]| {
         output.extend(slice);
         output.rotate_right(slice.len());
+        if output.len() > max_bytes {
+            return Err(log_too_large(max_bytes));
+        }
+        Ok(())
     };
 
     let mut buffer = vec![0; 2048];
@@ -2251,13 +2297,13 @@ async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u
         let mut lines = 1;
         loop {
             let Some(pos) = iter.next() else {
-                extend_slice_to_start(read_buf);
+                extend_slice_to_start(read_buf)?;
                 break;
             };
             lines += 1;
             tail -= 1;
             if tail == 0 {
-                extend_slice_to_start(&read_buf[(pos + 1)..]);
+                extend_slice_to_start(&read_buf[(pos + 1)..])?;
                 break 'main;
             }
         }
@@ -2622,9 +2668,42 @@ mod log_tail_tests {
         tmp.flush().unwrap();
 
         let mut file = File::open(tmp.path()).await.unwrap();
-        let out = read_last_n_lines(&mut file, usize::MAX).await.unwrap();
+        let out = read_last_n_lines(&mut file, usize::MAX, usize::MAX)
+            .await
+            .unwrap();
 
         assert_eq!(out, b"line1\nline2\nline3");
+    }
+
+    #[tokio::test]
+    async fn read_node_log_refuses_a_log_past_the_byte_limit() {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        for i in 0..1000 {
+            writeln!(tmp, "line {i}").unwrap();
+        }
+        tmp.flush().unwrap();
+        let len = std::fs::metadata(tmp.path()).unwrap().len() as usize;
+
+        for tail in [None, Some(0), Some(usize::MAX), Some(500)] {
+            let mut file = File::open(tmp.path()).await.unwrap();
+            let err = read_node_log(&mut file, tail, 100).await.unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::FileTooLarge, "tail {tail:?}");
+            assert!(err.to_string().contains("--local"), "{err}");
+        }
+
+        // Within the limit, the whole log or its last lines still come back.
+        let mut file = File::open(tmp.path()).await.unwrap();
+        let out = read_node_log(&mut file, None, len).await.unwrap();
+        assert_eq!(out.len(), len);
+        let mut file = File::open(tmp.path()).await.unwrap();
+        let out = read_node_log(&mut file, Some(2), 100).await.unwrap();
+        assert_eq!(out, b"line 998\nline 999");
+
+        // The last requested line is found in the very first chunk read,
+        // which already holds more than the limit.
+        let mut file = File::open(tmp.path()).await.unwrap();
+        let err = read_node_log(&mut file, Some(20), 50).await.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::FileTooLarge);
     }
 }
 

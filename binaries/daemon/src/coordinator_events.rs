@@ -6,7 +6,7 @@ use crate::spawn::Spawner;
 use crate::{
     CoreNodeKindExt, Daemon, Event, FinishDataflowWhen, InputDeadline, OutputId, RunStatus,
     RunningDataflow, STDERR_LOG_LINES_MAX, clear_node_result, close_input, log, node_inputs,
-    output_routing, read_last_n_lines, reject_unpinnable_backpressure_inputs, send_with_timestamp,
+    output_routing, read_node_log, reject_unpinnable_backpressure_inputs, send_with_timestamp,
 };
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
@@ -30,7 +30,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{fs::File, io::AsyncReadExt, sync::oneshot::Sender};
+use tokio::{fs::File, sync::oneshot::Sender};
 use tracing::error;
 
 /// The coordinator persisted this change before forwarding it. Keep its latest
@@ -368,14 +368,13 @@ impl Daemon {
                                             log::log_path(&log_dir, &dataflow_id, &node_id)
                                         ))?;
 
-                                let mut contents = match tail {
-                                    None | Some(0) => {
-                                        let mut contents = vec![];
-                                        file.read_to_end(&mut contents).await.map(|_| contents)
-                                    }
-                                    Some(tail) => read_last_n_lines(&mut file, tail).await,
-                                }
-                                .wrap_err("Could not read last n lines of log file")?;
+                                let mut contents = read_node_log(
+                                    &mut file,
+                                    tail,
+                                    crate::coordinator::MAX_BYTE_ARRAY_PAYLOAD,
+                                )
+                                .await
+                                .wrap_err("Could not read log file")?;
                                 if !contents.ends_with(b"\n") {
                                     // Append newline for better readability
                                     contents.push(b'\n');

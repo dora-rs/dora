@@ -40,6 +40,11 @@ const TOPIC_DEBUG_CHANNEL_CAPACITY: usize = 64;
 /// instead of taking the control plane down with it.
 pub(crate) const MAX_COORDINATOR_MESSAGE_BYTES: usize = 1024 * 1024;
 
+/// The most payload bytes a message can carry as a JSON number array: each
+/// byte takes at least two characters (a digit and a comma), so a larger
+/// payload can never fit in [`MAX_COORDINATOR_MESSAGE_BYTES`].
+pub(crate) const MAX_BYTE_ARRAY_PAYLOAD: usize = MAX_COORDINATOR_MESSAGE_BYTES / 2;
+
 /// Wraps the WS send channels for fire-and-forget daemon events to the coordinator.
 #[derive(Clone)]
 pub struct CoordinatorSender {
@@ -146,9 +151,8 @@ impl CoordinatorSender {
             mpsc::error::TrySendError::Full(()) => TrySendEventError::Full,
             mpsc::error::TrySendError::Closed(()) => TrySendEventError::Closed,
         })?;
-        // Each payload byte takes at least two characters in the JSON number
-        // array, so skip rendering a payload that cannot fit.
-        if payload.len() > MAX_COORDINATOR_MESSAGE_BYTES / 2 {
+        // Skip rendering a payload that cannot fit.
+        if payload.len() > MAX_BYTE_ARRAY_PAYLOAD {
             return Err(TrySendEventError::TooLarge {
                 bytes: payload.len().saturating_mul(2),
             });
@@ -739,6 +743,11 @@ fn jittered_backoff(backoff: Duration, rand: u64) -> Duration {
     Duration::from_millis((backoff.as_millis() as u64).saturating_add_signed(offset))
 }
 
+/// How to get a node log too large for a daemon reply, appended to that error.
+pub(crate) const LOGS_TOO_LARGE_HINT: &str = "; run `dora logs --local` on the machine \
+     that ran the node, or fetch fewer lines with `--node <name> --tail <lines>` and no \
+     `--since`, `--until`, `--grep` or `--level` filter";
+
 /// Encode the WS response carrying `reply` to the coordinator request
 /// `request_id`.
 ///
@@ -751,11 +760,7 @@ fn jittered_backoff(backoff: Duration, rand: u64) -> Duration {
 fn encode_reply(request_id: Uuid, reply: &DaemonCoordinatorReply) -> Option<String> {
     let too_large = |bytes| {
         let hint = match reply {
-            DaemonCoordinatorReply::Logs(_) => {
-                "; run `dora logs --local` on the machine that ran the node, or fetch \
-                 fewer lines with `--node <name> --tail <lines>` and no `--since`, \
-                 `--until`, `--grep` or `--level` filter"
-            }
+            DaemonCoordinatorReply::Logs(_) => LOGS_TOO_LARGE_HINT,
             _ => "",
         };
         let error = format!(
