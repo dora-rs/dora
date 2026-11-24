@@ -44,7 +44,8 @@ pub(crate) async fn handle_daemon_ws(
     // Track daemon_id and connection_id from incoming events for cleanup on disconnect
     let mut tracked_daemon_id: Option<DaemonId> = None;
     let mut tracked_connection_id: Option<Uuid> = None;
-    let mut dropped_debug_frames = DroppedEvents::default();
+    let mut dropped_debug_frames =
+        DroppedEvents::new("topic debug frame(s): the coordinator's topic debug queue is full");
     // Events read from this daemon that the main loop has not taken yet. They
     // are queued here rather than awaited at the read: awaiting would stop
     // this connection from reading the socket — and so from routing the
@@ -179,8 +180,7 @@ fn queue_daemon_event(
     match event {
         Event::TopicDebugData { .. } => match topic_debug_tx.try_send(event) {
             Err(mpsc::error::TrySendError::Full(_)) => {
-                dropped_debug_frames
-                    .record("topic debug frame(s): the coordinator's topic debug queue is full");
+                dropped_debug_frames.record();
                 true
             }
             result => result.is_ok(),
@@ -213,11 +213,22 @@ const MAX_BACKLOG_BYTES: usize = 32 * 1024 * 1024;
 
 /// Daemon events read off one connection and not yet taken by the main loop,
 /// each with the size of the message it arrived in.
-#[derive(Default)]
 struct EventBacklog {
     events: VecDeque<(Event, usize)>,
     bytes: usize,
     dropped_logs: DroppedEvents,
+}
+
+impl Default for EventBacklog {
+    fn default() -> Self {
+        Self {
+            events: VecDeque::new(),
+            bytes: 0,
+            dropped_logs: DroppedEvents::new(
+                "daemon log message(s): the coordinator is not keeping up",
+            ),
+        }
+    }
 }
 
 impl EventBacklog {
@@ -225,8 +236,7 @@ impl EventBacklog {
         if matches!(event, Event::Log(_))
             && self.bytes + size > MAX_BACKLOG_BYTES_BEFORE_DROPPING_LOGS
         {
-            self.dropped_logs
-                .record("daemon log message(s): the coordinator is not keeping up");
+            self.dropped_logs.record();
             return;
         }
         let was_full = self.is_full();
@@ -258,23 +268,53 @@ impl EventBacklog {
 
 /// Events a daemon connection had to drop, warned about at most once per
 /// interval with the count since the last warning.
-#[derive(Default)]
+///
+/// Drops counted after the last warning are reported by the next drop past
+/// the interval or, at the latest, when the value is dropped (the connection
+/// closes), so a burst that ends inside an interval is not reported as only
+/// the single drop that opened it.
 struct DroppedEvents {
+    /// What was dropped, for the warning.
+    what: &'static str,
     count: u64,
     last_log: Option<std::time::Instant>,
 }
 
 impl DroppedEvents {
-    fn record(&mut self, what: &str) {
+    fn new(what: &'static str) -> Self {
+        Self {
+            what,
+            count: 0,
+            last_log: None,
+        }
+    }
+
+    fn record(&mut self) {
+        if let Some(count) = self.record_at(std::time::Instant::now()) {
+            tracing::warn!("dropped {count} {}", self.what);
+        }
+    }
+
+    /// Count one drop at `now`, returning the count to warn about when the
+    /// interval since the last warning has passed.
+    fn record_at(&mut self, now: std::time::Instant) -> Option<u64> {
         self.count += 1;
-        let now = std::time::Instant::now();
         if self
             .last_log
             .is_none_or(|last| now - last >= std::time::Duration::from_secs(5))
         {
-            tracing::warn!("dropped {} {what}", self.count);
-            self.count = 0;
             self.last_log = Some(now);
+            Some(std::mem::take(&mut self.count))
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for DroppedEvents {
+    fn drop(&mut self) {
+        if self.count > 0 {
+            tracing::warn!("dropped {} {}", self.count, self.what);
         }
     }
 }
@@ -673,11 +713,28 @@ mod topic_debug_tests {
     }
 
     #[test]
+    fn dropped_events_keeps_the_count_of_a_burst_for_the_final_warning() {
+        let start = std::time::Instant::now();
+        let mut dropped = DroppedEvents::new("x");
+        // The first drop is warned about at once; the rest of the burst lands
+        // inside the 5s interval and must stay counted, not be forgotten.
+        assert_eq!(dropped.record_at(start), Some(1));
+        for _ in 0..99 {
+            assert_eq!(dropped.record_at(start), None);
+        }
+        assert_eq!(dropped.count, 99, "left for the warning on drop");
+        // Once the interval has passed, the next drop reports all of them.
+        let later = start + std::time::Duration::from_secs(5);
+        assert_eq!(dropped.record_at(later), Some(100));
+        assert_eq!(dropped.count, 0);
+    }
+
+    #[test]
     fn a_full_topic_debug_channel_does_not_hold_up_control_events() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         let (topic_debug_tx, mut topic_debug_rx) = mpsc::channel(1);
         let mut backlog = EventBacklog::default();
-        let mut dropped = DroppedEvents::default();
+        let mut dropped = DroppedEvents::new("topic debug frame(s)");
         let mut queue = |event, backlog: &mut EventBacklog| {
             queue_daemon_event(event, 1, &event_tx, backlog, &topic_debug_tx, &mut dropped)
         };
