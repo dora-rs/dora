@@ -161,6 +161,18 @@ pub enum ControlRequest {
         /// misparse postcard frames.
         #[serde(default)]
         protocol_version: Option<u16>,
+        /// Ask for the zenoh endpoints to read the topics from directly,
+        /// instead of a stream relayed by the coordinator.
+        ///
+        /// The coordinator then starts no daemon stream and answers with
+        /// [`TopicSubscribed::zenoh_endpoints`] set, unless a daemon serving
+        /// one of the topics has no endpoint this client can dial: then it
+        /// relays as for `false`. A coordinator that predates the field
+        /// ignores it and relays, so its reply has no endpoints either.
+        ///
+        /// [`TopicSubscribed::zenoh_endpoints`]: crate::coordinator_to_cli::ControlRequestReply::TopicSubscribed
+        #[serde(default)]
+        direct: bool,
     },
     TopicUnsubscribe {
         subscription_id: Uuid,
@@ -284,6 +296,19 @@ impl ControlRequest {
             dataflow_id,
             topics,
             protocol_version: Some(crate::TOPIC_DATA_PROTOCOL_VERSION),
+            direct: false,
+        }
+    }
+
+    /// Like [`topic_subscribe`](Self::topic_subscribe), but asks for the zenoh
+    /// endpoints to subscribe to the topics directly (see the `direct` field
+    /// of [`ControlRequest::TopicSubscribe`]).
+    pub fn topic_subscribe_direct(dataflow_id: Uuid, topics: Vec<(NodeId, DataId)>) -> Self {
+        Self::TopicSubscribe {
+            dataflow_id,
+            topics,
+            protocol_version: Some(crate::TOPIC_DATA_PROTOCOL_VERSION),
+            direct: true,
         }
     }
 }
@@ -333,6 +358,29 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn only_topic_subscribe_direct_asks_for_endpoints() {
+        for (request, expected) in [
+            (ControlRequest::topic_subscribe(Uuid::nil(), vec![]), false),
+            (
+                ControlRequest::topic_subscribe_direct(Uuid::nil(), vec![]),
+                true,
+            ),
+        ] {
+            match request {
+                ControlRequest::TopicSubscribe {
+                    direct,
+                    protocol_version,
+                    ..
+                } => {
+                    assert_eq!(direct, expected);
+                    assert_eq!(protocol_version, Some(crate::TOPIC_DATA_PROTOCOL_VERSION));
+                }
+                other => panic!("expected TopicSubscribe, got {other:?}"),
+            }
+        }
+    }
+
     /// The wire property the `#[non_exhaustive]` on `TopicSubscribe` is there
     /// to let us rely on: a request from a *newer* CLI carrying a field this
     /// coordinator does not know still decodes, and one from an *older* CLI
@@ -347,8 +395,15 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{label} peer's request must decode: {e}"));
             match req {
                 ControlRequest::TopicSubscribe {
-                    protocol_version, ..
-                } => assert_eq!(protocol_version, expected_version, "{label}"),
+                    protocol_version,
+                    direct,
+                    ..
+                } => {
+                    assert_eq!(protocol_version, expected_version, "{label}");
+                    // A request without the field, from a CLI that predates
+                    // it, keeps the relayed stream.
+                    assert!(!direct, "{label}");
+                }
                 other => panic!("expected TopicSubscribe, got {other:?}"),
             }
         }

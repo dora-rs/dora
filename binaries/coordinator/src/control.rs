@@ -7,6 +7,15 @@ use dora_message::{
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
+/// How a topic subscription is served.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TopicSubscription {
+    /// Relayed by the coordinator under this subscription id.
+    Relayed(Uuid),
+    /// Read by the client from these zenoh endpoints; nothing is relayed.
+    Direct(Vec<String>),
+}
+
 #[derive(Debug)]
 pub enum ControlEvent {
     IncomingRequest {
@@ -30,8 +39,11 @@ pub enum ControlEvent {
     TopicSubscribe {
         dataflow_id: Uuid,
         topics: Vec<(NodeId, DataId)>,
+        /// `Some(client_is_local)` for a `direct` request: answer with the
+        /// zenoh endpoints if every daemon has one the client can dial.
+        direct: Option<bool>,
         sender: crate::topic_subscriber::TopicFrameSender,
-        done_tx: oneshot::Sender<Result<Uuid, String>>,
+        done_tx: oneshot::Sender<Result<TopicSubscription, String>>,
     },
     TopicCheck {
         dataflow_id: Uuid,

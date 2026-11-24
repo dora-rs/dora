@@ -709,6 +709,7 @@ fn handle_response(
                 Ok(dora_message::coordinator_to_cli::ControlRequestReply::TopicSubscribed {
                     subscription_id,
                     protocol_version,
+                    ..
                 }) => {
                     // A coordinator on the other encoding would send frames we
                     // would misparse rather than fail on, so refuse the

@@ -3,8 +3,10 @@
 
 use crate::topology_lane::{MappingSpec, TopologyRequest};
 use crate::{
-    ControlEvent, Coordinator, cancel_pending_restart, ensure_delete_param_forward_applied,
-    ensure_set_param_forward_applied, handle_get_trace_spans, handle_get_traces,
+    ControlEvent, Coordinator, cancel_pending_restart,
+    control::TopicSubscription,
+    direct_topic_endpoints, ensure_delete_param_forward_applied, ensure_set_param_forward_applied,
+    handle_get_trace_spans, handle_get_traces,
     handlers::{
         attach_log_subscriber, build_dataflow, dataflow_result, handle_destroy, parse_logs_node_id,
         reload_dataflow, resolve_name, restart_node, retrieve_logs, start_dataflow, stop_dataflow,
@@ -587,19 +589,35 @@ impl Coordinator {
             ControlEvent::TopicSubscribe {
                 dataflow_id,
                 topics,
+                direct,
                 sender,
                 done_tx,
             } => {
-                let result = start_topic_debug_stream(
-                    &mut self.running_dataflows,
-                    &mut self.daemon_connections,
-                    dataflow_id,
-                    topics,
-                    sender,
-                    &self.clock,
-                )
-                .await
-                .map_err(|err| format!("{err:?}"));
+                let direct = direct.map(|client_is_local| {
+                    direct_topic_endpoints(
+                        &self.running_dataflows,
+                        &self.daemon_connections,
+                        dataflow_id,
+                        &topics,
+                        client_is_local,
+                    )
+                });
+                let result = match direct {
+                    Some(Ok(Some(endpoints))) => Ok(TopicSubscription::Direct(endpoints)),
+                    Some(Err(err)) => Err(format!("{err:?}")),
+                    // Not asked for, or a daemon the client can't reach: relay.
+                    None | Some(Ok(None)) => start_topic_debug_stream(
+                        &mut self.running_dataflows,
+                        &mut self.daemon_connections,
+                        dataflow_id,
+                        topics,
+                        sender,
+                        &self.clock,
+                    )
+                    .await
+                    .map(TopicSubscription::Relayed)
+                    .map_err(|err| format!("{err:?}")),
+                };
                 let _ = done_tx.send(result);
             }
             ControlEvent::TopicCheck {

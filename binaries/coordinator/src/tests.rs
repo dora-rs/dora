@@ -10649,3 +10649,173 @@ async fn relinking_to_a_live_single_daemon_entry_does_not_replay() {
         "a relink must not trigger the rebuilt-entry replay; got {events:?}"
     );
 }
+
+/// A coordinator running `sender/message` on daemon `m1`, plus the daemon side
+/// of `m1`'s connection, to see what the daemon is sent and to answer it.
+struct TopicFixture {
+    coordinator: Coordinator,
+    dataflow_id: DataflowId,
+    daemon_rx: tokio::sync::mpsc::Receiver<String>,
+    pending_replies: Arc<tokio::sync::Mutex<HashMap<Uuid, tokio::sync::oneshot::Sender<String>>>>,
+}
+
+/// [`TopicFixture`] with debug inspection on, and `m1` connected from another
+/// host and reporting `zenoh_endpoint`.
+fn topic_coordinator(zenoh_endpoint: Option<&str>) -> TopicFixture {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let daemon_id = DaemonId::new(Some("m1".to_string()));
+    let mut dataflow =
+        test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+    dataflow.descriptor.debug.enable_debug_inspection = true;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+    let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let mut connection =
+        crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+    connection.peer_addr = Some(std::net::SocketAddr::from(([10, 0, 2, 7], 40001)));
+    connection.zenoh_listen_endpoint = zenoh_endpoint.map(str::to_owned);
+    let mut daemon_connections = DaemonConnections::default();
+    daemon_connections.add(daemon_id, connection);
+
+    let coordinator = test_coordinator(
+        HashMap::from([(dataflow_id, dataflow)]),
+        daemon_connections,
+        Arc::new(InMemoryStore::new()),
+    );
+    TopicFixture {
+        coordinator,
+        dataflow_id,
+        daemon_rx: rx,
+        pending_replies,
+    }
+}
+
+/// Send a `TopicSubscribe` for `sender/message` through the event loop.
+async fn subscribe_topic(
+    coordinator: &mut Coordinator,
+    dataflow_id: DataflowId,
+    direct: Option<bool>,
+) -> Result<crate::control::TopicSubscription, String> {
+    let (frame_tx, _frame_rx) =
+        tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    coordinator
+        .handle_control_event(ControlEvent::TopicSubscribe {
+            dataflow_id,
+            topics: vec![("sender".to_string().into(), "message".to_string().into())],
+            direct,
+            sender: frame_tx.into(),
+            done_tx,
+        })
+        .await
+        .unwrap();
+    done_rx.await.expect("the event loop must answer")
+}
+
+/// A direct subscription is answered with the endpoint of the daemon running
+/// the output, and nothing is relayed: the daemon is not asked to stream and
+/// no subscriber is registered.
+#[tokio::test]
+async fn direct_topic_subscribe_returns_endpoints_and_starts_no_stream() {
+    let TopicFixture {
+        mut coordinator,
+        dataflow_id,
+        mut daemon_rx,
+        ..
+    } = topic_coordinator(Some("tcp/10.0.2.7:5456"));
+
+    let outcome = subscribe_topic(&mut coordinator, dataflow_id, Some(false)).await;
+
+    assert_eq!(
+        outcome,
+        Ok(crate::control::TopicSubscription::Direct(vec![
+            "tcp/10.0.2.7:5456".to_string()
+        ]))
+    );
+    assert!(
+        daemon_rx.try_recv().is_err(),
+        "a direct subscription must not start a daemon stream"
+    );
+    assert!(
+        coordinator.running_dataflows[&dataflow_id]
+            .topic_subscribers
+            .is_empty()
+    );
+}
+
+/// With no endpoint the client can dial, a direct request is relayed instead,
+/// in the same request: the client then just reads the relayed stream.
+#[tokio::test]
+async fn direct_topic_subscribe_falls_back_to_the_relay_without_an_endpoint() {
+    #[derive(serde::Deserialize)]
+    struct OutboundRaw {
+        id: String,
+        params: Timestamped<DaemonCoordinatorEvent>,
+    }
+
+    for endpoint in [None, Some("tcp/127.0.0.1:5456")] {
+        let TopicFixture {
+            mut coordinator,
+            dataflow_id,
+            mut daemon_rx,
+            pending_replies,
+        } = topic_coordinator(endpoint);
+        // Answer the daemon's start request, as `ws_daemon` would.
+        let daemon_task = tokio::spawn(async move {
+            let outbound = daemon_rx.recv().await.expect("a start request");
+            let outbound: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            assert!(
+                matches!(
+                    outbound.params.inner,
+                    DaemonCoordinatorEvent::StartTopicDebugStream { .. }
+                ),
+                "unexpected daemon command: {:?}",
+                outbound.params.inner
+            );
+            let reply =
+                serde_json::to_string(&DaemonCoordinatorReply::StartTopicDebugStreamResult(Ok(())))
+                    .unwrap();
+            let request_id = Uuid::parse_str(&outbound.id).unwrap();
+            let reply_tx = pending_replies.lock().await.remove(&request_id).unwrap();
+            let _ = reply_tx.send(reply);
+        });
+
+        // A remote client (`false`) can't use the remote daemon's loopback
+        // endpoint either.
+        let outcome = subscribe_topic(&mut coordinator, dataflow_id, Some(false)).await;
+
+        timeout(TokioDuration::from_secs(10), daemon_task)
+            .await
+            .expect("the daemon must be asked to stream")
+            .unwrap();
+        assert!(
+            matches!(outcome, Ok(crate::control::TopicSubscription::Relayed(_))),
+            "endpoint {endpoint:?}: {outcome:?}"
+        );
+    }
+}
+
+/// A direct request is held to the same rule as a relayed one: no endpoints
+/// for a dataflow that has not enabled debug inspection.
+#[tokio::test]
+async fn direct_topic_subscribe_requires_debug_inspection() {
+    let TopicFixture {
+        mut coordinator,
+        dataflow_id,
+        mut daemon_rx,
+        ..
+    } = topic_coordinator(Some("tcp/10.0.2.7:5456"));
+    coordinator
+        .running_dataflows
+        .get_mut(&dataflow_id)
+        .unwrap()
+        .descriptor
+        .debug
+        .enable_debug_inspection = false;
+
+    let outcome = subscribe_topic(&mut coordinator, dataflow_id, Some(true)).await;
+
+    let err = outcome.expect_err("must be refused");
+    assert!(err.contains("enable_debug_inspection"), "{err}");
+    assert!(daemon_rx.try_recv().is_err());
+}

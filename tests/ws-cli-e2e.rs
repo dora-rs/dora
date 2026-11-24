@@ -258,10 +258,7 @@ fn start_mock_topic_server(subscription_id: Uuid, payload: Vec<u8>) -> u16 {
                 ControlRequest::TopicSubscribe { .. } => {
                     // Must advertise the current binary-frame encoding, or the
                     // real client refuses the subscription (dora-rs/dora#3153).
-                    let reply = ControlRequestReply::TopicSubscribed {
-                        subscription_id,
-                        protocol_version: Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION),
-                    };
+                    let reply = ControlRequestReply::topic_subscribed(subscription_id);
                     let response = serde_json::json!({
                         "id": request.id,
                         "result": reply,

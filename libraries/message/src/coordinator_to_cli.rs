@@ -73,7 +73,15 @@ pub enum ControlRequestReply {
         cli: Option<IpAddr>,
     },
     NodeInfoList(Vec<NodeInfo>),
+    /// Constructed through [`ControlRequestReply::topic_subscribed`] or
+    /// [`ControlRequestReply::topic_subscribed_direct`], not by literal: the
+    /// variant is `#[non_exhaustive]` so that a field added here is a minor
+    /// change rather than a 2.0 (see "Stability scope at 1.0" in
+    /// `docs/api-rust.md`).
+    #[non_exhaustive]
     TopicSubscribed {
+        /// The relayed stream's id, which its binary frames are prefixed
+        /// with. Nil when `zenoh_endpoints` is set: nothing is relayed then.
         subscription_id: Uuid,
         /// Binary-frame encoding the coordinator will send, see
         /// [`TOPIC_DATA_PROTOCOL_VERSION`](crate::TOPIC_DATA_PROTOCOL_VERSION).
@@ -83,6 +91,16 @@ pub enum ControlRequestReply {
         /// than misparse them as postcard.
         #[serde(default)]
         protocol_version: Option<u16>,
+        /// Set in answer to a `direct` subscribe request: the zenoh endpoints
+        /// of the daemons running the requested outputs, for the client to
+        /// subscribe to them itself. The coordinator relays nothing for such
+        /// a subscription.
+        ///
+        /// `None` means the topics are relayed under `subscription_id`: the
+        /// request was not `direct`, a daemon had no endpoint this client can
+        /// dial, or the coordinator predates the field.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        zenoh_endpoints: Option<Vec<String>>,
     },
     TraceList(Vec<TraceSummary>),
     TraceSpans(Vec<TraceSpan>),
@@ -211,6 +229,29 @@ pub struct DataflowResult {
     pub node_results: BTreeMap<NodeId, Result<(), NodeError>>,
 }
 
+impl ControlRequestReply {
+    /// The reply to a relayed topic subscription, stamped with the
+    /// binary-frame encoding this crate speaks
+    /// ([`TOPIC_DATA_PROTOCOL_VERSION`](crate::TOPIC_DATA_PROTOCOL_VERSION)).
+    pub fn topic_subscribed(subscription_id: Uuid) -> Self {
+        Self::TopicSubscribed {
+            subscription_id,
+            protocol_version: Some(crate::TOPIC_DATA_PROTOCOL_VERSION),
+            zenoh_endpoints: None,
+        }
+    }
+
+    /// The reply to a `direct` topic subscription: the zenoh endpoints to
+    /// read the topics from. Nothing is relayed, so the subscription id is nil.
+    pub fn topic_subscribed_direct(zenoh_endpoints: Vec<String>) -> Self {
+        Self::TopicSubscribed {
+            subscription_id: Uuid::nil(),
+            protocol_version: Some(crate::TOPIC_DATA_PROTOCOL_VERSION),
+            zenoh_endpoints: Some(zenoh_endpoints),
+        }
+    }
+}
+
 impl DataflowResult {
     pub fn ok_empty(uuid: Uuid, timestamp: uhlc::Timestamp) -> Self {
         Self {
@@ -275,6 +316,56 @@ impl std::fmt::Display for DataflowIdAndName {
             write!(f, "[{name}] {}", self.uuid)
         } else {
             write!(f, "[<unnamed>] {}", self.uuid)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A relayed reply keeps the exact shape older CLIs expect: the new field
+    /// is left out rather than sent as `null`.
+    #[test]
+    fn relayed_topic_subscribed_has_no_endpoints_field() {
+        let id = Uuid::from_u128(7);
+        let json = serde_json::to_value(ControlRequestReply::topic_subscribed(id)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"TopicSubscribed": {
+                "subscription_id": id,
+                "protocol_version": crate::TOPIC_DATA_PROTOCOL_VERSION,
+            }})
+        );
+    }
+
+    /// A reply from a coordinator that predates `zenoh_endpoints` decodes as
+    /// a relayed subscription, and a direct reply round-trips its endpoints.
+    #[test]
+    fn topic_subscribed_endpoints_decode_from_older_and_newer_coordinators() {
+        let older = r#"{"TopicSubscribed":{"subscription_id":"00000000-0000-0000-0000-000000000007","protocol_version":2}}"#;
+        match serde_json::from_str(older).unwrap() {
+            ControlRequestReply::TopicSubscribed {
+                zenoh_endpoints, ..
+            } => assert_eq!(zenoh_endpoints, None),
+            other => panic!("expected TopicSubscribed, got {other:?}"),
+        }
+
+        let endpoints = vec!["tcp/10.0.0.2:5456".to_string()];
+        let json = serde_json::to_string(&ControlRequestReply::topic_subscribed_direct(
+            endpoints.clone(),
+        ))
+        .unwrap();
+        match serde_json::from_str(&json).unwrap() {
+            ControlRequestReply::TopicSubscribed {
+                subscription_id,
+                zenoh_endpoints,
+                ..
+            } => {
+                assert_eq!(subscription_id, Uuid::nil());
+                assert_eq!(zenoh_endpoints, Some(endpoints));
+            }
+            other => panic!("expected TopicSubscribed, got {other:?}"),
         }
     }
 }
