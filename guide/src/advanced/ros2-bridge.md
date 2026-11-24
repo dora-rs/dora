@@ -1198,7 +1198,10 @@ arm.take_event()                     # {"new": {}, "changed": {"speed": 3.0}, "d
 ```
 
 Each call blocks, with the GIL released, for up to `timeout_s` (default
-30s). `take_event` returns only the target's changes, oldest first. On
+30s). `take_event` returns only the target's changes, oldest first; a change
+made right after the client is created can arrive before the target has
+matched its `/parameter_events` subscription and be missed, so read the
+current values with `get` rather than waiting for an event. On
 native Zenoh with `rep2016`, the client needs the `rcl_interfaces` type
 descriptions in `AMENT_PREFIX_PATH`, as the parameter server does. Under CycloneDDS a
 *dora-hosted* node's parameter services do not answer yet

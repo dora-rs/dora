@@ -3357,7 +3357,8 @@ impl Ros2ParameterClient {
 
     /// The next change to the target's parameters, or `None` if none has
     /// arrived: a dict with `new` and `changed` (dicts of values) and
-    /// `deleted` (a list of names).
+    /// `deleted` (a list of names). A change made right after the client was
+    /// created can be missed; read current values with `get`.
     ///
     /// :rtype: dict | None
     pub fn take_event(&self, py: Python<'_>) -> eyre::Result<Option<Py<PyDict>>> {

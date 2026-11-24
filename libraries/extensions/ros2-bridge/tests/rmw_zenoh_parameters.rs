@@ -832,6 +832,12 @@ async fn a_parameter_client_reaches_another_nodes_parameters() {
     let speed = described[0].as_ref().unwrap();
     assert_eq!(speed.name, "speed");
     assert_eq!(speed.r#type, raw::ParameterType::DOUBLE);
+    // dora's server answers a NOT_SET descriptor for an undeclared name.
+    let missing = client
+        .describe(&names(&["missing"]), TIMEOUT)
+        .await
+        .unwrap();
+    assert!(missing[0].is_none(), "{missing:?}");
 
     // A change on the other node is not reported.
     other

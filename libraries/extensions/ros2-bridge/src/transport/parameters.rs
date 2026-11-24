@@ -1,7 +1,7 @@
 //! A client for another ROS 2 node's parameters: its six `rcl_interfaces`
 //! parameter services and its changes on `/parameter_events` (#4297).
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{Durability, History, Liveliness, Reliability, Ros2Qos};
 use ros2_client::{
@@ -13,6 +13,9 @@ use ros2_client::{
 mod dds;
 pub use dds::DdsParameterClient;
 
+/// The history depth of rmw's parameter QoS profiles.
+pub const PARAMETER_QOS_DEPTH: i32 = 1000;
+
 /// rmw's `rmw_qos_profile_parameter_events` and `rmw_qos_profile_parameters`:
 /// what parameter services and `/parameter_events` use.
 pub fn parameters_qos() -> Ros2Qos {
@@ -21,7 +24,9 @@ pub fn parameters_qos() -> Ros2Qos {
             max_blocking_time: Duration::ZERO,
         },
         durability: Durability::Volatile,
-        history: History::KeepLast { depth: 1000 },
+        history: History::KeepLast {
+            depth: PARAMETER_QOS_DEPTH,
+        },
         liveliness: Liveliness::Automatic {
             lease_duration: None,
         },
@@ -193,12 +198,7 @@ impl ParameterClient {
         if asked == got {
             Ok(())
         } else {
-            Err(ParameterClientError::Length {
-                service: service.suffix(),
-                target: self.target().to_owned(),
-                asked,
-                got,
-            })
+            Err(length_error(self.target(), service, asked, got))
         }
     }
 
@@ -209,13 +209,14 @@ impl ParameterClient {
         timeout: Duration,
     ) -> Result<Vec<Option<ParameterValue>>, ParameterClientError> {
         let service = ParameterService::Get;
+        let deadline = Instant::now() + timeout;
         let values = per_name(self.target(), service, names, |names| async move {
             let response: rcl::GetParametersResponse = dispatch!(
                 self,
                 service,
                 get,
                 rcl::GetParametersRequest { names },
-                timeout
+                remaining(deadline)
             )?;
             Ok(response.values)
         })
@@ -237,13 +238,14 @@ impl ParameterClient {
         timeout: Duration,
     ) -> Result<Vec<u8>, ParameterClientError> {
         let service = ParameterService::GetTypes;
+        let deadline = Instant::now() + timeout;
         let types = per_name(self.target(), service, names, |names| async move {
             let response: rcl::GetParameterTypesResponse = dispatch!(
                 self,
                 service,
                 get_types,
                 rcl::GetParameterTypesRequest { names },
-                timeout
+                remaining(deadline)
             )?;
             Ok(response.values)
         })
@@ -322,17 +324,25 @@ impl ParameterClient {
         timeout: Duration,
     ) -> Result<Vec<Option<raw::ParameterDescriptor>>, ParameterClientError> {
         let service = ParameterService::Describe;
-        per_name(self.target(), service, names, |names| async move {
+        let deadline = Instant::now() + timeout;
+        let descriptors = per_name(self.target(), service, names, |names| async move {
             let response: rcl::DescribeParametersResponse = dispatch!(
                 self,
                 service,
                 describe,
                 rcl::DescribeParametersRequest { names },
-                timeout
+                remaining(deadline)
             )?;
             Ok(response.values)
         })
-        .await
+        .await?;
+        // ros2-client and dora's server describe an undeclared name as NOT_SET.
+        Ok(descriptors
+            .into_iter()
+            .map(|descriptor| {
+                descriptor.filter(|descriptor| descriptor.r#type != raw::ParameterType::NOT_SET)
+            })
+            .collect())
     }
 
     fn events_error(&self, error: impl std::fmt::Display) -> ParameterClientError {
@@ -342,10 +352,21 @@ impl ParameterClient {
         }
     }
 
+    /// `event` as a change to the target's parameters; `None` for another
+    /// node's event, or one that changes nothing (rclcpp and rclpy publish
+    /// one for an empty `set_parameters_atomically`).
+    fn accept(&self, event: raw::ParameterEvent) -> Option<ParameterChange> {
+        if event.node != self.target() {
+            return None;
+        }
+        Some(ParameterChange::from_event(event)).filter(|change| !change.is_empty())
+    }
+
     /// The next change to the target's parameters that has arrived, if any.
-    /// Events of other nodes, and events that change nothing (rclcpp and
-    /// rclpy publish one for an empty `set_parameters_atomically`), are
-    /// skipped.
+    ///
+    /// The `/parameter_events` subscription starts with the client, and a
+    /// change published before the target has matched it can be missed: read
+    /// the values with [`Self::get`] for a consistent start.
     pub fn try_next_change(&self) -> Result<Option<ParameterChange>, ParameterClientError> {
         loop {
             let event = match self {
@@ -353,21 +374,17 @@ impl ParameterClient {
                 #[cfg(feature = "rmw-zenoh")]
                 Self::Zenoh(client) => client.try_recv_event().map_err(|e| self.events_error(e)),
             }?;
-            match event {
-                None => return Ok(None),
-                Some(event) if event.node == self.target() => {
-                    let change = ParameterChange::from_event(event);
-                    if !change.is_empty() {
-                        return Ok(Some(change));
-                    }
-                }
-                Some(_) => {}
+            let Some(event) = event else {
+                return Ok(None);
+            };
+            if let Some(change) = self.accept(event) {
+                return Ok(Some(change));
             }
         }
     }
 
-    /// Waits for the next change to the target's parameters. Events of other
-    /// nodes are skipped.
+    /// Waits for the next change to the target's parameters, as
+    /// [`Self::try_next_change`] reports them.
     pub async fn next_change(&self) -> Result<ParameterChange, ParameterClientError> {
         loop {
             let event = match self {
@@ -375,13 +392,30 @@ impl ParameterClient {
                 #[cfg(feature = "rmw-zenoh")]
                 Self::Zenoh(client) => client.recv_event().await.map_err(|e| self.events_error(e)),
             }?;
-            if event.node == self.target() {
-                let change = ParameterChange::from_event(event);
-                if !change.is_empty() {
-                    return Ok(change);
-                }
+            if let Some(change) = self.accept(event) {
+                return Ok(change);
             }
         }
+    }
+}
+
+/// The time left until `deadline`, for one of several calls sharing a
+/// timeout.
+fn remaining(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
+}
+
+fn length_error(
+    target: &str,
+    service: ParameterService,
+    asked: usize,
+    got: usize,
+) -> ParameterClientError {
+    ParameterClientError::Length {
+        service: service.suffix(),
+        target: target.to_owned(),
+        asked,
+        got,
     }
 }
 
@@ -420,12 +454,7 @@ where
     Fut: std::future::Future<Output = Result<Vec<T>, ParameterClientError>>,
 {
     let answer = call(names.to_vec()).await?;
-    let length_error = |asked, got| ParameterClientError::Length {
-        service: service.suffix(),
-        target: target.to_owned(),
-        asked,
-        got,
-    };
+    let length_error = |asked, got| length_error(target, service, asked, got);
     if answer.len() == names.len() {
         return Ok(answer.into_iter().map(Some).collect());
     }
@@ -442,6 +471,48 @@ where
         }
     }
     Ok(each)
+}
+
+/// Checks that `target` is a fully qualified node name such as
+/// `/robot/arm`, so the service names and the event filter built from it
+/// match the node's.
+pub fn check_target(target: &str) -> Result<(), String> {
+    let invalid = || format!("`{target}` is not a fully qualified node name such as `/robot/arm`");
+    let (namespace, base) = target.rsplit_once('/').ok_or_else(invalid)?;
+    let namespace = if namespace.is_empty() { "/" } else { namespace };
+    let name = ros2_client::NodeName::new(namespace, base).map_err(|_| invalid())?;
+    if name.fully_qualified_name() == target {
+        Ok(())
+    } else {
+        Err(invalid())
+    }
+}
+
+#[cfg(test)]
+mod check_target_tests {
+    use super::check_target;
+
+    #[test]
+    fn fully_qualified_node_names_are_accepted() {
+        for target in ["/arm", "/robot/arm", "/a/b/c_1"] {
+            assert_eq!(check_target(target), Ok(()), "{target}");
+        }
+    }
+
+    #[test]
+    fn other_names_are_rejected() {
+        for target in [
+            "arm",
+            "/robot/arm/",
+            "/",
+            "",
+            "//arm",
+            "/robot//arm",
+            "/1arm",
+        ] {
+            assert!(check_target(target).is_err(), "{target}");
+        }
+    }
 }
 
 #[cfg(test)]

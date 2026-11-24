@@ -11,7 +11,7 @@ use ros2_client::{
     parameters::raw, rcl_interfaces as rcl,
 };
 
-use super::{ParameterService, parameters_qos};
+use super::{ParameterService, check_target, parameters_qos};
 use crate::transport::dds::{detect_service_mapping, to_qos_profile};
 
 /// One call at a time: `Client::async_receive_response(id)` drops the
@@ -44,9 +44,7 @@ impl DdsParameterClient {
         target: &str,
         mapping: ServiceMapping,
     ) -> Result<Self, String> {
-        if !target.starts_with('/') {
-            return Err(format!("`{target}` is not a fully qualified node name"));
-        }
+        check_target(target)?;
         let qos = to_qos_profile(&parameters_qos());
         macro_rules! client {
             ($service:expr) => {{
@@ -111,39 +109,38 @@ impl DdsParameterClient {
     ) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
         self.wait_for_matches(node, timeout).await?;
-        answered(
-            &self.get,
-            rcl::GetParametersRequest { names: vec![] },
-            deadline,
+        // The services are independent, so they warm up together.
+        futures::try_join!(
+            answered(
+                &self.get,
+                rcl::GetParametersRequest { names: vec![] },
+                deadline
+            ),
+            answered(
+                &self.get_types,
+                rcl::GetParameterTypesRequest { names: vec![] },
+                deadline,
+            ),
+            answered(
+                &self.describe,
+                rcl::DescribeParametersRequest { names: vec![] },
+                deadline,
+            ),
+            answered(
+                &self.list,
+                rcl::ListParametersRequest {
+                    prefixes: vec![],
+                    depth: 1,
+                },
+                deadline,
+            ),
+            answered(
+                &self.set,
+                rcl::SetParametersRequest { parameter: vec![] },
+                deadline
+            ),
         )
-        .await?;
-        answered(
-            &self.get_types,
-            rcl::GetParameterTypesRequest { names: vec![] },
-            deadline,
-        )
-        .await?;
-        answered(
-            &self.describe,
-            rcl::DescribeParametersRequest { names: vec![] },
-            deadline,
-        )
-        .await?;
-        answered(
-            &self.list,
-            rcl::ListParametersRequest {
-                prefixes: vec![],
-                depth: 1,
-            },
-            deadline,
-        )
-        .await?;
-        answered(
-            &self.set,
-            rcl::SetParametersRequest { parameter: vec![] },
-            deadline,
-        )
-        .await
+        .map(|_| ())
         .map_err(|error| {
             format!(
                 "the parameter services of `{}` do not answer: {error}",
@@ -246,6 +243,9 @@ impl DdsParameterClient {
 /// How long one warm-up request waits for its answer before it is resent.
 const WARM_UP_ATTEMPT: Duration = Duration::from_millis(500);
 
+/// How long to wait before resending a warm-up request that failed at once.
+const WARM_UP_BACKOFF: Duration = Duration::from_millis(100);
+
 /// Calls `client` with `request` until it answers, or `deadline`.
 async fn answered<Q: Message + Clone + 'static, R: Message + 'static>(
     client: &OneAtATime<Q, R>,
@@ -253,10 +253,16 @@ async fn answered<Q: Message + Clone + 'static, R: Message + 'static>(
     deadline: Instant,
 ) -> Result<(), String> {
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let started = Instant::now();
+        let remaining = deadline.saturating_duration_since(started);
         match call(client, request.clone(), WARM_UP_ATTEMPT.min(remaining)).await {
             Ok(_) => return Ok(()),
             Err(error) if remaining <= WARM_UP_ATTEMPT => return Err(error),
+            // A call that failed at once (not a timeout) is not resent in a
+            // busy loop.
+            Err(_) if started.elapsed() < WARM_UP_BACKOFF => {
+                futures_timer::Delay::new(WARM_UP_BACKOFF).await;
+            }
             Err(_) => {}
         }
     }

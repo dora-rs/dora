@@ -33,7 +33,9 @@ use super::{
         NodeServiceClient, NodeServiceServer, ServiceError, ServiceRequest, wait_for_service,
     },
 };
-use crate::transport::parameters::{ParameterService as Service, parameters_qos};
+use crate::transport::parameters::{
+    PARAMETER_QOS_DEPTH, ParameterService as Service, check_target, parameters_qos,
+};
 
 /// The built-in parameter every node has, as ros2-client declares it.
 const USE_SIM_TIME: &str = "use_sim_time";
@@ -54,7 +56,7 @@ pub enum ParameterError {
     Publisher(#[from] PubSubError),
     #[error(transparent)]
     Cdr(#[from] TransportCdrError),
-    #[error("`{0}` is not a fully qualified node name")]
+    #[error("{0}")]
     Target(String),
 }
 
@@ -430,7 +432,7 @@ fn key(node: &Node, name: &str, identity: &RosTypeIdentity) -> Result<DataKey, P
 
 /// The QoS history depth of the parameter services and events, and so also
 /// how many requests a parameter service holds before it drops new ones.
-const QUEUE_DEPTH: i32 = 1000;
+const QUEUE_DEPTH: i32 = PARAMETER_QOS_DEPTH;
 /// How long a request may wait for its reply before it expires.
 const REQUEST_EXPIRY: Duration = Duration::from_secs(30);
 
@@ -495,9 +497,7 @@ impl ParameterClient {
         target: &str,
         types: &ParameterTypes,
     ) -> Result<Self, ParameterError> {
-        if !target.starts_with('/') {
-            return Err(ParameterError::Target(target.to_owned()));
-        }
+        check_target(target).map_err(ParameterError::Target)?;
         let mut services = Vec::with_capacity(types.services.len());
         for (service, identity) in &types.services {
             let name = format!("{target}/{}", service.suffix());

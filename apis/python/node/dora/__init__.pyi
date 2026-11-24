@@ -800,7 +800,8 @@ class Ros2ParameterClient:
     def take_event(self) -> typing.Optional[dict]:
         """The next change to the target's parameters, or `None` if none has
         arrived: a dict with `new` and `changed` (dicts of values) and
-        `deleted` (a list of names)."""
+        `deleted` (a list of names). A change made right after the client was
+        created can be missed; read current values with `get`."""
 
     def __repr__(self) -> str:
         """Return repr(self)."""
