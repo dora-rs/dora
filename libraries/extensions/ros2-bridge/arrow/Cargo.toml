@@ -33,3 +33,8 @@ byteorder = "1"
 serde_assert = "0.8.0"
 # CDR codec used by ros2-client 0.10 on the wire; used in tests to verify the
 # real CDR byte layout (length prefixes, alignment) rather than just serde shape.
+
+# Outside the 1.x guarantee (docs/api-rust.md, "Stability scope at 1.0"):
+# the Rust Semantic Review page shows its breaking changes as allowed.
+[package.metadata.rust-semantic-review]
+allow-breaking-changes = true

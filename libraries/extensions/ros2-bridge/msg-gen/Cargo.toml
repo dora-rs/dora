@@ -30,3 +30,8 @@ serde_json = { workspace = true }
 [dev-dependencies]
 # `syn::visit` walks the generated code in the codegen tests.
 syn = { version = "2.0", features = ["visit"] }
+
+# Outside the 1.x guarantee (docs/api-rust.md, "Stability scope at 1.0"):
+# the Rust Semantic Review page shows its breaking changes as allowed.
+[package.metadata.rust-semantic-review]
+allow-breaking-changes = true
