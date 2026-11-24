@@ -157,6 +157,28 @@ fn ensure_action_nodes_built() {
     });
 }
 
+/// `(uuid, status)` of every dataflow `dora list --format json` prints, one
+/// JSON object per line. `None` if the command could not run.
+fn list_dataflows_json(dora: &str) -> Option<Vec<(String, String)>> {
+    let output = Command::new(dora)
+        .args(["list", "--format", "json"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Some(
+        stdout
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .map(|entry| {
+                let field = |key: &str| entry[key].as_str().unwrap_or_default().to_string();
+                (field("uuid"), field("status"))
+            })
+            .collect(),
+    )
+}
+
 /// Ensure no leftover coordinator/daemon from a previous test or manual run.
 fn cleanup_stale(dora: &str) {
     let _ = Command::new(dora)
@@ -255,6 +277,15 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
         .unwrap_or_else(|e| panic!("{name}: failed to run dora build: {e}"));
     assert!(build_status.success(), "{name}: dora build failed");
 
+    // `dora up` reuses the persistent store, and `dora list` keeps showing
+    // the finished and failed records of earlier runs until `dora clean`.
+    // Note them so the poll below only judges the dataflow started here.
+    let earlier: Vec<String> = list_dataflows_json(&dora)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(uuid, _)| uuid)
+        .collect();
+
     // Start dataflow (detach so we get control back immediately)
     let mut start_cmd = Command::new(&dora);
     start_cmd.args(["start", full_yaml.to_str().unwrap(), "--detach"]);
@@ -275,15 +306,13 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
         std::thread::sleep(Duration::from_secs(2));
 
         // Check if any dataflows are still running
-        let list_result = Command::new(&dora)
-            .args(["list", "--format", "json"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .ok();
-        if let Some(output) = list_result {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.contains("Failed") {
+        if let Some(entries) = list_dataflows_json(&dora) {
+            let statuses: Vec<String> = entries
+                .into_iter()
+                .filter(|(uuid, _)| !earlier.contains(uuid))
+                .map(|(_, status)| status)
+                .collect();
+            if statuses.iter().any(|status| status == "Failed") {
                 // Clean up before panicking
                 let _ = Command::new(&dora)
                     .args(["stop", "--all"])
@@ -297,7 +326,7 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
                     .status();
                 panic!("{name}: dataflow entered Failed state");
             }
-            if stdout.trim().is_empty() || !stdout.contains("Running") {
+            if !statuses.iter().any(|status| status == "Running") {
                 break;
             }
         }

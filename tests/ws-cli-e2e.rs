@@ -2539,18 +2539,22 @@ mod real_dataflow {
     }
 
     fn start_lifecycle_dataflow_detached(dora: &str) -> Uuid {
-        // Assert no stale dataflows before we start — if the coordinator
-        // already has an entry, first() would return the wrong UUID and every
-        // subsequent node-command assertion would silently target it instead.
+        // Assert no stale running dataflows before we start — if the
+        // coordinator already runs one, first() would return the wrong UUID
+        // and every subsequent node-command assertion would silently target it
+        // instead. Finished and failed dataflows from earlier tests are fine:
+        // `dora up` reuses the persistent store, and `dora list` keeps showing
+        // their records until `dora clean`.
         {
             let session = connect_session();
             if let ControlRequestReply::DataflowList(list) =
                 super::send_request(&session, &ControlRequest::List).unwrap()
             {
+                let active = list.get_active();
                 assert!(
-                    list.0.is_empty(),
-                    "stale dataflow(s) in coordinator before start: {:?}",
-                    list.0.iter().map(|e| e.id.uuid).collect::<Vec<_>>()
+                    active.is_empty(),
+                    "stale running dataflow(s) in coordinator before start: {:?}",
+                    active.iter().map(|id| id.uuid).collect::<Vec<_>>()
                 );
             }
         }
@@ -2570,9 +2574,9 @@ mod real_dataflow {
             let session = connect_session();
             let reply = super::send_request(&session, &ControlRequest::List).unwrap();
             if let ControlRequestReply::DataflowList(list) = reply
-                && let Some(entry) = list.0.first()
+                && let Some(id) = list.get_active().first()
             {
-                break entry.id.uuid;
+                break id.uuid;
             }
             assert!(
                 std::time::Instant::now() < deadline,
