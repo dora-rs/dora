@@ -1,7 +1,9 @@
-# Builds a Rust Semantic Review page for pull requests and links it in
-# a PR comment: the changed items grouped by module, their callers and
-# callees, and the public API changes. Advisory only — nothing depends on
-# this job, and it does not gate the merge queue.
+# Builds a Rust Semantic Review page for pull requests: the changed items
+# grouped by module, their callers and callees, and the public API changes.
+# The comment that links it is posted by rust-semantic-review-comment.yml,
+# whose token can write also on PRs from forks; this job's token is
+# read-only. Advisory only: nothing depends on this job, and it does not
+# gate the merge queue.
 #
 # The action is https://github.com/phil-opp/rust-semantic-review, a toy
 # project; don't rely on its page as the only basis for a review.
@@ -10,11 +12,6 @@
 # deletes `.cargo/config*` and `rust-toolchain*` from its copies, and runs
 # rust-analyzer without build scripts or proc macros (`trust-project-code`
 # stays off). So no `actions/checkout` either.
-#
-# PRs from forks get a read-only token under `pull_request`, so for them the
-# comment fails with a warning and the link is only in the job summary.
-# `pull_request_target` would let it comment, but it hands the job a write
-# token while it processes the fork's code, so it is deliberately not used.
 name: Rust Semantic Review
 
 # Only for PRs that touch Rust code or the dependencies: the analysis takes
@@ -40,9 +37,9 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
-  # Only to show in the comment when the page expires.
-  actions: read
+  # For the previous comment, which the page of the changes since then
+  # starts from.
+  pull-requests: read
 
 # A new push to a PR cancels its running job. Runs on `main` queue instead,
 # so that merges arriving faster than a cold build still save the cache.
@@ -55,6 +52,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: phil-opp/rust-semantic-review@f110f6242be3eb5682b29f9ea0204ff214448061 # main, 2026-11-24
+      - uses: phil-opp/rust-semantic-review@1983a7f902bac523ddac143c3e9cc3300faf831b # main, 2026-11-24
         with:
+          # Uploads the data for the comment instead of posting it.
+          comment: workflow-run
+          # Measured on this workspace: about 1% more resolved calls for a
+          # 1.8 GB target-directory cache, or ~3 extra minutes without it.
+          trust-project-code: false
           retention-days: 30
