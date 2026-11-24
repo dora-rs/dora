@@ -1,0 +1,60 @@
+# Builds a Rust Semantic Review page for pull requests and links it in
+# a PR comment: the changed items grouped by module, their callers and
+# callees, and the public API changes. Advisory only — nothing depends on
+# this job, and it does not gate the merge queue.
+#
+# The action is https://github.com/phil-opp/rust-semantic-review, a toy
+# project; don't rely on its page as the only basis for a review.
+#
+# The PR's code is never built or run: the tool clones the PR itself,
+# deletes `.cargo/config*` and `rust-toolchain*` from its copies, and runs
+# rust-analyzer without build scripts or proc macros (`trust-project-code`
+# stays off). So no `actions/checkout` either.
+#
+# PRs from forks get a read-only token under `pull_request`, so for them the
+# comment fails with a warning and the link is only in the job summary.
+# `pull_request_target` would let it comment, but it hands the job a write
+# token while it processes the fork's code, so it is deliberately not used.
+name: Rust Semantic Review
+
+# Only for PRs that touch Rust code or the dependencies: the analysis takes
+# about 7 minutes of runner time on this workspace, and a docs- or CI-only
+# PR has no Rust items to show.
+on:
+  pull_request:
+    paths:
+      - "**.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust-semantic-review.yml"
+  # Builds and caches only the tool (no PR, nothing to analyze): caches
+  # saved on `main` are the ones every PR can read, so PR runs skip the
+  # ~7 minute build of the tool.
+  push:
+    branches: [main]
+    paths:
+      - "**.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust-semantic-review.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+  # Only to show in the comment when the page expires.
+  actions: read
+
+# A new push to a PR cancels its running job. Runs on `main` queue instead,
+# so that merges arriving faster than a cold build still save the cache.
+concurrency:
+  group: rust-semantic-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: phil-opp/rust-semantic-review@f110f6242be3eb5682b29f9ea0204ff214448061 # main, 2026-11-24
+        with:
+          retention-days: 30
