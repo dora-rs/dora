@@ -98,7 +98,11 @@ mod tests {
                 &NodeId::from("node".to_string()),
                 operator,
                 incoming_events,
-                RuntimeHandle::new(events_tx, SharedAllocator::default()),
+                RuntimeHandle::new(
+                    dora_core::config::OperatorId::from("op".to_owned()),
+                    events_tx,
+                    SharedAllocator::default(),
+                ),
                 init_done_tx,
                 &dataflow,
             )

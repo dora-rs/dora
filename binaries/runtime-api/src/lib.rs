@@ -131,7 +131,7 @@ pub fn main(runner: impl OperatorRunner) -> eyre::Result<()> {
             &node_id,
             operator_definition,
             incoming_events,
-            RuntimeHandle::new(operator_events_tx, allocator),
+            RuntimeHandle::new(operator_id.clone(), operator_events_tx, allocator),
             init_done_tx,
             &dataflow_descriptor,
         )
@@ -321,7 +321,8 @@ async fn run(
                     parameters,
                     encoded,
                 } => {
-                    let output_id = operator_output_id(&operator_id, &output_id);
+                    // already `{operator}/{output}`: `RuntimeHandle::send_output`
+                    // qualified it to pick the sample's delivery path
                     let mut send = tokio::task::spawn_blocking(move || {
                         let result = node.send_output_encoded(output_id, parameters, encoded);
                         (node, result)
