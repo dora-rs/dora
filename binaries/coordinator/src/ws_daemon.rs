@@ -456,10 +456,7 @@ async fn handle_daemon_request(
             // its pending caller (COORDINATOR_PENDING).
             let json =
                 format!(r#"{{"id":"{request_id}","method":"daemon_event","params":{params}}}"#);
-            if cmd_tx.send(json).await.is_err() {
-                return false;
-            }
-            true
+            !cmd_tx.send(json).await.is_err()
         }
         // `CoordinatorRequest` is `#[non_exhaustive]`: a newer daemon may send a
         // variant this coordinator predates. Keep the connection open and drop
