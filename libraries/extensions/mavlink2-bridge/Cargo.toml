@@ -14,3 +14,11 @@ arrow = { workspace = true }
 thiserror = { workspace = true }
 num-traits = "0.2"
 url = { workspace = true }
+# Replays recorded `.tlog` files through `tlog://` endpoints. No further
+# dependencies of its own.
+mavlink-tlog = { version = "0.1.3", optional = true }
+
+[features]
+## `tlog:///path/flight.tlog?speed=1.0` endpoints that replay a recorded
+## QGroundControl / Mission Planner / MAVProxy telemetry log.
+tlog = ["dep:mavlink-tlog"]

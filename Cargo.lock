@@ -2328,6 +2328,7 @@ version = "1.1.0"
 dependencies = [
  "arrow 59.3.3",
  "mavlink",
+ "mavlink-tlog",
  "num-traits",
  "thiserror 2.0.21",
  "url",
@@ -4686,6 +4687,12 @@ dependencies = [
  "serde_arrays",
  "serialport",
 ]
+
+[[package]]
+name = "mavlink-tlog"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c46169136e460779b8c0532a0dfa898b2175888b49aa4ffe96fca3b0abcf683"
 
 [[package]]
 name = "mavlink2-bridge-example-heartbeat-emitter"
