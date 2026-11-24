@@ -21,3 +21,8 @@ opentelemetry-otlp = { version = "0.32", features = [
 opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "metrics"] }
 eyre = { workspace = true }
 opentelemetry-system-metrics = { version = "0.32.0" }
+
+# Outside the 1.x guarantee (docs/api-rust.md, "Stability scope at 1.0"):
+# the Rust Semantic Review page shows its breaking changes as allowed.
+[package.metadata.rust-semantic-review]
+allow-breaking-changes = true

@@ -8,6 +8,13 @@
 # The action is https://github.com/phil-opp/rust-semantic-review, a toy
 # project; don't rely on its page as the only basis for a review.
 #
+# Published crates outside the 1.x guarantee (docs/api-rust.md, "Stability
+# scope at 1.0") set `allow-breaking-changes` under
+# `[package.metadata.rust-semantic-review]`, so the page doesn't ask for a
+# breaking release of them. The tool reads it from the base branch, so a PR
+# can't silence its own breaking change. A crate that moves between tiers
+# adds or drops it.
+#
 # The PR's code is never built or run: the tool clones the PR itself,
 # deletes `.cargo/config*` and `rust-toolchain*` from its copies, and runs
 # rust-analyzer without build scripts or proc macros (`trust-project-code`

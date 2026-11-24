@@ -17,3 +17,8 @@ proc-macro = true
 syn = { version = "2.0.118", features = ["full"] }
 quote = "1.0.46"
 proc-macro2 = "1.0.106"
+
+# Outside the 1.x guarantee (docs/api-rust.md, "Stability scope at 1.0"):
+# the Rust Semantic Review page shows its breaking changes as allowed.
+[package.metadata.rust-semantic-review]
+allow-breaking-changes = true
