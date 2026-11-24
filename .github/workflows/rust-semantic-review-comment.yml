@@ -1,5 +1,7 @@
-# Posts the comment for each run of rust-semantic-review.yml on a pull
-# request, also on PRs from forks, whose runs get a read-only token.
+# Posts the comment for runs of rust-semantic-review.yml that couldn't post
+# it themselves: PRs from forks and by Dependabot, whose runs get a
+# read-only token. On other PRs the analysis run has already commented, and
+# this job finds no data to post.
 #
 # `workflow_run` runs this file as it is on the default branch, with a token
 # that can write. Nothing of the PR is checked out or run here: the
@@ -29,4 +31,4 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: phil-opp/rust-semantic-review/comment@1983a7f902bac523ddac143c3e9cc3300faf831b # main, 2026-11-24
+      - uses: phil-opp/rust-semantic-review/comment@d202f8afce3ab823ed4df9ed516215416d4caa60 # main, 2026-11-24
