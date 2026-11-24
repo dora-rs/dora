@@ -3311,7 +3311,7 @@ impl Ros2ParameterClient {
     /// The descriptor of each of `names`: a dict with `type`, `description`,
     /// `additional_constraints`, `read_only`, `dynamic_typing`,
     /// `integer_range` and `floating_point_range` (lists of
-    /// `(from, to, step)`).
+    /// `(from, to, step)`), or `None` for a name the target does not have.
     ///
     /// :type names: list[str]
     /// :type timeout_s: float, optional
@@ -3328,6 +3328,10 @@ impl Ros2ParameterClient {
             py.detach(|| futures::executor::block_on(self.client.describe(&names, timeout)))?;
         let dict = PyDict::new(py);
         for (name, descriptor) in names.iter().zip(descriptors) {
+            let Some(descriptor) = descriptor else {
+                dict.set_item(name, py.None())?;
+                continue;
+            };
             let entry = PyDict::new(py);
             entry.set_item("type", parameter_type_name(descriptor.r#type))?;
             entry.set_item("description", descriptor.description)?;

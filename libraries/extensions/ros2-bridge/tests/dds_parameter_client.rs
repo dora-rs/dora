@@ -83,7 +83,10 @@ fn a_parameter_client_reaches_a_ros2_client_node() {
         listed.sort();
         assert_eq!(listed, ["gains", "speed", "use_sim_time"]);
         let described = client.describe(&names(&["gains"]), TIMEOUT).await.unwrap();
-        assert_eq!(described[0].r#type, raw::ParameterType::DOUBLE_ARRAY);
+        assert_eq!(
+            described[0].as_ref().unwrap().r#type,
+            raw::ParameterType::DOUBLE_ARRAY
+        );
 
         let results = client
             .set(

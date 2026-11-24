@@ -795,7 +795,7 @@ class Ros2ParameterClient:
         """The descriptor of each of `names`: a dict with `type`, `description`,
         `additional_constraints`, `read_only`, `dynamic_typing`,
         `integer_range` and `floating_point_range` (lists of
-        `(from, to, step)`)."""
+        `(from, to, step)`), or `None` for a name the target does not have."""
 
     def take_event(self) -> typing.Optional[dict]:
         """The next change to the target's parameters, or `None` if none has

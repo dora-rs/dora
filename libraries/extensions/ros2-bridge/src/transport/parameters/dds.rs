@@ -1,6 +1,6 @@
 //! The parameter client on the DDS transport, through ros2-client.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::{
     future::{Either, select},
@@ -94,8 +94,65 @@ impl DdsParameterClient {
         &self.target
     }
 
-    /// Waits until the target's six services are matched, or `timeout`.
+    /// Waits until the target's six services are matched and answer, or
+    /// `timeout`.
+    ///
+    /// An rcl server can still drop the first request of a client it has
+    /// only just discovered (#4213): it answers before it has matched the
+    /// client's response reader. So each service whose request changes
+    /// nothing is called once with an empty request, retried until it
+    /// answers. `set_parameters_atomically` is left out: rclcpp and rclpy
+    /// publish an event for it and run the node's set callbacks even when it
+    /// is empty. By the time the others answer, its endpoints are matched.
     pub async fn wait_for_services(
+        &self,
+        node: &ros2_client::Node,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        self.wait_for_matches(node, timeout).await?;
+        answered(
+            &self.get,
+            rcl::GetParametersRequest { names: vec![] },
+            deadline,
+        )
+        .await?;
+        answered(
+            &self.get_types,
+            rcl::GetParameterTypesRequest { names: vec![] },
+            deadline,
+        )
+        .await?;
+        answered(
+            &self.describe,
+            rcl::DescribeParametersRequest { names: vec![] },
+            deadline,
+        )
+        .await?;
+        answered(
+            &self.list,
+            rcl::ListParametersRequest {
+                prefixes: vec![],
+                depth: 1,
+            },
+            deadline,
+        )
+        .await?;
+        answered(
+            &self.set,
+            rcl::SetParametersRequest { parameter: vec![] },
+            deadline,
+        )
+        .await
+        .map_err(|error| {
+            format!(
+                "the parameter services of `{}` do not answer: {error}",
+                self.target
+            )
+        })
+    }
+
+    async fn wait_for_matches(
         &self,
         node: &ros2_client::Node,
         timeout: Duration,
@@ -183,6 +240,25 @@ impl DdsParameterClient {
             .await
             .map(|(event, _)| event)
             .map_err(|error| error.to_string())
+    }
+}
+
+/// How long one warm-up request waits for its answer before it is resent.
+const WARM_UP_ATTEMPT: Duration = Duration::from_millis(500);
+
+/// Calls `client` with `request` until it answers, or `deadline`.
+async fn answered<Q: Message + Clone + 'static, R: Message + 'static>(
+    client: &OneAtATime<Q, R>,
+    request: Q,
+    deadline: Instant,
+) -> Result<(), String> {
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match call(client, request.clone(), WARM_UP_ATTEMPT.min(remaining)).await {
+            Ok(_) => return Ok(()),
+            Err(error) if remaining <= WARM_UP_ATTEMPT => return Err(error),
+            Err(_) => {}
+        }
     }
 }
 

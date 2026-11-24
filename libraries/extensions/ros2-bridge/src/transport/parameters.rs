@@ -83,6 +83,11 @@ pub struct ParameterChange {
 }
 
 impl ParameterChange {
+    /// Whether nothing was added, changed or deleted.
+    pub fn is_empty(&self) -> bool {
+        self.new.is_empty() && self.changed.is_empty() && self.deleted.is_empty()
+    }
+
     pub fn from_event(event: raw::ParameterEvent) -> Self {
         let values = |parameters: Vec<raw::Parameter>| {
             parameters
@@ -204,22 +209,22 @@ impl ParameterClient {
         timeout: Duration,
     ) -> Result<Vec<Option<ParameterValue>>, ParameterClientError> {
         let service = ParameterService::Get;
-        let response: rcl::GetParametersResponse = dispatch!(
-            self,
-            service,
-            get,
-            rcl::GetParametersRequest {
-                names: names.to_vec(),
-            },
-            timeout
-        )?;
-        self.check_length(service, names.len(), response.values.len())?;
-        Ok(response
-            .values
+        let values = per_name(self.target(), service, names, |names| async move {
+            let response: rcl::GetParametersResponse = dispatch!(
+                self,
+                service,
+                get,
+                rcl::GetParametersRequest { names },
+                timeout
+            )?;
+            Ok(response.values)
+        })
+        .await?;
+        Ok(values
             .into_iter()
-            .map(|value| match ParameterValue::from(value) {
-                ParameterValue::NotSet => None,
-                value => Some(value),
+            .map(|value| match value.map(ParameterValue::from) {
+                None | Some(ParameterValue::NotSet) => None,
+                Some(value) => Some(value),
             })
             .collect())
     }
@@ -232,17 +237,21 @@ impl ParameterClient {
         timeout: Duration,
     ) -> Result<Vec<u8>, ParameterClientError> {
         let service = ParameterService::GetTypes;
-        let response: rcl::GetParameterTypesResponse = dispatch!(
-            self,
-            service,
-            get_types,
-            rcl::GetParameterTypesRequest {
-                names: names.to_vec(),
-            },
-            timeout
-        )?;
-        self.check_length(service, names.len(), response.values.len())?;
-        Ok(response.values)
+        let types = per_name(self.target(), service, names, |names| async move {
+            let response: rcl::GetParameterTypesResponse = dispatch!(
+                self,
+                service,
+                get_types,
+                rcl::GetParameterTypesRequest { names },
+                timeout
+            )?;
+            Ok(response.values)
+        })
+        .await?;
+        Ok(types
+            .into_iter()
+            .map(|ty| ty.unwrap_or(raw::ParameterType::NOT_SET))
+            .collect())
     }
 
     /// Sets each of `values` on its own; one result per value.
@@ -305,24 +314,25 @@ impl ParameterClient {
         })
     }
 
-    /// The descriptors of `names`.
+    /// The descriptors of `names`; `None` for a name the target does not
+    /// have.
     pub async fn describe(
         &self,
         names: &[String],
         timeout: Duration,
-    ) -> Result<Vec<raw::ParameterDescriptor>, ParameterClientError> {
+    ) -> Result<Vec<Option<raw::ParameterDescriptor>>, ParameterClientError> {
         let service = ParameterService::Describe;
-        let response: rcl::DescribeParametersResponse = dispatch!(
-            self,
-            service,
-            describe,
-            rcl::DescribeParametersRequest {
-                names: names.to_vec(),
-            },
-            timeout
-        )?;
-        self.check_length(service, names.len(), response.values.len())?;
-        Ok(response.values)
+        per_name(self.target(), service, names, |names| async move {
+            let response: rcl::DescribeParametersResponse = dispatch!(
+                self,
+                service,
+                describe,
+                rcl::DescribeParametersRequest { names },
+                timeout
+            )?;
+            Ok(response.values)
+        })
+        .await
     }
 
     fn events_error(&self, error: impl std::fmt::Display) -> ParameterClientError {
@@ -333,7 +343,9 @@ impl ParameterClient {
     }
 
     /// The next change to the target's parameters that has arrived, if any.
-    /// Events of other nodes are skipped.
+    /// Events of other nodes, and events that change nothing (rclcpp and
+    /// rclpy publish one for an empty `set_parameters_atomically`), are
+    /// skipped.
     pub fn try_next_change(&self) -> Result<Option<ParameterChange>, ParameterClientError> {
         loop {
             let event = match self {
@@ -344,7 +356,10 @@ impl ParameterClient {
             match event {
                 None => return Ok(None),
                 Some(event) if event.node == self.target() => {
-                    return Ok(Some(ParameterChange::from_event(event)));
+                    let change = ParameterChange::from_event(event);
+                    if !change.is_empty() {
+                        return Ok(Some(change));
+                    }
                 }
                 Some(_) => {}
             }
@@ -361,7 +376,10 @@ impl ParameterClient {
                 Self::Zenoh(client) => client.recv_event().await.map_err(|e| self.events_error(e)),
             }?;
             if event.node == self.target() {
-                return Ok(ParameterChange::from_event(event));
+                let change = ParameterChange::from_event(event);
+                if !change.is_empty() {
+                    return Ok(change);
+                }
             }
         }
     }
@@ -385,6 +403,134 @@ fn set_result(result: raw::SetParametersResult) -> SetParametersResult {
     }
 }
 
+/// One answer per name, `None` for a name the target does not have.
+///
+/// ros2-client answers `NOT_SET` for an undeclared name, but rclcpp and rclpy
+/// answer `get_parameters`, `get_parameter_types` and `describe_parameters`
+/// with an empty list when any of the names is undeclared. Then each name is
+/// asked alone, and an empty answer means that name is undeclared.
+async fn per_name<T, F, Fut>(
+    target: &str,
+    service: ParameterService,
+    names: &[String],
+    mut call: F,
+) -> Result<Vec<Option<T>>, ParameterClientError>
+where
+    F: FnMut(Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>, ParameterClientError>>,
+{
+    let answer = call(names.to_vec()).await?;
+    let length_error = |asked, got| ParameterClientError::Length {
+        service: service.suffix(),
+        target: target.to_owned(),
+        asked,
+        got,
+    };
+    if answer.len() == names.len() {
+        return Ok(answer.into_iter().map(Some).collect());
+    }
+    if !answer.is_empty() {
+        return Err(length_error(names.len(), answer.len()));
+    }
+    let mut each = Vec::with_capacity(names.len());
+    for name in names {
+        let mut one = call(vec![name.clone()]).await?;
+        match one.len() {
+            0 => each.push(None),
+            1 => each.push(one.pop()),
+            got => return Err(length_error(1, got)),
+        }
+    }
+    Ok(each)
+}
+
+#[cfg(test)]
+mod per_name_tests {
+    use futures::executor::block_on;
+
+    use super::{ParameterClientError, ParameterService, per_name};
+
+    /// A target that has `declared` and answers like rclpy, or like
+    /// ros2-client (`0` for an undeclared name) when `fills_missing`.
+    fn target(
+        declared: &'static [&'static str],
+        fills_missing: bool,
+    ) -> impl FnMut(Vec<String>) -> std::future::Ready<Result<Vec<u8>, ParameterClientError>> {
+        move |names: Vec<String>| {
+            let known = |name: &String| declared.contains(&name.as_str());
+            std::future::ready(Ok(if fills_missing {
+                names.iter().map(|name| u8::from(known(name))).collect()
+            } else if names.iter().all(known) {
+                vec![1; names.len()]
+            } else {
+                vec![]
+            }))
+        }
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn a_full_answer_is_used_as_is() {
+        let answer = block_on(per_name(
+            "/arm",
+            ParameterService::GetTypes,
+            &names(&["speed", "gains"]),
+            target(&["speed", "gains"], false),
+        ))
+        .unwrap();
+        assert_eq!(answer, [Some(1), Some(1)]);
+    }
+
+    #[test]
+    fn an_empty_answer_is_asked_again_name_by_name() {
+        let answer = block_on(per_name(
+            "/arm",
+            ParameterService::GetTypes,
+            &names(&["speed", "missing", "gains"]),
+            target(&["speed", "gains"], false),
+        ))
+        .unwrap();
+        assert_eq!(answer, [Some(1), None, Some(1)]);
+    }
+
+    #[test]
+    fn no_names_need_no_retry() {
+        let answer = block_on(per_name(
+            "/arm",
+            ParameterService::Get,
+            &[],
+            target(&[], false),
+        ))
+        .unwrap();
+        assert!(answer.is_empty());
+    }
+
+    #[test]
+    fn a_partial_answer_is_an_error() {
+        let error = block_on(per_name(
+            "/arm",
+            ParameterService::Describe,
+            &names(&["speed", "gains"]),
+            |_| std::future::ready(Ok(vec![1_u8])),
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ParameterClientError::Length {
+                    asked: 2,
+                    got: 1,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ros2_client::{
@@ -400,6 +546,18 @@ mod tests {
             name: name.into(),
             value: value.into(),
         }
+    }
+
+    #[test]
+    fn an_event_without_parameters_is_no_change() {
+        let event = ParameterEvent {
+            stamp: Time::ZERO,
+            node: "/robot/arm".into(),
+            new_parameters: vec![],
+            changed_parameters: vec![],
+            deleted_parameters: vec![],
+        };
+        assert!(ParameterChange::from_event(event).is_empty());
     }
 
     #[test]

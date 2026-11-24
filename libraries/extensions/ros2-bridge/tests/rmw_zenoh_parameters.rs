@@ -829,8 +829,9 @@ async fn a_parameter_client_reaches_another_nodes_parameters() {
     assert_eq!(listed, ["gains", "speed", "use_sim_time"]);
     let described = client.describe(&names(&["speed"]), TIMEOUT).await.unwrap();
     assert_eq!(described.len(), 1);
-    assert_eq!(described[0].name, "speed");
-    assert_eq!(described[0].r#type, raw::ParameterType::DOUBLE);
+    let speed = described[0].as_ref().unwrap();
+    assert_eq!(speed.name, "speed");
+    assert_eq!(speed.r#type, raw::ParameterType::DOUBLE);
 
     // A change on the other node is not reported.
     other
