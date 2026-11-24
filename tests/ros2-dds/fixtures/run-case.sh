@@ -20,6 +20,7 @@ case "$CASE" in
   namespace) peer="topic_peer.py subscribe --topic /robot/chatter" ;;
   qos-transient-local) peer="topic_peer.py publish-transient" ;;
   parameters) peer="parameter_peer.py" ;;
+  parameter-client) peer="parameter_host_peer.py" ;;
   rosout) peer="rosout_peer.py" ;;
   *) echo "unknown Python case: $CASE" >&2; exit 2 ;;
 esac

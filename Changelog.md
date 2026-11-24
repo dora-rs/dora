@@ -4,6 +4,7 @@
 
 ### Added
 
+- **dora nodes can read and tune another ROS 2 node's parameters** ([#4297](https://github.com/dora-rs/dora/issues/4297)). `Ros2Node.create_parameter_client("/robot/arm")` in Python, and `transport::parameters::ParameterClient` in Rust, wrap the target's six `rcl_interfaces` parameter services (`get`, `get_types`, `set`, `set_atomically`, `list`, `describe`) and report its changes from `/parameter_events`, on DDS and native Zenoh. Before, dora could only host parameters. Under CycloneDDS a dora-hosted node's parameters stay out of reach until [#4215](https://github.com/dora-rs/dora/issues/4215).
 - **A YAML ROS 2 action server can let its handler accept or reject each goal** ([#4248](https://github.com/dora-rs/dora/pull/4248), [#4234](https://github.com/dora-rs/dora/issues/4234)). When the bridge node declares a `goal_response` input, the bridge forwards each new goal on `goal` without answering the ROS 2 client. It then accepts or rejects the goal as the handler answers on a `goal_response` input: the goal's `goal_id` in the metadata and a one-element boolean array, `true` to accept, as data. A goal without an answer within 10 s is rejected. Without that input the bridge keeps accepting every goal on arrival, and the `ros2:` config gains no new key. This works on DDS and native Zenoh.
 
 ### Changed
