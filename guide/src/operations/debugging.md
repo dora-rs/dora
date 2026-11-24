@@ -9,6 +9,7 @@ This guide covers how to debug, record, replay, and monitor dora dataflows. It i
 - [Prerequisites](#prerequisites)
 - [Quick Debugging Checklist](#quick-debugging-checklist)
 - [Record and Replay](#record-and-replay)
+  - [Installing the Record and Replay Helpers](#installing-the-record-and-replay-helpers)
   - [Recording a Dataflow](#recording-a-dataflow)
   - [Recording Specific Topics](#recording-specific-topics)
   - [Proxy Recording (Remote / Diskless)](#proxy-recording-remote--diskless)
@@ -117,6 +118,21 @@ dora record dataflow.yml -o debug-capture.drec
 
 Record captures live dataflow messages to a file. Replay substitutes source nodes with recorded data, letting you reproduce behavior without hardware.
 
+### Installing the Record and Replay Helpers
+
+Local recording and replay launch separate helper binaries. The 1.1.0 CLI
+release archive and `dora-rs-cli` wheel ship the CLI alone. Build the helpers
+in a Dora checkout that matches your installed CLI version.
+
+```bash
+cargo build --locked --release -p dora-record-node -p dora-replay-node
+```
+
+Add the build output directory (`target/release` by default) to `PATH`
+before running `dora record` or `dora replay` from your project. When run
+from the Dora workspace root, the CLI can build the helper on demand.
+[Proxy recording](#proxy-recording-remote--diskless) runs directly in the CLI.
+
 ### Recording a Dataflow
 
 ```bash
@@ -127,7 +143,7 @@ dora record dataflow.yml
 dora record dataflow.yml -o my-capture.drec
 ```
 
-This injects a hidden `__dora_record__` node into the dataflow that subscribes to all node outputs and writes them to a `.drec` file. The record node binary (`dora-record-node`) is auto-built on first use.
+This injects a hidden `__dora_record__` node into the dataflow that subscribes to all node outputs and writes them to a `.drec` file.
 
 The recording runs until you press Ctrl-C or the dataflow stops.
 
@@ -192,8 +208,6 @@ Replay works by:
 2. Identifying which nodes produced the recorded data
 3. Replacing those source nodes with `dora-replay-node` instances
 4. Running the modified dataflow -- downstream nodes receive replayed data identically to live data
-
-The replay node binary (`dora-replay-node`) is auto-built on first use.
 
 ### Replay Options
 
