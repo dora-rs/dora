@@ -263,6 +263,7 @@ dora replay | --loop
 dora replay | --output-yaml <value>
 dora replay | --replace <value>
 dora replay | --speed <value>
+dora replay | --start-at <value>
 dora replay | <file> (required)
 dora restart
 dora restart | --coordinator-addr <value>
