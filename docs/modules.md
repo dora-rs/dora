@@ -95,16 +95,21 @@ module:
   inputs: [image]
   outputs: [result]
 
-build: pip install -r requirements.txt
+build: pip install -r "$MODULE_DIR/requirements.txt"
 
 nodes:
   - id: model
     path: model.py
+    args: --weights "$MODULE_DIR/model weights.bin"
+    env:
+      CONFIG: "$MODULE_DIR/config.yaml"
     inputs:
       image: _mod/image
     outputs:
       - result
 ```
+
+In a module's `args:`, `build:`, and string `env:` values, `$MODULE_DIR` expands to the canonical absolute path of the directory containing the declaring module file. Dora resolves symlinks during expansion, so the path is independent of the node's working directory. In a nested module, the token refers to that module's own directory. A remote daemon must be able to access the referenced files at the same absolute paths. Quote paths in arguments and build commands when they may contain spaces.
 
 ## Using Modules
 
