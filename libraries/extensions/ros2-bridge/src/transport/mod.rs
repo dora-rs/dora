@@ -6,6 +6,7 @@ pub mod action;
 pub mod dds;
 pub mod diagnostics;
 pub mod interfaces;
+pub mod parameters;
 mod types;
 pub mod zenoh;
 

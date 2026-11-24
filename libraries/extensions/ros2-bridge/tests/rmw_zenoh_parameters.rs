@@ -735,3 +735,148 @@ async fn a_set_is_answered_during_a_get_burst() {
         );
     }
 }
+
+/// A dora node reads and tunes another node's parameters through
+/// `transport::parameters::ParameterClient` (#4297).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parameter_client_reaches_another_nodes_parameters() {
+    use dora_ros2_bridge::transport::{
+        parameters::{ParameterChange, ParameterClient},
+        zenoh::parameters::ParameterClient as ZenohParameterClient,
+    };
+
+    const TIMEOUT: Duration = Duration::from_secs(5);
+    let context = Context::open(ContextOptions {
+        domain_id: 48,
+        config_uri: None,
+    })
+    .await
+    .unwrap();
+    let types = ParameterTypes::resolve(RmwZenohCompatibility::Humble, &resolver()).unwrap();
+    let host = |namespace: &'static str, name: &'static str| {
+        let context = &context;
+        let types = &types;
+        async move {
+            let node = context
+                .create_node("zid", name, "/", namespace, name)
+                .await
+                .unwrap();
+            let server = ParameterServer::declare(
+                &node,
+                &NodeName::new(namespace, name).unwrap(),
+                types,
+                vec![
+                    ("speed".into(), ParameterValue::Double(1.5)),
+                    ("gains".into(), ParameterValue::DoubleArray(vec![1.0, 2.0])),
+                ],
+                Some(Box::new(|name, value| {
+                    if name == "speed" && !matches!(value, ParameterValue::Double(_)) {
+                        Err("speed must stay a double".into())
+                    } else {
+                        Ok(())
+                    }
+                })),
+            )
+            .await
+            .unwrap();
+            (node, server)
+        }
+    };
+    let (_arm, arm) = host("/robot", "arm").await;
+    // Another node's parameter events, which the client must leave out.
+    let (_other, other) = host("/robot", "other").await;
+
+    let tuner = context
+        .create_node("zid", "tuner", "/", "/tools", "tuner")
+        .await
+        .unwrap();
+    let zenoh_client = ZenohParameterClient::declare(&tuner, NODE, &types)
+        .await
+        .unwrap();
+    zenoh_client
+        .wait_for_services(&tuner, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let client = ParameterClient::Zenoh(Box::new(zenoh_client));
+    assert_eq!(client.target(), NODE);
+
+    let names = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        client
+            .get(&names(&["speed", "missing"]), TIMEOUT)
+            .await
+            .unwrap(),
+        [Some(ParameterValue::Double(1.5)), None]
+    );
+    assert_eq!(
+        client
+            .get_types(&names(&["speed", "use_sim_time", "missing"]), TIMEOUT)
+            .await
+            .unwrap(),
+        [
+            raw::ParameterType::DOUBLE,
+            raw::ParameterType::BOOL,
+            raw::ParameterType::NOT_SET
+        ]
+    );
+    let mut listed = client.list(vec![], 0, TIMEOUT).await.unwrap().names;
+    listed.sort();
+    assert_eq!(listed, ["gains", "speed", "use_sim_time"]);
+    let described = client.describe(&names(&["speed"]), TIMEOUT).await.unwrap();
+    assert_eq!(described.len(), 1);
+    assert_eq!(described[0].name, "speed");
+    assert_eq!(described[0].r#type, raw::ParameterType::DOUBLE);
+
+    // A change on the other node is not reported.
+    other
+        .set("speed", ParameterValue::Double(5.0))
+        .await
+        .unwrap();
+    let results = client
+        .set(
+            vec![
+                ("speed".into(), ParameterValue::Double(2.0)),
+                ("speed".into(), ParameterValue::String("fast".into())),
+            ],
+            TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert_eq!(results, [Ok(()), Err("speed must stay a double".into())]);
+    assert_eq!(arm.get("speed"), Some(ParameterValue::Double(2.0)));
+    let change = tokio::time::timeout(TIMEOUT, client.next_change())
+        .await
+        .expect("a parameter event")
+        .unwrap();
+    assert_eq!(
+        change,
+        ParameterChange {
+            new: vec![],
+            changed: vec![("speed".into(), ParameterValue::Double(2.0))],
+            deleted: vec![],
+        }
+    );
+
+    let atomic = client
+        .set_atomically(
+            vec![
+                ("speed".into(), ParameterValue::Double(3.0)),
+                ("gains".into(), ParameterValue::DoubleArray(vec![3.0])),
+            ],
+            TIMEOUT,
+        )
+        .await
+        .unwrap();
+    assert_eq!(atomic, Ok(()));
+    let change = tokio::time::timeout(TIMEOUT, client.next_change())
+        .await
+        .expect("a parameter event")
+        .unwrap();
+    assert_eq!(change.changed.len(), 2);
+    assert!(client.try_next_change().unwrap().is_none());
+}
