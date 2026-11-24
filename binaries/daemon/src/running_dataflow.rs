@@ -605,7 +605,13 @@ impl RunningDataflow {
     /// grows while a user holds a `dora topic` subscription, and
     /// `StopTopicDebugStream` already reaps its entries on unsubscribe, so it is
     /// bounded by live subscriptions rather than by add/remove churn.
+    ///
+    /// The node's `dynamic_nodes` marker goes too: it describes the removed
+    /// incarnation, not the id. Left behind, a later static re-add under the
+    /// same id was still treated as dynamic — `dora node replace` refused it,
+    /// and producers added afterwards skipped it as a required startup acker.
     pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
+        self.dynamic_nodes.remove(node_id);
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
         self.node_stderr_most_recent.remove(node_id);
