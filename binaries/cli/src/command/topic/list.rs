@@ -69,7 +69,7 @@ fn list(
                 subscribers
                     .entry((user.source.clone(), user.output.clone()))
                     .or_default()
-                    .push((node.id.clone(), input_id.clone()));
+                    .push((node.id.clone(), input_id));
             }
         }
     }
