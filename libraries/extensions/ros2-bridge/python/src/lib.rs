@@ -1176,6 +1176,69 @@ impl Ros2Node {
             None => self.dds_node().is_ok_and(|node| node.has_parameter(name)),
         }
     }
+
+    /// Create a client for the parameters of another ROS2 node, given its
+    /// fully qualified name (e.g. `/robot/arm`). Waits until the node's
+    /// parameter services are available, for up to `timeout_s` (default 20s).
+    ///
+    /// ```python
+    /// arm = ros2_node.create_parameter_client("/robot/arm")
+    /// arm.get(["speed"])           # {"speed": 1.5}
+    /// arm.set({"speed": 2.0})      # [(True, "")]
+    /// arm.take_event()             # {"new": {}, "changed": {"speed": 2.0}, "deleted": []}
+    /// ```
+    ///
+    /// :type node: str
+    /// :type timeout_s: float, optional
+    /// :rtype: Ros2ParameterClient
+    #[pyo3(signature = (node, timeout_s=None))]
+    pub fn create_parameter_client(
+        &mut self,
+        py: Python<'_>,
+        node: &str,
+        timeout_s: Option<f64>,
+    ) -> eyre::Result<Ros2ParameterClient> {
+        use dora_ros2_bridge::transport::{
+            parameters::{DdsParameterClient, ParameterClient},
+            zenoh::parameters::ParameterClient as ZenohParameterClient,
+        };
+        let timeout = timeout_or(timeout_s, 20.0);
+        let target = node;
+        let client = match &mut self.node {
+            dora_ros2_bridge::transport::Node::Dds(node) => {
+                let client = DdsParameterClient::new(node.as_inner_mut(), target)
+                    .map_err(|error| eyre!(error))?;
+                let node = node.as_inner();
+                // Releases the GIL: this waits for discovery.
+                py.detach(|| futures::executor::block_on(client.wait_for_services(node, timeout)))
+                    .map_err(|error| eyre!(error))?;
+                ParameterClient::Dds(Box::new(client))
+            }
+            dora_ros2_bridge::transport::Node::Zenoh(node) => {
+                let dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. } =
+                    self.transport.config
+                else {
+                    unreachable!()
+                };
+                let types = ParameterTypes::resolve(
+                    compatibility,
+                    &TypeDescriptionResolver::from_ament_prefix_path(),
+                )
+                .wrap_err("a ROS2 parameter client on Zenoh needs the `rcl_interfaces` types")?;
+                let node = &*node;
+                let client = futures::executor::block_on(ZenohParameterClient::declare(
+                    node, target, &types,
+                ))
+                .wrap_err_with(|| format!("failed to create a parameter client for `{target}`"))?;
+                py.detach(|| futures::executor::block_on(client.wait_for_services(node, timeout)))
+                    .wrap_err_with(|| {
+                        format!("the parameter services of `{target}` are not available")
+                    })?;
+                ParameterClient::Zenoh(Box::new(client))
+            }
+        };
+        Ok(Ros2ParameterClient { client })
+    }
 }
 
 /// Parse a fully-qualified ROS2 name (e.g. `/ns/sub/base`) into a
@@ -3107,6 +3170,252 @@ impl Ros2ServiceClient {
     }
 }
 
+/// A client for another ROS2 node's parameters. Create via
+/// [`Ros2Node::create_parameter_client`].
+///
+/// Each call blocks, with the GIL released, until the target answers or
+/// `timeout_s` (default 30s) passes. Values are `bool`, `int`, `float`,
+/// `str`, `bytes` or homogeneous lists of them, as for `set_parameter`.
+///
+/// warnings:
+/// - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+///   at any point without it being considered a breaking change.
+#[pyclass]
+#[non_exhaustive]
+pub struct Ros2ParameterClient {
+    client: dora_ros2_bridge::transport::parameters::ParameterClient,
+}
+
+#[pymethods]
+impl Ros2ParameterClient {
+    /// The target node's fully qualified name.
+    ///
+    /// :rtype: str
+    #[getter]
+    pub fn target(&self) -> String {
+        self.client.target().to_owned()
+    }
+
+    /// The values of `names`, as a dict; `None` for a name the target does
+    /// not have.
+    ///
+    /// :type names: list[str]
+    /// :type timeout_s: float, optional
+    /// :rtype: dict
+    #[pyo3(signature = (names, timeout_s=None))]
+    pub fn get(
+        &self,
+        py: Python<'_>,
+        names: Vec<String>,
+        timeout_s: Option<f64>,
+    ) -> eyre::Result<Py<PyDict>> {
+        let timeout = timeout_or(timeout_s, 30.0);
+        let values = py.detach(|| futures::executor::block_on(self.client.get(&names, timeout)))?;
+        let dict = PyDict::new(py);
+        for (name, value) in names.iter().zip(values) {
+            let value = match value {
+                Some(value) => parameter_value_to_py(py, &value)?,
+                None => py.None(),
+            };
+            dict.set_item(name, value)?;
+        }
+        Ok(dict.unbind())
+    }
+
+    /// The type of each of `names` (`"bool"`, `"integer"`, `"double"`,
+    /// `"string"`, `"byte_array"`, `"bool_array"`, `"integer_array"`,
+    /// `"double_array"`, `"string_array"`, or `"not_set"` for a name the
+    /// target does not have).
+    ///
+    /// :type names: list[str]
+    /// :type timeout_s: float, optional
+    /// :rtype: dict[str, str]
+    #[pyo3(signature = (names, timeout_s=None))]
+    pub fn get_types(
+        &self,
+        py: Python<'_>,
+        names: Vec<String>,
+        timeout_s: Option<f64>,
+    ) -> eyre::Result<HashMap<String, String>> {
+        let timeout = timeout_or(timeout_s, 30.0);
+        let types =
+            py.detach(|| futures::executor::block_on(self.client.get_types(&names, timeout)))?;
+        Ok(names
+            .into_iter()
+            .zip(types)
+            .map(|(name, ty)| (name, parameter_type_name(ty).to_owned()))
+            .collect())
+    }
+
+    /// Set each of `values` on its own. Returns one `(successful, reason)`
+    /// per value, in order.
+    ///
+    /// :type values: dict
+    /// :type timeout_s: float, optional
+    /// :rtype: list[tuple[bool, str]]
+    #[pyo3(signature = (values, timeout_s=None))]
+    pub fn set(
+        &self,
+        values: Bound<'_, PyDict>,
+        timeout_s: Option<f64>,
+    ) -> eyre::Result<Vec<(bool, String)>> {
+        let py = values.py();
+        let values = parameter_values(&values)?;
+        let timeout = timeout_or(timeout_s, 30.0);
+        let results =
+            py.detach(|| futures::executor::block_on(self.client.set(values, timeout)))?;
+        Ok(results.into_iter().map(set_outcome).collect())
+    }
+
+    /// Set all of `values` or none of them. Returns `(successful, reason)`.
+    ///
+    /// :type values: dict
+    /// :type timeout_s: float, optional
+    /// :rtype: tuple[bool, str]
+    #[pyo3(signature = (values, timeout_s=None))]
+    pub fn set_atomically(
+        &self,
+        values: Bound<'_, PyDict>,
+        timeout_s: Option<f64>,
+    ) -> eyre::Result<(bool, String)> {
+        let py = values.py();
+        let values = parameter_values(&values)?;
+        let timeout = timeout_or(timeout_s, 30.0);
+        let result =
+            py.detach(|| futures::executor::block_on(self.client.set_atomically(values, timeout)))?;
+        Ok(set_outcome(result))
+    }
+
+    /// The target's parameter names under `prefixes` (all if empty), to
+    /// `depth` levels (0: no limit).
+    ///
+    /// :type prefixes: list[str], optional
+    /// :type depth: int, optional
+    /// :type timeout_s: float, optional
+    /// :rtype: list[str]
+    #[pyo3(signature = (prefixes=None, depth=0, timeout_s=None))]
+    pub fn list(
+        &self,
+        py: Python<'_>,
+        prefixes: Option<Vec<String>>,
+        depth: u64,
+        timeout_s: Option<f64>,
+    ) -> eyre::Result<Vec<String>> {
+        let timeout = timeout_or(timeout_s, 30.0);
+        let prefixes = prefixes.unwrap_or_default();
+        let listed =
+            py.detach(|| futures::executor::block_on(self.client.list(prefixes, depth, timeout)))?;
+        Ok(listed.names)
+    }
+
+    /// The descriptor of each of `names`: a dict with `type`, `description`,
+    /// `additional_constraints`, `read_only`, `dynamic_typing`,
+    /// `integer_range` and `floating_point_range` (lists of
+    /// `(from, to, step)`).
+    ///
+    /// :type names: list[str]
+    /// :type timeout_s: float, optional
+    /// :rtype: dict[str, dict]
+    #[pyo3(signature = (names, timeout_s=None))]
+    pub fn describe(
+        &self,
+        py: Python<'_>,
+        names: Vec<String>,
+        timeout_s: Option<f64>,
+    ) -> eyre::Result<Py<PyDict>> {
+        let timeout = timeout_or(timeout_s, 30.0);
+        let descriptors =
+            py.detach(|| futures::executor::block_on(self.client.describe(&names, timeout)))?;
+        let dict = PyDict::new(py);
+        for (name, descriptor) in names.iter().zip(descriptors) {
+            let entry = PyDict::new(py);
+            entry.set_item("type", parameter_type_name(descriptor.r#type))?;
+            entry.set_item("description", descriptor.description)?;
+            entry.set_item("additional_constraints", descriptor.additional_constraints)?;
+            entry.set_item("read_only", descriptor.read_only)?;
+            entry.set_item("dynamic_typing", descriptor.dynamic_typing)?;
+            let integer_range: Vec<_> = descriptor
+                .integer_range
+                .iter()
+                .map(|range| (range.from_value, range.to_value, range.step))
+                .collect();
+            entry.set_item("integer_range", integer_range)?;
+            let floating_point_range: Vec<_> = descriptor
+                .floating_point_range
+                .iter()
+                .map(|range| (range.from_value, range.to_value, range.step))
+                .collect();
+            entry.set_item("floating_point_range", floating_point_range)?;
+            dict.set_item(name, entry)?;
+        }
+        Ok(dict.unbind())
+    }
+
+    /// The next change to the target's parameters, or `None` if none has
+    /// arrived: a dict with `new` and `changed` (dicts of values) and
+    /// `deleted` (a list of names).
+    ///
+    /// :rtype: dict | None
+    pub fn take_event(&self, py: Python<'_>) -> eyre::Result<Option<Py<PyDict>>> {
+        let Some(change) = self.client.try_next_change()? else {
+            return Ok(None);
+        };
+        let values = |values: Vec<(String, ros2_client::ParameterValue)>| -> eyre::Result<_> {
+            let dict = PyDict::new(py);
+            for (name, value) in values {
+                dict.set_item(name, parameter_value_to_py(py, &value)?)?;
+            }
+            Ok(dict)
+        };
+        let event = PyDict::new(py);
+        event.set_item("new", values(change.new)?)?;
+        event.set_item("changed", values(change.changed)?)?;
+        event.set_item("deleted", change.deleted)?;
+        Ok(Some(event.unbind()))
+    }
+}
+
+/// The `rcl_interfaces/msg/ParameterType` constant as a Python-side name.
+fn parameter_type_name(ty: u8) -> &'static str {
+    match ty {
+        0 => "not_set",
+        1 => "bool",
+        2 => "integer",
+        3 => "double",
+        4 => "string",
+        5 => "byte_array",
+        6 => "bool_array",
+        7 => "integer_array",
+        8 => "double_array",
+        9 => "string_array",
+        _ => "unknown",
+    }
+}
+
+/// `values` as parameter values, in the dict's order.
+fn parameter_values(
+    values: &Bound<'_, PyDict>,
+) -> eyre::Result<Vec<(String, ros2_client::ParameterValue)>> {
+    values
+        .iter()
+        .map(|(name, value)| {
+            let name: String = name
+                .extract()
+                .map_err(|e| eyre!("parameter names must be str: {e}"))?;
+            let value = py_to_parameter_value(&value)
+                .wrap_err_with(|| format!("invalid value for parameter `{name}`"))?;
+            Ok((name, value))
+        })
+        .collect()
+}
+
+fn set_outcome(result: Result<(), String>) -> (bool, String) {
+    match result {
+        Ok(()) => (true, String::new()),
+        Err(reason) => (false, reason),
+    }
+}
+
 /// ROS2 service server. Create via [`Ros2Node::create_service_server`].
 ///
 /// warnings:
@@ -3312,6 +3621,7 @@ pub fn create_dora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Ros2Publisher>()?;
     m.add_class::<Ros2Subscription>()?;
     m.add_class::<Ros2ServiceClient>()?;
+    m.add_class::<Ros2ParameterClient>()?;
     m.add_class::<Ros2ServiceServer>()?;
     m.add_class::<Ros2ActionClient>()?;
     m.add_class::<Ros2ActionServer>()?;
@@ -3901,5 +4211,107 @@ mod dds_action_status_tests {
             matches!(qos.reliability(), Some(Reliability::Reliable { .. })),
             "{qos:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod parameter_client_tests {
+    use super::*;
+
+    /// One Python node tunes another's parameters through
+    /// `create_parameter_client` (#4297), on Zenoh.
+    #[test]
+    fn a_python_node_reads_and_sets_another_nodes_parameters() {
+        use pyo3::types::{PyAnyMethods, PyDict, PyDictMethods, PyList};
+        let context = Ros2Context::new(
+            Some(Vec::new()),
+            Some(Ros2Transport::zenoh("humble", None).unwrap()),
+            Some(79),
+        )
+        .unwrap();
+        pyo3::Python::attach(|py| {
+            let parameters = PyDict::new(py);
+            parameters.set_item("speed", 1.5).unwrap();
+            parameters.set_item("gains", vec![1.0, 2.0]).unwrap();
+            let _host = context
+                .new_node(
+                    "arm",
+                    "/robot",
+                    Ros2NodeOptions::new(Some(false)),
+                    Some(parameters),
+                )
+                .unwrap();
+            let mut tuner = context
+                .new_node("tuner", "/tools", Ros2NodeOptions::new(Some(false)), None)
+                .unwrap();
+            let client = tuner
+                .create_parameter_client(py, "/robot/arm", Some(10.0))
+                .unwrap();
+            assert_eq!(client.target(), "/robot/arm");
+
+            let names = |names: &[&str]| {
+                PyList::new(py, names)
+                    .unwrap()
+                    .extract::<Vec<String>>()
+                    .unwrap()
+            };
+            let values = client.get(py, names(&["speed", "missing"]), None).unwrap();
+            let values = values.bind(py);
+            assert_eq!(
+                values
+                    .get_item("speed")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<f64>()
+                    .unwrap(),
+                1.5
+            );
+            assert!(values.get_item("missing").unwrap().unwrap().is_none());
+
+            let types = client
+                .get_types(py, names(&["speed", "gains"]), None)
+                .unwrap();
+            assert_eq!(types["speed"], "double");
+            assert_eq!(types["gains"], "double_array");
+
+            let mut listed = client.list(py, None, 0, None).unwrap();
+            listed.sort();
+            assert_eq!(listed, ["gains", "speed", "use_sim_time"]);
+
+            let described = client.describe(py, names(&["speed"]), None).unwrap();
+            let speed = described.bind(py).get_item("speed").unwrap().unwrap();
+            assert_eq!(
+                speed.get_item("type").unwrap().extract::<String>().unwrap(),
+                "double"
+            );
+
+            let update = PyDict::new(py);
+            update.set_item("speed", 2.0).unwrap();
+            update.set_item("gains", "not a list").unwrap();
+            let results = client.set(update, None).unwrap();
+            assert_eq!(results[0], (true, String::new()));
+            assert!(!results[1].0, "{results:?}");
+
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let change = loop {
+                if let Some(change) = client.take_event(py).unwrap() {
+                    break change;
+                }
+                assert!(std::time::Instant::now() < deadline, "no parameter event");
+                py.detach(|| std::thread::sleep(Duration::from_millis(20)));
+            };
+            let changed = change.bind(py).get_item("changed").unwrap().unwrap();
+            assert_eq!(
+                changed.get_item("speed").unwrap().extract::<f64>().unwrap(),
+                2.0
+            );
+
+            let atomic = PyDict::new(py);
+            atomic.set_item("speed", 3.0).unwrap();
+            assert_eq!(
+                client.set_atomically(atomic, None).unwrap(),
+                (true, String::new())
+            );
+        });
     }
 }
