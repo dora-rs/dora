@@ -5466,6 +5466,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "param-recorder-node"
+version = "1.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

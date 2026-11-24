@@ -19,6 +19,7 @@
 
 #![cfg(unix)]
 
+use std::collections::BTreeMap;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -26,7 +27,9 @@ use std::sync::Once;
 use std::time::{Duration, Instant};
 
 use dora_cli::WsSession;
-use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_message::{
+    cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply, id::NodeId,
+};
 use uuid::Uuid;
 
 static BUILD: Once = Once::new();
@@ -44,6 +47,8 @@ fn ensure_built() {
                 "late-dynamic-sender",
                 "-p",
                 "emit-then-exit-source-node",
+                "-p",
+                "param-recorder-node",
             ])
             .status()
             .expect("failed to run cargo build");
@@ -164,17 +169,20 @@ fn spawn_coordinator(dora: &Path, port: u16, redb: &Path, log: &Path) -> Child {
 /// Query the coordinator for the set of `Running` dataflow uuids. Returns an
 /// error if the coordinator is unreachable (used while polling for reconnect).
 fn list_active(port: u16) -> eyre::Result<Vec<Uuid>> {
-    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
-    let session = WsSession::connect(addr)?;
-    let data = serde_json::to_vec(&ControlRequest::List)?;
-    let reply_bytes = session.request(&data)?;
-    let reply: ControlRequestReply = serde_json::from_slice(&reply_bytes)?;
-    match reply {
+    match control_request(port, &ControlRequest::List)? {
         ControlRequestReply::DataflowList(list) => {
             Ok(list.get_active().into_iter().map(|d| d.uuid).collect())
         }
         other => eyre::bail!("unexpected list reply: {other:?}"),
     }
+}
+
+/// Send one control request to the coordinator on `port` and decode its reply.
+fn control_request(port: u16, request: &ControlRequest) -> eyre::Result<ControlRequestReply> {
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr)?;
+    let reply_bytes = session.request(&serde_json::to_vec(request)?)?;
+    Ok(serde_json::from_slice(&reply_bytes)?)
 }
 
 fn dump_logs(coord_log: &Path, daemon_log: &Path) {
@@ -387,6 +395,253 @@ fn node_survives_coordinator_reconnect() {
     }
 
     // Teardown: stop the dataflow before Cleanup kills the processes.
+    let _ = Command::new(&dora)
+        .arg("stop")
+        .arg("--all")
+        .arg("--coordinator-port")
+        .arg(port.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// What `param-recorder-node` reports: the pids it started under, and the
+/// params it holds after applying its `set`/`del` lines in order.
+fn recorded_params(path: &Path) -> (Vec<u32>, BTreeMap<String, serde_json::Value>) {
+    let mut pids = Vec::new();
+    let mut params = BTreeMap::new();
+    for line in std::fs::read_to_string(path).unwrap_or_default().lines() {
+        let mut parts = line.splitn(3, ' ');
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some("pid"), Some(pid), None) => pids.extend(pid.parse::<u32>().ok()),
+            (Some("set"), Some(key), Some(value)) => {
+                let value = serde_json::from_str(value).expect("recorded value is JSON");
+                params.insert(key.to_string(), value);
+            }
+            (Some("del"), Some(key), None) => {
+                params.remove(key);
+            }
+            _ => panic!("unexpected line in the param record: {line:?}"),
+        }
+    }
+    (pids, params)
+}
+
+/// The params the coordinator's store holds for `node`.
+fn stored_params(
+    port: u16,
+    dataflow_id: Uuid,
+    node: &NodeId,
+) -> eyre::Result<BTreeMap<String, serde_json::Value>> {
+    let request = ControlRequest::GetParams {
+        dataflow_id,
+        node_id: node.clone(),
+    };
+    match control_request(port, &request)? {
+        ControlRequestReply::ParamList { params } => Ok(params.into_iter().collect()),
+        other => eyre::bail!("unexpected GetParams reply: {other:?}"),
+    }
+}
+
+/// Scenario 3.8 of `docs/plan-fault-injection.md` at the coordinator level:
+/// param changes acknowledged across a coordinator SIGKILL reach the node.
+///
+/// The daemon is frozen while the coordinator is killed and restarted, so it
+/// cannot reconnect yet. A `set` and a `delete` sent in that window are only
+/// persisted, and acknowledged. Once the daemon reconnects, the node must hold
+/// exactly what the store holds, as the same process. Before #4181 the
+/// coordinator never replayed persisted params to a rebuilt single-daemon
+/// dataflow, so both changes were acknowledged and never reached the node
+/// (dora-rs/dora#4180).
+#[test]
+fn param_changes_during_a_coordinator_restart_reach_the_node() {
+    ensure_built();
+
+    let dora = bin("dora");
+    let node = bin("param-recorder-node");
+    let node_id: NodeId = "recorder".to_string().into();
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let record = tmp.path().join("params.log");
+    let redb = tmp.path().join("coordinator.redb");
+    let coord_log = tmp.path().join("coordinator.log");
+    let daemon_log = tmp.path().join("daemon.log");
+    let dataflow_yml = tmp.path().join("dataflow.yml");
+    std::fs::write(
+        &dataflow_yml,
+        format!(
+            "nodes:\n  \
+             - id: {node_id}\n    \
+             path: {node}\n    \
+             inputs:\n      \
+             tick: dora/timer/millis/500\n    \
+             env:\n      \
+             DORA_TEST_MARKER_FILE: {record}\n",
+            node = node.display(),
+            record = record.display(),
+        ),
+    )
+    .expect("write dataflow yml");
+
+    let port = free_port();
+    let daemon_listen_port = free_port();
+    let mut cleanup = Cleanup::default();
+
+    cleanup.coordinator = Some(spawn_coordinator(&dora, port, &redb, &coord_log));
+    wait_until(
+        || port_open(port),
+        Duration::from_secs(20),
+        "coordinator to accept connections",
+    );
+    let daemon_out = std::fs::File::create(&daemon_log).expect("create daemon log");
+    let daemon_err = daemon_out.try_clone().expect("clone daemon log");
+    cleanup.daemon = Some(
+        Command::new(&dora)
+            .arg("daemon")
+            .arg("--coordinator-port")
+            .arg(port.to_string())
+            .arg("--local-listen-port")
+            .arg(daemon_listen_port.to_string())
+            .stdout(Stdio::from(daemon_out))
+            .stderr(Stdio::from(daemon_err))
+            .spawn()
+            .expect("failed to spawn daemon"),
+    );
+    let daemon_pid = cleanup.daemon.as_ref().unwrap().id();
+
+    let start = Command::new(&dora)
+        .arg("start")
+        .arg(&dataflow_yml)
+        .arg("--detach")
+        .arg("--coordinator-port")
+        .arg(port.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("failed to run dora start");
+    if !start.success() {
+        dump_logs(&coord_log, &daemon_log);
+        panic!("dora start failed");
+    }
+    wait_until(
+        || list_active(port).map(|v| v.len() == 1).unwrap_or(false),
+        Duration::from_secs(45),
+        "dataflow to register as Running",
+    );
+    let dataflow_id = list_active(port).expect("list active")[0];
+    // `Running` is reported before the node has connected to its daemon; the
+    // node writes its pid once it has, and a param sent earlier is refused.
+    wait_until(
+        || !recorded_params(&record).0.is_empty(),
+        Duration::from_secs(45),
+        "node to connect and record its pid",
+    );
+    let set = |key: &str, value: i64| {
+        control_request(
+            port,
+            &ControlRequest::SetParam {
+                dataflow_id,
+                node_id: node_id.clone(),
+                key: key.to_string(),
+                value: serde_json::json!(value),
+            },
+        )
+    };
+
+    // Before the fault: a param set while everything is connected reaches the
+    // node, and the node's view equals the store's.
+    let reply = set("before", 1).expect("set `before`");
+    assert!(
+        matches!(reply, ControlRequestReply::ParamSet),
+        "set `before`: {reply:?}"
+    );
+    let expected_before = BTreeMap::from([("before".to_string(), serde_json::json!(1))]);
+    wait_until(
+        || recorded_params(&record).1 == expected_before,
+        Duration::from_secs(30),
+        "node to apply `before`",
+    );
+    let (pids, _) = recorded_params(&record);
+    assert_eq!(pids.len(), 1, "node started once: {pids:?}");
+    let node_pid = pids[0];
+
+    // The fault: freeze the daemon so it cannot reconnect, then SIGKILL the
+    // coordinator and restart it on the same store.
+    signal(daemon_pid, "-STOP");
+    {
+        let coord = cleanup.coordinator.as_mut().unwrap();
+        coord.kill().expect("failed to kill coordinator");
+        coord.wait().expect("failed to reap coordinator");
+    }
+    cleanup.coordinator = None;
+    wait_until(
+        || !port_open(port),
+        Duration::from_secs(10),
+        "coordinator port to close",
+    );
+    cleanup.coordinator = Some(spawn_coordinator(&dora, port, &redb, &coord_log));
+    wait_until(
+        || port_open(port),
+        Duration::from_secs(20),
+        "coordinator to restart",
+    );
+
+    // While the daemon is away, a set and a delete are persisted and
+    // acknowledged.
+    let set_reply = set("during", 2);
+    let delete_reply = control_request(
+        port,
+        &ControlRequest::DeleteParam {
+            dataflow_id,
+            node_id: node_id.clone(),
+            key: "before".to_string(),
+        },
+    );
+    signal(daemon_pid, "-CONT");
+    assert!(
+        matches!(set_reply, Ok(ControlRequestReply::ParamSet)),
+        "set `during` while the daemon is away: {set_reply:?}"
+    );
+    assert!(
+        matches!(delete_reply, Ok(ControlRequestReply::ParamDeleted)),
+        "delete `before` while the daemon is away: {delete_reply:?}"
+    );
+
+    // After recovery: the store holds exactly what the acknowledged writes
+    // produced, and once the daemon reconnects the node holds the same.
+    let expected_after = BTreeMap::from([("during".to_string(), serde_json::json!(2))]);
+    let stored = stored_params(port, dataflow_id, &node_id).expect("read stored params");
+    assert_eq!(
+        stored, expected_after,
+        "params in the store after the restart"
+    );
+    wait_until(
+        || {
+            list_active(port)
+                .map(|v| v.contains(&dataflow_id))
+                .unwrap_or(false)
+        },
+        Duration::from_secs(60),
+        "daemon to reconnect and the dataflow to be re-adopted",
+    );
+    let applied = wait_for(
+        || recorded_params(&record).1 == expected_after,
+        Duration::from_secs(30),
+    );
+    let (pids, node_view) = recorded_params(&record);
+    if !applied || pids != vec![node_pid] {
+        dump_logs(&coord_log, &daemon_log);
+    }
+    assert_eq!(
+        node_view, expected_after,
+        "the node must hold the params the store holds after the daemon reconnects"
+    );
+    assert_eq!(
+        pids,
+        vec![node_pid],
+        "the node must keep running as the same process"
+    );
+
     let _ = Command::new(&dora)
         .arg("stop")
         .arg("--all")

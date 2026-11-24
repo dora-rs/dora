@@ -1,0 +1,22 @@
+[package]
+name = "param-recorder-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node that appends every param it is sent (`dora param set` /
+# `delete`) to `DORA_TEST_MARKER_FILE`. Used by tests/daemon-reconnect-e2e.rs
+# to check that the params a node applied match the coordinator's store after
+# a coordinator restart (dora-rs/dora#4180).
+
+[[bin]]
+name = "param-recorder-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }
