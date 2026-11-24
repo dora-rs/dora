@@ -1,39 +1,35 @@
-use std::{ptr::NonNull, sync::Arc};
+use std::sync::Arc;
 
-use aligned_vec::{AVec, ConstAlign};
 use dora_arrow_convert::IntoArrow;
+use dora_message::node_to_daemon::DataMessage;
 
-use crate::arrow_utils::decode_arrow_ipc_zero_copy_raw;
+use crate::arrow_utils::{IpcPayload, decode_arrow_ipc_zero_copy_raw};
 
-pub enum RawData {
-    Empty,
-    Vec(AVec<u8, ConstAlign<128>>),
-}
-
-impl RawData {
-    pub fn into_arrow_array(self) -> eyre::Result<arrow::array::ArrayData> {
-        match self {
-            // A metadata-only message with no payload. Any real array is a
-            // non-empty IPC stream, so an empty payload maps to the unit array.
-            // An empty `Vec` (a zero-length sample sent over the daemon path)
-            // is the same message, and the zenoh path already decodes an
-            // empty payload this way, so it must not become `Event::Error`.
-            RawData::Empty => Ok(unit_array()),
-            RawData::Vec(data) if data.is_empty() => Ok(unit_array()),
-            RawData::Vec(data) => {
-                // Wrap the 128-byte-aligned `AVec` as an Arrow `Buffer` without
-                // copying (the buffer aliases the allocation), then let the
-                // zero-copy IPC decoder slice the array buffers out of it in
-                // place (it realigns internally only if under-aligned).
-                let ptr = NonNull::new(data.as_ptr() as *mut _).unwrap();
-                let len = data.len();
-                let raw_buffer = unsafe {
-                    arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data))
-                };
-                decode_arrow_ipc_zero_copy_raw(raw_buffer)
-            }
+/// Decode a received payload into an Arrow array without copying it.
+///
+/// The payload stays behind its `Arc`: the Arrow buffer aliases the
+/// 128-byte-aligned allocation and keeps the `Arc` alive as its owner, and the
+/// zero-copy IPC decoder slices the array buffers out of it in place (it
+/// realigns internally only if under-aligned). Taking the `Arc` by reference
+/// means a payload that is still shared — a recorded input, an
+/// integration-test output — decodes in place instead of being deep-copied by
+/// `Arc::unwrap_or_clone` just to hand ownership to the decoder.
+pub(crate) fn shared_data_to_arrow_array(
+    data: Option<&Arc<DataMessage>>,
+) -> eyre::Result<arrow::array::ArrayRef> {
+    let data = match data {
+        // A metadata-only message with no payload. Any real array is a
+        // non-empty IPC stream, so an empty payload maps to the unit array.
+        // An empty `Vec` (a zero-length sample sent over the daemon path)
+        // is the same message, and the zenoh path already decodes an
+        // empty payload this way, so it must not become `Event::Error`.
+        None => unit_array(),
+        Some(message) if message.is_empty() => unit_array(),
+        Some(message) => {
+            decode_arrow_ipc_zero_copy_raw(IpcPayload::from_shared(message.clone()).into_arrow())?
         }
-    }
+    };
+    Ok(arrow::array::make_array(data))
 }
 
 /// The unit array an empty payload decodes to, on every receive path.
@@ -41,18 +37,18 @@ pub(crate) fn unit_array() -> arrow::array::ArrayData {
     dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data()
 }
 
-impl std::fmt::Debug for RawData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Data").finish_non_exhaustive()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::arrow_utils::ipc_encode;
+    use aligned_vec::{AVec, ConstAlign};
     use arrow::array::{Array, Float32Array};
-    use dora_message::node_to_daemon::DataMessage;
+
+    fn decode(message: DataMessage) -> arrow::array::ArrayData {
+        shared_data_to_arrow_array(Some(&Arc::new(message)))
+            .unwrap()
+            .to_data()
+    }
 
     /// The daemon/TCP fallback carries the IPC stream as a postcard-serialized
     /// `DataMessage::Vec`. A round-trip through that serialization must preserve
@@ -79,7 +75,7 @@ mod tests {
             "deserialized DataMessage::Vec must stay 128-byte aligned for zero-copy decode"
         );
 
-        let decoded = RawData::Vec(avec).into_arrow_array().unwrap();
+        let decoded = decode(DataMessage::Vec(avec));
         assert_eq!(
             data, decoded,
             "daemon-path payload must decode to the input"
@@ -91,15 +87,50 @@ mod tests {
     /// zenoh payload does, rather than fail as an IPC stream with no batches.
     #[test]
     fn empty_vec_payload_decodes_like_no_payload() {
-        let decoded = RawData::Vec(AVec::new(128)).into_arrow_array().unwrap();
-        assert_eq!(decoded, RawData::Empty.into_arrow_array().unwrap());
+        let decoded = decode(DataMessage::Vec(AVec::new(128)));
+        assert_eq!(decoded, unit_array());
+    }
+
+    /// A payload shared behind an `Arc` (a recorded input, an integration-test
+    /// output) decodes in place: the decoded array aliases the shared
+    /// allocation instead of a copy of it.
+    #[test]
+    fn shared_payload_decodes_without_copying() {
+        let data = Float32Array::from((0..1000).map(|i| i as f32).collect::<Vec<_>>()).into_data();
+        let len = ipc_encode::ipc_fast_path_len_data(&data).unwrap();
+        let mut avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, len);
+        ipc_encode::encode_ipc_into_data(&data, &mut avec).unwrap();
+        let payload_range = avec.as_ptr_range();
+        let shared = Arc::new(DataMessage::Vec(avec));
+
+        let decoded = shared_data_to_arrow_array(Some(&shared)).unwrap().to_data();
+        assert_eq!(data, decoded);
+        let values = decoded.buffers()[0].as_ptr();
+        assert!(
+            payload_range.contains(&values),
+            "decoded values must alias the shared payload, not a copy of it"
+        );
+        // The caller's handle is untouched and still usable.
+        assert_eq!(
+            Arc::strong_count(&shared),
+            2,
+            "decoded array keeps the payload alive"
+        );
+        drop(decoded);
+        assert_eq!(Arc::strong_count(&shared), 1);
+
+        let empty = Arc::new(DataMessage::Vec(AVec::new(128)));
+        assert_eq!(
+            shared_data_to_arrow_array(Some(&empty)).unwrap().to_data(),
+            unit_array()
+        );
     }
 
     /// An empty payload (metadata-only message) decodes to the unit array, never
     /// an error.
     #[test]
     fn empty_payload_decodes_to_unit_array() {
-        let decoded = RawData::Empty.into_arrow_array().unwrap();
+        let decoded = shared_data_to_arrow_array(None).unwrap().to_data();
         assert_eq!(decoded, unit_array());
     }
 }
