@@ -39,7 +39,8 @@ permissions:
   contents: read
   # For the comment.
   pull-requests: write
-  # Only to show in the comment when the page expires.
+  # To show in the comment when the page expires, and to reuse the
+  # previous run's analysis for the changes since the previous comment.
   actions: read
 
 # A new push to a PR cancels its running job. Runs on `main` queue instead,
@@ -53,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: phil-opp/rust-semantic-review@d202f8afce3ab823ed4df9ed516215416d4caa60 # main, 2026-11-24
+      - uses: phil-opp/rust-semantic-review@df39af20bbf153708944bafdd2910bd37e6665a0 # main, 2026-11-24
         with:
           # Measured on this workspace: about 1% more resolved calls for a
           # 1.8 GB target-directory cache, or ~3 extra minutes without it.
