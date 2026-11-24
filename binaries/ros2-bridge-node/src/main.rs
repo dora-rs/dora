@@ -679,8 +679,11 @@ fn run_zenoh_action_client(
             while let Ok((payload, _)) = feedback_client.feedback.recv_async().await {
                 match deserialize_cdr::<FeedbackMessage<BridgeMessage>>(&payload) {
                     Ok(message) => {
+                        let goal_id = message.goal_id.uuid.to_string();
                         if let Some(data) = message.feedback.0
-                            && feedback_tx.send(ActionEvent::Feedback(data)).is_err()
+                            && feedback_tx
+                                .send(ActionEvent::Feedback { goal_id, data })
+                                .is_err()
                         {
                             break;
                         }
@@ -760,7 +763,13 @@ fn run_zenoh_action_client(
                     match deserialize_cdr::<GetResultResponse<BridgeMessage>>(&response) {
                         Ok(response) => {
                             if let Some(data) = response.result.0 {
-                                let _ = result_tx.send(ActionEvent::Result(data));
+                                let goal_id = goal_id.uuid.to_string();
+                                let status = goal_status_to_str(response.status);
+                                let _ = result_tx.send(ActionEvent::Result {
+                                    goal_id,
+                                    status,
+                                    data,
+                                });
                             }
                         }
                         Err(error) => tracing::warn!("invalid Zenoh action result: {error}"),
@@ -769,14 +778,20 @@ fn run_zenoh_action_client(
             }
             MergedEvent::Dora(Event::Stop(_)) => break,
             MergedEvent::Dora(_) => {}
-            MergedEvent::External(ActionEvent::Feedback(data)) => node.send_output(
+            MergedEvent::External(ActionEvent::Feedback { goal_id, data }) => node.send_output(
                 "feedback".into(),
-                Default::default(),
+                goal_parameters(&goal_id),
                 StructArray::from(data),
             )?,
-            MergedEvent::External(ActionEvent::Result(data)) => {
-                node.send_output("result".into(), Default::default(), StructArray::from(data))?
-            }
+            MergedEvent::External(ActionEvent::Result {
+                goal_id,
+                status,
+                data,
+            }) => node.send_output(
+                "result".into(),
+                action_result_parameters(&goal_id, status),
+                StructArray::from(data),
+            )?,
         }
     }
     Ok(())
@@ -1173,6 +1188,34 @@ fn goal_parameters(goal_id: &str) -> dora_message::metadata::MetadataParameters 
     let mut parameters = dora_message::metadata::MetadataParameters::default();
     parameters.insert(GOAL_ID.to_string(), Parameter::String(goal_id.to_owned()));
     parameters
+}
+
+/// Metadata for an action result output: naming the `goal_id` and the terminal `goal_status`.
+fn action_result_parameters(
+    goal_id: &str,
+    status: &str,
+) -> dora_message::metadata::MetadataParameters {
+    let mut parameters = goal_parameters(goal_id);
+    parameters.insert(
+        GOAL_STATUS.to_string(),
+        Parameter::String(status.to_owned()),
+    );
+    parameters
+}
+
+/// Map a [`GoalStatusEnum`](ros2_client::action::GoalStatusEnum) to its standard
+/// metadata parameter string representation.
+fn goal_status_to_str(status: ros2_client::action::GoalStatusEnum) -> &'static str {
+    use ros2_client::action::GoalStatusEnum as S;
+    match status {
+        S::Succeeded => GOAL_STATUS_SUCCEEDED,
+        S::Aborted => GOAL_STATUS_ABORTED,
+        S::Canceled => GOAL_STATUS_CANCELED,
+        S::Accepted => "accepted",
+        S::Executing => "executing",
+        S::Canceling => "canceling",
+        S::Unknown => "unknown",
+    }
 }
 
 /// Tell the handler that the goal `goal_id` is being canceled.
@@ -2033,6 +2076,7 @@ fn run_action_client(
                 let feedback_tx = tx.clone();
                 let fb_type_info = feedback_type_info.clone();
                 let client_ref = client.clone();
+                let fb_goal_id = goal_id.uuid.to_string();
                 std::thread::spawn(move || {
                     let _guard = TypeInfoGuard::deserialize(fb_type_info);
                     let stream = client_ref.feedback_stream(goal_id);
@@ -2042,7 +2086,13 @@ fn run_action_client(
                             match item {
                                 Ok(msg) => {
                                     if let Some(data) = msg.0 {
-                                        if feedback_tx.send(ActionEvent::Feedback(data)).is_err() {
+                                        if feedback_tx
+                                            .send(ActionEvent::Feedback {
+                                                goal_id: fb_goal_id.clone(),
+                                                data,
+                                            })
+                                            .is_err()
+                                        {
                                             break;
                                         }
                                     } else {
@@ -2061,6 +2111,7 @@ fn run_action_client(
                 let result_tx = tx.clone();
                 let res_type_info = result_type_info.clone();
                 let client_ref = client.clone();
+                let res_goal_id = goal_id.uuid.to_string();
                 std::thread::spawn(move || {
                     let _permit = permit;
                     let _guard = TypeInfoGuard::deserialize(res_type_info);
@@ -2076,9 +2127,14 @@ fn run_action_client(
                             }
                         }
                     });
-                    if let Some(Ok((_status, msg))) = result {
+                    if let Some(Ok((status, msg))) = result {
                         if let Some(data) = msg.0 {
-                            let _ = result_tx.send(ActionEvent::Result(data));
+                            let status = goal_status_to_str(status);
+                            let _ = result_tx.send(ActionEvent::Result {
+                                goal_id: res_goal_id,
+                                status,
+                                data,
+                            });
                         } else {
                             tracing::warn!("action result contained no data");
                         }
@@ -2090,15 +2146,23 @@ fn run_action_client(
             MergedEvent::Dora(Event::Stop(_)) => break,
             MergedEvent::Dora(_) => {}
             MergedEvent::External(action_event) => match action_event {
-                ActionEvent::Feedback(data) => {
+                ActionEvent::Feedback { goal_id, data } => {
                     node.send_output(
                         "feedback".into(),
-                        Default::default(),
+                        goal_parameters(&goal_id),
                         StructArray::from(data),
                     )?;
                 }
-                ActionEvent::Result(data) => {
-                    node.send_output("result".into(), Default::default(), StructArray::from(data))?;
+                ActionEvent::Result {
+                    goal_id,
+                    status,
+                    data,
+                } => {
+                    node.send_output(
+                        "result".into(),
+                        action_result_parameters(&goal_id, status),
+                        StructArray::from(data),
+                    )?;
                 }
             },
         }
@@ -2108,8 +2172,15 @@ fn run_action_client(
 }
 
 enum ActionEvent {
-    Feedback(ArrayData),
-    Result(ArrayData),
+    Feedback {
+        goal_id: String,
+        data: ArrayData,
+    },
+    Result {
+        goal_id: String,
+        status: &'static str,
+        data: ArrayData,
+    },
 }
 
 enum ServerEvent {
@@ -3665,6 +3736,53 @@ mod zenoh_goal_status_tests {
             zenoh_result_goal_status(Some("")),
             GoalStatusEnum::Aborted
         ));
+    }
+}
+
+#[cfg(test)]
+mod action_client_metadata_tests {
+    use super::ros2_client::action::GoalStatusEnum;
+    use super::{
+        GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED, GOAL_STATUS_SUCCEEDED,
+        action_result_parameters, goal_parameters, goal_status_to_str,
+    };
+    use dora_message::metadata::get_string_param;
+
+    #[test]
+    fn goal_status_mapping() {
+        assert_eq!(
+            goal_status_to_str(GoalStatusEnum::Succeeded),
+            GOAL_STATUS_SUCCEEDED
+        );
+        assert_eq!(
+            goal_status_to_str(GoalStatusEnum::Aborted),
+            GOAL_STATUS_ABORTED
+        );
+        assert_eq!(
+            goal_status_to_str(GoalStatusEnum::Canceled),
+            GOAL_STATUS_CANCELED
+        );
+        assert_eq!(goal_status_to_str(GoalStatusEnum::Accepted), "accepted");
+        assert_eq!(goal_status_to_str(GoalStatusEnum::Executing), "executing");
+        assert_eq!(goal_status_to_str(GoalStatusEnum::Canceling), "canceling");
+        assert_eq!(goal_status_to_str(GoalStatusEnum::Unknown), "unknown");
+    }
+
+    #[test]
+    fn goal_parameters_contain_goal_id() {
+        let params = goal_parameters("test-goal-uuid");
+        assert_eq!(get_string_param(&params, GOAL_ID), Some("test-goal-uuid"));
+        assert_eq!(get_string_param(&params, GOAL_STATUS), None);
+    }
+
+    #[test]
+    fn action_result_parameters_contain_goal_id_and_status() {
+        let params = action_result_parameters("test-goal-uuid", GOAL_STATUS_SUCCEEDED);
+        assert_eq!(get_string_param(&params, GOAL_ID), Some("test-goal-uuid"));
+        assert_eq!(
+            get_string_param(&params, GOAL_STATUS),
+            Some(GOAL_STATUS_SUCCEEDED)
+        );
     }
 }
 
