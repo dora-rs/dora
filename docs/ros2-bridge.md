@@ -336,7 +336,7 @@ nodes:
       - result
 ```
 
-The bridge receives goals from ROS2 clients, auto-accepts them, and forwards the goal data on the `goal` output. The handler computes feedback and results and sends them back on the `feedback` and `result` inputs.
+The bridge receives goals from ROS2 clients, accepts them (or lets the handler decide, see [Accepting goals](#accepting-goals)), and forwards the goal data on the `goal` output. The handler computes feedback and results and sends them back on the `feedback` and `result` inputs.
 
 See `examples/ros2-bridge/yaml-bridge-action-server/` for a working Fibonacci example.
 
@@ -361,8 +361,11 @@ Event::Input { id, metadata, data } => match id.as_str() {
 ### Action Server Lifecycle
 
 1. ROS2 client sends a goal request
-2. Bridge auto-accepts the goal and starts executing
+2. Bridge accepts the goal and starts executing
 3. Bridge sends goal data on `goal` output with `goal_id` in metadata
+
+   With a `goal_response` input, steps 2 and 3 swap: the bridge sends the goal first
+   and accepts it only once the handler does (see [Accepting goals](#accepting-goals)).
 4. Handler sends `feedback` (zero or more times) with same `goal_id`
 5. Handler sends `result` (once) with same `goal_id`; bridge returns it to the ROS2 client
 6. Result send times out after 5 minutes if the client never requests it
@@ -418,7 +421,49 @@ computes one step per tick and stops at the step it reached.
 **Without a `cancel` output, the bridge rejects cancel requests**, so clients
 get an answer instead of waiting: nothing could stop the goal.
 
-Goals that contain no data or cannot be forwarded to the handler are automatically aborted -- the bridge sends `Aborted` status back to the ROS2 client so it does not hang indefinitely.
+### Accepting goals
+
+By default the bridge accepts every goal on arrival. To let the handler decide,
+connect a `goal_response` input from the handler; declaring that input is what
+switches the bridge to waiting for the handler:
+
+```yaml
+  - id: fib_server
+    ros2:
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
+      role: server
+    inputs:
+      goal_response: handler/goal_response
+      feedback: handler/feedback
+      result: handler/result
+    outputs:
+      - goal
+```
+
+For each new goal, the bridge then:
+
+1. sends it on `goal`, with its `goal_id`, without answering the ROS2 client yet;
+2. waits for the handler's `goal_response`: the goal's `goal_id` in the
+   metadata and a one-element boolean array as data, `true` to accept;
+3. accepts the goal (it starts executing) or rejects it, and answers the client.
+
+A goal the handler does not answer within 10 s is rejected, so the client is
+not left waiting; a `goal_response` that comes later is ignored with a warning.
+With a `cancel` output, such a goal also gets a `cancel` event, as does one the
+handler accepted that then fails to start, so a handler that already started
+on it can stop. Goals still waiting when the dataflow stops are rejected.
+A `goal_response` whose data is not a one-element boolean array rejects the
+goal. A handler should start working on a goal only once it has accepted it.
+
+```python
+node.send_output("goal_response", pa.array([order <= 46]), {"goal_id": goal_id})
+```
+
+`dataflow-accept.yml` in `examples/ros2-bridge/yaml-bridge-action-server/`
+rejects orders above 46, whose last value would overflow `i32`.
+
+Goals that contain no data or cannot be forwarded to the handler are automatically aborted -- the bridge sends `Aborted` status back to the ROS2 client so it does not hang indefinitely. With a `goal_response` input they are rejected instead, since they have not been accepted yet.
 
 ### Goal Status
 
@@ -445,8 +490,8 @@ node.send_output("result".into(), params, error_result)?;
 
 | Behavior | Value |
 |----------|-------|
-| Max concurrent goals | 8 (additional goals receive `Aborted` status) |
-| Auto-accept | All goals are auto-accepted |
+| Max concurrent goals | 8, counting goals waiting for the handler (additional goals receive `Aborted` status on DDS without a `goal_response` input, and are rejected otherwise) |
+| Goal acceptance | Automatic, or by the handler (see [Accepting goals](#accepting-goals)) |
 | Result send timeout | 5 minutes |
 
 ### Python Action Server Handler
@@ -1266,14 +1311,13 @@ These constraints apply to the **YAML / dynamic bridge**. The native code APIs
 have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-servers)
 (notably: the Python action client/server *do* support cancel).
 
-- **Action server auto-accept**: All incoming goals are automatically accepted. The handler cannot reject goals before execution starts.
 - **Action cancel needs a `cancel` output**: Without one, the YAML action server rejects ROS2 cancel requests (see [Canceling goals](#canceling-goals)).
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
 - **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable. On the DDS transport these channels additionally apply the override described in [Service and action QoS](#service-and-action-qos-dds-only); on the Zenoh transport ordinary service/action channels use the configured QoS as-is. On both transports the action status channel is always reliable and `transient_local` (see [Action status channel](#action-status-channel)).
 - **`AMENT_PREFIX_PATH` required**: The bridge fails at startup if no ROS2 message definitions are found.
 - **Max 64 topics**: Multi-topic mode supports at most 64 topics per bridge node.
-- **Max 8 concurrent action goals**: Additional goals receive `Aborted` status when the limit is reached.
+- **Max 8 concurrent action goals**: Additional goals receive `Aborted` status (DDS without a `goal_response` input) or are rejected (native Zenoh, or with a `goal_response` input) when the limit is reached.
 - **Max 64 pending service requests (server)**: Requests are dropped when the queue is full.
 
 ### Distro constraint

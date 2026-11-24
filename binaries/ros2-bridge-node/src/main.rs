@@ -3,10 +3,10 @@ use std::{
     collections::{HashMap, HashSet},
     path::Path,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use arrow::array::{ArrayData, StructArray};
+use arrow::array::{Array, ArrayData, StructArray};
 use dora_message::{
     descriptor::{
         Ros2BridgeConfig, Ros2Direction, Ros2QosConfig, Ros2Role, Ros2TopicConfig,
@@ -15,7 +15,7 @@ use dora_message::{
     metadata::{Parameter, get_string_param},
 };
 use dora_node_api::{
-    DoraNode, Event,
+    DoraArray, DoraNode, Event,
     merged::{MergeExternal, MergedEvent},
 };
 use dora_ros2_bridge::ros2_client;
@@ -770,6 +770,8 @@ enum ZenohActionServerEvent {
     Goal(dora_ros2_bridge::transport::zenoh::service::ServiceRequest),
     ResultRequest(dora_ros2_bridge::transport::zenoh::service::ServiceRequest),
     Cancel(dora_ros2_bridge::transport::zenoh::service::ServiceRequest),
+    /// Time to reject the goals the handler has not answered in time.
+    Tick,
 }
 
 struct ZenohServerGoal {
@@ -800,7 +802,9 @@ fn is_terminal_goal_status(status: ros2_client::action::GoalStatusEnum) -> bool 
 }
 
 /// Decides whether a Zenoh `SendGoal` for goal `key` is accepted, making room
-/// in `goals` first when it is full.
+/// in `goals` first when it is full. Goals still awaiting the handler's
+/// decision (`pending`) count toward the limit, and their
+/// ids are taken.
 ///
 /// Like `rcl_action`, a goal id that is already tracked is rejected and the
 /// table is left untouched: accepting it would overwrite the live goal,
@@ -808,15 +812,17 @@ fn is_terminal_goal_status(status: ros2_client::action::GoalStatusEnum) -> bool 
 /// dora handler a second `goal` for the same id. Otherwise, when the table is
 /// full, finished goals the client never polled are retired so a burst of them
 /// can't permanently reject all future work; running goals are always kept.
-fn zenoh_accept_goal(
+fn zenoh_accept_goal<R>(
     goals: &mut GoalSlots<String, ZenohServerGoal>,
     key: &str,
     has_payload: bool,
+    pending: &PendingGoals<R>,
 ) -> bool {
-    if goals.contains_key(key) {
+    let reserved = pending.len();
+    if goals.contains_key(key) || pending.contains(key) {
         return false;
     }
-    if goals.len() >= MAX_CONCURRENT_GOALS {
+    if goals.len() + reserved >= MAX_CONCURRENT_GOALS {
         let finished: Vec<String> = goals
             .iter()
             .filter(|(_, goal)| is_terminal_goal_status(goal.status))
@@ -826,7 +832,143 @@ fn zenoh_accept_goal(
             goals.remove(&k);
         }
     }
-    has_payload && goals.len() < MAX_CONCURRENT_GOALS
+    has_payload && goals.len() + reserved < MAX_CONCURRENT_GOALS
+}
+
+/// Answer a Zenoh `SendGoal` request, accepting or rejecting the goal.
+/// Returns the acceptance stamp.
+fn reply_send_goal(
+    server: &ZenohActionServer,
+    request_id: dora_ros2_bridge::transport::RequestId,
+    accepted: bool,
+) -> eyre::Result<ros2_client::builtin_interfaces::Time> {
+    let stamp = goal_accept_stamp();
+    let response = serialize_cdr(&ros2_client::action::SendGoalResponse { accepted, stamp })?;
+    if let Err(error) = futures::executor::block_on(server.send_goal.reply(request_id, &response)) {
+        tracing::warn!("failed to reply to Zenoh send-goal request: {error}");
+    }
+    Ok(stamp)
+}
+
+impl ZenohServerGoal {
+    /// A goal just accepted at `stamp`.
+    fn executing(
+        id: ros2_client::action::GoalId,
+        stamp: ros2_client::builtin_interfaces::Time,
+    ) -> Self {
+        Self {
+            id,
+            stamp,
+            status: ros2_client::action::GoalStatusEnum::Executing,
+            result: None,
+            result_requests: Vec::new(),
+        }
+    }
+}
+
+/// The input on which an action server's handler answers each goal: `goal_id`
+/// in the metadata, a one-element boolean array as data. An action server that
+/// declares it waits for the handler's answer; one that does not accepts every
+/// goal on arrival.
+const GOAL_RESPONSE_INPUT: &str = "goal_response";
+
+/// How long a server with a [`GOAL_RESPONSE_INPUT`] waits for the handler's answer before
+/// rejecting the goal, so that the ROS2 client is not left waiting.
+const GOAL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The handler's decision for `goal_id`, `true` to accept. A `goal_response`
+/// that is not a one-element boolean array rejects the goal, with a warning.
+fn handler_accepts(goal_id: &str, data: &DoraArray) -> bool {
+    bool::try_from(data).unwrap_or_else(|error| {
+        tracing::warn!("goal_response for goal {goal_id} is not a boolean: {error}; rejecting it");
+        false
+    })
+}
+
+/// Send `event()` to `tx` every second until the receiver is gone: the clock
+/// that expires [`PendingGoals`]. A tick is skipped when the channel is full,
+/// so ticks never hold up the goal and cancel events that share it.
+fn spawn_ticker<E: Send + 'static>(tx: flume::Sender<E>, event: impl Fn() -> E + Send + 'static) {
+    std::thread::spawn(move || {
+        while !matches!(
+            tx.try_send(event()),
+            Err(flume::TrySendError::Disconnected(_))
+        ) {
+            std::thread::sleep(Duration::from_secs(1));
+        }
+    });
+}
+
+/// Goals of an action server with a [`GOAL_RESPONSE_INPUT`] that the handler has not
+/// answered yet, with the request to answer the ROS2 client with (`R`).
+struct PendingGoals<R> {
+    goals: HashMap<String, (R, Instant)>,
+}
+
+impl<R> Default for PendingGoals<R> {
+    fn default() -> Self {
+        Self {
+            goals: HashMap::new(),
+        }
+    }
+}
+
+impl<R> PendingGoals<R> {
+    fn add(&mut self, goal_id: String, request: R, now: Instant) {
+        self.goals.insert(goal_id, (request, now));
+    }
+
+    fn contains(&self, goal_id: &str) -> bool {
+        self.goals.contains_key(goal_id)
+    }
+
+    fn len(&self) -> usize {
+        self.goals.len()
+    }
+
+    /// The handler answered `goal_id`: its request, if it is still pending.
+    fn decide(&mut self, goal_id: &str) -> Option<R> {
+        self.goals.remove(goal_id).map(|(request, _)| request)
+    }
+
+    /// Remove and return every pending goal, e.g. to reject them on shutdown.
+    fn drain(&mut self) -> Vec<(String, R)> {
+        self.goals
+            .drain()
+            .map(|(goal_id, (request, _))| (goal_id, request))
+            .collect()
+    }
+
+    /// Remove and return the goals that have waited [`GOAL_RESPONSE_TIMEOUT`]
+    /// or longer.
+    fn expired(&mut self, now: Instant) -> Vec<(String, R)> {
+        self.goals
+            .extract_if(|_, (_, since)| now.duration_since(*since) >= GOAL_RESPONSE_TIMEOUT)
+            .map(|(goal_id, (request, _))| (goal_id, request))
+            .collect()
+    }
+}
+
+/// Reject the pending goals the handler has not answered in time, with
+/// `reject`, then tell the handler through `cancel`, if declared, since it may
+/// already be working on them. Shared by both transports.
+fn expire_pending<R>(
+    pending: &mut PendingGoals<R>,
+    node: &mut DoraNode,
+    cancel_output: bool,
+    mut reject: impl FnMut(&str, R) -> eyre::Result<()>,
+) -> eyre::Result<()> {
+    for (goal_id, request) in pending.expired(Instant::now()) {
+        tracing::warn!(
+            "the handler did not answer goal {goal_id} within {}s, rejecting it",
+            GOAL_RESPONSE_TIMEOUT.as_secs()
+        );
+        reject(&goal_id, request)?;
+        if cancel_output {
+            send_cancel(node, &goal_id);
+        }
+    }
+    Ok(())
 }
 
 /// Cancel requests are answered by the shared, rcl-conformant
@@ -1003,6 +1145,12 @@ fn declares_cancel_output(node: &DoraNode) -> bool {
     node.node_config().outputs.contains(CANCEL_OUTPUT)
 }
 
+/// Whether the node declares the [`GOAL_RESPONSE_INPUT`], which makes the
+/// handler accept or reject each goal.
+fn declares_goal_response_input(node: &DoraNode) -> bool {
+    node.node_config().inputs.contains_key(GOAL_RESPONSE_INPUT)
+}
+
 /// Metadata naming the goal an action server output is about: the handler
 /// correlates `goal`, `cancel`, `feedback` and `result` by it.
 fn goal_parameters(goal_id: &str) -> dora_message::metadata::MetadataParameters {
@@ -1055,7 +1203,7 @@ fn run_zenoh_action_server(
 ) -> eyre::Result<()> {
     use ros2_client::action::{
         CancelGoalResponse, FeedbackMessage, GetResultRequest, GetResultResponse, GoalStatusEnum,
-        SendGoalRequest, SendGoalResponse,
+        SendGoalRequest,
     };
 
     let server = Arc::new(server);
@@ -1065,6 +1213,7 @@ fn run_zenoh_action_server(
     };
     let (mut node, events) = DoraNode::init_from_env()?;
     let cancel_output = declares_cancel_output(&node);
+    let handler_decides = declares_goal_response_input(&node);
     let (tx, rx) = flume::bounded(MAX_CONCURRENT_GOALS * 4);
     for kind in 0..3 {
         let server = server.clone();
@@ -1090,8 +1239,17 @@ fn run_zenoh_action_server(
             });
         });
     }
+    if handler_decides {
+        spawn_ticker(tx.clone(), || ZenohActionServerEvent::Tick);
+    }
     drop(tx);
     let mut goals: GoalSlots<String, ZenohServerGoal> = GoalSlots::new(MAX_CONCURRENT_GOALS);
+    // Goals sent to the handler but not answered yet, with
+    // the request to answer and the goal id.
+    let mut pending: PendingGoals<(
+        dora_ros2_bridge::transport::RequestId,
+        ros2_client::action::GoalId,
+    )> = PendingGoals::default();
     let merged = events.merge_external(Box::pin(rx.into_stream()));
     for event in futures::executor::block_on_stream(merged) {
         match event {
@@ -1118,25 +1276,26 @@ fn run_zenoh_action_server(
                     }
                 };
                 let key = decoded.goal_id.uuid.to_string();
-                let accepted = zenoh_accept_goal(&mut goals, &key, decoded.goal.0.is_some());
-                let stamp = goal_accept_stamp();
-                let response = serialize_cdr(&SendGoalResponse { accepted, stamp })?;
-                if let Err(error) =
-                    futures::executor::block_on(server.send_goal.reply(request.id, &response))
+                let accepted =
+                    zenoh_accept_goal(&mut goals, &key, decoded.goal.0.is_some(), &pending);
+                if handler_decides
+                    && accepted
+                    && let Some(data) = decoded.goal.0
                 {
-                    tracing::warn!("failed to reply to Zenoh send-goal request: {error}");
+                    // The handler decides; answer the client once it has.
+                    pending.add(key.clone(), (request.id, decoded.goal_id), Instant::now());
+                    node.send_output(
+                        "goal".into(),
+                        goal_parameters(&key),
+                        StructArray::from(data),
+                    )?;
+                    continue;
                 }
-                if accepted {
-                    let data = decoded.goal.0.expect("accepted goal has payload");
+                let stamp = reply_send_goal(&server, request.id, accepted)?;
+                if accepted && let Some(data) = decoded.goal.0 {
                     goals.insert(
                         key.clone(),
-                        ZenohServerGoal {
-                            id: decoded.goal_id,
-                            stamp,
-                            status: GoalStatusEnum::Executing,
-                            result: None,
-                            result_requests: Vec::new(),
-                        },
+                        ZenohServerGoal::executing(decoded.goal_id, stamp),
                     )?;
                     node.send_output(
                         "goal".into(),
@@ -1199,6 +1358,14 @@ fn run_zenoh_action_server(
                     publish_zenoh_status(&server, &goals)?;
                 }
             }
+            MergedEvent::External(ZenohActionServerEvent::Tick) => {
+                expire_pending(
+                    &mut pending,
+                    &mut node,
+                    cancel_output,
+                    |_, (request_id, _)| reply_send_goal(&server, request_id, false).map(drop),
+                )?;
+            }
             MergedEvent::External(ZenohActionServerEvent::Cancel(request)) => {
                 let Some(decoded): Option<CancelGoalRequestWire> = value_or_warn(
                     deserialize_cdr(&request.payload),
@@ -1240,6 +1407,19 @@ fn run_zenoh_action_server(
                     tracing::warn!("action server input `{id}` missing goal_id metadata");
                     continue;
                 };
+                if id.as_str() == GOAL_RESPONSE_INPUT {
+                    let Some((request_id, goal_id)) = pending.decide(&goal_key) else {
+                        tracing::warn!("goal_response for goal {goal_key}, which is not pending");
+                        continue;
+                    };
+                    let accepted = handler_accepts(&goal_key, &data);
+                    let stamp = reply_send_goal(&server, request_id, accepted)?;
+                    if accepted {
+                        goals.insert(goal_key, ZenohServerGoal::executing(goal_id, stamp))?;
+                        publish_zenoh_status(&server, &goals)?;
+                    }
+                    continue;
+                }
                 let Some(goal) = goals.get_mut(&goal_key) else {
                     tracing::warn!("action input for unknown goal {goal_key}");
                     continue;
@@ -1319,6 +1499,11 @@ fn run_zenoh_action_server(
             MergedEvent::Dora(Event::Stop(_)) => break,
             MergedEvent::Dora(_) => {}
         }
+    }
+    // Answer the goals still waiting for the handler, so their clients are
+    // not left waiting.
+    for (_, (request_id, _)) in pending.drain() {
+        reply_send_goal(&server, request_id, false)?;
     }
     Ok(())
 }
@@ -1959,6 +2144,13 @@ enum ServerEvent {
     Pending(String),
     /// A pending goal failed to start and will not reach the main loop.
     Dropped(String),
+    /// With a [`GOAL_RESPONSE_INPUT`]: a new goal for the handler to accept or reject.
+    GoalRequest {
+        handle: ros2_client::action::NewGoalHandle<BridgeMessage>,
+        data: Option<ArrayData>,
+    },
+    /// Time to reject the goals the handler has not answered in time.
+    Tick,
 }
 
 fn run_action_server(
@@ -1969,6 +2161,7 @@ fn run_action_server(
 ) -> eyre::Result<()> {
     let (mut node, dora_events) = DoraNode::init_from_env()?;
     let cancel_output = declares_cancel_output(&node);
+    let handler_decides = declares_goal_response_input(&node);
     let server = Arc::new(server);
 
     // Map goal_id -> ExecutingGoalHandle for dispatching feedback/result
@@ -1982,6 +2175,9 @@ fn run_action_server(
     // the receive thread will block.
     let (tx, rx) = flume::bounded::<ServerEvent>(MAX_CONCURRENT_GOALS * 2);
     let cancel_tx = tx.clone();
+    if handler_decides {
+        spawn_ticker(tx.clone(), || ServerEvent::Tick);
+    }
 
     // Background thread: receive goals from ROS2 clients, auto-accept and
     // start executing, then forward to the main loop.
@@ -1999,24 +2195,27 @@ fn run_action_server(
                 };
 
                 let goal_data = server_ref.get_new_goal(new_goal_handle.clone());
+                if handler_decides {
+                    // The main loop accepts or rejects it once the handler
+                    // has decided.
+                    let request = ServerEvent::GoalRequest {
+                        handle: new_goal_handle,
+                        data: goal_data.and_then(|goal| goal.0),
+                    };
+                    if tx.send(request).is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 let pending_id = new_goal_handle.goal_id().uuid.to_string();
                 if tx.send(ServerEvent::Pending(pending_id.clone())).is_err() {
                     break;
                 }
 
-                let accepted = match server_ref.accept_goal(new_goal_handle).await {
+                let executing = match accept_and_start(&server_ref, new_goal_handle).await {
                     Ok(h) => h,
                     Err(e) => {
-                        tracing::warn!("failed to accept goal: {e:?}");
-                        let _ = tx.send(ServerEvent::Dropped(pending_id));
-                        continue;
-                    }
-                };
-
-                let executing = match server_ref.start_executing_goal(accepted).await {
-                    Ok(h) => h,
-                    Err(e) => {
-                        tracing::warn!("failed to start executing goal: {e:?}");
+                        tracing::warn!("failed to accept goal {pending_id}: {e:?}");
                         let _ = tx.send(ServerEvent::Dropped(pending_id));
                         continue;
                     }
@@ -2069,6 +2268,9 @@ fn run_action_server(
     });
 
     let mut cancels = DdsCancels::new(cancel_output);
+    // Goals sent to the handler but not answered yet.
+    let mut pending: PendingGoals<ros2_client::action::NewGoalHandle<BridgeMessage>> =
+        PendingGoals::default();
 
     let rx_stream = rx.into_stream();
     let merged = dora_events.merge_external(Box::pin(rx_stream));
@@ -2085,6 +2287,26 @@ fn run_action_server(
                 };
 
                 match id.as_str() {
+                    GOAL_RESPONSE_INPUT => {
+                        let Some(handle) = pending.decide(&goal_id) else {
+                            tracing::warn!(
+                                "goal_response for goal {goal_id}, which is not pending"
+                            );
+                            continue;
+                        };
+                        if handler_accepts(&goal_id, &data) {
+                            match start_accepted_goal(&server, handle, &goal_id) {
+                                Some(executing) => {
+                                    executing_goals.insert(goal_id, executing)?;
+                                }
+                                // The handler accepted a goal that will not run.
+                                None if cancel_output => send_cancel(&mut node, &goal_id),
+                                None => {}
+                            }
+                        } else {
+                            reject_new_goal(&server, handle, &goal_id);
+                        }
+                    }
                     "feedback" => {
                         if let Some(handle) = executing_goals.get(&goal_id) {
                             let handle = handle.clone();
@@ -2159,6 +2381,46 @@ fn run_action_server(
             MergedEvent::External(server_event) => {
                 // The pending goal that reached the handler or was dropped, if any.
                 let settled = match server_event {
+                    ServerEvent::GoalRequest { handle, data } => {
+                        let goal_id = handle.goal_id().uuid.to_string();
+                        let room = executing_goals.len() + pending.len() < MAX_CONCURRENT_GOALS;
+                        match data {
+                            // No duplicate-id check: ros2-client drops a new goal
+                            // whose id it already tracks, so none reaches here.
+                            Some(data) if room => {
+                                if let Err(e) = node.send_output(
+                                    "goal".into(),
+                                    goal_parameters(&goal_id),
+                                    StructArray::from(data),
+                                ) {
+                                    tracing::warn!("failed to send goal {goal_id} to handler: {e}");
+                                    reject_new_goal(&server, handle, &goal_id);
+                                } else {
+                                    pending.add(goal_id, handle, Instant::now());
+                                }
+                            }
+                            _ => {
+                                tracing::warn!(
+                                    "rejecting goal {goal_id}: it has no data, or \
+                                     {MAX_CONCURRENT_GOALS} goals are running or pending"
+                                );
+                                reject_new_goal(&server, handle, &goal_id);
+                            }
+                        }
+                        None
+                    }
+                    ServerEvent::Tick => {
+                        expire_pending(
+                            &mut pending,
+                            &mut node,
+                            cancel_output,
+                            |goal_id, handle| {
+                                reject_new_goal(&server, handle, goal_id);
+                                Ok(())
+                            },
+                        )?;
+                        None
+                    }
                     ServerEvent::Pending(goal_id) => {
                         cancels.goal_pending(&goal_id);
                         None
@@ -2213,7 +2475,46 @@ fn run_action_server(
         }
     }
 
+    // Answer the goals still waiting for the handler, so their clients are
+    // not left waiting.
+    for (goal_id, handle) in pending.drain() {
+        reject_new_goal(&server, handle, &goal_id);
+    }
     Ok(())
+}
+
+/// Reject a DDS goal that the handler did not accept.
+fn reject_new_goal(
+    server: &ros2_client::action::AsyncActionServer<BridgeMessage, BridgeMessage, BridgeMessage>,
+    handle: ros2_client::action::NewGoalHandle<BridgeMessage>,
+    goal_id: &str,
+) {
+    if let Err(e) = futures::executor::block_on(server.reject_goal(handle)) {
+        tracing::warn!("failed to reject goal {goal_id}: {e:?}");
+    }
+}
+
+/// Accept a new DDS goal and start executing it.
+async fn accept_and_start(
+    server: &ros2_client::action::AsyncActionServer<BridgeMessage, BridgeMessage, BridgeMessage>,
+    handle: ros2_client::action::NewGoalHandle<BridgeMessage>,
+) -> Result<
+    ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
+    ros2_client::action::GoalError<()>,
+> {
+    let accepted = server.accept_goal(handle).await?;
+    server.start_executing_goal(accepted).await
+}
+
+/// Accept a DDS goal that the handler accepted and start executing it.
+fn start_accepted_goal(
+    server: &ros2_client::action::AsyncActionServer<BridgeMessage, BridgeMessage, BridgeMessage>,
+    handle: ros2_client::action::NewGoalHandle<BridgeMessage>,
+    goal_id: &str,
+) -> Option<ros2_client::action::ExecutingGoalHandle<BridgeMessage>> {
+    futures::executor::block_on(accept_and_start(server, handle))
+        .inspect_err(|e| tracing::warn!("failed to accept goal {goal_id}: {e:?}"))
+        .ok()
 }
 
 /// Answer a DDS cancel request and tell the handler about each goal it
@@ -3172,7 +3473,14 @@ mod zenoh_cancel_tests {
 #[cfg(test)]
 mod zenoh_accept_goal_tests {
     use super::ros2_client::action::{GoalId, GoalStatusEnum};
-    use super::{GoalSlots, MAX_CONCURRENT_GOALS, ZenohServerGoal, zenoh_accept_goal};
+    use super::{
+        GoalSlots, MAX_CONCURRENT_GOALS, PendingGoals, ZenohServerGoal, zenoh_accept_goal,
+    };
+    use std::time::Instant;
+
+    fn none() -> PendingGoals<()> {
+        PendingGoals::default()
+    }
 
     fn insert(goals: &mut GoalSlots<String, ZenohServerGoal>, status: GoalStatusEnum) -> String {
         let id = GoalId::new_random();
@@ -3195,15 +3503,15 @@ mod zenoh_accept_goal_tests {
     #[test]
     fn a_new_goal_is_accepted() {
         let mut goals = GoalSlots::new(MAX_CONCURRENT_GOALS);
-        assert!(zenoh_accept_goal(&mut goals, "new", true));
-        assert!(!zenoh_accept_goal(&mut goals, "no-payload", false));
+        assert!(zenoh_accept_goal(&mut goals, "new", true, &none()));
+        assert!(!zenoh_accept_goal(&mut goals, "no-payload", false, &none()));
     }
 
     #[test]
     fn a_reused_goal_id_is_rejected_and_the_live_goal_is_kept() {
         let mut goals = GoalSlots::new(MAX_CONCURRENT_GOALS);
         let live = insert(&mut goals, GoalStatusEnum::Executing);
-        assert!(!zenoh_accept_goal(&mut goals, &live, true));
+        assert!(!zenoh_accept_goal(&mut goals, &live, true, &none()));
         assert!(matches!(
             goals.get(&live).map(|g| g.status),
             Some(GoalStatusEnum::Executing)
@@ -3217,7 +3525,7 @@ mod zenoh_accept_goal_tests {
         while goals.len() < MAX_CONCURRENT_GOALS {
             insert(&mut goals, GoalStatusEnum::Executing);
         }
-        assert!(!zenoh_accept_goal(&mut goals, &finished, true));
+        assert!(!zenoh_accept_goal(&mut goals, &finished, true, &none()));
         // The finished goal and its stored result must survive: the
         // duplicate must not evict the very goal it collides with.
         assert_eq!(
@@ -3233,8 +3541,29 @@ mod zenoh_accept_goal_tests {
         while goals.len() < MAX_CONCURRENT_GOALS {
             insert(&mut goals, GoalStatusEnum::Executing);
         }
-        assert!(zenoh_accept_goal(&mut goals, "new", true));
+        assert!(zenoh_accept_goal(&mut goals, "new", true, &none()));
         assert!(!goals.contains_key(&finished));
+    }
+
+    #[test]
+    fn goals_awaiting_the_handler_count_toward_the_limit() {
+        let mut goals = GoalSlots::new(MAX_CONCURRENT_GOALS);
+        while goals.len() < MAX_CONCURRENT_GOALS - 1 {
+            insert(&mut goals, GoalStatusEnum::Executing);
+        }
+        assert!(zenoh_accept_goal(&mut goals, "new", true, &none()));
+        let mut pending = none();
+        pending.add("waiting".to_owned(), (), Instant::now());
+        assert!(!zenoh_accept_goal(&mut goals, "new", true, &pending));
+    }
+
+    #[test]
+    fn the_id_of_a_goal_awaiting_the_handler_is_taken() {
+        let mut goals = GoalSlots::new(MAX_CONCURRENT_GOALS);
+        let mut pending = none();
+        pending.add("waiting".to_owned(), (), Instant::now());
+        assert!(!zenoh_accept_goal(&mut goals, "waiting", true, &pending));
+        assert!(zenoh_accept_goal(&mut goals, "other", true, &pending));
     }
 
     #[test]
@@ -3243,8 +3572,55 @@ mod zenoh_accept_goal_tests {
         while goals.len() < MAX_CONCURRENT_GOALS {
             insert(&mut goals, GoalStatusEnum::Executing);
         }
-        assert!(!zenoh_accept_goal(&mut goals, "new", true));
+        assert!(!zenoh_accept_goal(&mut goals, "new", true, &none()));
         assert_eq!(goals.len(), MAX_CONCURRENT_GOALS);
+    }
+}
+
+#[cfg(test)]
+mod goal_response_tests {
+    use super::{GOAL_RESPONSE_TIMEOUT, PendingGoals};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_pending_goal_is_decided_once() {
+        let mut pending = PendingGoals::default();
+        pending.add("a".to_owned(), 1, Instant::now());
+        assert!(pending.contains("a"));
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending.decide("a"), Some(1));
+        assert_eq!(pending.decide("a"), None);
+        assert_eq!(pending.len(), 0);
+    }
+
+    #[test]
+    fn only_goals_past_the_timeout_expire() {
+        let mut pending = PendingGoals::default();
+        let start = Instant::now();
+        pending.add("old".to_owned(), 1, start);
+        pending.add("new".to_owned(), 2, start + Duration::from_secs(5));
+        assert!(
+            pending
+                .expired(start + GOAL_RESPONSE_TIMEOUT - Duration::from_secs(1))
+                .is_empty()
+        );
+        let expired = pending.expired(start + GOAL_RESPONSE_TIMEOUT);
+        assert_eq!(expired, [("old".to_owned(), 1)]);
+        assert!(pending.contains("new"));
+        assert!(!pending.contains("old"));
+    }
+
+    #[test]
+    fn draining_returns_every_pending_goal_once() {
+        let mut pending = PendingGoals::default();
+        let now = Instant::now();
+        pending.add("a".to_owned(), 1, now);
+        pending.add("b".to_owned(), 2, now);
+        let mut drained = pending.drain();
+        drained.sort();
+        assert_eq!(drained, [("a".to_owned(), 1), ("b".to_owned(), 2)]);
+        assert_eq!(pending.len(), 0);
+        assert!(pending.drain().is_empty());
     }
 }
 

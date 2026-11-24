@@ -1554,6 +1554,21 @@ jobs:
           Remove-Item "C:\Android" -Force -Recurse
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse
           Remove-Item "C:\hostedtoolcache\windows\CodeQL" -Force -Recurse
+      # The C/C++ examples run `clang++` from PATH, and the MSVC STL rejects a
+      # clang older than it expects (STL1000, #4254). Put the clang Visual
+      # Studio bundles, which always matches its STL, ahead of the standalone
+      # LLVM.
+      - name: Use a Clang that matches the MSVC STL (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $bundled = Join-Path $vs 'VC\Tools\Llvm\x64\bin'
+          if (-not (Test-Path "$bundled\clang++.exe")) { throw "Visual Studio bundles no clang in $bundled" }
+          Add-Content -Path $env:GITHUB_PATH -Value $bundled
+          $env:PATH = "$bundled;$env:PATH"
+          (Get-Command clang++).Source
+          clang++ --version
       # Examples call dora_cli as a library (via `examples/*/run.rs`) but the
       # daemon still spawns runtime nodes as child processes via
       # `which::which("dora")`. Build the CLI binary and add it to PATH so
