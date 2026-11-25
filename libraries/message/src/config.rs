@@ -215,7 +215,11 @@ impl Eq for InputDef {}
 // reports its own error.
 impl<'de> Deserialize<'de> for InputDef {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // `deny_unknown_fields`, like `Node` and `Descriptor`: a misspelled
+        // option (`queue_sise`) must fail the parse, not silently fall back
+        // to the default it was meant to override.
         #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
         struct WithOptions {
             source: InputMapping,
             #[serde(default)]
@@ -886,6 +890,24 @@ mod tests {
         // Neither a string nor a map: the expectation names both forms.
         let err = serde_yaml::from_str::<Input>("42").unwrap_err().to_string();
         assert!(err.contains("input mapping string"), "{err}");
+    }
+
+    /// A misspelled option in an input's long form is an error, not a
+    /// silently dropped setting: `queue_sise: 1` used to parse as an input
+    /// with the default queue size.
+    #[test]
+    fn input_long_form_rejects_unknown_keys() {
+        for (yaml, key) in [
+            ("source: a/b\nqueue_sise: 1", "queue_sise"),
+            ("source: a/b\ninput_timout: 2.0", "input_timout"),
+            ("source: a/b\nqueue_size: 1\npolicy: drop_oldest", "policy"),
+        ] {
+            let err = serde_yaml::from_str::<Input>(yaml).unwrap_err().to_string();
+            assert!(
+                err.contains("unknown field") && err.contains(key),
+                "yaml {yaml:?}: {err}"
+            );
+        }
     }
 
     /// The JSON wire form (CLI -> coordinator -> daemon) still parses.
