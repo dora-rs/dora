@@ -23,10 +23,15 @@ esac
 archive="https://github.com/$REPO/releases/download/$tag/dora-cli-$target.tar.gz"
 echo "Installing dora $tag ($target) to $DEST"
 
-# Download, extract, install (archive nests the binary in a dora-cli-<target>/ dir)
+# Download, extract, install (archive nests the binaries in a dora-cli-<target>/
+# dir). `dora record`/`dora replay` look for `dora-record-node` and
+# `dora-replay-node` next to the `dora` executable first.
 mkdir -p "$DEST"
-curl -fsSL "$archive" | tar -xz -C "$DEST" --strip-components 1 "dora-cli-$target/dora"
-chmod 755 "$DEST/dora"
+curl -fsSL "$archive" | tar -xz -C "$DEST" --strip-components 1 \
+  "dora-cli-$target/dora" \
+  "dora-cli-$target/dora-record-node" \
+  "dora-cli-$target/dora-replay-node"
+chmod 755 "$DEST/dora" "$DEST/dora-record-node" "$DEST/dora-replay-node"
 
 # Add to PATH if not already there
 add_to_rc() {
