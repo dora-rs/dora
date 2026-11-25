@@ -25,8 +25,7 @@ New-Item -ItemType Directory -Path $dest -Force | Out-Null
 # tarballs, which nest them in a dora-cli-<target>/ directory).
 Expand-Archive -Path $zip -DestinationPath $tmp -Force
 Move-Item -Path "$tmp\dora.exe" -Destination "$dest\dora.exe" -Force
-# `dora-record-node` and `dora-replay-node` are `publish = false`, so the
-# archive is where `dora record`/`dora replay` get them.
+# `dora record`/`dora replay` look for these next to `dora.exe` first.
 Move-Item -Path "$tmp\dora-record-node.exe" -Destination "$dest\dora-record-node.exe" -Force
 Move-Item -Path "$tmp\dora-replay-node.exe" -Destination "$dest\dora-replay-node.exe" -Force
 Remove-Item -Path $tmp -Recurse -Force

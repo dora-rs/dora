@@ -24,9 +24,8 @@ archive="https://github.com/$REPO/releases/download/$tag/dora-cli-$target.tar.gz
 echo "Installing dora $tag ($target) to $DEST"
 
 # Download, extract, install (archive nests the binaries in a dora-cli-<target>/
-# dir). `dora-record-node` and `dora-replay-node` are `publish = false`, so this
-# archive is where `dora record`/`dora replay` get them; both look next to the
-# `dora` executable first.
+# dir). `dora record`/`dora replay` look for `dora-record-node` and
+# `dora-replay-node` next to the `dora` executable first.
 mkdir -p "$DEST"
 curl -fsSL "$archive" | tar -xz -C "$DEST" --strip-components 1 \
   "dora-cli-$target/dora" \

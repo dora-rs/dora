@@ -158,13 +158,11 @@ The 1.1.0 archives and the `dora-rs-cli` wheel ship the CLI alone. A
 afterwards to get the helpers.
 
 If no helper is found, the CLI builds it: inside the Dora workspace with
-`cargo build`, and otherwise by installing it from the release tag that
-matches the CLI version, into `~/.dora/nodes/<version>` (this needs a Rust
-toolchain):
+`cargo build`, and otherwise by installing the version that matches the CLI
+from crates.io into `~/.dora/nodes/<version>` (this needs a Rust toolchain):
 
 ```bash
-cargo install --locked --root ~/.dora/nodes/<version> \
-  --git https://github.com/dora-rs/dora --tag v<version> dora-record-node
+cargo install --locked --root ~/.dora/nodes/<version> --version =<version> dora-record-node
 ```
 
 You can also build both helpers yourself in a Dora checkout that matches your

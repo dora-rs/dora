@@ -87,9 +87,8 @@ jobs:
           # (dora-ros2-bridge before dora-node-api-cxx) and dev-deps, which
           # keep their version requirement when packaged (dora-daemon and
           # dora-cli before dora-ros2-bridge, which dev-depends on both).
-          # Excludes `publish = false` binaries (dora-record-node,
-          # dora-replay-node, dora-ros2-bridge-node — delivered via the CLI)
-          # and the PyPI-only dora-node-api-python.
+          # Excludes the `publish = false` dora-ros2-bridge-node (built per
+          # ROS distro) and the PyPI-only dora-node-api-python.
           CRATES=(
             dora-message
             dora-arrow-convert
@@ -104,6 +103,8 @@ jobs:
             dora-operator-api-macros
             dora-operator-api
             dora-node-api
+            dora-record-node
+            dora-replay-node
             dora-node-api-c
             dora-operator-api-c
             dora-coordinator
@@ -233,11 +234,9 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: Build CLI for ${{ matrix.target }}
-        # The recording nodes ship with the CLI. They are `publish = false`
-        # (delivered through the CLI rather than crates.io — see their
-        # manifests and the CRATES list above), so this archive is the only
-        # place a normal install can get them from. `dora record` and
-        # `dora replay` look for them next to the `dora` executable first
+        # The recording nodes ship with the CLI, so `dora record` and
+        # `dora replay` work after a normal install without a Rust toolchain.
+        # Both look for them next to the `dora` executable first
         # (`binaries/cli/src/command/node_binary.rs`).
         #
         # Two invocations on purpose: one `cargo build` unifies dependency
