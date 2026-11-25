@@ -55,7 +55,24 @@ pub(crate) async fn handle_daemon_ws(
     let mut backlog = EventBacklog::default();
 
     loop {
+        // The earliest time a drop counted since the last warning is due to
+        // be reported, so a burst that ends inside the warning interval is
+        // still reported then rather than only on the next drop.
+        let flush_at = [
+            dropped_debug_frames.next_flush(),
+            backlog.dropped_logs.next_flush(),
+        ]
+        .into_iter()
+        .flatten()
+        .min();
         tokio::select! {
+            () = tokio::time::sleep_until(
+                flush_at.map_or_else(tokio::time::Instant::now, Into::into),
+            ), if flush_at.is_some() => {
+                let now = std::time::Instant::now();
+                dropped_debug_frames.flush(now);
+                backlog.dropped_logs.flush(now);
+            }
             // Incoming messages from daemon. Paused while the backlog is at
             // its hard cap, which leaves the daemon to TCP backpressure as
             // before #3983 rather than buffering without bound.
@@ -266,13 +283,17 @@ impl EventBacklog {
     }
 }
 
+/// How often a connection warns about the events it had to drop.
+const DROP_WARNING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Events a daemon connection had to drop, warned about at most once per
-/// interval with the count since the last warning.
+/// [`DROP_WARNING_INTERVAL`] with the count since the last warning.
 ///
-/// Drops counted after the last warning are reported by the next drop past
-/// the interval or, at the latest, when the value is dropped (the connection
-/// closes), so a burst that ends inside an interval is not reported as only
-/// the single drop that opened it.
+/// Drops counted after the last warning are reported once the interval has
+/// passed, whether or not another drop arrives: `handle_daemon_ws` wakes up at
+/// [`Self::next_flush`] to report them, and the rest is reported when the
+/// connection closes. A burst that ends inside an interval is therefore not
+/// reported as only the single drop that opened it.
 struct DroppedEvents {
     /// What was dropped, for the warning.
     what: &'static str,
@@ -290,24 +311,36 @@ impl DroppedEvents {
     }
 
     fn record(&mut self) {
-        if let Some(count) = self.record_at(std::time::Instant::now()) {
+        self.count += 1;
+        self.flush(std::time::Instant::now());
+    }
+
+    /// Warn about the drops counted so far if the interval has passed.
+    fn flush(&mut self, now: std::time::Instant) {
+        if let Some(count) = self.take_due(now) {
             tracing::warn!("dropped {count} {}", self.what);
         }
     }
 
-    /// Count one drop at `now`, returning the count to warn about when the
+    /// The count to warn about at `now`: every unreported drop, once the
     /// interval since the last warning has passed.
-    fn record_at(&mut self, now: std::time::Instant) -> Option<u64> {
-        self.count += 1;
-        if self
+    fn take_due(&mut self, now: std::time::Instant) -> Option<u64> {
+        let in_interval = self
             .last_log
-            .is_none_or(|last| now - last >= std::time::Duration::from_secs(5))
-        {
-            self.last_log = Some(now);
-            Some(std::mem::take(&mut self.count))
-        } else {
-            None
+            .is_some_and(|last| now < last + DROP_WARNING_INTERVAL);
+        if self.count == 0 || in_interval {
+            return None;
         }
+        self.last_log = Some(now);
+        Some(std::mem::take(&mut self.count))
+    }
+
+    /// When the drops counted so far become due for a warning, if any are.
+    /// (Only drops held back by an earlier warning can be pending, so
+    /// `last_log` is set whenever `count` is non-zero.)
+    fn next_flush(&self) -> Option<std::time::Instant> {
+        let last = self.last_log.filter(|_| self.count > 0)?;
+        Some(last + DROP_WARNING_INTERVAL)
     }
 }
 
@@ -713,20 +746,31 @@ mod topic_debug_tests {
     }
 
     #[test]
-    fn dropped_events_keeps_the_count_of_a_burst_for_the_final_warning() {
+    fn dropped_events_reports_the_rest_of_a_burst_once_the_interval_passes() {
         let start = std::time::Instant::now();
         let mut dropped = DroppedEvents::new("x");
-        // The first drop is warned about at once; the rest of the burst lands
-        // inside the 5s interval and must stay counted, not be forgotten.
-        assert_eq!(dropped.record_at(start), Some(1));
+        let record_at = |dropped: &mut DroppedEvents, now| {
+            dropped.count += 1;
+            dropped.take_due(now)
+        };
+        // The first drop is reported at once; the rest of the burst lands
+        // inside the interval and stays counted.
+        assert_eq!(record_at(&mut dropped, start), Some(1));
         for _ in 0..99 {
-            assert_eq!(dropped.record_at(start), None);
+            assert_eq!(record_at(&mut dropped, start), None);
         }
-        assert_eq!(dropped.count, 99, "left for the warning on drop");
-        // Once the interval has passed, the next drop reports all of them.
-        let later = start + std::time::Duration::from_secs(5);
-        assert_eq!(dropped.record_at(later), Some(100));
-        assert_eq!(dropped.count, 0);
+
+        // With no further drops, the connection wakes at `next_flush` and
+        // reports the other 99 there, not only on a later drop or close.
+        let due = start + DROP_WARNING_INTERVAL;
+        assert_eq!(dropped.next_flush(), Some(due));
+        assert_eq!(
+            dropped.take_due(due - std::time::Duration::from_millis(1)),
+            None
+        );
+        assert_eq!(dropped.take_due(due), Some(99));
+        assert_eq!(dropped.next_flush(), None, "nothing left to report");
+        assert_eq!(dropped.take_due(due + DROP_WARNING_INTERVAL), None);
     }
 
     #[test]
