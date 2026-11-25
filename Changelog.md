@@ -9,6 +9,7 @@
 ### Changed
 
 - **A YAML ROS 2 service client keeps several requests in flight instead of one at a time** ([#4260](https://github.com/dora-rs/dora/pull/4260), [#4258](https://github.com/dora-rs/dora/issues/4258)). It used to send a request and block until the response came or 30 s passed before reading the next input, so one slow request held up every request behind it. Now it sends each request as its input arrives and keeps as many in flight as its service QoS history holds (`keep_last`, 10 by default, at most 64), and gives up on the oldest unanswered one once the server has answered nothing for 30 s since that request was sent, so a server that answers one at a time never makes queued requests time out, while one that stops answering fails them all about 30 s later. Responses still come out in request order. **The ROS 2 server now gets several requests at once; set `qos.keep_last: 1` to keep sending one at a time.** Each `response` also carries the metadata parameters of the request it answers, except delivery keys such as `flush`, so a dataflow can match them by an id it sets. On DDS and native Zenoh.
+- **An input's long form rejects unknown keys** (PR_LINK). A misspelled option such as `queue_sise: 1` or `input_timout: 2.0` under an input's `source:` map used to be silently dropped, so the input ran with the default it was meant to override. It is now a parse error naming the key, as an unknown key on a node already was. **A dataflow that carries a stray key in an input's long form no longer loads;** remove or correct the key.
 
 ### Fixed
 
