@@ -103,8 +103,6 @@ jobs:
             dora-operator-api-macros
             dora-operator-api
             dora-node-api
-            dora-record-node
-            dora-replay-node
             dora-node-api-c
             dora-operator-api-c
             dora-coordinator
@@ -118,6 +116,10 @@ jobs:
             dora-node-api-cxx
             dora-operator-api-cxx
             dora-ros2-bridge-arrow
+            # Last on purpose: nothing depends on the two node binaries, so a
+            # failure publishing them can't hold back the crates above.
+            dora-record-node
+            dora-replay-node
           )
           # Published WITH verification: cargo builds each crate from the
           # tarball it just packed, resolving its dependencies against
