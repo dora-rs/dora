@@ -37,12 +37,14 @@ pub fn find(binary_name: &str, crate_name: &str) -> eyre::Result<PathBuf> {
     // installations). It has to come from the git tag: the crate is
     // `publish = false`, so `cargo install <crate> --version <v>` always fails.
     let version = env!("CARGO_PKG_VERSION");
-    let manual = manual_install(crate_name, version);
+    let root = install_root(version);
+    let manual = manual_install(crate_name, version, &root);
     eprintln!(
-        "{binary_name} not found in workspace, installing from {REPO_URL} (tag v{version})..."
+        "{binary_name} not found in workspace, installing from {REPO_URL} (tag v{version}) into {}...",
+        root.display()
     );
     let status = Command::new("cargo")
-        .args(install_args(crate_name, version))
+        .args(install_args(crate_name, version, &root))
         .status();
     match status {
         Ok(s) if s.success() => {}
@@ -61,16 +63,30 @@ pub fn find(binary_name: &str, crate_name: &str) -> eyre::Result<PathBuf> {
     })
 }
 
+/// Where the fallback installs the node binaries: `~/.dora/nodes/<version>`,
+/// with the binaries in its `bin/` directory.
+///
+/// A fixed root means [`search`] finds the binary right after the install,
+/// whatever cargo's own install root is (`$CARGO_INSTALL_ROOT`,
+/// `install.root`, or a `$CARGO_HOME/bin` that may not be on `PATH`). One
+/// root per CLI version means a CLI never picks up a node that an older CLI
+/// installed this way.
+fn install_root(version: &str) -> PathBuf {
+    super::coordinator::dora_dir().join("nodes").join(version)
+}
+
 /// `cargo install` arguments for a node crate that is not on crates.io.
 ///
 /// `--locked` makes the install use the `Cargo.lock` committed at the release
 /// tag instead of resolving dependencies fresh, so the node matches the
 /// dependencies the release was built against. Without it a semver-compatible
 /// dependency published after the tag can break or silently change the build.
-fn install_args(crate_name: &str, version: &str) -> Vec<String> {
+fn install_args(crate_name: &str, version: &str, root: &Path) -> Vec<String> {
     vec![
         "install".to_owned(),
         "--locked".to_owned(),
+        "--root".to_owned(),
+        root.display().to_string(),
         "--git".to_owned(),
         REPO_URL.to_owned(),
         "--tag".to_owned(),
@@ -80,9 +96,9 @@ fn install_args(crate_name: &str, version: &str) -> Vec<String> {
 }
 
 /// The same install as a copy-pasteable command for error messages.
-fn manual_install(crate_name: &str, version: &str) -> String {
+fn manual_install(crate_name: &str, version: &str, root: &Path) -> String {
     let mut command = vec!["cargo".to_owned()];
-    command.extend(install_args(crate_name, version));
+    command.extend(install_args(crate_name, version, root));
     command.join(" ")
 }
 
@@ -110,6 +126,13 @@ fn search(binary_name: &str) -> Option<PathBuf> {
         if let Some(candidate) = probe_dir(dir, binary_name) {
             return Some(candidate);
         }
+    }
+
+    // Check where the `cargo install` fallback in `find` puts it, before PATH
+    // so that a node an older CLI installed elsewhere does not win.
+    let fallback_bin = install_root(env!("CARGO_PKG_VERSION")).join("bin");
+    if let Some(candidate) = probe_dir(&fallback_bin, binary_name) {
+        return Some(candidate);
     }
 
     // Check PATH
@@ -144,7 +167,9 @@ fn search(binary_name: &str) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{REPO_URL, install_args, manual_install, probe_dir};
+    use std::path::Path;
+
+    use super::{REPO_URL, install_args, install_root, manual_install, probe_dir};
 
     /// `dora-record-node` and `dora-replay-node` are `publish = false`, so the
     /// registry form (`cargo install <crate> --version <v>`) can never resolve
@@ -152,11 +177,14 @@ mod tests {
     /// install has to come from this project's release tag instead.
     #[test]
     fn unpublished_node_installs_from_the_release_tag() {
+        let root = Path::new("/home/u/.dora/nodes/1.1.0");
         assert_eq!(
-            install_args("dora-record-node", "1.1.0"),
+            install_args("dora-record-node", "1.1.0", root),
             [
                 "install",
                 "--locked",
+                "--root",
+                "/home/u/.dora/nodes/1.1.0",
                 "--git",
                 REPO_URL,
                 "--tag",
@@ -165,9 +193,21 @@ mod tests {
             ]
         );
         assert_eq!(
-            manual_install("dora-record-node", "1.1.0"),
-            format!("cargo install --locked --git {REPO_URL} --tag v1.1.0 dora-record-node")
+            manual_install("dora-record-node", "1.1.0", root),
+            format!(
+                "cargo install --locked --root /home/u/.dora/nodes/1.1.0 --git {REPO_URL} --tag v1.1.0 dora-record-node"
+            )
         );
+    }
+
+    /// The fallback installs into a root of its own, one per CLI version, so
+    /// `search` finds the result no matter where cargo would install by
+    /// default, and never a node another CLI version installed there.
+    #[test]
+    fn install_root_is_per_version_under_dora_dir() {
+        let root = install_root("1.2.0");
+        assert!(root.ends_with(Path::new(".dora").join("nodes").join("1.2.0")));
+        assert_ne!(root, install_root("1.1.0"));
     }
 
     #[test]

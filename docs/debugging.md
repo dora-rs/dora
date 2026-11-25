@@ -152,14 +152,18 @@ Local recording and replay launch separate helper binaries,
 
 Since 1.2, the CLI release archives and the `install.sh` / `install.ps1`
 installers ship both helpers next to `dora`, so they work out of the box.
-The 1.1.0 archives and the `dora-rs-cli` wheel ship the CLI alone.
+The 1.1.0 archives and the `dora-rs-cli` wheel ship the CLI alone. A
+`dora self update` from 1.1 also replaces only `dora`; re-run the installer
+afterwards to get the helpers.
 
 If no helper is found, the CLI builds it: inside the Dora workspace with
 `cargo build`, and otherwise by installing it from the release tag that
-matches the CLI version (this needs a Rust toolchain):
+matches the CLI version, into `~/.dora/nodes/<version>` (this needs a Rust
+toolchain):
 
 ```bash
-cargo install --locked --git https://github.com/dora-rs/dora --tag v<version> dora-record-node
+cargo install --locked --root ~/.dora/nodes/<version> \
+  --git https://github.com/dora-rs/dora --tag v<version> dora-record-node
 ```
 
 You can also build both helpers yourself in a Dora checkout that matches your
