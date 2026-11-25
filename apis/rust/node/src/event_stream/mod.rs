@@ -228,7 +228,7 @@ pub struct EventStream {
     /// explicitly tears these down under a deadline (see there); by the time
     /// this field drops it is already empty.
     _zenoh_subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
-    /// Per-input `@schema` subscribers (zenoh-ext AdvancedSubscriber) that prime
+    /// Per-input schema-key subscribers (zenoh-ext AdvancedSubscriber) that prime
     /// the data subscribers' decoders. Kept alive like `_zenoh_subscribers`.
     _zenoh_schema_subscribers: Vec<zenoh_ext::AdvancedSubscriber<()>>,
     /// The `dora-startup-acker` thread (see [`spawn_startup_acker`]). Exits
@@ -633,14 +633,14 @@ impl EventStream {
                     }
                     // Per-input persistent decoder for the schema-once path,
                     // shared between this data subscriber (which decodes batches
-                    // in zenoh receipt order) and the `@schema` subscriber (which
+                    // in zenoh receipt order) and the schema-key subscriber (which
                     // primes it from the cached/live schema). `Mutex` because the
                     // zenoh callbacks are `Fn`; uncontended in practice (each
                     // subscriber delivers its samples serially).
                     let decoder = std::sync::Arc::new(std::sync::Mutex::new(
                         crate::arrow_utils::ipc_encode::InputDecoder::new(),
                     ));
-                    // Set if the `@schema` subscriber fails to declare: the
+                    // Set if the schema-key subscriber fails to declare: the
                     // schema plane is then dead for this input and only the
                     // producer's periodic in-band full-stream refresh can prime
                     // the decoder. The data callback surfaces a `FatalError` if
@@ -655,7 +655,7 @@ impl EventStream {
                     // is set, so it costs nothing on the healthy path.
                     let first_undecodable =
                         std::sync::Arc::new(std::sync::Mutex::new(Option::<Instant>::None));
-                    // The `@schema` subscriber primes `decoder`; its history query
+                    // The schema-key subscriber primes `decoder`; its history query
                     // fetches the cached schema on join (late joiners), and
                     // `detect_late_publishers` covers a producer that starts later.
                     declare_schema_subscriber(
@@ -778,7 +778,7 @@ impl EventStream {
                                             // and wait — the window is bounded by the
                                             // producer's periodic full-stream refresh,
                                             // which re-primes in-band. But if the
-                                            // `@schema` subscriber failed to declare, the
+                                            // schema-key subscriber failed to declare, the
                                             // schema plane is dead (a degraded zenoh
                                             // session) and only that refresh can save the
                                             // input — give it a grace window, then surface
@@ -806,7 +806,7 @@ impl EventStream {
                                                         tracing::warn!(
                                                             input = %input_id_cb,
                                                             "schema-once batch arrived unprimed \
-                                                             while the `@schema` subscriber is \
+                                                             while the schema-key subscriber is \
                                                              not declared; dropping, waiting up \
                                                              to {}s for the producer's in-band \
                                                              full-stream refresh",
@@ -818,7 +818,7 @@ impl EventStream {
                                                         Instant::now(),
                                                     ) && tx_cb
                                                         .try_send(EventItem::FatalError(eyre!(
-                                                            "input `{input_id_cb}`: the `@schema` \
+                                                            "input `{input_id_cb}`: the schema-key \
                                                              subscriber failed to declare (a \
                                                              degraded zenoh session) and the \
                                                              input stayed undecodable for {}s \
@@ -2210,7 +2210,7 @@ fn zenoh_payload_to_buffer(payload: zenoh::bytes::ZBytes) -> arrow::buffer::Buff
     }
 }
 
-/// Declare the `@schema` AdvancedSubscriber for an input: its callback primes
+/// Declare the schema-key AdvancedSubscriber for an input: its callback primes
 /// `decoder` from the schema published on the output's schema subtopic. The
 /// history query fetches the cached schema on join; `detect_late_publishers`
 /// re-queries a producer that appears after this subscriber.
@@ -2242,7 +2242,7 @@ fn declare_schema_subscriber(
     let key = match zenoh::key_expr::KeyExpr::new(topic) {
         Ok(k) => k.into_owned(),
         Err(e) => {
-            tracing::warn!(input = %input_id, "invalid @schema zenoh key ({e}); schema-once disabled for this input");
+            tracing::warn!(input = %input_id, "invalid zenoh schema key ({e}); schema-once disabled for this input");
             schema_plane_failed.store(true, std::sync::atomic::Ordering::Relaxed);
             return;
         }
@@ -2262,13 +2262,13 @@ fn declare_schema_subscriber(
                     guard
                 });
                 if let Err(e) = decoder.set_schema_raw(hash, buffer) {
-                    tracing::warn!(input = %input_id_cb, "failed to prime decoder from @schema sample: {e}");
+                    tracing::warn!(input = %input_id_cb, "failed to prime decoder from schema-key sample: {e}");
                 }
             }));
             if result.is_err() {
-                tracing::error!(input = %input_id_cb, "zenoh @schema subscriber callback panicked");
+                tracing::error!(input = %input_id_cb, "zenoh schema-key subscriber callback panicked");
                 let _ = tx.try_send(EventItem::FatalError(eyre!(
-                    "zenoh @schema subscriber for input `{input_id_cb}` panicked"
+                    "zenoh schema-key subscriber for input `{input_id_cb}` panicked"
                 )));
             }
         })
@@ -2276,14 +2276,14 @@ fn declare_schema_subscriber(
     match sub {
         Ok(s) => out.push(s),
         Err(e) => {
-            tracing::warn!(input = %input_id, "failed to declare @schema subscriber ({e}); schema-once disabled for this input");
+            tracing::warn!(input = %input_id, "failed to declare schema-key subscriber ({e}); schema-once disabled for this input");
             schema_plane_failed.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
 
 /// How long a schema-once input may stay continuously undecodable — with the
-/// `@schema` plane dead — before the node exits with a `FatalError`. Three
+/// `schema/` plane dead — before the node exits with a `FatalError`. Three
 /// producer full-stream refresh intervals: the refresh re-primes the input
 /// in-band, so if it hasn't healed after three periods the input is genuinely
 /// dead (producer gone or data plane dropping every refresh), not just waiting
@@ -2323,7 +2323,7 @@ fn observe_input_timestamp(
 
 /// Decode a zenoh data sample in receipt order. A schema-less batch (the
 /// `SCHEMA_HASH` parameter is present) decodes against the per-input decoder
-/// primed from the output's `@schema` subtopic or in-band from an earlier full
+/// primed from the output's schema key or in-band from an earlier full
 /// stream — returning `Ok(None)` if that schema hasn't been received yet, in
 /// which case the caller drops it. Other messages (large/SHM full streams,
 /// daemon-path payloads) decode standalone — and additionally prime the decoder
@@ -2362,12 +2362,12 @@ fn decode_zenoh_sample(
 /// stream received on the data topic.
 ///
 /// The producer sends a full stream for the first message of an output (and
-/// after every schema change, failed `@schema` publish, or periodic refresh —
+/// after every schema change, failed schema-key publish, or periodic refresh —
 /// see `publish_schema_once`). Since all data-plane puts share one publisher,
 /// zenoh delivers them in order, so this priming happens strictly before the
 /// schema-less batches that reference the schema — closing the QoS race where
-/// an express batch overtakes the `@schema` plane's non-express schema, and
-/// re-priming (within the refresh interval) any consumer whose `@schema`
+/// an express batch overtakes the `schema/` plane's non-express schema, and
+/// re-priming (within the refresh interval) any consumer whose schema-key
 /// history query missed the single schema emission.
 fn prime_in_band(
     decoder: &mut crate::arrow_utils::ipc_encode::InputDecoder,
@@ -2469,7 +2469,7 @@ impl Drop for EventStream {
         // The callbacks use `try_send`, so undeclaring before `receiver` drops
         // cannot deadlock on a blocked callback.
         //
-        // The `@schema` `AdvancedSubscriber`s (added with the Arrow IPC data
+        // The schema-key `AdvancedSubscriber`s (added with the Arrow IPC data
         // plane in #2366) undeclare on the same shared session and can wedge
         // the same way, so they must be torn down under the same deadline —
         // mirroring `DoraNode::Drop`, which drops both publisher maps inside
@@ -4552,10 +4552,10 @@ mod tests {
 
     /// A full self-describing stream on the data topic must prime the per-input
     /// decoder in-band: the schema-less batches that follow decode against it
-    /// without any `@schema`-plane delivery. This is what makes the producer's
+    /// without any schema-key delivery. This is what makes the producer's
     /// "full stream until the schema is confirmed published" strategy race-free
     /// — data-plane puts share one publisher, so zenoh preserves their order,
-    /// while the separate `@schema` plane can lose the race with an express
+    /// while the separate `schema/` plane can lose the race with an express
     /// batch (dora-rs/dora#2366 review: first-message QoS race).
     #[test]
     fn full_stream_primes_decoder_in_band_for_schema_less_batches() {
@@ -4570,7 +4570,7 @@ mod tests {
         let mut decoder = InputDecoder::new();
 
         // Message 1: full stream (no SCHEMA_HASH), as the producer sends while
-        // the schema is not yet confirmed published on the `@schema` plane.
+        // the schema is not yet confirmed published on the `schema/` plane.
         let first = Int32Array::from(vec![1, 2]).into_data();
         let mut full = vec![0u8; ipc_fast_path_len_data(&first).unwrap()];
         encode_ipc_into_data(&first, &mut full).unwrap();
@@ -4784,7 +4784,7 @@ mod tests {
 
     /// The schema-plane FatalError only fires after the grace window: the
     /// producer's periodic full-stream refresh heals an unprimed input in-band,
-    /// so a node with a dead `@schema` plane must not be killed on the first
+    /// so a node with a dead `schema/` plane must not be killed on the first
     /// dropped batch when it would recover within seconds.
     #[test]
     fn schema_plane_fatal_waits_out_the_grace_window() {
