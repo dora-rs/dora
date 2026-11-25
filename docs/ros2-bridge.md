@@ -345,17 +345,17 @@ The action bridge sends feedback and results on separate outputs:
 
 When sending a goal to the action bridge, the caller can attach a `goal_id` in the input's metadata parameters (`dora_node_api::GOAL_ID`). The bridge preserves this `goal_id` on all corresponding `feedback` and `result` messages so callers can correlate asynchronous responses when multiple goals are in flight (e.g., via `recv_action_result(&goal_id, …)`). If no `goal_id` is set on the goal input, the bridge falls back to the assigned ROS UUID.
 
-The `result` output carries the `goal_status` metadata parameter (`dora_node_api::GOAL_STATUS`). Terminal statuses are `succeeded`, `aborted`, and `canceled` — these are the values that `EventStream::recv_action_result` and the Python action helpers treat as final. The bridge emits `aborted` for all client-side failure cases (goal rejected by server, send-goal timeout, undecodable response) so that callers waiting with `recv_action_result` are unblocked immediately rather than hanging until their timeout:
+The `result` output carries the `goal_status` metadata parameter (`dora_node_api::GOAL_STATUS`). Terminal statuses are `succeeded`, `aborted`, and `canceled` — these are the values that `EventStream::recv_action_result` and the Python action helpers treat as final. The bridge emits `aborted` for all client-side failure cases (goal rejected by server, concurrency limit reached, send-goal timeout, result timed out, undecodable response) so that callers waiting with `recv_action_result` are unblocked immediately rather than hanging until their timeout:
 
 | `goal_status` | Meaning |
 |---|---|
 | `succeeded` | Goal completed successfully |
-| `aborted` | Goal was aborted by the server, returned a non-terminal/`Unknown` result status, or encountered a client-side failure (rejected goal, send-goal timeout, undecodable response) |
+| `aborted` | Goal was aborted by the server, returned a non-terminal/`Unknown` result status, or encountered a client-side failure (rejected goal, concurrency limit reached, send-goal timeout, result timed out, undecodable response) |
 | `canceled` | Goal was canceled |
 
 ### Concurrent Goals
 
-The bridge supports up to 8 concurrent in-flight goals (`MAX_CONCURRENT_GOALS`). Additional goals are dropped with a warning. Each goal spawns dedicated feedback and result reader threads.
+The bridge supports up to 8 concurrent in-flight goals (`MAX_CONCURRENT_GOALS`). Additional goals are dropped with a warning and emit an empty `result` with `goal_status: aborted`. Each goal spawns dedicated feedback and result reader threads.
 
 ### Timeouts
 

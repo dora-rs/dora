@@ -705,15 +705,20 @@ fn run_zenoh_action_client(
     for event in futures::executor::block_on_stream(merged) {
         match event {
             MergedEvent::Dora(Event::Input { metadata, data, .. }) => {
+                let ros_goal_id = ros2_client::action::GoalId::new_random();
+                let caller_goal_id = resolve_action_goal_id(&metadata.parameters, &ros_goal_id);
                 let permit = match goal_limit.try_acquire() {
                     Ok(permit) => permit,
                     Err(error) => {
                         tracing::warn!("{error}");
+                        emit_aborted_result(
+                            &mut node,
+                            &caller_goal_id,
+                            "Zenoh goal dropped at concurrency limit",
+                        );
                         continue;
                     }
                 };
-                let ros_goal_id = ros2_client::action::GoalId::new_random();
-                let caller_goal_id = resolve_action_goal_id(&metadata.parameters, &ros_goal_id);
                 // Fix 4: insert mapping BEFORE send_goal.call so that early
                 // feedback arriving before the response carries caller_goal_id.
                 if let Ok(mut g) = active_goals.lock() {
@@ -748,13 +753,7 @@ fn run_zenoh_action_client(
                     if let Ok(mut g) = active_goals.lock() {
                         g.remove(&ros_goal_id.uuid.to_string());
                     }
-                    if let Err(e) = node.send_output(
-                        "result".into(),
-                        action_result_parameters(&caller_goal_id, GOAL_STATUS_ABORTED),
-                        arrow::array::NullArray::new(0),
-                    ) {
-                        tracing::warn!("failed to emit aborted result for timed-out goal: {e}");
-                    }
+                    emit_aborted_result(&mut node, &caller_goal_id, "timed-out Zenoh goal");
                     continue;
                 };
                 let Some(response): Option<SendGoalResponse> = value_or_warn(
@@ -764,15 +763,7 @@ fn run_zenoh_action_client(
                     if let Ok(mut g) = active_goals.lock() {
                         g.remove(&ros_goal_id.uuid.to_string());
                     }
-                    if let Err(e) = node.send_output(
-                        "result".into(),
-                        action_result_parameters(&caller_goal_id, GOAL_STATUS_ABORTED),
-                        arrow::array::NullArray::new(0),
-                    ) {
-                        tracing::warn!(
-                            "failed to emit aborted result for undecodable response: {e}"
-                        );
-                    }
+                    emit_aborted_result(&mut node, &caller_goal_id, "undecodable Zenoh response");
                     continue;
                 };
                 if !response.accepted {
@@ -780,14 +771,7 @@ fn run_zenoh_action_client(
                     if let Ok(mut g) = active_goals.lock() {
                         g.remove(&ros_goal_id.uuid.to_string());
                     }
-                    // Fix 2 & 1: emit directly (avoids deadlock) with GOAL_STATUS_ABORTED.
-                    if let Err(e) = node.send_output(
-                        "result".into(),
-                        action_result_parameters(&caller_goal_id, GOAL_STATUS_ABORTED),
-                        arrow::array::NullArray::new(0),
-                    ) {
-                        tracing::warn!("failed to emit aborted result for rejected goal: {e}");
-                    }
+                    emit_aborted_result(&mut node, &caller_goal_id, "rejected Zenoh goal");
                     continue;
                 }
                 let result_client = client.clone();
@@ -1323,6 +1307,19 @@ fn goal_status_to_str(status: ros2_client::action::GoalStatusEnum) -> &'static s
         S::Succeeded => GOAL_STATUS_SUCCEEDED,
         S::Canceled => GOAL_STATUS_CANCELED,
         S::Aborted | S::Accepted | S::Executing | S::Canceling | S::Unknown => GOAL_STATUS_ABORTED,
+    }
+}
+
+/// Emit an empty `result` message with `goal_status: "aborted"` directly from
+/// the main event loop so callers waiting in `recv_action_result` unblock
+/// without risking bounded-channel deadlock.
+fn emit_aborted_result(node: &mut DoraNode, goal_id: &str, context: &str) {
+    if let Err(e) = node.send_output(
+        "result".into(),
+        action_result_parameters(goal_id, GOAL_STATUS_ABORTED),
+        arrow::array::NullArray::new(0),
+    ) {
+        tracing::warn!("failed to emit aborted result for {context}: {e}");
     }
 }
 
@@ -2145,6 +2142,14 @@ fn run_action_client(
                         tracing::warn!(
                             "max concurrent goals ({MAX_CONCURRENT_GOALS}) reached, dropping goal"
                         );
+                        let fallback_id = ros2_client::action::GoalId::new_random();
+                        let dropped_goal_id =
+                            resolve_action_goal_id(&metadata.parameters, &fallback_id);
+                        emit_aborted_result(
+                            &mut node,
+                            &dropped_goal_id,
+                            "DDS goal dropped at concurrency limit",
+                        );
                         continue;
                     }
                 };
@@ -2185,15 +2190,7 @@ fn run_action_client(
                     let emit_id = caller_supplied_id.unwrap_or_else(|| {
                         ros2_client::action::GoalId::new_random().uuid.to_string()
                     });
-                    if let Err(e) = node.send_output(
-                        "result".into(),
-                        action_result_parameters(&emit_id, GOAL_STATUS_ABORTED),
-                        arrow::array::NullArray::new(0),
-                    ) {
-                        tracing::warn!(
-                            "failed to emit aborted result for DDS send-goal failure: {e}"
-                        );
-                    }
+                    emit_aborted_result(&mut node, &emit_id, "DDS send-goal failure");
                     continue;
                 };
 
@@ -2203,15 +2200,7 @@ fn run_action_client(
 
                 if !send_goal_response.accepted {
                     tracing::warn!("action goal was rejected by server");
-                    // Emit directly via node.send_output (avoids deadlock on bounded tx)
-                    // with GOAL_STATUS_ABORTED so recv_action_result unblocks immediately.
-                    if let Err(e) = node.send_output(
-                        "result".into(),
-                        action_result_parameters(&caller_goal_id, GOAL_STATUS_ABORTED),
-                        arrow::array::NullArray::new(0),
-                    ) {
-                        tracing::warn!("failed to emit aborted result for rejected DDS goal: {e}");
-                    }
+                    emit_aborted_result(&mut node, &caller_goal_id, "rejected DDS goal");
                     continue;
                 }
 
@@ -2265,7 +2254,15 @@ fn run_action_client(
                         match futures::future::select(recv, timeout).await {
                             futures::future::Either::Left((result, _)) => Some(result),
                             futures::future::Either::Right(_) => {
-                                tracing::warn!("action result timed out");
+                                tracing::warn!("action result timed out; sending cancel request");
+                                let cancel = client_ref.async_cancel_goal(
+                                    goal_id,
+                                    ros2_client::builtin_interfaces::Time::ZERO,
+                                );
+                                futures::pin_mut!(cancel);
+                                let cancel_timeout =
+                                    futures_timer::Delay::new(Duration::from_secs(5));
+                                let _ = futures::future::select(cancel, cancel_timeout).await;
                                 None
                             }
                         }
