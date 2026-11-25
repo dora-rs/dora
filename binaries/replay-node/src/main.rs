@@ -176,9 +176,17 @@ fn main() -> eyre::Result<()> {
     let do_loop = std::env::var("DORA_REPLAY_LOOP")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
+    let start_at_nanos: Option<u64> = match std::env::var("DORA_REPLAY_START_AT")
+        .or_else(|_| std::env::var("DORA_REPLAY_FROM_TIMESTAMP"))
+    {
+        Ok(val) => Some(val.parse().wrap_err("invalid DORA_REPLAY_START_AT")?),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(e) => return Err(e).wrap_err("failed to read DORA_REPLAY_START_AT"),
+    };
 
     let (mut node, mut events) = DoraNode::init_from_env()?;
 
+    let target_nanos = start_at_nanos.unwrap_or(0);
     // Start of the current pass's pacing schedule; see `pacing_gap`.
     let mut pass_start = Instant::now();
     loop {
@@ -189,15 +197,36 @@ fn main() -> eyre::Result<()> {
         let mut replayed = 0u64;
         let mut skipped = 0u64;
         let mut stopped = false;
+        let mut pass_started = false;
 
         // Borrow each record from the reader instead of copying it out: the
         // payload is only decoded, and the decode makes its own copy.
         while let Some(entry) = reader.next_record()? {
+            let Some(entry_offset) = entry_pass_offset(entry.timestamp_offset_nanos, target_nanos)
+            else {
+                continue;
+            };
+
+            // When seeking with a start offset, preceding records were skipped by
+            // reading through the file, which takes real disk I/O time. Reset the
+            // pass schedule upon reaching the first matching record so that I/O
+            // time does not consume the beginning of the pacing schedule and emit
+            // subsequent records in an unpaced burst.
+            //
+            // Without `--start-at` (or when target offset is 0), we preserve `pass_start`
+            // (anchored to `next_pass_start` by `end_of_pass`) so successive passes loop
+            // without schedule drift. With `--start-at` plus `--loop`, the per-pass rescan adds
+            // a small per-node drift across passes, accepted in exchange for avoiding unpaced bursts.
+            if should_reset_pass_clock(target_nanos, pass_started) {
+                pass_start = Instant::now();
+                pass_started = true;
+            }
+
             if entry.node_id != replay_node {
                 continue;
             }
             // Wait out the pacing gap, watching for `Stop` while we do.
-            let gap = pacing_gap(pass_start.elapsed(), entry.timestamp_offset_nanos, speed);
+            let gap = pacing_gap(pass_start.elapsed(), entry_offset, speed);
             if wait_out_gap(&mut events, gap) == Replay::Stop {
                 stopped = true;
                 break;
@@ -286,7 +315,31 @@ fn main() -> eyre::Result<()> {
             );
         }
 
+        // If a start offset was requested and it is at or past the recording's
+        // end, there are no messages to replay in this or any subsequent pass:
+        let pass_duration = if let Some(target) = start_at_nanos {
+            let Some(dur) = pass_duration_from_target(reader.last_timestamp_offset_nanos(), target)
+            else {
+                eprintln!(
+                    "dora-replay-node[{replay_node}]: target offset {target} ns is at or past end of recording, nothing to replay"
+                );
+                break;
+            };
+            dur
+        } else {
+            reader.last_timestamp_offset_nanos()
+        };
+
         if !do_loop {
+            break;
+        }
+
+        // Refuse to loop if the effective pass duration is zero (e.g. boundary offset),
+        // preventing a tight busy-loop.
+        if start_at_nanos.is_some() && pass_duration == 0 {
+            eprintln!(
+                "dora-replay-node[{replay_node}]: remaining replay duration is zero, exiting loop"
+            );
             break;
         }
 
@@ -303,12 +356,8 @@ fn main() -> eyre::Result<()> {
         // poll inside the loop above, and without it `--loop` on a recording
         // holding nothing for this node would spin reopening the file with no
         // way to stop.
-        let (rest_of_pass, next_pass_start) = end_of_pass(
-            pass_start,
-            Instant::now(),
-            reader.last_timestamp_offset_nanos(),
-            speed,
-        );
+        let (rest_of_pass, next_pass_start) =
+            end_of_pass(pass_start, Instant::now(), pass_duration, speed);
         if wait_out_gap(&mut events, rest_of_pass) == Replay::Stop {
             eprintln!("dora-replay-node[{replay_node}]: stop requested, exiting");
             break;
@@ -318,6 +367,45 @@ fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+/// Returns the relative offset within a pass starting at `target_nanos`, or
+/// `None` if the entry is before the target offset and should be skipped.
+pub fn entry_pass_offset(entry_offset_nanos: u64, target_nanos: u64) -> Option<u64> {
+    if entry_offset_nanos < target_nanos {
+        None
+    } else {
+        Some(entry_offset_nanos - target_nanos)
+    }
+}
+
+/// Returns the effective replay duration of a pass starting at `target_nanos`.
+///
+/// Returns `None` if `target_nanos >= last_offset_nanos`, indicating that the
+/// target start offset is at or beyond the recording's end and there are no
+/// messages or duration to replay.
+pub fn pass_duration_from_target(last_offset_nanos: u64, target_nanos: u64) -> Option<u64> {
+    if target_nanos >= last_offset_nanos {
+        None
+    } else {
+        Some(last_offset_nanos - target_nanos)
+    }
+}
+
+/// Whether reaching a matching record should reset the pass pacing clock.
+///
+/// Preceding records were skipped by reading through the file, which takes real
+/// disk I/O time. Resetting upon the first matching record prevents that I/O
+/// time from consuming the pacing schedule and emitting an unpaced burst.
+///
+/// Only resets when there is skipped time to discard (`target_nanos > 0`).
+/// Without `--start-at` (or when target offset is 0), `pass_start` is preserved
+/// across `--loop` passes (anchored to `next_pass_start` by [`end_of_pass`])
+/// to avoid accumulating schedule drift. With `--start-at` plus `--loop`,
+/// the per-pass rescan adds a small per-node drift across passes, accepted in
+/// exchange for avoiding unpaced bursts.
+pub fn should_reset_pass_clock(target_nanos: u64, pass_started: bool) -> bool {
+    target_nanos > 0 && !pass_started
 }
 
 /// The metadata parameters to re-send for a recorded output.
@@ -333,8 +421,9 @@ fn replay_parameters(mut parameters: MetadataParameters) -> MetadataParameters {
 #[cfg(test)]
 mod tests {
     use super::{
-        Replay, classify_event, decode_recorded_payload, end_of_pass, pacing_gap,
-        replay_emitted_nothing_usable, replay_parameters,
+        Replay, classify_event, decode_recorded_payload, end_of_pass, entry_pass_offset,
+        pacing_gap, pass_duration_from_target, replay_emitted_nothing_usable, replay_parameters,
+        should_reset_pass_clock,
     };
     use dora_message::aligned_vec::{AVec, ConstAlign};
     use dora_node_api::DoraArray;
@@ -382,6 +471,57 @@ mod tests {
         let (rest, next) = end_of_pass(start, start + Duration::from_secs(1), 10 * SECOND, 0.0);
         assert_eq!(rest, Duration::ZERO);
         assert_eq!(next, start);
+    }
+
+    #[test]
+    fn entry_pass_offset_skips_entries_before_target() {
+        assert_eq!(entry_pass_offset(500 * SECOND, 1000 * SECOND), None);
+        assert_eq!(entry_pass_offset(0, 1000 * SECOND), None);
+    }
+
+    #[test]
+    fn entry_pass_offset_calculates_relative_offset_at_and_after_target() {
+        // At target -> offset 0 within pass
+        assert_eq!(entry_pass_offset(1000 * SECOND, 1000 * SECOND), Some(0));
+        // After target -> relative offset within pass
+        assert_eq!(
+            entry_pass_offset(1500 * SECOND, 1000 * SECOND),
+            Some(500 * SECOND)
+        );
+        assert_eq!(
+            entry_pass_offset(2500 * SECOND, 1000 * SECOND),
+            Some(1500 * SECOND)
+        );
+    }
+
+    #[test]
+    fn pass_duration_from_target_calculates_remaining_period() {
+        assert_eq!(
+            pass_duration_from_target(10 * SECOND, 2 * SECOND),
+            Some(8 * SECOND)
+        );
+        assert_eq!(pass_duration_from_target(10 * SECOND, 0), Some(10 * SECOND));
+    }
+
+    #[test]
+    fn pass_duration_from_target_rejects_boundary_and_past_end() {
+        // Equal to last timestamp (boundary) returns None to prevent 0-duration loops
+        assert_eq!(pass_duration_from_target(10 * SECOND, 10 * SECOND), None);
+        // Past the end returns None
+        assert_eq!(pass_duration_from_target(10 * SECOND, 12 * SECOND), None);
+    }
+
+    #[test]
+    fn pass_clock_reset_only_runs_when_start_at_is_specified() {
+        // Without --start-at (target == 0): never resets the pass clock, preserving
+        // next_pass_start across loop passes so reopening and timer overshoot do not drift.
+        assert!(!should_reset_pass_clock(0, false));
+        assert!(!should_reset_pass_clock(0, true));
+
+        // With --start-at (target > 0): resets on the first record of the pass to discard
+        // disk I/O scan time, but not on subsequent records.
+        assert!(should_reset_pass_clock(10 * SECOND, false));
+        assert!(!should_reset_pass_clock(10 * SECOND, true));
     }
 
     #[test]
