@@ -120,17 +120,33 @@ Record captures live dataflow messages to a file. Replay substitutes source node
 
 ### Installing the Record and Replay Helpers
 
-Local recording and replay launch separate helper binaries. The 1.1.0 CLI
-release archive and `dora-rs-cli` wheel ship the CLI alone. Build the helpers
-in a Dora checkout that matches your installed CLI version.
+Local recording and replay launch separate helper binaries,
+`dora-record-node` and `dora-replay-node`. The CLI looks for them next to the
+`dora` executable first, then in `~/.dora/nodes/<version>/bin` (where the
+install fallback below puts them), then on `PATH`.
+
+Since 1.2, the CLI release archives and the `install.sh` / `install.ps1`
+installers ship both helpers next to `dora`, so they work out of the box.
+The 1.1.0 archives and the `dora-rs-cli` wheel ship the CLI alone. A
+`dora self update` from 1.1 also replaces only `dora`; re-run the installer
+afterwards to get the helpers.
+
+If no helper is found, the CLI builds it: inside the Dora workspace with
+`cargo build`, and otherwise by installing the version that matches the CLI
+from crates.io into `~/.dora/nodes/<version>` (this needs a Rust toolchain):
+
+```bash
+cargo install --locked --root ~/.dora/nodes/<version> --version =<version> dora-record-node
+```
+
+You can also build both helpers yourself in a Dora checkout that matches your
+installed CLI version, and add the build output directory
+(`target/release` by default) to `PATH`:
 
 ```bash
 cargo build --locked --release -p dora-record-node -p dora-replay-node
 ```
 
-Add the build output directory (`target/release` by default) to `PATH`
-before running `dora record` or `dora replay` from your project. When run
-from the Dora workspace root, the CLI can build the helper on demand.
 [Proxy recording](#proxy-recording-remote--diskless) runs directly in the CLI.
 
 ### Recording a Dataflow
