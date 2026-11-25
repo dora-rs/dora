@@ -350,9 +350,8 @@ The `result` output carries the `goal_status` metadata parameter (`dora_node_api
 | `goal_status` | Meaning |
 |---|---|
 | `succeeded` | Goal completed successfully |
-| `aborted` | Goal was aborted by the server **or** the bridge encountered a failure (rejected goal, send-goal timeout, undecodable response) |
+| `aborted` | Goal was aborted by the server, returned a non-terminal/`Unknown` result status, or encountered a client-side failure (rejected goal, send-goal timeout, undecodable response) |
 | `canceled` | Goal was canceled |
-| `accepted` / `executing` / `canceling` | Non-terminal statuses reported by the server |
 
 ### Concurrent Goals
 

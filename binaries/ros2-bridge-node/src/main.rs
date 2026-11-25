@@ -1299,9 +1299,6 @@ fn action_result_parameters(
     parameters
 }
 
-pub const GOAL_STATUS_REJECTED: &str = "rejected";
-pub const GOAL_STATUS_UNKNOWN: &str = "unknown";
-
 /// Resolve the goal ID for an action client goal input.
 ///
 /// If the caller provided a `goal_id` in `parameters`, preserve it so the caller
@@ -1316,18 +1313,16 @@ fn resolve_action_goal_id(
         .unwrap_or_else(|| ros_goal_id.uuid.to_string())
 }
 
-/// Map a [`GoalStatusEnum`](ros2_client::action::GoalStatusEnum) to its standard
-/// metadata parameter string representation.
+/// Map a [`GoalStatusEnum`](ros2_client::action::GoalStatusEnum) from a
+/// `GetResult` response to a terminal `goal_status` string (`succeeded`,
+/// `aborted`, or `canceled`) so `recv_action_result` never hangs on
+/// `Unknown` or non-terminal statuses.
 fn goal_status_to_str(status: ros2_client::action::GoalStatusEnum) -> &'static str {
     use ros2_client::action::GoalStatusEnum as S;
     match status {
         S::Succeeded => GOAL_STATUS_SUCCEEDED,
-        S::Aborted => GOAL_STATUS_ABORTED,
         S::Canceled => GOAL_STATUS_CANCELED,
-        S::Accepted => "accepted",
-        S::Executing => "executing",
-        S::Canceling => "canceling",
-        S::Unknown => GOAL_STATUS_UNKNOWN,
+        S::Aborted | S::Accepted | S::Executing | S::Canceling | S::Unknown => GOAL_STATUS_ABORTED,
     }
 }
 
@@ -2185,17 +2180,20 @@ fn run_action_client(
                     "failed to send ROS2 action goal",
                 )?
                 else {
-                    // Fix 3: emit aborted result using the caller-supplied id (or a
-                    // placeholder) so the handler is not left hanging.
-                    let emit_id = caller_supplied_id
-                        .as_deref()
-                        .unwrap_or("unknown")
-                        .to_owned();
-                    let _ = tx.send(ActionEvent::Result {
-                        goal_id: emit_id,
-                        status: GOAL_STATUS_ABORTED,
-                        data: None,
+                    // Emit directly via node.send_output (avoids deadlock on bounded tx)
+                    // and fall back to a random UUID if caller supplied no goal_id (matching Zenoh).
+                    let emit_id = caller_supplied_id.unwrap_or_else(|| {
+                        ros2_client::action::GoalId::new_random().uuid.to_string()
                     });
+                    if let Err(e) = node.send_output(
+                        "result".into(),
+                        action_result_parameters(&emit_id, GOAL_STATUS_ABORTED),
+                        arrow::array::NullArray::new(0),
+                    ) {
+                        tracing::warn!(
+                            "failed to emit aborted result for DDS send-goal failure: {e}"
+                        );
+                    }
                     continue;
                 };
 
@@ -2205,13 +2203,15 @@ fn run_action_client(
 
                 if !send_goal_response.accepted {
                     tracing::warn!("action goal was rejected by server");
-                    // Fix 1: use GOAL_STATUS_ABORTED — recv_action_result only treats
-                    // succeeded / aborted / canceled as terminal; rejected would hang.
-                    let _ = tx.send(ActionEvent::Result {
-                        goal_id: caller_goal_id,
-                        status: GOAL_STATUS_ABORTED,
-                        data: None,
-                    });
+                    // Emit directly via node.send_output (avoids deadlock on bounded tx)
+                    // with GOAL_STATUS_ABORTED so recv_action_result unblocks immediately.
+                    if let Err(e) = node.send_output(
+                        "result".into(),
+                        action_result_parameters(&caller_goal_id, GOAL_STATUS_ABORTED),
+                        arrow::array::NullArray::new(0),
+                    ) {
+                        tracing::warn!("failed to emit aborted result for rejected DDS goal: {e}");
+                    }
                     continue;
                 }
 
@@ -3899,8 +3899,7 @@ mod action_client_metadata_tests {
     use super::ros2_client::action::{GoalId, GoalStatusEnum};
     use super::{
         GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED, GOAL_STATUS_SUCCEEDED,
-        GOAL_STATUS_UNKNOWN, action_result_parameters, goal_parameters, goal_status_to_str,
-        resolve_action_goal_id,
+        action_result_parameters, goal_parameters, goal_status_to_str, resolve_action_goal_id,
     };
     use dora_message::metadata::{MetadataParameters, Parameter, get_string_param};
 
@@ -3918,12 +3917,21 @@ mod action_client_metadata_tests {
             goal_status_to_str(GoalStatusEnum::Canceled),
             GOAL_STATUS_CANCELED
         );
-        assert_eq!(goal_status_to_str(GoalStatusEnum::Accepted), "accepted");
-        assert_eq!(goal_status_to_str(GoalStatusEnum::Executing), "executing");
-        assert_eq!(goal_status_to_str(GoalStatusEnum::Canceling), "canceling");
+        assert_eq!(
+            goal_status_to_str(GoalStatusEnum::Accepted),
+            GOAL_STATUS_ABORTED
+        );
+        assert_eq!(
+            goal_status_to_str(GoalStatusEnum::Executing),
+            GOAL_STATUS_ABORTED
+        );
+        assert_eq!(
+            goal_status_to_str(GoalStatusEnum::Canceling),
+            GOAL_STATUS_ABORTED
+        );
         assert_eq!(
             goal_status_to_str(GoalStatusEnum::Unknown),
-            GOAL_STATUS_UNKNOWN
+            GOAL_STATUS_ABORTED
         );
     }
 
