@@ -1,5 +1,5 @@
 //! Topic debug streams: relaying observed outputs to coordinator-side
-//! watchers (`dora topic echo`/`hz`). The schema-key cache that lets a late
+//! watchers (`dora topic echo`/`hz`). The schema cache that lets a late
 //! watcher decode Arrow IPC frames is in `dora_core::debug_topic`.
 
 use crate::{Daemon, InterDaemonEvent, OutputId};

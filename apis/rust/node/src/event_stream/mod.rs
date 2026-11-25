@@ -2262,7 +2262,7 @@ fn declare_schema_subscriber(
                     guard
                 });
                 if let Err(e) = decoder.set_schema_raw(hash, buffer) {
-                    tracing::warn!(input = %input_id_cb, "failed to prime decoder from schema-key sample: {e}");
+                    tracing::warn!(input = %input_id_cb, "failed to prime decoder from schema sample: {e}");
                 }
             }));
             if result.is_err() {
@@ -2283,7 +2283,7 @@ fn declare_schema_subscriber(
 }
 
 /// How long a schema-once input may stay continuously undecodable — with the
-/// `schema/` plane dead — before the node exits with a `FatalError`. Three
+/// schema plane dead — before the node exits with a `FatalError`. Three
 /// producer full-stream refresh intervals: the refresh re-primes the input
 /// in-band, so if it hasn't healed after three periods the input is genuinely
 /// dead (producer gone or data plane dropping every refresh), not just waiting
@@ -2362,11 +2362,11 @@ fn decode_zenoh_sample(
 /// stream received on the data topic.
 ///
 /// The producer sends a full stream for the first message of an output (and
-/// after every schema change, failed schema-key publish, or periodic refresh —
+/// after every schema change, failed schema publish, or periodic refresh —
 /// see `publish_schema_once`). Since all data-plane puts share one publisher,
 /// zenoh delivers them in order, so this priming happens strictly before the
 /// schema-less batches that reference the schema — closing the QoS race where
-/// an express batch overtakes the `schema/` plane's non-express schema, and
+/// an express batch overtakes the schema plane's non-express schema, and
 /// re-priming (within the refresh interval) any consumer whose schema-key
 /// history query missed the single schema emission.
 fn prime_in_band(
@@ -4552,10 +4552,10 @@ mod tests {
 
     /// A full self-describing stream on the data topic must prime the per-input
     /// decoder in-band: the schema-less batches that follow decode against it
-    /// without any schema-key delivery. This is what makes the producer's
+    /// without any schema-plane delivery. This is what makes the producer's
     /// "full stream until the schema is confirmed published" strategy race-free
     /// — data-plane puts share one publisher, so zenoh preserves their order,
-    /// while the separate `schema/` plane can lose the race with an express
+    /// while the separate schema plane can lose the race with an express
     /// batch (dora-rs/dora#2366 review: first-message QoS race).
     #[test]
     fn full_stream_primes_decoder_in_band_for_schema_less_batches() {
@@ -4570,7 +4570,7 @@ mod tests {
         let mut decoder = InputDecoder::new();
 
         // Message 1: full stream (no SCHEMA_HASH), as the producer sends while
-        // the schema is not yet confirmed published on the `schema/` plane.
+        // the schema is not yet confirmed published on the schema plane.
         let first = Int32Array::from(vec![1, 2]).into_data();
         let mut full = vec![0u8; ipc_fast_path_len_data(&first).unwrap()];
         encode_ipc_into_data(&first, &mut full).unwrap();
@@ -4784,7 +4784,7 @@ mod tests {
 
     /// The schema-plane FatalError only fires after the grace window: the
     /// producer's periodic full-stream refresh heals an unprimed input in-band,
-    /// so a node with a dead `schema/` plane must not be killed on the first
+    /// so a node with a dead schema plane must not be killed on the first
     /// dropped batch when it would recover within seconds.
     #[test]
     fn schema_plane_fatal_waits_out_the_grace_window() {

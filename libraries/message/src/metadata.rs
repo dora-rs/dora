@@ -344,8 +344,8 @@ pub const SCHEMA_HASH: &str = "_schema_hash";
 /// prepending the retained schema block to each schema-once batch, so the
 /// rebuilt stream the CLI receives is larger than what actually travelled on
 /// the wire (the schema-less batch — the schema is published only once, on
-/// the output's separate schema key). To keep `dora topic info`'s bandwidth accounting
-/// accurate, the daemon stamps the original data-sample length here; the CLI
+/// the output's separate schema key). To keep `dora topic info`'s bandwidth
+/// accounting accurate, the daemon stamps the original data-sample length here; the CLI
 /// measures this instead of the rebuilt stream length (dora-rs/dora#2584).
 ///
 /// Debug/inspection path only — never set on real node→node outputs, and

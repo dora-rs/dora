@@ -988,7 +988,7 @@ impl InputDecoder {
     /// previously installed (e.g. after a soft reset), it re-primes from the
     /// retained bytes first. Returns `Ok(None)` when no schema for `hash` is
     /// known yet — the caller drops the message, which is fine on the lossy
-    /// `CongestionControl::Drop` data plane (the schema-key history query, the
+    /// `CongestionControl::Drop` data plane (the schema history query, the
     /// next schema publish, or the producer's periodic full-stream refresh —
     /// which primes in-band — will prime it).
     pub fn decode_batch(
