@@ -891,7 +891,7 @@ const MAX_RETAINED_SCHEMAS: usize = 8;
 
 /// Per-input receive state for the schema-once zenoh path: one persistent
 /// [`StreamDecoder`](arrow::ipc::reader::StreamDecoder) primed from the schema
-/// published on the output's `@schema` subtopic (or in-band, from the schema
+/// published on the output's schema key (or in-band, from the schema
 /// block of a full self-describing stream on the data topic), then reused to
 /// decode the schema-less batch messages that flow on the data topic.
 pub struct InputDecoder {
@@ -917,7 +917,7 @@ impl Default for InputDecoder {
 impl InputDecoder {
     /// Create an unprimed decoder. It decodes nothing until a schema is
     /// installed via [`set_schema`](Self::set_schema) (delivered from the output's
-    /// `@schema` subtopic).
+    /// schema key).
     pub fn new() -> Self {
         Self {
             decoder: arrow::ipc::reader::StreamDecoder::new(),

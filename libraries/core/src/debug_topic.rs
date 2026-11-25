@@ -1,4 +1,4 @@
-//! `@schema` reassembly for `dora topic`: rebuilding the self-describing Arrow
+//! Schema-once reassembly for `dora topic`: rebuilding the self-describing Arrow
 //! IPC stream of each output sample a node publishes on zenoh, with the cache
 //! that lets a late watcher decode schema-once batches.
 //!
@@ -8,12 +8,12 @@
 
 use std::sync::Arc;
 
-/// Cached `@schema` bytes (keyed by their FNV-1a hash, most-recent last) for
-/// one debug-watched output, shared between the `@schema` subscriber callback
+/// Cached schema bytes from the output's schema key (keyed by their FNV-1a hash, most-recent last) for
+/// one debug-watched output, shared between the schema-key subscriber callback
 /// and the data task. Retains several schemas — mirroring the node receive
 /// path's `InputDecoder` retention — so an output that interleaves schemas
 /// (e.g. schema-once batches of schema A between large full streams of schema
-/// B) doesn't have its schema-once schema clobbered, and a stale `@schema`
+/// B) doesn't have its schema-once schema clobbered, and a stale schema-key
 /// history-query result arriving after an in-band prime can't evict the
 /// fresher schema (both stay retained).
 pub type DebugSchemaCache = Arc<std::sync::Mutex<Vec<(u64, Vec<u8>)>>>;
@@ -37,7 +37,8 @@ pub fn retain_debug_schema(cache: &mut Vec<(u64, Vec<u8>)>, hash: u64, schema: &
     }
 }
 
-/// Remember a schema block received on an output's `@schema` key. It is keyed
+/// Remember a schema block received on an output's schema key
+/// (`topics::zenoh_output_schema_topic`). It is keyed
 /// by its FNV-1a hash, the hash the producer tags its schema-once batches with
 /// (see [`crate::schema_once::schema_block_and_hash`]).
 pub fn retain_published_schema(cache: &mut Vec<(u64, Vec<u8>)>, schema: &[u8]) {
@@ -47,7 +48,7 @@ pub fn retain_published_schema(cache: &mut Vec<(u64, Vec<u8>)>, schema: &[u8]) {
 /// Rebuild a self-describing Arrow IPC stream for a `dora topic` debug frame.
 ///
 /// Small node→node outputs travel as schema-once batches: the schema is
-/// published once on the `@schema` subtopic and each data sample carries only
+/// published once on the output's schema key and each data sample carries only
 /// the schema-less record batch (`DoraNode::publish_schema_once`). The
 /// `dora topic` decoder expects a full self-describing stream, so for such a
 /// batch we prepend the retained schema block — concatenation reconstructs the
