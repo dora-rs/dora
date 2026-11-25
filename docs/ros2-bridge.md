@@ -345,15 +345,13 @@ The action bridge sends feedback and results on separate outputs:
 
 When sending a goal to the action bridge, the caller can attach a `goal_id` in the input's metadata parameters (`dora_node_api::GOAL_ID`). The bridge preserves this `goal_id` on all corresponding `feedback` and `result` messages so callers can correlate asynchronous responses when multiple goals are in flight (e.g., via `recv_action_result(&goal_id, …)`). If no `goal_id` is set on the goal input, the bridge falls back to the assigned ROS UUID.
 
-The `result` output carries the `goal_status` metadata parameter (`dora_node_api::GOAL_STATUS`). In addition to terminal statuses (`succeeded`, `aborted`, `canceled`), it can report `rejected` if the action server rejected the goal, `unknown` if the request timed out or failed to deserialize, or non-terminal statuses (`accepted`, `executing`, `canceling`) if returned by the server:
+The `result` output carries the `goal_status` metadata parameter (`dora_node_api::GOAL_STATUS`). Terminal statuses are `succeeded`, `aborted`, and `canceled` — these are the values that `EventStream::recv_action_result` and the Python action helpers treat as final. The bridge emits `aborted` for all client-side failure cases (goal rejected by server, send-goal timeout, undecodable response) so that callers waiting with `recv_action_result` are unblocked immediately rather than hanging until their timeout:
 
 | `goal_status` | Meaning |
 |---|---|
 | `succeeded` | Goal completed successfully |
-| `aborted` | Goal was aborted by the server |
+| `aborted` | Goal was aborted by the server **or** the bridge encountered a failure (rejected goal, send-goal timeout, undecodable response) |
 | `canceled` | Goal was canceled |
-| `rejected` | Goal was rejected by the action server |
-| `unknown` | Result timed out, failed to decode, or status is unknown |
 | `accepted` / `executing` / `canceling` | Non-terminal statuses reported by the server |
 
 ### Concurrent Goals

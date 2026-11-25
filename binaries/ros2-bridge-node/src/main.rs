@@ -714,6 +714,11 @@ fn run_zenoh_action_client(
                 };
                 let ros_goal_id = ros2_client::action::GoalId::new_random();
                 let caller_goal_id = resolve_action_goal_id(&metadata.parameters, &ros_goal_id);
+                // Fix 4: insert mapping BEFORE send_goal.call so that early
+                // feedback arriving before the response carries caller_goal_id.
+                if let Ok(mut g) = active_goals.lock() {
+                    g.insert(ros_goal_id.uuid.to_string(), caller_goal_id.clone());
+                }
                 let request = {
                     let _guard = TypeInfoGuard::serialize(goal_type_info.clone());
                     serialize_cdr(&SendGoalRequest {
@@ -725,6 +730,10 @@ fn run_zenoh_action_client(
                     request,
                     "dropping Zenoh action goal that cannot be serialized",
                 ) else {
+                    // Remove early mapping on serialisation failure.
+                    if let Ok(mut g) = active_goals.lock() {
+                        g.remove(&ros_goal_id.uuid.to_string());
+                    }
                     continue;
                 };
                 let Some(response) = value_or_warn(
@@ -733,35 +742,53 @@ fn run_zenoh_action_client(
                     ),
                     "Zenoh action send-goal failed",
                 ) else {
-                    let _ = tx.send(ActionEvent::Result {
-                        goal_id: caller_goal_id,
-                        status: GOAL_STATUS_UNKNOWN,
-                        data: None,
-                    });
+                    // Fix 2 & 1: emit directly via node.send_output (avoids deadlock on
+                    // bounded tx) and use GOAL_STATUS_ABORTED (a terminal status that
+                    // recv_action_result recognises).
+                    if let Ok(mut g) = active_goals.lock() {
+                        g.remove(&ros_goal_id.uuid.to_string());
+                    }
+                    if let Err(e) = node.send_output(
+                        "result".into(),
+                        action_result_parameters(&caller_goal_id, GOAL_STATUS_ABORTED),
+                        arrow::array::NullArray::new(0),
+                    ) {
+                        tracing::warn!("failed to emit aborted result for timed-out goal: {e}");
+                    }
                     continue;
                 };
                 let Some(response): Option<SendGoalResponse> = value_or_warn(
                     deserialize_cdr(&response),
                     "invalid Zenoh action send-goal response",
                 ) else {
-                    let _ = tx.send(ActionEvent::Result {
-                        goal_id: caller_goal_id,
-                        status: GOAL_STATUS_UNKNOWN,
-                        data: None,
-                    });
+                    if let Ok(mut g) = active_goals.lock() {
+                        g.remove(&ros_goal_id.uuid.to_string());
+                    }
+                    if let Err(e) = node.send_output(
+                        "result".into(),
+                        action_result_parameters(&caller_goal_id, GOAL_STATUS_ABORTED),
+                        arrow::array::NullArray::new(0),
+                    ) {
+                        tracing::warn!(
+                            "failed to emit aborted result for undecodable response: {e}"
+                        );
+                    }
                     continue;
                 };
                 if !response.accepted {
                     tracing::warn!("action goal was rejected by server");
-                    let _ = tx.send(ActionEvent::Result {
-                        goal_id: caller_goal_id,
-                        status: GOAL_STATUS_REJECTED,
-                        data: None,
-                    });
+                    if let Ok(mut g) = active_goals.lock() {
+                        g.remove(&ros_goal_id.uuid.to_string());
+                    }
+                    // Fix 2 & 1: emit directly (avoids deadlock) with GOAL_STATUS_ABORTED.
+                    if let Err(e) = node.send_output(
+                        "result".into(),
+                        action_result_parameters(&caller_goal_id, GOAL_STATUS_ABORTED),
+                        arrow::array::NullArray::new(0),
+                    ) {
+                        tracing::warn!("failed to emit aborted result for rejected goal: {e}");
+                    }
                     continue;
-                }
-                if let Ok(mut g) = active_goals.lock() {
-                    g.insert(ros_goal_id.uuid.to_string(), caller_goal_id.clone());
                 }
                 let result_client = client.clone();
                 let result_tx = tx.clone();
@@ -795,7 +822,7 @@ fn run_zenoh_action_client(
                             tracing::warn!("failed to encode get-result request: {error}");
                             let _ = result_tx.send(ActionEvent::Result {
                                 goal_id: res_goal_id,
-                                status: GOAL_STATUS_UNKNOWN,
+                                status: GOAL_STATUS_ABORTED,
                                 data: None,
                             });
                             return;
@@ -811,7 +838,7 @@ fn run_zenoh_action_client(
                             tracing::warn!("Zenoh action result error: {error}");
                             let _ = result_tx.send(ActionEvent::Result {
                                 goal_id: res_goal_id,
-                                status: GOAL_STATUS_UNKNOWN,
+                                status: GOAL_STATUS_ABORTED,
                                 data: None,
                             });
                             return;
@@ -831,7 +858,7 @@ fn run_zenoh_action_client(
                             tracing::warn!("invalid Zenoh action result: {error}");
                             let _ = result_tx.send(ActionEvent::Result {
                                 goal_id: res_goal_id,
-                                status: GOAL_STATUS_UNKNOWN,
+                                status: GOAL_STATUS_ABORTED,
                                 data: None,
                             });
                         }
@@ -2129,6 +2156,14 @@ fn run_action_client(
 
                 let array_data = data.as_array().to_data();
 
+                // Fix 3: resolve the caller-supplied goal_id from metadata BEFORE the
+                // DDS send-goal call so that a timeout/failure can still emit a result.
+                // `async_send_goal` returns a ROS-generated goal UUID; if the caller did
+                // not supply a custom goal_id we fall back to that UUID after the call.
+                // Retrieve the caller-supplied id now (may be None).
+                let caller_supplied_id =
+                    get_string_param(&metadata.parameters, GOAL_ID).map(str::to_owned);
+
                 // Send goal with timeout (guard clears thread-local on drop)
                 let _guard = TypeInfoGuard::serialize(goal_type_info.clone());
                 // As for service calls, a goal the server does not answer in
@@ -2150,16 +2185,31 @@ fn run_action_client(
                     "failed to send ROS2 action goal",
                 )?
                 else {
+                    // Fix 3: emit aborted result using the caller-supplied id (or a
+                    // placeholder) so the handler is not left hanging.
+                    let emit_id = caller_supplied_id
+                        .as_deref()
+                        .unwrap_or("unknown")
+                        .to_owned();
+                    let _ = tx.send(ActionEvent::Result {
+                        goal_id: emit_id,
+                        status: GOAL_STATUS_ABORTED,
+                        data: None,
+                    });
                     continue;
                 };
 
+                // On the success path, resolve normally — this handles the
+                // caller_supplied_id fallback to the ROS UUID internally.
                 let caller_goal_id = resolve_action_goal_id(&metadata.parameters, &goal_id);
 
                 if !send_goal_response.accepted {
                     tracing::warn!("action goal was rejected by server");
+                    // Fix 1: use GOAL_STATUS_ABORTED — recv_action_result only treats
+                    // succeeded / aborted / canceled as terminal; rejected would hang.
                     let _ = tx.send(ActionEvent::Result {
                         goal_id: caller_goal_id,
-                        status: GOAL_STATUS_REJECTED,
+                        status: GOAL_STATUS_ABORTED,
                         data: None,
                     });
                     continue;
@@ -2233,7 +2283,7 @@ fn run_action_client(
                         }
                         let _ = result_tx.send(ActionEvent::Result {
                             goal_id: res_goal_id,
-                            status: GOAL_STATUS_UNKNOWN,
+                            status: GOAL_STATUS_ABORTED,
                             data: None,
                         });
                     }
@@ -3848,9 +3898,9 @@ mod zenoh_goal_status_tests {
 mod action_client_metadata_tests {
     use super::ros2_client::action::{GoalId, GoalStatusEnum};
     use super::{
-        GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED, GOAL_STATUS_REJECTED,
-        GOAL_STATUS_SUCCEEDED, GOAL_STATUS_UNKNOWN, action_result_parameters, goal_parameters,
-        goal_status_to_str, resolve_action_goal_id,
+        GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED, GOAL_STATUS_SUCCEEDED,
+        GOAL_STATUS_UNKNOWN, action_result_parameters, goal_parameters, goal_status_to_str,
+        resolve_action_goal_id,
     };
     use dora_message::metadata::{MetadataParameters, Parameter, get_string_param};
 
@@ -3893,16 +3943,20 @@ mod action_client_metadata_tests {
             Some(GOAL_STATUS_SUCCEEDED)
         );
 
-        let rejected_params = action_result_parameters("test-goal-uuid", GOAL_STATUS_REJECTED);
+        // The bridge emits GOAL_STATUS_ABORTED for all client-side failure cases
+        // (rejected goal, send-goal timeout, undecodable response) so that
+        // recv_action_result — which only treats succeeded/aborted/canceled as
+        // terminal — unblocks immediately.
+        let aborted_params = action_result_parameters("test-goal-uuid", GOAL_STATUS_ABORTED);
         assert_eq!(
-            get_string_param(&rejected_params, GOAL_STATUS),
-            Some(GOAL_STATUS_REJECTED)
+            get_string_param(&aborted_params, GOAL_STATUS),
+            Some(GOAL_STATUS_ABORTED)
         );
 
-        let unknown_params = action_result_parameters("test-goal-uuid", GOAL_STATUS_UNKNOWN);
+        let canceled_params = action_result_parameters("test-goal-uuid", GOAL_STATUS_CANCELED);
         assert_eq!(
-            get_string_param(&unknown_params, GOAL_STATUS),
-            Some(GOAL_STATUS_UNKNOWN)
+            get_string_param(&canceled_params, GOAL_STATUS),
+            Some(GOAL_STATUS_CANCELED)
         );
     }
 
