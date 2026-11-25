@@ -4708,3 +4708,58 @@ async fn reload_for_an_unknown_dataflow_still_errors() {
         "the error must name the dataflow: {message}"
     );
 }
+
+/// An `OutputClosed` for a remote consumer must survive a full inter-daemon
+/// publish queue. Nothing re-sends it, so dropping it like a data message
+/// left the remote consumer's input open until `dora stop`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn output_closed_waits_for_a_full_publish_queue() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let clock = Arc::new(HLC::default());
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
+
+    // A one-slot queue that nothing drains, already full.
+    let (publish_tx, mut publish_rx) = mpsc::channel(1);
+    daemon.zenoh_publish_tx = publish_tx;
+    let dataflow_id = Uuid::new_v4();
+    let node_id = NodeId::from("producer".to_string());
+    let output_id = OutputId(node_id.clone(), DataId::from("out".to_string()));
+    let mut dataflow = test_dataflow();
+    dataflow.open_external_mappings.insert(output_id.clone());
+    daemon.running.insert(dataflow_id, dataflow);
+    daemon
+        .send_to_remote_receivers(
+            dataflow_id,
+            &output_id,
+            b"filler".to_vec(),
+            crate::node_events::RemoteDelivery::BestEffort,
+        )
+        .await
+        .unwrap();
+
+    daemon
+        .send_output_closed_events(dataflow_id, node_id, vec![output_id.1.clone()])
+        .await
+        .unwrap();
+    assert_eq!(
+        daemon
+            .ft_stats
+            .dropped_messages
+            .load(atomic::Ordering::Relaxed),
+        0,
+        "a control event is not a dropped data message"
+    );
+
+    let filler = publish_rx.recv().await.unwrap();
+    assert_eq!(filler.serialized, b"filler");
+    let closed = tokio::time::timeout(Duration::from_secs(5), publish_rx.recv())
+        .await
+        .expect("OutputClosed must be queued once a slot frees")
+        .unwrap();
+    let event = Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(&closed.serialized)
+        .unwrap();
+    assert!(
+        matches!(event.inner, InterDaemonEvent::OutputClosed { output_id: ref o, .. } if *o == output_id.1),
+        "unexpected event"
+    );
+}

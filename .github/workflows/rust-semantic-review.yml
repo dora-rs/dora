@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: phil-opp/rust-semantic-review@d728ff1f158ec8a356f04082d5f98a2b11028cc7 # main, 2026-11-25
+      - uses: phil-opp/rust-semantic-review@a53705062bca6b188c4d6f4bfab40b01d75a0c5e # main, 2026-11-25
         with:
           # Measured on this workspace: about 1% more resolved calls for a
           # 1.8 GB target-directory cache, or ~3 extra minutes without it.
