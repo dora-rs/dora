@@ -370,11 +370,16 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
     }
     let resolved_dataflow_for_session =
         (!hub_resolution.is_empty()).then(|| dataflow_descriptor.clone());
-    // Inject contracts from node manifests adjacent to path: nodes (§6.2)
-    let injection = dora_core::manifest::inject::inject_adjacent_manifests(
+    // Inject contracts from node manifests adjacent to path: nodes (§6.2).
+    // `--hub-override` nodes are skipped: hub resolution already applied
+    // their checkout's contract, and their path is relative to that checkout,
+    // not to `working_dir` (#4311).
+    let hub_override_nodes = hub_override_node_dirs.keys().cloned().collect();
+    let injection = dora_core::manifest::inject::inject_adjacent_manifests_except(
         &mut dataflow_descriptor,
         working_dir,
         &mut registry,
+        &hub_override_nodes,
     );
     for note in &injection.notes {
         println!("  {note}");
