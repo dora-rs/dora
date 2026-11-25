@@ -69,8 +69,10 @@ pub fn find(binary_name: &str, crate_name: &str) -> eyre::Result<PathBuf> {
 /// A fixed root means [`search`] finds the binary right after the install,
 /// whatever cargo's own install root is (`$CARGO_INSTALL_ROOT`,
 /// `install.root`, or a `$CARGO_HOME/bin` that may not be on `PATH`). One
-/// root per CLI version means a CLI never picks up a node that an older CLI
-/// installed this way.
+/// root per CLI version means a released CLI never picks up a node that an
+/// older release installed this way. Builds from `main` carry the last
+/// release's version, so they share that release's root; a version check of
+/// the found binary would close that gap.
 fn install_root(version: &str) -> PathBuf {
     super::coordinator::dora_dir().join("nodes").join(version)
 }

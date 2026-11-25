@@ -122,7 +122,8 @@ Record captures live dataflow messages to a file. Replay substitutes source node
 
 Local recording and replay launch separate helper binaries,
 `dora-record-node` and `dora-replay-node`. The CLI looks for them next to the
-`dora` executable first, then on `PATH`.
+`dora` executable first, then in `~/.dora/nodes/<version>/bin` (where the
+install fallback below puts them), then on `PATH`.
 
 Since 1.2, the CLI release archives and the `install.sh` / `install.ps1`
 installers ship both helpers next to `dora`, so they work out of the box.
