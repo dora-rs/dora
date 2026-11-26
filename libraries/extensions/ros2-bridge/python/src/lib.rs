@@ -265,13 +265,12 @@ impl Ros2Context {
         let domain_id = resolve_domain_id(domain_id, std::env::var("ROS_DOMAIN_ID"))?;
         let transport = transport.unwrap_or_else(Ros2Transport::dds);
         let security_dir = transport.security.as_deref();
-        let context = futures::executor::block_on(
-            dora_ros2_bridge::transport::Context::open_with_security(
+        let context =
+            futures::executor::block_on(dora_ros2_bridge::transport::Context::open_with_security(
                 &transport.config,
                 domain_id,
                 security_dir,
-            ),
-        )?;
+            ))?;
         Ok(Self {
             context,
             transport,

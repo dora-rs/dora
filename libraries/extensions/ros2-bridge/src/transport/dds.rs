@@ -74,6 +74,7 @@ impl Context {
 
     /// [`Context::new`] with the value of [`INTERFACES_ENV`] passed in: only
     /// those local addresses are advertised and used, or all when `None`.
+    #[allow(dead_code)]
     pub(crate) fn with_interfaces(
         domain_id: u16,
         value: Option<&str>,
@@ -480,7 +481,8 @@ mod tests {
 
     #[test]
     fn security_dir_missing_files_are_reported() {
-        let temp = std::env::temp_dir().join(format!("test_dds_sec_missing_{}", std::process::id()));
+        let temp =
+            std::env::temp_dir().join(format!("test_dds_sec_missing_{}", std::process::id()));
         std::fs::create_dir_all(&temp).unwrap();
         // create only one file
         std::fs::write(temp.join("cert.pem"), b"dummy").unwrap();
@@ -519,7 +521,10 @@ mod tests {
             let TransportError::DdsContext { message } = err else {
                 panic!("expected DdsContext error, got {err:?}");
             };
-            assert!(message.contains("without the 'security' feature"), "{message}");
+            assert!(
+                message.contains("without the 'security' feature"),
+                "{message}"
+            );
         }
 
         let _ = std::fs::remove_dir_all(&temp);
