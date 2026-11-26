@@ -753,6 +753,22 @@ fn run_zenoh_action_client(
                     if let Ok(mut g) = active_goals.lock() {
                         g.remove(&ros_goal_id.uuid.to_string());
                     }
+                    // Best-effort cancel: a send-goal timeout does not guarantee the
+                    // server never accepted the goal.
+                    #[derive(serde::Serialize)]
+                    struct CancelGoalRequest {
+                        goal_info: ros2_client::action::GoalInfo,
+                    }
+                    if let Ok(cancel_req) = serialize_cdr(&CancelGoalRequest {
+                        goal_info: ros2_client::action::GoalInfo {
+                            goal_id: ros_goal_id,
+                            stamp: ros2_client::builtin_interfaces::Time::ZERO,
+                        },
+                    }) {
+                        let _ = futures::executor::block_on(
+                            client.cancel_goal.call(cancel_req, Duration::from_secs(5)),
+                        );
+                    }
                     emit_aborted_result(&mut node, &caller_goal_id, "timed-out Zenoh goal");
                     continue;
                 };
