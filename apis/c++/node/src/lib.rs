@@ -72,6 +72,20 @@ mod ffi {
         NodeRestarted,
     }
 
+    /// Why a `DoraEventType::Stop` event was sent. Mirrors
+    /// `dora_node_api::StopCause`; read it with `event_stop_cause`.
+    enum DoraStopCause {
+        /// The dataflow was stopped (`dora stop`, Ctrl-C). Exit soon:
+        /// dora kills nodes that keep running for too long after this.
+        Manual,
+        /// Every input of this node has closed. Only sent to nodes with
+        /// at least one input. Queued inputs are delivered before it.
+        AllInputsClosed,
+        /// A stop cause added to dora after this header was generated.
+        /// Treat it as a stop.
+        Unknown,
+    }
+
     struct DoraInput {
         id: String,
         data: Vec<u8>,
@@ -248,6 +262,13 @@ mod ffi {
         /// `event_type` wrongly is told rather than handed something
         /// plausible.
         fn event_as_node_restarted(event: Box<DoraEvent>) -> Result<String>;
+        /// Why a `Stop` event was sent. Borrows the event, like
+        /// `event_type`.
+        ///
+        /// Errors for any other event type, including the
+        /// `AllInputsClosed` event type, which marks the end of the event
+        /// stream and is not a stop event.
+        fn event_stop_cause(event: &Box<DoraEvent>) -> Result<DoraStopCause>;
         /// Selectively close one or more of this node's outputs without
         /// shutting the whole node down. Subsequent downstream
         /// subscribers see the corresponding `InputClosed` event.
@@ -780,6 +801,17 @@ fn event_as_node_restarted(event: Box<DoraEvent>) -> eyre::Result<String> {
         bail!("not a NodeRestarted event");
     };
     Ok(id.to_string())
+}
+
+fn event_stop_cause(event: &DoraEvent) -> eyre::Result<ffi::DoraStopCause> {
+    let EventOrReason::Event(Event::Stop(cause)) = &event.0 else {
+        bail!("not a Stop event");
+    };
+    Ok(match cause {
+        dora_node_api::StopCause::Manual => ffi::DoraStopCause::Manual,
+        dora_node_api::StopCause::AllInputsClosed => ffi::DoraStopCause::AllInputsClosed,
+        _ => ffi::DoraStopCause::Unknown,
+    })
 }
 
 /// Parse a caller-supplied output id via `FromStr` instead of the panicking
@@ -2448,6 +2480,37 @@ mod tests {
             event_as_node_restarted(event).is_err(),
             "a caller that branched wrongly must be told, not handed a plausible id"
         );
+    }
+
+    /// Both stop causes arrive as `DoraEventType::Stop`; before
+    /// `event_stop_cause`, a C++ node could not tell "all my inputs
+    /// closed" from "the dataflow was stopped".
+    #[test]
+    fn a_stop_event_reports_its_cause() {
+        for (cause, expected) in [
+            (dora_node_api::StopCause::Manual, ffi::DoraStopCause::Manual),
+            (
+                dora_node_api::StopCause::AllInputsClosed,
+                ffi::DoraStopCause::AllInputsClosed,
+            ),
+        ] {
+            let event = Box::new(DoraEvent(EventOrReason::Event(Event::Stop(cause))));
+            assert!(matches!(event_type(&event), ffi::DoraEventType::Stop));
+            assert!(event_stop_cause(&event).expect("a Stop event has a cause") == expected);
+        }
+    }
+
+    #[test]
+    fn event_stop_cause_rejects_other_events() {
+        let closed = Box::new(DoraEvent(EventOrReason::Closed));
+        assert!(
+            event_stop_cause(&closed).is_err(),
+            "the end-of-stream marker is not a stop event"
+        );
+        let restarted = Box::new(DoraEvent(EventOrReason::Event(Event::NodeRestarted {
+            id: NodeId::from("calc".to_string()),
+        })));
+        assert!(event_stop_cause(&restarted).is_err());
     }
 
     fn exported_u8_array() -> (arrow::ffi::FFI_ArrowArray, arrow::ffi::FFI_ArrowSchema) {

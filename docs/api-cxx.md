@@ -117,18 +117,22 @@ DoraNodeFailed event_as_node_failed(rust::Box<DoraEvent> event);
 // Id of the upstream node that restarted. Throws if the event is not
 // NodeRestarted.
 rust::String event_as_node_restarted(rust::Box<DoraEvent> event);
+
+// Why a Stop event was sent. Borrows the event. Throws if the event is
+// not Stop.
+DoraStopCause event_stop_cause(const rust::Box<DoraEvent>& event);
 ```
 
 ### DoraEventType
 
 ```cpp
 enum class DoraEventType : uint8_t {
-    Stop,             // graceful shutdown requested
+    Stop,             // the node should stop (use event_stop_cause for why)
     Input,            // new data arrived on an input
     InputClosed,      // a single input was closed
     Error,            // an error occurred
     Unknown,          // unrecognized event variant
-    AllInputsClosed,  // all inputs closed (stream ended)
+    AllInputsClosed,  // the event stream has ended (not a stop cause, see below)
     Empty,            // try_next_event / drained_events_next found no event ready
     Timeout,          // next_event_timeout deadline elapsed without an event
     NodeFailed,       // an upstream node failed (use event_as_node_failed to inspect)
@@ -138,6 +142,22 @@ enum class DoraEventType : uint8_t {
 ```
 
 `Empty` is distinct from `Timeout`: `Empty` means "no event available right now" (the caller did not request a timeout); `Timeout` means "the caller-supplied deadline elapsed before an event arrived". A non-blocking poll never returns `Timeout`; a timed receive returns either `Timeout` or `AllInputsClosed` if no event arrived in time.
+
+### DoraStopCause
+
+```cpp
+enum class DoraStopCause : uint8_t {
+    Manual,           // the dataflow was stopped (`dora stop`, Ctrl-C)
+    AllInputsClosed,  // every input of this node has closed
+    Unknown,          // a cause added in a later dora release
+};
+```
+
+A node gets `DoraEventType::Stop` for both causes. `event_stop_cause` tells them apart, the way `Event::Stop(StopCause)` does in Rust. `AllInputsClosed` is only sent to a node that has at least one input.
+
+No new events are read after a `Stop`. On the plain event stream (`next` / `next_event`), a `Stop(AllInputsClosed)` comes after every input that was queued before it, and the next receive returns `DoraEventType::AllInputsClosed`. A `Stop(Manual)` is returned ahead of queued inputs, as in Rust, so the next receives may return those inputs before `DoraEventType::AllInputsClosed`. That event type means only that the stream has ended. It does not tell you whether the inputs closed or the dataflow was stopped. A `CombinedEvents` stream does not end after `Stop`, so break out of the loop yourself there.
+
+After a `Manual` stop, exit soon: dora kills a node that keeps running for too long after it. After `AllInputsClosed`, no more inputs will arrive: finish any remaining work, such as flushing results, and exit. Dora also kills a node that is still running long after its inputs closed and the rest of the dataflow has finished (120 s by default, set per node with `finish_grace_secs`).
 
 ### DoraInput
 
@@ -602,6 +622,9 @@ int main() {
             break;
         }
         if (ty == DoraEventType::Stop) {
+            if (event_stop_cause(event) == DoraStopCause::AllInputsClosed) {
+                std::cout << "all inputs closed" << std::endl;
+            }
             break;
         }
         if (ty == DoraEventType::Input) {
