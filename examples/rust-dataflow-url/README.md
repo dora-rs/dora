@@ -33,8 +33,8 @@ run.execute()?;
 ```
 
 The full runner also checks elapsed time after `execute()`. A node stopped
-at the deadline can report a clean exit, so this check makes a hung pipeline
-fail the example in CI.
+at the deadline can report a clean exit. The elapsed-time check makes the run
+fail when it reaches the deadline.
 
 ## Run
 
