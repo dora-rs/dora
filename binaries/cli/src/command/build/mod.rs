@@ -7,8 +7,8 @@
 //! - If the dataflow is distributed across multiple machines, each `build` command will be run the target machine of the corresponding node.
 //!     - i.e. the machine specified under the `deploy` key
 //!     - this requires a connection to the dora coordinator, so you need to specify the coordinator IP/port for this
-//!     - to run the build commands of all nodes _locally_, you can use `dora build --local`
-//! - If the build command does not specify any `deploy` keys, all build commands will be run locally (i.e. `dora build` behaves like `dora build --local`)
+//! - To run the build commands of all nodes _locally_ without a coordinator, you can use `dora build --local`
+//! - If no `deploy` keys and no coordinator flags are given, `dora build` still builds through a running local coordinator when one is reachable (so `dora start` sees `git:`/`hub:` build metadata), and falls back to a local build otherwise
 //!
 //! #### Git Source
 //!
@@ -508,9 +508,6 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
     } else if force_local {
         log::info!("Building locally, as requested through `--force-local`");
         BuildKind::Local
-    } else if dataflow_descriptor.nodes.iter().all(|n| n.deploy.is_none()) {
-        log::info!("Building locally because dataflow does not contain any `deploy` sections");
-        BuildKind::Local
     } else if coordinator_addr.is_some() || coordinator_port.is_some() {
         log::info!("Building through coordinator, using the given coordinator socket information");
         // explicit coordinator address or port set -> there should be a coordinator running
@@ -521,6 +518,8 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         match session() {
             Ok(coordinator_session) => {
                 // we found a local coordinator instance at default port -> use it for building
+                // so the daemon records build metadata (git clones, hub confinement, uv envs)
+                // needed by a subsequent `dora start`, even when no `deploy` keys are set.
                 log::info!("Found local dora coordinator instance -> building through coordinator");
                 BuildKind::ThroughCoordinator {
                     coordinator_session,

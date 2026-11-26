@@ -3254,4 +3254,85 @@ mod real_dataflow {
                 String::from_utf8_lossy(&out.stdout).contains("/sigterm-ignoring-node")
             })
     }
+
+    #[test]
+    fn e2e_git_node_build_then_start() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
+
+        let dir = tempdir().expect("create tempdir");
+        let src = dir.path().join("repo");
+        std::fs::create_dir_all(src.join("src")).unwrap();
+        std::fs::write(
+            src.join("Cargo.toml"),
+            "[package]\nname = \"git-smoke-node\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[workspace]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("src/main.rs"),
+            "fn main() { println!(\"git node ok\"); }\n",
+        )
+        .unwrap();
+
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .current_dir(&src)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .args([
+                    "-c",
+                    "user.email=test@dora.rs",
+                    "-c",
+                    "user.name=test",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        git(&["add", "."]);
+        git(&["commit", "--quiet", "-m", "init"]);
+
+        let git_path = src.display().to_string().replace('\\', "/");
+        let git_url = if git_path.starts_with('/') {
+            format!("file://{git_path}")
+        } else {
+            format!("file:///{git_path}")
+        };
+        let yaml = dir.path().join("dataflow.yml");
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  - id: git-node\n    git: {git_url}\n    branch: main\n    build: cargo build\n    path: target/debug/git-smoke-node\n"
+            ),
+        )
+        .unwrap();
+
+        let build_out = Command::new(&dora)
+            .args(["build", yaml.to_str().unwrap()])
+            .output()
+            .expect("run dora build");
+        assert!(
+            build_out.status.success(),
+            "dora build failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&build_out.stdout),
+            String::from_utf8_lossy(&build_out.stderr)
+        );
+
+        let start_out = Command::new(&dora)
+            .args(["start", yaml.to_str().unwrap(), "--detach"])
+            .output()
+            .expect("run dora start");
+        assert!(
+            start_out.status.success(),
+            "dora start failed after `dora build`:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&start_out.stdout),
+            String::from_utf8_lossy(&start_out.stderr)
+        );
+    }
 }
