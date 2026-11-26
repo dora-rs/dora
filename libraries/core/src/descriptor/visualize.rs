@@ -6,7 +6,6 @@ use dora_message::{
 
 use super::{CustomNode, ModuleBoundaries, ResolvedNode, RuntimeNode, SINGLE_OPERATOR_DEFAULT_ID};
 use std::{
-    borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Write as _,
     time::Duration,
@@ -29,7 +28,7 @@ pub fn visualize_nodes_with_boundaries(
 
     // Render module subgraphs first
     for (module_id, members) in &boundaries.modules {
-        let safe_id = mermaid_subgraph_id(module_id);
+        let safe_id = mermaid_subgraph_id("m_", module_id);
         writeln!(flowchart, "subgraph {safe_id} [{module_id}]").unwrap();
         for node in nodes.values() {
             let node_id_str: &str = node.id.as_ref();
@@ -106,35 +105,29 @@ fn collect_dora_nodes(
 
 /// The Mermaid id to emit for a dora node (or `node/operator`) id.
 ///
-/// Mermaid lexes a lowercase `end` at a word boundary as the subgraph-closing
-/// keyword even where a node id is expected (its flowchart docs warn about
-/// this), so `end`, `end-effector`, or `end.x` would break the whole document.
-/// Those ids get a `___` prefix, and so does any id already starting with
-/// `___`, which keeps the mapping one-to-one (`___end` can't collide with
-/// `end`, nor a user node with the built-in `___dora___`). Labels keep the
-/// real id. Every declaration and edge must go through this so they match.
-fn mermaid_id(id: &str) -> Cow<'_, str> {
-    let lexes_as_end = id
-        .strip_prefix("end")
-        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'));
-    if lexes_as_end || id.starts_with("___") {
-        Cow::Owned(format!("___{id}"))
-    } else {
-        Cow::Borrowed(id)
-    }
+/// Mermaid's flowchart lexer matches its keywords before node ids, so a valid
+/// dora id such as `end`, `graph`, `style-transfer`, `class.v2` or `click`
+/// would lex as a keyword and make the whole document fail to parse. Every
+/// user id therefore gets an `n_` prefix: no keyword starts with it, and a
+/// fixed prefix is one-to-one by construction and can't collide with the
+/// built-in `___dora___` / `dora/timer/...` ids. Labels keep the real id.
+/// Every declaration and edge must go through this so they match.
+fn mermaid_id(id: &str) -> String {
+    format!("n_{id}")
 }
 
-/// The Mermaid id for a subgraph: dots are invalid in subgraph ids, so they
-/// become `_`, then [`mermaid_id`] applies.
-fn mermaid_subgraph_id(id: &str) -> String {
-    mermaid_id(&id.replace('.', "_")).into_owned()
+/// The Mermaid id for a subgraph, under its own `prefix` so a module (`m_`)
+/// and a runtime node's subgraph (`s_`) can't collide with each other or with
+/// a node id. Dots are invalid in subgraph ids, so they become `_`.
+fn mermaid_subgraph_id(prefix: &str, id: &str) -> String {
+    format!("{prefix}{}", id.replace('.', "_"))
 }
 
 /// Escape Mermaid-significant characters in free-form label text (e.g. a node
 /// `description`) so it stays well-formed inside a quoted Mermaid label.
 ///
-/// Node and data IDs are charset-validated (see [`mermaid_id`] for the
-/// keyword clash Mermaid still has), but a `description` is unrestricted, so a
+/// Node and data IDs are charset-validated (and prefixed, see [`mermaid_id`]),
+/// but a `description` is unrestricted, so a
 /// `"` (or `<`, `>`, `#`, `&`) would otherwise corrupt the generated diagram.
 /// Mermaid accepts HTML entity codes written with a leading `#` in place of
 /// `&`, so we emit those. `#` is escaped first so the entities we introduce
@@ -234,9 +227,9 @@ fn visualize_runtime_node(
         // runtime node inside a module is prefixed with `{module_id}.` during
         // expansion, so an unsanitized `subgraph {node_id}` here emits an
         // invalid Mermaid document for those nodes. The contained operator
-        // nodes keep their raw `{node_id}/{operator_id}` ids (dots are valid in
-        // node ids, only subgraph ids), so edges still line up.
-        let safe_id = mermaid_subgraph_id(node_id.as_ref());
+        // nodes keep their dots (`n_{node_id}/{operator_id}`; dots are valid
+        // in node ids, only not in subgraph ids), so edges still line up.
+        let safe_id = mermaid_subgraph_id("s_", node_id.as_ref());
         // Quote the subgraph title only when a description must be appended, so
         // a node without one keeps its previous unquoted title (same shape as
         // the single-operator `label` above).
@@ -293,14 +286,14 @@ fn visualize_inputs(
     flowchart: &mut String,
     nodes: &HashMap<&NodeId, &ResolvedNode>,
 ) {
-    let target = &*mermaid_id(target);
+    let target = mermaid_id(target);
     for (input_id, input) in inputs {
         match &input.mapping {
             mapping @ (InputMapping::Timer { .. } | InputMapping::Logs(_)) => {
                 writeln!(flowchart, "  {mapping} -- {input_id} --> {target}").unwrap();
             }
             InputMapping::User(mapping) => {
-                visualize_user_mapping(mapping, target, nodes, input_id, flowchart)
+                visualize_user_mapping(mapping, &target, nodes, input_id, flowchart)
             }
         }
     }
@@ -522,29 +515,29 @@ nodes:
         let flowchart = visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
 
         assert!(
-            flowchart.contains(r#"subgraph pipeline ["pipeline<hr/>*Two stage*"]"#),
+            flowchart.contains(r#"subgraph s_pipeline ["pipeline<hr/>*Two stage*"]"#),
             "the subgraph title must carry the node description; got:\n{flowchart}"
         );
     }
 
-    /// Mermaid lexes a lowercase `end` at a word boundary as the
-    /// subgraph-closing keyword, so a node id of `end`, `end-…`, or `end.…`
-    /// must not be emitted bare: neither where the node is declared nor where
-    /// an edge references it.
+    /// Mermaid's flowchart lexer matches keywords (`end`, `graph`, `style`,
+    /// `class`, `click`, ...) before node ids, so a node id like these must
+    /// never be emitted bare: neither where it is declared, nor where an edge
+    /// references it, nor as a subgraph id.
     #[test]
-    fn node_ids_lexed_as_end_keyword_are_prefixed() {
+    fn keyword_node_ids_are_never_emitted_bare() {
         let yaml = r#"
 nodes:
   - id: end
     path: ./source
     outputs:
       - o
-  - id: end-effector
+  - id: style-transfer
     path: ./sink
     inputs:
       i: end/o
-      arm: end.arm/stage1/mid
-  - id: end.arm
+      arm: graph.x/stage1/mid
+  - id: graph.x
     operators:
       - id: stage1
         python: s1.py
@@ -558,48 +551,47 @@ nodes:
         let flowchart = visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
 
         for expected in [
-            r#"  ___end[\"**end**"/]"#,
-            r#"  ___end-effector[/"**end-effector**"\]"#,
-            // `_` is a word character: `end_arm` is not the keyword.
-            "subgraph end_arm [end.arm]",
-            "  ___end.arm/stage1[stage1]",
-            "  ___end -- o as i --> ___end-effector",
-            "  ___end.arm/stage1 -- mid as arm --> ___end-effector",
-            "  dora/timer/millis/100 -- tick --> ___end.arm/stage1",
+            r#"  n_end[\"**end**"/]"#,
+            r#"  n_style-transfer[/"**style-transfer**"\]"#,
+            "subgraph s_graph_x [graph.x]",
+            "  n_graph.x/stage1[stage1]",
+            "  n_end -- o as i --> n_style-transfer",
+            "  n_graph.x/stage1 -- mid as arm --> n_style-transfer",
+            "  dora/timer/millis/100 -- tick --> n_graph.x/stage1",
         ] {
             assert!(
                 flowchart.lines().any(|l| l == expected),
                 "missing line `{expected}`; got:\n{flowchart}"
             );
         }
-        // The only lines that may start with the bare keyword are the
-        // subgraph closings themselves.
-        for line in flowchart.lines() {
+        // Apart from the header, a subgraph closing `end`, and the built-in
+        // timer ids, every statement starts with a prefixed id or `subgraph`.
+        for line in flowchart.lines().skip(1) {
             let line = line.trim_start();
             assert!(
-                line == "end" || !line.starts_with("end"),
-                "line starts with a bare `end` id: `{line}`; got:\n{flowchart}"
+                line == "end"
+                    || ["n_", "subgraph ", "dora/timer/"]
+                        .iter()
+                        .any(|p| line.starts_with(p)),
+                "line starts with a bare id: `{line}`; got:\n{flowchart}"
             );
         }
     }
 
     #[test]
-    fn mermaid_id_only_prefixes_ids_lexed_as_end() {
+    fn mermaid_ids_are_always_prefixed() {
         for id in [
             "end",
-            "end-effector",
-            "end.x",
-            "end/op",
-            "___end",
-            "___dora___",
+            "graph",
+            "style.cam",
+            "click",
+            "_top",
+            "camera",
+            "a/op",
         ] {
-            assert_eq!(mermaid_id(id), format!("___{id}"), "{id}");
+            assert_eq!(mermaid_id(id), format!("n_{id}"), "{id}");
         }
-        for id in [
-            "endpoint", "end_x", "End", "END", "legend", "camera", "a.end",
-        ] {
-            assert_eq!(mermaid_id(id), id, "{id}");
-        }
+        assert_eq!(super::mermaid_subgraph_id("m_", "class.v2"), "m_class_v2");
     }
 
     #[test]
