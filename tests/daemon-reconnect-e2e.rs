@@ -406,11 +406,14 @@ fn node_survives_coordinator_reconnect() {
 }
 
 /// What `param-recorder-node` reports: the pids it started under, and the
-/// params it holds after applying its `set`/`del` lines in order.
+/// params it holds after applying its `set`/`del` lines in order. A last line
+/// without its `\n` is still being written and is left for the next poll.
 fn recorded_params(path: &Path) -> (Vec<u32>, BTreeMap<String, serde_json::Value>) {
     let mut pids = Vec::new();
     let mut params = BTreeMap::new();
-    for line in std::fs::read_to_string(path).unwrap_or_default().lines() {
+    let mut record = std::fs::read_to_string(path).unwrap_or_default();
+    record.truncate(record.rfind('\n').map_or(0, |end| end + 1));
+    for line in record.lines() {
         let mut parts = line.splitn(3, ' ');
         match (parts.next(), parts.next(), parts.next()) {
             (Some("pid"), Some(pid), None) => pids.extend(pid.parse::<u32>().ok()),
