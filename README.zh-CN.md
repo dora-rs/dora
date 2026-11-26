@@ -421,7 +421,7 @@ examples/               # 示例数据流
 | [python-drain](examples/python-drain) | Python | 事件排空模式 |
 | [multiple-daemons](examples/multiple-daemons) | Rust | 分布式多守护进程部署 |
 | [rust-dataflow-git](examples/rust-dataflow-git) | Rust | 基于 Git 的数据流加载 |
-| [rust-dataflow-url](examples/rust-dataflow-url) | Rust | 基于 URL 的数据流加载 |
+| [rust-dataflow-url](examples/rust-dataflow-url) | Rust | 在 Rust 程序中构建并运行本地数据流 |
 
 ### 日志
 
