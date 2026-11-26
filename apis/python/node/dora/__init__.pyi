@@ -567,6 +567,20 @@ class Ros2Node:
     def has_parameter(self, name: str) -> bool:
         """Whether a ROS2 parameter with the given name is declared."""
 
+    def create_parameter_client(
+        self, node: str, timeout_s: float = None
+    ) -> dora.Ros2ParameterClient:
+        """Create a client for the parameters of another ROS2 node, given its
+        fully qualified name (e.g. `/robot/arm`). Waits until the node's
+        parameter services are available, for up to `timeout_s` (default 20s).
+
+        ```python
+        arm = ros2_node.create_parameter_client("/robot/arm")
+        arm.get(["speed"])           # {"speed": 1.5}
+        arm.set({"speed": 2.0})      # [(True, "")]
+        arm.take_event()             # {"new": {}, "changed": {"speed": 2.0}, "deleted": []}
+        ```"""
+
     def create_topic(
         self, name: str, message_type: str, qos: dora.Ros2QosPolicies
     ) -> dora.Ros2Topic:
@@ -718,6 +732,82 @@ class Ros2ServiceClient:
         The request must match the service's `_Request` structure as an Arrow
         struct (e.g. `pa.array([{"a": 2, "b": 3}])`). Returns the `_Response`
         as a pyarrow array. Raises on timeout (default 30s)."""
+
+    def __repr__(self) -> str:
+        """Return repr(self)."""
+
+    def __str__(self) -> str:
+        """Return str(self)."""
+
+@typing.final
+class Ros2ParameterClient:
+    """A client for another ROS2 node's parameters. Create via
+    `Ros2Node.create_parameter_client`.
+
+    Each call blocks, with the GIL released, until the target answers or
+    `timeout_s` (default 30s) passes. Values are `bool`, `int`, `float`,
+    `str`, `bytes` or homogeneous lists of them, as for `set_parameter`.
+
+    warnings:
+    - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+    at any point without it being considered a breaking change."""
+
+    @property
+    def target(self) -> str:
+        """The target node's fully qualified name."""
+
+    def get(
+        self, names: typing.List[str], timeout_s: float = None
+    ) -> typing.Dict[str, typing.Optional[typing.Union[bool, int, float, str, bytes, list]]]:
+        """The values of `names`; `None` for a name the target does not have."""
+
+    def get_types(
+        self, names: typing.List[str], timeout_s: float = None
+    ) -> typing.Dict[str, str]:
+        """The type of each of `names` (`"bool"`, `"integer"`, `"double"`,
+        `"string"`, `"byte_array"`, `"bool_array"`, `"integer_array"`,
+        `"double_array"`, `"string_array"`, or `"not_set"` for a name the
+        target does not have)."""
+
+    def set(
+        self, values: dict, timeout_s: float = None
+    ) -> typing.List[typing.Tuple[bool, str]]:
+        """Set each of `values` on its own. Returns one `(successful, reason)`
+        per value, in order."""
+
+    def set_atomically(
+        self, values: dict, timeout_s: float = None
+    ) -> typing.Tuple[bool, str]:
+        """Set all of `values` or none of them. Returns `(successful, reason)`."""
+
+    def list(
+        self,
+        prefixes: typing.List[str] = None,
+        depth: int = 0,
+        timeout_s: float = None,
+    ) -> typing.List[str]:
+        """The target's parameter names under `prefixes` (all if empty), to
+        `depth` levels (0: no limit)."""
+
+    def describe(
+        self, names: typing.List[str], timeout_s: float = None
+    ) -> typing.Dict[str, dict]:
+        """The descriptor of each of `names`: a dict with `type`, `description`,
+        `additional_constraints`, `read_only`, `dynamic_typing`,
+        `integer_range` and `floating_point_range` (lists of
+        `(from, to, step)`), or `None` for a name the target does not have."""
+
+    def take_event(self) -> typing.Optional[dict]:
+        """The next change to the target's parameters, or `None` if none has
+        arrived: a dict with `new` and `changed` (dicts of values) and
+        `deleted` (a list of names). Changes are kept as they arrive, up to
+        1024. A change made right after the client was created can be missed;
+        read current values with `get`."""
+
+    def next_event(self, timeout_s: float = None) -> typing.Optional[dict]:
+        """Wait for the next change to the target's parameters, like
+        `take_event`, for up to `timeout_s` (no limit if `None`). Returns
+        `None` if none came in time. Releases the GIL while it waits."""
 
     def __repr__(self) -> str:
         """Return repr(self)."""

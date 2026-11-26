@@ -26,12 +26,17 @@ use super::{
     },
     deserialize_cdr,
     keyexpr::{DataKey, KeyError, TopicToken},
-    pubsub::{NodePublisher, PubSubError},
+    pubsub::{NodePublisher, NodeSubscription, PubSubError},
     qos::ZenohQosMapping,
     serialize_cdr,
-    service::{NodeServiceServer, ServiceError, ServiceRequest},
+    service::{
+        NodeServiceClient, NodeServiceServer, ServiceError, ServiceRequest, wait_for_service,
+    },
 };
-use crate::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
+use crate::transport::parameters::{
+    PARAMETER_QOS_DEPTH, ParameterEvents, ParameterService as Service, check_target,
+    parameters_qos, spawn_event_pump,
+};
 
 /// The built-in parameter every node has, as ros2-client declares it.
 const USE_SIM_TIME: &str = "use_sim_time";
@@ -50,40 +55,10 @@ pub enum ParameterError {
     Service(#[from] ServiceError),
     #[error(transparent)]
     Publisher(#[from] PubSubError),
-}
-
-/// The six parameter services.
-#[derive(Clone, Copy)]
-enum Service {
-    Get,
-    GetTypes,
-    Set,
-    SetAtomically,
-    List,
-    Describe,
-}
-
-impl Service {
-    const ALL: [Self; 6] = [
-        Self::Get,
-        Self::GetTypes,
-        Self::Set,
-        Self::SetAtomically,
-        Self::List,
-        Self::Describe,
-    ];
-
-    /// The service's name under the node, and its `rcl_interfaces` type.
-    fn suffix_and_type(self) -> (&'static str, &'static str) {
-        match self {
-            Self::Get => ("get_parameters", "GetParameters"),
-            Self::GetTypes => ("get_parameter_types", "GetParameterTypes"),
-            Self::Set => ("set_parameters", "SetParameters"),
-            Self::SetAtomically => ("set_parameters_atomically", "SetParametersAtomically"),
-            Self::List => ("list_parameters", "ListParameters"),
-            Self::Describe => ("describe_parameters", "DescribeParameters"),
-        }
-    }
+    #[error(transparent)]
+    Cdr(#[from] TransportCdrError),
+    #[error("{0}")]
+    Target(String),
 }
 
 /// The `rcl_interfaces` types a parameter server needs. Resolve them before
@@ -101,10 +76,14 @@ impl ParameterTypes {
         let services = Service::ALL
             .into_iter()
             .map(|service| {
-                let (_, ty) = service.suffix_and_type();
                 Ok((
                     service,
-                    resolve_service(compatibility, "rcl_interfaces", ty, resolver)?,
+                    resolve_service(
+                        compatibility,
+                        "rcl_interfaces",
+                        service.type_name(),
+                        resolver,
+                    )?,
                 ))
             })
             .collect::<Result<_, ParameterError>>()?;
@@ -373,46 +352,21 @@ impl ParameterServer {
         let mut values: BTreeMap<_, _> = declared.into_iter().collect();
         values.insert(USE_SIM_TIME.to_owned(), ParameterValue::Boolean(false));
 
-        // rmw's `rmw_qos_profile_parameter_events` and `rmw_qos_profile_parameters`.
-        let qos = Ros2Qos {
-            reliability: Reliability::Reliable {
-                max_blocking_time: Duration::ZERO,
-            },
-            durability: Durability::Volatile,
-            history: History::KeepLast { depth: QUEUE_DEPTH },
-            liveliness: Liveliness::Automatic {
-                lease_duration: None,
-            },
-        };
-        let token = |name: &str, identity: &RosTypeIdentity| TopicToken {
-            name: name.to_owned(),
-            type_name: identity.dds_name.clone(),
-            type_hash: identity.key_hash_component(),
-            qos: ZenohQosMapping::from_ros_qos(&qos).to_string(),
-        };
-
-        let key = |name: &str, identity| {
-            DataKey::new(node.domain(), name, identity).map_err(|error| ParameterError::Key {
-                name: name.to_owned(),
-                error,
-            })
-        };
-        let events = key("/parameter_events", &types.event)?;
+        let events = key(node, PARAMETER_EVENTS, &types.event)?;
         let events = NodePublisher::declare(
             node,
             events.as_str(),
-            token("/parameter_events", &types.event),
-            &qos,
+            token(PARAMETER_EVENTS, &types.event),
+            &parameters_qos(),
         )
         .await?;
 
         let mut servers = Vec::with_capacity(types.services.len());
         for (service, identity) in &types.services {
-            let (suffix, _) = service.suffix_and_type();
-            let name = format!("{node_name}/{suffix}");
+            let name = format!("{node_name}/{}", service.suffix());
             let server = NodeServiceServer::declare(
                 node,
-                key(&name, identity)?.as_str(),
+                key(node, &name, identity)?.as_str(),
                 token(&name, identity),
                 QUEUE_DEPTH as usize,
                 REQUEST_EXPIRY,
@@ -458,9 +412,28 @@ impl ParameterServer {
     }
 }
 
+const PARAMETER_EVENTS: &str = "/parameter_events";
+
+/// The graph token of a parameter service or of `/parameter_events`.
+fn token(name: &str, identity: &RosTypeIdentity) -> TopicToken {
+    TopicToken {
+        name: name.to_owned(),
+        type_name: identity.dds_name.clone(),
+        type_hash: identity.key_hash_component(),
+        qos: ZenohQosMapping::from_ros_qos(&parameters_qos()).to_string(),
+    }
+}
+
+fn key(node: &Node, name: &str, identity: &RosTypeIdentity) -> Result<DataKey, ParameterError> {
+    DataKey::new(node.domain(), name, identity).map_err(|error| ParameterError::Key {
+        name: name.to_owned(),
+        error,
+    })
+}
+
 /// The QoS history depth of the parameter services and events, and so also
 /// how many requests a parameter service holds before it drops new ones.
-const QUEUE_DEPTH: i32 = 1000;
+const QUEUE_DEPTH: i32 = PARAMETER_QOS_DEPTH;
 /// How long a request may wait for its reply before it expires.
 const REQUEST_EXPIRY: Duration = Duration::from_secs(30);
 
@@ -501,5 +474,119 @@ async fn serve(
                 }
             }
         }
+    }
+}
+
+/// A client for the parameter services and `/parameter_events` of the node
+/// with the fully qualified name `target`.
+pub struct ParameterClient {
+    target: String,
+    services: Vec<(Service, NodeServiceClient, TopicToken)>,
+    events: ParameterEvents,
+}
+
+/// Requests one parameter client may have waiting at once.
+const CLIENT_PENDING_REQUESTS: usize = 16;
+/// `/parameter_events` messages a client holds before the oldest are dropped.
+const EVENT_CAPACITY: usize = 256;
+/// The largest `/parameter_events` message a client accepts.
+const MAX_EVENT_SIZE: usize = 1024 * 1024;
+
+impl ParameterClient {
+    pub async fn declare(
+        node: &Node,
+        target: &str,
+        types: &ParameterTypes,
+    ) -> Result<Self, ParameterError> {
+        check_target(target).map_err(ParameterError::Target)?;
+        let mut services = Vec::with_capacity(types.services.len());
+        for (service, identity) in &types.services {
+            let name = format!("{target}/{}", service.suffix());
+            let token = token(&name, identity);
+            let client = NodeServiceClient::declare(
+                node,
+                key(node, &name, identity)?.as_str(),
+                token.clone(),
+                CLIENT_PENDING_REQUESTS,
+            )
+            .await?;
+            services.push((*service, client, token));
+        }
+        let subscription = NodeSubscription::declare(
+            node,
+            key(node, PARAMETER_EVENTS, &types.event)?.as_str(),
+            token(PARAMETER_EVENTS, &types.event),
+            &parameters_qos(),
+            EVENT_CAPACITY,
+            MAX_EVENT_SIZE,
+            Arc::new(|bytes: &[u8]| {
+                deserialize_cdr::<raw::ParameterEvent>(bytes)
+                    .map_err(|error| PubSubError::Decode(error.to_string()))
+            }),
+        )
+        .await?;
+        let events = spawn_event_pump(
+            target.to_owned(),
+            futures::stream::unfold(subscription, |subscription| async move {
+                let event = subscription
+                    .recv_async()
+                    .await
+                    .map(|(event, _)| event)
+                    .map_err(|error| error.to_string());
+                Some((event, subscription))
+            }),
+        )
+        .map_err(ParameterError::Target)?;
+        Ok(Self {
+            target: target.to_owned(),
+            services,
+            events,
+        })
+    }
+
+    /// Waits until all six services of the target are in the graph.
+    pub async fn wait_for_services(
+        &self,
+        node: &Node,
+        timeout: Duration,
+    ) -> Result<(), ParameterError> {
+        let deadline = std::time::Instant::now() + timeout;
+        for (_, _, token) in &self.services {
+            wait_for_service(
+                node.graph(),
+                &token.name,
+                &token.type_name,
+                &token.type_hash,
+                &token.qos,
+                deadline,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// Calls the target's `service` with `request`.
+    pub async fn call<Q: Serialize, R: DeserializeOwned>(
+        &self,
+        service: Service,
+        request: &Q,
+        timeout: Duration,
+    ) -> Result<R, ParameterError> {
+        let client = self
+            .services
+            .iter()
+            .find_map(|(declared, client, _)| (*declared == service).then_some(client))
+            .ok_or(ParameterError::Service(ServiceError::TransportClosed))?;
+        let response = client.call(serialize_cdr(request)?, timeout).await?;
+        Ok(deserialize_cdr(&response)?)
+    }
+
+    /// The target's changes from `/parameter_events`.
+    pub fn events(&self) -> &ParameterEvents {
+        &self.events
     }
 }
