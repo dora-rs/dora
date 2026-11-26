@@ -2,6 +2,29 @@
 
 use std::net::IpAddr;
 
+/// Check that `endpoint` has zenoh's endpoint shape:
+/// `<protocol>/<address>[?<metadata>][#<config>]`.
+///
+/// This is zenoh's own parser, and it does not depend on the protocol: it
+/// accepts any protocol name, including ones dora does not use. It is the
+/// check zenoh runs on every `connect/endpoints` entry when the config is
+/// built, so a value it rejects could never have been dialed.
+///
+/// ```
+/// use dora_message::zenoh::check_zenoh_endpoint_syntax;
+///
+/// assert!(check_zenoh_endpoint_syntax("tcp/10.0.0.5:5456").is_ok());
+/// assert!(check_zenoh_endpoint_syntax("quic/[fd7a:1::2]:7447?prio=high").is_ok());
+/// // No protocol: zenoh rejects it.
+/// assert!(check_zenoh_endpoint_syntax("10.0.0.5:5456").is_err());
+/// ```
+pub fn check_zenoh_endpoint_syntax(endpoint: &str) -> Result<(), String> {
+    endpoint
+        .parse::<zenoh_protocol::core::EndPoint>()
+        .map(drop)
+        .map_err(|err| err.to_string())
+}
+
 /// Whether a zenoh endpoint (`tcp/127.0.0.1:5456`, `tcp/[::1]:5456`,
 /// `tcp/localhost:5456`, optionally with `?metadata` or `#config` suffixes)
 /// names a loopback address, which only reaches the host it was bound on.
