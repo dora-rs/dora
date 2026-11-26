@@ -394,7 +394,11 @@ class Ros2Context:
     ```"""
 
     def __init__(
-        self, ros_paths: typing.List[str] = None, domain_id: typing.Optional[int] = None
+        self,
+        ros_paths: typing.List[str] = None,
+        transport: typing.Optional[typing.Any] = None,
+        domain_id: typing.Optional[int] = None,
+        security: typing.Optional[str] = None,
     ) -> None:
         """ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
 

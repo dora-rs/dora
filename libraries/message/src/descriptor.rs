@@ -1949,6 +1949,10 @@ pub struct Ros2BridgeConfig {
     /// ROS2 node name. Defaults to the dora node id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_name: Option<String>,
+
+    /// Optional DDS Security credential directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security: Option<PathBuf>,
 }
 
 impl Default for Ros2BridgeConfig {
@@ -1967,6 +1971,7 @@ impl Default for Ros2BridgeConfig {
             qos: Ros2QosConfig::default(),
             namespace: default_ros2_namespace(),
             node_name: None,
+            security: None,
         }
     }
 }
@@ -2453,6 +2458,19 @@ mod tests {
         let config: Ros2BridgeConfig =
             serde_yaml::from_str("topic: /chatter\nmessage_type: std_msgs/String\n").unwrap();
         assert!(matches!(config.transport, Ros2TransportConfig::Dds));
+        assert_eq!(config.security, None);
+    }
+
+    #[test]
+    fn ros2_bridge_parses_security_directory() {
+        let config: Ros2BridgeConfig = serde_yaml::from_str(
+            "topic: /chatter\nmessage_type: std_msgs/String\nsecurity: /etc/ros/security/enclave\n",
+        )
+        .unwrap();
+        assert_eq!(
+            config.security,
+            Some(std::path::PathBuf::from("/etc/ros/security/enclave"))
+        );
     }
 
     #[test]

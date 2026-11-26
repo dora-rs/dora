@@ -766,6 +766,15 @@ fn validate_ros2_config(
         bail!("node `{node_id}`: ros2 Zenoh config_uri must not be empty");
     }
 
+    if let Some(security) = &config.security {
+        if security.as_os_str().is_empty() {
+            bail!("node `{node_id}`: ros2 security must not be empty");
+        }
+        if matches!(config.transport, Ros2TransportConfig::Zenoh { .. }) {
+            bail!("node `{node_id}`: ros2 security is only supported on the DDS transport");
+        }
+    }
+
     // Exactly one of topic, topics, service, action must be set
     let mode_count = [
         config.topic.is_some(),
