@@ -78,8 +78,8 @@ mod ffi {
         /// The dataflow was stopped (`dora stop`, Ctrl-C). Exit soon:
         /// dora kills nodes that keep running for too long after this.
         Manual,
-        /// Every input of this node has closed. The event stream ends
-        /// after this event, as it does for `Manual`.
+        /// Every input of this node has closed. Only sent to nodes with
+        /// at least one input. Queued inputs are delivered before it.
         AllInputsClosed,
         /// A stop cause added to dora after this header was generated.
         /// Treat it as a stop.
@@ -2508,7 +2508,7 @@ mod tests {
             "the end-of-stream marker is not a stop event"
         );
         let restarted = Box::new(DoraEvent(EventOrReason::Event(Event::NodeRestarted {
-            id: dora_node_api::dora_core::config::NodeId::from("calc".to_string()),
+            id: NodeId::from("calc".to_string()),
         })));
         assert!(event_stop_cause(&restarted).is_err());
     }

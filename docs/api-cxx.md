@@ -153,9 +153,11 @@ enum class DoraStopCause : uint8_t {
 };
 ```
 
-A node gets `DoraEventType::Stop` for both causes. `event_stop_cause` tells them apart, the way `Event::Stop(StopCause)` does in Rust. The event stream ends after a `Stop` event whatever its cause, and the next receive returns `DoraEventType::AllInputsClosed`. That event type means only that the stream has ended. It does not tell you whether the inputs closed or the dataflow was stopped.
+A node gets `DoraEventType::Stop` for both causes. `event_stop_cause` tells them apart, the way `Event::Stop(StopCause)` does in Rust. `AllInputsClosed` is only sent to a node that has at least one input.
 
-After a `Manual` stop, exit soon: dora kills a node that keeps running for too long after it. After `AllInputsClosed`, no more inputs will arrive: finish any remaining work, such as flushing results, and exit.
+No new events are read after a `Stop`. On the plain event stream (`next` / `next_event`), a `Stop(AllInputsClosed)` comes after every input that was queued before it, and the next receive returns `DoraEventType::AllInputsClosed`. A `Stop(Manual)` is returned ahead of queued inputs, as in Rust, so the next receives may return those inputs before `DoraEventType::AllInputsClosed`. That event type means only that the stream has ended. It does not tell you whether the inputs closed or the dataflow was stopped. A `CombinedEvents` stream does not end after `Stop`, so break out of the loop yourself there.
+
+After a `Manual` stop, exit soon: dora kills a node that keeps running for too long after it. After `AllInputsClosed`, no more inputs will arrive: finish any remaining work, such as flushing results, and exit. Dora also kills a node that is still running long after its inputs closed and the rest of the dataflow has finished (120 s by default, set per node with `finish_grace_secs`).
 
 ### DoraInput
 
