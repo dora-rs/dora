@@ -2750,6 +2750,52 @@ nodes:
         assert!(err.to_string().contains("keep_last"));
     }
 
+    #[test]
+    fn validate_ros2_security_empty_rejected() {
+        let config = Ros2BridgeConfig {
+            topic: Some("/topic".into()),
+            message_type: Some("std_msgs/String".into()),
+            security: Some(PathBuf::from("")),
+            ..Default::default()
+        };
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("topic".to_owned()));
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &outputs,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("ros2 security must not be empty"));
+    }
+
+    #[test]
+    fn validate_ros2_security_on_zenoh_rejected() {
+        let config = Ros2BridgeConfig {
+            transport: Ros2TransportConfig::Zenoh {
+                compatibility: RmwZenohCompatibility::Humble,
+                config_uri: None,
+            },
+            topic: Some("/topic".into()),
+            message_type: Some("std_msgs/String".into()),
+            security: Some(PathBuf::from("/etc/ros/security")),
+            ..Default::default()
+        };
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("topic".to_owned()));
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &outputs,
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("only supported on the DDS transport"));
+    }
+
     // --- Type annotation tests ---
 
     fn parse_dataflow(yaml: &str) -> Descriptor {

@@ -67,6 +67,14 @@ impl Ros2Transport {
     }
 
     #[staticmethod]
+    pub fn dds_secure(security: PathBuf) -> Self {
+        Self {
+            config: dora_message::descriptor::Ros2TransportConfig::Dds,
+            security: Some(security),
+        }
+    }
+
+    #[staticmethod]
     #[pyo3(signature = (compatibility, config_uri=None))]
     pub fn zenoh(compatibility: &str, config_uri: Option<PathBuf>) -> PyResult<Self> {
         let compatibility = match compatibility {
@@ -259,11 +267,13 @@ impl Ros2Context {
         let domain_id = resolve_domain_id(domain_id, std::env::var("ROS_DOMAIN_ID"))?;
         let transport = transport.unwrap_or_else(|| Ros2Transport::dds(None));
         let security_dir = security.or_else(|| transport.security.clone());
-        let context = futures::executor::block_on(dora_ros2_bridge::transport::Context::open_with_security(
-            &transport.config,
-            domain_id,
-            security_dir.as_deref(),
-        ))?;
+        let context = futures::executor::block_on(
+            dora_ros2_bridge::transport::Context::open_with_security(
+                &transport.config,
+                domain_id,
+                security_dir.as_deref(),
+            ),
+        )?;
         Ok(Self {
             context,
             transport,

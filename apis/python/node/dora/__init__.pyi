@@ -997,6 +997,29 @@ class Ros2Topic:
     def __str__(self) -> str:
         """Return str(self)."""
 
+class Ros2Transport:
+    """ROS2 Transport configuration.
+
+    warnings:
+    - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+    at any point without it being considered a breaking change."""
+
+    @staticmethod
+    def dds(security: typing.Optional[str] = None) -> Ros2Transport:
+        """Create a DDS transport configuration with optional DDS Security credentials directory."""
+
+    @staticmethod
+    def dds_secure(security: str) -> Ros2Transport:
+        """Create a secure DDS transport configuration with DDS Security credentials directory."""
+
+    @staticmethod
+    def zenoh(compatibility: str, config_uri: typing.Optional[str] = None) -> Ros2Transport:
+        """Create a Zenoh transport configuration."""
+
+    @property
+    def kind(self) -> str:
+        """Transport kind: 'dds' or 'zenoh'."""
+
 def build(
     dataflow_path: str,
     uv: bool = None,

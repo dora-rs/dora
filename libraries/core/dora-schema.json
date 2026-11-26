@@ -907,6 +907,13 @@
             }
           ]
         },
+        "security": {
+          "description": "Optional DDS Security credential directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "service": {
           "description": "ROS2 service name (e.g. \"/add_two_ints\").\nMutually exclusive with `topic`, `topics`, `action`.",
           "type": [

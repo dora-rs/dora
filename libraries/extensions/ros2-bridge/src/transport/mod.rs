@@ -52,7 +52,6 @@ impl Context {
         }
     }
 
-    #[cfg(feature = "rmw-zenoh")]
     pub async fn open(
         config: &Ros2TransportConfig,
         domain_id: u16,
@@ -60,7 +59,6 @@ impl Context {
         Self::open_with_security(config, domain_id, None).await
     }
 
-    #[cfg(feature = "rmw-zenoh")]
     pub async fn open_with_security(
         config: &Ros2TransportConfig,
         domain_id: u16,
@@ -70,6 +68,7 @@ impl Context {
             Ros2TransportConfig::Dds => {
                 dds::Context::new_with_security(domain_id, security_dir).map(Self::Dds)
             }
+            #[cfg(feature = "rmw-zenoh")]
             Ros2TransportConfig::Zenoh { config_uri, .. } => {
                 if security_dir.is_some() {
                     return Err(TransportError::DdsContext {
@@ -87,6 +86,15 @@ impl Context {
                 .map_err(|error| TransportError::ZenohContext {
                     message: error.to_string(),
                 })
+            }
+            #[cfg(not(feature = "rmw-zenoh"))]
+            Ros2TransportConfig::Zenoh { .. } => {
+                if security_dir.is_some() {
+                    return Err(TransportError::DdsContext {
+                        message: "DDS Security is only supported on the DDS transport".into(),
+                    });
+                }
+                Err(TransportError::UnsupportedTransport { transport: "zenoh" })
             }
         }
     }
