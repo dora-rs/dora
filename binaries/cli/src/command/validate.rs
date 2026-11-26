@@ -4,7 +4,7 @@ use dora_core::{
         Descriptor, DescriptorExt,
         validate::{check_dataflow_static, check_type_annotations_full, check_wiring},
     },
-    manifest::{NodeManifest, inject::inject_adjacent_manifests_except},
+    manifest::{NodeManifest, inject::inject_adjacent_manifests},
     types::TypeRegistry,
 };
 use eyre::{Context, bail};
@@ -150,13 +150,7 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre
     println!("Descriptor config OK.");
 
     // Inject contracts from node manifests adjacent to path: nodes (§6.2)
-    // hub-override nodes were contract-checked by hub resolution (#4311)
-    let injection = inject_adjacent_manifests_except(
-        &mut descriptor,
-        working_dir,
-        &mut registry,
-        &hub_resolution.override_dirs.keys().cloned().collect(),
-    );
+    let injection = inject_adjacent_manifests(&mut descriptor, working_dir, &mut registry);
     for note in &injection.notes {
         println!("  {note}");
     }
