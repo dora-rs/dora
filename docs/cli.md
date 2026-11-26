@@ -398,7 +398,7 @@ dora build <PATH> [OPTIONS]
 
 **Type checking:** After expanding modules, `build` runs the same type checks as `validate`. Warnings are printed by default; use `--strict-types` (or set `strict_types: true` in the YAML) to fail the build on type mismatches. User-defined types in a `types/` directory next to the dataflow are loaded automatically.
 
-**Build strategy:** If nodes have `deploy` sections and a coordinator is reachable, builds are distributed to target machines. Otherwise, builds run locally.
+**Build strategy:** If nodes have `deploy` sections and a coordinator is reachable, builds are distributed to target machines. If no `deploy` sections are present, builds run locally by default, except when a node uses `git:` or `hub:` sources and a local coordinator with a same-machine unnamed daemon is reachable, in which case the build routes through the coordinator so `dora start` receives the build metadata.
 
 **Git sources:** Nodes with a `git:` field are cloned/updated before building. The build command runs from the git repository root.
 

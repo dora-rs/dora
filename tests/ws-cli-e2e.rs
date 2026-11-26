@@ -3255,15 +3255,8 @@ mod real_dataflow {
             })
     }
 
-    #[test]
-    fn e2e_git_node_build_then_start() {
-        ensure_built();
-        let dora = dora_bin();
-        start_cluster(&dora);
-        let _guard = ClusterGuard(&dora);
-
-        let dir = tempdir().expect("create tempdir");
-        let src = dir.path().join("repo");
+    fn setup_git_smoke_dataflow(dir: &Path) -> std::path::PathBuf {
+        let src = dir.join("repo");
         std::fs::create_dir_all(src.join("src")).unwrap();
         std::fs::write(
             src.join("Cargo.toml"),
@@ -3304,7 +3297,7 @@ mod real_dataflow {
         } else {
             format!("file:///{git_path}")
         };
-        let yaml = dir.path().join("dataflow.yml");
+        let yaml = dir.join("dataflow.yml");
         std::fs::write(
             &yaml,
             format!(
@@ -3312,6 +3305,18 @@ mod real_dataflow {
             ),
         )
         .unwrap();
+        yaml
+    }
+
+    #[test]
+    fn e2e_git_node_build_then_start() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
+
+        let dir = tempdir().expect("create tempdir");
+        let yaml = setup_git_smoke_dataflow(dir.path());
 
         let build_out = Command::new(&dora)
             .args(["build", yaml.to_str().unwrap()])
@@ -3333,6 +3338,87 @@ mod real_dataflow {
             "dora start failed after `dora build`:\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&start_out.stdout),
             String::from_utf8_lossy(&start_out.stderr)
+        );
+    }
+
+    #[test]
+    fn e2e_git_node_build_then_daemon_run_dataflow() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
+
+        let dir = tempdir().expect("create tempdir");
+        let yaml = setup_git_smoke_dataflow(dir.path());
+
+        let build_out = Command::new(&dora)
+            .args(["build", yaml.to_str().unwrap()])
+            .output()
+            .expect("run dora build");
+        assert!(
+            build_out.status.success(),
+            "dora build failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&build_out.stdout),
+            String::from_utf8_lossy(&build_out.stderr)
+        );
+
+        let run_out = Command::new(&dora)
+            .args(["daemon", "--run-dataflow", yaml.to_str().unwrap()])
+            .output()
+            .expect("run dora daemon --run-dataflow");
+        assert!(
+            run_out.status.success(),
+            "dora daemon --run-dataflow failed after `dora build`:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&run_out.stdout),
+            String::from_utf8_lossy(&run_out.stderr)
+        );
+    }
+
+    #[test]
+    fn e2e_git_node_build_coordinator_without_daemon_falls_back_local() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            listener.local_addr().unwrap().port()
+        };
+        let port_str = port.to_string();
+        let (coord_child, _stdout_path, _stderr_path) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["coordinator", "--port", &port_str, "--quiet"],
+            "coord-only",
+        );
+        let _coord_guard = KillOnDrop(Some(coord_child));
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "isolated coordinator did not listen on port {port} in time"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let dir = tempdir().expect("create tempdir");
+        let yaml = setup_git_smoke_dataflow(dir.path());
+
+        let build_out = Command::new(&dora)
+            .args(["build", yaml.to_str().unwrap()])
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("DORA_COORDINATOR_PORT", &port_str)
+            .env_remove("DORA_COORDINATOR_ADDR")
+            .env_remove("DORA_COORDINATOR_INTERFACE")
+            .output()
+            .expect("run dora build");
+        assert!(
+            build_out.status.success(),
+            "dora build failed when coordinator had no unnamed daemon:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&build_out.stdout),
+            String::from_utf8_lossy(&build_out.stderr)
         );
     }
 }

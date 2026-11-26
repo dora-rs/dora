@@ -356,7 +356,27 @@ impl Executable for Daemon {
                                 .write_out_for_dataflow(&dataflow_path)
                                 .context("failed to persist invalidated dataflow session")?;
                         }
+                        let has_git_source = resolved_for_fingerprint
+                            .values()
+                            .any(|node| node.has_git_source());
                         drop(resolved_for_fingerprint);
+                        if dataflow_session.local_build.is_none()
+                            && dataflow_session.build_id.is_some()
+                            && has_git_source
+                        {
+                            let build_path = dataflow_path.clone();
+                            let build_session = dataflow_session.clone();
+                            let build_info = tokio::task::spawn_blocking(move || {
+                                super::build::rebuild_local_build_for_daemon_run(
+                                    expanded,
+                                    &build_path,
+                                    &build_session,
+                                )
+                            })
+                            .await
+                            .context("local build task panicked")??;
+                            dataflow_session.local_build = Some(build_info);
+                        }
 
                         let result = dora_daemon::Daemon::run_dataflow(&dataflow_path,
                             dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,
