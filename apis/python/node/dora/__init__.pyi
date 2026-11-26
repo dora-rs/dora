@@ -398,7 +398,6 @@ class Ros2Context:
         ros_paths: typing.List[str] = None,
         transport: typing.Optional[typing.Any] = None,
         domain_id: typing.Optional[int] = None,
-        security: typing.Optional[str] = None,
     ) -> None:
         """ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
 
@@ -1005,8 +1004,8 @@ class Ros2Transport:
     at any point without it being considered a breaking change."""
 
     @staticmethod
-    def dds(security: typing.Optional[str] = None) -> Ros2Transport:
-        """Create a DDS transport configuration with optional DDS Security credentials directory."""
+    def dds() -> Ros2Transport:
+        """Create a DDS transport configuration."""
 
     @staticmethod
     def dds_secure(security: str) -> Ros2Transport:

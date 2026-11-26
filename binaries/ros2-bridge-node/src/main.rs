@@ -2828,11 +2828,12 @@ fn create_ros_node(
     ros2_client::NodeName,
 )> {
     let domain_id = parse_dds_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref())?;
-    let context = dora_ros2_bridge::transport::dds::Context::new_with_security(
-        domain_id,
-        config.security.as_deref(),
-    )
-    .map_err(|e| eyre!("{e}"))?;
+    let context =
+        dora_ros2_bridge::transport::dds::Context::new_with_security(
+            domain_id,
+            config.security.as_deref(),
+        )
+        .map_err(|e| eyre!("{e}"))?;
     // Reports QoS and RMW-mapping mismatches of the endpoints registered with it.
     let diagnostics = context.diagnostics().clone();
     let ros_context = context.into_inner();

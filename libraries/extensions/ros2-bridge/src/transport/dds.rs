@@ -480,8 +480,7 @@ mod tests {
 
     #[test]
     fn security_dir_missing_files_are_reported() {
-        let temp =
-            std::env::temp_dir().join(format!("test_dds_sec_missing_{}", std::process::id()));
+        let temp = std::env::temp_dir().join(format!("test_dds_sec_missing_{}", std::process::id()));
         std::fs::create_dir_all(&temp).unwrap();
         // create only one file
         std::fs::write(temp.join("cert.pem"), b"dummy").unwrap();
@@ -499,8 +498,7 @@ mod tests {
 
     #[test]
     fn security_validation_passes_when_all_files_present() {
-        let temp =
-            std::env::temp_dir().join(format!("test_dds_sec_valid_{}", std::process::id()));
+        let temp = std::env::temp_dir().join(format!("test_dds_sec_valid_{}", std::process::id()));
         std::fs::create_dir_all(&temp).unwrap();
         for file in [
             "identity_ca.cert.pem",
@@ -521,10 +519,7 @@ mod tests {
             let TransportError::DdsContext { message } = err else {
                 panic!("expected DdsContext error, got {err:?}");
             };
-            assert!(
-                message.contains("without the 'security' feature"),
-                "{message}"
-            );
+            assert!(message.contains("without the 'security' feature"), "{message}");
         }
 
         let _ = std::fs::remove_dir_all(&temp);

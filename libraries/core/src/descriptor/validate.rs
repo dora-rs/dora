@@ -2791,9 +2791,7 @@ nodes:
             &outputs,
         )
         .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("only supported on the DDS transport"));
+        assert!(err.to_string().contains("only supported on the DDS transport"));
     }
 
     // --- Type annotation tests ---

@@ -58,11 +58,10 @@ pub struct Ros2Transport {
 #[pymethods]
 impl Ros2Transport {
     #[staticmethod]
-    #[pyo3(signature = (security=None))]
-    pub fn dds(security: Option<PathBuf>) -> Self {
+    pub fn dds() -> Self {
         Self {
             config: dora_message::descriptor::Ros2TransportConfig::Dds,
-            security,
+            security: None,
         }
     }
 
@@ -203,12 +202,11 @@ mod domain_id_tests {
 impl Ros2Context {
     /// Create a new context
     #[new]
-    #[pyo3(signature = (ros_paths=None, transport=None, domain_id=None, security=None))]
+    #[pyo3(signature = (ros_paths=None, transport=None, domain_id=None))]
     pub fn new(
         ros_paths: Option<Vec<PathBuf>>,
         transport: Option<Ros2Transport>,
         domain_id: Option<u16>,
-        security: Option<PathBuf>,
     ) -> eyre::Result<Self> {
         Python::attach(|py| -> Result<()> {
             let warnings = py
@@ -265,13 +263,13 @@ impl Ros2Context {
         }
 
         let domain_id = resolve_domain_id(domain_id, std::env::var("ROS_DOMAIN_ID"))?;
-        let transport = transport.unwrap_or_else(|| Ros2Transport::dds(None));
-        let security_dir = security.or_else(|| transport.security.clone());
+        let transport = transport.unwrap_or_else(Ros2Transport::dds);
+        let security_dir = transport.security.as_deref();
         let context = futures::executor::block_on(
             dora_ros2_bridge::transport::Context::open_with_security(
                 &transport.config,
                 domain_id,
-                security_dir.as_deref(),
+                security_dir,
             ),
         )?;
         Ok(Self {

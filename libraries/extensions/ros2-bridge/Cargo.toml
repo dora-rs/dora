@@ -16,7 +16,7 @@ default = ["generate-messages", "ros2-humble"]
 generate-messages = ["dep:dora-ros2-bridge-msg-gen"]
 ros2-examples = []
 rmw-zenoh = ["dep:zenoh", "dep:zenoh-ext"]
-security = ["dep:rustdds", "rustdds/security"]
+security = ["ros2-client/security"]
 # ROS distro, forwarded to `ros2-client`. Its features form a chain (each
 # enables the older distros), so selecting a newer one also turns on the older
 # flags and `ros2-client::COMPILED_ROS_DISTRO` reports the newest. That means
@@ -48,7 +48,6 @@ cdr-encoding = { workspace = true }
 byteorder = "1"
 zenoh = { workspace = true, optional = true }
 zenoh-ext = { workspace = true, optional = true }
-rustdds = { version = "0.15", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
