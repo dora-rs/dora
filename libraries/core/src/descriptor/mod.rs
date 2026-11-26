@@ -130,6 +130,13 @@ pub trait DescriptorExt {
     /// file. Internal IDs are prefixed with `{module_id}.` and input/output
     /// wiring is rewritten accordingly.
     fn expand(&self, working_dir: &Path) -> eyre::Result<Descriptor>;
+    /// Like [`expand`](Self::expand), but allows overriding the module
+    /// confinement `project_root` (e.g. from `--project-root`).
+    fn expand_with_project_root(
+        &self,
+        working_dir: &Path,
+        project_root: Option<&Path>,
+    ) -> eyre::Result<Descriptor>;
     /// Like [`expand`](Self::expand) but also returns module boundary metadata
     /// for visualization.
     fn expand_with_boundaries(
@@ -512,6 +519,14 @@ impl DescriptorExt for Descriptor {
 
     fn expand(&self, working_dir: &Path) -> eyre::Result<Descriptor> {
         expand::expand_modules(self, working_dir)
+    }
+
+    fn expand_with_project_root(
+        &self,
+        working_dir: &Path,
+        project_root: Option<&Path>,
+    ) -> eyre::Result<Descriptor> {
+        expand::expand_modules_with_project_root(self, working_dir, project_root)
     }
 
     fn expand_with_boundaries(

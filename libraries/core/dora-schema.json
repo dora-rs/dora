@@ -62,6 +62,13 @@
         "$ref": "#/$defs/Node"
       }
     },
+    "project_root": {
+      "description": "Project root directory for module path confinement (optional).\n\nBy default, `module:` references must stay within the dataflow file's\nown directory. Setting `project_root` (resolved relative to the\ndataflow file if relative) lets dataflows in subdirectories share a\ncommon `modules/` folder while still rejecting paths that escape the\nconfigured root.\n\nCan be overridden on the CLI via `--project-root`.\n\n## Example\n\n```yaml\nproject_root: ../..\nnodes:\n  - id: shared\n    module: ../../modules/shared.yml\n```",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "strict_types": {
       "description": "Enable strict type checking: type warnings become errors during build.\n\nCan also be enabled via `--strict-types` CLI flag on `dora build`.",
       "type": [
