@@ -8,6 +8,7 @@ use dora_core::uhlc::HLC;
 use dora_message::{
     DataflowId,
     common::DaemonId,
+    coordinator_to_cli::ZenohTopicSource,
     coordinator_to_daemon::{DaemonCoordinatorEvent, Timestamped},
     daemon_to_coordinator::DaemonCoordinatorReply,
     descriptor::{CoreNodeKind, RuntimeNode},
@@ -158,29 +159,31 @@ pub(crate) fn topic_debug_enabled(
     Ok(dataflow.descriptor.debug.enable_debug_inspection)
 }
 
-/// The zenoh endpoints a client can read `topics` from directly: one per
-/// daemon running a requested output, deduplicated.
+/// Where a client can read `topics` from zenoh directly: for each daemon
+/// running a requested output, its endpoint and the outputs it runs.
 ///
 /// Checks the same things as [`start_topic_debug_stream`] (the outputs exist,
 /// debug inspection is on) and fails the same way, but starts no stream.
 /// `Ok(None)` if a daemon has no endpoint the client can dial (see
 /// [`DaemonConnections::zenoh_endpoint_for`]); the caller then relays instead.
-pub(crate) fn direct_topic_endpoints(
+pub(crate) fn direct_topic_sources(
     running_dataflows: &HashMap<DataflowId, RunningDataflow>,
     daemon_connections: &DaemonConnections,
     dataflow_id: DataflowId,
     topics: &[(dora_message::id::NodeId, dora_message::id::DataId)],
     client_is_local: bool,
-) -> eyre::Result<Option<Vec<String>>> {
+) -> eyre::Result<Option<Vec<ZenohTopicSource>>> {
     let outputs_by_daemon = topic_outputs_by_daemon(running_dataflows, dataflow_id, topics)?;
     if !topic_debug_enabled(running_dataflows, dataflow_id)? {
         eyre::bail!("topic inspection requires `debug.enable_debug_inspection: true`");
     }
-    let endpoints: Option<BTreeSet<String>> = outputs_by_daemon
-        .keys()
-        .map(|daemon_id| daemon_connections.zenoh_endpoint_for(daemon_id, client_is_local))
-        .collect();
-    Ok(endpoints.map(|endpoints| endpoints.into_iter().collect()))
+    Ok(outputs_by_daemon
+        .into_iter()
+        .map(|(daemon_id, outputs)| {
+            let endpoint = daemon_connections.zenoh_endpoint_for(&daemon_id, client_is_local)?;
+            Some(ZenohTopicSource::new(endpoint, outputs))
+        })
+        .collect())
 }
 
 pub(crate) async fn start_topic_debug_stream(

@@ -5,7 +5,7 @@ use crate::topology_lane::{MappingSpec, TopologyRequest};
 use crate::{
     ControlEvent, Coordinator, cancel_pending_restart,
     control::TopicSubscription,
-    direct_topic_endpoints, ensure_delete_param_forward_applied, ensure_set_param_forward_applied,
+    direct_topic_sources, ensure_delete_param_forward_applied, ensure_set_param_forward_applied,
     handle_get_trace_spans, handle_get_traces,
     handlers::{
         attach_log_subscriber, build_dataflow, dataflow_result, handle_destroy, parse_logs_node_id,
@@ -594,7 +594,7 @@ impl Coordinator {
                 done_tx,
             } => {
                 let direct = direct.map(|client_is_local| {
-                    direct_topic_endpoints(
+                    direct_topic_sources(
                         &self.running_dataflows,
                         &self.daemon_connections,
                         dataflow_id,
@@ -603,7 +603,7 @@ impl Coordinator {
                     )
                 });
                 let result = match direct {
-                    Some(Ok(Some(endpoints))) => Ok(TopicSubscription::Direct(endpoints)),
+                    Some(Ok(Some(sources))) => Ok(TopicSubscription::Direct(sources)),
                     Some(Err(err)) => Err(format!("{err:?}")),
                     // Not asked for, or a daemon the client can't reach: relay.
                     None | Some(Ok(None)) => start_topic_debug_stream(

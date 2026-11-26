@@ -3,6 +3,7 @@
 //! Replaces `TcpRequestReplyConnection` with a single WS connection that handles
 //! both request-reply and log streaming.
 
+use dora_message::coordinator_to_cli::ZenohTopicSource;
 use dora_message::ws_protocol::WsRequest;
 use eyre::{Context, eyre};
 use futures::{SinkExt, StreamExt};
@@ -127,8 +128,18 @@ enum SessionCommand {
     SubscribeTopics {
         request: Vec<u8>,
         subscriber: TopicSubscriber,
-        ack_tx: oneshot::Sender<eyre::Result<Uuid>>,
+        ack_tx: oneshot::Sender<eyre::Result<TopicAck>>,
     },
+}
+
+/// How the coordinator answered a topic subscription.
+enum TopicAck {
+    /// Frames will arrive on this connection under the id; the session has
+    /// registered the subscriber for them.
+    Relayed(Uuid),
+    /// Read the topics from zenoh at these sources. Nothing is relayed, so the
+    /// subscriber comes back unused.
+    Direct(Vec<ZenohTopicSource>, TopicSubscriber),
 }
 
 impl WsSession {
@@ -249,7 +260,7 @@ impl WsSession {
     /// subscription UUID prefix are dispatched to the receiver.
     ///
     /// The receiver's backlog is bounded by `limits`; frames that arrive while
-    /// it is full are dropped and counted (see `dispatch_topic_frame` and
+    /// it is full are dropped and counted (see [`TopicSubscriber::offer`] and
     /// [`TopicReceiver::dropped`]).
     pub fn subscribe_topics(
         &self,
@@ -257,12 +268,79 @@ impl WsSession {
         topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
         limits: TopicBufferLimits,
     ) -> eyre::Result<(Uuid, TopicReceiver)> {
-        let request = serde_json::to_vec(
-            &dora_message::cli_to_coordinator::ControlRequest::topic_subscribe(dataflow_id, topics),
-        )
-        .map_err(|e| eyre!("failed to serialize TopicSubscribe: {e}"))?;
-
         let (subscriber, data_rx) = topic_channel(limits);
+        let subscription_id = self.subscribe_relayed(dataflow_id, topics, subscriber)?;
+        Ok((subscription_id, data_rx))
+    }
+
+    /// Like [`subscribe_topics`](Self::subscribe_topics), but reads the topics
+    /// straight from zenoh when the coordinator says where, so they don't pass
+    /// through the coordinator's control plane (dora-rs/dora#4025).
+    ///
+    /// Falls back to the relayed stream, on the same receiver, when the
+    /// coordinator answers with one (it predates direct subscriptions, or a
+    /// daemon has no endpoint this CLI can dial) or when a zenoh endpoint
+    /// can't be reached. `DORA_TOPIC_DIRECT=off` always relays. The returned
+    /// id is nil for a direct subscription: nothing is relayed to unsubscribe.
+    pub fn subscribe_topics_direct(
+        &self,
+        dataflow_id: Uuid,
+        topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
+        limits: TopicBufferLimits,
+    ) -> eyre::Result<(Uuid, TopicReceiver)> {
+        let (subscriber, data_rx) = topic_channel(limits);
+        if !crate::topic_direct::enabled() {
+            let subscription_id = self.subscribe_relayed(dataflow_id, topics, subscriber)?;
+            return Ok((subscription_id, data_rx));
+        }
+        let request = dora_message::cli_to_coordinator::ControlRequest::topic_subscribe_direct(
+            dataflow_id,
+            topics.clone(),
+        );
+        let (sources, subscriber) = match self.send_topic_subscribe(&request, subscriber)? {
+            TopicAck::Relayed(subscription_id) => return Ok((subscription_id, data_rx)),
+            TopicAck::Direct(sources, subscriber) => (sources, subscriber),
+        };
+        match self.rt.block_on(crate::topic_direct::subscribe(
+            dataflow_id,
+            sources,
+            subscriber,
+        )) {
+            Ok(()) => Ok((Uuid::nil(), data_rx)),
+            Err((err, subscriber)) => {
+                // Not on stdout: that is `topic echo`'s data stream.
+                tracing::debug!("reading topics through the coordinator instead: {err:?}");
+                let subscription_id = self.subscribe_relayed(dataflow_id, topics, subscriber)?;
+                Ok((subscription_id, data_rx))
+            }
+        }
+    }
+
+    fn subscribe_relayed(
+        &self,
+        dataflow_id: Uuid,
+        topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
+        subscriber: TopicSubscriber,
+    ) -> eyre::Result<Uuid> {
+        let request =
+            dora_message::cli_to_coordinator::ControlRequest::topic_subscribe(dataflow_id, topics);
+        match self.send_topic_subscribe(&request, subscriber)? {
+            TopicAck::Relayed(subscription_id) => Ok(subscription_id),
+            TopicAck::Direct(..) => {
+                eyre::bail!(
+                    "the coordinator answered a relayed topic subscription with zenoh sources"
+                )
+            }
+        }
+    }
+
+    fn send_topic_subscribe(
+        &self,
+        request: &dora_message::cli_to_coordinator::ControlRequest,
+        subscriber: TopicSubscriber,
+    ) -> eyre::Result<TopicAck> {
+        let request = serde_json::to_vec(request)
+            .map_err(|e| eyre!("failed to serialize TopicSubscribe: {e}"))?;
         let (ack_tx, ack_rx) = oneshot::channel();
         self.cmd_tx
             .send(SessionCommand::SubscribeTopics {
@@ -271,13 +349,9 @@ impl WsSession {
                 ack_tx,
             })
             .map_err(|_| eyre!("WS session closed"))?;
-
-        let subscription_id = self
-            .rt
+        self.rt
             .block_on(ack_rx)
-            .map_err(|_| eyre!("WS session dropped ack"))??;
-
-        Ok((subscription_id, data_rx))
+            .map_err(|_| eyre!("WS session dropped ack"))?
     }
 
     /// Subscribe to log events on this connection.
@@ -318,7 +392,8 @@ type PendingSubscribes = HashMap<
         std_mpsc::Sender<eyre::Result<Vec<u8>>>,
     ),
 >;
-type PendingTopicSubscribes = HashMap<Uuid, (oneshot::Sender<eyre::Result<Uuid>>, TopicSubscriber)>;
+type PendingTopicSubscribes =
+    HashMap<Uuid, (oneshot::Sender<eyre::Result<TopicAck>>, TopicSubscriber)>;
 type TopicSubscribers = HashMap<Uuid, TopicSubscriber>;
 /// How much a topic subscription's backlog holds before newer frames are
 /// dropped: at most `frames` frames and `bytes` payload bytes. A frame for an
@@ -362,6 +437,43 @@ pub(crate) struct TopicSubscriber {
     tx: std_mpsc::SyncSender<eyre::Result<Vec<u8>>>,
     max_bytes: usize,
     backlog: Arc<TopicBacklog>,
+}
+
+/// The receiving end of a topic subscription is gone.
+pub(crate) struct ReceiverGone;
+
+impl TopicSubscriber {
+    /// Hand one frame's payload to the receiver, without waiting.
+    ///
+    /// Whoever calls this also has other work that must not stall on a slow
+    /// consumer (the session loop reads request replies, a direct zenoh
+    /// subscription must keep draining its subscriber), and must not buffer
+    /// for one without limit either: an unbounded backlog grows until the CLI
+    /// runs out of memory (e.g. `dora topic echo` on a large camera topic). A
+    /// frame that would overfill the backlog — by count or by bytes — is
+    /// dropped instead, before its payload is copied, and counted.
+    pub(crate) fn offer(&self, payload: &[u8]) -> Result<(), ReceiverGone> {
+        let backlog = &self.backlog;
+        let queued = backlog.bytes.load(Ordering::Relaxed);
+        let fits = queued == 0 || queued.saturating_add(payload.len()) <= self.max_bytes;
+        if fits {
+            // Counted before the send, so the receiver never subtracts first.
+            backlog.bytes.fetch_add(payload.len(), Ordering::Relaxed);
+            match self.tx.try_send(Ok(payload.to_vec())) {
+                Ok(()) => return Ok(()),
+                Err(std_mpsc::TrySendError::Full(_)) => {
+                    backlog.bytes.fetch_sub(payload.len(), Ordering::Relaxed);
+                }
+                Err(std_mpsc::TrySendError::Disconnected(_)) => return Err(ReceiverGone),
+            }
+        }
+        // Only `debug`: the CLI's console logger writes to stdout, which is the
+        // data stream of `topic echo`. Consumers report the count on stderr.
+        if backlog.dropped.fetch_add(1, Ordering::Relaxed) == 0 {
+            tracing::debug!("topic data arrives faster than it is processed; dropping frames");
+        }
+        Ok(())
+    }
 }
 
 /// A handle to a [`TopicReceiver`]'s drop count that outlives the receiver,
@@ -440,15 +552,7 @@ pub(crate) fn topic_channel(limits: TopicBufferLimits) -> (TopicSubscriber, Topi
 }
 
 /// Hand one binary WS frame (`subscription id ++ payload`) to its
-/// subscriber, without waiting.
-///
-/// The session loop also reads request replies, so it must never block on a
-/// slow consumer — and it must not buffer for one without limit either: it
-/// keeps the socket drained, so the coordinator's own drop-when-full policy
-/// never sees the slow consumer, and an unbounded backlog here grows until
-/// the CLI runs out of memory (e.g. `dora topic echo` on a large camera
-/// topic). A frame that would overfill the backlog — by count or by bytes —
-/// is dropped instead, before its payload is copied.
+/// subscriber, without waiting (see [`TopicSubscriber::offer`]).
 fn dispatch_topic_frame(topic_subscribers: &mut TopicSubscribers, data: &[u8]) {
     let Some((sub_id_bytes, payload)) = data.split_first_chunk::<16>() else {
         tracing::warn!("binary WS frame too short ({} bytes)", data.len());
@@ -458,30 +562,8 @@ fn dispatch_topic_frame(topic_subscribers: &mut TopicSubscribers, data: &[u8]) {
     let Some(subscriber) = topic_subscribers.get(&sub_id) else {
         return;
     };
-    let backlog = &subscriber.backlog;
-    let queued = backlog.bytes.load(Ordering::Relaxed);
-    let fits = queued == 0 || queued.saturating_add(payload.len()) <= subscriber.max_bytes;
-    if fits {
-        // Counted before the send, so the receiver never subtracts first.
-        backlog.bytes.fetch_add(payload.len(), Ordering::Relaxed);
-        match subscriber.tx.try_send(Ok(payload.to_vec())) {
-            Ok(()) => return,
-            Err(std_mpsc::TrySendError::Full(_)) => {
-                backlog.bytes.fetch_sub(payload.len(), Ordering::Relaxed);
-            }
-            Err(std_mpsc::TrySendError::Disconnected(_)) => {
-                topic_subscribers.remove(&sub_id);
-                return;
-            }
-        }
-    }
-    // Only `debug`: the CLI's console logger writes to stdout, which is the
-    // data stream of `topic echo`. Consumers report the count on stderr.
-    if backlog.dropped.fetch_add(1, Ordering::Relaxed) == 0 {
-        tracing::debug!(
-            "topic data arrives faster than it is processed; \
-             dropping frames for subscription {sub_id}"
-        );
+    if subscriber.offer(payload).is_err() {
+        topic_subscribers.remove(&sub_id);
     }
 }
 
@@ -709,6 +791,7 @@ fn handle_response(
                 Ok(dora_message::coordinator_to_cli::ControlRequestReply::TopicSubscribed {
                     subscription_id,
                     protocol_version,
+                    zenoh_sources,
                     ..
                 }) => {
                     // A coordinator on the other encoding would send frames we
@@ -726,9 +809,11 @@ fn handle_response(
                     // already-closing subscription would not earn its keep.
                     if protocol_version != Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION) {
                         let _ = ack_tx.send(Err(topic_protocol_mismatch_error(protocol_version)));
+                    } else if let Some(sources) = zenoh_sources {
+                        let _ = ack_tx.send(Ok(TopicAck::Direct(sources, subscriber)));
                     } else {
                         topic_subscribers.insert(subscription_id, subscriber);
-                        let _ = ack_tx.send(Ok(subscription_id));
+                        let _ = ack_tx.send(Ok(TopicAck::Relayed(subscription_id)));
                     }
                 }
                 Ok(dora_message::coordinator_to_cli::ControlRequestReply::Error(e)) => {
@@ -929,9 +1014,47 @@ mod tests {
             &mut topic_subs,
         );
 
-        let result_id = ack_rx.try_recv().unwrap().unwrap();
-        assert_eq!(result_id, sub_id);
+        let ack = ack_rx.try_recv().unwrap().unwrap();
+        assert!(matches!(ack, TopicAck::Relayed(id) if id == sub_id));
         assert!(topic_subs.contains_key(&sub_id));
+    }
+
+    /// A direct reply hands the sources and the unused subscriber back to the
+    /// caller, and registers nothing for relayed frames: none will come.
+    #[test]
+    fn handle_response_direct_topic_subscribe_ack() {
+        let id = Uuid::new_v4();
+        let (ack_tx, mut ack_rx) = oneshot::channel();
+        let (data_tx, _data_rx) = topic_channel(TopicBufferLimits::LIVE);
+        let mut topic_pending = HashMap::new();
+        topic_pending.insert(id, (ack_tx, data_tx));
+        let mut topic_subs = HashMap::new();
+        let sources = vec![ZenohTopicSource::new(
+            "tcp/10.0.0.2:5456".to_string(),
+            vec![("camera".to_string().into(), "image".to_string().into())],
+        )];
+
+        handle_response(
+            id,
+            Some(raw(serde_json::to_value(
+                dora_message::coordinator_to_cli::ControlRequestReply::topic_subscribed_direct(
+                    sources.clone(),
+                ),
+            )
+            .unwrap())),
+            None,
+            &mut HashMap::new(),
+            &mut HashMap::new(),
+            &mut Vec::new(),
+            &mut topic_pending,
+            &mut topic_subs,
+        );
+
+        match ack_rx.try_recv().unwrap().unwrap() {
+            TopicAck::Direct(got, _subscriber) => assert_eq!(got, sources),
+            TopicAck::Relayed(id) => panic!("expected a direct ack, got relayed {id}"),
+        }
+        assert!(topic_subs.is_empty());
     }
 
     /// Binary topic frames are positionally encoded, so a coordinator on a
@@ -970,7 +1093,11 @@ mod tests {
             &mut topic_subs,
         );
 
-        (ack_rx.try_recv().unwrap(), topic_subs.contains_key(&sub_id))
+        let ack = ack_rx.try_recv().unwrap().map(|ack| match ack {
+            TopicAck::Relayed(id) => id,
+            TopicAck::Direct(..) => panic!("no sources were sent"),
+        });
+        (ack, topic_subs.contains_key(&sub_id))
     }
 
     #[test]

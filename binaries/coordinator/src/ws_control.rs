@@ -385,8 +385,8 @@ pub(crate) async fn handle_control_ws(
                                 topic_subscriptions.push(subscription_id);
                                 ControlRequestReply::topic_subscribed(subscription_id)
                             }
-                            Ok(Ok(TopicSubscription::Direct(endpoints))) => {
-                                ControlRequestReply::topic_subscribed_direct(endpoints)
+                            Ok(Ok(TopicSubscription::Direct(sources))) => {
+                                ControlRequestReply::topic_subscribed_direct(sources)
                             }
                             Ok(Err(err)) => {
                                 let resp = WsResponse::err(req.id, err);

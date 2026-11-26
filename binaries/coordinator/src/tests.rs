@@ -10713,10 +10713,10 @@ async fn subscribe_topic(
 }
 
 /// A direct subscription is answered with the endpoint of the daemon running
-/// the output, and nothing is relayed: the daemon is not asked to stream and
-/// no subscriber is registered.
+/// the output, paired with that output, and nothing is relayed: the daemon is
+/// not asked to stream and no subscriber is registered.
 #[tokio::test]
-async fn direct_topic_subscribe_returns_endpoints_and_starts_no_stream() {
+async fn direct_topic_subscribe_returns_sources_and_starts_no_stream() {
     let TopicFixture {
         mut coordinator,
         dataflow_id,
@@ -10729,7 +10729,10 @@ async fn direct_topic_subscribe_returns_endpoints_and_starts_no_stream() {
     assert_eq!(
         outcome,
         Ok(crate::control::TopicSubscription::Direct(vec![
-            "tcp/10.0.2.7:5456".to_string()
+            dora_message::coordinator_to_cli::ZenohTopicSource::new(
+                "tcp/10.0.2.7:5456".to_string(),
+                vec![("sender".to_string().into(), "message".to_string().into())],
+            )
         ]))
     );
     assert!(
@@ -10818,4 +10821,83 @@ async fn direct_topic_subscribe_requires_debug_inspection() {
     let err = outcome.expect_err("must be refused");
     assert!(err.contains("enable_debug_inspection"), "{err}");
     assert!(daemon_rx.try_recv().is_err());
+}
+
+/// Outputs on two daemons give two sources, each with only its own daemon's
+/// outputs: a zenoh client session links to a single endpoint, so the client
+/// subscribes per daemon and must know which outputs to ask each for.
+#[test]
+fn direct_topic_sources_are_grouped_by_daemon() {
+    let dataflow_id = DataflowId::from(Uuid::new_v4());
+    let (daemon_a, daemon_b) = (
+        DaemonId::new(Some("a".to_string())),
+        DaemonId::new(Some("b".to_string())),
+    );
+    let mut dataflow =
+        test_running_dataflow(dataflow_id, daemon_a.clone(), "sender".to_string().into());
+    dataflow.descriptor = serde_json::from_value(serde_json::json!({
+        "nodes": [
+            {"id": "sender", "path": "sender", "outputs": ["message"]},
+            {"id": "camera", "path": "camera", "outputs": ["image", "depth"]},
+        ],
+        "debug": {"enable_debug_inspection": true},
+    }))
+    .unwrap();
+    dataflow.nodes = dataflow
+        .descriptor
+        .resolve_aliases_and_set_defaults()
+        .unwrap();
+    dataflow
+        .node_to_daemon
+        .insert("camera".to_string().into(), daemon_b.clone());
+    dataflow.daemons.insert(daemon_b.clone());
+    let running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+
+    let mut daemon_connections = DaemonConnections::default();
+    for (daemon_id, endpoint) in [
+        (&daemon_a, "tcp/10.0.2.7:5456"),
+        (&daemon_b, "tcp/10.0.2.8:5456"),
+    ] {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut connection = crate::state::DaemonConnection::new(
+            tx,
+            Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            BTreeMap::new(),
+        );
+        connection.zenoh_listen_endpoint = Some(endpoint.to_string());
+        daemon_connections.add(daemon_id.clone(), connection);
+    }
+    let topic =
+        |node: &str, output: &str| -> (dora_core::config::NodeId, dora_core::config::DataId) {
+            (node.to_string().into(), output.to_string().into())
+        };
+
+    let mut sources = crate::topic_debug::direct_topic_sources(
+        &running_dataflows,
+        &daemon_connections,
+        dataflow_id,
+        &[
+            topic("camera", "image"),
+            topic("sender", "message"),
+            topic("camera", "depth"),
+        ],
+        false,
+    )
+    .unwrap()
+    .expect("both daemons have a routable endpoint");
+    sources.sort_by(|a, b| a.endpoint.cmp(&b.endpoint));
+
+    assert_eq!(
+        sources,
+        vec![
+            dora_message::coordinator_to_cli::ZenohTopicSource::new(
+                "tcp/10.0.2.7:5456".to_string(),
+                vec![topic("sender", "message")],
+            ),
+            dora_message::coordinator_to_cli::ZenohTopicSource::new(
+                "tcp/10.0.2.8:5456".to_string(),
+                vec![topic("camera", "image"), topic("camera", "depth")],
+            ),
+        ]
+    );
 }

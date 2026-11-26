@@ -86,7 +86,7 @@ impl Executable for Hz {
             .map(|t| (t.node_id.clone(), t.data_id.clone()))
             .collect();
 
-        let (_subscription_id, data_rx) = session.subscribe_topics(
+        let (_subscription_id, data_rx) = session.subscribe_topics_direct(
             dataflow_id,
             ws_topics,
             crate::ws_client::TopicBufferLimits::LIVE,

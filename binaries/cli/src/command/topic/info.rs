@@ -164,7 +164,7 @@ fn info(
 
     // Subscribe via WS
     let ws_topics = vec![(topic.node_id.clone(), topic.data_id.clone())];
-    let (_subscription_id, data_rx) = session.subscribe_topics(
+    let (_subscription_id, data_rx) = session.subscribe_topics_direct(
         dataflow_id,
         ws_topics,
         crate::ws_client::TopicBufferLimits::LIVE,

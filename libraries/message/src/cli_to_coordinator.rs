@@ -161,16 +161,16 @@ pub enum ControlRequest {
         /// misparse postcard frames.
         #[serde(default)]
         protocol_version: Option<u16>,
-        /// Ask for the zenoh endpoints to read the topics from directly,
-        /// instead of a stream relayed by the coordinator.
+        /// Ask where to read the topics from zenoh directly, instead of a
+        /// stream relayed by the coordinator.
         ///
         /// The coordinator then starts no daemon stream and answers with
-        /// [`TopicSubscribed::zenoh_endpoints`] set, unless a daemon serving
+        /// [`TopicSubscribed::zenoh_sources`] set, unless a daemon serving
         /// one of the topics has no endpoint this client can dial: then it
         /// relays as for `false`. A coordinator that predates the field
-        /// ignores it and relays, so its reply has no endpoints either.
+        /// ignores it and relays, so its reply has no sources either.
         ///
-        /// [`TopicSubscribed::zenoh_endpoints`]: crate::coordinator_to_cli::ControlRequestReply::TopicSubscribed
+        /// [`TopicSubscribed::zenoh_sources`]: crate::coordinator_to_cli::ControlRequestReply::TopicSubscribed
         #[serde(default)]
         direct: bool,
     },
@@ -300,8 +300,8 @@ impl ControlRequest {
         }
     }
 
-    /// Like [`topic_subscribe`](Self::topic_subscribe), but asks for the zenoh
-    /// endpoints to subscribe to the topics directly (see the `direct` field
+    /// Like [`topic_subscribe`](Self::topic_subscribe), but asks where to
+    /// subscribe to the topics on zenoh directly (see the `direct` field
     /// of [`ControlRequest::TopicSubscribe`]).
     pub fn topic_subscribe_direct(dataflow_id: Uuid, topics: Vec<(NodeId, DataId)>) -> Self {
         Self::TopicSubscribe {

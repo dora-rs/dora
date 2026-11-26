@@ -12,8 +12,8 @@ use uuid::Uuid;
 pub enum TopicSubscription {
     /// Relayed by the coordinator under this subscription id.
     Relayed(Uuid),
-    /// Read by the client from these zenoh endpoints; nothing is relayed.
-    Direct(Vec<String>),
+    /// Read by the client from zenoh at these sources; nothing is relayed.
+    Direct(Vec<dora_message::coordinator_to_cli::ZenohTopicSource>),
 }
 
 #[derive(Debug)]
@@ -40,7 +40,7 @@ pub enum ControlEvent {
         dataflow_id: Uuid,
         topics: Vec<(NodeId, DataId)>,
         /// `Some(client_is_local)` for a `direct` request: answer with the
-        /// zenoh endpoints if every daemon has one the client can dial.
+        /// zenoh sources if every daemon has an endpoint the client can dial.
         direct: Option<bool>,
         sender: crate::topic_subscriber::TopicFrameSender,
         done_tx: oneshot::Sender<Result<TopicSubscription, String>>,

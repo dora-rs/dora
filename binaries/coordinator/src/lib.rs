@@ -152,7 +152,7 @@ pub(crate) use spawn_build::{
     check_spawn_timeouts, fail_pending_spawn, finalize_build, handle_dataflow_spawn_result,
 };
 pub(crate) use topic_debug::{
-    close_topic_subscribers_on_finish, direct_topic_endpoints, live_topic_subscriptions,
+    close_topic_subscribers_on_finish, direct_topic_sources, live_topic_subscriptions,
     restore_topic_debug_streams_for_daemon, start_topic_debug_stream, stop_topic_debug_stream,
     topic_publish_output_id,
 };

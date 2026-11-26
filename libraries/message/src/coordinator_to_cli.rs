@@ -81,7 +81,7 @@ pub enum ControlRequestReply {
     #[non_exhaustive]
     TopicSubscribed {
         /// The relayed stream's id, which its binary frames are prefixed
-        /// with. Nil when `zenoh_endpoints` is set: nothing is relayed then.
+        /// with. Nil when `zenoh_sources` is set: nothing is relayed then.
         subscription_id: Uuid,
         /// Binary-frame encoding the coordinator will send, see
         /// [`TOPIC_DATA_PROTOCOL_VERSION`](crate::TOPIC_DATA_PROTOCOL_VERSION).
@@ -91,16 +91,16 @@ pub enum ControlRequestReply {
         /// than misparse them as postcard.
         #[serde(default)]
         protocol_version: Option<u16>,
-        /// Set in answer to a `direct` subscribe request: the zenoh endpoints
-        /// of the daemons running the requested outputs, for the client to
-        /// subscribe to them itself. The coordinator relays nothing for such
-        /// a subscription.
+        /// Set in answer to a `direct` subscribe request: where the client
+        /// reads the requested outputs from zenoh itself, one entry per daemon
+        /// running some of them. The coordinator relays nothing for such a
+        /// subscription.
         ///
         /// `None` means the topics are relayed under `subscription_id`: the
         /// request was not `direct`, a daemon had no endpoint this client can
         /// dial, or the coordinator predates the field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        zenoh_endpoints: Option<Vec<String>>,
+        zenoh_sources: Option<Vec<ZenohTopicSource>>,
     },
     TraceList(Vec<TraceSummary>),
     TraceSpans(Vec<TraceSpan>),
@@ -237,18 +237,45 @@ impl ControlRequestReply {
         Self::TopicSubscribed {
             subscription_id,
             protocol_version: Some(crate::TOPIC_DATA_PROTOCOL_VERSION),
-            zenoh_endpoints: None,
+            zenoh_sources: None,
         }
     }
 
-    /// The reply to a `direct` topic subscription: the zenoh endpoints to
-    /// read the topics from. Nothing is relayed, so the subscription id is nil.
-    pub fn topic_subscribed_direct(zenoh_endpoints: Vec<String>) -> Self {
+    /// The reply to a `direct` topic subscription: where to read the topics
+    /// from. Nothing is relayed, so the subscription id is nil.
+    pub fn topic_subscribed_direct(zenoh_sources: Vec<ZenohTopicSource>) -> Self {
         Self::TopicSubscribed {
             subscription_id: Uuid::nil(),
             protocol_version: Some(crate::TOPIC_DATA_PROTOCOL_VERSION),
-            zenoh_endpoints: Some(zenoh_endpoints),
+            zenoh_sources: Some(zenoh_sources),
         }
+    }
+}
+
+/// Where a client reads some of a direct topic subscription's outputs: the
+/// zenoh endpoint of one daemon, and the outputs of that daemon's nodes.
+///
+/// One per daemon, because a zenoh client session links to a single endpoint
+/// (the first of its `connect` list it reaches), and a daemon forwards its own
+/// nodes' samples to the clients linked to it. So a client opens one session
+/// per source and subscribes there to that source's `topics` only.
+///
+/// `#[non_exhaustive]` and built with [`ZenohTopicSource::new`], so a field
+/// can be added (with `#[serde(default)]`) as a minor change.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[non_exhaustive]
+pub struct ZenohTopicSource {
+    /// The daemon's zenoh listen endpoint, e.g. `tcp/10.0.0.2:5456`.
+    pub endpoint: String,
+    /// The requested outputs this daemon's nodes publish, by the output ids
+    /// they publish under (the ids relayed frames carry, which for an
+    /// operator include its id, e.g. `op/image`).
+    pub topics: Vec<(NodeId, DataId)>,
+}
+
+impl ZenohTopicSource {
+    pub fn new(endpoint: String, topics: Vec<(NodeId, DataId)>) -> Self {
+        Self { endpoint, topics }
     }
 }
 
@@ -327,7 +354,7 @@ mod tests {
     /// A relayed reply keeps the exact shape older CLIs expect: the new field
     /// is left out rather than sent as `null`.
     #[test]
-    fn relayed_topic_subscribed_has_no_endpoints_field() {
+    fn relayed_topic_subscribed_has_no_sources_field() {
         let id = Uuid::from_u128(7);
         let json = serde_json::to_value(ControlRequestReply::topic_subscribed(id)).unwrap();
         assert_eq!(
@@ -339,31 +366,34 @@ mod tests {
         );
     }
 
-    /// A reply from a coordinator that predates `zenoh_endpoints` decodes as
-    /// a relayed subscription, and a direct reply round-trips its endpoints.
+    /// A reply from a coordinator that predates `zenoh_sources` decodes as a
+    /// relayed subscription, and a direct reply round-trips its sources.
     #[test]
-    fn topic_subscribed_endpoints_decode_from_older_and_newer_coordinators() {
+    fn topic_subscribed_sources_decode_from_older_and_newer_coordinators() {
         let older = r#"{"TopicSubscribed":{"subscription_id":"00000000-0000-0000-0000-000000000007","protocol_version":2}}"#;
         match serde_json::from_str(older).unwrap() {
-            ControlRequestReply::TopicSubscribed {
-                zenoh_endpoints, ..
-            } => assert_eq!(zenoh_endpoints, None),
+            ControlRequestReply::TopicSubscribed { zenoh_sources, .. } => {
+                assert_eq!(zenoh_sources, None)
+            }
             other => panic!("expected TopicSubscribed, got {other:?}"),
         }
 
-        let endpoints = vec!["tcp/10.0.0.2:5456".to_string()];
+        let sources = vec![ZenohTopicSource::new(
+            "tcp/10.0.0.2:5456".to_string(),
+            vec![("camera".to_string().into(), "image".to_string().into())],
+        )];
         let json = serde_json::to_string(&ControlRequestReply::topic_subscribed_direct(
-            endpoints.clone(),
+            sources.clone(),
         ))
         .unwrap();
         match serde_json::from_str(&json).unwrap() {
             ControlRequestReply::TopicSubscribed {
                 subscription_id,
-                zenoh_endpoints,
+                zenoh_sources,
                 ..
             } => {
                 assert_eq!(subscription_id, Uuid::nil());
-                assert_eq!(zenoh_endpoints, Some(endpoints));
+                assert_eq!(zenoh_sources, Some(sources));
             }
             other => panic!("expected TopicSubscribed, got {other:?}"),
         }
