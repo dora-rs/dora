@@ -116,16 +116,17 @@ fn read_file(path: &str) -> eyre::Result<Outputs> {
 /// having read them.
 fn read_outputs<R: Read>(reader: &mut RecordingReader<R>) -> eyre::Result<Outputs> {
     let mut outputs = Outputs::new();
-    while let Some(entry) = reader.next_entry()? {
-        let event = Timestamped::deserialize_inter_daemon_event(&entry.event_bytes).wrap_err_with(
-            || {
+    // Borrowed, not `next_entry`: the payload is only decoded and hashed, so
+    // copying it out of the reader first would be one copy too many.
+    while let Some(entry) = reader.next_record()? {
+        let event =
+            Timestamped::deserialize_inter_daemon_event(entry.event_bytes).wrap_err_with(|| {
                 eyre!(
                     "failed to decode a message of `{}/{}`",
                     entry.node_id,
                     entry.output_id
                 )
-            },
-        )?;
+            })?;
         // Only `Output` events are messages; the recorder writes nothing else.
         let InterDaemonEvent::Output { data, .. } = event.inner else {
             continue;
@@ -138,7 +139,7 @@ fn read_outputs<R: Read>(reader: &mut RecordingReader<R>) -> eyre::Result<Output
             digest.update(data.as_slice());
         }
         outputs
-            .entry((entry.node_id, entry.output_id))
+            .entry((entry.node_id.to_owned(), entry.output_id.to_owned()))
             .or_default()
             .push(digest.finalize().into());
     }
