@@ -173,11 +173,10 @@ impl Context {
         sec_dir: &Path,
     ) -> Result<rustdds::DomainParticipantBuilder, TransportError> {
         Self::validate_security_dir(sec_dir)?;
-        let configs =
-            rustdds::security::DomainParticipantSecurityConfigFiles::with_ros_default_names(
-                sec_dir,
-                String::new(),
-            );
+        let configs = rustdds::DomainParticipantSecurityConfigFiles::with_ros_default_names(
+            sec_dir,
+            String::new(),
+        );
         Ok(builder.builtin_security(configs))
     }
 
@@ -517,7 +516,9 @@ mod tests {
 
         #[cfg(not(feature = "security"))]
         {
-            let err = Context::new_with_security(DOMAIN_ID, Some(&temp)).unwrap_err();
+            let Err(err) = Context::new_with_security(DOMAIN_ID, Some(&temp)) else {
+                panic!("expected new_with_security to fail without the 'security' feature");
+            };
             let TransportError::DdsContext { message } = err else {
                 panic!("expected DdsContext error, got {err:?}");
             };

@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["rmw-zenoh", "ros2-humble"]
 rmw-zenoh = ["dora-ros2-bridge/rmw-zenoh"]
+security = ["dora-ros2-bridge/security"]
 # ROS distro, forwarded to the crates that link `ros2-client`. See
 # `dora-ros2-bridge`'s manifest for the chain semantics.
 ros2-humble = ["dora-ros2-bridge/ros2-humble", "dora-ros2-bridge-arrow/ros2-humble"]

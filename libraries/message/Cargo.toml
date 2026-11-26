@@ -24,9 +24,6 @@ repository.workspace = true
 [lints]
 workspace = true
 
-[package.metadata.cargo-semver-checks.lints]
-constructible_struct_adds_field = "allow"
-
 [dependencies]
 zenoh-protocol = { workspace = true }
 arrow-data = { workspace = true }
