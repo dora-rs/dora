@@ -170,8 +170,9 @@ elif a.case == "parameter-client":
     atomic = arm.set_atomically({"speed": 3.0, "gains": [3.0]})
     check(atomic[0] is True, f"set_atomically {atomic!r}")
     wait_for_speed(3.0)
-    # The node answers 3.0 by setting 4.0 itself.
-    wait_for_speed(4.0)
+    # The node answers 3.0 by setting 4.0 itself; wait for it with next_event.
+    change = arm.next_event(timeout_s=20)
+    check(change is not None and change["changed"].get("speed") == 4.0, f"next_event {change!r}")
     check(arm.get(["speed"]) == {"speed": 4.0}, "speed after the node's own set")
     check(arm.set({"speed": 5.0}) == [(True, "")], "done")
 elif a.case == "rosout":

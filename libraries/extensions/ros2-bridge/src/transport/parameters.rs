@@ -352,50 +352,34 @@ impl ParameterClient {
         }
     }
 
-    /// `event` as a change to the target's parameters; `None` for another
-    /// node's event, or one that changes nothing (rclcpp and rclpy publish
-    /// one for an empty `set_parameters_atomically`).
-    fn accept(&self, event: raw::ParameterEvent) -> Option<ParameterChange> {
-        if event.node != self.target() {
-            return None;
+    fn events(&self) -> &ParameterEvents {
+        match self {
+            Self::Dds(client) => client.events(),
+            #[cfg(feature = "rmw-zenoh")]
+            Self::Zenoh(client) => client.events(),
         }
-        Some(ParameterChange::from_event(event)).filter(|change| !change.is_empty())
     }
 
     /// The next change to the target's parameters that has arrived, if any.
     ///
-    /// The `/parameter_events` subscription starts with the client, and a
-    /// change published before the target has matched it can be missed: read
-    /// the values with [`Self::get`] for a consistent start.
+    /// A thread keeps the target's changes from `/parameter_events` as they
+    /// arrive, so other nodes' events cannot crowd them out; up to 1024 are
+    /// held, then the oldest are dropped. The subscription starts with the
+    /// client, and a change published before the target has matched it can be
+    /// missed: read the values with [`Self::get`] for a consistent start.
     pub fn try_next_change(&self) -> Result<Option<ParameterChange>, ParameterClientError> {
-        loop {
-            let event = match self {
-                Self::Dds(client) => client.try_recv_event().map_err(|e| self.events_error(e)),
-                #[cfg(feature = "rmw-zenoh")]
-                Self::Zenoh(client) => client.try_recv_event().map_err(|e| self.events_error(e)),
-            }?;
-            let Some(event) = event else {
-                return Ok(None);
-            };
-            if let Some(change) = self.accept(event) {
-                return Ok(Some(change));
-            }
-        }
+        self.events()
+            .try_next()
+            .map_err(|error| self.events_error(error))
     }
 
     /// Waits for the next change to the target's parameters, as
     /// [`Self::try_next_change`] reports them.
     pub async fn next_change(&self) -> Result<ParameterChange, ParameterClientError> {
-        loop {
-            let event = match self {
-                Self::Dds(client) => client.recv_event().await.map_err(|e| self.events_error(e)),
-                #[cfg(feature = "rmw-zenoh")]
-                Self::Zenoh(client) => client.recv_event().await.map_err(|e| self.events_error(e)),
-            }?;
-            if let Some(change) = self.accept(event) {
-                return Ok(change);
-            }
-        }
+        self.events()
+            .next()
+            .await
+            .map_err(|error| self.events_error(error))
     }
 }
 
@@ -512,6 +496,207 @@ mod check_target_tests {
         ] {
             assert!(check_target(target).is_err(), "{target}");
         }
+    }
+}
+
+/// The target's parameter changes, filtered from `/parameter_events` as
+/// they arrive by a thread that runs until this is dropped.
+pub struct ParameterEvents {
+    changes: flume::Receiver<Result<ParameterChange, String>>,
+    _stop: flume::Sender<()>,
+}
+
+impl ParameterEvents {
+    /// The next change that has arrived, if any.
+    pub fn try_next(&self) -> Result<Option<ParameterChange>, String> {
+        match self.changes.try_recv() {
+            Ok(change) => change.map(Some),
+            Err(flume::TryRecvError::Empty) => Ok(None),
+            Err(flume::TryRecvError::Disconnected) => Err(PUMP_STOPPED.to_owned()),
+        }
+    }
+
+    /// Waits for the next change.
+    pub async fn next(&self) -> Result<ParameterChange, String> {
+        self.changes
+            .recv_async()
+            .await
+            .map_err(|_| PUMP_STOPPED.to_owned())?
+    }
+}
+
+/// Changes held for the caller before the oldest are dropped.
+const CHANGE_CAPACITY: usize = 1024;
+
+/// Starts the thread that keeps `target`'s changes from `events`.
+pub(crate) fn spawn_event_pump(
+    target: String,
+    events: impl futures::Stream<Item = Result<raw::ParameterEvent, String>> + Send + 'static,
+) -> Result<ParameterEvents, String> {
+    spawn_event_pump_with_capacity(target, events, CHANGE_CAPACITY)
+}
+
+const PUMP_STOPPED: &str = "the parameter events subscription ended";
+
+fn spawn_event_pump_with_capacity(
+    target: String,
+    events: impl futures::Stream<Item = Result<raw::ParameterEvent, String>> + Send + 'static,
+    capacity: usize,
+) -> Result<ParameterEvents, String> {
+    use futures::{FutureExt, StreamExt};
+    let (tx, changes) = flume::bounded(capacity);
+    let (stop, stopped) = flume::bounded::<()>(1);
+    // Pops the oldest change when the queue is full.
+    let oldest = changes.clone();
+    let name = format!("ros2-parameter-events {target}");
+    std::thread::Builder::new()
+        .name(name)
+        .spawn(move || {
+            futures::executor::block_on(async move {
+                let mut stopped = stopped.recv_async().fuse();
+                let events = events.fuse();
+                futures::pin_mut!(events);
+                loop {
+                    let change = futures::select_biased! {
+                        _ = stopped => return,
+                        event = events.next() => match event {
+                            None => return,
+                            Some(Ok(event)) => match accept(&target, event) {
+                                Some(change) => Ok(change),
+                                None => continue,
+                            },
+                            Some(Err(error)) => Err(error),
+                        },
+                    };
+                    let mut change = change;
+                    loop {
+                        match tx.try_send(change) {
+                            Ok(()) => break,
+                            Err(flume::TrySendError::Full(unsent)) => {
+                                let _ = oldest.try_recv();
+                                change = unsent;
+                            }
+                            Err(flume::TrySendError::Disconnected(_)) => return,
+                        }
+                    }
+                }
+            })
+        })
+        .map_err(|error| format!("failed to start the parameter events thread: {error}"))?;
+    Ok(ParameterEvents {
+        changes,
+        _stop: stop,
+    })
+}
+
+/// `event` as a change to `target`'s parameters; `None` for another node's
+/// event, or one that changes nothing (rclcpp and rclpy publish one for an
+/// empty `set_parameters_atomically`).
+fn accept(target: &str, event: raw::ParameterEvent) -> Option<ParameterChange> {
+    if event.node != target {
+        return None;
+    }
+    Some(ParameterChange::from_event(event)).filter(|change| !change.is_empty())
+}
+
+#[cfg(test)]
+mod event_pump_tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+
+    use futures::{StreamExt, executor::block_on, stream};
+    use ros2_client::{ParameterValue, builtin_interfaces::Time, parameters::raw};
+
+    use super::{ParameterChange, spawn_event_pump, spawn_event_pump_with_capacity};
+
+    const TARGET: &str = "/robot/arm";
+
+    fn event(node: &str, speed: Option<f64>) -> Result<raw::ParameterEvent, String> {
+        Ok(raw::ParameterEvent {
+            stamp: Time::ZERO,
+            node: node.into(),
+            new_parameters: vec![],
+            changed_parameters: speed
+                .map(|speed| raw::Parameter {
+                    name: "speed".into(),
+                    value: ParameterValue::Double(speed).into(),
+                })
+                .into_iter()
+                .collect(),
+            deleted_parameters: vec![],
+        })
+    }
+
+    fn speed(change: &ParameterChange) -> f64 {
+        match change.changed.as_slice() {
+            [(name, ParameterValue::Double(speed))] if name == "speed" => *speed,
+            other => panic!("unexpected change {other:?}"),
+        }
+    }
+
+    /// Waits until `ready` holds, for at most 2 s.
+    fn eventually(ready: impl Fn() -> bool) {
+        let end = Instant::now() + Duration::from_secs(2);
+        while !ready() {
+            assert!(Instant::now() < end, "timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn only_the_targets_changes_are_kept() {
+        let events = stream::iter([
+            event("/robot/other", Some(9.0)),
+            event(TARGET, None),
+            event(TARGET, Some(2.0)),
+        ])
+        .chain(stream::pending());
+        let changes = spawn_event_pump(TARGET.into(), events).unwrap();
+        assert_eq!(speed(&block_on(changes.next()).unwrap()), 2.0);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(changes.try_next().unwrap(), None);
+    }
+
+    #[test]
+    fn a_full_queue_drops_its_oldest_change() {
+        let events = stream::iter([
+            event(TARGET, Some(1.0)),
+            event(TARGET, Some(2.0)),
+            event(TARGET, Some(3.0)),
+        ])
+        .chain(stream::pending());
+        let changes = spawn_event_pump_with_capacity(TARGET.into(), events, 2).unwrap();
+        eventually(|| changes.changes.len() == 2 && changes.changes.is_full());
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(speed(&changes.try_next().unwrap().unwrap()), 2.0);
+        assert_eq!(speed(&changes.try_next().unwrap().unwrap()), 3.0);
+    }
+
+    #[test]
+    fn dropping_the_changes_stops_the_pump() {
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = Dropped(dropped.clone());
+        // A stream that never yields, and notes when the pump drops it.
+        let events = stream::pending().map(move |event: Result<raw::ParameterEvent, String>| {
+            let _ = &guard;
+            event
+        });
+        let changes = spawn_event_pump(TARGET.into(), events).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(!dropped.load(Ordering::SeqCst));
+        drop(changes);
+        eventually(|| dropped.load(Ordering::SeqCst));
     }
 }
 

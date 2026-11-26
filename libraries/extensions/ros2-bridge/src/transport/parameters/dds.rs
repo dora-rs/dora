@@ -11,7 +11,7 @@ use ros2_client::{
     parameters::raw, rcl_interfaces as rcl,
 };
 
-use super::{ParameterService, check_target, parameters_qos};
+use super::{ParameterEvents, ParameterService, check_target, parameters_qos, spawn_event_pump};
 use crate::transport::dds::{detect_service_mapping, to_qos_profile};
 
 /// One call at a time: `Client::async_receive_response(id)` drops the
@@ -29,7 +29,7 @@ pub struct DdsParameterClient {
     set_atomically: OneAtATime<rcl::SetParametersRequest, rcl::SetParametersAtomicallyResponse>,
     list: OneAtATime<rcl::ListParametersRequest, rcl::ListParametersResponse>,
     describe: OneAtATime<rcl::DescribeParametersRequest, rcl::DescribeParametersResponse>,
-    events: Subscription<raw::ParameterEvent>,
+    events: ParameterEvents,
 }
 
 impl DdsParameterClient {
@@ -73,9 +73,20 @@ impl DdsParameterClient {
                 &qos,
             )
             .map_err(|error| format!("failed to create /parameter_events: {error:?}"))?;
-        let events = node
+        let subscription: Subscription<raw::ParameterEvent> = node
             .create_subscription(&topic, Some(qos.clone()))
             .map_err(|error| format!("failed to subscribe to /parameter_events: {error:?}"))?;
+        let events = spawn_event_pump(
+            target.to_owned(),
+            futures::stream::unfold(subscription, |subscription| async move {
+                let event = subscription
+                    .async_take()
+                    .await
+                    .map(|(event, _)| event)
+                    .map_err(|error| error.to_string());
+                Some((event, subscription))
+            }),
+        )?;
         Ok(Self {
             target: target.to_owned(),
             get: client!(ParameterService::Get),
@@ -224,19 +235,8 @@ impl DdsParameterClient {
         call(&self.describe, request, timeout).await
     }
 
-    pub(super) fn try_recv_event(&self) -> Result<Option<raw::ParameterEvent>, String> {
-        self.events
-            .take()
-            .map(|event| event.map(|(event, _)| event))
-            .map_err(|error| error.to_string())
-    }
-
-    pub(super) async fn recv_event(&self) -> Result<raw::ParameterEvent, String> {
-        self.events
-            .async_take()
-            .await
-            .map(|(event, _)| event)
-            .map_err(|error| error.to_string())
+    pub(super) fn events(&self) -> &ParameterEvents {
+        &self.events
     }
 }
 
@@ -273,8 +273,9 @@ async fn call<Q: Message + 'static, R: Message + 'static>(
     request: Q,
     timeout: Duration,
 ) -> Result<R, String> {
-    let client = client.lock().await;
+    // The timeout covers waiting for an earlier call on the same service.
     let call = async {
+        let client = client.lock().await;
         let id = client
             .async_send_request(request)
             .await
@@ -288,5 +289,65 @@ async fn call<Q: Message + 'static, R: Message + 'static>(
     match select(call, futures_timer::Delay::new(timeout)).await {
         Either::Left((result, _)) => result,
         Either::Right(_) => Err(format!("no response within {timeout:?}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use futures::{
+        executor::block_on,
+        future::{Either, select},
+        lock::Mutex,
+    };
+    use ros2_client::{
+        Context, ContextOptions, Name, NodeName, NodeOptions, ServiceMapping, ServiceTypeName,
+        rcl_interfaces as rcl,
+    };
+
+    use super::{OneAtATime, call};
+    use crate::transport::{dds::to_qos_profile, parameters::parameters_qos};
+
+    /// A call queued behind another on the same service still ends at its
+    /// own timeout, instead of waiting for the other call first.
+    #[test]
+    fn a_call_waiting_for_the_service_still_times_out() {
+        let context = Context::with_options(ContextOptions::new().domain_id(91)).unwrap();
+        let mut node = context
+            .new_node(NodeName::new("/", "lock_test").unwrap(), NodeOptions::new())
+            .unwrap();
+        let qos = to_qos_profile(&parameters_qos());
+        let client: OneAtATime<rcl::GetParametersRequest, rcl::GetParametersResponse> = Mutex::new(
+            node.create_client(
+                ServiceMapping::Enhanced,
+                &Name::new("/nobody", "get_parameters").unwrap(),
+                &ServiceTypeName::new("rcl_interfaces", "GetParameters"),
+                qos.clone(),
+                qos,
+            )
+            .unwrap(),
+        );
+        // Another call holds the service.
+        let _held = block_on(client.lock());
+        let started = Instant::now();
+        let call = call(
+            &client,
+            rcl::GetParametersRequest { names: vec![] },
+            Duration::from_millis(200),
+        );
+        let outcome = block_on(select(
+            Box::pin(call),
+            futures_timer::Delay::new(Duration::from_secs(2)),
+        ));
+        let Either::Left((result, _)) = outcome else {
+            panic!("the call waited for the other one instead of timing out");
+        };
+        assert!(result.is_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }

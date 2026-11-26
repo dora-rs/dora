@@ -800,8 +800,14 @@ class Ros2ParameterClient:
     def take_event(self) -> typing.Optional[dict]:
         """The next change to the target's parameters, or `None` if none has
         arrived: a dict with `new` and `changed` (dicts of values) and
-        `deleted` (a list of names). A change made right after the client was
-        created can be missed; read current values with `get`."""
+        `deleted` (a list of names). Changes are kept as they arrive, up to
+        1024. A change made right after the client was created can be missed;
+        read current values with `get`."""
+
+    def next_event(self, timeout_s: float = None) -> typing.Optional[dict]:
+        """Wait for the next change to the target's parameters, like
+        `take_event`, for up to `timeout_s` (no limit if `None`). Returns
+        `None` if none came in time. Releases the GIL while it waits."""
 
     def __repr__(self) -> str:
         """Return repr(self)."""

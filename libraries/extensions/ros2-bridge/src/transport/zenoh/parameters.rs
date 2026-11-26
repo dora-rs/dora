@@ -34,7 +34,8 @@ use super::{
     },
 };
 use crate::transport::parameters::{
-    PARAMETER_QOS_DEPTH, ParameterService as Service, check_target, parameters_qos,
+    PARAMETER_QOS_DEPTH, ParameterEvents, ParameterService as Service, check_target,
+    parameters_qos, spawn_event_pump,
 };
 
 /// The built-in parameter every node has, as ros2-client declares it.
@@ -481,7 +482,7 @@ async fn serve(
 pub struct ParameterClient {
     target: String,
     services: Vec<(Service, NodeServiceClient, TopicToken)>,
-    events: NodeSubscription<raw::ParameterEvent>,
+    events: ParameterEvents,
 }
 
 /// Requests one parameter client may have waiting at once.
@@ -511,7 +512,7 @@ impl ParameterClient {
             .await?;
             services.push((*service, client, token));
         }
-        let events = NodeSubscription::declare(
+        let subscription = NodeSubscription::declare(
             node,
             key(node, PARAMETER_EVENTS, &types.event)?.as_str(),
             token(PARAMETER_EVENTS, &types.event),
@@ -524,6 +525,18 @@ impl ParameterClient {
             }),
         )
         .await?;
+        let events = spawn_event_pump(
+            target.to_owned(),
+            futures::stream::unfold(subscription, |subscription| async move {
+                let event = subscription
+                    .recv_async()
+                    .await
+                    .map(|(event, _)| event)
+                    .map_err(|error| error.to_string());
+                Some((event, subscription))
+            }),
+        )
+        .map_err(ParameterError::Target)?;
         Ok(Self {
             target: target.to_owned(),
             services,
@@ -572,13 +585,8 @@ impl ParameterClient {
         Ok(deserialize_cdr(&response)?)
     }
 
-    /// The next `/parameter_events` message that has arrived, of any node.
-    pub fn try_recv_event(&self) -> Result<Option<raw::ParameterEvent>, ParameterError> {
-        Ok(self.events.try_recv()?.map(|(event, _)| event))
-    }
-
-    /// Waits for the next `/parameter_events` message, of any node.
-    pub async fn recv_event(&self) -> Result<raw::ParameterEvent, ParameterError> {
-        Ok(self.events.recv_async().await?.0)
+    /// The target's changes from `/parameter_events`.
+    pub fn events(&self) -> &ParameterEvents {
+        &self.events
     }
 }

@@ -1142,7 +1142,7 @@ qos = Ros2QosPolicies(reliable=True, keep_last=1)
 | `node.create_action_client(name, type, qos)` → `Ros2ActionClient` | `.send_goal(goal)` → `goal_id`, `.take_feedback(goal_id)`, `.take_result(goal_id)`, `.cancel(goal_id=None)` |
 | `node.create_action_server(name, type, qos)` → `Ros2ActionServer` | `.take_goal()` → `(goal_id, goal)`, `.send_feedback(goal_id, fb)`, `.send_result(goal_id, result, status=None)`, `.take_cancel()` |
 | `node.set_parameter` / `get_parameter` / `list_parameters` / `has_parameter` | Runtime parameters (also served to `ros2 param`) |
-| `node.create_parameter_client(node, timeout_s=None)` → `Ros2ParameterClient` | Another node's parameters: `.get(names)`, `.get_types(names)`, `.set(values)`, `.set_atomically(values)`, `.list(prefixes=None, depth=0)`, `.describe(names)`, `.take_event()` |
+| `node.create_parameter_client(node, timeout_s=None)` → `Ros2ParameterClient` | Another node's parameters: `.get(names)`, `.get_types(names)`, `.set(values)`, `.set_atomically(values)`, `.list(prefixes=None, depth=0)`, `.describe(names)`, `.take_event()`, `.next_event(timeout_s=None)` |
 
 Service client example (call an external ROS2 `AddTwoInts`):
 
@@ -1174,10 +1174,13 @@ arm.set_atomically({"speed": 3.0, "gains": [3.0]})  # (True, "")
 arm.list()                           # ["gains", "speed", "use_sim_time"]
 arm.describe(["speed"])["speed"]     # {"type": "double", "description": ..., "read_only": False, ...}
 arm.take_event()                     # {"new": {}, "changed": {"speed": 3.0}, "deleted": []} or None
+arm.next_event(timeout_s=5)          # the same, waiting up to 5s for it
 ```
 
 Each call blocks, with the GIL released, for up to `timeout_s` (default
-30s). `take_event` returns only the target's changes, oldest first; a change
+30s). `take_event` and `next_event` return only the target's changes, oldest
+first: they are kept as they arrive (up to 1024, then the oldest are dropped),
+so other nodes' events on `/parameter_events` cannot crowd them out. A change
 made right after the client is created can arrive before the target has
 matched its `/parameter_events` subscription and be missed, so read the
 current values with `get` rather than waiting for an event. On

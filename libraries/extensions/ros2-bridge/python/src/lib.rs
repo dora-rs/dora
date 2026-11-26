@@ -3357,27 +3357,71 @@ impl Ros2ParameterClient {
 
     /// The next change to the target's parameters, or `None` if none has
     /// arrived: a dict with `new` and `changed` (dicts of values) and
-    /// `deleted` (a list of names). A change made right after the client was
-    /// created can be missed; read current values with `get`.
+    /// `deleted` (a list of names). Changes are kept as they arrive, up to
+    /// 1024. A change made right after the client was created can be missed;
+    /// read current values with `get`.
     ///
     /// :rtype: dict | None
     pub fn take_event(&self, py: Python<'_>) -> eyre::Result<Option<Py<PyDict>>> {
-        let Some(change) = self.client.try_next_change()? else {
-            return Ok(None);
-        };
-        let values = |values: Vec<(String, ros2_client::ParameterValue)>| -> eyre::Result<_> {
-            let dict = PyDict::new(py);
-            for (name, value) in values {
-                dict.set_item(name, parameter_value_to_py(py, &value)?)?;
-            }
-            Ok(dict)
-        };
-        let event = PyDict::new(py);
-        event.set_item("new", values(change.new)?)?;
-        event.set_item("changed", values(change.changed)?)?;
-        event.set_item("deleted", change.deleted)?;
-        Ok(Some(event.unbind()))
+        match self.client.try_next_change()? {
+            Some(change) => Ok(Some(parameter_change_to_py(py, change)?)),
+            None => Ok(None),
+        }
     }
+
+    /// Wait for the next change to the target's parameters, like
+    /// `take_event`, for up to `timeout_s` (no limit if `None`). Returns
+    /// `None` if none came in time. Releases the GIL while it waits.
+    ///
+    /// :type timeout_s: float, optional
+    /// :rtype: dict | None
+    #[pyo3(signature = (timeout_s=None))]
+    pub fn next_event(
+        &self,
+        py: Python<'_>,
+        timeout_s: Option<f64>,
+    ) -> eyre::Result<Option<Py<PyDict>>> {
+        let timeout = timeout_s.map(|secs| timeout_or(Some(secs), 0.0));
+        let change = py.detach(|| {
+            futures::executor::block_on(async {
+                let next = self.client.next_change();
+                futures::pin_mut!(next);
+                match timeout {
+                    None => next.await.map(Some),
+                    Some(timeout) => {
+                        match futures::future::select(next, futures_timer::Delay::new(timeout))
+                            .await
+                        {
+                            futures::future::Either::Left((change, _)) => change.map(Some),
+                            futures::future::Either::Right(_) => Ok(None),
+                        }
+                    }
+                }
+            })
+        })?;
+        change
+            .map(|change| parameter_change_to_py(py, change))
+            .transpose()
+    }
+}
+
+/// A parameter change as the dict `take_event` and `next_event` return.
+fn parameter_change_to_py(
+    py: Python<'_>,
+    change: dora_ros2_bridge::transport::parameters::ParameterChange,
+) -> eyre::Result<Py<PyDict>> {
+    let values = |values: Vec<(String, ros2_client::ParameterValue)>| -> eyre::Result<_> {
+        let dict = PyDict::new(py);
+        for (name, value) in values {
+            dict.set_item(name, parameter_value_to_py(py, &value)?)?;
+        }
+        Ok(dict)
+    };
+    let event = PyDict::new(py);
+    event.set_item("new", values(change.new)?)?;
+    event.set_item("changed", values(change.changed)?)?;
+    event.set_item("deleted", change.deleted)?;
+    Ok(event.unbind())
 }
 
 /// The `rcl_interfaces/msg/ParameterType` constant as a Python-side name.
@@ -4297,14 +4341,10 @@ mod parameter_client_tests {
             assert_eq!(results[0], (true, String::new()));
             assert!(!results[1].0, "{results:?}");
 
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            let change = loop {
-                if let Some(change) = client.take_event(py).unwrap() {
-                    break change;
-                }
-                assert!(std::time::Instant::now() < deadline, "no parameter event");
-                py.detach(|| std::thread::sleep(Duration::from_millis(20)));
-            };
+            let change = client
+                .next_event(py, Some(10.0))
+                .unwrap()
+                .expect("a parameter event within 10 s");
             let changed = change.bind(py).get_item("changed").unwrap().unwrap();
             assert_eq!(
                 changed.get_item("speed").unwrap().extract::<f64>().unwrap(),
@@ -4317,6 +4357,11 @@ mod parameter_client_tests {
                 client.set_atomically(atomic, None).unwrap(),
                 (true, String::new())
             );
+            // Nothing else changes: the wait ends empty-handed at its timeout.
+            assert!(client.next_event(py, Some(10.0)).unwrap().is_some());
+            let started = std::time::Instant::now();
+            assert!(client.next_event(py, Some(0.2)).unwrap().is_none());
+            assert!(started.elapsed() < Duration::from_secs(2));
         });
     }
 }
