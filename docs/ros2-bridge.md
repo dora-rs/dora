@@ -1324,6 +1324,15 @@ DDS only the status stream shows `Aborted`.
   `RMW_IMPLEMENTATION` (at codegen time for native, runtime for the YAML bridge).
   A mismatch makes calls hang. Set `RMW_IMPLEMENTATION` consistently on both sides;
   on DDS the bridge warns when it sees a peer whose RMW does not fit (see below).
+- **A Dora node's own parameters are out of reach of CycloneDDS peers.** On
+  DDS, `ros2-client` serves a node's six parameter services with the Fast-DDS
+  (`Enhanced`) mapping whatever `RMW_IMPLEMENTATION` says, so
+  `ros2 param list/get/set` and other clients on `rmw_cyclonedds_cpp` time out
+  on a Dora node's parameters, and so does a Dora parameter client under
+  CycloneDDS ([#4215](https://github.com/dora-rs/dora/issues/4215)). Peers on
+  Fast-DDS, Dora's native Zenoh transport, and Dora parameter clients of
+  `rclcpp`/`rclpy` nodes are not affected. The fix waits on a `ros2-client`
+  release with [Atostek/ros2-client#86](https://github.com/Atostek/ros2-client/pull/86).
 - There is **no `wait_for_action_server`** in `ros2-client`; a client's first
   `send_goal` simply times out if no server is present.
 - **Hosts with several network interfaces.** dora advertises an address for every
