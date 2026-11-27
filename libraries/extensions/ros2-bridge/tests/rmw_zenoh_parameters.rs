@@ -713,10 +713,19 @@ async fn a_set_is_answered_during_a_get_burst() {
         get.await.unwrap();
     }
     // Gets still waiting when the set was sent. A service that takes turns
-    // answers the set right after the get in progress, so only a few of them
-    // are answered first; one that served the burst before the set answers
-    // nearly all of them. Only the gets answered between sending the set and
-    // its reply count, and the bound is relative to those still waiting.
+    // answers the set right after the get in progress, so the gets queued at
+    // the server when the set arrived are still unanswered when its reply
+    // comes back. One that served the burst before the set answers all of
+    // them first, because the set reaches the server behind every get. Only
+    // the gets answered between sending the set and its reply count, and the
+    // bound is relative to those still waiting.
+    //
+    // The bound can't be tighter than "a clear share stayed unanswered": gets
+    // still in transit when the set was sent arrive ahead of it, and the
+    // server must answer them first however fairly it takes turns. On a slow
+    // runner that is most of the burst (a Windows nightly answered 531 of 899
+    // with a fair server, #4284), whereas a server patched to always serve
+    // `get_parameters` first left at most ~5% unanswered in local runs.
     let waiting = 900 - answered_at_send;
     if waiting < 450 {
         // Most of the burst was gone before the set could be sent (a slow
@@ -729,9 +738,9 @@ async fn a_set_is_answered_during_a_get_burst() {
         );
     } else {
         assert!(
-            answered_meanwhile < waiting / 2,
+            answered_meanwhile <= waiting - waiting / 10,
             "{answered_meanwhile} of the {waiting} gets still waiting were answered while the \
-             set waited"
+             set waited: the set was answered only after nearly the whole burst"
         );
     }
 }
