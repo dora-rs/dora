@@ -1,0 +1,11 @@
+nodes:
+  - id: cxx-param-host
+    path: build/param_host
+    inputs:
+      tick: dora/timer/millis/200
+    outputs: []
+  - id: cxx-param-client
+    path: build/param_client
+    inputs:
+      tick: dora/timer/millis/500
+    outputs: []

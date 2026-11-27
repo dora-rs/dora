@@ -141,6 +141,16 @@ name = "cxx-ros2-dataflow-action-server"
 path = "../../../examples/ros2-bridge/c++/action-server/run.rs"
 required-features = ["ros2-examples"]
 
+[[example]]
+name = "cxx-ros2-dataflow-parameter"
+path = "../../../examples/ros2-bridge/c++/parameter/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
+name = "cxx-ros2-dataflow-parameter-client"
+path = "../../../examples/ros2-bridge/c++/parameter/run.rs"
+required-features = ["ros2-examples"]
+
 # Outside the 1.x guarantee (docs/api-rust.md, "Stability scope at 1.0"):
 # the Rust Semantic Review page shows its breaking changes as allowed.
 [package.metadata.rust-semantic-review]

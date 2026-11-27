@@ -186,6 +186,8 @@ pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macr
 
                     type Ros2Context = crate::ros2::default_impl::Ros2Context;
                     type Ros2Node = crate::ros2::default_impl::Ros2Node;
+                    type Ros2ParameterClient = crate::ros2::default_impl::Ros2ParameterClient;
+                    type Ros2ParameterEvent = crate::ros2::default_impl::ffi::Ros2ParameterEvent;
 
                     type Ros2Durability = crate::ros2::default_impl::ffi::Ros2Durability;
                     type Ros2Liveliness = crate::ros2::default_impl::ffi::Ros2Liveliness;
@@ -204,6 +206,8 @@ pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macr
                 #rust_imports
 
                 use crate::ros2::default_impl::Ros2Node;
+                #[allow(unused_imports)]
+                use crate::ros2::default_impl::Ros2ParameterClient;
                 #[allow(unused_imports)]
                 use crate::ros2::default_impl::ActionGoalId;
             },
@@ -301,11 +305,54 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             type Ros2Context;
             type Ros2Node;
             type ActionGoalId;
+            type Ros2ParameterClient;
             fn init_ros2_context() -> Result<Box<Ros2Context>>;
             fn init_ros2_context_with_transport(transport: Ros2TransportConfig) -> Result<Box<Ros2Context>>;
             fn new_node(self: &Ros2Context, name_space: &str, base_name: &str) -> Result<Box<Ros2Node>>;
             fn qos_default() -> Ros2QosPolicies;
             fn actionqos_default() -> Ros2ActionClientQosPolicies;
+
+            fn set_parameter(self: &Ros2Node, name: &str, value: &str) -> Result<()>;
+            fn set_parameter_string(self: &Ros2Node, name: &str, value: &str) -> Result<()>;
+            fn set_parameter_double(self: &Ros2Node, name: &str, value: f64) -> Result<()>;
+            fn set_parameter_int(self: &Ros2Node, name: &str, value: i64) -> Result<()>;
+            fn set_parameter_bool(self: &Ros2Node, name: &str, value: bool) -> Result<()>;
+            fn get_parameter(self: &Ros2Node, name: &str) -> Result<String>;
+            fn get_parameter_string(self: &Ros2Node, name: &str) -> Result<String>;
+            fn get_parameter_double(self: &Ros2Node, name: &str) -> Result<f64>;
+            fn get_parameter_int(self: &Ros2Node, name: &str) -> Result<i64>;
+            fn get_parameter_bool(self: &Ros2Node, name: &str) -> Result<bool>;
+            fn list_parameters(self: &Ros2Node) -> Result<Vec<String>>;
+            fn has_parameter(self: &Ros2Node, name: &str) -> bool;
+
+            fn create_parameter_client(self: &mut Ros2Node, target: &str, timeout_s: f64) -> Result<Box<Ros2ParameterClient>>;
+
+            fn target(self: &Ros2ParameterClient) -> String;
+            fn get(self: &Ros2ParameterClient, name: &str, timeout_s: f64) -> Result<String>;
+            fn get_string(self: &Ros2ParameterClient, name: &str, timeout_s: f64) -> Result<String>;
+            fn get_double(self: &Ros2ParameterClient, name: &str, timeout_s: f64) -> Result<f64>;
+            fn get_int(self: &Ros2ParameterClient, name: &str, timeout_s: f64) -> Result<i64>;
+            fn get_bool(self: &Ros2ParameterClient, name: &str, timeout_s: f64) -> Result<bool>;
+            fn set(self: &Ros2ParameterClient, name: &str, value: &str, timeout_s: f64) -> Result<bool>;
+            fn set_string(self: &Ros2ParameterClient, name: &str, value: &str, timeout_s: f64) -> Result<bool>;
+            fn set_double(self: &Ros2ParameterClient, name: &str, value: f64, timeout_s: f64) -> Result<bool>;
+            fn set_int(self: &Ros2ParameterClient, name: &str, value: i64, timeout_s: f64) -> Result<bool>;
+            fn set_bool(self: &Ros2ParameterClient, name: &str, value: bool, timeout_s: f64) -> Result<bool>;
+            fn list(self: &Ros2ParameterClient, prefix: &str, depth: u64, timeout_s: f64) -> Result<Vec<String>>;
+            fn get_type(self: &Ros2ParameterClient, name: &str, timeout_s: f64) -> Result<String>;
+            fn get_types(self: &Ros2ParameterClient, names: &Vec<String>, timeout_s: f64) -> Result<Vec<String>>;
+            fn describe(self: &Ros2ParameterClient, name: &str, timeout_s: f64) -> Result<String>;
+            fn take_event(self: &Ros2ParameterClient) -> Result<Ros2ParameterEvent>;
+        }
+
+        #[derive(Debug, Clone)]
+        pub struct Ros2ParameterEvent {
+            pub has_event: bool,
+            pub new_names: Vec<String>,
+            pub new_values: Vec<String>,
+            pub changed_names: Vec<String>,
+            pub changed_values: Vec<String>,
+            pub deleted_names: Vec<String>,
         }
 
         #[derive(Debug, Clone, Copy)]
@@ -444,6 +491,7 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
                     dora_ros2_bridge::transport::Node::Zenoh(node) => GeneratedNode::Zenoh {
                         node,
                         compatibility: self.compatibility.context("Zenoh compatibility profile missing")?,
+                        parameters: std::sync::Arc::new(std::sync::Mutex::new(None)),
                     }
                 };
 
@@ -457,6 +505,7 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             Zenoh {
                 node: dora_ros2_bridge::transport::zenoh::Node,
                 compatibility: dora_ros2_bridge::dora_message::descriptor::RmwZenohCompatibility,
+                parameters: std::sync::Arc<std::sync::Mutex<Option<dora_ros2_bridge::transport::zenoh::parameters::ParameterServer>>>,
             },
         }
 
@@ -481,11 +530,455 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
                     GeneratedNode::Zenoh { .. } => eyre::bail!("entity requires the DDS transport"),
                 }
             }
+
+            pub fn create_parameter_client(
+                &mut self,
+                target: &str,
+                timeout_s: f64,
+            ) -> eyre::Result<Box<Ros2ParameterClient>> {
+                use dora_ros2_bridge::transport::parameters::{DdsParameterClient, ParameterClient};
+                #[cfg(feature = "rmw-zenoh")]
+                use dora_ros2_bridge::transport::zenoh::parameters::ParameterClient as ZenohParameterClient;
+
+                let timeout = timeout_or(timeout_s, 20.0);
+                let client = match &mut self.node {
+                    GeneratedNode::Dds(node) => {
+                        let client = DdsParameterClient::new(node, target)
+                            .map_err(|error| eyre::eyre!(error))?;
+                        futures::executor::block_on(client.wait_for_services(node, timeout))
+                            .map_err(|error| eyre::eyre!(error))?;
+                        ParameterClient::Dds(Box::new(client))
+                    }
+                    #[cfg(feature = "rmw-zenoh")]
+                    GeneratedNode::Zenoh { node, compatibility, .. } => {
+                        let types = dora_ros2_bridge::transport::zenoh::parameters::ParameterTypes::resolve(
+                            *compatibility,
+                            &dora_ros2_bridge::dora_message::descriptor::TypeDescriptionResolver::from_ament_prefix_path(),
+                        )
+                        .map_err(|e| eyre::eyre!("a ROS2 parameter client on Zenoh needs the `rcl_interfaces` types: {e}"))?;
+                        let client = futures::executor::block_on(ZenohParameterClient::declare(
+                            node, target, &types,
+                        ))
+                        .map_err(|e| eyre::eyre!("failed to create a parameter client for `{target}`: {e}"))?;
+                        futures::executor::block_on(client.wait_for_services(node, timeout))
+                            .map_err(|e| eyre::eyre!("the parameter services of `{target}` are not available: {e}"))?;
+                        ParameterClient::Zenoh(Box::new(client))
+                    }
+                };
+                Ok(Box::new(Ros2ParameterClient { client }))
+            }
+
+            pub fn set_parameter(&self, name: &str, value: &str) -> eyre::Result<()> {
+                if let Ok(b) = value.parse::<bool>() {
+                    return self.set_parameter_bool(name, b);
+                }
+                if let Ok(i) = value.parse::<i64>() {
+                    return self.set_parameter_int(name, i);
+                }
+                if let Ok(d) = value.parse::<f64>() {
+                    return self.set_parameter_double(name, d);
+                }
+                self.set_parameter_string(name, value)
+            }
+
+            pub fn set_parameter_string(&self, name: &str, value: &str) -> eyre::Result<()> {
+                let val = ros2_client::ParameterValue::String(value.to_owned());
+                self.set_param_value(name, val)
+            }
+
+            pub fn set_parameter_double(&self, name: &str, value: f64) -> eyre::Result<()> {
+                let val = ros2_client::ParameterValue::Double(value);
+                self.set_param_value(name, val)
+            }
+
+            pub fn set_parameter_int(&self, name: &str, value: i64) -> eyre::Result<()> {
+                let val = ros2_client::ParameterValue::Integer(value);
+                self.set_param_value(name, val)
+            }
+
+            pub fn set_parameter_bool(&self, name: &str, value: bool) -> eyre::Result<()> {
+                let val = ros2_client::ParameterValue::Boolean(value);
+                self.set_param_value(name, val)
+            }
+
+            fn set_param_value(&self, name: &str, val: ros2_client::ParameterValue) -> eyre::Result<()> {
+                match &self.node {
+                    GeneratedNode::Dds(node) => {
+                        node.set_parameter(name, val)
+                            .map_err(|e| eyre::eyre!("failed to set parameter `{name}`: {e:?}"))
+                    }
+                    #[cfg(feature = "rmw-zenoh")]
+                    GeneratedNode::Zenoh { node, compatibility, parameters } => {
+                        let mut guard = parameters.lock().unwrap();
+                        if guard.is_none() {
+                            let types = dora_ros2_bridge::transport::zenoh::parameters::ParameterTypes::resolve(
+                                *compatibility,
+                                &dora_ros2_bridge::dora_message::descriptor::TypeDescriptionResolver::from_ament_prefix_path(),
+                            )
+                            .map_err(|e| eyre::eyre!("failed to resolve parameter types: {e:?}"))?;
+                            let node_name = ros2_client::NodeName::new(node.namespace(), node.name())
+                                .map_err(|e| eyre::eyre!("invalid node name: {e:?}"))?;
+                            let mut initial = std::collections::BTreeMap::new();
+                            initial.insert(name.to_owned(), val.clone());
+                            let server = futures::executor::block_on(
+                                dora_ros2_bridge::transport::zenoh::parameters::ParameterServer::declare(
+                                    node,
+                                    &node_name,
+                                    types,
+                                    initial,
+                                    None,
+                                )
+                            )
+                            .map_err(|e| eyre::eyre!("failed to declare parameter server: {e:?}"))?;
+                            *guard = Some(server);
+                            return Ok(());
+                        }
+                        if let Some(ref server) = *guard {
+                            return futures::executor::block_on(server.set(name, val))
+                                .map_err(|e| eyre::eyre!("failed to set parameter `{name}`: {e:?}"));
+                        }
+                        eyre::bail!("failed to set parameter `{name}` on Zenoh node")
+                    }
+                }
+            }
+
+            pub fn get_parameter(&self, name: &str) -> eyre::Result<String> {
+                let val = self.get_param_value(name)?;
+                Ok(parameter_value_to_string(&val))
+            }
+
+            pub fn get_parameter_string(&self, name: &str) -> eyre::Result<String> {
+                match self.get_param_value(name)? {
+                    ros2_client::ParameterValue::String(s) => Ok(s),
+                    other => Ok(parameter_value_to_string(&other)),
+                }
+            }
+
+            pub fn get_parameter_double(&self, name: &str) -> eyre::Result<f64> {
+                match self.get_param_value(name)? {
+                    ros2_client::ParameterValue::Double(d) => Ok(d),
+                    ros2_client::ParameterValue::Integer(i) => Ok(i as f64),
+                    other => eyre::bail!("parameter `{name}` is not a double, got {other:?}"),
+                }
+            }
+
+            pub fn get_parameter_int(&self, name: &str) -> eyre::Result<i64> {
+                match self.get_param_value(name)? {
+                    ros2_client::ParameterValue::Integer(i) => Ok(i),
+                    other => eyre::bail!("parameter `{name}` is not an integer, got {other:?}"),
+                }
+            }
+
+            pub fn get_parameter_bool(&self, name: &str) -> eyre::Result<bool> {
+                match self.get_param_value(name)? {
+                    ros2_client::ParameterValue::Boolean(b) => Ok(b),
+                    other => eyre::bail!("parameter `{name}` is not a boolean, got {other:?}"),
+                }
+            }
+
+            fn get_param_value(&self, name: &str) -> eyre::Result<ros2_client::ParameterValue> {
+                match &self.node {
+                    GeneratedNode::Dds(node) => {
+                        node.get_parameter(name)
+                            .ok_or_else(|| eyre::eyre!("parameter `{name}` not found"))
+                    }
+                    #[cfg(feature = "rmw-zenoh")]
+                    GeneratedNode::Zenoh { parameters, .. } => {
+                        if let Ok(guard) = parameters.lock() {
+                            if let Some(ref server) = *guard {
+                                return server.get(name)
+                                    .ok_or_else(|| eyre::eyre!("parameter `{name}` not found"));
+                            }
+                        }
+                        eyre::bail!("parameter `{name}` not found (no parameter server active on Zenoh node)")
+                    }
+                }
+            }
+
+            pub fn list_parameters(&self) -> eyre::Result<Vec<String>> {
+                match &self.node {
+                    GeneratedNode::Dds(node) => Ok(node.list_parameters()),
+                    #[cfg(feature = "rmw-zenoh")]
+                    GeneratedNode::Zenoh { parameters, .. } => {
+                        if let Ok(guard) = parameters.lock() {
+                            if let Some(ref server) = *guard {
+                                return Ok(server.list());
+                            }
+                        }
+                        Ok(Vec::new())
+                    }
+                }
+            }
+
+            pub fn has_parameter(&self, name: &str) -> bool {
+                match &self.node {
+                    GeneratedNode::Dds(node) => node.has_parameter(name),
+                    #[cfg(feature = "rmw-zenoh")]
+                    GeneratedNode::Zenoh { parameters, .. } => {
+                        if let Ok(guard) = parameters.lock() {
+                            if let Some(ref server) = *guard {
+                                return server.has(name);
+                            }
+                        }
+                        false
+                    }
+                }
+            }
         }
 
         unsafe impl cxx::ExternType for Ros2Node {
             type Id = cxx::type_id!("Ros2Node");
             type Kind = cxx::kind::Opaque;
+        }
+
+        pub struct Ros2ParameterClient {
+            pub client: dora_ros2_bridge::transport::parameters::ParameterClient,
+        }
+
+        unsafe impl cxx::ExternType for Ros2ParameterClient {
+            type Id = cxx::type_id!("Ros2ParameterClient");
+            type Kind = cxx::kind::Opaque;
+        }
+
+        impl Ros2ParameterClient {
+            pub fn target(&self) -> String {
+                self.client.target().to_owned()
+            }
+
+            pub fn get(&self, name: &str, timeout_s: f64) -> eyre::Result<String> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let names = vec![name.to_owned()];
+                let values = futures::executor::block_on(self.client.get(&names, timeout))?;
+                match values.into_iter().next().flatten() {
+                    Some(v) => Ok(parameter_value_to_string(&v)),
+                    None => eyre::bail!("parameter `{name}` not found on target `{}`", self.client.target()),
+                }
+            }
+
+            pub fn get_double(&self, name: &str, timeout_s: f64) -> eyre::Result<f64> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let names = vec![name.to_owned()];
+                let values = futures::executor::block_on(self.client.get(&names, timeout))?;
+                match values.into_iter().next().flatten() {
+                    Some(ros2_client::ParameterValue::Double(d)) => Ok(d),
+                    Some(ros2_client::ParameterValue::Integer(i)) => Ok(i as f64),
+                    Some(other) => eyre::bail!("parameter `{name}` is not a double, got {other:?}"),
+                    None => eyre::bail!("parameter `{name}` not found on target `{}`", self.client.target()),
+                }
+            }
+
+            pub fn get_string(&self, name: &str, timeout_s: f64) -> eyre::Result<String> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let names = vec![name.to_owned()];
+                let values = futures::executor::block_on(self.client.get(&names, timeout))?;
+                match values.into_iter().next().flatten() {
+                    Some(ros2_client::ParameterValue::String(s)) => Ok(s),
+                    Some(other) => Ok(parameter_value_to_string(&other)),
+                    None => eyre::bail!("parameter `{name}` not found on target `{}`", self.client.target()),
+                }
+            }
+
+            pub fn get_int(&self, name: &str, timeout_s: f64) -> eyre::Result<i64> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let names = vec![name.to_owned()];
+                let values = futures::executor::block_on(self.client.get(&names, timeout))?;
+                match values.into_iter().next().flatten() {
+                    Some(ros2_client::ParameterValue::Integer(i)) => Ok(i),
+                    Some(other) => eyre::bail!("parameter `{name}` is not an integer, got {other:?}"),
+                    None => eyre::bail!("parameter `{name}` not found on target `{}`", self.client.target()),
+                }
+            }
+
+            pub fn get_bool(&self, name: &str, timeout_s: f64) -> eyre::Result<bool> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let names = vec![name.to_owned()];
+                let values = futures::executor::block_on(self.client.get(&names, timeout))?;
+                match values.into_iter().next().flatten() {
+                    Some(ros2_client::ParameterValue::Boolean(b)) => Ok(b),
+                    Some(other) => eyre::bail!("parameter `{name}` is not a boolean, got {other:?}"),
+                    None => eyre::bail!("parameter `{name}` not found on target `{}`", self.client.target()),
+                }
+            }
+
+            pub fn set(&self, name: &str, value: &str, timeout_s: f64) -> eyre::Result<bool> {
+                if let Ok(b) = value.parse::<bool>() {
+                    return self.set_bool(name, b, timeout_s);
+                }
+                if let Ok(i) = value.parse::<i64>() {
+                    return self.set_int(name, i, timeout_s);
+                }
+                if let Ok(d) = value.parse::<f64>() {
+                    return self.set_double(name, d, timeout_s);
+                }
+                self.set_string(name, value, timeout_s)
+            }
+
+            pub fn set_double(&self, name: &str, value: f64, timeout_s: f64) -> eyre::Result<bool> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let values = vec![(name.to_owned(), ros2_client::ParameterValue::Double(value))];
+                let results = futures::executor::block_on(self.client.set(values, timeout))?;
+                match results.into_iter().next() {
+                    Some(res) => {
+                        if !res.successful {
+                            eyre::bail!("failed to set parameter `{name}`: {}", res.reason);
+                        }
+                        Ok(true)
+                    }
+                    None => eyre::bail!("no response for setting parameter `{name}`"),
+                }
+            }
+
+            pub fn set_string(&self, name: &str, value: &str, timeout_s: f64) -> eyre::Result<bool> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let values = vec![(name.to_owned(), ros2_client::ParameterValue::String(value.to_owned()))];
+                let results = futures::executor::block_on(self.client.set(values, timeout))?;
+                match results.into_iter().next() {
+                    Some(res) => {
+                        if !res.successful {
+                            eyre::bail!("failed to set parameter `{name}`: {}", res.reason);
+                        }
+                        Ok(true)
+                    }
+                    None => eyre::bail!("no response for setting parameter `{name}`"),
+                }
+            }
+
+            pub fn set_int(&self, name: &str, value: i64, timeout_s: f64) -> eyre::Result<bool> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let values = vec![(name.to_owned(), ros2_client::ParameterValue::Integer(value))];
+                let results = futures::executor::block_on(self.client.set(values, timeout))?;
+                match results.into_iter().next() {
+                    Some(res) => {
+                        if !res.successful {
+                            eyre::bail!("failed to set parameter `{name}`: {}", res.reason);
+                        }
+                        Ok(true)
+                    }
+                    None => eyre::bail!("no response for setting parameter `{name}`"),
+                }
+            }
+
+            pub fn set_bool(&self, name: &str, value: bool, timeout_s: f64) -> eyre::Result<bool> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let values = vec![(name.to_owned(), ros2_client::ParameterValue::Boolean(value))];
+                let results = futures::executor::block_on(self.client.set(values, timeout))?;
+                match results.into_iter().next() {
+                    Some(res) => {
+                        if !res.successful {
+                            eyre::bail!("failed to set parameter `{name}`: {}", res.reason);
+                        }
+                        Ok(true)
+                    }
+                    None => eyre::bail!("no response for setting parameter `{name}`"),
+                }
+            }
+
+            pub fn list(&self, prefix: &str, depth: u64, timeout_s: f64) -> eyre::Result<Vec<String>> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let prefixes = if prefix.is_empty() { vec![] } else { vec![prefix.to_owned()] };
+                let listed = futures::executor::block_on(self.client.list(prefixes, depth, timeout))?;
+                Ok(listed.names)
+            }
+
+            pub fn get_type(&self, name: &str, timeout_s: f64) -> eyre::Result<String> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let names = vec![name.to_owned()];
+                let types = futures::executor::block_on(self.client.get_types(&names, timeout))?;
+                match types.into_iter().next() {
+                    Some(ty) => Ok(parameter_type_name(ty).to_owned()),
+                    None => eyre::bail!("no type returned for parameter `{name}`"),
+                }
+            }
+
+            pub fn get_types(&self, names: &Vec<String>, timeout_s: f64) -> eyre::Result<Vec<String>> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let types = futures::executor::block_on(self.client.get_types(names, timeout))?;
+                Ok(types.into_iter().map(|t| parameter_type_name(t).to_owned()).collect())
+            }
+
+            pub fn describe(&self, name: &str, timeout_s: f64) -> eyre::Result<String> {
+                let timeout = timeout_or(timeout_s, 30.0);
+                let names = vec![name.to_owned()];
+                let descriptors = futures::executor::block_on(self.client.describe(&names, timeout))?;
+                match descriptors.into_iter().next().flatten() {
+                    Some(d) => Ok(format!("{}: {}", d.name, d.description)),
+                    None => eyre::bail!("no descriptor returned for parameter `{name}`"),
+                }
+            }
+
+            pub fn take_event(&self) -> eyre::Result<ffi::Ros2ParameterEvent> {
+                match self.client.try_next_change()? {
+                    Some(change) => {
+                        let mut new_names = Vec::new();
+                        let mut new_values = Vec::new();
+                        for (k, v) in change.new {
+                            new_names.push(k);
+                            new_values.push(parameter_value_to_string(&v));
+                        }
+                        let mut changed_names = Vec::new();
+                        let mut changed_values = Vec::new();
+                        for (k, v) in change.changed {
+                            changed_names.push(k);
+                            changed_values.push(parameter_value_to_string(&v));
+                        }
+                        Ok(ffi::Ros2ParameterEvent {
+                            has_event: true,
+                            new_names,
+                            new_values,
+                            changed_names,
+                            changed_values,
+                            deleted_names: change.deleted,
+                        })
+                    }
+                    None => Ok(ffi::Ros2ParameterEvent {
+                        has_event: false,
+                        new_names: Vec::new(),
+                        new_values: Vec::new(),
+                        changed_names: Vec::new(),
+                        changed_values: Vec::new(),
+                        deleted_names: Vec::new(),
+                    }),
+                }
+            }
+        }
+
+        fn timeout_or(timeout_s: f64, default_secs: f64) -> std::time::Duration {
+            if timeout_s > 0.0 {
+                std::time::Duration::from_secs_f64(timeout_s)
+            } else {
+                std::time::Duration::from_secs_f64(default_secs)
+            }
+        }
+
+        fn parameter_value_to_string(value: &ros2_client::ParameterValue) -> String {
+            match value {
+                ros2_client::ParameterValue::NotSet => String::new(),
+                ros2_client::ParameterValue::Boolean(b) => b.to_string(),
+                ros2_client::ParameterValue::Integer(i) => i.to_string(),
+                ros2_client::ParameterValue::Double(d) => d.to_string(),
+                ros2_client::ParameterValue::String(s) => s.clone(),
+                ros2_client::ParameterValue::ByteArray(b) => format!("{b:?}"),
+                ros2_client::ParameterValue::BooleanArray(b) => format!("{b:?}"),
+                ros2_client::ParameterValue::IntegerArray(i) => format!("{i:?}"),
+                ros2_client::ParameterValue::DoubleArray(d) => format!("{d:?}"),
+                ros2_client::ParameterValue::StringArray(s) => format!("{s:?}"),
+            }
+        }
+
+        fn parameter_type_name(ty: u8) -> &'static str {
+            match ty {
+                0 => "not_set",
+                1 => "bool",
+                2 => "integer",
+                3 => "double",
+                4 => "string",
+                5 => "byte_array",
+                6 => "bool_array",
+                7 => "integer_array",
+                8 => "double_array",
+                9 => "string_array",
+                _ => "unknown",
+            }
         }
 
         unsafe impl cxx::ExternType for Ros2Context {
@@ -939,6 +1432,16 @@ mod tests {
         assert!(generated.contains("ZenohHumble"));
         assert!(generated.contains("ZenohRep2016"));
         assert!(generated.contains("dora_ros2_bridge :: transport :: Context"));
+    }
+
+    #[test]
+    fn parameter_client_and_node_hosting_are_generated_for_cxx() {
+        let generated = generate_default_impls(true).to_string();
+        assert!(generated.contains("Ros2ParameterClient"));
+        assert!(generated.contains("create_parameter_client"));
+        assert!(generated.contains("set_parameter"));
+        assert!(generated.contains("get_parameter"));
+        assert!(generated.contains("take_event"));
     }
 
     #[test]

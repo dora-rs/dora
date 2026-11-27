@@ -64,7 +64,7 @@ node calling into ROS2 (dora→ROS2); "server" = a Dora node serving ROS2 client
 |---|---|---|---|---|---|---|
 | **YAML bridge** | ✅ | ✅ | ✅ | ✅ | ✅ | (node-hosted) |
 | **Rust** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | hosting via `ros2-client`; client via `transport::parameters::ParameterClient` |
-| **C++** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
+| **C++** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | hosting via `ros2-client`; client via `Ros2ParameterClient` |
 | **Python** (pyo3) | ✅ | ✅ | ✅ | ✅¹ | ✅ | ✅ |
 
 ¹ On DDS, the first goal can be lost while discovery is still running
