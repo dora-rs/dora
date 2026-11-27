@@ -514,6 +514,11 @@ fn main() -> eyre::Result<()> {
         let Some(event) = event else { break };
         match event {
             Event::Input { id, metadata, data } => {
+                // Stamp the entry on arrival, before the IPC encode and
+                // serialize below: both copy the payload, so a later stamp
+                // would place a large frame behind a small one that arrived at
+                // the same moment, by however long the encode took.
+                let timestamp_offset_nanos = dora_recording::offset_since(start);
                 let (source_node, source_output) = match reverse_map.get(&*id) {
                     Some(pair) => pair,
                     None => continue,
@@ -567,7 +572,7 @@ fn main() -> eyre::Result<()> {
                 let entry = RecordEntry {
                     node_id: source_node.to_string(),
                     output_id: source_output.to_string(),
-                    timestamp_offset_nanos: dora_recording::offset_since(start),
+                    timestamp_offset_nanos,
                     event_bytes,
                 };
                 // A recorder attaches to a live dataflow whose direct
