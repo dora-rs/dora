@@ -10,7 +10,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DISTROS=(humble kilted)
 RMWS=(rmw_fastrtps_cpp rmw_cyclonedds_cpp)
-PY_CASES=(topic-pub topic-sub service-client service-server action-client action-server graph domain namespace qos-transient-local parameters rosout)
+PY_CASES=(topic-pub topic-sub service-client service-server action-client action-server graph domain namespace qos-transient-local parameters parameter-client rosout)
 YAML_CASES=(yaml-service-server yaml-service-client yaml-service-client-concurrent yaml-service-client-sequential yaml-service-client-dropped yaml-action-server yaml-action-server-cancel yaml-action-server-accept yaml-action-server-reject yaml-action-client)
 EXPECTED=${DORA_ROS2_DDS_EXPECTED:-$ROOT/tests/ros2-dds/expected-failures.txt}
 

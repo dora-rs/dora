@@ -103,7 +103,7 @@ ROS2 (dora→ROS2); "server" = a Dora node serving ROS2 clients (ROS2→dora).
 | | topic pub/sub | service client | service server | action client | action server | parameters |
 |---|---|---|---|---|---|---|
 | **YAML bridge** | ✅ | ✅ | ✅ | ✅ | ✅ | (node-hosted) |
-| **Rust** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
+| **Rust** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | hosting via `ros2-client`; client via `transport::parameters::ParameterClient` |
 | **C++** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
 | **Python** (pyo3) | ✅ | ✅ | ✅ | ✅¹ | ✅ | ✅ |
 
@@ -1163,6 +1163,7 @@ qos = Ros2QosPolicies(reliable=True, keep_last=1)
 | `node.create_action_client(name, type, qos)` → `Ros2ActionClient` | `.send_goal(goal)` → `goal_id`, `.take_feedback(goal_id)`, `.take_result(goal_id)`, `.cancel(goal_id=None)` |
 | `node.create_action_server(name, type, qos)` → `Ros2ActionServer` | `.take_goal()` → `(goal_id, goal)`, `.send_feedback(goal_id, fb)`, `.send_result(goal_id, result, status=None)`, `.take_cancel()` |
 | `node.set_parameter` / `get_parameter` / `list_parameters` / `has_parameter` | Runtime parameters (also served to `ros2 param`) |
+| `node.create_parameter_client(node, timeout_s=None)` → `Ros2ParameterClient` | Another node's parameters: `.get(names)`, `.get_types(names)`, `.set(values)`, `.set_atomically(values)`, `.list(prefixes=None, depth=0)`, `.describe(names)`, `.take_event()`, `.next_event(timeout_s=None)` |
 
 Service client example (call an external ROS2 `AddTwoInts`):
 
@@ -1182,6 +1183,34 @@ node.set_parameter("speed", 2.0)
 print(node.get_parameter("speed"), node.list_parameters())
 ```
 
+Another node's parameters (like `ros2 param get/set`, and its changes from
+`/parameter_events`):
+
+```python
+arm = node.create_parameter_client("/robot/arm")    # waits for its services (20s)
+arm.get(["speed", "missing"])        # {"speed": 1.5, "missing": None}
+arm.get_types(["speed"])             # {"speed": "double"}
+arm.set({"speed": 2.0, "gains": "x"})  # [(True, ""), (False, "<reason>")]
+arm.set_atomically({"speed": 3.0, "gains": [3.0]})  # (True, "")
+arm.list()                           # ["gains", "speed", "use_sim_time"]
+arm.describe(["speed"])["speed"]     # {"type": "double", "description": ..., "read_only": False, ...}
+arm.take_event()                     # {"new": {}, "changed": {"speed": 3.0}, "deleted": []} or None
+arm.next_event(timeout_s=5)          # the same, waiting up to 5s for it
+```
+
+Each call blocks, with the GIL released, for up to `timeout_s` (default
+30s). `take_event` and `next_event` return only the target's changes, oldest
+first: they are kept as they arrive (up to 1024, then the oldest are dropped),
+so other nodes' events on `/parameter_events` cannot crowd them out. A change
+made right after the client is created can arrive before the target has
+matched its `/parameter_events` subscription and be missed, so read the
+current values with `get` rather than waiting for an event. On
+native Zenoh with `rep2016`, the client needs the `rcl_interfaces` type
+descriptions in `AMENT_PREFIX_PATH`, as the parameter server does. Under CycloneDDS a
+*dora-hosted* node's parameter services do not answer yet
+([#4215](https://github.com/dora-rs/dora/issues/4215)), so a client cannot
+reach those; nodes hosted by rclcpp or rclpy are not affected.
+
 On native Zenoh, a node created with at least one parameter in `parameters=`
 serves the same six `rcl_interfaces` parameter services and publishes
 `/parameter_events` on a change, as on DDS. A node without any gets neither,
@@ -1198,7 +1227,11 @@ The blocking calls (`call`, `take_*`) release the GIL while waiting. See
 ### Rust (`dora-ros2-bridge`)
 
 A Rust node uses `ros2-client` directly with the generated message structs from
-`dora_ros2_bridge::messages::<package>`. Topic, service, and action client/server
+`dora_ros2_bridge::messages::<package>`. For another node's parameters,
+`dora_ros2_bridge::transport::parameters::ParameterClient` wraps its six
+`rcl_interfaces` services and its `/parameter_events` on both transports
+(`DdsParameterClient::new(&mut ros_node, "/robot/arm")`, or
+`zenoh::parameters::ParameterClient::declare` on native Zenoh). Topic, service, and action client/server
 are all native `ros2-client` calls; the action server uses
 `AsyncActionServer<A>` (no extra codegen needed).
 

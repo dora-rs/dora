@@ -6,7 +6,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 source "$ROOT/scripts/cargo-target-dir.sh"
 TARGET_DIR="$(cargo_target_dir "$ROOT")"
 COMPOSE=(docker compose -f "$ROOT/docker-compose.ros2-zenoh.yml" --profile)
-CASES=(topic-pub topic-sub service-client service-server action-client action-server graph domain namespace qos-transient-local parameters rosout)
+CASES=(topic-pub topic-sub service-client service-server action-client action-server graph domain namespace qos-transient-local parameters parameter-client rosout)
 DISTRO=${1:-}
 CASE=${2:-all}
 
