@@ -310,7 +310,14 @@ pub enum ZenohMesh<'a> {
 /// after `{k}=` inside the token, so a leading `-` there (e.g. `priority: "-1"`)
 /// is harmless and must stay allowed. (Sibling of dora-rs/dora#3135, which
 /// guards the `host`/`user` fields on the ssh-target side.)
+///
+/// An empty value is rejected at a token start too: an empty label key becomes
+/// `--labels =v`, which the remote daemon refuses, so it would never start.
+/// An empty label value (`k=`) is valid.
 fn validate_shell_safe(what: &str, value: &str, at_token_start: bool) -> eyre::Result<()> {
+    if at_token_start && value.is_empty() {
+        bail!("{what} must not be empty");
+    }
     if let Some(ch) = value
         .chars()
         .find(|c| !c.is_ascii_alphanumeric() && *c != '_' && *c != '-' && *c != '.')
@@ -553,6 +560,20 @@ mod tests {
         assert!(
             err.contains("must not start with `-`") && err.contains("label key"),
             "label key with leading dash should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_empty_label_key() {
+        // An empty key becomes `--labels =v` on the remote command line, which
+        // the daemon's `parse_labels` rejects, so it must fail at load time.
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: h\n    labels:\n      \"\": \"v\"\n",
+        );
+        let err = ClusterConfig::load(f.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("label key") && err.contains("must not be empty"),
+            "empty label key should be rejected, got: {err}"
         );
     }
 
