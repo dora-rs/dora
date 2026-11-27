@@ -126,6 +126,9 @@ pub struct Build {
     /// only.
     #[clap(long = "hub-override", value_name = "PKG=PATH")]
     hub_override: Vec<String>,
+    /// Override the project root directory for module path confinement
+    #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
+    project_root: Option<PathBuf>,
 }
 
 impl Executable for Build {
@@ -144,6 +147,7 @@ impl Executable for Build {
             parallel: self.parallel,
             offline: self.offline,
             hub_overrides: self.hub_override,
+            project_root_override: self.project_root,
             ..Default::default()
         })
     }
@@ -188,6 +192,8 @@ pub struct BuildConfig {
     /// rewritten copy (e.g. a tempfile) whose parent can't resolve the
     /// original `build:` directives or relative node binaries.
     pub working_dir_override: Option<PathBuf>,
+    /// Override the project root directory for module path confinement.
+    pub project_root_override: Option<PathBuf>,
 }
 
 impl BuildConfig {
@@ -235,6 +241,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         offline,
         hub_overrides,
         working_dir_override,
+        project_root_override,
     } = cfg;
     // Parse `--hub-override <namespace>/<name>=<path>` into key -> canonical
     // local dir. The key matches a node's resolved `hub:` reference key.
@@ -273,7 +280,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
                 dataflow_path.display()
             )
         })?
-        .expand(working_dir)
+        .expand_with_project_root(working_dir, project_root_override.as_deref())
         .wrap_err("failed to expand modules in dataflow descriptor")?;
 
     // `--hub-override` is a local-only inner-loop feature (the checkout exists

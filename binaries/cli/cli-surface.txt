@@ -17,6 +17,7 @@ dora build | --locked
 dora build | --lockfile <value>
 dora build | --offline
 dora build | --parallel
+dora build | --project-root <value>
 dora build | --strict-types
 dora build | --uv
 dora build | --write-lockfile
@@ -80,6 +81,7 @@ dora down | --force
 dora down | alias: destroy
 dora expand
 dora expand | --module
+dora expand | --project-root <value>
 dora expand | <dataflow> (required)
 dora graph
 dora graph | --mermaid
@@ -282,6 +284,7 @@ dora run | --lockfile <value>
 dora run | --log-filter <value>
 dora run | --log-format <value>
 dora run | --log-level <value>
+dora run | --project-root <value>
 dora run | --stop-after <value>
 dora run | --uv
 dora run | --write-lockfile
@@ -301,6 +304,7 @@ dora start | --detach
 dora start | --env <value>
 dora start | --exit-when-nodes-finish <value>
 dora start | --hot-reload
+dora start | --project-root <value>
 dora start | --uv
 dora start | -n/--name <value>
 dora start | <dataflow> (required)
@@ -380,5 +384,6 @@ dora up | --recreate-store
 dora validate
 dora validate | --node-manifest <value>
 dora validate | --offline
+dora validate | --project-root <value>
 dora validate | --strict-types
 dora validate | <dataflow>

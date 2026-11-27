@@ -30,6 +30,9 @@ pub struct Validate {
     /// Do not access the network for hub index refreshes (cache only)
     #[clap(long, action, conflicts_with = "node_manifest")]
     offline: bool,
+    /// Override the project root directory for module path confinement
+    #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::DirPath, conflicts_with = "node_manifest")]
+    project_root: Option<PathBuf>,
 }
 
 impl Executable for Validate {
@@ -40,7 +43,12 @@ impl Executable for Validate {
         let dataflow = self
             .dataflow
             .expect("clap guarantees dataflow when --node-manifest is absent");
-        validate_dataflow(&dataflow, self.strict_types, self.offline)
+        validate_dataflow(
+            &dataflow,
+            self.strict_types,
+            self.offline,
+            self.project_root.as_deref(),
+        )
     }
 }
 
@@ -57,7 +65,12 @@ fn validate_node_manifest(path: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre::Result<()> {
+fn validate_dataflow(
+    dataflow: &Path,
+    strict_types: bool,
+    offline: bool,
+    project_root: Option<&Path>,
+) -> eyre::Result<()> {
     let working_dir = dataflow
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -74,7 +87,7 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre
                 dataflow.display()
             )
         })?
-        .expand(working_dir)
+        .expand_with_project_root(working_dir, project_root)
         .context("failed to expand modules in dataflow descriptor")?;
 
     let strict = strict_types || descriptor.strict_types.unwrap_or(false);

@@ -105,6 +105,9 @@ pub struct Run {
     /// can't resolve the original `build:` / relative-path references.
     #[clap(skip)]
     pub working_dir: Option<PathBuf>,
+    /// Override the project root directory for module path confinement
+    #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
+    pub project_root: Option<PathBuf>,
     /// Substitute a local checkout for a hub package (UC11 inner loop):
     /// `--hub-override <namespace>/<name>=<path>`. The checkout's manifest must
     /// declare the same `namespace` and `name`. Same as `dora build
@@ -168,6 +171,7 @@ impl Run {
             write_lockfile: false,
             lockfile: None,
             working_dir: None,
+            project_root: None,
             hub_override: Vec::new(),
             env: Vec::new(),
             exit_when_nodes_finish: None,
@@ -265,6 +269,7 @@ impl Run {
             write_lockfile: self.write_lockfile,
             lockfile_override: self.lockfile.clone(),
             working_dir_override: self.working_dir.clone(),
+            project_root_override: self.project_root.clone(),
             hub_overrides: self.hub_override.clone(),
             ..Default::default()
         })
@@ -277,17 +282,26 @@ impl Run {
         // (when present) is the mandatory base — the on-disk YAML still
         // has unresolved `hub:` references. Without `--env`, pass the
         // session state through unchanged.
-        let descriptor_override = if env_overrides.is_empty() {
-            dataflow_session.resolved_dataflow.clone()
-        } else {
-            let mut descriptor = match dataflow_session.resolved_dataflow.clone() {
+        let mut descriptor_override = dataflow_session.resolved_dataflow.clone();
+        if descriptor_override.is_none() && self.project_root.is_some() {
+            let working_dir =
+                crate::common::working_dir_or_parent(self.working_dir.as_deref(), &dataflow_path);
+            descriptor_override = Some(
+                Descriptor::blocking_read(&dataflow_path)
+                    .context("failed to read dataflow descriptor")?
+                    .expand_with_project_root(working_dir, self.project_root.as_deref())
+                    .context("failed to expand modules in dataflow descriptor")?,
+            );
+        }
+        if !env_overrides.is_empty() {
+            let mut descriptor = match descriptor_override {
                 Some(resolved) => resolved,
                 None => Descriptor::blocking_read(&dataflow_path)
                     .context("failed to read dataflow descriptor for --env")?,
             };
             crate::env_overrides::apply_env_overrides(&mut descriptor, env_overrides);
-            Some(descriptor)
-        };
+            descriptor_override = Some(descriptor);
+        }
 
         let node_filters = match &self.log_filter {
             Some(filter) => parse_log_filter(filter).map_err(|e| eyre::eyre!(e))?,

@@ -192,6 +192,27 @@ pub struct Descriptor {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env: Option<BTreeMap<String, EnvValue>>,
+
+    /// Project root directory for module path confinement (optional).
+    ///
+    /// By default, `module:` references must stay within the dataflow file's
+    /// own directory. Setting `project_root` (resolved relative to the
+    /// dataflow file if relative) lets dataflows in subdirectories share a
+    /// common `modules/` folder while still rejecting paths that escape the
+    /// configured root.
+    ///
+    /// Can be overridden on the CLI via `--project-root`.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// project_root: ../..
+    /// nodes:
+    ///   - id: shared
+    ///     module: ../../modules/shared.yml
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<PathBuf>,
 }
 
 // Wire descriptors must remain readable by peers whose strict `Node` schema
@@ -241,6 +262,7 @@ impl Descriptor {
             exit_when_nodes_finish: None,
             type_rules: Default::default(),
             env: None,
+            project_root: None,
         }
     }
 }

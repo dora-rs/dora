@@ -91,6 +91,9 @@ pub struct Start {
     /// visible in `ps` — prefer a node `env:` block for secrets.
     #[clap(long = "env", value_name = "KEY=VALUE")]
     env: Vec<String>,
+    /// Override the project root directory for module path confinement
+    #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::DirPath)]
+    project_root: Option<PathBuf>,
 }
 
 impl Executable for Start {
@@ -107,6 +110,7 @@ impl Executable for Start {
             self.debug,
             env_overrides,
             self.exit_when_nodes_finish,
+            self.project_root.as_deref(),
         )?;
 
         let attach = match (self.attach, self.detach) {
@@ -152,6 +156,7 @@ impl Executable for Start {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn start_dataflow(
     dataflow: String,
     name: Option<String>,
@@ -160,12 +165,18 @@ fn start_dataflow(
     debug: bool,
     env_overrides: BTreeMap<String, EnvValue>,
     exit_when_nodes_finish: Option<bool>,
+    project_root: Option<&Path>,
 ) -> Result<(PathBuf, Descriptor, WsSession, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     // No extra context on the error: every failure inside already carries a
     // user-facing, actionable message.
-    let (dataflow_descriptor, dataflow_session) =
-        prepare_descriptor(&dataflow, debug, env_overrides, exit_when_nodes_finish)?;
+    let (dataflow_descriptor, dataflow_session) = prepare_descriptor(
+        &dataflow,
+        debug,
+        env_overrides,
+        exit_when_nodes_finish,
+        project_root,
+    )?;
 
     let session = connect_to_coordinator(coordinator_socket)?;
 
@@ -204,6 +215,7 @@ fn prepare_descriptor(
     debug: bool,
     env_overrides: BTreeMap<String, EnvValue>,
     exit_when_nodes_finish: Option<bool>,
+    project_root: Option<&Path>,
 ) -> eyre::Result<(Descriptor, DataflowSession)> {
     let working_dir = dataflow
         .parent()
@@ -217,7 +229,7 @@ fn prepare_descriptor(
                 dataflow.display()
             )
         })?
-        .expand(working_dir)
+        .expand_with_project_root(working_dir, project_root)
         .wrap_err("failed to expand modules in dataflow descriptor")?;
     let mut dataflow_session =
         DataflowSession::read_session(dataflow).context("failed to read DataflowSession")?;
@@ -447,13 +459,14 @@ mod tests {
         // YAML says nothing -> the flag turns it on.
         let dataflow = hub_dataflow_fixture(dir.path(), HUB_SOURCE, HUB_RESOLVED);
         let (descriptor, _) =
-            prepare_descriptor(&dataflow, false, BTreeMap::new(), Some(true)).unwrap();
+            prepare_descriptor(&dataflow, false, BTreeMap::new(), Some(true), None).unwrap();
         assert_eq!(descriptor.exit_when_nodes_finish, Some(true));
         // and we are looking at the hub-resolved descriptor, not the on-disk one
         assert!(descriptor.nodes.iter().all(|n| n.hub.is_none()));
 
         // omitted -> the descriptor's own setting stands, untouched.
-        let (descriptor, _) = prepare_descriptor(&dataflow, false, BTreeMap::new(), None).unwrap();
+        let (descriptor, _) =
+            prepare_descriptor(&dataflow, false, BTreeMap::new(), None, None).unwrap();
         assert_eq!(descriptor.exit_when_nodes_finish, None);
 
         // YAML says `true` -> the documented `=false` force-off must apply.
@@ -464,10 +477,11 @@ mod tests {
             &format!("{on}{HUB_RESOLVED}"),
         );
         let (descriptor, _) =
-            prepare_descriptor(&dataflow, false, BTreeMap::new(), Some(false)).unwrap();
+            prepare_descriptor(&dataflow, false, BTreeMap::new(), Some(false), None).unwrap();
         assert_eq!(descriptor.exit_when_nodes_finish, Some(false));
 
-        let (descriptor, _) = prepare_descriptor(&dataflow, false, BTreeMap::new(), None).unwrap();
+        let (descriptor, _) =
+            prepare_descriptor(&dataflow, false, BTreeMap::new(), None, None).unwrap();
         assert_eq!(descriptor.exit_when_nodes_finish, Some(true));
     }
 
@@ -480,7 +494,8 @@ mod tests {
         let dataflow = hub_dataflow_fixture(dir.path(), HUB_SOURCE, HUB_RESOLVED);
         std::fs::write(&dataflow, format!("{HUB_SOURCE}  - id: b\n    path: ./b\n")).unwrap();
 
-        let err = prepare_descriptor(&dataflow, false, BTreeMap::new(), Some(true)).unwrap_err();
+        let err =
+            prepare_descriptor(&dataflow, false, BTreeMap::new(), Some(true), None).unwrap_err();
         assert!(
             err.to_string()
                 .contains("changed since the last `dora build`"),

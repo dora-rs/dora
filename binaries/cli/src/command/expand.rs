@@ -12,6 +12,9 @@ pub struct Expand {
     /// Validate a standalone module file instead of a full dataflow
     #[clap(long, action)]
     module: bool,
+    /// Override the project root directory for module path confinement
+    #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::DirPath, conflicts_with = "module")]
+    project_root: Option<PathBuf>,
 }
 
 impl Executable for Expand {
@@ -22,7 +25,7 @@ impl Executable for Expand {
             return Ok(());
         }
 
-        let yaml = expanded_yaml(&self.dataflow)?;
+        let yaml = expanded_yaml(&self.dataflow, self.project_root.as_deref())?;
         print!("{yaml}");
         // serde_yaml includes a trailing newline; if not, ensure one for
         // shell pipeline composability
@@ -33,14 +36,14 @@ impl Executable for Expand {
     }
 }
 
-fn expanded_yaml(dataflow: &Path) -> eyre::Result<String> {
+fn expanded_yaml(dataflow: &Path, project_root: Option<&Path>) -> eyre::Result<String> {
     let working_dir = dataflow
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let descriptor = Descriptor::blocking_read(dataflow)
         .with_context(|| format!("failed to read dataflow at `{}`", dataflow.display()))?
-        .expand(working_dir)
+        .expand_with_project_root(working_dir, project_root)
         .context("failed to expand modules")?;
     // `path_fallback` is internal, and a dataflow file that sets it is
     // rejected; leave it out so the output can be run like the input.
@@ -166,7 +169,8 @@ nodes:
             "nodes:\n  - id: m\n    module: modules/worker.yml\n",
         )
         .unwrap();
-        let flat: Descriptor = serde_yaml::from_str(&expanded_yaml(&dataflow).unwrap()).unwrap();
+        let flat: Descriptor =
+            serde_yaml::from_str(&expanded_yaml(&dataflow, None).unwrap()).unwrap();
         let script = flat.nodes[0].args.as_ref().unwrap();
         assert_eq!(
             script,
@@ -216,7 +220,8 @@ nodes:
             "nodes:\n  - id: outer\n    module: outer.yml\n    params:\n      config: user/config\n",
         )
         .unwrap();
-        let flat: Descriptor = serde_yaml::from_str(&expanded_yaml(&dataflow).unwrap()).unwrap();
+        let flat: Descriptor =
+            serde_yaml::from_str(&expanded_yaml(&dataflow, None).unwrap()).unwrap();
         let node = &flat.nodes[0];
         let outer = canonical_slash_path(dir.path());
         assert_eq!(
@@ -251,7 +256,7 @@ nodes:
         let dataflow = dir.path().join("dataflow.yml");
         std::fs::write(&dataflow, "nodes:\n  - id: m\n    module: modules/m.yml\n").unwrap();
 
-        let yaml = expanded_yaml(&dataflow).unwrap();
+        let yaml = expanded_yaml(&dataflow, None).unwrap();
         let expanded = dir.path().join("expanded.yml");
         std::fs::write(&expanded, &yaml).unwrap();
         let read_back = Descriptor::blocking_read(&expanded).unwrap();
@@ -262,5 +267,32 @@ nodes:
             Some(Path::new("modules").join("tool").as_path())
         );
         read_back.check(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn expanded_yaml_supports_project_root_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let modules = repo.join("modules");
+        let df_dir = repo.join("dataflows").join("prog_a");
+        std::fs::create_dir_all(&modules).unwrap();
+        std::fs::create_dir_all(&df_dir).unwrap();
+        std::fs::write(
+            modules.join("shared.yml"),
+            "module:\n  name: shared\nnodes:\n  - id: worker\n    path: worker.py\n",
+        )
+        .unwrap();
+        let dataflow = df_dir.join("prog_a.yml");
+        std::fs::write(
+            &dataflow,
+            "nodes:\n  - id: m\n    module: ../../modules/shared.yml\n",
+        )
+        .unwrap();
+
+        assert!(expanded_yaml(&dataflow, None).is_err());
+        let flat: Descriptor =
+            serde_yaml::from_str(&expanded_yaml(&dataflow, Some(repo)).unwrap()).unwrap();
+        assert_eq!(flat.nodes.len(), 1);
+        assert_eq!(flat.nodes[0].id.to_string(), "m.worker");
     }
 }

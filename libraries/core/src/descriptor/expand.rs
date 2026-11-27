@@ -88,7 +88,24 @@ pub struct ExpandedDescriptor {
 /// file. Internal IDs are prefixed with `{module_id}.` and all input/output
 /// wiring is rewritten so the result is a plain flat descriptor.
 pub fn expand_modules(descriptor: &Descriptor, base_dir: &Path) -> eyre::Result<Descriptor> {
-    Ok(expand_modules_with_boundaries(descriptor, base_dir)?.descriptor)
+    expand_modules_with_project_root(descriptor, base_dir, None)
+}
+
+/// Like [`expand_modules`], but allows overriding the module confinement
+/// `project_root` (e.g. from `--project-root`). When `project_root_override`
+/// is `None`, falls back to `descriptor.project_root` (resolved relative to
+/// `base_dir`) and then to `base_dir`.
+pub fn expand_modules_with_project_root(
+    descriptor: &Descriptor,
+    base_dir: &Path,
+    project_root_override: Option<&Path>,
+) -> eyre::Result<Descriptor> {
+    Ok(expand_modules_with_boundaries_and_project_root(
+        descriptor,
+        base_dir,
+        project_root_override,
+    )?
+    .descriptor)
 }
 
 /// Like [`expand_modules`] but also returns module boundary metadata for
@@ -97,20 +114,58 @@ pub fn expand_modules_with_boundaries(
     descriptor: &Descriptor,
     base_dir: &Path,
 ) -> eyre::Result<ExpandedDescriptor> {
+    expand_modules_with_boundaries_and_project_root(descriptor, base_dir, None)
+}
+
+/// Like [`expand_modules_with_boundaries`], but allows overriding the module
+/// confinement `project_root` (e.g. from `--project-root`).
+pub fn expand_modules_with_boundaries_and_project_root(
+    descriptor: &Descriptor,
+    base_dir: &Path,
+    project_root_override: Option<&Path>,
+) -> eyre::Result<ExpandedDescriptor> {
     let has_modules = descriptor.nodes.iter().any(|n| n.module.is_some());
-    if !has_modules {
+    let has_explicit_root = project_root_override.is_some() || descriptor.project_root.is_some();
+    if !has_modules && !has_explicit_root {
         return Ok(ExpandedDescriptor {
             descriptor: descriptor.clone(),
             boundaries: ModuleBoundaries::default(),
         });
     }
 
-    let project_root = normalize_path(dunce::simplified(
-        &std::path::absolute(base_dir)
-            .with_context(|| format!("failed to make base_dir absolute: {}", base_dir.display()))?,
-    ));
+    let raw_root = if let Some(override_root) = project_root_override {
+        std::path::absolute(override_root).with_context(|| {
+            format!(
+                "failed to make project_root absolute: {}",
+                override_root.display()
+            )
+        })?
+    } else if let Some(ref desc_root) = descriptor.project_root {
+        let joined = base_dir.join(desc_root);
+        std::path::absolute(&joined).with_context(|| {
+            format!("failed to make project_root absolute: {}", joined.display())
+        })?
+    } else {
+        std::path::absolute(base_dir)
+            .with_context(|| format!("failed to make base_dir absolute: {}", base_dir.display()))?
+    };
+
+    let project_root = normalize_path(dunce::simplified(&raw_root));
     let canonical_project_root = dunce::canonicalize(&project_root)
         .with_context(|| format!("failed to resolve project root: {}", project_root.display()))?;
+    if !canonical_project_root.is_dir() {
+        bail!(
+            "project root `{}` is not a directory",
+            project_root.display()
+        );
+    }
+
+    if !has_modules {
+        return Ok(ExpandedDescriptor {
+            descriptor: descriptor.clone(),
+            boundaries: ModuleBoundaries::default(),
+        });
+    }
     let mut seen = HashSet::new();
     let mut flat_nodes = Vec::new();
     let mut output_maps: BTreeMap<String, ModuleOutputMap> = BTreeMap::new();
@@ -5651,5 +5706,156 @@ nodes:
         );
         let err = check_module_file(&missing).unwrap_err().to_string();
         assert!(err.contains("no inner node produces it"), "{err}");
+    }
+
+    #[test]
+    fn expand_allows_shared_modules_with_descriptor_project_root() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path();
+        let dataflow_dir = repo.join("dataflows").join("prog_a");
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+
+        write_file(
+            repo,
+            "modules/shared.yml",
+            r#"
+module:
+  name: shared
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: $MODULE_DIR/../nodes/x/main.py
+    outputs: [out]
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+project_root: ../..
+nodes:
+  - id: m
+    module: ../../modules/shared.yml
+"#,
+        );
+
+        let expanded = expand_modules(&desc, &dataflow_dir).unwrap();
+        assert_eq!(expanded.nodes.len(), 1);
+        assert_eq!(expanded.nodes[0].id.to_string(), "m.worker");
+    }
+
+    #[test]
+    fn expand_still_rejects_escape_outside_descriptor_project_root() {
+        let tmp = TempDir::new().unwrap();
+        let outer = tmp.path();
+        let repo = outer.join("repo");
+        let dataflow_dir = repo.join("dataflows").join("prog_a");
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+
+        write_file(
+            outer,
+            "outside.yml",
+            r#"
+module:
+  name: outside
+
+nodes:
+  - id: evil
+    path: evil.py
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+project_root: ../..
+nodes:
+  - id: m
+    module: ../../../outside.yml
+"#,
+        );
+
+        let err = expand_modules(&desc, &dataflow_dir)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("escapes the project directory"), "{err}");
+    }
+
+    #[test]
+    fn expand_project_root_override_takes_precedence_over_descriptor() {
+        let tmp = TempDir::new().unwrap();
+        let repo = tmp.path();
+        let dataflow_dir = repo.join("dataflows").join("prog_a");
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+
+        write_file(
+            repo,
+            "modules/shared.yml",
+            r#"
+module:
+  name: shared
+
+nodes:
+  - id: worker
+    path: worker.py
+"#,
+        );
+
+        // Descriptor sets project_root to "." (too narrow), CLI override widens it to repo.
+        let desc = parse_descriptor(
+            r#"
+project_root: .
+nodes:
+  - id: m
+    module: ../../modules/shared.yml
+"#,
+        );
+        assert!(expand_modules(&desc, &dataflow_dir).is_err());
+
+        let expanded = expand_modules_with_project_root(&desc, &dataflow_dir, Some(repo)).unwrap();
+        assert_eq!(expanded.nodes.len(), 1);
+        assert_eq!(expanded.nodes[0].id.to_string(), "m.worker");
+
+        // Conversely, CLI override can narrow a wider descriptor project_root.
+        let wide_desc = parse_descriptor(
+            r#"
+project_root: ../..
+nodes:
+  - id: m
+    module: ../../modules/shared.yml
+"#,
+        );
+        let err = expand_modules_with_project_root(&wide_desc, &dataflow_dir, Some(&dataflow_dir))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("escapes the project directory"), "{err}");
+    }
+
+    #[test]
+    fn expand_rejects_nonexistent_or_file_project_root() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        let file = write_file(base, "not_a_dir.txt", "hello");
+
+        let desc_missing = parse_descriptor(
+            r#"
+project_root: ./does_not_exist
+nodes:
+  - id: a
+    path: a.py
+"#,
+        );
+        assert!(expand_modules(&desc_missing, base).is_err());
+
+        let desc_file = parse_descriptor(
+            r#"
+project_root: ./not_a_dir.txt
+nodes:
+  - id: a
+    path: a.py
+"#,
+        );
+        let err = expand_modules(&desc_file, base).unwrap_err().to_string();
+        assert!(err.contains("is not a directory"), "{err}");
+        let _ = file;
     }
 }
