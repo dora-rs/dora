@@ -2119,6 +2119,7 @@ dependencies = [
  "webbrowser",
  "which",
  "zenoh",
+ "zenoh-ext",
  "zip",
 ]
 

@@ -1,4 +1,7 @@
-use crate::{Event, control::ControlEvent};
+use crate::{
+    Event,
+    control::{ControlEvent, TopicSubscription},
+};
 use axum::extract::ws::{Message, WebSocket};
 use dora_message::{
     TOPIC_DATA_PROTOCOL_VERSION,
@@ -308,6 +311,7 @@ pub(crate) async fn handle_control_ws(
                         dataflow_id,
                         topics,
                         protocol_version,
+                        direct,
                         ..
                     } => {
                         // Reject before doing any work: the frames this
@@ -364,17 +368,25 @@ pub(crate) async fn handle_control_ws(
                         }
 
                         let (done_tx, done_rx) = oneshot::channel();
+                        // A CLI on the coordinator's host may be handed a
+                        // loopback endpoint of a daemon on this host too.
+                        let cli_is_local =
+                            peer_ip(cli.remote, cli.local) == IpAddr::V4(Ipv4Addr::LOCALHOST);
                         let _ = event_tx.send(Event::Control(ControlEvent::TopicSubscribe {
                             dataflow_id: *dataflow_id,
                             topics: topics.clone(),
+                            direct: direct.then_some(cli_is_local),
                             sender: binary_tx.clone(),
                             done_tx,
                         })).await;
 
-                        let subscription_id = match done_rx.await {
-                            Ok(Ok(subscription_id)) => {
+                        let reply = match done_rx.await {
+                            Ok(Ok(TopicSubscription::Relayed(subscription_id))) => {
                                 topic_subscriptions.push(subscription_id);
-                                subscription_id
+                                ControlRequestReply::topic_subscribed(subscription_id)
+                            }
+                            Ok(Ok(TopicSubscription::Direct(sources))) => {
+                                ControlRequestReply::topic_subscribed_direct(sources)
                             }
                             Ok(Err(err)) => {
                                 let resp = WsResponse::err(req.id, err);
@@ -391,10 +403,6 @@ pub(crate) async fn handle_control_ws(
                             }
                         };
 
-                        let reply = ControlRequestReply::TopicSubscribed {
-                            subscription_id,
-                            protocol_version: Some(TOPIC_DATA_PROTOCOL_VERSION),
-                        };
                         let resp_json = format_response_json(req.id, &reply);
                         if ws_tx.send(Message::Text(resp_json.into())).await.is_err() {
                             break;

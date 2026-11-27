@@ -11,6 +11,7 @@ mod formatting;
 pub mod output;
 pub mod session;
 mod template;
+mod topic_direct;
 mod ws_client;
 pub use ws_client::{TopicBufferLimits, WsSession};
 

@@ -13,8 +13,12 @@ use dora_coordinator::dora_coordinator_store::{
 };
 use dora_coordinator::{CoordinatorStore, InMemoryStore};
 use dora_message::{
-    cli_to_coordinator::ControlRequest, common::DaemonId, coordinator_to_cli::ControlRequestReply,
-    current_crate_version, id::NodeId, ws_protocol::WsRequest,
+    cli_to_coordinator::ControlRequest,
+    common::DaemonId,
+    coordinator_to_cli::{ControlRequestReply, ZenohTopicSource},
+    current_crate_version,
+    id::NodeId,
+    ws_protocol::WsRequest,
 };
 use futures::{SinkExt, StreamExt};
 use std::{
@@ -226,10 +230,21 @@ impl CoordinatorStore for FailingListStore {
 /// Start a minimal control websocket server that acks `TopicSubscribe` and
 /// later pushes a binary frame on the same connection.
 fn start_mock_topic_server(subscription_id: Uuid, payload: Vec<u8>) -> u16 {
+    start_mock_topic_server_with(subscription_id, payload, None)
+}
+
+/// Like [`start_mock_topic_server`], but answers a `direct` subscription with
+/// `direct_sources`, counting how many it got, instead of relaying it.
+fn start_mock_topic_server_with(
+    subscription_id: Uuid,
+    payload: Vec<u8>,
+    direct_sources: Option<(Vec<ZenohTopicSource>, Arc<std::sync::atomic::AtomicUsize>)>,
+) -> u16 {
     async fn handle_mock_control_ws<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         socket: tokio_tungstenite::WebSocketStream<S>,
         subscription_id: Uuid,
         payload: Vec<u8>,
+        direct_sources: Option<(Vec<ZenohTopicSource>, Arc<std::sync::atomic::AtomicUsize>)>,
     ) {
         use tokio_tungstenite::tungstenite::Message;
 
@@ -255,13 +270,23 @@ fn start_mock_topic_server(subscription_id: Uuid, payload: Vec<u8>) -> u16 {
                         .await
                         .expect("send hello reply");
                 }
+                ControlRequest::TopicSubscribe { direct: true, .. } if direct_sources.is_some() => {
+                    let (sources, count) = direct_sources.as_ref().unwrap();
+                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let reply = ControlRequestReply::topic_subscribed_direct(sources.clone());
+                    let response = serde_json::json!({
+                        "id": request.id,
+                        "result": reply,
+                    });
+                    ws_tx
+                        .send(Message::Text(response.to_string().into()))
+                        .await
+                        .expect("send direct topic subscribe reply");
+                }
                 ControlRequest::TopicSubscribe { .. } => {
                     // Must advertise the current binary-frame encoding, or the
                     // real client refuses the subscription (dora-rs/dora#3153).
-                    let reply = ControlRequestReply::TopicSubscribed {
-                        subscription_id,
-                        protocol_version: Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION),
-                    };
+                    let reply = ControlRequestReply::topic_subscribed(subscription_id);
                     let response = serde_json::json!({
                         "id": request.id,
                         "result": reply,
@@ -299,9 +324,11 @@ fn start_mock_topic_server(subscription_id: Uuid, payload: Vec<u8>) -> u16 {
             loop {
                 let (stream, _) = listener.accept().await.expect("accept mock topic client");
                 let payload = payload.clone();
+                let direct_sources = direct_sources.clone();
                 tokio::spawn(async move {
                     let ws_stream = accept_async(stream).await.expect("accept websocket");
-                    handle_mock_control_ws(ws_stream, subscription_id, payload).await;
+                    handle_mock_control_ws(ws_stream, subscription_id, payload, direct_sources)
+                        .await;
                 });
             }
         });
@@ -543,6 +570,47 @@ fn cli_topic_subscription_receives_binary_frames_immediately_after_subscribe_ack
         )
         .expect("subscribe topics");
 
+    assert_eq!(received_subscription_id, subscription_id);
+    let payload = data_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("receive topic payload")
+        .expect("topic payload should be ok");
+    assert_eq!(payload, expected_payload);
+}
+
+/// A direct subscription whose zenoh endpoint can't be reached falls back to
+/// the relayed stream, on the same receiver, over the same connection.
+#[test]
+fn cli_direct_topic_subscription_falls_back_to_the_relay() {
+    let subscription_id = Uuid::new_v4();
+    let expected_payload = b"relayed-payload".to_vec();
+    let direct_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // Nothing listens on port 1.
+    let sources = vec![ZenohTopicSource::new(
+        "tcp/127.0.0.1:1".to_string(),
+        vec![("node".to_string().into(), "output".to_string().into())],
+    )];
+    let port = start_mock_topic_server_with(
+        subscription_id,
+        expected_payload.clone(),
+        Some((sources, direct_requests.clone())),
+    );
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+    let (received_subscription_id, data_rx) = session
+        .subscribe_topics_direct(
+            Uuid::new_v4(),
+            vec![("node".to_string().into(), "output".to_string().into())],
+            dora_cli::TopicBufferLimits::LIVE,
+        )
+        .expect("subscribe topics");
+
+    assert_eq!(
+        direct_requests.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the CLI must ask for a direct subscription first"
+    );
     assert_eq!(received_subscription_id, subscription_id);
     let payload = data_rx
         .recv_timeout(std::time::Duration::from_secs(2))

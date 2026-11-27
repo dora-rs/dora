@@ -184,23 +184,27 @@ impl DaemonConnections {
         joining: &DaemonId,
         joining_addr: Option<SocketAddr>,
     ) -> Vec<String> {
-        // `to_canonical` so a dual-stack coordinator socket, which reports an
-        // IPv4 peer as `::ffff:127.0.0.1`, still recognizes it as loopback.
-        let is_local = |addr: Option<SocketAddr>| {
-            addr.is_some_and(|addr| addr.ip().to_canonical().is_loopback())
-        };
-        let joining_is_local = is_local(joining_addr);
+        let joining_is_local = is_local_peer(joining_addr);
         self.daemons
             .iter()
             .filter(|(id, _)| *id != joining)
-            .filter_map(|(_, conn)| {
-                let endpoint = conn.zenoh_listen_endpoint.clone()?;
-                if !dora_core::topics::zenoh_endpoint_is_loopback(&endpoint) {
-                    return Some(endpoint);
-                }
-                (joining_is_local && is_local(conn.peer_addr)).then_some(endpoint)
-            })
+            .filter_map(|(_, conn)| conn.zenoh_endpoint_for_peer(joining_is_local))
             .collect()
+    }
+
+    /// The zenoh endpoint of `daemon` that a peer on this host (`peer_is_local`)
+    /// or on another one can dial, by the same rule as
+    /// [`zenoh_endpoints_for`](Self::zenoh_endpoints_for). `None` if the
+    /// daemon is not connected, has reported no endpoint, or only a loopback
+    /// one that the peer can't reach.
+    pub(crate) fn zenoh_endpoint_for(
+        &self,
+        daemon: &DaemonId,
+        peer_is_local: bool,
+    ) -> Option<String> {
+        self.daemons
+            .get(daemon)?
+            .zenoh_endpoint_for_peer(peer_is_local)
     }
 
     /// Record (or, with `None`, withdraw) a daemon's zenoh endpoint after it
@@ -459,7 +463,25 @@ struct WsErrorEnvelope {
     ws_error: String,
 }
 
+/// Whether a peer reached the coordinator over loopback, i.e. runs on the
+/// coordinator's host. `to_canonical` so a dual-stack coordinator socket, which
+/// reports an IPv4 peer as `::ffff:127.0.0.1`, still recognizes it as loopback.
+pub(crate) fn is_local_peer(addr: Option<SocketAddr>) -> bool {
+    addr.is_some_and(|addr| addr.ip().to_canonical().is_loopback())
+}
+
 impl DaemonConnection {
+    /// This daemon's zenoh endpoint, if a peer that is (`peer_is_local`) or
+    /// isn't on the coordinator's host can dial it: a routable endpoint always,
+    /// a loopback one only when both the peer and this daemon are local.
+    fn zenoh_endpoint_for_peer(&self, peer_is_local: bool) -> Option<String> {
+        let endpoint = self.zenoh_listen_endpoint.clone()?;
+        if !dora_core::topics::zenoh_endpoint_is_loopback(&endpoint) {
+            return Some(endpoint);
+        }
+        (peer_is_local && is_local_peer(self.peer_addr)).then_some(endpoint)
+    }
+
     pub(crate) fn new(
         sender: mpsc::Sender<String>,
         pending_replies: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
@@ -1490,5 +1512,47 @@ mod zenoh_endpoint_registry_tests {
                 .zenoh_endpoints_for(&daemon("B"), local(40002))
                 .is_empty()
         );
+    }
+
+    /// A single daemon's endpoint for a client follows the same locality rule:
+    /// a routable endpoint for any client, a loopback one only for a client
+    /// on the coordinator's host when the daemon is local too.
+    #[test]
+    fn a_daemons_endpoint_for_a_client_follows_the_locality_rule() {
+        let mut connections = DaemonConnections::default();
+        let (a, b) = (daemon("A"), daemon("B"));
+        let mut local_daemon = connection();
+        local_daemon.peer_addr = local(40001);
+        local_daemon.zenoh_listen_endpoint = Some("tcp/127.0.0.1:5456".into());
+        connections.add(a.clone(), local_daemon);
+        let mut remote_daemon = connection();
+        remote_daemon.peer_addr = remote(40002);
+        remote_daemon.zenoh_listen_endpoint = Some("tcp/10.0.2.7:5456".into());
+        connections.add(b.clone(), remote_daemon);
+
+        for client_is_local in [true, false] {
+            assert_eq!(
+                connections.zenoh_endpoint_for(&b, client_is_local),
+                Some("tcp/10.0.2.7:5456".into()),
+                "routable endpoint, client_is_local={client_is_local}"
+            );
+        }
+        assert_eq!(
+            connections.zenoh_endpoint_for(&a, true),
+            Some("tcp/127.0.0.1:5456".into())
+        );
+        assert_eq!(connections.zenoh_endpoint_for(&a, false), None);
+    }
+
+    /// No endpoint to give: the daemon isn't connected, or hasn't reported one
+    /// (an older daemon, or one whose listener isn't verified yet).
+    #[test]
+    fn a_daemon_without_an_endpoint_has_none_for_a_client() {
+        let mut connections = DaemonConnections::default();
+        let a = daemon("A");
+        connections.add(a.clone(), connection());
+
+        assert_eq!(connections.zenoh_endpoint_for(&a, true), None);
+        assert_eq!(connections.zenoh_endpoint_for(&daemon("ghost"), true), None);
     }
 }

@@ -164,6 +164,41 @@ rather than fail. Upgrade whichever side is older.
 Bump `TOPIC_DATA_PROTOCOL_VERSION` whenever the binary payload encoding changes.
 The JSON handshake itself is self-describing and does not need the bump.
 
+### Direct subscriptions
+
+`dora topic echo`, `hz` and `info` first ask to read the topics straight from
+zenoh, so their data doesn't pass through the coordinator. Their request sets
+`"direct": true`:
+
+```json
+{"TopicSubscribe":  {"dataflow_id": "...", "topics": [...], "protocol_version": 2, "direct": true}}
+{"TopicSubscribed": {"subscription_id": "00000000-0000-0000-0000-000000000000", "protocol_version": 2,
+                     "zenoh_sources": [{"endpoint": "tcp/10.0.0.2:5456", "topics": [["camera", "image"]]}]}}
+```
+
+- The coordinator runs the same checks as for a relayed subscription (the
+  outputs exist, `enable_debug_inspection` is on), but starts no daemon stream.
+- It answers with one source per daemon running a requested output: the
+  daemon's zenoh endpoint, and the outputs it runs. A loopback endpoint is only
+  given to a CLI on the coordinator's host.
+- The CLI opens one zenoh client session per source, because a client session
+  links to a single endpoint. It subscribes there to the outputs' data and
+  `@schema` keys, and rebuilds each sample into the same frame payload a relayed
+  frame carries.
+
+The CLI relays instead, on the same receiver, when it can't use the direct path:
+- the coordinator answers without `zenoh_sources`, because a daemon has no
+  endpoint the CLI can dial or because the coordinator predates the field;
+- an endpoint can't be reached within 3 seconds;
+- `DORA_TOPIC_DIRECT=off` is set.
+
+`dora record --proxy` always relays.
+
+A direct subscriber reads zenoh like any other peer on the network, so the
+coordinator's token and `enable_debug_inspection` only gate the request for the
+endpoints, not the data itself. That data was already readable by anyone who can
+reach the zenoh network.
+
 ---
 
 ## Data Flow
