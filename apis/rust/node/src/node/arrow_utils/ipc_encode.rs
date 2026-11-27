@@ -891,7 +891,7 @@ const MAX_RETAINED_SCHEMAS: usize = 8;
 
 /// Per-input receive state for the schema-once zenoh path: one persistent
 /// [`StreamDecoder`](arrow::ipc::reader::StreamDecoder) primed from the schema
-/// published on the output's `@schema` subtopic (or in-band, from the schema
+/// published on the output's schema key (or in-band, from the schema
 /// block of a full self-describing stream on the data topic), then reused to
 /// decode the schema-less batch messages that flow on the data topic.
 pub struct InputDecoder {
@@ -917,7 +917,7 @@ impl Default for InputDecoder {
 impl InputDecoder {
     /// Create an unprimed decoder. It decodes nothing until a schema is
     /// installed via [`set_schema`](Self::set_schema) (delivered from the output's
-    /// `@schema` subtopic).
+    /// schema key).
     pub fn new() -> Self {
         Self {
             decoder: arrow::ipc::reader::StreamDecoder::new(),
@@ -947,7 +947,7 @@ impl InputDecoder {
     }
 
     /// Install the schema for `hash` from a framed IPC **schema message** (the
-    /// payload published on the `@schema` subtopic, or the schema block of a
+    /// payload published on the schema key, or the schema block of a
     /// full stream received in-band): prime a fresh decoder with it and retain
     /// the bytes for later local re-priming. A no-op when the live decoder is
     /// already primed with `hash`.
@@ -988,7 +988,7 @@ impl InputDecoder {
     /// previously installed (e.g. after a soft reset), it re-primes from the
     /// retained bytes first. Returns `Ok(None)` when no schema for `hash` is
     /// known yet — the caller drops the message, which is fine on the lossy
-    /// `CongestionControl::Drop` data plane (the `@schema` history query, the
+    /// `CongestionControl::Drop` data plane (the schema history query, the
     /// next schema publish, or the producer's periodic full-stream refresh —
     /// which primes in-band — will prime it).
     pub fn decode_batch(
@@ -1250,7 +1250,7 @@ mod tests {
     }
 
     /// The schema-once receive contract: an `InputDecoder` is primed by a schema
-    /// message (as delivered from the `@schema` subtopic), then decodes the
+    /// message (as delivered from the schema key), then decodes the
     /// schema-less batches that follow, and drops a batch whose hash it isn't
     /// primed for.
     #[test]
@@ -1545,7 +1545,7 @@ mod tests {
         );
 
         // Prime from the schema block of the dictionary stream — exactly the
-        // bytes the producer publishes on the `@schema` subtopic.
+        // bytes the producer publishes on the schema key.
         let mut dec = InputDecoder::new();
         let full0 = encode_ipc_to_vec_data(&first).unwrap();
         let block = schema_block_len(&full0).unwrap();
@@ -1789,7 +1789,7 @@ mod tests {
     }
 
     /// The daemon's `dora topic` debug path rebuilds a schema-once batch into a
-    /// full self-describing stream by concatenating the cached `@schema` block
+    /// full self-describing stream by concatenating the cached schema block
     /// with the schema-less batch. That only works because
     /// `schema_block ++ batch_slice` is byte-identical to the original stream —
     /// lock that invariant (and that the result still decodes) here.
@@ -2160,7 +2160,7 @@ mod tests {
             .collect()
     }
 
-    /// A schema from a peer (the `@schema` subtopic) that makes arrow-ipc panic
+    /// A schema from a peer (the schema key) that makes arrow-ipc panic
     /// is an error, not a panic, and leaves the decoder usable (#3863).
     #[test]
     fn a_schema_that_panics_arrow_is_an_error() {

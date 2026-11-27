@@ -829,7 +829,7 @@ pub struct DoraNode {
     /// The producer half of the startup handshake (marker thread + ack
     /// subscribers). `None` without a zenoh session (interactive/testing).
     startup_handshake: Option<StartupHandshake>,
-    /// Per-output schema publishers on the `@schema` subtopic (lazily created on
+    /// Per-output schema publishers on the schema key (lazily created on
     /// the first small message). Their cache retains the last schema so a
     /// late-joining subscriber fetches it via a history query, letting the data
     /// topic carry only schema-less batches. Dropped before the session, like
@@ -2242,18 +2242,18 @@ impl DoraNode {
                 // reach this point — large payloads were routed to the daemon
                 // path above. Apply the schema-once optimization to small
                 // messages with a stable Arrow schema: publish the schema on the
-                // `@schema` subtopic (only on change) and send just the
+                // schema key (only on change) and send just the
                 // schema-less batch on the data topic, tagged with the schema
                 // hash so the receiver matches it to the decoder primed from the
                 // subtopic.
                 //
                 // The message that (re)publishes the schema — the output's first,
-                // every schema change, any message after a failed `@schema` put,
+                // every schema change, any message after a failed schema put,
                 // and a periodic refresh — is itself sent as a full
                 // self-describing stream (`publish_schema_once` returns `None`
                 // for it). It decodes standalone and primes receivers in-band,
                 // in data-plane order, so the express batch can never outrun its
-                // own schema (the `@schema` plane's non-express `Block` publish
+                // own schema (the schema plane's non-express `Block` publish
                 // otherwise loses that race) and a one-shot output cannot lose
                 // its only message.
                 //
@@ -2261,7 +2261,7 @@ impl DoraNode {
                 // `request_id`/`goal_id`/`goal_status`) are excluded: a server
                 // legitimately multiplexes multiple response schemas through one
                 // output, interleaved per request, and each per-message schema
-                // change would force a full stream + `@schema` publish anyway.
+                // change would force a full stream + schema publish anyway.
                 // Sending them as full self-describing streams (the pre-PR
                 // behavior) makes each message decode standalone regardless of
                 // schema order, at the cost of ~400 B of framing per message —
@@ -3406,7 +3406,7 @@ pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
 
 /// How often a schema-once output re-sends a full self-describing stream on the
 /// data topic. Full streams prime receivers in-band, so this bounds how long a
-/// consumer that missed the single `@schema` emission (e.g. a failed zenoh-ext
+/// consumer that missed the single schema emission (e.g. a failed zenoh-ext
 /// history query) drops schema-less batches: it re-primes at the next refresh
 /// instead of losing the input permanently. ~400 B of extra framing per output
 /// per interval — negligible.
@@ -3414,7 +3414,7 @@ pub(crate) const SCHEMA_ONCE_REFRESH_INTERVAL: Duration = Duration::from_secs(5)
 
 /// Producer-side schema-once state for one output.
 struct SchemaOnceState {
-    /// Hash of the schema confirmed published on the `@schema` subtopic.
+    /// Hash of the schema confirmed published on the schema key.
     published_hash: u64,
     /// The schema block `published_hash` was computed from, so a message with
     /// the same block reuses the hash instead of hashing it again.
@@ -3427,11 +3427,11 @@ struct SchemaOnceState {
 #[derive(Debug)]
 enum SchemaOnceDecision {
     /// The schema for this hash is not confirmed published (first message,
-    /// schema change, or an earlier `@schema` publish failed): publish it and
+    /// schema change, or an earlier schema publish failed): publish it and
     /// send this message as a full self-describing stream. The full stream
     /// decodes standalone and primes receivers in-band — in data-plane order —
     /// so the first message of an output cannot be lost to the express batch
-    /// racing ahead of the schema on the separate `@schema` plane, and a failed
+    /// racing ahead of the schema on the separate schema plane, and a failed
     /// schema publish degrades to "full stream every message" (decodable)
     /// instead of "hash-tagged but undecodable" (dora-rs/dora#2366 review).
     PublishSchemaAndSendFullStream,
@@ -3460,11 +3460,11 @@ fn schema_once_decision(
     }
 }
 
-/// Publish the Arrow IPC schema for `output_id` on its `@schema` subtopic when
+/// Publish the Arrow IPC schema for `output_id` on its schema key when
 /// it changes, and return the attachment metadata (carrying the schema hash)
 /// for the schema-less batch the caller sends on the data topic. Returns `None`
 /// when the caller must send the full self-describing stream instead: on the
-/// message that (re)publishes the schema, when the `@schema` publish failed,
+/// message that (re)publishes the schema, when the schema publish failed,
 /// for the periodic full-stream refresh, or if `full_stream` is not a parseable
 /// IPC stream (see [`SchemaOnceDecision`]).
 ///
@@ -3501,7 +3501,7 @@ fn publish_schema_once(
                     // emission is retried on the next message rather than
                     // silently skipped.
                     Ok(()) => {
-                        tracing::debug!(output = %output_id, hash, "schema published on @schema subtopic");
+                        tracing::debug!(output = %output_id, hash, "schema published on schema key");
                         schema_state.insert(
                             output_id.clone(),
                             SchemaOnceState {
@@ -3512,7 +3512,7 @@ fn publish_schema_once(
                         );
                     }
                     Err(e) => {
-                        tracing::warn!(output = %output_id, "failed to publish schema on @schema subtopic ({e})");
+                        tracing::warn!(output = %output_id, "failed to publish schema on schema key ({e})");
                     }
                 }
             }
@@ -3547,7 +3547,7 @@ fn publish_schema_once(
 }
 
 /// Get or lazily declare the schema `AdvancedPublisher` for `output_id` on its
-/// `@schema` subtopic. The cache (depth 1) retains the last schema so a
+/// schema key. The cache (depth 1) retains the last schema so a
 /// late-joining subscriber's history query can fetch it; `publisher_detection`
 /// lets a subscriber that started first discover this publisher and query its
 /// cache. `CongestionControl::Block` keeps the single live schema emission from
@@ -3619,7 +3619,7 @@ fn schema_once_eligible(
 enum ZenohPutChoice<'a> {
     /// Schema-once fast path: the schema-less batch `payload` paired with the
     /// schema-tagged `attachment` from [`publish_schema_once`]. No metadata is
-    /// re-encoded — the receiver primes its decoder from the `@schema` subtopic
+    /// re-encoded — the receiver primes its decoder from the schema key
     /// and matches this batch by the schema hash carried in the attachment.
     ///
     /// The attachment is owned so it moves into zenoh's `ZBytes` without a
@@ -4678,13 +4678,13 @@ mod tests {
         // No state yet (first message of this output) → publish the schema and
         // send THIS message as a full stream: it decodes standalone and primes
         // receivers in-band, so the first message can never be lost to the
-        // batch racing ahead of the schema on the separate `@schema` plane
+        // batch racing ahead of the schema on the separate schema plane
         // (dora-rs/dora#2366 review).
         assert!(matches!(
             schema_once_decision(None, 7, start),
             SchemaOnceDecision::PublishSchemaAndSendFullStream
         ));
-        // Schema changed (or an earlier `@schema` publish failed, which leaves
+        // Schema changed (or an earlier schema publish failed, which leaves
         // the recorded hash stale) → same: publish + full stream.
         assert!(matches!(
             schema_once_decision(Some(&state), 8, start),
@@ -4696,7 +4696,7 @@ mod tests {
             SchemaOnceDecision::SendSchemaLessBatch
         ));
         // Refresh due → send a full stream so any consumer that missed the
-        // single `@schema` emission re-primes in-band within the interval
+        // single schema emission re-primes in-band within the interval
         // instead of losing the input permanently.
         assert!(matches!(
             schema_once_decision(Some(&state), 7, later),

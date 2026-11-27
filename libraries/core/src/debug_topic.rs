@@ -1,4 +1,4 @@
-//! `@schema` reassembly for `dora topic`: rebuilding the self-describing Arrow
+//! Schema-once reassembly for `dora topic`: rebuilding the self-describing Arrow
 //! IPC stream of each output sample a node publishes on zenoh, with the cache
 //! that lets a late watcher decode schema-once batches.
 //!
@@ -8,12 +8,12 @@
 
 use std::sync::Arc;
 
-/// Cached `@schema` bytes (keyed by their FNV-1a hash, most-recent last) for
-/// one debug-watched output, shared between the `@schema` subscriber callback
-/// and the data task. Retains several schemas — mirroring the node receive
+/// Cached schema blocks (keyed by their FNV-1a hash, most-recent last) for one
+/// debug-watched output, shared between the schema-key subscriber callback and
+/// the data task. Retains several schemas — mirroring the node receive
 /// path's `InputDecoder` retention — so an output that interleaves schemas
 /// (e.g. schema-once batches of schema A between large full streams of schema
-/// B) doesn't have its schema-once schema clobbered, and a stale `@schema`
+/// B) doesn't have its schema-once schema clobbered, and a stale schema-key
 /// history-query result arriving after an in-band prime can't evict the
 /// fresher schema (both stay retained).
 pub type DebugSchemaCache = Arc<std::sync::Mutex<Vec<(u64, Vec<u8>)>>>;
@@ -37,8 +37,9 @@ pub fn retain_debug_schema(cache: &mut Vec<(u64, Vec<u8>)>, hash: u64, schema: &
     }
 }
 
-/// Remember a schema block received on an output's `@schema` key. It is keyed
-/// by its FNV-1a hash, the hash the producer tags its schema-once batches with
+/// Remember a schema block received on an output's schema key
+/// (`topics::zenoh_output_schema_topic`). It is keyed by its FNV-1a hash, the
+/// hash the producer tags its schema-once batches with
 /// (see [`crate::schema_once::schema_block_and_hash`]).
 pub fn retain_published_schema(cache: &mut Vec<(u64, Vec<u8>)>, schema: &[u8]) {
     retain_debug_schema(cache, dora_message::metadata::fnv1a(schema), schema);
@@ -47,7 +48,7 @@ pub fn retain_published_schema(cache: &mut Vec<(u64, Vec<u8>)>, schema: &[u8]) {
 /// Rebuild a self-describing Arrow IPC stream for a `dora topic` debug frame.
 ///
 /// Small node→node outputs travel as schema-once batches: the schema is
-/// published once on the `@schema` subtopic and each data sample carries only
+/// published once on the output's schema key and each data sample carries only
 /// the schema-less record batch (`DoraNode::publish_schema_once`). The
 /// `dora topic` decoder expects a full self-describing stream, so for such a
 /// batch we prepend the retained schema block — concatenation reconstructs the
@@ -67,7 +68,7 @@ pub fn rebuild_debug_topic_stream(
     match get_integer_param(parameters, SCHEMA_HASH) {
         Some(hash) => {
             // Only rebuild with the schema matching this batch's hash —
-            // otherwise wait for the right `@schema` rather than emit a stream
+            // otherwise wait for the right schema rather than emit a stream
             // the CLI would decode against the wrong (stale/future) schema.
             let (_, schema) = cache.iter().find(|(h, _)| *h == hash as u64)?;
             let mut full = Vec::with_capacity(schema.len() + payload.len());
@@ -84,8 +85,8 @@ pub fn rebuild_debug_topic_stream(
 
 /// In-band schema priming for a full self-describing payload (no
 /// `SCHEMA_HASH`), mirroring the node receive path: such a stream carries the
-/// same schema block the producer publishes on `@schema`, so retain it here —
-/// then the schema-less batches that follow rebuild even if the `@schema`
+/// same schema block the producer publishes on the schema key, so retain it
+/// here — then the schema-less batches that follow rebuild even if the schema-key
 /// subscription missed the (single) schema emission. The producer guarantees
 /// such a full stream for the first message of every output and periodically
 /// thereafter (`DoraNode::publish_schema_once`). No-op for a schema-once batch.
@@ -125,7 +126,7 @@ pub fn prepare_debug_topic_frame(
         return None;
     }
     // `None`: a schema-once batch whose schema hasn't been cached yet — drop
-    // this inspection frame (transient, recovers once `@schema` or the
+    // this inspection frame (transient, recovers once the schema or the
     // producer's next full-stream refresh arrives).
     let data = rebuild_debug_topic_stream(cache, &metadata.parameters, payload)?;
     // `data` is now always a full self-describing stream, so drop the internal
@@ -269,7 +270,7 @@ mod debug_topic_tests {
 
     /// A full self-describing stream must prime the debug schema cache in-band
     /// (mirroring the node receive path), so `dora topic` can rebuild the
-    /// schema-less batches that follow even when the `@schema` subscription
+    /// schema-less batches that follow even when the schema-key subscription
     /// missed the (single) schema emission — the producer guarantees a full
     /// stream for the first message of every output and periodically
     /// thereafter (dora-rs/dora#2366 review).
@@ -288,7 +289,7 @@ mod debug_topic_tests {
         assert_eq!(cache, vec![(hash, schema_block)]);
 
         // A schema-less batch tagged with that hash now rebuilds, without any
-        // `@schema` sample ever having been received.
+        // schema sample ever having been received.
         let out = rebuild_debug_topic_stream(&mut cache, &params_with_schema_hash(hash), &batch);
         assert_eq!(out, Some(full));
     }
@@ -304,7 +305,7 @@ mod debug_topic_tests {
         let hash_a = fnv1a(&schema_a);
         let batch_a = framed(b"BATCH-A");
 
-        // Prime A (as the @schema subscriber or an earlier full stream would).
+        // Prime A (as the schema-key subscriber or an earlier full stream would).
         let mut cache = vec![(hash_a, schema_a.clone())];
 
         // A large full stream of schema B passes through on the same output...
@@ -345,7 +346,7 @@ mod debug_topic_tests {
         );
     }
 
-    /// A schema received on `@schema` must be keyed by the hash the producer
+    /// A schema received on the schema key must be keyed by the hash the producer
     /// tags its schema-once batches with, or none of them rebuild.
     #[test]
     fn published_schema_rebuilds_the_batches_tagged_with_its_hash() {

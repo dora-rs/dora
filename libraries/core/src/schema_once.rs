@@ -1,8 +1,9 @@
 //! Arrow IPC stream framing for the schema-once wire format.
 //!
 //! A small node output travels schema-once: the node publishes the Arrow
-//! schema once, on the output's `@schema` key, and each sample carries only
-//! the schema-less record batch, tagged with the schema's hash. The producer
+//! schema once, on the output's schema key
+//! (`topics::zenoh_output_schema_topic`), and each sample carries only the
+//! schema-less record batch, tagged with the schema's hash. The producer
 //! and the receive path in `dora-node-api`, and the `dora topic` rebuild in
 //! [`crate::debug_topic`], all find the schema block and its hash through the
 //! functions here, so they can't drift apart.

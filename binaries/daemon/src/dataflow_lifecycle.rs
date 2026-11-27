@@ -408,7 +408,7 @@ impl Daemon {
                         })?;
 
                     // Small node→node outputs use the schema-once path: the
-                    // schema is published once on the `@schema` subtopic and each
+                    // schema is published once on the schema key and each
                     // data sample carries only the schema-less record batch (see
                     // `DoraNode::publish_schema_once`). `dora topic` expects a
                     // full self-describing stream, so cache the schema here and
@@ -441,7 +441,7 @@ impl Daemon {
                             Ok(s) => Some(s),
                             Err(e) => {
                                 tracing::warn!(
-                                    "failed to declare @schema debug subscriber on \
+                                    "failed to declare schema-key debug subscriber on \
                                      {schema_topic} ({e}); schema-once outputs may render as \
                                      undecodable in `dora topic`"
                                 );
@@ -456,7 +456,7 @@ impl Daemon {
                     let mut finished_rx = dataflow.finished_tx.subscribe();
                     let watched_outputs = dataflow.debug_watched_outputs.clone();
                     tokio::spawn(async move {
-                        // Keep the `@schema` subscriber alive for the task's life.
+                        // Keep the schema-key subscriber alive for the task's life.
                         let _schema_subscriber = schema_subscriber;
                         let mut finished = pin!(finished_rx.recv());
                         loop {
