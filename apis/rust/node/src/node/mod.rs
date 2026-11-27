@@ -3220,15 +3220,19 @@ impl SampleAllocator {
         direct: bool,
     ) -> NodeResult<EncodedSample> {
         let sample = match ipc_encode::PreparedIpc::from_data(array) {
-            Some(prepared) => {
-                // Prepare once: size the sample from the prepared layout, then
-                // encode into it — avoids rebuilding the layout + IPC headers.
-                let mut sample = self.allocate_for_path(prepared.byte_len(), direct)?;
-                prepared
-                    .encode_into(&mut sample)
-                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-                sample
-            }
+            // Prepare once: size the sample from the prepared layout, then
+            // encode into it — avoids rebuilding the layout + IPC headers.
+            Some(prepared) => match self.try_allocate_shm(prepared.byte_len(), direct) {
+                Some(mut sample) => {
+                    prepared
+                        .encode_into(&mut sample)
+                        .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+                    sample
+                }
+                // Append into an empty heap buffer: zero-filling one first
+                // would write the whole payload twice.
+                None => prepared.encode_to_aligned_vec().into(),
+            },
             None => {
                 let bytes = ipc_encode::encode_ipc_to_vec_data(array)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e:#}")))?;

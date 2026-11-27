@@ -39,6 +39,8 @@
 
 use std::sync::Arc;
 
+use aligned_vec::{AVec, ConstAlign};
+
 use arrow::array::ArrayData;
 use arrow::buffer::Buffer as ArrowBuffer;
 use arrow::ipc::writer::{DictionaryTracker, IpcDataGenerator, IpcWriteOptions};
@@ -513,22 +515,94 @@ impl PreparedIpc {
     pub fn encode_into(&self, dst: &mut [u8]) -> eyre::Result<()> {
         encode_prepared_into(&self.0, dst)
     }
+
+    /// Encode the complete IPC stream into a new heap buffer of exactly
+    /// [`byte_len`](Self::byte_len) bytes — the same bytes as
+    /// [`encode_into`](Self::encode_into).
+    ///
+    /// Each byte is written once. Zero-filling a buffer of `byte_len()` and
+    /// then calling `encode_into` would write the whole payload twice.
+    pub(crate) fn encode_to_aligned_vec(&self) -> AVec<u8, ConstAlign<128>> {
+        let mut out = AVec::with_capacity(128, self.0.total);
+        write_prepared(&self.0, &mut out);
+        debug_assert_eq!(out.len(), self.0.total);
+        out
+    }
 }
 
 /// Frame one IPC message into `dst[at..]`: continuation marker, i32-LE metadata
 /// length, the flatbuffer, then zero padding so the block is 64-aligned (which
 /// makes the following body — or next message — start 64-aligned). Returns the
 /// block size written.
-fn write_framed_message(dst: &mut [u8], at: usize, flatbuffer: &[u8]) -> usize {
+fn write_framed_message<S: IpcSink + ?Sized>(dst: &mut S, at: usize, flatbuffer: &[u8]) -> usize {
     let block = round_up(PREFIX_LEN + flatbuffer.len(), ALIGN);
     let metadata_len = (block - PREFIX_LEN) as i32;
-    dst[at..at + 4].copy_from_slice(&CONTINUATION_MARKER);
-    dst[at + 4..at + 8].copy_from_slice(&metadata_len.to_le_bytes());
-    dst[at + 8..at + 8 + flatbuffer.len()].copy_from_slice(flatbuffer);
+    dst.write_at(at, &CONTINUATION_MARKER);
+    dst.write_at(at + 4, &metadata_len.to_le_bytes());
+    dst.write_at(at + 8, flatbuffer);
     // Zero the trailing padding (the sample buffer may be uninitialized SHM).
-    dst[at + 8 + flatbuffer.len()..at + block].fill(0);
+    let padding_start = at + 8 + flatbuffer.len();
+    dst.fill_at(padding_start, at + block - padding_start, 0);
     block
 }
+
+/// Where the fast-path encoders write a stream: a pre-sized slice (which may
+/// be uninitialized SHM, so the encoders write every byte, padding included)
+/// or a heap buffer the stream is appended to.
+///
+/// The encoders write strictly in ascending, gap-free order, which is what
+/// lets the heap buffer start empty and grow, rather than being zero-filled
+/// up front and then overwritten.
+trait IpcSink {
+    /// Write `bytes` at offset `at`.
+    fn write_at(&mut self, at: usize, bytes: &[u8]);
+    /// Write `len` copies of `byte` at offset `at`.
+    fn fill_at(&mut self, at: usize, len: usize, byte: u8);
+}
+
+impl IpcSink for [u8] {
+    fn write_at(&mut self, at: usize, bytes: &[u8]) {
+        self[at..at + bytes.len()].copy_from_slice(bytes);
+    }
+
+    fn fill_at(&mut self, at: usize, len: usize, byte: u8) {
+        self[at..at + len].fill(byte);
+    }
+}
+
+/// Appends, so `at` must be where the buffer currently ends. A real assert, not
+/// a debug one: appending at the wrong place would shift every later byte of
+/// the stream, which is far worse than a panic, and the check costs one
+/// compare per buffer.
+impl IpcSink for AVec<u8, ConstAlign<128>> {
+    fn write_at(&mut self, at: usize, bytes: &[u8]) {
+        assert_eq!(self.len(), at, "IPC sink writes must be sequential");
+        self.extend_from_slice(bytes);
+    }
+
+    fn fill_at(&mut self, at: usize, len: usize, byte: u8) {
+        assert_eq!(self.len(), at, "IPC sink writes must be sequential");
+        // Copied from a static chunk rather than through `AVec::resize`, which
+        // writes one byte per iteration. An all-valid bitmap is a fill of
+        // `len / 8` bytes; every other fill is up to 63 bytes of padding.
+        static ZEROS: [u8; FILL_CHUNK] = [0; FILL_CHUNK];
+        static ONES: [u8; FILL_CHUNK] = [0xff; FILL_CHUNK];
+        let chunk = match byte {
+            0 => &ZEROS,
+            0xff => &ONES,
+            _ => unreachable!("the IPC encoders only fill with 0x00 or 0xff"),
+        };
+        let mut remaining = len;
+        while remaining > 0 {
+            let n = remaining.min(FILL_CHUNK);
+            self.extend_from_slice(&chunk[..n]);
+            remaining -= n;
+        }
+    }
+}
+
+/// Size of the static chunks the heap [`IpcSink`] fills from.
+const FILL_CHUNK: usize = 4096;
 
 /// Encode `array` as a complete Arrow IPC stream directly into `dst`, copying
 /// each array buffer exactly once.
@@ -553,6 +627,13 @@ fn encode_prepared_into(prepared: &Prepared, dst: &mut [u8]) -> eyre::Result<()>
         );
     }
 
+    write_prepared(prepared, dst);
+    Ok(())
+}
+
+/// Write the whole stream of `prepared` to `dst`, which holds (or, for a heap
+/// buffer, grows to) exactly `prepared.total` bytes.
+fn write_prepared<S: IpcSink + ?Sized>(prepared: &Prepared, dst: &mut S) {
     let mut at = 0;
     at += write_framed_message(dst, at, &prepared.schema_message);
     debug_assert_eq!(at, prepared.schema_block);
@@ -564,28 +645,25 @@ fn encode_prepared_into(prepared: &Prepared, dst: &mut [u8]) -> eyre::Result<()>
     at = body_start + prepared.layout.body_len;
 
     // End-of-stream: continuation marker + zero length.
-    dst[at..at + 4].copy_from_slice(&CONTINUATION_MARKER);
-    dst[at + 4..at + 8].copy_from_slice(&0i32.to_le_bytes());
+    dst.write_at(at, &CONTINUATION_MARKER);
+    dst.write_at(at + 4, &0i32.to_le_bytes());
     debug_assert_eq!(at + PREFIX_LEN, prepared.total);
-
-    Ok(())
 }
 
 /// Copy each body buffer to its 64-aligned offset within `dst[body_start..]`,
 /// zeroing per-buffer alignment padding (the destination may be uninitialized
 /// SHM). Shared by the full-stream and schema-less-batch encoders.
-fn write_body(dst: &mut [u8], body_start: usize, layout: &Layout) {
+fn write_body<S: IpcSink + ?Sized>(dst: &mut S, body_start: usize, layout: &Layout) {
     for desc in &layout.descs {
         let start = body_start + desc.offset;
         let end = start + desc.len;
         match &desc.src {
             BufferSrc::Bytes(buffer, src_off) => {
-                dst[start..end].copy_from_slice(&buffer.as_slice()[*src_off..*src_off + desc.len]);
+                dst.write_at(start, &buffer.as_slice()[*src_off..*src_off + desc.len]);
             }
-            BufferSrc::AllOnes => dst[start..end].fill(0xff),
+            BufferSrc::AllOnes => dst.fill_at(start, desc.len, 0xff),
         }
-        let padded_end = body_start + desc.offset + round_up(desc.len, ALIGN);
-        dst[end..padded_end].fill(0);
+        dst.fill_at(end, round_up(desc.len, ALIGN) - desc.len, 0);
     }
 }
 
@@ -605,7 +683,7 @@ pub(crate) fn encode_schema_message_for(data_type: &DataType) -> eyre::Result<Ve
     let schema_message = build_schema_message(data_type)?;
     let block = round_up(PREFIX_LEN + schema_message.len(), ALIGN);
     let mut dst = vec![0u8; block];
-    write_framed_message(&mut dst, 0, &schema_message);
+    write_framed_message(dst.as_mut_slice(), 0, &schema_message);
     Ok(dst)
 }
 
@@ -1155,6 +1233,59 @@ mod tests {
         let mut buf = vec![0u8; len];
         encode_ipc_into_data(array, &mut buf).expect("fast-path encode");
         buf
+    }
+
+    /// The heap encoder appends into an empty buffer instead of overwriting a
+    /// zero-filled one, so it must emit exactly the bytes `encode_into` does,
+    /// padding included, for every layout shape: no validity bitmap, a real
+    /// bitmap, an all-ones bitmap, offsets, nested children, no buffers at all,
+    /// and zero rows.
+    #[test]
+    fn encode_to_aligned_vec_matches_encode_into() {
+        let item = Arc::new(Field::new("item", DataType::Int32, true));
+        let list = ListArray::try_new(
+            item,
+            arrow::buffer::OffsetBuffer::new(vec![0, 2, 2, 3].into()),
+            Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])),
+            Some(vec![true, false, true].into()),
+        )
+        .unwrap();
+        let strukt = StructArray::from(vec![
+            (
+                Arc::new(Field::new("a", DataType::Float32, false)),
+                Arc::new(Float32Array::from(vec![1.0, 2.0])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("b", DataType::Utf8, true)),
+                Arc::new(StringArray::from(vec![Some("x"), None])) as ArrayRef,
+            ),
+        ]);
+        let arrays: Vec<ArrayData> = vec![
+            UInt8Array::from(vec![7u8; 1000]).into_data(),
+            UInt64Array::from(Vec::<u64>::new()).into_data(),
+            Int32Array::from(vec![Some(1), None, Some(3)]).into_data(),
+            BooleanArray::from(vec![true, false, true]).into_data(),
+            StringArray::from(vec!["hello", "", "world"]).into_data(),
+            LargeStringArray::from(vec![Some("a"), None]).into_data(),
+            FixedSizeBinaryArray::try_from_iter(vec![[1u8, 2], [3, 4]].into_iter())
+                .unwrap()
+                .into_data(),
+            NullArray::new(5).into_data(),
+            list.into_data(),
+            strukt.into_data(),
+        ];
+        for array in &arrays {
+            let prepared = PreparedIpc::from_data(array)
+                .unwrap_or_else(|| panic!("{:?} should be fast-path eligible", array.data_type()));
+            let appended = prepared.encode_to_aligned_vec();
+            assert_eq!(
+                appended.as_slice(),
+                fast_encode(array).as_slice(),
+                "{:?}",
+                array.data_type()
+            );
+            assert_eq!(appended.len(), prepared.byte_len());
+        }
     }
 
     /// The per-thread schema cache must never hand back a stale header when
