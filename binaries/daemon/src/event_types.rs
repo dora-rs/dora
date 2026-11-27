@@ -22,8 +22,9 @@ use dora_message::common::{NodeError, NodeExitStatus};
 pub use dora_message::daemon_to_daemon::InterDaemonEvent;
 
 use crate::{
-    coordinator::CoordinatorEvent, local_listener::DynamicNodeEventWrapper,
-    running_dataflow::RunningNode,
+    coordinator::CoordinatorEvent,
+    local_listener::DynamicNodeEventWrapper,
+    running_dataflow::{RunningNode, TimerKey},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -191,7 +192,7 @@ pub enum DaemonNodeEvent {
 pub enum DoraEvent {
     Timer {
         dataflow_id: DataflowId,
-        interval: Duration,
+        key: TimerKey,
         metadata: metadata::Metadata,
     },
     Logs {

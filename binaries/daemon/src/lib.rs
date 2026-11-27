@@ -11,7 +11,7 @@
 use coordinator::CoordinatorEvent;
 use dora_core::{
     build::{BuildInfo, GitManager},
-    config::{DataId, Input, NodeId, NodeRunConfig},
+    config::{DataId, Input, InputMapping, NodeId, NodeRunConfig},
     descriptor::{
         CoreNodeKind, DYNAMIC_SOURCE, Descriptor, DescriptorExt, RuntimeNode, read_as_descriptor,
         validate,
@@ -2581,7 +2581,7 @@ trait CoreNodeKindExt {
 
 impl CoreNodeKindExt for CoreNodeKind {
     fn run_config(&self) -> NodeRunConfig {
-        match self {
+        let mut run_config = match self {
             CoreNodeKind::Runtime(n) => {
                 // A runtime node's I/O is the union of its operators', and the
                 // remaining keys (type annotations, framing, pool size) have no
@@ -2593,7 +2593,17 @@ impl CoreNodeKindExt for CoreNodeKind {
                 run_config
             }
             CoreNodeKind::Custom(n) => n.run_config.clone(),
+        };
+        // Unphase timer inputs so nodes running older dora-node-api (1.0/1.1)
+        // or python wheels do not fail to deserialize `dora/timer/.../phase/...`.
+        // The daemon handles timer scheduling and dispatches input events by
+        // input_id; nodes only need the unphased timer interval.
+        for input in run_config.inputs.values_mut() {
+            if let InputMapping::Timer { phase, .. } = &mut input.mapping {
+                *phase = std::time::Duration::ZERO;
+            }
         }
+        run_config
     }
 
     fn dynamic(&self) -> bool {
