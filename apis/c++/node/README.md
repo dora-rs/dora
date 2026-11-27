@@ -61,6 +61,10 @@ Instead, use the following functions to read and destructure the event:
 
 - `event_type(event)` returns a `DoraEventType`, which describes the kind of event. For example, an event could be an input or a stop instruction.
   - when receiving a `DoraEventType::AllInputsClosed`, the node should exit and not call `next` anymore
+  - a `DoraEventType::Stop` event is sent when the dataflow is stopped, and also when all inputs of a node that has at least one input have closed. Use `event_stop_cause(event)` to tell them apart:
+    - it returns `DoraStopCause::Manual` or `DoraStopCause::AllInputsClosed` (or `DoraStopCause::Unknown` for a cause added in a later release);
+    - it borrows the event and throws if the event is not a stop event.
+  - no new events are read after a stop event. After `DoraStopCause::AllInputsClosed`, the next `next` call returns `DoraEventType::AllInputsClosed`. After `DoraStopCause::Manual`, inputs that were already queued may be returned first, then `DoraEventType::AllInputsClosed`.
 - Events of type `DoraEventType::Input` can be downcasted using `event_as_input`:
   ```c++
   auto input = event_as_input(std::move(event));
