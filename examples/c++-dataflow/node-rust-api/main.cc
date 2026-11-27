@@ -42,6 +42,16 @@ int main()
         {
             break;
         }
+        else if (ty == DoraEventType::Stop)
+        {
+            auto cause = event_stop_cause(event);
+            std::cout << "Received stop (cause: "
+                      << (cause == DoraStopCause::Manual            ? "manual"
+                          : cause == DoraStopCause::AllInputsClosed ? "all inputs closed"
+                                                                    : "unknown")
+                      << ")" << std::endl;
+            break;
+        }
         else if (ty == DoraEventType::Input)
         {
             auto input = event_as_input(std::move(event));
