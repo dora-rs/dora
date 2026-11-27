@@ -193,6 +193,7 @@ Extensions, downloads and security:
 - `dora-tracing` drops the uncalled `set_up_tracing`, `add_layer` and `with_layers` ([#3802](https://github.com/dora-rs/dora/pull/3802)), and `dora-ros2-bridge` its unused `ServiceClient`/`ServiceServer` transport types ([#3803](https://github.com/dora-rs/dora/pull/3803)). The YAML bridge node drops its unused library target ([#3869](https://github.com/dora-rs/dora/pull/3869)). None of these crates is covered by the 1.0 guarantee.
 - Refactors without a behavior change: [#3745](https://github.com/dora-rs/dora/pull/3745), [#3956](https://github.com/dora-rs/dora/pull/3956), [#4004](https://github.com/dora-rs/dora/pull/4004), [#4046](https://github.com/dora-rs/dora/pull/4046), [#4051](https://github.com/dora-rs/dora/pull/4051), [#3769](https://github.com/dora-rs/dora/pull/3769).
 - Nightly CI runs a ROS 2 DDS interop matrix against real rclpy peers over Fast-DDS and CycloneDDS ([#4217](https://github.com/dora-rs/dora/pull/4217)).
+- The release workflow builds the macOS CLI on `macos-15`, since GitHub retired the `macos-14` image that left the v1.2.0-rc.1 run without a GitHub Release ([#4344](https://github.com/dora-rs/dora/pull/4344)).
 
 ## v1.1.0 (2026-10-07)
 
