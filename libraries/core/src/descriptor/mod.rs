@@ -2130,7 +2130,7 @@ nodes:
             visualize::visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
 
         assert!(
-            flowchart.contains("subgraph camera_front [camera.front]"),
+            flowchart.contains("subgraph s_camera_front [camera.front]"),
             "runtime-node subgraph id must be sanitized and labelled; got:\n{flowchart}"
         );
         assert!(
