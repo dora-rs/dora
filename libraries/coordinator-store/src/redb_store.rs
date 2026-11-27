@@ -122,7 +122,7 @@ impl RedbStore {
                     return Err(eyre!(
                         "{marker}: database at `{path}` has v{v}, \
                          but this binary expects v{SCHEMA_VERSION}. \
-                         Delete the file and restart to create a fresh database, \
+                         Move the file aside and restart to create a fresh database, \
                          or use `--store memory` to bypass persistence.",
                         marker = crate::SCHEMA_MISMATCH_MARKER,
                         path = path.display()
@@ -1063,6 +1063,12 @@ mod tests {
                 assert!(
                     !msg.contains("dora up --recreate-store"),
                     "custom redb paths must not receive default-store recovery advice: {msg}"
+                );
+                // the old store holds past results and params; recovery
+                // archives it (see `SCHEMA_MISMATCH_MARKER`), never deletes it
+                assert!(
+                    msg.contains("Move the file aside") && !msg.contains("Delete the file"),
+                    "recovery advice must keep the old store: {msg}"
                 );
             }
         }

@@ -84,8 +84,8 @@ The coordinator keeps its state (dataflows, their results, `dora param` values) 
 
 ```
 redb schema version mismatch: database at `~/.dora/coordinator.redb` has v3,
-but this binary expects v5. Delete the file and restart to create a fresh
-database, or use `--store memory` to bypass persistence.
+but this binary expects v5. Move the file aside and restart to create a
+fresh database, or use `--store memory` to bypass persistence.
 ```
 
 Run `dora up --recreate-store`: it moves the old store aside as `coordinator.redb.backup` (numbered if one already exists) and starts fresh. `dora up` prints this hint under the error; `dora coordinator` run directly shows only the message above. The flag handles the default store path only, so a custom `--store redb:<path>` needs a manual move, and it is refused while `DORA_COORDINATOR_ADDR` points at a non-loopback address, so run it on the coordinator's machine with that variable unset. Running dataflows are re-registered by their daemons when they reconnect; persisted `dora param` values and the results of past runs stay in the `.backup` file only. Only `--store memory` deployments have nothing to do here.
