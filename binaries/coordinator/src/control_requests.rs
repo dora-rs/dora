@@ -879,10 +879,42 @@ impl Coordinator {
                 };
                 DataflowListEntry { id, status }
             });
+        let mut entries: Vec<_> = running.collect();
 
-        let reply = Ok(ControlRequestReply::DataflowList(DataflowList(
-            running.chain(finished_failed).collect(),
-        )));
+        // A dataflow that finished before a coordinator restart, or that the
+        // recovery timeout failed, exists only in the store: startup recovery
+        // and the timeout write the record but put nothing in memory. The same
+        // goes for a finished dataflow the `MAX_DATAFLOW_RESULTS` cap evicted
+        // from `dataflow_results`. List them the way `dora clean` sees them, so
+        // `list` shows what `clean` removes: finished records stay listed until
+        // `dora clean` deletes them, they are not capped. In both cases they
+        // are older than every finished dataflow still in memory, so they go
+        // before those, oldest first by `updated_at`, and the default output
+        // stays chronological.
+        match self.store.list_dataflows() {
+            Ok(mut records) => {
+                records.sort_by_key(|record| (record.updated_at, record.uuid));
+                entries.extend(records.into_iter().filter_map(|record| {
+                    if self.running_dataflows.contains_key(&record.uuid)
+                        || self.dataflow_results.contains_key(&record.uuid)
+                    {
+                        return None;
+                    }
+                    let status = stored_final_status(&record.status)?;
+                    Some(DataflowListEntry {
+                        id: DataflowIdAndName {
+                            uuid: record.uuid,
+                            name: record.name,
+                        },
+                        status,
+                    })
+                }));
+            }
+            Err(e) => tracing::warn!("dora list: failed to read persisted dataflows: {e}"),
+        }
+        entries.extend(finished_failed);
+
+        let reply = Ok(ControlRequestReply::DataflowList(DataflowList(entries)));
         let _ = reply_sender.send(reply);
         Ok(())
     }
@@ -995,10 +1027,8 @@ impl Coordinator {
                 // skip to avoid double-counting.
                 continue;
             }
-            let status = match record.status {
-                StoreDataflowStatus::Succeeded => DataflowStatus::Finished,
-                StoreDataflowStatus::Failed { .. } => DataflowStatus::Failed,
-                _ => continue,
+            let Some(status) = stored_final_status(&record.status) else {
+                continue;
             };
             candidates.push((record.uuid, record.name, status, false));
         }
@@ -1346,6 +1376,17 @@ impl Coordinator {
         )
         .await;
         Ok(())
+    }
+}
+
+/// The status `dora list` and `dora clean` report for a persisted dataflow
+/// that is not in memory. `None` for a record that has not finished
+/// (`Pending`, `Running`, `Recovering`, `Stopping`).
+fn stored_final_status(status: &StoreDataflowStatus) -> Option<DataflowStatus> {
+    match status {
+        StoreDataflowStatus::Succeeded => Some(DataflowStatus::Finished),
+        StoreDataflowStatus::Failed { .. } => Some(DataflowStatus::Failed),
+        _ => None,
     }
 }
 
