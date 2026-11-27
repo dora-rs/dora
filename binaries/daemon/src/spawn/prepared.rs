@@ -316,19 +316,19 @@ impl PreparedNode {
         let (op_tx, op_rx) = flume::bounded(2);
         let (finished_tx, finished_rx) = oneshot::channel();
         let (registered_tx, registered_rx) = oneshot::channel();
+        let pid = Arc::new(AtomicU32::new(0));
         let kind = self
             .clone()
-            .spawn_inner(&mut logger, op_rx, finished_tx)
+            .spawn_inner(&mut logger, op_rx, finished_tx, &pid)
             .await?;
 
         let disable_restart = Arc::new(AtomicBool::new(false));
         let force_restart_next = Arc::new(AtomicBool::new(false));
-        let pid = Arc::new(AtomicU32::new(0));
         let restart_count = Arc::new(AtomicU32::new(0));
         let running_node = RunningNode {
             process: match &kind {
                 NodeKind::Dynamic => None,
-                NodeKind::Spawned { .. } => Some(crate::ProcessHandle::new(op_tx)),
+                NodeKind::Spawned => Some(crate::ProcessHandle::new(op_tx)),
             },
             restart_loop_start: Some(registered_tx),
             _listener_shutdown: Some(self.listener_shutdown.clone()),
@@ -339,12 +339,10 @@ impl PreparedNode {
             disable_restart: disable_restart.clone(),
             force_restart_next: force_restart_next.clone(),
             restart_count: restart_count.clone(),
+            // `spawn_inner` already published the PID.
             pid: match kind {
                 NodeKind::Dynamic => None,
-                NodeKind::Spawned { pid: new_pid } => {
-                    pid.store(new_pid, atomic::Ordering::Release);
-                    Some(pid.clone())
-                }
+                NodeKind::Spawned => Some(pid.clone()),
             },
             last_activity: self.last_activity.clone(),
             spawned_at: self.spawned_at.clone(),
@@ -665,13 +663,12 @@ impl PreparedNode {
                     .store(new_generation, atomic::Ordering::Release);
                 let result = self
                     .clone()
-                    .spawn_inner(&mut logger, op_rx_new, finished_tx)
+                    .spawn_inner(&mut logger, op_rx_new, finished_tx, &pid)
                     .await;
                 match result {
-                    Ok(NodeKind::Spawned { pid: new_pid }) => {
+                    Ok(NodeKind::Spawned) => {
                         finished_rx = finished_rx_new;
                         let new_handle = crate::ProcessHandle::new(op_tx_new);
-                        pid.store(new_pid, atomic::Ordering::Release);
                         // Install the new `ProcessHandle` in
                         // `running_nodes` so subsequent stop/kill
                         // operations target this incarnation.
@@ -731,6 +728,7 @@ impl PreparedNode {
         logger: &mut NodeLogger<'_>,
         op_rx: flume::Receiver<ProcessOperation>,
         finished_tx: oneshot::Sender<NodeProcessFinished>,
+        shared_pid: &AtomicU32,
     ) -> eyre::Result<NodeKind> {
         let mut child = match &mut self.command {
             Some(command) => {
@@ -898,6 +896,13 @@ impl PreparedNode {
         let pid = child.id().context(
             "Could not get the pid for the just spawned node and indicate that there is an error",
         )?;
+        // Publish the PID before `spawned_at`: the metrics sampler treats a
+        // non-zero `spawned_at` as "`pid` names the live process", and
+        // `spawn_inner` still awaits on the logger and the log file before
+        // it returns. Storing the PID only after that return left a window
+        // in which a restarted node was sampled under its predecessor's
+        // (possibly recycled) PID (dora-rs/dora#4271).
+        shared_pid.store(pid, atomic::Ordering::Release);
         let now = crate::node_communication::current_millis();
         self.spawned_at.store(now, atomic::Ordering::Release);
         self.startup_kill_sent
@@ -1368,14 +1373,16 @@ impl PreparedNode {
                     .await;
             }
         });
-        Ok(NodeKind::Spawned { pid })
+        Ok(NodeKind::Spawned)
     }
 }
 
 #[must_use]
 enum NodeKind {
     Dynamic,
-    Spawned { pid: u32 },
+    /// The PID is published through the `shared_pid` passed to
+    /// `spawn_inner`.
+    Spawned,
 }
 
 struct NodeProcessFinished {
@@ -1612,10 +1619,15 @@ mod tests {
             let (_op_tx, op_rx) = flume::bounded(2);
             let (finished_tx, finished_rx) = oneshot::channel();
             let kind = node
-                .spawn_inner(&mut test_logger().await, op_rx, finished_tx)
+                .spawn_inner(
+                    &mut test_logger().await,
+                    op_rx,
+                    finished_tx,
+                    &AtomicU32::new(0),
+                )
                 .await
                 .expect("spawn test node");
-            assert!(matches!(kind, NodeKind::Spawned { .. }));
+            assert!(matches!(kind, NodeKind::Spawned));
             // Sent only after the log writer has flushed and finished.
             finished_rx.await.expect("node finished");
         }
@@ -1631,6 +1643,47 @@ mod tests {
             "the respawn truncated the previous incarnation's log: {log}"
         );
         assert!(log.contains("second-incarnation"), "{log}");
+    }
+
+    /// The PID must be published before `spawned_at`: the metrics sampler
+    /// reads a non-zero `spawned_at` as "`pid` names the live process", and
+    /// `spawn_inner` still awaits on the logger and the log file after the
+    /// spawn. A restart used to store the new PID only once `spawn_inner`
+    /// had returned, so a sample in between read the predecessor's
+    /// (possibly recycled) PID (dora-rs/dora#4271).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_inner_publishes_the_pid_with_spawned_at() {
+        use clonable_command::{Command, Stdio};
+
+        let tmp = tempfile::tempdir().expect("create tempdir");
+        let (daemon_tx, _daemon_rx) = tokio::sync::mpsc::channel(64);
+        let mut node = test_prepared_node(daemon_tx, 0, 0.0);
+        node.node_working_dir = tmp.path().to_path_buf();
+        node.command = Some(
+            Command::new("true")
+                .stdin(Stdio::Null)
+                .stdout(Stdio::Piped)
+                .stderr(Stdio::Piped),
+        );
+        let spawned_at = node.spawned_at.clone();
+        // The predecessor's PID, as `restart_loop` leaves it during backoff.
+        let stale_pid = u32::MAX;
+        let shared_pid = AtomicU32::new(stale_pid);
+        let (_op_tx, op_rx) = flume::bounded(2);
+        let (finished_tx, finished_rx) = oneshot::channel();
+        let kind = node
+            .spawn_inner(&mut test_logger().await, op_rx, finished_tx, &shared_pid)
+            .await
+            .expect("spawn test node");
+        assert!(matches!(kind, NodeKind::Spawned));
+        assert_ne!(spawned_at.load(atomic::Ordering::Acquire), 0);
+        let pid = shared_pid.load(atomic::Ordering::Acquire);
+        assert!(
+            pid != stale_pid && pid != 0,
+            "spawned_at was set while the shared pid still named the predecessor"
+        );
+        finished_rx.await.expect("node finished");
     }
 
     /// The first core this test process may run on.
@@ -1710,7 +1763,12 @@ mod tests {
         let (_op_tx, op_rx) = flume::bounded(2);
         let (finished_tx, finished_rx) = oneshot::channel();
         if let Err(err) = node
-            .spawn_inner(&mut test_logger().await, op_rx, finished_tx)
+            .spawn_inner(
+                &mut test_logger().await,
+                op_rx,
+                finished_tx,
+                &AtomicU32::new(0),
+            )
             .await
         {
             return Err(format!("{err:?}"));

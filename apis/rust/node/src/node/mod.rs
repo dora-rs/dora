@@ -184,6 +184,25 @@ fn parse_zero_copy_threshold(raw: Option<&str>) -> usize {
     }
 }
 
+/// Parse a `DORA_NODE_SHM_POOL_SIZE` override with the same grammar as the
+/// per-node `shared_memory_pool_size` YAML key (`134217728`, `128MB`, ...).
+///
+/// Returns `None` when the variable is absent or invalid, so the built-in
+/// default applies; an invalid value is logged rather than dropped silently,
+/// since the variable exists to raise the pool for large payloads.
+fn parse_shm_pool_size(raw: Option<&str>) -> Option<usize> {
+    let raw = raw?;
+    match raw.parse::<dora_message::config::ByteSize>() {
+        Ok(size) => Some(size.as_bytes()),
+        Err(err) => {
+            tracing::warn!(
+                "invalid DORA_NODE_SHM_POOL_SIZE={raw:?} ({err}); using the default pool size"
+            );
+            None
+        }
+    }
+}
+
 /// How many large outbound sends are traced hop-by-hop
 /// (dora-rs/dora#2742 diagnostic; see [`DoraNode::send_output_sample`]).
 ///
@@ -1290,9 +1309,7 @@ impl DoraNode {
             .shared_memory_pool_size
             .map(|bs| bs.as_bytes())
             .or_else(|| {
-                std::env::var("DORA_NODE_SHM_POOL_SIZE")
-                    .ok()
-                    .and_then(|s| s.parse::<usize>().ok())
+                parse_shm_pool_size(std::env::var("DORA_NODE_SHM_POOL_SIZE").ok().as_deref())
             })
             // 8 MB default — kept deliberately small so the pool fits a
             // constrained `/dev/shm` (Docker/Kubernetes commonly cap it at
@@ -1459,6 +1476,14 @@ impl DoraNode {
             }
         };
 
+        // Publishers are all declared by now, so the allocator can carry
+        // their readiness flags for the operator threads it is handed to.
+        let direct_outputs = Arc::new(
+            zenoh_publishers
+                .iter()
+                .map(|(id, output)| (id.clone(), output.ready.clone()))
+                .collect(),
+        );
         let node = Self {
             id: node_id,
             dataflow_id,
@@ -1473,6 +1498,7 @@ impl DoraNode {
             sample_allocator: SampleAllocator {
                 shm_provider: zenoh_shm_provider,
                 zero_copy_threshold: zenoh_zero_copy_threshold,
+                direct_outputs: Some(direct_outputs),
             },
             large_send_diag_count: 0,
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
@@ -2632,6 +2658,12 @@ impl DoraNode {
     /// The runtime hands one to each operator thread so the operator can encode
     /// its payload into a dora-owned [`DataSample`] itself — see
     /// [`SampleAllocator`] for why that matters (dora-rs/dora#2742).
+    ///
+    /// The handle knows which outputs take the direct-zenoh path, so
+    /// [`SampleAllocator::encode_arrow_for_output`] gives an output pinned to
+    /// the daemon path a heap buffer instead of a shared-memory one. It holds
+    /// the outputs' readiness flags themselves, not a copy of their values;
+    /// the set of outputs is fixed once `init` has declared every publisher.
     pub fn sample_allocator(&self) -> SampleAllocator {
         self.sample_allocator.clone()
     }
@@ -3023,6 +3055,11 @@ impl EncodedSample {
 pub struct SampleAllocator {
     shm_provider: Option<Arc<zenoh::shm::ShmProvider<zenoh::shm::PosixShmProviderBackend>>>,
     zero_copy_threshold: usize,
+    /// The node's direct-zenoh outputs and their readiness flags (see
+    /// [`DirectOutput::ready`]), when this allocator came from
+    /// [`DoraNode::sample_allocator`]. `None` means the delivery path is
+    /// unknown and every output is assumed direct.
+    direct_outputs: Option<Arc<HashMap<DataId, Arc<AtomicBool>>>>,
 }
 
 impl SampleAllocator {
@@ -3054,6 +3091,15 @@ impl SampleAllocator {
         data_len: usize,
         direct: bool,
     ) -> NodeResult<DataSample> {
+        Ok(self
+            .try_allocate_shm(data_len, direct)
+            .unwrap_or_else(|| AVec::__from_elem(128, 0, data_len).into()))
+    }
+
+    /// The shared-memory half of [`allocate_for_path`](Self::allocate_for_path):
+    /// an SHM sample of `data_len` bytes when that path would use one, `None`
+    /// when the sample belongs on the heap.
+    fn try_allocate_shm(&self, data_len: usize, direct: bool) -> Option<DataSample> {
         if direct
             && data_len >= self.zero_copy_threshold
             && let Some(provider) = &self.shm_provider
@@ -3078,7 +3124,7 @@ impl SampleAllocator {
                     // back to heap rather than expose or publish an oversized
                     // slice (`DataSample` has no length cap of its own).
                     if sbuf.as_ref().len() == data_len {
-                        return Ok(DataSample {
+                        return Some(DataSample {
                             storage: SampleStorage::Shm(sbuf),
                         });
                     }
@@ -3094,8 +3140,7 @@ impl SampleAllocator {
             }
         }
 
-        let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
-        Ok(avec.into())
+        None
     }
 
     /// Encodes `array` as a complete Arrow IPC stream into a freshly allocated
@@ -3130,6 +3175,38 @@ impl SampleAllocator {
         self.encode_arrow_data(&dora_arrow_convert::internal::array_ref(array).to_data())
     }
 
+    /// [`encode_arrow`](Self::encode_arrow) for a sample that will be sent on
+    /// `output_id`, allocated for that output's delivery path (see
+    /// [`allocate_for_path`](Self::allocate_for_path)): an output pinned to
+    /// the daemon path gets a heap buffer, which it sends without the extra
+    /// copy out of shared memory. Pass the id the sample is sent under, as
+    /// given to [`DoraNode::send_output_encoded`].
+    ///
+    /// On an allocator that does not come from [`DoraNode::sample_allocator`]
+    /// this is the same as [`encode_arrow`](Self::encode_arrow).
+    pub fn encode_arrow_for_output(
+        &self,
+        output_id: &DataId,
+        array: &DoraArray,
+    ) -> NodeResult<EncodedSample> {
+        self.encode_arrow_data_for_path(
+            &dora_arrow_convert::internal::array_ref(array).to_data(),
+            self.output_is_direct(output_id),
+        )
+    }
+
+    /// Whether a sample for `output_id` is published straight to zenoh — the
+    /// allocator-side mirror of [`DoraNode::output_direct_ready`]. Unknown
+    /// when the allocator was not built from a node, so assume direct there.
+    fn output_is_direct(&self, output_id: &DataId) -> bool {
+        match &self.direct_outputs {
+            Some(outputs) => outputs
+                .get(output_id)
+                .is_some_and(|ready| ready.load(Ordering::Relaxed)),
+            None => true,
+        }
+    }
+
     /// Same, for dora-internal callers that already hold an [`ArrayData`].
     pub(crate) fn encode_arrow_data(&self, array: &ArrayData) -> NodeResult<EncodedSample> {
         self.encode_arrow_data_for_path(array, true)
@@ -3155,9 +3232,14 @@ impl SampleAllocator {
             None => {
                 let bytes = ipc_encode::encode_ipc_to_vec_data(array)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e:#}")))?;
-                let mut sample = self.allocate_for_path(bytes.len(), direct)?;
-                sample.copy_from_slice(&bytes);
-                sample
+                match self.try_allocate_shm(bytes.len(), direct) {
+                    Some(mut sample) => {
+                        sample.copy_from_slice(&bytes);
+                        sample
+                    }
+                    // One copy, without zero-filling the buffer first.
+                    None => AVec::from_slice(128, &bytes).into(),
+                }
             }
         };
         Ok(EncodedSample {
@@ -3185,6 +3267,7 @@ impl SampleAllocator {
         Self {
             shm_provider: None,
             zero_copy_threshold: ZERO_COPY_THRESHOLD,
+            direct_outputs: None,
         }
     }
 }
@@ -3803,6 +3886,17 @@ mod tests {
         IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
         integration_testing_format::{IncomingEvent, TimedIncomingEvent},
     };
+
+    #[test]
+    fn shm_pool_size_override_accepts_the_yaml_grammar() {
+        assert_eq!(parse_shm_pool_size(None), None);
+        assert_eq!(parse_shm_pool_size(Some("4096")), Some(4096));
+        assert_eq!(parse_shm_pool_size(Some(" 134217728 ")), Some(128 << 20));
+        assert_eq!(parse_shm_pool_size(Some("128MB")), Some(128 << 20));
+        assert_eq!(parse_shm_pool_size(Some("64 KB")), Some(64 << 10));
+        assert_eq!(parse_shm_pool_size(Some("junk")), None);
+        assert_eq!(parse_shm_pool_size(Some("-1MB")), None);
+    }
 
     #[test]
     fn zero_copy_threshold_override_is_parsed_and_clamped() {
@@ -4957,6 +5051,33 @@ mod operator_boundary_tests {
         assert_eq!(decoded, array);
     }
 
+    /// A type the hand-rolled fast path doesn't cover (a dictionary array)
+    /// goes through the official IPC writer and is copied into the heap
+    /// sample as is, on both delivery paths.
+    #[test]
+    fn fallback_encoded_sample_holds_the_writer_output() {
+        use arrow::array::{Array, DictionaryArray};
+        use arrow::datatypes::Int32Type;
+
+        let dict: DictionaryArray<Int32Type> = vec!["a", "b", "a", "c"].into_iter().collect();
+        let data = dict.to_data();
+        assert!(
+            ipc_encode::PreparedIpc::from_data(&data).is_none(),
+            "dictionaries must take the fallback path for this test"
+        );
+        let expected = ipc_encode::encode_ipc_to_vec_data(&data).unwrap();
+
+        let allocator = SampleAllocator::heap();
+        for direct in [true, false] {
+            let encoded = allocator.encode_arrow_data_for_path(&data, direct).unwrap();
+            assert!(matches!(encoded.sample.storage, SampleStorage::Heap(_)));
+            assert_eq!(&*encoded.sample, expected.as_slice(), "direct={direct}");
+            let decoded = crate::arrow_utils::decode_arrow_ipc(&encoded.sample).unwrap();
+            let decoded = dora_arrow_convert::internal::array_ref(&decoded).to_data();
+            assert_eq!(decoded, data, "direct={direct}");
+        }
+    }
+
     /// A sample bound for the daemon path must come from the heap even when an
     /// SHM provider exists: that path copies an SHM sample out into a
     /// `DataMessage::Vec` (the heap one moves without a copy), and the SHM
@@ -4979,6 +5100,7 @@ mod operator_boundary_tests {
         let allocator = SampleAllocator {
             shm_provider: Some(Arc::new(provider)),
             zero_copy_threshold: ZERO_COPY_THRESHOLD,
+            direct_outputs: None,
         };
         let is_shm = |sample: &DataSample| matches!(sample.storage, SampleStorage::Shm(_));
         let len = ZERO_COPY_THRESHOLD * 2;
@@ -4997,6 +5119,51 @@ mod operator_boundary_tests {
         // The daemon-path copy of an SHM sample is byte-identical.
         let DataMessage::Vec(copied) = direct.sample.finalize().into_data_message();
         assert_eq!(&copied[..], daemon.as_bytes());
+
+        // Per-output encoding puts the storage where the path choice (see
+        // `only_a_ready_direct_output_is_encoded_for_the_direct_path`) says.
+        let node_allocator = SampleAllocator {
+            direct_outputs: Some(Arc::new(HashMap::from([
+                (
+                    DataId::from("op/direct".to_owned()),
+                    Arc::new(AtomicBool::new(true)),
+                ),
+                (
+                    DataId::from("op/frozen".to_owned()),
+                    Arc::new(AtomicBool::new(false)),
+                ),
+            ]))),
+            ..allocator.clone()
+        };
+        let payload = vec![7u8; len].into_arrow();
+        let encode = |id: &str| {
+            node_allocator
+                .encode_arrow_for_output(&DataId::from(id.to_owned()), &payload)
+                .unwrap()
+        };
+        let direct = encode("op/direct");
+        assert!(is_shm(&direct.sample));
+        let frozen = encode("op/frozen");
+        assert!(!is_shm(&frozen.sample));
+        assert_eq!(frozen.as_bytes(), direct.as_bytes());
+    }
+
+    /// The path choice itself needs no SHM provider, so it is checked on every
+    /// host, unlike the storage it leads to above.
+    #[test]
+    fn only_a_ready_direct_output_is_encoded_for_the_direct_path() {
+        let id = |s: &str| DataId::from(s.to_owned());
+        let allocator = SampleAllocator {
+            direct_outputs: Some(Arc::new(HashMap::from([
+                (id("op/direct"), Arc::new(AtomicBool::new(true))),
+                (id("op/frozen"), Arc::new(AtomicBool::new(false))),
+            ]))),
+            ..SampleAllocator::heap()
+        };
+        assert!(allocator.output_is_direct(&id("op/direct")));
+        assert!(!allocator.output_is_direct(&id("op/frozen")));
+        assert!(!allocator.output_is_direct(&id("op/pinned")));
+        assert!(SampleAllocator::heap().output_is_direct(&id("op/pinned")));
     }
 
     /// The allocator is handed to operator threads, so it has to cross thread

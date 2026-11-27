@@ -29,3 +29,8 @@ eyre = { workspace = true, optional = true }
 shared_memory_extended = { version = "0.13.0", optional = true }
 uuid = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+
+# Outside the 1.x guarantee (docs/api-rust.md, "Stability scope at 1.0"):
+# the Rust Semantic Review page shows its breaking changes as allowed.
+[package.metadata.rust-semantic-review]
+allow-breaking-changes = true

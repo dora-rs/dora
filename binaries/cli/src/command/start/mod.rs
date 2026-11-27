@@ -248,6 +248,7 @@ fn prepare_descriptor(
     let resolved_for_fingerprint = dataflow_descriptor
         .resolve_aliases_and_set_defaults()
         .context("failed to resolve nodes for session fingerprint")?;
+    super::warn_unsupported_distribution(&dataflow_descriptor);
     if dataflow_session.invalidate_if_build_inputs_changed(&resolved_for_fingerprint) {
         dataflow_session
             .write_out_for_dataflow(dataflow)

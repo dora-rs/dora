@@ -3,12 +3,20 @@
 //! Sends `example_interfaces/AddTwoInts` requests as Arrow struct arrays
 //! through the declarative ROS2 service bridge, and prints the response.
 //! No ROS2 dependencies needed -- the bridge handles all ROS2 communication.
+//!
+//! The bridge keeps several requests in flight and returns the responses in
+//! request order. Each request carries a `request_number` metadata parameter,
+//! which the bridge copies onto its response, so the requester can check which
+//! request a response answers.
 
 use std::sync::Arc;
 
 use arrow::array::{Array, Int64Array, StructArray};
 use arrow::datatypes::{DataType, Field};
-use dora_node_api::{self, DoraNode, Event, dora_core::config::DataId};
+use dora_node_api::{self, DoraNode, Event, Parameter, dora_core::config::DataId};
+
+/// The metadata parameter that numbers each request.
+const REQUEST_NUMBER: &str = "request_number";
 
 fn main() -> eyre::Result<()> {
     let (mut node, mut events) = DoraNode::init_from_env()?;
@@ -26,8 +34,10 @@ fn main() -> eyre::Result<()> {
 
                     // Build Arrow struct matching AddTwoInts_Request: {a: i64, b: i64}
                     let request = make_add_request(a, b);
-                    println!("Sending request: {a} + {b}");
-                    node.send_output(output.clone(), metadata.parameters, request)?;
+                    println!("Sending request {counter}: {a} + {b}");
+                    let mut parameters = metadata.parameters;
+                    parameters.insert(REQUEST_NUMBER.to_owned(), Parameter::Integer(counter));
+                    node.send_output(output.clone(), parameters, request)?;
                 }
                 "response" => {
                     // Parse Arrow struct matching AddTwoInts_Response: {sum: i64}
@@ -47,7 +57,20 @@ fn main() -> eyre::Result<()> {
                         .downcast_ref::<Int64Array>()
                         .expect("expected Int64Array for 'sum'")
                         .value(0);
-                    println!("Received response: sum = {sum}");
+                    let Some(Parameter::Integer(number)) = metadata.parameters.get(REQUEST_NUMBER)
+                    else {
+                        eprintln!("Warning: response without `{REQUEST_NUMBER}`");
+                        continue;
+                    };
+                    // Request `n` asks for n + 10n.
+                    if sum == number * 11 {
+                        println!("Received response to request {number}: sum = {sum}");
+                    } else {
+                        println!(
+                            "Mismatched response to request {number}: sum = {sum}, expected {}",
+                            number * 11
+                        );
+                    }
                 }
                 other => eprintln!("Ignoring unexpected input `{other}`"),
             },

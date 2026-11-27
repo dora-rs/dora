@@ -1,0 +1,69 @@
+# Builds a Rust Semantic Review page for pull requests: the changed items
+# grouped by module, their callers and callees, and the public API changes.
+# This job posts the comment that links it. On PRs from forks and by
+# Dependabot its token is read-only, so it uploads the data for the comment
+# instead, and rust-semantic-review-comment.yml posts it. Advisory only:
+# nothing depends on this job, and it does not gate the merge queue.
+#
+# The action is https://github.com/phil-opp/rust-semantic-review, a toy
+# project; don't rely on its page as the only basis for a review.
+#
+# Published crates outside the 1.x guarantee (docs/api-rust.md, "Stability
+# scope at 1.0") set `allow-breaking-changes` under
+# `[package.metadata.rust-semantic-review]`, so the page doesn't ask for a
+# breaking release of them. The tool reads it from the base branch, so a PR
+# can't silence its own breaking change. A crate that moves between tiers
+# adds or drops it.
+#
+# The PR's code is never built or run: the tool clones the PR itself,
+# deletes `.cargo/config*` and `rust-toolchain*` from its copies, and runs
+# rust-analyzer without build scripts or proc macros (`trust-project-code`
+# stays off). So no `actions/checkout` either.
+name: Rust Semantic Review
+
+# Only for PRs that touch Rust code or the dependencies: the analysis takes
+# about 7 minutes of runner time on this workspace, and a docs- or CI-only
+# PR has no Rust items to show.
+on:
+  pull_request:
+    paths:
+      - "**.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust-semantic-review.yml"
+  # Builds and caches only the tool (no PR, nothing to analyze): caches
+  # saved on `main` are the ones every PR can read, so PR runs skip the
+  # ~7 minute build of the tool.
+  push:
+    branches: [main]
+    paths:
+      - "**.rs"
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust-semantic-review.yml"
+
+permissions:
+  contents: read
+  # For the comment.
+  pull-requests: write
+  # To show in the comment when the page expires, and to reuse the
+  # previous run's analysis for the changes since the previous comment.
+  actions: read
+
+# A new push to a PR cancels its running job. Runs on `main` queue instead,
+# so that merges arriving faster than a cold build still save the cache.
+concurrency:
+  group: rust-semantic-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: phil-opp/rust-semantic-review@7d67f2ec0bfef7997b4d3ffe8e67f6ff86fc9d64 # main, 2026-11-25
+        with:
+          # Measured on this workspace: about 1% more resolved calls for a
+          # 1.8 GB target-directory cache, or ~3 extra minutes without it.
+          trust-project-code: false
+          retention-days: 30

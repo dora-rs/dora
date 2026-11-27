@@ -302,6 +302,34 @@ where
     download_with(&client, url, target_dir, expected_sha256).await
 }
 
+/// `url` without the parts that conventionally carry credentials, for logs
+/// and error messages.
+///
+/// A source URL may authenticate in-band: `https://user:TOKEN@host/op.so`, or
+/// a presigned object-store URL whose query (`?X-Amz-Signature=...`) is the
+/// credential. Those messages reach the daemon and node logs and the log
+/// pipeline, so drop the userinfo, the query (replaced by `?<redacted>` so the
+/// reader can still tell there was one), and the fragment. The path is kept,
+/// since it is what tells the reader which artifact failed; a token embedded
+/// in a path segment is not recognized. A string that doesn't parse as a URL
+/// is not echoed back at all.
+fn redact_url(url: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(url) else {
+        return "<invalid URL>".to_owned();
+    };
+    // Both fail only for a URL that cannot carry userinfo in the first place.
+    let _ = url.set_username("");
+    let _ = url.set_password(None);
+    let had_query = url.query().is_some();
+    url.set_query(None);
+    url.set_fragment(None);
+    let mut shown = String::from(url);
+    if had_query {
+        shown.push_str("?<redacted>");
+    }
+    shown
+}
+
 /// Download `url` into `target_dir` using an already-built `client`, so the
 /// timeout behavior can be exercised in tests with a short read timeout.
 async fn download_with<T>(
@@ -313,6 +341,11 @@ async fn download_with<T>(
 where
     T: reqwest::IntoUrl + std::fmt::Display + Copy,
 {
+    // Every message below names the URL through this redacted copy, and each
+    // `reqwest::Error` drops its own copy (`without_url`), which would
+    // otherwise print the full URL, credentials included, in the error chain.
+    let shown_url = redact_url(&url.to_string());
+
     tokio::fs::create_dir_all(&target_dir)
         .await
         .wrap_err("failed to create parent folder")?;
@@ -321,13 +354,15 @@ where
         .get(url)
         .send()
         .await
-        .wrap_err_with(|| format!("failed to request operator from `{url}`"))?;
+        .map_err(reqwest::Error::without_url)
+        .wrap_err_with(|| format!("failed to request operator from `{shown_url}`"))?;
 
     // Reject 4xx/5xx before reading the body: otherwise the error page is
     // written out as if it were the requested artifact.
     let response = response
         .error_for_status()
-        .wrap_err_with(|| format!("server returned an error status for `{url}`"))?;
+        .map_err(reqwest::Error::without_url)
+        .wrap_err_with(|| format!("server returned an error status for `{shown_url}`"))?;
 
     let filename = get_filename(&response).context("Could not find a filename")?;
     let path = target_dir.join(&filename);
@@ -366,7 +401,8 @@ where
         while let Some(chunk) = response
             .chunk()
             .await
-            .wrap_err_with(|| format!("failed to download from `{url}`"))?
+            .map_err(reqwest::Error::without_url)
+            .wrap_err_with(|| format!("failed to download from `{shown_url}`"))?
         {
             hasher.update(&chunk);
             file.write_all(&chunk)
@@ -390,11 +426,13 @@ where
         // `actual_hash` is lowercase hex; a digest from an index/lockfile may be
         // uppercase, so compare case-insensitively rather than rejecting it.
         if !expected.eq_ignore_ascii_case(&actual_hash) {
-            eyre::bail!("SHA-256 mismatch for `{url}`: expected {expected}, got {actual_hash}");
+            eyre::bail!(
+                "SHA-256 mismatch for `{shown_url}`: expected {expected}, got {actual_hash}"
+            );
         }
     } else {
         tracing::warn!(
-            url = %url,
+            url = %shown_url,
             sha256 = %actual_hash,
             "downloading without integrity verification — \
              consider adding sha256 to the source definition"
@@ -847,6 +885,85 @@ mod tests {
             Some("mod\u{e8}le.bin"),
             "a raw UTF-8 Content-Disposition filename must not fall back to the URL name"
         );
+    }
+
+    // --- URL redaction ---
+
+    #[test]
+    fn redact_url_drops_userinfo_query_and_fragment() {
+        use super::redact_url;
+        assert_eq!(
+            redact_url("https://user:TOKEN@example.com/op.so"),
+            "https://example.com/op.so"
+        );
+        assert_eq!(
+            redact_url("https://TOKEN@example.com/op.so"),
+            "https://example.com/op.so"
+        );
+        assert_eq!(
+            redact_url("https://bucket.s3.example.com/m.bin?X-Amz-Signature=abc#frag"),
+            "https://bucket.s3.example.com/m.bin?<redacted>"
+        );
+        // A URL without credentials is shown as is.
+        assert_eq!(
+            redact_url("http://127.0.0.1:8080/flow.yml"),
+            "http://127.0.0.1:8080/flow.yml"
+        );
+        // Garbage is not echoed back: it could be a credential pasted by mistake.
+        assert_eq!(redact_url("not a url SECRET"), "<invalid URL>");
+    }
+
+    /// An error status and a digest mismatch both name the URL; neither may
+    /// carry its credentials, including through the wrapped `reqwest::Error`.
+    #[tokio::test]
+    async fn download_errors_do_not_leak_url_credentials() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        async fn serve(response: &'static [u8]) -> std::net::SocketAddr {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                socket.write_all(response).await.unwrap();
+                socket.flush().await.unwrap();
+            });
+            addr
+        }
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let target_dir =
+            std::env::temp_dir().join(format!("dora-download-redact-{}", std::process::id()));
+
+        let addr = serve(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n").await;
+        let url = format!("http://user:PASSWORD@{addr}/op.so?sig=QUERYSECRET");
+        let status_err = super::download_with(&client, url.as_str(), &target_dir, None)
+            .await
+            .unwrap_err();
+
+        let addr = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok").await;
+        let url = format!("http://user:PASSWORD@{addr}/op.so?sig=QUERYSECRET");
+        let digest_err =
+            super::download_with(&client, url.as_str(), &target_dir, Some(&"0".repeat(64)))
+                .await
+                .unwrap_err();
+        let _ = std::fs::remove_dir_all(&target_dir);
+
+        for (what, err) in [("status", status_err), ("digest", digest_err)] {
+            let shown = format!("{err:?}");
+            assert!(
+                shown.contains("/op.so?<redacted>"),
+                "{what} error must still name the redacted URL; got: {shown}"
+            );
+            for secret in ["PASSWORD", "QUERYSECRET"] {
+                assert!(
+                    !shown.contains(secret),
+                    "{what} error leaks `{secret}`: {shown}"
+                );
+            }
+        }
     }
 
     // --- read timeout (stalled body) ---

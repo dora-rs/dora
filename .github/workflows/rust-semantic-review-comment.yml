@@ -1,0 +1,34 @@
+# Posts the comment for runs of rust-semantic-review.yml that couldn't post
+# it themselves: PRs from forks and by Dependabot, whose runs get a
+# read-only token. On other PRs the analysis run has already commented, and
+# this job finds no data to post.
+#
+# `workflow_run` runs this file as it is on the default branch, with a token
+# that can write. Nothing of the PR is checked out or run here: the
+# comment-only action reads the analysis run's small data artifact, checks
+# its form, and checks that the PR is still at the analysed commit before
+# it posts.
+name: Rust Semantic Review comment
+
+on:
+  workflow_run:
+    workflows: [Rust Semantic Review]
+    types: [completed]
+
+permissions:
+  # To read the analysis run's artifacts and when they expire.
+  actions: read
+  pull-requests: write
+
+# One at a time per PR branch, in order, so that a comment is never posted
+# twice for the same previous one.
+concurrency:
+  group: rust-semantic-review-comment-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+
+jobs:
+  comment:
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: phil-opp/rust-semantic-review/comment@7d67f2ec0bfef7997b4d3ffe8e67f6ff86fc9d64 # main, 2026-11-25

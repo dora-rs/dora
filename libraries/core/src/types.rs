@@ -73,13 +73,18 @@ impl TypeDef {
     ///
     /// Returns `None` if the type has no field definitions or any of them could
     /// not be resolved.
+    ///
+    /// Also `None` when the schema, with every struct reference expanded,
+    /// would hold more than `MAX_SCHEMA_FIELDS` fields: see
+    /// [`resolve_field_type`].
     pub fn to_arrow_schema_with_registry(&self, registry: &TypeRegistry) -> Option<Schema> {
-        self.build_schema(|t| resolve_field_type(t, registry, 0))
+        let mut budget = MAX_SCHEMA_FIELDS;
+        self.build_schema(|t| resolve_field_type(t, registry, 0, &mut budget))
     }
 
     /// Fail-closed: if any declared field cannot be resolved, returns `None`
     /// rather than a partial schema that could mask type errors.
-    fn build_schema(&self, resolve: impl Fn(&str) -> Option<DataType>) -> Option<Schema> {
+    fn build_schema(&self, mut resolve: impl FnMut(&str) -> Option<DataType>) -> Option<Schema> {
         if self.fields.is_empty() {
             return None;
         }
@@ -136,14 +141,33 @@ pub fn is_known_arrow_type(name: &str) -> bool {
 
 const MAX_TYPE_DEPTH: u8 = 8;
 
+/// The most field types one schema may resolve, counting every struct
+/// reference (and `List` item) as often as it is expanded. The std types
+/// need a few dozen.
+const MAX_SCHEMA_FIELDS: usize = 4096;
+
 /// Resolve a field type string to an Arrow `DataType`, supporting:
 /// - Primitive Arrow types (`Float64`, `Utf8`, etc.)
 /// - `List<T>` syntax (mapped to `LargeList`)
 /// - Struct type references by short name (`Vector3`) or full URN (`std/math/v1/Vector3`)
-fn resolve_field_type(type_str: &str, registry: &TypeRegistry, depth: u8) -> Option<DataType> {
+///
+/// Each call spends one unit of `budget` and fails once it is used up.
+/// `MAX_TYPE_DEPTH` bounds how deep the expansion goes but not how wide: a
+/// chain of shipped types whose fields each reference the next type several
+/// times expands to `fanout^depth` fields (10^8 for eight types of ten
+/// fields). Building, comparing and printing such a schema would hang
+/// `dora build` / `dora validate` on an untrusted package; the budget stops
+/// it after `MAX_SCHEMA_FIELDS` resolutions instead.
+fn resolve_field_type(
+    type_str: &str,
+    registry: &TypeRegistry,
+    depth: u8,
+    budget: &mut usize,
+) -> Option<DataType> {
     if depth > MAX_TYPE_DEPTH {
         return None;
     }
+    *budget = budget.checked_sub(1)?;
 
     // Trim surrounding whitespace so a padded field type (e.g. a quoted
     // `"Float32 "` in YAML) resolves the same way here as in
@@ -163,7 +187,7 @@ fn resolve_field_type(type_str: &str, registry: &TypeRegistry, depth: u8) -> Opt
         .and_then(|s| s.strip_suffix('>'))
         .map(str::trim)
     {
-        let inner_dt = resolve_field_type(inner, registry, depth + 1)?;
+        let inner_dt = resolve_field_type(inner, registry, depth + 1, budget)?;
         return Some(DataType::LargeList(Arc::new(Field::new(
             "item", inner_dt, true,
         ))));
@@ -186,7 +210,7 @@ fn resolve_field_type(type_str: &str, registry: &TypeRegistry, depth: u8) -> Opt
         .fields
         .iter()
         .map(|f| {
-            let dt = resolve_field_type(&f.r#type, registry, depth + 1)?;
+            let dt = resolve_field_type(&f.r#type, registry, depth + 1, budget)?;
             Some(Field::new(&f.name, dt, f.nullable))
         })
         .collect::<Option<Vec<_>>>()?;
@@ -1410,6 +1434,12 @@ mod tests {
 
     // --- resolve_field_type tests ---
 
+    /// [`super::resolve_field_type`] with a full budget.
+    fn resolve_field_type(type_str: &str, registry: &TypeRegistry, depth: u8) -> Option<DataType> {
+        let mut budget = MAX_SCHEMA_FIELDS;
+        super::resolve_field_type(type_str, registry, depth, &mut budget)
+    }
+
     #[test]
     fn resolve_field_type_primitive() {
         let reg = TypeRegistry::new();
@@ -1607,6 +1637,57 @@ mod tests {
         let def = reg.resolve("std/vision/v1/Segmentation").unwrap();
         let schema = def.to_arrow_schema_with_registry(&reg).unwrap();
         assert_eq!(schema.fields().len(), 5);
+    }
+
+    /// Registers `acme/dag/v1/T0..T7`, where every field of `Ti` is a
+    /// `T(i+1)` and `T7`'s fields are `Float32`: within `MAX_TYPE_DEPTH`, and
+    /// `fanout^8` leaf fields once expanded.
+    fn struct_dag(fanout: usize) -> TypeRegistry {
+        let mut reg = TypeRegistry::new();
+        let last = usize::from(MAX_TYPE_DEPTH) - 1;
+        for level in 0..=last {
+            let field_type = if level == last {
+                "Float32".to_string()
+            } else {
+                format!("acme/dag/v1/T{}", level + 1)
+            };
+            let def = TypeDef {
+                arrow: "Struct".to_string(),
+                description: None,
+                params: vec![],
+                fields: (0..fanout)
+                    .map(|i| FieldDef {
+                        name: format!("f{i}"),
+                        r#type: field_type.clone(),
+                        nullable: true,
+                    })
+                    .collect(),
+                metadata: vec![],
+            };
+            reg.insert_type(format!("acme/dag/v1/T{level}"), def);
+        }
+        reg
+    }
+
+    fn dag_schema(reg: &TypeRegistry) -> Option<Schema> {
+        reg.resolve("acme/dag/v1/T0")
+            .unwrap()
+            .to_arrow_schema_with_registry(reg)
+    }
+
+    /// A struct DAG that expands to 10^8 fields must be refused once it
+    /// exceeds the field budget, not built (which used to hang).
+    #[test]
+    fn a_struct_dag_past_the_field_budget_does_not_resolve() {
+        assert!(dag_schema(&struct_dag(10)).is_none());
+    }
+
+    /// The same shape at a fanout whose expansion fits the budget (510
+    /// fields) still resolves, so the budget only cuts off blow-ups.
+    #[test]
+    fn a_struct_dag_within_the_field_budget_resolves() {
+        let schema = dag_schema(&struct_dag(2)).expect("510 fields fit the budget");
+        assert_eq!(schema.fields().len(), 2);
     }
 
     #[test]

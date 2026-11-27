@@ -173,6 +173,40 @@ fn bump_drop_count(dropped: &mut HashMap<DataId, u64>, id: &DataId) -> u64 {
     *count
 }
 
+/// Count an input event discarded at `cap` as a drop, unless it is a zenoh
+/// input whose arrival bound released it first and counted it there.
+///
+/// A `drop_oldest` queue overflowing is the steady state of a consumer slower
+/// than its producer, so log on a power-of-two cadence rather than per dropped
+/// event; the count is exact.
+fn count_drop(
+    dropped: &mut HashMap<DataId, u64>,
+    policy: QueuePolicy,
+    cap: usize,
+    discarded: EventItem,
+) {
+    let Some(discarded) = discarded.settle() else {
+        return;
+    };
+    let Some(id) = input_id(&discarded) else {
+        return;
+    };
+    let drops = bump_drop_count(dropped, id);
+    if should_warn_drop(drops) {
+        if policy == QueuePolicy::Backpressure {
+            tracing::error!(
+                drops,
+                "Backpressure input `{id}` hit hard cap ({cap}), dropping oldest to prevent OOM"
+            );
+        } else {
+            tracing::warn!(
+                drops,
+                "Discarding event for input `{id}` due to queue size limit"
+            );
+        }
+    }
+}
+
 /// Emit a loud error when a correlated event has to be dropped because
 /// everything in the queue is also correlated. Identifies the correlation
 /// keys so operators can trace the affected request/goal.
@@ -563,33 +597,6 @@ impl Scheduler {
         bump_drop_count(&mut self.dropped, &NON_INPUT_EVENT_ID)
     }
 
-    /// Discards the queued messages of `input` for a `flush: true` message.
-    ///
-    /// Streaming pattern's `flush: true` means "discard stale stream chunks".
-    /// It must NOT wipe service responses or action results that happen to
-    /// share the same input, because those carry `request_id` / `goal_id` /
-    /// `goal_status` correlations whose senders are waiting for them
-    /// (dora-rs/adora#146). Use the same correlation predicate that the
-    /// drop_oldest path uses and retain correlated events across the flush.
-    pub(crate) fn flush(&mut self, input: &DataId) {
-        let Some((_size, queue)) = self.event_queues.get_mut(input) else {
-            return;
-        };
-        let before = queue.len();
-        queue.retain(is_correlated);
-        let drained = before - queue.len();
-        if drained > 0 {
-            tracing::debug!("Flushed {drained} queued event(s) for input `{input}` (flush signal)");
-        }
-        if !queue.is_empty() {
-            tracing::debug!(
-                input = %input,
-                preserved = queue.len(),
-                "flush signal retained correlated (request_id/goal_id) events"
-            );
-        }
-    }
-
     pub(crate) fn add_event(&mut self, event: EventItem) {
         let event_id = input_id(&event);
         let should_flush = flush_target(&event).is_some();
@@ -600,8 +607,30 @@ impl Scheduler {
             return;
         };
 
-        if should_flush {
-            self.flush(event_id);
+        // Flush older queued messages when flush=true is present.
+        //
+        // Streaming pattern's `flush: true` means "discard stale stream chunks".
+        // It must NOT wipe service responses or action results that happen to
+        // share the same input, because those carry `request_id` / `goal_id` /
+        // `goal_status` correlations whose senders are waiting for them
+        // (dora-rs/adora#146). Use the same correlation predicate that the
+        // drop_oldest path uses and retain correlated events across the flush.
+        if should_flush && let Some((_size, queue)) = self.event_queues.get_mut(event_id) {
+            let before = queue.len();
+            queue.retain(is_correlated);
+            let drained = before - queue.len();
+            if drained > 0 {
+                tracing::debug!(
+                    "Flushed {drained} queued event(s) for input `{event_id}` (flush signal)"
+                );
+            }
+            if !queue.is_empty() {
+                tracing::debug!(
+                    input = %event_id,
+                    preserved = queue.len(),
+                    "flush signal retained correlated (request_id/goal_id) events"
+                );
+            }
         }
 
         // Enforce queue size limit.
@@ -631,38 +660,24 @@ impl Scheduler {
 
         let cap = policy.effective_cap(*size);
         if queue.len() >= cap {
-            // A `drop_oldest` queue overflowing is the steady state of a
-            // consumer slower than its producer, so log on a power-of-two
-            // cadence rather than per dropped event; the count is exact.
-            let drops = bump_drop_count(&mut self.dropped, event_id);
-            if should_warn_drop(drops) {
-                if policy == QueuePolicy::Backpressure {
-                    tracing::error!(
-                        drops,
-                        "Backpressure input `{event_id}` hit hard cap ({cap}), \
-                         dropping oldest to prevent OOM"
-                    );
-                } else {
-                    tracing::warn!(
-                        drops,
-                        "Discarding event for input `{event_id}` due to queue size limit"
-                    );
-                }
-            }
-            match select_eviction(queue.iter(), &event) {
-                Eviction::RemoveAt(idx) => {
-                    queue.remove(idx);
-                }
+            let discarded = match select_eviction(queue.iter(), &event) {
+                Eviction::RemoveAt(idx) => queue.remove(idx),
                 Eviction::DropIncoming => {
                     // Queue is entirely correlated; preserve correlations
                     // by dropping the incoming (non-correlated) event.
+                    count_drop(&mut self.dropped, policy, cap, event);
                     return;
                 }
                 Eviction::DropCorrelatedLoud(idx) => {
-                    if let Some(dropped) = queue.remove(idx) {
-                        log_correlation_drop(event_id, &dropped);
+                    let dropped = queue.remove(idx);
+                    if let Some(dropped) = &dropped {
+                        log_correlation_drop(event_id, dropped);
                     }
+                    dropped
                 }
+            };
+            if let Some(discarded) = discarded {
+                count_drop(&mut self.dropped, policy, cap, discarded);
             }
         }
         queue.push_back(event);

@@ -35,6 +35,8 @@ const MAX_MODULE_FILE_SIZE: u64 = 1_048_576;
 /// Usage in module YAML: `_mod/port_name`
 const MODULE_INPUT_SOURCE: &str = "_mod";
 
+const MODULE_DIR_TOKEN: &str = "$MODULE_DIR";
+
 /// Where the outputs a module declares end up after expansion: maps each
 /// declared output name to the mapping a consumer must use to read it — the
 /// prefixed inner node ID plus the output name as that node addresses it
@@ -210,7 +212,7 @@ fn check_module_file_inner(
         );
     }
 
-    let module_file = load_module_file(canonical)?;
+    let module_file = load_module_file(canonical, ".")?;
     validate_module_header(&module_file.module)?;
     let module_dir = canonical
         .parent()
@@ -295,7 +297,7 @@ fn check_module_file_inner(
             // boundary is enforced by the real expansion path, not this lint.
             //
             // Load nested module to collect its declared outputs.
-            let nested_module = load_module_file(&nested_canonical)?;
+            let nested_module = load_module_file(&nested_canonical, ".")?;
             check_nested_module_required_inputs(
                 &module_file.module.name,
                 &node.id,
@@ -374,7 +376,7 @@ fn collect_module_source_outputs(
                     module_file.module.name, mod_path, node.id,
                 )
             })?;
-            let nested_module = load_module_file(&nested_canonical)?;
+            let nested_module = load_module_file(&nested_canonical, ".")?;
             nested_module
                 .module
                 .outputs
@@ -711,12 +713,21 @@ fn expand_module_node(
         );
     }
 
-    let module_file = load_module_file(&canonical)?;
-    validate_module_header(&module_file.module)?;
     let module_id = node.id.to_string();
     let module_dir = absolute_module
         .parent()
         .expect("module file must have a parent directory");
+
+    // Builds and nodes can run from a Git checkout or a custom working directory.
+    let physical_dir = canonical
+        .parent()
+        .ok_or_else(|| eyre::eyre!("module file has no parent: {}", canonical.display()))?
+        .to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    let dir = physical_dir.as_str();
+    let mut module_file = load_module_file(&canonical, dir)?;
+    validate_module_header(&module_file.module)?;
+    expand_build_dir(&mut module_file.build, dir);
 
     // Validate: all required module inputs are provided by the node's inputs
     for declared_input in &module_file.module.inputs {
@@ -835,6 +846,19 @@ fn expand_module_node(
         }
 
         resolve_inner_node_paths(&mut inner_node, module_dir, project_root)?;
+
+        if let Some(args) = &mut inner_node.args {
+            *args = substitute_module_vars(args, params, Some(dir));
+        }
+        expand_build_dir(&mut inner_node.build, dir);
+        if let Some(op) = &mut inner_node.operator {
+            expand_build_dir(&mut op.config.build, dir);
+        }
+        if let Some(runtime) = &mut inner_node.operators {
+            for op in &mut runtime.operators {
+                expand_build_dir(&mut op.config.build, dir);
+            }
+        }
 
         // Propagate deploy from module node to inner nodes
         if inner_node.deploy.is_none() {
@@ -1139,8 +1163,7 @@ fn propagate_module_node_env(
     }
 }
 
-/// Substitute `${_param.name}` and `$PARAM_<NAME>` references in a node's args
-/// and inject params into the node's env map as `EnvValue::String` entries.
+/// Inject params into the node's env map as `EnvValue::String` entries.
 /// A nested module node gets them in its own `params` instead.
 ///
 /// An injected value has its `$VAR` references expanded here, as a YAML
@@ -1150,11 +1173,6 @@ fn substitute_params_in_node(
     node: &mut Node,
     params: &BTreeMap<String, String>,
 ) -> eyre::Result<()> {
-    // Substitute in args
-    if let Some(ref mut args) = node.args {
-        *args = substitute_params_in_str(args, params);
-    }
-
     // A nested module node expands later with its own `params` only. Resolve
     // a forwarded `speed: $PARAM_SPEED` against ours and hand down the params
     // it does not set; its own expansion then substitutes them into its inner
@@ -1211,6 +1229,18 @@ fn expand_env_references(value: &str) -> eyre::Result<String> {
 /// verbatim, matching the old behavior of only replacing keys present in
 /// `params`.
 fn substitute_params_in_str(s: &str, params: &BTreeMap<String, String>) -> String {
+    substitute_module_vars(s, params, None)
+}
+
+fn expand_build_dir(build: &mut Option<String>, dir: &str) {
+    if let Some(build) = build
+        && build.contains('$')
+    {
+        *build = substitute_module_vars(build, &BTreeMap::new(), Some(dir));
+    }
+}
+
+fn substitute_module_vars(s: &str, params: &BTreeMap<String, String>, dir: Option<&str>) -> String {
     const BRACED: &str = "${_param.";
     const ENV_STYLE: &str = "$PARAM_";
 
@@ -1229,7 +1259,16 @@ fn substitute_params_in_str(s: &str, params: &BTreeMap<String, String>) -> Strin
         result.push_str(&rest[..start]);
         let at_token = &rest[start..];
 
-        if let Some(after_prefix) = at_token.strip_prefix(BRACED) {
+        if let Some(dir) = dir
+            && let Some(tail) = at_token.strip_prefix("${MODULE_DIR}").or_else(|| {
+                at_token.strip_prefix(MODULE_DIR_TOKEN).filter(|tail| {
+                    !tail.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                })
+            })
+        {
+            result.push_str(dir);
+            rest = tail;
+        } else if let Some(after_prefix) = at_token.strip_prefix(BRACED) {
             match after_prefix.find('}') {
                 Some(end) => {
                     let key = &after_prefix[..end];
@@ -1479,7 +1518,7 @@ fn rewrite_inputs_map(
     Ok(())
 }
 
-fn load_module_file(path: &Path) -> eyre::Result<ModuleFile> {
+fn load_module_file(path: &Path, dir: &str) -> eyre::Result<ModuleFile> {
     use std::io::Read as _;
     // Bound the read itself, not just a `metadata().len()` pre-check: that
     // check reports 0 for FIFOs/character devices (e.g. `/dev/zero`) and is
@@ -1501,7 +1540,7 @@ fn load_module_file(path: &Path) -> eyre::Result<ModuleFile> {
             path.display()
         );
     }
-    let module = serde_yaml::from_slice(&buf)
+    let module = dora_message::descriptor::deserialize_module_yaml(&buf, dir)
         .with_context(|| format!("failed to parse module file: {}", path.display()))?;
     super::reject_duplicate_keys(&buf)
         .with_context(|| format!("failed to parse module file: {}", path.display()))?;
@@ -1659,7 +1698,7 @@ nodes:
         content.push_str(&"a".repeat((MAX_MODULE_FILE_SIZE + 16) as usize));
         let path = write_file(tmp.path(), "big_module.yml", &content);
 
-        let err = load_module_file(&path).unwrap_err().to_string();
+        let err = load_module_file(&path, ".").unwrap_err().to_string();
         assert!(err.contains("too large"), "unexpected error: {err}");
     }
 
@@ -1675,7 +1714,7 @@ nodes:
         assert_eq!(content.len() as u64, MAX_MODULE_FILE_SIZE);
         let path = write_file(tmp.path(), "ok_module.yml", &content);
 
-        assert!(load_module_file(&path).is_ok());
+        assert!(load_module_file(&path, ".").is_ok());
     }
 
     #[test]

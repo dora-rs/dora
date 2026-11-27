@@ -310,6 +310,20 @@ pub struct LogSubscriber {
     pub filter: dora_message::config::LogSubscriptionFilter,
 }
 
+/// Every Zenoh listen endpoint planned by `dataflows`. A planned port is
+/// only probed free, not held, until its node binds it, so a node IPC
+/// listener of *any* dataflow on this daemon must stay off it (#4107,
+/// #4242).
+pub(crate) fn planned_zenoh_endpoints<'a>(
+    dataflows: impl IntoIterator<Item = &'a RunningDataflow>,
+) -> BTreeSet<String> {
+    dataflows
+        .into_iter()
+        .flat_map(|dataflow| dataflow.zenoh_peering.values())
+        .flat_map(|peering| peering.listen.iter().cloned())
+        .collect()
+}
+
 pub struct RunningDataflow {
     pub(crate) id: uuid::Uuid,
     pub(crate) descriptor: Descriptor,
@@ -605,7 +619,13 @@ impl RunningDataflow {
     /// grows while a user holds a `dora topic` subscription, and
     /// `StopTopicDebugStream` already reaps its entries on unsubscribe, so it is
     /// bounded by live subscriptions rather than by add/remove churn.
+    ///
+    /// The node's `dynamic_nodes` marker goes too: it describes the removed
+    /// incarnation, not the id. Left behind, a later static re-add under the
+    /// same id was still treated as dynamic — `dora node replace` refused it,
+    /// and producers added afterwards skipped it as a required startup acker.
     pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
+        self.dynamic_nodes.remove(node_id);
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
         self.node_stderr_most_recent.remove(node_id);

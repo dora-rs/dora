@@ -26,3 +26,8 @@ tempfile = { workspace = true }
 # See the matching note in `libraries/message/Cargo.toml`: `Uuid::new_v4` is
 # test-only here too, and uhlc 0.5 used to enable `uuid/v4` for us by accident.
 uuid = { workspace = true, features = ["v4"] }
+
+# Outside the 1.x guarantee (docs/api-rust.md, "Stability scope at 1.0"):
+# the Rust Semantic Review page shows its breaking changes as allowed.
+[package.metadata.rust-semantic-review]
+allow-breaking-changes = true

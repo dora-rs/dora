@@ -1025,16 +1025,30 @@ fn parse_log_content(path: &Path, content: &str) -> Vec<LogMessage> {
     }
 }
 
+/// The instant `ago` before `now`, saturating at the earliest representable
+/// time.
+///
+/// `--since`/`--until` take an unbounded duration, and a large one (a few
+/// hundred thousand years) overflowed `DateTime - TimeDelta`, which panics.
+/// An even larger one failed `TimeDelta::from_std` and silently dropped the
+/// filter, so `--until <huge>` showed every line instead of none. Saturating
+/// keeps both flags' meaning: "since before everything" / "until before
+/// everything".
+fn time_cutoff(now: DateTime<Utc>, ago: std::time::Duration) -> DateTime<Utc> {
+    chrono::TimeDelta::from_std(ago)
+        .ok()
+        .and_then(|delta| now.checked_sub_signed(delta))
+        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+}
+
 fn apply_time_filters(
     messages: Vec<LogMessage>,
     since: Option<std::time::Duration>,
     until: Option<std::time::Duration>,
     now: DateTime<Utc>,
 ) -> Vec<LogMessage> {
-    let since_threshold =
-        since.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
-    let until_threshold =
-        until.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
+    let since_threshold = since.map(|d| time_cutoff(now, d));
+    let until_threshold = until.map(|d| time_cutoff(now, d));
 
     messages
         .into_iter()
@@ -1293,10 +1307,8 @@ fn stream_logs_from_coordinator(
     let log_level = follow_subscription_level(&config.min_level, &config.node_filters);
 
     let now = Utc::now();
-    let since_threshold =
-        since.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
-    let until_threshold =
-        until.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
+    let since_threshold = since.map(|d| time_cutoff(now, d));
+    let until_threshold = until.map(|d| time_cutoff(now, d));
     let want_node = node.map(|n| n.as_ref());
 
     let request = serde_json::to_vec(&ControlRequest::LogSubscribe {
@@ -1515,6 +1527,29 @@ mod tests {
             apply_time_filters(msgs, None, Some(std::time::Duration::from_secs(3600)), now);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].message, "old");
+    }
+
+    /// A huge `--since`/`--until` must saturate, not panic on
+    /// `DateTime - TimeDelta` overflow or silently drop the filter.
+    #[test]
+    fn time_filter_saturates_huge_durations() {
+        let now = Utc::now();
+        let msgs = vec![make_msg("a", None, None, now - chrono::TimeDelta::hours(1))];
+        // ~317k years: valid `TimeDelta`, beyond `DateTime`'s range.
+        let beyond_datetime = std::time::Duration::from_secs(10_000_000_000_000);
+        // Beyond `TimeDelta`'s range entirely.
+        let beyond_delta = std::time::Duration::from_secs(u64::MAX);
+        for huge in [beyond_datetime, beyond_delta] {
+            assert_eq!(
+                apply_time_filters(msgs.clone(), Some(huge), None, now).len(),
+                1,
+                "since <huge> keeps everything"
+            );
+            assert!(
+                apply_time_filters(msgs.clone(), None, Some(huge), now).is_empty(),
+                "until <huge> keeps nothing"
+            );
+        }
     }
 
     #[test]

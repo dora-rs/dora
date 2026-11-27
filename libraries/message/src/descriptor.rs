@@ -6,7 +6,6 @@ use crate::{
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_with_expand_env::with_expand_envs;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -343,9 +342,9 @@ pub enum DistributeStrategy {
     /// Each daemon builds from source (current/default behavior).
     #[default]
     Local,
-    /// CLI pushes built binary via SSH/SCP before spawn.
+    /// Reserved for SCP distribution. Currently uses local builds.
     Scp,
-    /// Daemon pulls binary from coordinator HTTP artifact store before spawn.
+    /// Reserved for HTTP distribution. Currently uses local builds.
     Http,
 }
 
@@ -1765,6 +1764,45 @@ fn unescape_json_env_map(env: &mut serde_json::Value) {
     }
 }
 
+thread_local! {
+    static MODULE_DIR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Decode a module from the original YAML, resolving `$MODULE_DIR` in its
+/// environment strings alongside ordinary host variables.
+#[doc(hidden)]
+pub fn deserialize_module_yaml<'de, T: Deserialize<'de>>(
+    yaml: &'de [u8],
+    module_dir: &str,
+) -> Result<T, serde_yaml::Error> {
+    // Serde's nested EnvValue visitor has no context parameter. Confine the
+    // override to this synchronous decode, including nesting and unwinding.
+    struct Restore(Option<String>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            MODULE_DIR.replace(self.0.take());
+        }
+    }
+    let _restore = Restore(MODULE_DIR.replace(Some(module_dir.to_owned())));
+    serde_yaml::from_slice(yaml)
+}
+
+fn expand_env_value<'de, D: serde::Deserializer<'de>>(de: D) -> Result<String, D::Error> {
+    let raw = String::deserialize(de)?;
+    MODULE_DIR.with_borrow(|dir| {
+        shellexpand::env_with_context(&raw, |name| {
+            if name == "MODULE_DIR"
+                && let Some(dir) = dir
+            {
+                return Ok(Some(dir.clone()));
+            }
+            std::env::var(name).map(Some)
+        })
+        .map(|value| value.into_owned())
+        .map_err(serde::de::Error::custom)
+    })
+}
+
 impl<'de> Deserialize<'de> for EnvValue {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -1775,7 +1813,7 @@ impl<'de> Deserialize<'de> for EnvValue {
             // Before `Float`, which would round it to the nearest `f64`.
             Unsigned(u64),
             Float(f64),
-            #[serde(deserialize_with = "with_expand_envs")]
+            #[serde(deserialize_with = "expand_env_value")]
             String(String),
         }
         Ok(match Raw::deserialize(deserializer)? {

@@ -9,6 +9,7 @@ This guide covers how to debug, record, replay, and monitor dora dataflows. It i
 - [Prerequisites](#prerequisites)
 - [Quick Debugging Checklist](#quick-debugging-checklist)
 - [Record and Replay](#record-and-replay)
+  - [Installing the Record and Replay Helpers](#installing-the-record-and-replay-helpers)
   - [Recording a Dataflow](#recording-a-dataflow)
   - [Recording Specific Topics](#recording-specific-topics)
   - [Proxy Recording (Remote / Diskless)](#proxy-recording-remote--diskless)
@@ -117,6 +118,37 @@ dora record dataflow.yml -o debug-capture.drec
 
 Record captures live dataflow messages to a file. Replay substitutes source nodes with recorded data, letting you reproduce behavior without hardware.
 
+### Installing the Record and Replay Helpers
+
+Local recording and replay launch separate helper binaries,
+`dora-record-node` and `dora-replay-node`. The CLI looks for them next to the
+`dora` executable first, then in `~/.dora/nodes/<version>/bin` (where the
+install fallback below puts them), then on `PATH`.
+
+Since 1.2, the CLI release archives and the `install.sh` / `install.ps1`
+installers ship both helpers next to `dora`, so they work out of the box.
+The 1.1.0 archives and the `dora-rs-cli` wheel ship the CLI alone. A
+`dora self update` from 1.1 also replaces only `dora`; re-run the installer
+afterwards to get the helpers.
+
+If no helper is found, the CLI builds it: inside the Dora workspace with
+`cargo build`, and otherwise by installing the version that matches the CLI
+from crates.io into `~/.dora/nodes/<version>` (this needs a Rust toolchain):
+
+```bash
+cargo install --locked --root ~/.dora/nodes/<version> --version =<version> dora-record-node
+```
+
+You can also build both helpers yourself in a Dora checkout that matches your
+installed CLI version, and add the build output directory
+(`target/release` by default) to `PATH`:
+
+```bash
+cargo build --locked --release -p dora-record-node -p dora-replay-node
+```
+
+[Proxy recording](#proxy-recording-remote--diskless) runs directly in the CLI.
+
 ### Recording a Dataflow
 
 ```bash
@@ -127,7 +159,7 @@ dora record dataflow.yml
 dora record dataflow.yml -o my-capture.drec
 ```
 
-This injects a hidden `__dora_record__` node into the dataflow that subscribes to all node outputs and writes them to a `.drec` file. The record node binary (`dora-record-node`) is auto-built on first use.
+This injects a hidden `__dora_record__` node into the dataflow that subscribes to all node outputs and writes them to a `.drec` file.
 
 The recording runs until you press Ctrl-C or the dataflow stops.
 
@@ -192,8 +224,6 @@ Replay works by:
 2. Identifying which nodes produced the recorded data
 3. Replacing those source nodes with `dora-replay-node` instances
 4. Running the modified dataflow -- downstream nodes receive replayed data identically to live data
-
-The replay node binary (`dora-replay-node`) is auto-built on first use.
 
 ### Replay Options
 

@@ -2006,10 +2006,6 @@ msgstr ""
 msgid "`/api/daemon` — Daemon registration and event stream"
 msgstr ""
 
-#: src/concepts/architecture.md:117
-msgid "`/api/artifacts/{build_id}/{node_id}` — Binary artifact downloads"
-msgstr ""
-
 #: src/concepts/architecture.md:118
 msgid "`/health` — Health check endpoint"
 msgstr ""
@@ -3241,20 +3237,8 @@ msgid "Build Distribution"
 msgstr ""
 
 #: src/concepts/architecture.md:662
-msgid "Three strategies via `DistributeStrategy`:"
-msgstr ""
-
-#: src/concepts/architecture.md:663
-msgid "**Local** — each daemon builds from source (default)"
-msgstr ""
-
-#: src/concepts/architecture.md:664
-msgid "**Scp** — CLI pushes built binaries via SSH/SCP"
-msgstr ""
-
-#: src/concepts/architecture.md:665
-msgid "**Http** — daemons pull from coordinator's `/api/artifacts` endpoint"
-msgstr ""
+msgid "Configured build steps run on the target machine. Prebuilt binaries must already exist there. The values `scp` and `http` are accepted for compatibility and use the same behavior as `local`."
+msgstr "配置的构建步骤在目标机器上运行。预编译的二进制文件必须已存在于该机器上。为保持兼容，仍接受 `scp` 和 `http`，其行为与 `local` 相同。"
 
 #: src/concepts/architecture.md:667
 msgid "Machine Labels"
@@ -5088,14 +5072,8 @@ msgstr ""
 msgid "gpu-server"
 msgstr ""
 
-#: src/concepts/dataflow-yaml.md:318 src/operations/distributed.md:456
-#: src/operations/distributed.md:469 src/operations/distributed.md:482
-#: src/operations/distributed.md:807
+#: src/concepts/dataflow-yaml.md:319 src/operations/distributed.md:755
 msgid "distribute"
-msgstr ""
-
-#: src/concepts/dataflow-yaml.md:318 src/operations/distributed.md:469
-msgid "scp"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:319 src/operations/cli.md:250
@@ -5147,14 +5125,6 @@ msgstr ""
 #: src/concepts/dataflow-yaml.md:329 src/operations/distributed.md:492
 #: src/operations/distributed.md:818
 msgid "`local`"
-msgstr ""
-
-#: src/concepts/dataflow-yaml.md:329
-msgid ""
-"How built binaries reach the target daemon: **`local`** -- each daemon "
-"builds from source independently; **`scp`** -- CLI pushes the built binary "
-"via SSH/SCP before spawn; **`http`** -- daemon pulls the binary from the "
-"coordinator's HTTP artifact store"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:331 src/operations/cli.md:257
@@ -5215,7 +5185,7 @@ msgid ""
 "The `id` field is optional for single operators (defaults to the node `id`):"
 msgstr ""
 
-#: src/concepts/dataflow-yaml.md:359 src/concepts/modules.md:95
+#: src/concepts/dataflow-yaml.md:359
 #: src/operations/cli.md:211
 msgid "pip install -r requirements.txt"
 msgstr ""
@@ -6615,6 +6585,33 @@ msgstr ""
 #: src/concepts/modules.md:101
 msgid "_mod/image"
 msgstr ""
+
+#: src/concepts/modules.md:98
+msgid "pip install -r \"$MODULE_DIR/requirements.txt\""
+msgstr ""
+
+#: src/concepts/modules.md:103
+msgid "--weights \"$MODULE_DIR/model weights.bin\""
+msgstr ""
+
+#: src/concepts/modules.md:105
+msgid "CONFIG"
+msgstr ""
+
+#: src/concepts/modules.md:105
+msgid "\"$MODULE_DIR/config.yaml\""
+msgstr ""
+
+#: src/concepts/modules.md:112
+msgid ""
+"In a module's `args:`, `build:`, and string `env:` values, `$MODULE_DIR` "
+"expands to the canonical absolute path of the directory containing the "
+"declaring module file. Dora resolves symlinks during expansion, so the path "
+"is independent of the node's working directory. In a nested module, the "
+"token refers to that module's own directory. A remote daemon must be able to "
+"access the referenced files at the same absolute paths. Quote paths in "
+"arguments and build commands when they may contain spaces."
+msgstr "在模块的 `args:`、`build:` 和字符串类型的 `env:` 值中，`$MODULE_DIR` 会展开为声明该引用的模块文件所在目录的规范化绝对路径。Dora 在展开时解析符号链接，因此该路径与节点的工作目录无关。在嵌套模块中，此标记指向该模块自己的目录。远程守护进程必须能够通过相同的绝对路径访问所引用的文件。参数和构建命令中的路径可能包含空格时，请用引号将路径括起来。"
 
 #: src/concepts/modules.md:106
 msgid "Using Modules"
@@ -20711,8 +20708,8 @@ msgid "`deploy.distribute`"
 msgstr ""
 
 #: src/operations/distributed.md:104
-msgid "local, scp, or http strategies"
-msgstr ""
+msgid "Build steps run on the target machine"
+msgstr "构建步骤在目标机器上运行"
 
 #: src/operations/distributed.md:105
 msgid "systemd services"
@@ -21200,22 +21197,6 @@ msgstr ""
 msgid "Binary Distribution"
 msgstr ""
 
-#: src/operations/distributed.md:445
-msgid ""
-"Control how node binaries are delivered to remote daemons via the "
-"`distribute` field."
-msgstr ""
-
-#: src/operations/distributed.md:447
-msgid "Local (default)"
-msgstr ""
-
-#: src/operations/distributed.md:449
-msgid ""
-"Each daemon builds from source on its own machine. This is the current "
-"default behavior."
-msgstr ""
-
 #: src/operations/distributed.md:455 src/operations/distributed.md:468
 #: src/operations/distributed.md:481
 msgid "edge-01"
@@ -21223,41 +21204,6 @@ msgstr ""
 
 #: src/operations/distributed.md:456
 msgid "local"
-msgstr ""
-
-#: src/operations/distributed.md:460
-msgid "SCP mode"
-msgstr ""
-
-#: src/operations/distributed.md:462
-msgid ""
-"The CLI pushes the locally-built binary to the target machine via SSH/SCP "
-"before spawning."
-msgstr ""
-
-#: src/operations/distributed.md:473
-msgid "HTTP mode"
-msgstr ""
-
-#: src/operations/distributed.md:475
-msgid ""
-"The coordinator runs an artifact store. Daemons pull binaries from the "
-"coordinator via HTTP before spawning."
-msgstr ""
-
-#: src/operations/distributed.md:482
-msgid "http"
-msgstr ""
-
-#: src/operations/distributed.md:486
-msgid ""
-"Artifacts are served from `GET /api/artifacts/{build_id}/{node_id}` on the "
-"coordinator's WebSocket port. The endpoint requires authentication (Bearer "
-"token) and sanitizes node IDs to prevent path traversal."
-msgstr ""
-
-#: src/operations/distributed.md:488
-msgid "When to use each strategy"
 msgstr ""
 
 #: src/operations/distributed.md:490
@@ -21268,36 +21214,12 @@ msgstr ""
 msgid "Tradeoffs"
 msgstr ""
 
-#: src/operations/distributed.md:492
-msgid "Homogeneous clusters, CI builds"
-msgstr ""
-
-#: src/operations/distributed.md:492
-msgid "Requires build toolchain on every machine"
-msgstr ""
-
 #: src/operations/distributed.md:493
 msgid "`scp`"
 msgstr ""
 
-#: src/operations/distributed.md:493
-msgid "Heterogeneous clusters, cross-compiled binaries"
-msgstr ""
-
-#: src/operations/distributed.md:493
-msgid "Requires SSH access from CLI to all machines"
-msgstr ""
-
 #: src/operations/distributed.md:494
 msgid "`http`"
-msgstr ""
-
-#: src/operations/distributed.md:494
-msgid "Air-gapped daemons, firewalled networks"
-msgstr ""
-
-#: src/operations/distributed.md:494
-msgid "Requires coordinator reachability from all daemons"
 msgstr ""
 
 #: src/operations/distributed.md:498
@@ -21836,9 +21758,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/distributed.md:807
-msgid ""
-"local                # local | scp | http\n"
-"      working_dir"
+msgid "local\n      working_dir"
 msgstr ""
 
 #: src/operations/distributed.md:808
@@ -21853,10 +21773,6 @@ msgstr ""
 
 #: src/operations/distributed.md:817
 msgid "Required daemon labels. All key-value pairs must match."
-msgstr ""
-
-#: src/operations/distributed.md:818
-msgid "Binary distribution strategy: `local`, `scp`, or `http`."
 msgstr ""
 
 #: src/operations/distributed.md:819

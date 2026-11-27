@@ -85,6 +85,25 @@ pub(crate) fn dataflow_for_dynamic_node<'a>(
     running.get_mut(&id).ok_or_else(no_node)
 }
 
+/// What [`Daemon::send_to_remote_receivers`] does when the inter-daemon
+/// publish queue is full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoteDelivery {
+    /// Drop the event and count it as a lost message. For data outputs, so a
+    /// slow zenoh link never blocks the event loop.
+    BestEffort,
+    /// Wait for a free slot in a background task, for up to
+    /// [`RELIABLE_SEND_TIMEOUT`]. For control events such as `OutputClosed`,
+    /// which nothing re-sends: dropping one would leave the remote consumer's
+    /// input open until the dataflow is stopped.
+    Reliable,
+}
+
+/// How long a [`RemoteDelivery::Reliable`] event waits for room in the
+/// inter-daemon publish queue before it is given up on, so a wedged zenoh
+/// link cannot keep the waiting task alive forever.
+const RELIABLE_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// The control publisher for `output_id`, declared on first use and cached
 /// per output. The cache is hit on every later message, so it is probed by
 /// reference and the `OutputId` key (two heap strings) is cloned only on the
@@ -143,10 +162,18 @@ impl Daemon {
                 event: DynamicNodeEvent::NodeConfig { node_id },
                 reply_tx,
             } => {
+                // Every dataflow's plan, including this one's: its own listeners
+                // are also checked against its live `zenoh_peering`.
+                let planned =
+                    crate::running_dataflow::planned_zenoh_endpoints(self.running.values());
                 let node_config =
                     dataflow_for_dynamic_node(&mut self.running, &node_id).and_then(|dataflow| {
                         dataflow
-                            .dynamic_node_config(&node_id, self.zenoh_listen_endpoint.as_deref())
+                            .dynamic_node_config(
+                                &node_id,
+                                self.zenoh_listen_endpoint.as_deref(),
+                                &planned,
+                            )
                             .map_err(|err| {
                                 format!(
                                     "failed to get dynamic node config within given dataflow: {err}"
@@ -668,8 +695,13 @@ impl Daemon {
         }
 
         if remote_receivers {
-            self.send_to_remote_receivers(dataflow_id, &output_id, serialized_event)
-                .await?;
+            self.send_to_remote_receivers(
+                dataflow_id,
+                &output_id,
+                serialized_event,
+                RemoteDelivery::BestEffort,
+            )
+            .await?;
         }
 
         Ok(())
@@ -696,11 +728,15 @@ impl Daemon {
         Ok(())
     }
 
+    /// Queue `serialized_event` for publication to the daemons that consume
+    /// `output_id`. See [`RemoteDelivery`] for what happens when the publish
+    /// queue is full.
     pub(crate) async fn send_to_remote_receivers(
         &mut self,
         dataflow_id: Uuid,
         output_id: &OutputId,
         serialized_event: Vec<u8>,
+        delivery: RemoteDelivery,
     ) -> Result<(), eyre::Error> {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
@@ -728,6 +764,26 @@ impl Daemon {
         };
         match self.zenoh_publish_tx.try_send(outbound) {
             Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(outbound))
+                if delivery == RemoteDelivery::Reliable =>
+            {
+                // Wait for a slot off the event loop. The data already queued
+                // for this output stays ahead of it: the queue is FIFO, and
+                // the producer has finished, so nothing new is sent on it.
+                let tx = self.zenoh_publish_tx.clone();
+                tokio::spawn(async move {
+                    match tokio::time::timeout(RELIABLE_SEND_TIMEOUT, tx.send(outbound)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) => tracing::error!(
+                            "zenoh drain task is gone — inter-daemon publish channel closed"
+                        ),
+                        Err(_) => tracing::error!(
+                            "zenoh publish channel stayed full for {RELIABLE_SEND_TIMEOUT:?}, \
+                             dropping inter-daemon control message"
+                        ),
+                    }
+                });
+            }
             Err(mpsc::error::TrySendError::Full(_)) => {
                 tracing::warn!(
                     "zenoh publish channel full ({ZENOH_PUBLISH_CHANNEL_CAPACITY}), \
@@ -854,8 +910,13 @@ impl Daemon {
             }
             .serialize()
             .wrap_err("failed to serialize inter-daemon output-closed event")?;
-            self.send_to_remote_receivers(dataflow_id, &output_id, serialized_event)
-                .await?;
+            self.send_to_remote_receivers(
+                dataflow_id,
+                &output_id,
+                serialized_event,
+                RemoteDelivery::Reliable,
+            )
+            .await?;
         }
 
         Ok(())

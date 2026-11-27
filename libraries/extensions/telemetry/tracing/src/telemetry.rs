@@ -87,9 +87,25 @@ pub(crate) fn service_resource(name: &str) -> opentelemetry_sdk::Resource {
 const CONTEXT_ENTRY_SEP: char = '\n';
 
 /// Serialize the trace context (trace ID, span ID) into a compact string.
-/// Only W3C TraceContext keys (`traceparent`, `tracestate`) are included.
-/// OTel Baggage keys are stripped to prevent sensitive data from leaking
-/// across node boundaries in the dataflow.
+///
+/// The string holds whatever the process-global text-map propagator injects,
+/// except the W3C `baggage` key, which is dropped so OTel Baggage entries
+/// (which may carry sensitive data) do not cross node boundaries in the
+/// dataflow. With the propagator [`init_tracing`] installs, that leaves only
+/// the W3C TraceContext keys `traceparent` and `tracestate`. A propagator the
+/// application installed itself (which `init_tracing` keeps) has all of its
+/// other keys forwarded unchanged, including any it uses to carry baggage
+/// under another name.
+///
+/// Returns an empty string when `context` has no valid span, without calling
+/// the propagator:
+///
+/// ```
+/// use dora_tracing::telemetry::serialize_context;
+/// use opentelemetry::Context;
+///
+/// assert_eq!(serialize_context(&Context::new()), "");
+/// ```
 pub fn serialize_context(context: &Context) -> String {
     // Fast path: with no valid active span there is nothing to propagate.
     // Every standard text-map propagator (W3C TraceContext, B3, Jaeger,

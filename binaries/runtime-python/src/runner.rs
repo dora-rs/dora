@@ -406,7 +406,11 @@ mod callback_impl {
         fn send_output_rejects_invalid_id_without_panicking() {
             let (events_tx, _events_rx) = tokio::sync::mpsc::channel(1);
             let mut callback = SendOutputCallback {
-                handle: RuntimeHandle::new(events_tx, SharedAllocator::default()),
+                handle: RuntimeHandle::new(
+                    dora_core::config::OperatorId::from("op".to_owned()),
+                    events_tx,
+                    SharedAllocator::default(),
+                ),
             };
             // Without the `auto-initialize` feature (unified in only when
             // `dora-node-api-python` is in the same build).

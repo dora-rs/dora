@@ -242,8 +242,12 @@ impl Daemon {
         // daemons running the rest of the dataflow, then build the dial lists.
         // The trade has to finish before any node spawns — a node's zenoh
         // session reads its dial list once at startup and never again.
-        let listeners =
-            crate::spawn::reserve_node_listeners(&nodes, &spawn_nodes, self.zenoh_routable_addr);
+        let listeners = crate::spawn::reserve_node_listeners(
+            &nodes,
+            &spawn_nodes,
+            self.zenoh_routable_addr,
+            &crate::running_dataflow::planned_zenoh_endpoints(self.running.values()),
+        );
         // Started here but awaited below, so its bounded wait overlaps the
         // build metadata and working-directory work in between rather than
         // stalling the event loop on its own. Same reason the memory-pool
@@ -276,6 +280,11 @@ impl Daemon {
         }
         self.working_dir
             .insert(dataflow_id, base_working_dir.clone());
+        // Before this dataflow joins `running`, whose own plan the spawner
+        // reads from `zenoh_peering` (#4242).
+        let planned_zenoh_endpoints = Arc::new(crate::running_dataflow::planned_zenoh_endpoints(
+            self.running.values(),
+        ));
         let dataflow = self.running.entry(dataflow_id).or_insert(dataflow);
 
         let mut stopped = Vec::new();
@@ -540,6 +549,7 @@ impl Daemon {
             shutdown: dataflow.listener_shutdown_rx.clone(),
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
             zenoh_peering: dataflow.zenoh_peering.clone(),
+            planned_zenoh_endpoints,
             disable_multicast: self.disable_multicast,
             machine_id: self.machine_id.clone(),
             bind_nodes_to_parent: self.bind_nodes_to_parent,

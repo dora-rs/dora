@@ -47,6 +47,7 @@ EXEMPT_MODULE_NAMES = frozenset(
         "Ros2Liveliness",
         "Ros2Node",
         "Ros2NodeOptions",
+        "Ros2ParameterClient",
         "Ros2Publisher",
         "Ros2QosPolicies",
         "Ros2ServiceClient",

@@ -1034,8 +1034,6 @@ mod typed {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn result_waiters_are_bounded_per_goal() {
-        use dora_ros2_bridge::transport::zenoh::service::ServiceError;
-
         let Fixture {
             client,
             keys,
@@ -1079,16 +1077,15 @@ mod typed {
         drop(answered);
 
         // The refusal is the only answer that can arrive before `finish`.
-        let rejected = tokio::time::timeout(TIMEOUT, answers.recv())
+        // It is a normal `STATUS_UNKNOWN` reply, not a service error:
+        // `rmw_zenoh_cpp` drops error replies unread, which would leave a
+        // ROS 2 client's call hanging (#4244).
+        let refused = tokio::time::timeout(TIMEOUT, answers.recv())
             .await
-            .expect("the observer that overflowed the goal should be refused while it runs")
+            .expect("the observer that overflowed the goal should be answered while it runs")
             .expect("the senders outlive this receive")
-            .unwrap_err();
-        assert!(
-            matches!(&rejected, ActionCallError::Service(ServiceError::Remote(error))
-                if error == "result waiter limit of 16 reached for this goal"),
-            "{rejected:?}"
-        );
+            .expect("the overflowing request must get a normal reply, not a service error");
+        assert_eq!(refused, (GoalStatusEnum::Unknown, Sequence::default()));
         assert!(
             tokio::time::timeout(Duration::from_millis(200), answers.recv())
                 .await
@@ -1126,8 +1123,6 @@ mod typed {
     /// goals as possible".
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn result_capacity_scales_with_the_server_goal_limit() {
-        use dora_ros2_bridge::transport::zenoh::service::ServiceError;
-
         const GOALS: i32 = 4;
         const WAITERS_PER_GOAL: usize = 16;
 
@@ -1174,15 +1169,15 @@ mod typed {
         // pending: the shared pending-slot pool covers all four goals'
         // full complement at once.
         for (order, (_, answers)) in goals.iter_mut().enumerate() {
-            let rejected = tokio::time::timeout(TIMEOUT, answers.recv())
+            let refused = tokio::time::timeout(TIMEOUT, answers.recv())
                 .await
-                .expect("the per-goal rejection must leave every other waiter pending")
+                .expect("the per-goal refusal must leave every other waiter pending")
                 .expect("the senders outlive this receive")
-                .unwrap_err();
-            assert!(
-                matches!(&rejected, ActionCallError::Service(ServiceError::Remote(error))
-                    if error == "result waiter limit of 16 reached for this goal"),
-                "goal {order}: {rejected:?}"
+                .expect("the overflowing request must get a normal reply, not a service error");
+            assert_eq!(
+                refused,
+                (GoalStatusEnum::Unknown, Sequence::default()),
+                "goal {order}"
             );
             assert!(
                 tokio::time::timeout(Duration::from_millis(200), answers.recv())

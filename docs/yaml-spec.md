@@ -166,11 +166,11 @@ inputs:
 | `queue_policy` | string | `drop_oldest` | `drop_oldest`: drops oldest message when full. `backpressure`: buffers up to 10x `queue_size` without dropping (drops with ERROR log at hard cap) |
 | `input_timeout` | float | -- | Circuit breaker timeout in seconds. If no message arrives within this period, the daemon closes the input and the node receives an `InputClosed` event for graceful degradation |
 
-On the direct zenoh path, `queue_size` also applies while messages wait in the
-receiver's ingress channel: when a `drop_oldest` input has more than
-`queue_size` messages waiting there, the oldest is discarded and counted as a
-drop. That releases its shared-memory buffer, so a receiver that falls behind
-cannot exhaust its producer's pool.
+On the direct zenoh path, `queue_size` applies from the moment a message
+arrives: when a `drop_oldest` input has more than `queue_size` messages waiting
+in the receiver, in its ingress channel or its input queue, the oldest is
+discarded and counted as a drop. That releases its shared-memory buffer, so a
+receiver that falls behind cannot exhaust its producer's pool.
 
 A `backpressure` input keeps its producer's output on the daemon path instead
 of the direct zenoh path. The direct path's callback drops at the receiver's
@@ -434,7 +434,7 @@ Assign nodes to specific machines using `deploy`:
     machine: gpu-server
     labels:
       gpu: "true"
-    distribute: scp
+    distribute: local
   path: ./target/debug/inference
   inputs:
     frames: camera-driver/frames
@@ -445,7 +445,7 @@ Assign nodes to specific machines using `deploy`:
 | `machine` | string | -- | Target machine/daemon ID. The coordinator routes the node to the daemon registered with this ID |
 | `working_dir` | string | -- | Working directory on the target machine |
 | `labels` | object | -- | Key-value labels for scheduling. The coordinator matches these against labels reported by each daemon at registration |
-| `distribute` | string | `local` | How built binaries reach the target daemon: **`local`** -- each daemon builds from source independently; **`scp`** -- CLI pushes the built binary via SSH/SCP before spawn; **`http`** -- daemon pulls the binary from the coordinator's HTTP artifact store |
+| `distribute` | string | `local` | Configured build steps run on the target machine. Prebuilt binaries must already exist there. The values `scp` and `http` are accepted for compatibility and use the same behavior as `local`. |
 
 When nodes are on different machines, communication automatically switches from shared memory to Zenoh pub/sub.
 

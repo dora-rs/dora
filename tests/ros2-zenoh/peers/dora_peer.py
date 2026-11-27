@@ -137,6 +137,44 @@ elif a.case == "parameters":
     node.set_parameter("speed", 9.0)
     wait_until(lambda: True if node.get_parameter("speed") == 10.0 else None)
     time.sleep(1)
+elif a.case == "parameter-client":
+    # An rclpy node `/robot/arm` hosts the parameters (parameter_host_peer.py).
+    def check(ok, what):
+        if not ok:
+            raise SystemExit(f"parameter-client: {what}")
+
+    def wait_for_speed(value):
+        # Other events (e.g. `gains`) are skipped; changes come in order.
+        def read():
+            event = arm.take_event()
+            if event is not None and event["changed"].get("speed") == value:
+                return event
+            return None
+        return wait_until(read)
+
+    arm = node.create_parameter_client("/robot/arm", timeout_s=20)
+    check(arm.target == "/robot/arm", f"target {arm.target!r}")
+    values = arm.get(["speed", "gains", "missing"])
+    check(values == {"speed": 1.5, "gains": [1.0, 2.0], "missing": None}, f"get {values!r}")
+    types = arm.get_types(["speed", "gains", "missing"])
+    check(types == {"speed": "double", "gains": "double_array", "missing": "not_set"}, f"types {types!r}")
+    listed = arm.list()
+    check({"speed", "gains", "use_sim_time"} <= set(listed), f"list {listed!r}")
+    described = arm.describe(["speed"])["speed"]
+    check(described["type"] == "double" and described["description"] == "speed in m/s", f"describe {described!r}")
+    results = arm.set({"speed": 2.0, "gains": "not a list"})
+    check(results[0] == (True, "") and results[1][0] is False, f"set {results!r}")
+    wait_for_speed(2.0)
+    rejected = arm.set({"speed": -1.0})
+    check(rejected == [(False, "speed must not be negative")], f"rejected {rejected!r}")
+    atomic = arm.set_atomically({"speed": 3.0, "gains": [3.0]})
+    check(atomic[0] is True, f"set_atomically {atomic!r}")
+    wait_for_speed(3.0)
+    # The node answers 3.0 by setting 4.0 itself; wait for it with next_event.
+    change = arm.next_event(timeout_s=20)
+    check(change is not None and change["changed"].get("speed") == 4.0, f"next_event {change!r}")
+    check(arm.get(["speed"]) == {"speed": 4.0}, "speed after the node's own set")
+    check(arm.set({"speed": 5.0}) == [(True, "")], "done")
 elif a.case == "rosout":
     # Longer than the ROS peer waits for `/rosout` (15 s) plus its 2 s settle.
     time.sleep(20)

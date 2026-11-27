@@ -1,0 +1,837 @@
+//! A client for another ROS 2 node's parameters: its six `rcl_interfaces`
+//! parameter services and its changes on `/parameter_events` (#4297).
+
+use std::time::{Duration, Instant};
+
+use super::{Durability, History, Liveliness, Reliability, Ros2Qos};
+use ros2_client::{
+    ParameterValue,
+    parameters::{SetParametersResult, raw},
+    rcl_interfaces as rcl,
+};
+
+mod dds;
+pub use dds::DdsParameterClient;
+
+/// The history depth of rmw's parameter QoS profiles.
+pub const PARAMETER_QOS_DEPTH: i32 = 1000;
+
+/// rmw's `rmw_qos_profile_parameter_events` and `rmw_qos_profile_parameters`:
+/// what parameter services and `/parameter_events` use.
+pub fn parameters_qos() -> Ros2Qos {
+    Ros2Qos {
+        reliability: Reliability::Reliable {
+            max_blocking_time: Duration::ZERO,
+        },
+        durability: Durability::Volatile,
+        history: History::KeepLast {
+            depth: PARAMETER_QOS_DEPTH,
+        },
+        liveliness: Liveliness::Automatic {
+            lease_duration: None,
+        },
+    }
+}
+
+/// The six `rcl_interfaces` parameter services every ROS 2 node offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParameterService {
+    Get,
+    GetTypes,
+    Set,
+    SetAtomically,
+    List,
+    Describe,
+}
+
+impl ParameterService {
+    pub const ALL: [Self; 6] = [
+        Self::Get,
+        Self::GetTypes,
+        Self::Set,
+        Self::SetAtomically,
+        Self::List,
+        Self::Describe,
+    ];
+
+    /// The service's name under its node, e.g. `get_parameters`.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Self::Get => "get_parameters",
+            Self::GetTypes => "get_parameter_types",
+            Self::Set => "set_parameters",
+            Self::SetAtomically => "set_parameters_atomically",
+            Self::List => "list_parameters",
+            Self::Describe => "describe_parameters",
+        }
+    }
+
+    /// Its `rcl_interfaces/srv` type, e.g. `GetParameters`.
+    pub fn type_name(self) -> &'static str {
+        match self {
+            Self::Get => "GetParameters",
+            Self::GetTypes => "GetParameterTypes",
+            Self::Set => "SetParameters",
+            Self::SetAtomically => "SetParametersAtomically",
+            Self::List => "ListParameters",
+            Self::Describe => "DescribeParameters",
+        }
+    }
+}
+
+/// One change to the target node's parameters, from `/parameter_events`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParameterChange {
+    pub new: Vec<(String, ParameterValue)>,
+    pub changed: Vec<(String, ParameterValue)>,
+    pub deleted: Vec<String>,
+}
+
+impl ParameterChange {
+    /// Whether nothing was added, changed or deleted.
+    pub fn is_empty(&self) -> bool {
+        self.new.is_empty() && self.changed.is_empty() && self.deleted.is_empty()
+    }
+
+    pub fn from_event(event: raw::ParameterEvent) -> Self {
+        let values = |parameters: Vec<raw::Parameter>| {
+            parameters
+                .into_iter()
+                .map(|parameter| (parameter.name, parameter.value.into()))
+                .collect()
+        };
+        Self {
+            new: values(event.new_parameters),
+            changed: values(event.changed_parameters),
+            deleted: event
+                .deleted_parameters
+                .into_iter()
+                .map(|parameter| parameter.name)
+                .collect(),
+        }
+    }
+}
+
+/// The parameter names and prefixes `list_parameters` returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParameterList {
+    pub names: Vec<String>,
+    pub prefixes: Vec<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ParameterClientError {
+    #[error("`{service}` of {target} failed: {error}")]
+    Call {
+        service: &'static str,
+        target: String,
+        error: String,
+    },
+    #[error("`{service}` of {target} answered {got} entries for {asked} names")]
+    Length {
+        service: &'static str,
+        target: String,
+        asked: usize,
+        got: usize,
+    },
+    #[error("parameter events of {target} failed: {error}")]
+    Events { target: String, error: String },
+}
+
+/// A client for the parameters of one ROS 2 node, on either transport.
+/// Both are boxed: each holds six service clients and a subscription.
+pub enum ParameterClient {
+    Dds(Box<DdsParameterClient>),
+    #[cfg(feature = "rmw-zenoh")]
+    Zenoh(Box<super::zenoh::parameters::ParameterClient>),
+}
+
+/// Calls `$method` of the DDS client, or `$service` of the Zenoh one.
+macro_rules! dispatch {
+    ($self:ident, $service:expr, $method:ident, $request:expr, $timeout:expr) => {{
+        let service: ParameterService = $service;
+        let request = $request;
+        match $self {
+            Self::Dds(client) => client
+                .$method(request, $timeout)
+                .await
+                .map_err(|error| $self.call_error(service, error)),
+            #[cfg(feature = "rmw-zenoh")]
+            Self::Zenoh(client) => client
+                .call(service, &request, $timeout)
+                .await
+                .map_err(|error| $self.call_error(service, error)),
+        }
+    }};
+}
+
+impl ParameterClient {
+    /// The target node's fully qualified name.
+    pub fn target(&self) -> &str {
+        match self {
+            Self::Dds(client) => client.target(),
+            #[cfg(feature = "rmw-zenoh")]
+            Self::Zenoh(client) => client.target(),
+        }
+    }
+
+    /// Turns a transport error of `service` into a [`ParameterClientError`].
+    fn call_error(
+        &self,
+        service: ParameterService,
+        error: impl std::fmt::Display,
+    ) -> ParameterClientError {
+        ParameterClientError::Call {
+            service: service.suffix(),
+            target: self.target().to_owned(),
+            error: error.to_string(),
+        }
+    }
+
+    /// Fails unless `service` answered one entry for each of `asked` names.
+    fn check_length(
+        &self,
+        service: ParameterService,
+        asked: usize,
+        got: usize,
+    ) -> Result<(), ParameterClientError> {
+        if asked == got {
+            Ok(())
+        } else {
+            Err(length_error(self.target(), service, asked, got))
+        }
+    }
+
+    /// The values of `names`; `None` for a name the target does not have.
+    pub async fn get(
+        &self,
+        names: &[String],
+        timeout: Duration,
+    ) -> Result<Vec<Option<ParameterValue>>, ParameterClientError> {
+        let service = ParameterService::Get;
+        let deadline = Instant::now() + timeout;
+        let values = per_name(self.target(), service, names, |names| async move {
+            let response: rcl::GetParametersResponse = dispatch!(
+                self,
+                service,
+                get,
+                rcl::GetParametersRequest { names },
+                remaining(deadline)
+            )?;
+            Ok(response.values)
+        })
+        .await?;
+        Ok(values
+            .into_iter()
+            .map(|value| match value.map(ParameterValue::from) {
+                None | Some(ParameterValue::NotSet) => None,
+                Some(value) => Some(value),
+            })
+            .collect())
+    }
+
+    /// The `rcl_interfaces/msg/ParameterType` of each of `names`
+    /// (`NOT_SET`, 0, for a name the target does not have).
+    pub async fn get_types(
+        &self,
+        names: &[String],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, ParameterClientError> {
+        let service = ParameterService::GetTypes;
+        let deadline = Instant::now() + timeout;
+        let types = per_name(self.target(), service, names, |names| async move {
+            let response: rcl::GetParameterTypesResponse = dispatch!(
+                self,
+                service,
+                get_types,
+                rcl::GetParameterTypesRequest { names },
+                remaining(deadline)
+            )?;
+            Ok(response.values)
+        })
+        .await?;
+        Ok(types
+            .into_iter()
+            .map(|ty| ty.unwrap_or(raw::ParameterType::NOT_SET))
+            .collect())
+    }
+
+    /// Sets each of `values` on its own; one result per value.
+    pub async fn set(
+        &self,
+        values: Vec<(String, ParameterValue)>,
+        timeout: Duration,
+    ) -> Result<Vec<SetParametersResult>, ParameterClientError> {
+        let service = ParameterService::Set;
+        let asked = values.len();
+        let response: rcl::SetParametersResponse = dispatch!(
+            self,
+            service,
+            set,
+            rcl::SetParametersRequest {
+                parameter: parameters(values),
+            },
+            timeout
+        )?;
+        self.check_length(service, asked, response.results.len())?;
+        Ok(response.results.into_iter().map(set_result).collect())
+    }
+
+    /// Sets all of `values` or none of them.
+    pub async fn set_atomically(
+        &self,
+        values: Vec<(String, ParameterValue)>,
+        timeout: Duration,
+    ) -> Result<SetParametersResult, ParameterClientError> {
+        let response: rcl::SetParametersAtomicallyResponse = dispatch!(
+            self,
+            ParameterService::SetAtomically,
+            set_atomically,
+            rcl::SetParametersRequest {
+                parameter: parameters(values),
+            },
+            timeout
+        )?;
+        Ok(set_result(response.result))
+    }
+
+    /// The target's parameter names under `prefixes` (all if empty), to
+    /// `depth` levels (0: no limit).
+    pub async fn list(
+        &self,
+        prefixes: Vec<String>,
+        depth: u64,
+        timeout: Duration,
+    ) -> Result<ParameterList, ParameterClientError> {
+        let response: rcl::ListParametersResponse = dispatch!(
+            self,
+            ParameterService::List,
+            list,
+            rcl::ListParametersRequest { prefixes, depth },
+            timeout
+        )?;
+        Ok(ParameterList {
+            names: response.result.names,
+            prefixes: response.result.prefixes,
+        })
+    }
+
+    /// The descriptors of `names`; `None` for a name the target does not
+    /// have.
+    pub async fn describe(
+        &self,
+        names: &[String],
+        timeout: Duration,
+    ) -> Result<Vec<Option<raw::ParameterDescriptor>>, ParameterClientError> {
+        let service = ParameterService::Describe;
+        let deadline = Instant::now() + timeout;
+        let descriptors = per_name(self.target(), service, names, |names| async move {
+            let response: rcl::DescribeParametersResponse = dispatch!(
+                self,
+                service,
+                describe,
+                rcl::DescribeParametersRequest { names },
+                remaining(deadline)
+            )?;
+            Ok(response.values)
+        })
+        .await?;
+        // ros2-client and dora's server describe an undeclared name as NOT_SET.
+        Ok(descriptors
+            .into_iter()
+            .map(|descriptor| {
+                descriptor.filter(|descriptor| descriptor.r#type != raw::ParameterType::NOT_SET)
+            })
+            .collect())
+    }
+
+    fn events_error(&self, error: impl std::fmt::Display) -> ParameterClientError {
+        ParameterClientError::Events {
+            target: self.target().to_owned(),
+            error: error.to_string(),
+        }
+    }
+
+    fn events(&self) -> &ParameterEvents {
+        match self {
+            Self::Dds(client) => client.events(),
+            #[cfg(feature = "rmw-zenoh")]
+            Self::Zenoh(client) => client.events(),
+        }
+    }
+
+    /// The next change to the target's parameters that has arrived, if any.
+    ///
+    /// A thread keeps the target's changes from `/parameter_events` as they
+    /// arrive, so other nodes' events cannot crowd them out; up to 1024 are
+    /// held, then the oldest are dropped. The subscription starts with the
+    /// client, and a change published before the target has matched it can be
+    /// missed: read the values with [`Self::get`] for a consistent start.
+    pub fn try_next_change(&self) -> Result<Option<ParameterChange>, ParameterClientError> {
+        self.events()
+            .try_next()
+            .map_err(|error| self.events_error(error))
+    }
+
+    /// Waits for the next change to the target's parameters, as
+    /// [`Self::try_next_change`] reports them.
+    pub async fn next_change(&self) -> Result<ParameterChange, ParameterClientError> {
+        self.events()
+            .next()
+            .await
+            .map_err(|error| self.events_error(error))
+    }
+}
+
+/// The time left until `deadline`, for one of several calls sharing a
+/// timeout.
+fn remaining(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
+}
+
+fn length_error(
+    target: &str,
+    service: ParameterService,
+    asked: usize,
+    got: usize,
+) -> ParameterClientError {
+    ParameterClientError::Length {
+        service: service.suffix(),
+        target: target.to_owned(),
+        asked,
+        got,
+    }
+}
+
+fn parameters(values: Vec<(String, ParameterValue)>) -> Vec<raw::Parameter> {
+    values
+        .into_iter()
+        .map(|(name, value)| raw::Parameter {
+            name,
+            value: value.into(),
+        })
+        .collect()
+}
+
+fn set_result(result: raw::SetParametersResult) -> SetParametersResult {
+    if result.successful {
+        Ok(())
+    } else {
+        Err(result.reason)
+    }
+}
+
+/// One answer per name, `None` for a name the target does not have.
+///
+/// ros2-client answers `NOT_SET` for an undeclared name, but rclcpp and rclpy
+/// answer `get_parameters`, `get_parameter_types` and `describe_parameters`
+/// with an empty list when any of the names is undeclared. Then each name is
+/// asked alone, and an empty answer means that name is undeclared.
+async fn per_name<T, F, Fut>(
+    target: &str,
+    service: ParameterService,
+    names: &[String],
+    mut call: F,
+) -> Result<Vec<Option<T>>, ParameterClientError>
+where
+    F: FnMut(Vec<String>) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>, ParameterClientError>>,
+{
+    let answer = call(names.to_vec()).await?;
+    let length_error = |asked, got| length_error(target, service, asked, got);
+    if answer.len() == names.len() {
+        return Ok(answer.into_iter().map(Some).collect());
+    }
+    if !answer.is_empty() {
+        return Err(length_error(names.len(), answer.len()));
+    }
+    let mut each = Vec::with_capacity(names.len());
+    for name in names {
+        let mut one = call(vec![name.clone()]).await?;
+        match one.len() {
+            0 => each.push(None),
+            1 => each.push(one.pop()),
+            got => return Err(length_error(1, got)),
+        }
+    }
+    Ok(each)
+}
+
+/// Checks that `target` is a fully qualified node name such as
+/// `/robot/arm`, so the service names and the event filter built from it
+/// match the node's.
+pub fn check_target(target: &str) -> Result<(), String> {
+    let invalid = || format!("`{target}` is not a fully qualified node name such as `/robot/arm`");
+    let (namespace, base) = target.rsplit_once('/').ok_or_else(invalid)?;
+    let namespace = if namespace.is_empty() { "/" } else { namespace };
+    let name = ros2_client::NodeName::new(namespace, base).map_err(|_| invalid())?;
+    if name.fully_qualified_name() == target {
+        Ok(())
+    } else {
+        Err(invalid())
+    }
+}
+
+#[cfg(test)]
+mod check_target_tests {
+    use super::check_target;
+
+    #[test]
+    fn fully_qualified_node_names_are_accepted() {
+        for target in ["/arm", "/robot/arm", "/a/b/c_1"] {
+            assert_eq!(check_target(target), Ok(()), "{target}");
+        }
+    }
+
+    #[test]
+    fn other_names_are_rejected() {
+        for target in [
+            "arm",
+            "/robot/arm/",
+            "/",
+            "",
+            "//arm",
+            "/robot//arm",
+            "/1arm",
+        ] {
+            assert!(check_target(target).is_err(), "{target}");
+        }
+    }
+}
+
+/// The target's parameter changes, filtered from `/parameter_events` as
+/// they arrive by a thread that runs until this is dropped.
+pub struct ParameterEvents {
+    changes: flume::Receiver<Result<ParameterChange, String>>,
+    _stop: flume::Sender<()>,
+}
+
+impl ParameterEvents {
+    /// The next change that has arrived, if any.
+    pub fn try_next(&self) -> Result<Option<ParameterChange>, String> {
+        match self.changes.try_recv() {
+            Ok(change) => change.map(Some),
+            Err(flume::TryRecvError::Empty) => Ok(None),
+            Err(flume::TryRecvError::Disconnected) => Err(PUMP_STOPPED.to_owned()),
+        }
+    }
+
+    /// Waits for the next change.
+    pub async fn next(&self) -> Result<ParameterChange, String> {
+        self.changes
+            .recv_async()
+            .await
+            .map_err(|_| PUMP_STOPPED.to_owned())?
+    }
+}
+
+/// Changes held for the caller before the oldest are dropped.
+const CHANGE_CAPACITY: usize = 1024;
+
+/// Starts the thread that keeps `target`'s changes from `events`.
+pub(crate) fn spawn_event_pump(
+    target: String,
+    events: impl futures::Stream<Item = Result<raw::ParameterEvent, String>> + Send + 'static,
+) -> Result<ParameterEvents, String> {
+    spawn_event_pump_with_capacity(target, events, CHANGE_CAPACITY)
+}
+
+const PUMP_STOPPED: &str = "the parameter events subscription ended";
+
+fn spawn_event_pump_with_capacity(
+    target: String,
+    events: impl futures::Stream<Item = Result<raw::ParameterEvent, String>> + Send + 'static,
+    capacity: usize,
+) -> Result<ParameterEvents, String> {
+    use futures::{FutureExt, StreamExt};
+    let (tx, changes) = flume::bounded(capacity);
+    let (stop, stopped) = flume::bounded::<()>(1);
+    // Pops the oldest change when the queue is full.
+    let oldest = changes.clone();
+    let name = format!("ros2-parameter-events {target}");
+    std::thread::Builder::new()
+        .name(name)
+        .spawn(move || {
+            futures::executor::block_on(async move {
+                let mut stopped = stopped.recv_async().fuse();
+                let events = events.fuse();
+                futures::pin_mut!(events);
+                loop {
+                    let change = futures::select_biased! {
+                        _ = stopped => return,
+                        event = events.next() => match event {
+                            None => return,
+                            Some(Ok(event)) => match accept(&target, event) {
+                                Some(change) => Ok(change),
+                                None => continue,
+                            },
+                            Some(Err(error)) => Err(error),
+                        },
+                    };
+                    let mut change = change;
+                    loop {
+                        match tx.try_send(change) {
+                            Ok(()) => break,
+                            Err(flume::TrySendError::Full(unsent)) => {
+                                let _ = oldest.try_recv();
+                                change = unsent;
+                            }
+                            Err(flume::TrySendError::Disconnected(_)) => return,
+                        }
+                    }
+                }
+            })
+        })
+        .map_err(|error| format!("failed to start the parameter events thread: {error}"))?;
+    Ok(ParameterEvents {
+        changes,
+        _stop: stop,
+    })
+}
+
+/// `event` as a change to `target`'s parameters; `None` for another node's
+/// event, or one that changes nothing (rclcpp and rclpy publish one for an
+/// empty `set_parameters_atomically`).
+fn accept(target: &str, event: raw::ParameterEvent) -> Option<ParameterChange> {
+    if event.node != target {
+        return None;
+    }
+    Some(ParameterChange::from_event(event)).filter(|change| !change.is_empty())
+}
+
+#[cfg(test)]
+mod event_pump_tests {
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+
+    use futures::{StreamExt, executor::block_on, stream};
+    use ros2_client::{ParameterValue, builtin_interfaces::Time, parameters::raw};
+
+    use super::{ParameterChange, spawn_event_pump, spawn_event_pump_with_capacity};
+
+    const TARGET: &str = "/robot/arm";
+
+    fn event(node: &str, speed: Option<f64>) -> Result<raw::ParameterEvent, String> {
+        Ok(raw::ParameterEvent {
+            stamp: Time::ZERO,
+            node: node.into(),
+            new_parameters: vec![],
+            changed_parameters: speed
+                .map(|speed| raw::Parameter {
+                    name: "speed".into(),
+                    value: ParameterValue::Double(speed).into(),
+                })
+                .into_iter()
+                .collect(),
+            deleted_parameters: vec![],
+        })
+    }
+
+    fn speed(change: &ParameterChange) -> f64 {
+        match change.changed.as_slice() {
+            [(name, ParameterValue::Double(speed))] if name == "speed" => *speed,
+            other => panic!("unexpected change {other:?}"),
+        }
+    }
+
+    /// Waits until `ready` holds, for at most 2 s.
+    fn eventually(ready: impl Fn() -> bool) {
+        let end = Instant::now() + Duration::from_secs(2);
+        while !ready() {
+            assert!(Instant::now() < end, "timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn only_the_targets_changes_are_kept() {
+        let events = stream::iter([
+            event("/robot/other", Some(9.0)),
+            event(TARGET, None),
+            event(TARGET, Some(2.0)),
+        ])
+        .chain(stream::pending());
+        let changes = spawn_event_pump(TARGET.into(), events).unwrap();
+        assert_eq!(speed(&block_on(changes.next()).unwrap()), 2.0);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(changes.try_next().unwrap(), None);
+    }
+
+    #[test]
+    fn a_full_queue_drops_its_oldest_change() {
+        let events = stream::iter([
+            event(TARGET, Some(1.0)),
+            event(TARGET, Some(2.0)),
+            event(TARGET, Some(3.0)),
+        ])
+        .chain(stream::pending());
+        let changes = spawn_event_pump_with_capacity(TARGET.into(), events, 2).unwrap();
+        eventually(|| changes.changes.len() == 2 && changes.changes.is_full());
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(speed(&changes.try_next().unwrap().unwrap()), 2.0);
+        assert_eq!(speed(&changes.try_next().unwrap().unwrap()), 3.0);
+    }
+
+    #[test]
+    fn dropping_the_changes_stops_the_pump() {
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = Dropped(dropped.clone());
+        // A stream that never yields, and notes when the pump drops it.
+        let events = stream::pending().map(move |event: Result<raw::ParameterEvent, String>| {
+            let _ = &guard;
+            event
+        });
+        let changes = spawn_event_pump(TARGET.into(), events).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(!dropped.load(Ordering::SeqCst));
+        drop(changes);
+        eventually(|| dropped.load(Ordering::SeqCst));
+    }
+}
+
+#[cfg(test)]
+mod per_name_tests {
+    use futures::executor::block_on;
+
+    use super::{ParameterClientError, ParameterService, per_name};
+
+    /// A target that has `declared` and answers like rclpy, or like
+    /// ros2-client (`0` for an undeclared name) when `fills_missing`.
+    fn target(
+        declared: &'static [&'static str],
+        fills_missing: bool,
+    ) -> impl FnMut(Vec<String>) -> std::future::Ready<Result<Vec<u8>, ParameterClientError>> {
+        move |names: Vec<String>| {
+            let known = |name: &String| declared.contains(&name.as_str());
+            std::future::ready(Ok(if fills_missing {
+                names.iter().map(|name| u8::from(known(name))).collect()
+            } else if names.iter().all(known) {
+                vec![1; names.len()]
+            } else {
+                vec![]
+            }))
+        }
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    #[test]
+    fn a_full_answer_is_used_as_is() {
+        let answer = block_on(per_name(
+            "/arm",
+            ParameterService::GetTypes,
+            &names(&["speed", "gains"]),
+            target(&["speed", "gains"], false),
+        ))
+        .unwrap();
+        assert_eq!(answer, [Some(1), Some(1)]);
+    }
+
+    #[test]
+    fn an_empty_answer_is_asked_again_name_by_name() {
+        let answer = block_on(per_name(
+            "/arm",
+            ParameterService::GetTypes,
+            &names(&["speed", "missing", "gains"]),
+            target(&["speed", "gains"], false),
+        ))
+        .unwrap();
+        assert_eq!(answer, [Some(1), None, Some(1)]);
+    }
+
+    #[test]
+    fn no_names_need_no_retry() {
+        let answer = block_on(per_name(
+            "/arm",
+            ParameterService::Get,
+            &[],
+            target(&[], false),
+        ))
+        .unwrap();
+        assert!(answer.is_empty());
+    }
+
+    #[test]
+    fn a_partial_answer_is_an_error() {
+        let error = block_on(per_name(
+            "/arm",
+            ParameterService::Describe,
+            &names(&["speed", "gains"]),
+            |_| std::future::ready(Ok(vec![1_u8])),
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                ParameterClientError::Length {
+                    asked: 2,
+                    got: 1,
+                    ..
+                }
+            ),
+            "{error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ros2_client::{
+        ParameterValue,
+        builtin_interfaces::Time,
+        parameters::raw::{self, ParameterEvent},
+    };
+
+    use super::ParameterChange;
+
+    fn parameter(name: &str, value: ParameterValue) -> raw::Parameter {
+        raw::Parameter {
+            name: name.into(),
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn an_event_without_parameters_is_no_change() {
+        let event = ParameterEvent {
+            stamp: Time::ZERO,
+            node: "/robot/arm".into(),
+            new_parameters: vec![],
+            changed_parameters: vec![],
+            deleted_parameters: vec![],
+        };
+        assert!(ParameterChange::from_event(event).is_empty());
+    }
+
+    #[test]
+    fn a_parameter_event_becomes_a_change() {
+        let event = ParameterEvent {
+            stamp: Time::ZERO,
+            node: "/robot/arm".into(),
+            new_parameters: vec![parameter("gains", ParameterValue::DoubleArray(vec![1.0]))],
+            changed_parameters: vec![parameter("speed", ParameterValue::Double(2.0))],
+            deleted_parameters: vec![parameter("old", ParameterValue::NotSet)],
+        };
+        assert_eq!(
+            ParameterChange::from_event(event),
+            ParameterChange {
+                new: vec![("gains".into(), ParameterValue::DoubleArray(vec![1.0]))],
+                changed: vec![("speed".into(), ParameterValue::Double(2.0))],
+                deleted: vec!["old".into()],
+            }
+        );
+    }
+}

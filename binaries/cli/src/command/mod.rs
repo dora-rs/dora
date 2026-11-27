@@ -68,6 +68,22 @@ use trace::Trace;
 use up::Up;
 use validate::Validate;
 
+fn warn_unsupported_distribution(descriptor: &dora_message::descriptor::Descriptor) {
+    use dora_message::descriptor::DistributeStrategy;
+
+    let mut deployments = descriptor.deploy.iter().chain(
+        descriptor
+            .nodes
+            .iter()
+            .filter_map(|node| node.deploy.as_ref()),
+    );
+    if deployments.any(|deploy| deploy.distribute != DistributeStrategy::Local) {
+        eprintln!(
+            "warning: deploy.distribute values `scp` and `http` do not transfer binaries; ensure the target machine has the executable or a build step to produce it"
+        );
+    }
+}
+
 /// dora-rs cli client
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {

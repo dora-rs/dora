@@ -103,7 +103,7 @@ ROS2 (dora→ROS2); "server" = a Dora node serving ROS2 clients (ROS2→dora).
 | | topic pub/sub | service client | service server | action client | action server | parameters |
 |---|---|---|---|---|---|---|
 | **YAML bridge** | ✅ | ✅ | ✅ | ✅ | ✅ | (node-hosted) |
-| **Rust** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
+| **Rust** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | hosting via `ros2-client`; client via `transport::parameters::ParameterClient` |
 | **C++** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
 | **Python** (pyo3) | ✅ | ✅ | ✅ | ✅¹ | ✅ | ✅ |
 
@@ -282,7 +282,49 @@ The bridge waits for the service to become available (up to 10 retries, 2 second
 1. Serializes the Arrow data as an `AddTwoInts_Request` CDR message
 2. Sends the request to the ROS2 service
 3. Waits for a response (30-second timeout)
-4. Deserializes the response into Arrow and sends it on the `response` output
+4. Deserializes the response into Arrow and sends it on the `response` output,
+   with the metadata parameters of the request input it answers
+
+Requests do not wait for each other: the bridge keeps as many in flight as
+the service QoS history holds (`keep_last`, 10 by default, at most 64; 64 with
+`keep_all`), and reads the next input only when fewer are outstanding. More at
+once could push requests out of a server's request history, or responses out
+of the bridge's own, before they are read. Set `qos.keep_last: 1` to send one
+request at a time, as before; that also sets the history depth of the service
+endpoints.
+
+Responses come out in the order of the requests, as before: a response that
+arrives early waits for the ones before it. The oldest unanswered request
+times out once 30 s have passed both since it was sent and since the server's
+last answer to any request. A server that answers one request at a time keeps
+answering, so the requests queued behind it never time out, as with the
+sequential client; a server that stops answering fails all of them about 30 s
+later; a single request it drops fails 30 s after the answers stop. A request
+that fails or times out is dropped with a warning and the next response goes
+out in its place, so pairing responses with requests by position drifts after
+a failure. Only a failure of the DDS participant itself,
+which cannot be recovered, ends the bridge and with it every request in flight.
+
+Each response carries the metadata parameters of the request it answers,
+except those that steer delivery: `flush`, `seq`, `fin`, `session_id`,
+`segment_id`, the tracing context and dora's own `_`-prefixed keys. To match
+responses to requests reliably, put an id in the request's parameters and read
+it back from the response:
+
+```rust
+// requester: number each request
+let mut parameters = MetadataParameters::default();
+parameters.insert("request_number".into(), Parameter::Integer(n));
+node.send_output("request".into(), parameters, request)?;
+
+// ... later, on the `response` input:
+let number = metadata.parameters.get("request_number");
+```
+
+The example requester in `examples/ros2-bridge/yaml-bridge-service/` does this.
+
+When the inputs close or the dataflow stops, the bridge waits for the
+requests already in flight before it exits.
 
 ### Service Server
 
@@ -331,7 +373,8 @@ Responses can arrive in any order -- the bridge correlates them by `request_id`,
 | Behavior | Value |
 |----------|-------|
 | Service client: wait for availability | 10 retries, 2s each (20s total) |
-| Service client: response timeout | 30 seconds |
+| Service client: response timeout | 30 seconds without any answer, for the oldest unanswered request |
+| Service client: requests in flight | `qos.keep_last` (default 10), at most 64; 64 with `keep_all` |
 | Service server: pending request limit | 64 |
 
 ---
@@ -409,7 +452,7 @@ nodes:
       - result
 ```
 
-The bridge receives goals from ROS2 clients, auto-accepts them, and forwards the goal data on the `goal` output. The handler computes feedback and results and sends them back on the `feedback` and `result` inputs.
+The bridge receives goals from ROS2 clients, accepts them (or lets the handler decide, see [Accepting goals](#accepting-goals)), and forwards the goal data on the `goal` output. The handler computes feedback and results and sends them back on the `feedback` and `result` inputs.
 
 See `examples/ros2-bridge/yaml-bridge-action-server/` for a working Fibonacci example.
 
@@ -434,8 +477,11 @@ Event::Input { id, metadata, data } => match id.as_str() {
 ### Action Server Lifecycle
 
 1. ROS2 client sends a goal request
-2. Bridge auto-accepts the goal and starts executing
+2. Bridge accepts the goal and starts executing
 3. Bridge sends goal data on `goal` output with `goal_id` in metadata
+
+   With a `goal_response` input, steps 2 and 3 swap: the bridge sends the goal first
+   and accepts it only once the handler does (see [Accepting goals](#accepting-goals)).
 4. Handler sends `feedback` (zero or more times) with same `goal_id`
 5. Handler sends `result` (once) with same `goal_id`; bridge returns it to the ROS2 client
 6. Result send times out after 5 minutes if the client never requests it
@@ -491,7 +537,49 @@ computes one step per tick and stops at the step it reached.
 **Without a `cancel` output, the bridge rejects cancel requests**, so clients
 get an answer instead of waiting: nothing could stop the goal.
 
-Goals that contain no data or cannot be forwarded to the handler are automatically aborted -- the bridge sends `Aborted` status back to the ROS2 client so it does not hang indefinitely.
+### Accepting goals
+
+By default the bridge accepts every goal on arrival. To let the handler decide,
+connect a `goal_response` input from the handler; declaring that input is what
+switches the bridge to waiting for the handler:
+
+```yaml
+  - id: fib_server
+    ros2:
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
+      role: server
+    inputs:
+      goal_response: handler/goal_response
+      feedback: handler/feedback
+      result: handler/result
+    outputs:
+      - goal
+```
+
+For each new goal, the bridge then:
+
+1. sends it on `goal`, with its `goal_id`, without answering the ROS2 client yet;
+2. waits for the handler's `goal_response`: the goal's `goal_id` in the
+   metadata and a one-element boolean array as data, `true` to accept;
+3. accepts the goal (it starts executing) or rejects it, and answers the client.
+
+A goal the handler does not answer within 10 s is rejected, so the client is
+not left waiting; a `goal_response` that comes later is ignored with a warning.
+With a `cancel` output, such a goal also gets a `cancel` event, as does one the
+handler accepted that then fails to start, so a handler that already started
+on it can stop. Goals still waiting when the dataflow stops are rejected.
+A `goal_response` whose data is not a one-element boolean array rejects the
+goal. A handler should start working on a goal only once it has accepted it.
+
+```python
+node.send_output("goal_response", pa.array([order <= 46]), {"goal_id": goal_id})
+```
+
+`dataflow-accept.yml` in `examples/ros2-bridge/yaml-bridge-action-server/`
+rejects orders above 46, whose last value would overflow `i32`.
+
+Goals that contain no data or cannot be forwarded to the handler are automatically aborted -- the bridge sends `Aborted` status back to the ROS2 client so it does not hang indefinitely. With a `goal_response` input they are rejected instead, since they have not been accepted yet.
 
 ### Goal Status
 
@@ -518,8 +606,8 @@ node.send_output("result".into(), params, error_result)?;
 
 | Behavior | Value |
 |----------|-------|
-| Max concurrent goals | 8 (additional goals receive `Aborted` status) |
-| Auto-accept | All goals are auto-accepted |
+| Max concurrent goals | 8, counting goals waiting for the handler (additional goals receive `Aborted` status on DDS without a `goal_response` input, and are rejected otherwise) |
+| Goal acceptance | Automatic, or by the handler (see [Accepting goals](#accepting-goals)) |
 | Result send timeout | 5 minutes |
 
 ### Python Action Server Handler
@@ -1075,6 +1163,7 @@ qos = Ros2QosPolicies(reliable=True, keep_last=1)
 | `node.create_action_client(name, type, qos)` → `Ros2ActionClient` | `.send_goal(goal)` → `goal_id`, `.take_feedback(goal_id)`, `.take_result(goal_id)`, `.cancel(goal_id=None)` |
 | `node.create_action_server(name, type, qos)` → `Ros2ActionServer` | `.take_goal()` → `(goal_id, goal)`, `.send_feedback(goal_id, fb)`, `.send_result(goal_id, result, status=None)`, `.take_cancel()` |
 | `node.set_parameter` / `get_parameter` / `list_parameters` / `has_parameter` | Runtime parameters (also served to `ros2 param`) |
+| `node.create_parameter_client(node, timeout_s=None)` → `Ros2ParameterClient` | Another node's parameters: `.get(names)`, `.get_types(names)`, `.set(values)`, `.set_atomically(values)`, `.list(prefixes=None, depth=0)`, `.describe(names)`, `.take_event()`, `.next_event(timeout_s=None)` |
 
 Service client example (call an external ROS2 `AddTwoInts`):
 
@@ -1094,6 +1183,34 @@ node.set_parameter("speed", 2.0)
 print(node.get_parameter("speed"), node.list_parameters())
 ```
 
+Another node's parameters (like `ros2 param get/set`, and its changes from
+`/parameter_events`):
+
+```python
+arm = node.create_parameter_client("/robot/arm")    # waits for its services (20s)
+arm.get(["speed", "missing"])        # {"speed": 1.5, "missing": None}
+arm.get_types(["speed"])             # {"speed": "double"}
+arm.set({"speed": 2.0, "gains": "x"})  # [(True, ""), (False, "<reason>")]
+arm.set_atomically({"speed": 3.0, "gains": [3.0]})  # (True, "")
+arm.list()                           # ["gains", "speed", "use_sim_time"]
+arm.describe(["speed"])["speed"]     # {"type": "double", "description": ..., "read_only": False, ...}
+arm.take_event()                     # {"new": {}, "changed": {"speed": 3.0}, "deleted": []} or None
+arm.next_event(timeout_s=5)          # the same, waiting up to 5s for it
+```
+
+Each call blocks, with the GIL released, for up to `timeout_s` (default
+30s). `take_event` and `next_event` return only the target's changes, oldest
+first: they are kept as they arrive (up to 1024, then the oldest are dropped),
+so other nodes' events on `/parameter_events` cannot crowd them out. A change
+made right after the client is created can arrive before the target has
+matched its `/parameter_events` subscription and be missed, so read the
+current values with `get` rather than waiting for an event. On
+native Zenoh with `rep2016`, the client needs the `rcl_interfaces` type
+descriptions in `AMENT_PREFIX_PATH`, as the parameter server does. Under CycloneDDS a
+*dora-hosted* node's parameter services do not answer yet
+([#4215](https://github.com/dora-rs/dora/issues/4215)), so a client cannot
+reach those; nodes hosted by rclcpp or rclpy are not affected.
+
 On native Zenoh, a node created with at least one parameter in `parameters=`
 serves the same six `rcl_interfaces` parameter services and publishes
 `/parameter_events` on a change, as on DDS. A node without any gets neither,
@@ -1110,7 +1227,11 @@ The blocking calls (`call`, `take_*`) release the GIL while waiting. See
 ### Rust (`dora-ros2-bridge`)
 
 A Rust node uses `ros2-client` directly with the generated message structs from
-`dora_ros2_bridge::messages::<package>`. Topic, service, and action client/server
+`dora_ros2_bridge::messages::<package>`. For another node's parameters,
+`dora_ros2_bridge::transport::parameters::ParameterClient` wraps its six
+`rcl_interfaces` services and its `/parameter_events` on both transports
+(`DdsParameterClient::new(&mut ros_node, "/robot/arm")`, or
+`zenoh::parameters::ParameterClient::declare` on native Zenoh). Topic, service, and action client/server
 are all native `ros2-client` calls; the action server uses
 `AsyncActionServer<A>` (no extra codegen needed).
 
@@ -1244,14 +1365,13 @@ These constraints apply to the **YAML / dynamic bridge**. The native code APIs
 have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-servers)
 (notably: the Python action client/server *do* support cancel).
 
-- **Action server auto-accept**: All incoming goals are automatically accepted. The handler cannot reject goals before execution starts.
 - **Action cancel needs a `cancel` output**: Without one, the YAML action server rejects ROS2 cancel requests (see [Canceling goals](#canceling-goals)).
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
-- **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
+- **Service client limits**: The YAML service client keeps at most `qos.keep_last` (default 10, at most 64) requests in flight, and its 30 s response timeout is not configurable.
 - **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable.
 - **`AMENT_PREFIX_PATH` required**: The bridge fails at startup if no ROS2 message definitions are found.
 - **Max 64 topics**: Multi-topic mode supports at most 64 topics per bridge node.
-- **Max 8 concurrent action goals**: Additional goals receive `Aborted` status when the limit is reached.
+- **Max 8 concurrent action goals**: Additional goals receive `Aborted` status (DDS without a `goal_response` input) or are rejected (native Zenoh, or with a `goal_response` input) when the limit is reached.
 - **Max 64 pending service requests (server)**: Requests are dropped when the queue is full.
 
 ---

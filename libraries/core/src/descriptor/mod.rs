@@ -630,14 +630,10 @@ pub fn source_is_url(source: &str) -> bool {
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     let path = with_exe_extension(source);
 
-    // Search path within current working directory. A folder named like the
-    // executable (often a Python package's source, next to the console
-    // script that `pip install -e` puts on `$PATH`) cannot be spawned, so it
-    // must not shadow the uv/`$PATH` lookup. The exception is a folder with a
-    // `__main__.py`: `dora run --uv` spawns it as `uv run <folder>`, which
-    // runs that file.
+    // Search path within current working directory. A folder that cannot be
+    // spawned must not shadow the uv/`$PATH` lookup (see `is_spawnable`).
     let joined = working_dir.join(&path);
-    if joined.is_file() || joined.join("__main__.py").is_file() {
+    if is_spawnable(&joined) {
         absolutize_preserving_symlinks(&joined)
     // Otherwise resolve against the `uv`-managed environment first (when `uv`
     // is available), then fall back to the system `$PATH`.
@@ -648,6 +644,17 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     } else {
         bail!("Could not find source path {}", path.display())
     }
+}
+
+/// Whether a node path found on disk can be spawned.
+///
+/// A folder named like the executable (often a Python package's source, next
+/// to the console script that `pip install -e` puts on `$PATH`) cannot be, so
+/// it must not count as found. The exception is a folder with a
+/// `__main__.py`: under `--uv` it is spawned as `uv run <folder>`, which runs
+/// that file.
+fn is_spawnable(path: &Path) -> bool {
+    path.is_file() || path.join("__main__.py").is_file()
 }
 
 /// `source` with the platform's executable extension when it has none.
@@ -744,7 +751,7 @@ pub fn resolve_path_confined(
 
     // a file within the node's working dir (e.g. target/release/<bin>)
     let candidate = working_dir.join(&path);
-    if candidate.exists() {
+    if is_spawnable(&candidate) {
         return confine(&candidate, working_dir);
     }
 
@@ -1731,6 +1738,40 @@ nodes:
         let resolved =
             resolve_path_confined(exe, tmp.path().join("empty").as_path(), Some(&env_dir));
         assert!(resolved.is_ok(), "{resolved:?}");
+    }
+
+    /// Like [`resolve_path`], a folder named like the entrypoint (often the
+    /// package source next to its console script) cannot be spawned, so it
+    /// must fail resolution with the "could not find" error instead of
+    /// resolving and failing at spawn with `Permission denied`.
+    #[test]
+    fn resolve_path_confined_skips_a_directory_with_the_entrypoint_name() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let name = format!("talker{}", std::env::consts::EXE_SUFFIX);
+        std::fs::create_dir(tmp.path().join(&name)).unwrap();
+        let env_dir = tmp.path().join("env");
+        std::fs::create_dir_all(env_dir.join(if cfg!(windows) { "Scripts" } else { "bin" }))
+            .unwrap();
+
+        let err = resolve_path_confined(&name, tmp.path(), Some(&env_dir)).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("could not find"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// A folder with a `__main__.py` still resolves, as it does for
+    /// [`resolve_path`]: under `--uv` it is spawned as `uv run <folder>`.
+    #[test]
+    fn resolve_path_confined_keeps_a_directory_with_a_main_py() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let name = format!("talker{}", std::env::consts::EXE_SUFFIX);
+        let dir = tmp.path().join(&name);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("__main__.py"), "").unwrap();
+
+        let resolved = resolve_path_confined(&name, tmp.path(), None).unwrap();
+        assert_eq!(resolved, dir.canonicalize().unwrap());
     }
 
     #[cfg(unix)]

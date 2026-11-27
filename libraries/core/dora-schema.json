@@ -157,12 +157,12 @@
           "const": "local"
         },
         {
-          "description": "CLI pushes built binary via SSH/SCP before spawn.",
+          "description": "Reserved for SCP distribution. Currently uses local builds.",
           "type": "string",
           "const": "scp"
         },
         {
-          "description": "Daemon pulls binary from coordinator HTTP artifact store before spawn.",
+          "description": "Reserved for HTTP distribution. Currently uses local builds.",
           "type": "string",
           "const": "http"
         }

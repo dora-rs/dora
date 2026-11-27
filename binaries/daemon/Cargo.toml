@@ -80,3 +80,8 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Console",
     "Win32_System_Threading",
 ] }
+
+# Outside the 1.x guarantee (docs/api-rust.md, "Stability scope at 1.0"):
+# the Rust Semantic Review page shows its breaking changes as allowed.
+[package.metadata.rust-semantic-review]
+allow-breaking-changes = true

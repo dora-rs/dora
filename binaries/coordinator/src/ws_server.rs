@@ -1,10 +1,7 @@
-use crate::{
-    artifacts::ArtifactStore, events::Event, ws_control::handle_control_ws,
-    ws_daemon::handle_daemon_ws,
-};
+use crate::{events::Event, ws_control::handle_control_ws, ws_daemon::handle_daemon_ws};
 use axum::{
     Router,
-    extract::{ConnectInfo, Path, Query, State, ws::WebSocketUpgrade},
+    extract::{ConnectInfo, Query, State, ws::WebSocketUpgrade},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
@@ -152,7 +149,6 @@ pub(crate) struct WsState {
     pub topic_debug_tx: mpsc::Sender<Event>,
     pub clock: Arc<HLC>,
     pub auth_token: Option<AuthToken>,
-    pub artifact_store: Arc<ArtifactStore>,
     pub store: Arc<dyn CoordinatorStore>,
     pub rate_limiter: IpRateLimiter,
     /// DaemonId -> WS peer address (set at registration). Lets daemons
@@ -224,10 +220,9 @@ pub(crate) fn router(state: WsState) -> Router {
     Router::new()
         .route("/api/control", get(ws_control_handler))
         .route("/api/daemon", get(ws_daemon_handler))
-        .route("/api/artifacts/{build_id}/{node_id}", get(artifact_handler))
         .route("/health", get(health))
         .with_state(Arc::new(state))
-        // Bounds requests *in flight* (handshakes, artifact downloads); open
+        // Bounds requests *in flight*, including handshakes; open
         // WebSocket sockets are capped separately by the `WsState` semaphores.
         .layer(ServiceBuilder::new().layer(ConcurrencyLimitLayer::new(MAX_WS_CONNECTIONS)))
 }
@@ -291,49 +286,13 @@ async fn ws_daemon_handler(
         }))
 }
 
-async fn artifact_handler(
-    State(state): State<Arc<WsState>>,
-    ConnectInfo(peer): ConnectInfo<PeerInfo>,
-    headers: HeaderMap,
-    Query(_query): Query<TokenQuery>,
-    Path((build_id, node_id)): Path<(String, String)>,
-) -> Result<impl IntoResponse, StatusCode> {
-    let addr = peer.remote;
-    if !state.rate_limiter.check(addr.ip()) {
-        return Err(StatusCode::TOO_MANY_REQUESTS);
-    }
-    let token = extract_token(&headers);
-    validate_token(&state.auth_token, &token)?;
-
-    let build_uuid: uuid::Uuid = build_id.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    let node_id: dora_message::id::NodeId = node_id.parse().map_err(|_| StatusCode::BAD_REQUEST)?;
-
-    let path = state.artifact_store.artifact_path(&build_uuid, &node_id);
-
-    let data = tokio::fs::read(&path).await.map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            StatusCode::NOT_FOUND
-        } else {
-            StatusCode::INTERNAL_SERVER_ERROR
-        }
-    })?;
-
-    Ok((
-        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
-        data,
-    ))
-}
-
 /// Start the axum WS server. Returns the bound port, a shutdown trigger, and a future to await.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve(
     bind: SocketAddr,
     event_tx: mpsc::Sender<Event>,
     topic_debug_tx: mpsc::Sender<Event>,
     clock: Arc<HLC>,
     auth_token: Option<AuthToken>,
-    artifact_store: Arc<ArtifactStore>,
     store: Arc<dyn CoordinatorStore>,
     daemon_peer_addrs: Arc<std::sync::RwLock<std::collections::HashMap<String, SocketAddr>>>,
 ) -> eyre::Result<(
@@ -348,7 +307,6 @@ pub(crate) async fn serve(
         topic_debug_tx,
         clock,
         auth_token,
-        artifact_store,
         store,
         rate_limiter: IpRateLimiter::new(),
         daemon_peer_addrs,

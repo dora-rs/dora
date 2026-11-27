@@ -37,6 +37,23 @@ impl IpcPayload {
         })
     }
 
+    /// Wrap a received payload that may still be shared, without copying it.
+    ///
+    /// The buffer aliases the payload's allocation and holds the `Arc` as its
+    /// owner, so the bytes stay valid for as long as any decoded array does.
+    pub(crate) fn from_shared(
+        data: std::sync::Arc<dora_message::node_to_daemon::DataMessage>,
+    ) -> Self {
+        let dora_message::node_to_daemon::DataMessage::Vec(bytes) = &*data;
+        let ptr = std::ptr::NonNull::from(bytes.as_slice()).cast::<u8>();
+        let len = bytes.len();
+        // SAFETY: `ptr`/`len` describe the payload's allocation. The `Arc` that
+        // owns the message is moved into the buffer as its owner, and the
+        // payload cannot be mutated or freed while the `Arc` is alive, so the
+        // allocation outlives every reference the `Buffer` hands out.
+        Self(unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, data) })
+    }
+
     /// Take ownership of a `Vec` payload without copying it.
     ///
     /// A plain `Vec` carries no alignment guarantee, so the decoder may have to

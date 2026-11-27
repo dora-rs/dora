@@ -103,7 +103,7 @@ dora cluster down
 |---------|-----------------|-------------|
 | Cluster lifecycle | `dora cluster up/status/down` | SSH-based daemon management from a single machine |
 | Label scheduling | `deploy.labels` | Route nodes to daemons by key-value labels |
-| Binary distribution | `deploy.distribute` | local, scp, or http strategies |
+| Binary distribution | `deploy.distribute` | Build steps run on the target machine |
 | systemd services | `dora cluster install/uninstall` | Persistent daemon services that survive reboots |
 | Auto-recovery | Automatic | Re-spawn nodes when a daemon reconnects |
 | Rolling upgrade | `dora cluster upgrade` | SCP binary + restart per-machine sequentially |
@@ -618,56 +618,7 @@ The label matching function iterates over all connected daemons and checks that 
 
 ## Binary Distribution
 
-Control how node binaries are delivered to remote daemons via the `distribute` field.
-
-### Local (default)
-
-Each daemon builds from source on its own machine. This is the current default behavior.
-
-```yaml
-nodes:
-  - id: my-node
-    deploy:
-      machine: edge-01
-      distribute: local
-    path: ./my-node
-```
-
-### SCP mode
-
-The CLI pushes the locally-built binary to the target machine via SSH/SCP before spawning.
-
-```yaml
-nodes:
-  - id: my-node
-    deploy:
-      machine: edge-01
-      distribute: scp
-    path: ./my-node
-```
-
-### HTTP mode
-
-The coordinator runs an artifact store. Daemons pull binaries from the coordinator via HTTP before spawning.
-
-```yaml
-nodes:
-  - id: my-node
-    deploy:
-      machine: edge-01
-      distribute: http
-    path: ./my-node
-```
-
-Artifacts are served from `GET /api/artifacts/{build_id}/{node_id}` on the coordinator's WebSocket port. The endpoint requires authentication (Bearer token) and sanitizes node IDs to prevent path traversal.
-
-### When to use each strategy
-
-| Strategy | Best for | Tradeoffs |
-|----------|----------|-----------|
-| `local` | Homogeneous clusters, CI builds | Requires build toolchain on every machine |
-| `scp` | Heterogeneous clusters, cross-compiled binaries | Requires SSH access from CLI to all machines |
-| `http` | Air-gapped daemons, firewalled networks | Requires coordinator reachability from all daemons |
+Configured build steps run on the target machine. Prebuilt binaries must already exist there. The values `scp` and `http` are accepted for compatibility and use the same behavior as `local`.
 
 ---
 
@@ -979,7 +930,7 @@ nodes:
       labels:                          # Label requirements (superset match)
         gpu: "true"
         arch: arm64
-      distribute: local                # local | scp | http
+      distribute: local
       working_dir: /opt/my-app         # Working directory on the target machine
     path: ./my-node
 ```
@@ -990,7 +941,7 @@ nodes:
 |-------|------|---------|-------------|
 | `machine` | string | none | Target machine ID. Takes priority over labels. |
 | `labels` | map | empty | Required daemon labels. All key-value pairs must match. |
-| `distribute` | string | `local` | Binary distribution strategy: `local`, `scp`, or `http`. |
+| `distribute` | string | `local` | Configured build steps run on the target machine. Prebuilt binaries must already exist there. The values `scp` and `http` are accepted for compatibility and use the same behavior as `local`. |
 | `working_dir` | path | none | Working directory on the target machine. |
 
 ### Resolution priority

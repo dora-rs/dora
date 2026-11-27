@@ -603,6 +603,9 @@ impl Daemon {
                     if node.kind.dynamic() {
                         self.check_dynamic_node_listener(&node_id)?;
                     }
+                    let planned_zenoh_endpoints = Arc::new(
+                        crate::running_dataflow::planned_zenoh_endpoints(self.running.values()),
+                    );
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -663,6 +666,7 @@ impl Daemon {
                         shutdown: dataflow.listener_shutdown_rx.clone(),
                         zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
                         zenoh_peering: dataflow.zenoh_peering.clone(),
+                        planned_zenoh_endpoints: planned_zenoh_endpoints.clone(),
                         disable_multicast: self.disable_multicast,
                         bind_nodes_to_parent: self.bind_nodes_to_parent,
                         machine_id: self.machine_id.clone(),
@@ -1013,6 +1017,9 @@ impl Daemon {
                     if node.kind.dynamic() {
                         self.check_dynamic_node_listener(&node_id)?;
                     }
+                    let planned_zenoh_endpoints = Arc::new(
+                        crate::running_dataflow::planned_zenoh_endpoints(self.running.values()),
+                    );
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -1195,6 +1202,7 @@ impl Daemon {
                         shutdown: dataflow.listener_shutdown_rx.clone(),
                         zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
                         zenoh_peering: dataflow.zenoh_peering.clone(),
+                        planned_zenoh_endpoints: planned_zenoh_endpoints.clone(),
                         disable_multicast: self.disable_multicast,
                         bind_nodes_to_parent: self.bind_nodes_to_parent,
                         machine_id: self.machine_id.clone(),
