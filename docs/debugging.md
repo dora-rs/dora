@@ -243,6 +243,9 @@ dora replay recording.drec --speed 2.0
 
 # Replay as fast as possible (speed 0)
 dora replay recording.drec --speed 0
+
+# Start replaying 10 seconds into the recording
+dora replay recording.drec --start-at 10s
 ```
 
 Replay works by:
@@ -257,6 +260,7 @@ Replay works by:
 |------|---------|-------------|
 | `--speed <FLOAT>` | `1.0` | Playback speed multiplier. `2.0` = 2x, `0.5` = half speed, `0` = as fast as possible |
 | `--loop` | off | Loop the recording continuously |
+| `--start-at <DURATION>` | - | Start replay at or after this time offset (e.g. `10s`, `2s500ms`) |
 | `--replace <NODES>` | all recorded | Comma-separated list of nodes to replace |
 | `--output-yaml <PATH>` | - | Write modified descriptor YAML without running |
 

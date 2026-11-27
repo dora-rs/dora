@@ -2,13 +2,17 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use clap::Args;
 use dora_recording::RecordingReader;
 use eyre::{Context, bail};
 
-use crate::command::{Executable, Run};
+use crate::{
+    command::{Executable, Run},
+    common::parse_duration,
+};
 
 /// Replay a recorded dataflow from a `.drec` file.
 ///
@@ -32,6 +36,9 @@ use crate::command::{Executable, Run};
 ///
 ///   Just generate the modified YAML:
 ///     dora replay recording.drec --output-yaml modified.yml
+///
+///   Start replaying 10 seconds into the recording:
+///     dora replay recording.drec --start-at 10s
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Replay {
@@ -50,6 +57,16 @@ pub struct Replay {
     /// Loop the recording
     #[clap(long)]
     r#loop: bool,
+
+    /// Start replay at or after this time offset into the recording.
+    ///
+    /// Examples:
+    ///   --start-at 10s
+    ///   --start-at 2s500ms
+    ///   --start-at 500ms
+    #[clap(long, value_name = "DURATION", verbatim_doc_comment)]
+    #[arg(value_parser = parse_duration)]
+    start_at: Option<Duration>,
 
     /// Just generate modified YAML, don't run
     #[clap(long, value_name = "PATH")]
@@ -120,12 +137,15 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     let mut descriptor: serde_yaml::Value =
         serde_yaml::from_str(descriptor_yaml).wrap_err("failed to parse descriptor YAML")?;
 
-    // Discover which nodes produced recorded data and how many messages each
-    // output carries (used to size receiver queues below).
+    // Discover which nodes produced recorded data, the latest timestamp offset per
+    // node, and how many messages each output carries (used to size receiver queues below).
     let mut recorded_counts: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
-    // Only the ids are needed here; `next_entry_header` skips copying each
+    let mut node_last_offsets: BTreeMap<String, u64> = BTreeMap::new();
+    // Only the ids and timestamps are needed here; `next_entry_header` skips copying each
     // entry's event payload out of the record buffer.
     while let Some(entry) = reader.next_entry_header()? {
+        let last = node_last_offsets.entry(entry.node_id.clone()).or_default();
+        *last = (*last).max(entry.timestamp_offset_nanos);
         *recorded_counts
             .entry(entry.node_id)
             .or_default()
@@ -184,19 +204,36 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
 
     let unmapped = unmapped_recorded_nodes(nodes, &nodes_to_replace);
     if !unmapped.is_empty() {
-        let unmapped = unmapped.join(", ");
+        let unmapped_list = unmapped.join(", ");
         if explicit_replace {
             bail!(
-                "cannot replay `{unmapped}`: not a top-level node of the recorded dataflow \
+                "cannot replay `{unmapped_list}`: not a top-level node of the recorded dataflow \
                  (a node inside a `module:` is recorded under its expanded id, but replay \
                  can only replace top-level nodes)"
             );
         }
         eprintln!(
-            "warning: recorded nodes `{unmapped}` are not top-level nodes of the recorded \
+            "warning: recorded nodes `{unmapped_list}` are not top-level nodes of the recorded \
              dataflow (e.g. nodes inside a `module:`), so they run live instead of being \
              replayed"
         );
+    }
+
+    let unmapped_set: BTreeSet<&str> = unmapped.iter().map(|s| s.as_str()).collect();
+    let actually_replaced: BTreeSet<String> = nodes_to_replace
+        .iter()
+        .filter(|id| !unmapped_set.contains(id.as_str()))
+        .cloned()
+        .collect();
+
+    let warnings = validate_start_at(
+        args.start_at,
+        &actually_replaced,
+        &node_last_offsets,
+        explicit_replace,
+    )?;
+    for warning in warnings {
+        eprintln!("warning: {warning}");
     }
 
     replace_recorded_nodes_with_replay(
@@ -206,6 +243,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         &recording_path,
         args.speed,
         args.r#loop,
+        args.start_at,
     );
     let sizing = raise_replayed_input_queue_sizes(nodes, &nodes_to_replace, &recorded_counts);
     for input in &sizing.lossy {
@@ -291,6 +329,58 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     run.execute_with(true)
 }
 
+/// Validates that `--start-at` falls before the end of the recording for the
+/// nodes being replaced, and emits warnings for any individual replaced nodes
+/// that have no records at or after the start offset.
+fn validate_start_at(
+    start_at: Option<Duration>,
+    actually_replaced: &BTreeSet<String>,
+    node_last_offsets: &BTreeMap<String, u64>,
+    explicit_replace: bool,
+) -> eyre::Result<Vec<String>> {
+    let Some(start_at) = start_at else {
+        return Ok(Vec::new());
+    };
+    let start_nanos = u64::try_from(start_at.as_nanos()).unwrap_or(u64::MAX);
+
+    let max_replaced_offset = actually_replaced
+        .iter()
+        .filter_map(|node| node_last_offsets.get(node).copied())
+        .max()
+        .unwrap_or(0);
+
+    if actually_replaced.is_empty() || start_nanos >= max_replaced_offset {
+        if explicit_replace {
+            if actually_replaced.len() == 1 {
+                let node = actually_replaced.iter().next().unwrap();
+                bail!(
+                    "start offset `{start_at:?}` ({start_nanos} ns) is at or past the end of replaced node `{node}` ({max_replaced_offset} ns)"
+                );
+            } else {
+                bail!(
+                    "start offset `{start_at:?}` ({start_nanos} ns) is at or past the end of the replaced recorded nodes ({max_replaced_offset} ns)"
+                );
+            }
+        } else {
+            bail!(
+                "start offset `{start_at:?}` ({start_nanos} ns) is at or past the end of the recording ({max_replaced_offset} ns)"
+            );
+        }
+    }
+
+    let mut warnings = Vec::new();
+    for node in actually_replaced {
+        if let Some(&node_last) = node_last_offsets.get(node)
+            && start_nanos >= node_last
+        {
+            warnings.push(format!(
+                "start offset `{start_at:?}` ({start_nanos} ns) is at or past the end of node `{node}` ({node_last} ns); it will replay no messages"
+            ));
+        }
+    }
+    Ok(warnings)
+}
+
 /// The recorded nodes in `nodes_to_replace` that `nodes` has no entry for,
 /// so replay cannot swap them for a replay node. A node inside a `module:` is
 /// recorded under its expanded id (`<module>.<inner>`), while the recording
@@ -321,6 +411,7 @@ fn replace_recorded_nodes_with_replay(
     recording_path: &Path,
     speed: f64,
     r#loop: bool,
+    start_at: Option<Duration>,
 ) {
     for node in nodes.iter_mut() {
         let node_id = node
@@ -391,6 +482,13 @@ fn replace_recorded_nodes_with_replay(
             env.insert(
                 serde_yaml::Value::String("DORA_REPLAY_LOOP".to_string()),
                 serde_yaml::Value::String("true".to_string()),
+            );
+        }
+        if let Some(start) = start_at {
+            let start_nanos = u64::try_from(start.as_nanos()).unwrap_or(u64::MAX);
+            env.insert(
+                serde_yaml::Value::String("DORA_REPLAY_START_AT".to_string()),
+                serde_yaml::Value::String(start_nanos.to_string()),
             );
         }
     }
@@ -701,8 +799,36 @@ mod tests {
             &PathBuf::from("/tmp/recording.drec"),
             1.0,
             false,
+            None,
         );
         serde_yaml::to_string(&descriptor).unwrap()
+    }
+
+    #[test]
+    fn replace_with_replay_injects_start_at() {
+        let yaml = "nodes:\n  - id: cam\n    path: cam.py\n";
+        let mut descriptor: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let nodes = descriptor
+            .get_mut("nodes")
+            .and_then(|v| v.as_sequence_mut())
+            .unwrap();
+        let mut nodes_to_replace = BTreeSet::new();
+        nodes_to_replace.insert("cam".to_string());
+        replace_recorded_nodes_with_replay(
+            nodes,
+            &nodes_to_replace,
+            &PathBuf::from("/tmp/dora-replay-node"),
+            &PathBuf::from("/tmp/recording.drec"),
+            1.0,
+            false,
+            Some(Duration::from_nanos(12345678)),
+        );
+        let cam_node = &nodes[0];
+        let env = cam_node.get("env").unwrap();
+        assert_eq!(
+            env.get("DORA_REPLAY_START_AT").unwrap().as_str().unwrap(),
+            "12345678"
+        );
     }
 
     #[test]
@@ -754,6 +880,204 @@ mod tests {
         // `inf` is accepted and normalized to as-fast-as-possible (0.0).
         let cli = Cli::try_parse_from(["dora", "rec.drec", "--speed=inf"]).unwrap();
         assert_eq!(cli.replay.speed, 0.0);
+    }
+
+    #[test]
+    fn start_at_value_parser_is_wired_onto_the_arg() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            replay: Replay,
+        }
+
+        // Accepts valid durations in various units.
+        let cli = Cli::try_parse_from(["dora", "rec.drec", "--start-at=10s"]).unwrap();
+        assert_eq!(cli.replay.start_at, Some(Duration::from_secs(10)));
+
+        let cli = Cli::try_parse_from(["dora", "rec.drec", "--start-at=500ms"]).unwrap();
+        assert_eq!(cli.replay.start_at, Some(Duration::from_millis(500)));
+
+        let cli = Cli::try_parse_from(["dora", "rec.drec", "--start-at=2s500ms"]).unwrap();
+        assert_eq!(cli.replay.start_at, Some(Duration::from_millis(2500)));
+
+        // Rejects invalid duration strings.
+        assert!(Cli::try_parse_from(["dora", "rec.drec", "--start-at=invalid"]).is_err());
+        assert!(Cli::try_parse_from(["dora", "rec.drec", "--start-at=-5s"]).is_err());
+    }
+
+    #[test]
+    fn validate_start_at_none_returns_no_warnings() {
+        let mut offsets = BTreeMap::new();
+        offsets.insert("cam".to_string(), 10_000_000_000);
+        let mut replaced = BTreeSet::new();
+        replaced.insert("cam".to_string());
+
+        let res = validate_start_at(None, &replaced, &offsets, false).unwrap();
+        assert!(res.is_empty());
+    }
+
+    #[test]
+    fn validate_start_at_within_bounds_returns_no_warnings() {
+        let mut offsets = BTreeMap::new();
+        offsets.insert("imu".to_string(), 20_000_000_000);
+        offsets.insert("camera".to_string(), 30_000_000_000);
+        let mut replaced = BTreeSet::new();
+        replaced.insert("imu".to_string());
+        replaced.insert("camera".to_string());
+
+        let res =
+            validate_start_at(Some(Duration::from_secs(10)), &replaced, &offsets, false).unwrap();
+        assert!(res.is_empty());
+    }
+
+    #[test]
+    fn validate_start_at_rejects_single_replaced_node_past_end() {
+        let mut offsets = BTreeMap::new();
+        offsets.insert("imu".to_string(), 40_000_000_000);
+        offsets.insert("camera".to_string(), 60_000_000_000);
+        let mut replaced = BTreeSet::new();
+        replaced.insert("imu".to_string());
+
+        let err = validate_start_at(Some(Duration::from_secs(50)), &replaced, &offsets, true)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("start offset `50s` (50000000000 ns) is at or past the end of replaced node `imu` (40000000000 ns)"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_start_at_rejects_multiple_replaced_nodes_all_past_end() {
+        let mut offsets = BTreeMap::new();
+        offsets.insert("imu".to_string(), 30_000_000_000);
+        offsets.insert("gps".to_string(), 40_000_000_000);
+        offsets.insert("camera".to_string(), 60_000_000_000);
+        let mut replaced = BTreeSet::new();
+        replaced.insert("imu".to_string());
+        replaced.insert("gps".to_string());
+
+        let err = validate_start_at(Some(Duration::from_secs(50)), &replaced, &offsets, true)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("start offset `50s` (50000000000 ns) is at or past the end of the replaced recorded nodes (40000000000 ns)"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_start_at_warns_on_partial_replaced_nodes_past_end() {
+        let mut offsets = BTreeMap::new();
+        offsets.insert("imu".to_string(), 40_000_000_000);
+        offsets.insert("camera".to_string(), 60_000_000_000);
+        let mut replaced = BTreeSet::new();
+        replaced.insert("camera".to_string());
+        replaced.insert("imu".to_string());
+
+        let warnings =
+            validate_start_at(Some(Duration::from_secs(50)), &replaced, &offsets, true).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(
+            warnings[0].contains("start offset `50s` (50000000000 ns) is at or past the end of node `imu` (40000000000 ns); it will replay no messages"),
+            "unexpected warning: {:?}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn validate_start_at_rejects_past_end_without_explicit_replace() {
+        let mut offsets = BTreeMap::new();
+        offsets.insert("imu".to_string(), 40_000_000_000);
+        offsets.insert("camera".to_string(), 60_000_000_000);
+        let mut replaced = BTreeSet::new();
+        replaced.insert("camera".to_string());
+        replaced.insert("imu".to_string());
+
+        let err = validate_start_at(Some(Duration::from_secs(70)), &replaced, &offsets, false)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("start offset `70s` (70000000000 ns) is at or past the end of the recording (60000000000 ns)"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_start_at_warns_without_explicit_replace_when_one_node_ends_early() {
+        let mut offsets = BTreeMap::new();
+        offsets.insert("imu".to_string(), 40_000_000_000);
+        offsets.insert("camera".to_string(), 60_000_000_000);
+        let mut replaced = BTreeSet::new();
+        replaced.insert("camera".to_string());
+        replaced.insert("imu".to_string());
+
+        let warnings =
+            validate_start_at(Some(Duration::from_secs(50)), &replaced, &offsets, false).unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("node `imu`"));
+    }
+
+    #[test]
+    fn validate_start_at_rejects_boundary_offset() {
+        let mut offsets = BTreeMap::new();
+        offsets.insert("imu".to_string(), 40_000_000_000);
+        let mut replaced = BTreeSet::new();
+        replaced.insert("imu".to_string());
+
+        let err = validate_start_at(Some(Duration::from_secs(40)), &replaced, &offsets, true)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("start offset `40s` (40000000000 ns) is at or past the end of replaced node `imu` (40000000000 ns)"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_start_at_rejects_empty_actually_replaced() {
+        let offsets = BTreeMap::new();
+        let replaced = BTreeSet::new();
+
+        let err = validate_start_at(Some(Duration::from_secs(10)), &replaced, &offsets, false)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "start offset `10s` (10000000000 ns) is at or past the end of the recording (0 ns)"
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_start_at_rejects_overflow_start_duration() {
+        let mut offsets = BTreeMap::new();
+        offsets.insert("imu".to_string(), 40_000_000_000);
+        let mut replaced = BTreeSet::new();
+        replaced.insert("imu".to_string());
+
+        let err = validate_start_at(Some(Duration::MAX), &replaced, &offsets, true).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("is at or past the end of replaced node `imu`")
+        );
+    }
+
+    #[test]
+    fn validate_start_at_filters_unmapped_module_nodes_so_they_do_not_mask_dead_top_level_nodes() {
+        let mut offsets = BTreeMap::new();
+        offsets.insert("camera".to_string(), 40_000_000_000);
+        // An unmapped inner module node produced records up to 100s, but runs live and is not replayed:
+        offsets.insert("module/inner".to_string(), 100_000_000_000);
+
+        let mut replaced = BTreeSet::new();
+        // `actually_replaced` excludes "module/inner" because it is unmapped:
+        replaced.insert("camera".to_string());
+
+        let err = validate_start_at(Some(Duration::from_secs(50)), &replaced, &offsets, false)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("start offset `50s` (50000000000 ns) is at or past the end of the recording (40000000000 ns)"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
