@@ -306,10 +306,22 @@ pub fn current_crate_version() -> semver::Version {
     semver::Version::parse(crate_version_raw).unwrap()
 }
 
+/// Whether two dora versions can talk to each other: semver-caret, in either
+/// direction.
+///
+/// The pre-release and build parts are ignored. Semver only lets a requirement
+/// match a pre-release of its own `major.minor.patch`, so `1.2.0-rc.1` and
+/// `1.1.0` would reject each other although they speak the same 1.x protocol,
+/// and a release candidate could not run nodes or wheels from the stable
+/// release.
 pub(crate) fn versions_compatible(
     crate_version: &semver::Version,
     specified_version: &semver::Version,
 ) -> Result<bool, String> {
+    let release = |version: &semver::Version| {
+        semver::Version::new(version.major, version.minor, version.patch)
+    };
+    let (crate_version, specified_version) = (&release(crate_version), &release(specified_version));
     let req = semver::VersionReq::parse(&crate_version.to_string()).map_err(|error| {
         format!("failed to parse crate version `{crate_version}` as `VersionReq`: {error}")
     })?;
@@ -321,6 +333,33 @@ pub(crate) fn versions_compatible(
         })?;
     let matches = req.matches(specified_version) || specified_dora_req.matches(crate_version);
     Ok(matches)
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::versions_compatible;
+
+    fn compatible(a: &str, b: &str) -> bool {
+        let a = semver::Version::parse(a).unwrap();
+        let b = semver::Version::parse(b).unwrap();
+        versions_compatible(&a, &b).unwrap() && versions_compatible(&b, &a).unwrap()
+    }
+
+    #[test]
+    fn release_candidate_talks_to_the_stable_series() {
+        assert!(compatible("1.2.0-rc.1", "1.1.0"));
+        assert!(compatible("1.2.0-rc.1", "1.0.1"));
+        assert!(compatible("1.2.0-rc.1", "1.2.0"));
+        assert!(compatible("1.2.0-rc.1", "1.2.0-rc.2"));
+        assert!(compatible("1.1.0", "1.2.0"));
+    }
+
+    #[test]
+    fn other_major_versions_stay_incompatible() {
+        assert!(!compatible("1.2.0-rc.1", "0.4.1"));
+        assert!(!compatible("2.0.0-rc.1", "1.2.0"));
+        assert!(!compatible("1.0.0", "0.4.1"));
+    }
 }
 
 #[cfg(test)]
