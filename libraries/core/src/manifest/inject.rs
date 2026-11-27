@@ -13,7 +13,7 @@
 //! through paths that don't inject (deliberate for now; see plan §6.2).
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -51,6 +51,21 @@ pub fn inject_adjacent_manifests(
     working_dir: &Path,
     registry: &mut TypeRegistry,
 ) -> InjectionResult {
+    inject_adjacent_manifests_except(dataflow, working_dir, registry, &BTreeSet::new())
+}
+
+/// [`inject_adjacent_manifests`], leaving the nodes in `skip` alone.
+///
+/// For nodes whose contract was already applied elsewhere and whose `path:`
+/// is not relative to `working_dir`, such as `--hub-override` nodes: their
+/// path is relative to the override checkout, so a manifest found by walking
+/// up from `working_dir` would not be theirs (#4311).
+pub fn inject_adjacent_manifests_except(
+    dataflow: &mut Descriptor,
+    working_dir: &Path,
+    registry: &mut TypeRegistry,
+    skip: &BTreeSet<NodeId>,
+) -> InjectionResult {
     let mut result = InjectionResult::default();
 
     // Pass 1: locate each node's manifest.
@@ -67,6 +82,7 @@ pub fn inject_adjacent_manifests(
             || node.operators.is_some()
             || node.operator.is_some()
             || node.ros2.is_some()
+            || skip.contains(&node.id)
         {
             continue;
         }
@@ -411,6 +427,47 @@ nodes:
                 .get(&"bbox".parse::<dora_message::id::DataId>().unwrap()),
             Some(&"std/vision/v1/BoundingBox".to_string())
         );
+    }
+
+    /// A `--hub-override` node is desugared to a `path:` node whose path is
+    /// relative to the override checkout, and its contract was already
+    /// applied by hub resolution. An unrelated `dora-node.yml` on the walk
+    /// from the dataflow dir must not be matched against it (#4311): neither
+    /// as a spurious "does not name the node's path" warning (fatal under
+    /// `--strict-types`) nor as a second, foreign contract.
+    #[test]
+    fn skipped_nodes_are_not_matched_against_dataflow_dir_manifests() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_manifest(
+            tmp.path(),
+            "apiVersion: 1\nname: my-app\nnamespace: me\nruntime: python\nentrypoint: main.py\n",
+        );
+        let yaml = r#"
+nodes:
+  - id: detector
+    path: target/release/dora-yolo
+    outputs: [bbox]
+  - id: other
+    path: main.py
+    outputs: [out]
+"#;
+        let skip: BTreeSet<NodeId> = ["detector".parse().unwrap(), "other".parse().unwrap()]
+            .into_iter()
+            .collect();
+        let mut df = dataflow(yaml);
+        let result =
+            inject_adjacent_manifests_except(&mut df, tmp.path(), &mut TypeRegistry::new(), &skip);
+        assert_eq!(result.warnings, Vec::<String>::new());
+        assert_eq!(result.notes, Vec::<String>::new());
+
+        // without the skip set, the root manifest is matched against both:
+        // a spurious mismatch warning for `detector`, and a foreign contract
+        // applied to `other` (whose entrypoint happens to coincide)
+        let mut df = dataflow(yaml);
+        let result = inject_adjacent_manifests(&mut df, tmp.path(), &mut TypeRegistry::new());
+        assert_eq!(result.warnings.len(), 2, "{:?}", result.warnings);
+        assert!(result.warnings[0].contains("\"detector\""));
+        assert!(result.warnings[1].contains("\"other\""));
     }
 
     /// A typed port the dataflow leaves unwired gets no injected type: the
