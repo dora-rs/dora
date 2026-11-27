@@ -215,11 +215,13 @@ impl Eq for InputDef {}
 // reports its own error.
 impl<'de> Deserialize<'de> for InputDef {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        // `deny_unknown_fields`, like `Node` and `Descriptor`: an unknown
-        // option (`queue_len`) must fail the parse, not silently fall back
-        // to the default it was meant to override.
+        // Deliberately tolerant of unknown keys: this also decodes the
+        // inputs the daemon hands a node (`DORA_NODE_CONFIG`) and the
+        // resolved nodes the coordinator sends a daemon, so a peer from an
+        // older 1.x must ignore an option a newer release adds. A user's
+        // file is checked for unknown option keys before it gets here, by
+        // `dora_core::descriptor::reject_unknown_input_options`.
         #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
         struct WithOptions {
             source: InputMapping,
             #[serde(default)]
@@ -892,22 +894,17 @@ mod tests {
         assert!(err.contains("input mapping string"), "{err}");
     }
 
-    /// A misspelled or misnamed option in an input's long form is an error, not a
-    /// silently dropped setting: `queue_len: 1` used to parse as an input
-    /// with the default queue size.
+    /// An input from a newer 1.x peer may carry an option this version does
+    /// not know: it must still decode, with the unknown key ignored, so an
+    /// older node or daemon keeps working during a rolling upgrade. Unknown
+    /// keys in a user's own file are rejected earlier, in `dora-core`.
     #[test]
-    fn input_long_form_rejects_unknown_keys() {
-        for (yaml, key) in [
-            ("source: a/b\nqueue_len: 1", "queue_len"),
-            ("source: a/b\ntimeout: 2.0", "timeout"),
-            ("source: a/b\nqueue_size: 1\npolicy: drop_oldest", "policy"),
-        ] {
-            let err = serde_yaml::from_str::<Input>(yaml).unwrap_err().to_string();
-            assert!(
-                err.contains("unknown field") && err.contains(key),
-                "yaml {yaml:?}: {err}"
-            );
-        }
+    fn input_long_form_ignores_unknown_keys_on_the_wire() {
+        let input: Input =
+            serde_json::from_str(r#"{"source":"a/b","queue_size":1,"future_opt":true}"#).unwrap();
+        assert_eq!(input.queue_size, Some(1));
+        let input: Input = serde_yaml::from_str("source: a/b\nfuture_opt: 2").unwrap();
+        assert_eq!(input.queue_size, None);
     }
 
     /// The JSON wire form (CLI -> coordinator -> daemon) still parses.

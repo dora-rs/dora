@@ -1544,6 +1544,8 @@ fn load_module_file(path: &Path, dir: &str) -> eyre::Result<ModuleFile> {
         .with_context(|| format!("failed to parse module file: {}", path.display()))?;
     super::reject_duplicate_keys(&buf)
         .with_context(|| format!("failed to parse module file: {}", path.display()))?;
+    super::reject_unknown_input_options(&buf)
+        .with_context(|| format!("failed to parse module file: {}", path.display()))?;
     Ok(module)
 }
 
