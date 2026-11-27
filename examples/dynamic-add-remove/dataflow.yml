@@ -11,8 +11,7 @@
 # Step 2: Add a filter node dynamically
 #   dora node add --from-yaml filter-node.yml --dataflow dynamic-add-remove
 #
-# Step 3: Wire the filter into the pipeline
-#   dora node connect <dataflow> sender/value filter/input
+# Step 3: Wire the filter output to the receiver
 #   dora node connect <dataflow> filter/output receiver/filtered
 #
 # Step 4: Remove the filter

@@ -29,6 +29,9 @@ int main() {
         DoraEventType ty = read_dora_event_type(event);
         if (ty == DoraEventType_Input) {
             count += 1;
+            if (count == 1 || count % 20 == 0) {
+                std::cerr << "filter: received input " << count << std::endl;
+            }
             int rc = dora_send_output(
                 ctx, const_cast<char *>(out_id), std::strlen(out_id),
                 reinterpret_cast<char *>(&count), sizeof(count));

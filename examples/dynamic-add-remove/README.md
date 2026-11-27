@@ -42,14 +42,11 @@ The receiver logs all integers from the sender.
 dora node add --from-yaml examples/dynamic-add-remove/filter-node.yml --dataflow demo
 ```
 
-The filter node is registered in the dataflow but not yet wired.
+The filter node declares `input: sender/value` in its YAML so its Zenoh subscription is established when the node starts.
 
-### Step 3: Wire the filter into the pipeline
+### Step 3: Wire the filter output into the receiver
 
 ```bash
-# Connect sender's output to filter's input
-dora node connect --dataflow demo sender/value filter/input
-
 # Connect filter's output to receiver
 dora node connect --dataflow demo filter/output receiver/filtered
 ```

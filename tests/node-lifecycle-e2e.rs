@@ -409,6 +409,27 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
     );
 
     // --- 4 + 5. dora node connect (two edges) ---------------------------
+    // An undeclared edge from a direct-capable output must be refused with
+    // an actionable error (issue #4063).
+    let (ok_refused, _, stderr_refused) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "connect",
+            "--dataflow",
+            name,
+            "sender/value",
+            "filter/undeclared_input",
+        ]),
+        "dora node connect unpinnable direct edge",
+    );
+    assert!(
+        !ok_refused && stderr_refused.contains("may publish directly over Zenoh"),
+        "direct-capable edge without declared subscription must be rejected; got ok={ok_refused}, stderr:\n{stderr_refused}"
+    );
+
+    // The filter node declared `input: sender/value` in its YAML descriptor
+    // (`filter-node.yml`). Connecting it again tests idempotent retry of an
+    // already-wired edge (#4063).
     let (ok, stdout, stderr) = run_capture(
         Command::new(&dora).args([
             "node",
@@ -441,6 +462,28 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
     assert!(
         stdout.contains("filter/output -> receiver/filtered"),
         "connect 2 missing success line:\n{stdout}"
+    );
+
+    // Verify that data is actually delivered: the receiver node consumes the
+    // runtime-connected `filtered` input from filter/output (#4063).
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut delivered = false;
+    let mut last_log = String::new();
+    while std::time::Instant::now() < deadline {
+        let (ok, stdout, _) = run_capture(
+            Command::new(&dora).args(["logs", name, "--node", "receiver"]),
+            "dora logs receiver",
+        );
+        if ok && stdout.contains("filtered") {
+            delivered = true;
+            break;
+        }
+        last_log = stdout;
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(
+        delivered,
+        "receiver node did not receive runtime-connected `filtered` input within 10s;\nlast logs:\n{last_log}"
     );
 
     // --- 6. dora node disconnect ----------------------------------------

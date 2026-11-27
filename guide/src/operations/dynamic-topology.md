@@ -12,10 +12,10 @@ dora node add --from-yaml new-node.yml --dataflow my-app
 dora node remove my-app filter-node
 
 # Connect two nodes (add a live mapping)
-dora node connect --dataflow my-app sender/value filter/input
+dora node connect --dataflow my-app filter/output receiver/filtered
 
 # Disconnect two nodes (remove a mapping)
-dora node disconnect --dataflow my-app sender/value filter/input
+dora node disconnect --dataflow my-app filter/output receiver/filtered
 ```
 
 ## Node YAML Definition
@@ -33,10 +33,13 @@ inputs:
   tick: dora/timer/millis/300
 ```
 
-Inputs can be declared inline like above, or wired after the fact with
-`dora node connect`. Timer inputs work either way, including on an
-interval that no already-running node subscribes to — adding the node
-starts a tick source for that interval.
+Upstream inputs from existing direct-capable outputs and built-in timer inputs
+(`dora/timer/...`) must be declared inline in the node YAML when adding the node.
+Zenoh subscriptions and timer intervals are created at startup. `dora node connect`
+connects outputs of dynamically added nodes that are pinned to the daemon path;
+it cannot connect built-in timer inputs at runtime. Timer inputs declared when
+adding the node work on any interval, including an interval that no already-running
+node subscribes to — adding the node starts a tick source for that interval.
 
 ## Examples
 

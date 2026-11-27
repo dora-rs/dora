@@ -3,5 +3,7 @@
 
 id: filter
 path: build/cxx_filter
+inputs:
+  input: sender/value
 outputs:
   - output
