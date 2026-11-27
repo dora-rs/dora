@@ -136,6 +136,7 @@ impl PoolState {
                 direct,
                 data_port,
                 data_addr,
+                data_auth,
                 ..
             } => {
                 // Complete a synchronous cross-machine register: hand the
@@ -145,7 +146,13 @@ impl PoolState {
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&(dataflow_id, shared_memory_id))
                 {
-                    let _ = tx.send((ok, direct, data_port, data_addr));
+                    let _ = tx.send(RegisterAckReply {
+                        ok,
+                        direct,
+                        data_port,
+                        data_addr,
+                        data_auth,
+                    });
                 }
                 Ok(())
             }
@@ -352,6 +359,7 @@ impl PoolState {
                             error,
                             data_port,
                             data_addr,
+                            data_auth: data_listener_requires_token(),
                         },
                         shm_provider.as_deref(),
                     )
@@ -899,24 +907,23 @@ impl PoolState {
                             )
                             .await
                             {
-                                Ok(Ok((true, ack_direct, ack_data_port, ack_data_addr))) => {
+                                Ok(Ok(ack)) if ack.ok => {
                                     // Direct-TCP data plane: remember the
                                     // mirror's data listener so per-frame
-                                    // writes bypass the zenoh relay. The
-                                    // explicitly advertised address wins —
-                                    // the coordinator-derived one
-                                    // (`peer_addr.ip()`, the mirror daemon's
-                                    // WS source address) is the wrong dial
-                                    // target under NAT / multi-homed /
-                                    // same-host coordinator deployment.
-                                    let endpoint = ack_data_addr.or_else(|| {
-                                        ack_data_port.map(|data_port| {
-                                            std::net::SocketAddr::new(
-                                                peer_addr.ip(),
-                                                data_port,
-                                            )
-                                        })
-                                    });
+                                    // writes bypass the zenoh relay.
+                                    let endpoint = ack
+                                        .direct_endpoint(
+                                            peer_addr.ip(),
+                                            cross_data_auth_token().is_some(),
+                                        )
+                                        .unwrap_or_else(|e| {
+                                            tracing::warn!(
+                                                "memory pool: pool {shared_memory_id} on \
+                                                 machine \"{machine_id}\": {e}; writes go \
+                                                 over the zenoh relay"
+                                            );
+                                            None
+                                        });
                                     if let Some(endpoint) = endpoint {
                                         cross_data_endpoints
                                             .lock()
@@ -974,10 +981,10 @@ impl PoolState {
                                         );
                                     });
                                     reply = Ok(());
-                                    direct = ack_direct;
+                                    direct = ack.direct;
                                     break;
                                 }
-                                Ok(Ok((false, _, _, _))) => {
+                                Ok(Ok(_)) => {
                                     reply = Err(format!(
                                         r#"machine "{machine_id}" resolved but remote pool creation failed: remote returned ok=false; cross-machine memory pool not created"#
                                     ));
