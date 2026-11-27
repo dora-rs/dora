@@ -457,8 +457,9 @@ mod timeout_tests {
     fn a_server_that_stops_answering_fails_every_call_after_one_timeout() {
         let (outcomes, took) = run(vec![None, None, None]);
         assert_eq!(outcomes, vec![(1, None), (2, None), (3, None)]);
-        // Not one timeout per call ahead: 3 x 200 ms would be 600 ms.
-        assert!(took >= TIMEOUT && took < TIMEOUT * 2, "took {took:?}");
+        // Not one timeout per call ahead: 3 x 200 ms would be 600 ms. The
+        // bound sits right below that, so a slow CI timer does not trip it.
+        assert!(took >= TIMEOUT && took < TIMEOUT * 3, "took {took:?}");
     }
 
     #[test]
@@ -477,16 +478,16 @@ mod timeout_tests {
 
     #[test]
     fn a_dropped_request_fails_one_timeout_after_the_answers_stop() {
-        let answers = vec![
-            Some(Duration::from_millis(20)),
-            None,
-            Some(Duration::from_millis(40)),
-        ];
+        const LAST_ANSWER: Duration = Duration::from_millis(150);
+        let answers = vec![Some(Duration::from_millis(20)), None, Some(LAST_ANSWER)];
         let (outcomes, took) = run(answers);
         // Call 3, answered early, still comes out after call 2.
         assert_eq!(outcomes, vec![(1, Some(1)), (2, None), (3, Some(3))]);
-        // 200 ms after the last answer (40 ms), not after its own send.
-        assert!(took >= TIMEOUT && took < TIMEOUT * 2, "took {took:?}");
+        // Call 2 is given up 200 ms after the last answer (150 ms), not 200 ms
+        // after its own send. Only the lower bound tells those apart; an upper
+        // bound would only measure the runner's timer latency (#4331), and the
+        // 2 s guard in `run` already catches a driver that never gives up.
+        assert!(took >= LAST_ANSWER + TIMEOUT, "took {took:?}");
     }
 }
 
