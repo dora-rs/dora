@@ -155,6 +155,7 @@ Known gap: `dora self update` destructive swap path (tracked in
 | Full reconciliation back to Running post-restart | no automated coverage | — | Gap (aspirational per `state-reconstruction-smoke` docstring) |
 | Damaged store file is rejected, never served with altered records | `damaged_store_is_rejected_or_reads_back_intact` + siblings in `redb_store.rs`; `e2e_up_reports_corrupt_coordinator_store` | PR | Contract |
 | Param writes stay atomic and acknowledged ones survive a SIGKILL of the writing process | `sigkill_during_param_writes_keeps_every_acked_write` (`libraries/coordinator-store/tests/sigkill_during_writes.rs`) | PR | Contract |
+| Param changes acknowledged across a coordinator SIGKILL + restart reach the node (set and delete while the daemon is away) | `param_changes_during_a_coordinator_restart_reach_the_node` (`tests/daemon-reconnect-e2e.rs`) | PR | Contract |
 
 ## Cross-language interop
 
