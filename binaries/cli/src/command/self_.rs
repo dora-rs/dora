@@ -1,4 +1,5 @@
 use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 
 use super::{Executable, default_tracing};
 use clap::Subcommand;
@@ -93,25 +94,109 @@ fn check_only_update_hint(wheel: bool) -> String {
     }
 }
 
-/// The updater `dora self update` runs: the CLI archive of the latest
-/// `dora-rs/dora` release for this target.
-fn cli_updater() -> eyre::Result<self_update::backends::github::Update> {
-    #[cfg(target_os = "linux")]
-    let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
-    #[cfg(target_os = "macos")]
-    let bin_path_in_archive = format!("dora-cli-{}/dora", env!("TARGET"));
-    #[cfg(target_os = "windows")]
-    let bin_path_in_archive = String::from("dora.exe");
+/// Where the executable `name` sits in this target's CLI archive: under
+/// `dora-cli-<target>/` in the Unix tarballs, at the root of the Windows zip.
+fn path_in_archive(target: &str, name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        format!("dora-cli-{target}/{name}")
+    }
+}
 
-    Ok(self_update::backends::github::Update::configure()
+/// The node binaries the CLI archive ships next to `dora`, and that
+/// `node_binary::search` looks for next to the `dora` executable first.
+const NODE_BINARIES: &[&str] = &["dora-record-node", "dora-replay-node"];
+
+/// Extract the [`NODE_BINARIES`] from the downloaded CLI `archive` into
+/// `staging`, at their paths in the archive. A binary the archive lacks
+/// (a release from before they were shipped) or that fails to extract is
+/// left out; [`refresh_node_binaries`] reports it.
+fn stage_node_binaries(archive: &Path, staging: &Path, target: &str) {
+    for name in NODE_BINARIES {
+        let _ = self_update::Extract::from_source(archive)
+            .extract_file(staging, path_in_archive(target, name));
+    }
+}
+
+/// Replace each of the [`NODE_BINARIES`] found in `exe_dir` with the copy
+/// staged by [`stage_node_binaries`], so the updated CLI does not go on
+/// running the previous version's record and replay nodes (#4337). Returns
+/// a warning for each one that is left stale. A node not in `exe_dir` is
+/// not installed there: `node_binary::search` then looks elsewhere.
+fn refresh_node_binaries(staging: &Path, exe_dir: &Path, target: &str) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for name in NODE_BINARIES {
+        let file_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+        let installed = exe_dir.join(&file_name);
+        if !installed.exists() {
+            continue;
+        }
+        let staged = staging.join(path_in_archive(target, name));
+        let result = if staged.is_file() {
+            replace_file(
+                &staged,
+                &installed,
+                &exe_dir.join(format!(".{file_name}.new")),
+            )
+        } else {
+            Err(eyre::eyre!("the release archive does not contain it"))
+        };
+        if let Err(e) = result {
+            warnings.push(format!(
+                "{} was not updated ({e:#}); it is from the previous version, so delete it \
+                 to let `dora record`/`dora replay` install a matching one",
+                installed.display()
+            ));
+        }
+    }
+    warnings
+}
+
+/// Replace `dest` with a copy of `src`, through `tmp` in the same directory
+/// so the replacement is a rename and `dest` is never left half-written.
+/// The copy gets `dest`'s permissions: the installers mark the nodes
+/// executable themselves rather than rely on the archive's file modes.
+fn replace_file(src: &Path, dest: &Path, tmp: &Path) -> eyre::Result<()> {
+    let permissions = std::fs::metadata(dest)
+        .wrap_err("reading the installed file failed")?
+        .permissions();
+    let result = std::fs::copy(src, tmp)
+        .wrap_err("copy failed")
+        .and_then(|_| std::fs::set_permissions(tmp, permissions).wrap_err("chmod failed"))
+        .and_then(|()| std::fs::rename(tmp, dest).wrap_err("replace failed"));
+    if result.is_err() {
+        let _ = std::fs::remove_file(tmp);
+    }
+    result
+}
+
+/// The updater `dora self update` runs: the CLI archive of the latest
+/// `dora-rs/dora` release for this target. With `node_staging`, the
+/// [`NODE_BINARIES`] are also extracted from the downloaded archive into
+/// that directory, before the CLI is replaced.
+fn cli_updater(
+    node_staging: Option<PathBuf>,
+) -> eyre::Result<self_update::backends::github::Update> {
+    let target = env!("TARGET");
+    let mut builder = self_update::backends::github::Update::configure();
+    builder
         .repo_owner("dora-rs")
         .repo_name("dora")
-        .bin_path_in_archive(&bin_path_in_archive)
+        .bin_path_in_archive(path_in_archive(target, "dora"))
         .bin_name("dora")
         .asset_identifier(CLI_ASSET_IDENTIFIER)
         .show_download_progress(true)
-        .current_version(env!("CARGO_PKG_VERSION"))
-        .build()?)
+        .current_version(env!("CARGO_PKG_VERSION"));
+    if let Some(staging) = node_staging {
+        // The archive hook is the one point that sees the downloaded
+        // archive; it only reads it, so it never rejects the update.
+        builder.verify_archive(move |archive| {
+            stage_node_binaries(archive, &staging, target);
+            Ok(())
+        });
+    }
+    Ok(builder.build()?)
 }
 
 impl Executable for SelfSubCommand {
@@ -127,7 +212,17 @@ impl Executable for SelfSubCommand {
 
                 println!("Checking for updates...");
 
-                let status = cli_updater()?;
+                // Before the update: once the running executable is
+                // replaced, `current_exe()` may no longer name a real file.
+                let exe_dir = std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().map(Path::to_owned));
+                let node_staging = if check_only {
+                    None
+                } else {
+                    Some(tempfile::tempdir().wrap_err("failed to create a staging directory")?)
+                };
+                let status = cli_updater(node_staging.as_ref().map(|d| d.path().to_owned()))?;
 
                 if check_only {
                     // Only check if an update is available
@@ -179,6 +274,15 @@ impl Executable for SelfSubCommand {
                             let version = update_status.version();
                             if update_status.is_updated() {
                                 println!("Successfully updated Dora CLI to version: {version}");
+                                if let (Some(staging), Some(exe_dir)) = (&node_staging, &exe_dir) {
+                                    for warning in refresh_node_binaries(
+                                        staging.path(),
+                                        exe_dir,
+                                        env!("TARGET"),
+                                    ) {
+                                        eprintln!("warning: {warning}");
+                                    }
+                                }
                             } else {
                                 println!("Dora CLI is already at the latest version: {version}");
                             }
@@ -280,7 +384,7 @@ mod tests {
     #[test]
     fn the_cli_updater_selects_the_cli_archive() {
         use self_update::UpdateConfig;
-        let updater = super::cli_updater().unwrap();
+        let updater = super::cli_updater(None).unwrap();
         assert_eq!(
             updater.asset_identifier(),
             Some(super::CLI_ASSET_IDENTIFIER)
@@ -424,5 +528,110 @@ mod tests {
             .extract_file(&out, "dora.exe")
             .expect("self_update must extract a Deflate zip entry");
         assert_eq!(std::fs::read(out.join("dora.exe")).unwrap(), payload);
+    }
+
+    /// Write a CLI archive for `target` holding `files` (name, contents) at
+    /// their [`super::path_in_archive`] paths.
+    fn cli_archive(
+        dir: &std::path::Path,
+        target: &str,
+        files: &[(&str, &[u8])],
+    ) -> std::path::PathBuf {
+        // A zip on every platform: `extract_file` detects the format from the
+        // extension, and the entries' paths are what this exercises.
+        let archive = dir.join(format!("dora-cli-{target}.zip"));
+        let mut writer = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, contents) in files {
+            writer
+                .start_file(super::path_in_archive(target, name), options)
+                .unwrap();
+            writer.write_all(contents).unwrap();
+        }
+        writer.finish().unwrap();
+        archive
+    }
+
+    fn node_file(name: &str) -> String {
+        format!("{name}{}", std::env::consts::EXE_SUFFIX)
+    }
+
+    /// #4337: after `dora self update`, a record/replay node next to `dora`
+    /// is replaced by the one in the same release archive, so the new CLI
+    /// does not run the previous version's node, which `node_binary::search`
+    /// prefers over every other location.
+    #[test]
+    fn self_update_replaces_the_node_binaries_next_to_dora() {
+        let target = "x86_64-unknown-linux-gnu";
+        let dir = tempfile::tempdir().unwrap();
+        let archive = cli_archive(
+            dir.path(),
+            target,
+            &[
+                ("dora", b"new dora"),
+                ("dora-record-node", b"new record"),
+                ("dora-replay-node", b"new replay"),
+            ],
+        );
+        let staging = dir.path().join("staging");
+        super::stage_node_binaries(&archive, &staging, target);
+
+        let exe_dir = dir.path().join("bin");
+        std::fs::create_dir(&exe_dir).unwrap();
+        for name in super::NODE_BINARIES {
+            let installed = exe_dir.join(node_file(name));
+            std::fs::write(&installed, b"old").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&installed, std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+            }
+        }
+
+        let warnings = super::refresh_node_binaries(&staging, &exe_dir, target);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        for (name, contents) in [
+            ("dora-record-node", "new record"),
+            ("dora-replay-node", "new replay"),
+        ] {
+            let installed = exe_dir.join(node_file(name));
+            assert_eq!(std::fs::read_to_string(&installed).unwrap(), contents);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&installed).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o755, "{name} must stay executable");
+            }
+        }
+        // Nothing but the two nodes is left behind in the install directory.
+        assert_eq!(std::fs::read_dir(&exe_dir).unwrap().count(), 2);
+    }
+
+    /// A node the archive does not contain is reported, not silently kept;
+    /// a node that is not next to `dora` is not installed there.
+    #[test]
+    fn self_update_warns_about_a_node_it_cannot_refresh() {
+        let target = "x86_64-unknown-linux-gnu";
+        let dir = tempfile::tempdir().unwrap();
+        let archive = cli_archive(dir.path(), target, &[("dora", b"new dora")]);
+        let staging = dir.path().join("staging");
+        super::stage_node_binaries(&archive, &staging, target);
+
+        let exe_dir = dir.path().join("bin");
+        std::fs::create_dir(&exe_dir).unwrap();
+        let record = exe_dir.join(node_file("dora-record-node"));
+        std::fs::write(&record, b"old").unwrap();
+
+        let warnings = super::refresh_node_binaries(&staging, &exe_dir, target);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains(&record.display().to_string())
+                && warnings[0].contains("delete it"),
+            "{warnings:?}"
+        );
+        assert_eq!(std::fs::read(&record).unwrap(), b"old");
+        assert!(!exe_dir.join(node_file("dora-replay-node")).exists());
     }
 }
