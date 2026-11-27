@@ -495,6 +495,7 @@ impl DescriptorExt for Descriptor {
         let descriptor: Descriptor =
             serde_yaml::from_slice(&buf).context("failed to parse given descriptor")?;
         reject_duplicate_keys(&buf).context("failed to parse given descriptor")?;
+        reject_unknown_input_options(&buf).context("failed to parse given descriptor")?;
         // A dataflow file must not set the internal `path_fallback`. Checked
         // here, not in expansion: the daemon also expands a descriptor that
         // was expanded already (`dora build`'s session), which carries it.
@@ -573,6 +574,87 @@ fn merge_env(
 /// ```
 pub fn reject_duplicate_keys(buf: &[u8]) -> eyre::Result<()> {
     serde_yaml::from_slice::<serde_yaml::Value>(buf)?;
+    Ok(())
+}
+
+/// The keys an input's long form (`source:` plus options) may set.
+///
+/// `dora_message::config::Input` decodes tolerantly, so that an older node or
+/// daemon ignores an option a newer 1.x adds; this list is what a user's own
+/// file is held to.
+const INPUT_OPTION_KEYS: &[&str] = &["source", "queue_size", "input_timeout", "queue_policy"];
+
+/// Rejects an unknown key in the long form of any input of a dataflow
+/// document (`nodes:`, as in a dataflow or module file).
+///
+/// `Input` deserializes tolerantly, because the same decoder reads the inputs
+/// a daemon hands a node and those must survive version skew. In a file a
+/// user wrote, though, a misnamed option such as `queue_len: 1` would be
+/// silently dropped and the input would run with the default it was meant to
+/// override, so files are checked here. [`DescriptorExt::parse`] and module
+/// loading call this already.
+///
+/// ```
+/// use dora_core::descriptor::reject_unknown_input_options;
+///
+/// let yaml = b"nodes:\n  - id: sink\n    path: ./sink\n    inputs:\n      tick:\n        source: dora/timer/millis/10\n        queue_len: 1\n";
+/// let err = reject_unknown_input_options(yaml).unwrap_err();
+/// assert!(err.to_string().contains("unknown option `queue_len`"));
+///
+/// reject_unknown_input_options(b"nodes:\n  - id: sink\n    path: ./sink\n").unwrap();
+/// ```
+pub fn reject_unknown_input_options(buf: &[u8]) -> eyre::Result<()> {
+    let document: serde_yaml::Value = serde_yaml::from_slice(buf)?;
+    let Some(nodes) = document.get("nodes").and_then(|nodes| nodes.as_sequence()) else {
+        return Ok(());
+    };
+    nodes.iter().try_for_each(check_node_input_options)
+}
+
+/// [`reject_unknown_input_options`] for a single node mapping, as written for
+/// `dora node add` or `dora node replace`.
+pub fn reject_unknown_node_input_options(buf: &[u8]) -> eyre::Result<()> {
+    check_node_input_options(&serde_yaml::from_slice(buf)?)
+}
+
+fn check_node_input_options(node: &serde_yaml::Value) -> eyre::Result<()> {
+    let id = node.get("id").and_then(|id| id.as_str()).unwrap_or("?");
+    check_inputs(node, &format!("node `{id}`"))?;
+    if let Some(operator) = node.get("operator") {
+        check_inputs(operator, &format!("node `{id}`"))?;
+    }
+    if let Some(operators) = node.get("operators").and_then(|ops| ops.as_sequence()) {
+        for operator in operators {
+            let op_id = operator.get("id").and_then(|id| id.as_str()).unwrap_or("?");
+            check_inputs(operator, &format!("node `{id}`, operator `{op_id}`"))?;
+        }
+    }
+    Ok(())
+}
+
+fn check_inputs(owner: &serde_yaml::Value, location: &str) -> eyre::Result<()> {
+    let Some(inputs) = owner.get("inputs").and_then(|inputs| inputs.as_mapping()) else {
+        return Ok(());
+    };
+    for (input_id, input) in inputs {
+        let Some(options) = input.as_mapping() else {
+            continue;
+        };
+        for key in options.keys() {
+            let key = key.as_str().unwrap_or("?");
+            if !INPUT_OPTION_KEYS.contains(&key) {
+                bail!(
+                    "{location}: input `{}`: unknown option `{key}`, expected one of {}",
+                    input_id.as_str().unwrap_or("?"),
+                    INPUT_OPTION_KEYS
+                        .iter()
+                        .map(|k| format!("`{k}`"))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2241,5 +2323,62 @@ nodes:
             msg.contains("`operator`"),
             "the error must list the single-`operator` kind, got: {msg}"
         );
+    }
+
+    /// A misnamed option in an input's long form fails the parse, naming the
+    /// node, the input and the key, instead of being silently dropped. This
+    /// covers nodes, single operators and multi-operator nodes.
+    #[test]
+    fn parse_rejects_unknown_input_options() {
+        for (yaml, key) in [
+            (
+                "nodes:\n  - id: sink\n    path: ./sink\n    inputs:\n      tick:\n        source: dora/timer/millis/10\n        queue_len: 1\n",
+                "queue_len",
+            ),
+            (
+                "nodes:\n  - id: sink\n    operator:\n      python: op.py\n      inputs:\n        tick:\n          source: dora/timer/millis/10\n          timeout: 2.0\n",
+                "timeout",
+            ),
+            (
+                "nodes:\n  - id: sink\n    operators:\n      - id: op\n        python: op.py\n        inputs:\n          tick:\n            source: dora/timer/millis/10\n            policy: drop_oldest\n",
+                "policy",
+            ),
+        ] {
+            let err = format!(
+                "{:#}",
+                Descriptor::parse(yaml.as_bytes().to_vec()).unwrap_err()
+            );
+            assert!(
+                err.contains(&format!("unknown option `{key}`"))
+                    && err.contains("`sink`")
+                    && err.contains("`tick`"),
+                "yaml {yaml:?}: {err}"
+            );
+        }
+    }
+
+    /// Every option the check allows is one `Input` actually reads, and the
+    /// short form and a fully specified long form still parse.
+    #[test]
+    fn parse_accepts_every_known_input_option() {
+        let yaml = "nodes:\n  - id: sink\n    path: ./sink\n    inputs:\n      short: dora/timer/millis/10\n      long:\n        source: dora/timer/millis/10\n        queue_size: 2\n        input_timeout: 1.5\n        queue_policy: drop_oldest\n";
+        let descriptor = Descriptor::parse(yaml.as_bytes().to_vec()).unwrap();
+        let long = &descriptor.nodes[0].inputs["long"];
+        assert_eq!(long.queue_size, Some(2));
+        assert_eq!(long.input_timeout, Some(1.5));
+        assert!(long.queue_policy.is_some());
+        // The allowed set is exactly what `Input` serializes for a fully
+        // specified long form, so the two can't drift apart.
+        let serialized = serde_yaml::to_value(long).unwrap();
+        let mut keys: Vec<&str> = serialized
+            .as_mapping()
+            .unwrap()
+            .keys()
+            .filter_map(|k| k.as_str())
+            .collect();
+        keys.sort_unstable();
+        let mut known = INPUT_OPTION_KEYS.to_vec();
+        known.sort_unstable();
+        assert_eq!(keys, known);
     }
 }

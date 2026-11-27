@@ -31,6 +31,8 @@ impl Executable for Add {
             serde_yaml::from_str(&yaml_content).wrap_err("failed to parse node YAML")?;
         dora_core::descriptor::reject_duplicate_keys(yaml_content.as_bytes())
             .wrap_err("failed to parse node YAML")?;
+        dora_core::descriptor::reject_unknown_node_input_options(yaml_content.as_bytes())
+            .wrap_err("failed to parse node YAML")?;
 
         let reply = send_control_request(&session, &ControlRequest::AddNode { dataflow_id, node })
             .wrap_err("failed to add node")?;

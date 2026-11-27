@@ -50,6 +50,8 @@ fn parse_replacement_node(
         serde_yaml::from_str(yaml_content).wrap_err("failed to parse node YAML")?;
     dora_core::descriptor::reject_duplicate_keys(yaml_content.as_bytes())
         .wrap_err("failed to parse node YAML")?;
+    dora_core::descriptor::reject_unknown_node_input_options(yaml_content.as_bytes())
+        .wrap_err("failed to parse node YAML")?;
     if node.id.to_string() != expected_id {
         bail!(
             "node id mismatch: the command names `{expected_id}` but the YAML defines `{}`; \
@@ -118,6 +120,20 @@ mod tests {
             .expect_err("a repeated input key must be rejected");
         assert!(
             format!("{err:#}").contains("duplicate entry with key \"x\""),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    /// A misnamed input option must fail instead of being silently dropped,
+    /// as it does for a whole dataflow file.
+    #[test]
+    fn replacement_yaml_must_not_misname_an_input_option() {
+        let yaml =
+            "id: filter\npath: /bin/true\ninputs:\n  x:\n    source: a/out\n    queue_len: 1\n";
+        let err = parse_replacement_node(yaml, "filter")
+            .expect_err("a misnamed input option must be rejected");
+        assert!(
+            format!("{err:#}").contains("unknown option `queue_len`"),
             "unexpected error: {err:#}"
         );
     }
