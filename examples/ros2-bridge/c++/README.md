@@ -17,6 +17,7 @@ See the [top-level README](../README.md) for the capability×language matrix and
 | `action-client`  | `cxx-ros2-dataflow-action-client`  | yes (rclcpp action server)¹  |
 | `action-client-concurrent` | `cxx-ros2-dataflow-action-client-concurrent` | yes (rclcpp action server)¹ |
 | `action-server`  | `cxx-ros2-dataflow-action-server`  | no (dora server + client)¹   |
+| `parameter`      | `cxx-ros2-dataflow-parameter`      | no (dora host + client)      |
 | `turtle`         | `cxx-ros2-dataflow`                | yes (`turtlesim`)            |
 
 All C++ examples are gated behind `--features ros2-examples`.
@@ -35,7 +36,7 @@ the action examples are **not run in nightly CI** — validate them with
 `scripts/ros2dev.sh qa` on x86 Linux before a release ([#1170](https://github.com/dora-rs/dora/issues/1170)).
 See [`docs/ros2-bridge.md`](../../../docs/ros2-bridge.md).
 
-Service *client*, topic-only, and parameter examples are not provided in C++ —
+Service *client* and topic-only examples are not provided in C++ —
 those surfaces are covered by the Rust and Python examples (see the matrix).
 
 ## Setup
