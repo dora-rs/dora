@@ -226,13 +226,19 @@ fn write_mcap<W: Write + Seek>(
     let mut message_count: u64 = 0;
     let mut skipped: u64 = 0;
 
+    // Borrow each record from the reader's buffer: `next_entry` would copy
+    // every payload out (up to `MAX_RECORD_BYTES`) before the topic filter
+    // below gets the chance to discard it.
     while let Some(entry) = reader
-        .next_entry()
+        .next_record()
         .wrap_err("failed to read a recording entry")?
     {
         if !filter.is_empty() {
-            let key = (&entry.node_id, &entry.output_id);
-            let Some(pos) = filter.iter().position(|(n, o)| (n, o) == key) else {
+            let key = (entry.node_id, entry.output_id);
+            let Some(pos) = filter
+                .iter()
+                .position(|(n, o)| (n.as_str(), o.as_str()) == key)
+            else {
                 continue;
             };
             matched.insert(pos);
@@ -247,7 +253,7 @@ fn write_mcap<W: Write + Seek>(
         // (`replay-node/src/main.rs`). The count is reported below, and a pass
         // that decoded nothing usable still fails, so systematic format drift
         // cannot pass for an empty recording.
-        let timestamped = match Timestamped::deserialize_inter_daemon_event(&entry.event_bytes) {
+        let timestamped = match Timestamped::deserialize_inter_daemon_event(entry.event_bytes) {
             Ok(timestamped) => timestamped,
             Err(err) => {
                 eprintln!(
@@ -273,8 +279,8 @@ fn write_mcap<W: Write + Seek>(
         let existing = channels.get(&topic).map(|channel| channel.foxglove);
         let converted = match (&foxglove, existing) {
             (Some(mapper), None | Some(Some(_))) => mapper.convert(
-                &entry.node_id,
-                &entry.output_id,
+                entry.node_id,
+                entry.output_id,
                 &metadata,
                 publish_data.as_deref(),
             ),
