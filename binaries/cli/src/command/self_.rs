@@ -119,33 +119,47 @@ fn stage_node_binaries(archive: &Path, staging: &Path, target: &str) {
     }
 }
 
-/// Replace each of the [`NODE_BINARIES`] found in `exe_dir` with the copy
-/// staged by [`stage_node_binaries`], so the updated CLI does not go on
-/// running the previous version's record and replay nodes (#4337). Returns
-/// a warning for each one that is left stale. A node not in `exe_dir` is
-/// not installed there: `node_binary::search` then looks elsewhere.
-fn refresh_node_binaries(staging: &Path, exe_dir: &Path, target: &str) -> Vec<String> {
+/// Bring the [`NODE_BINARIES`] in `exe_dir` up to the copies staged by
+/// [`stage_node_binaries`], so the updated CLI does not go on running the
+/// previous version's record and replay nodes (#4337). Returns a warning
+/// for each node left stale.
+///
+/// A node missing from `exe_dir` is installed only when `install_missing`:
+/// for the installers' `~/.dora/bin`, which held only `dora` before the
+/// nodes were shipped. Elsewhere (e.g. `~/.cargo/bin`, which cargo
+/// manages) it is left out and `node_binary::search` looks further.
+fn refresh_node_binaries(
+    staging: &Path,
+    exe_dir: &Path,
+    target: &str,
+    install_missing: bool,
+) -> Vec<String> {
     let mut warnings = Vec::new();
     for name in NODE_BINARIES {
         let file_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
         let installed = exe_dir.join(&file_name);
+        let staged = staging.join(path_in_archive(target, name));
+        let tmp = exe_dir.join(format!(".{file_name}.new"));
         if !installed.exists() {
+            if install_missing
+                && staged.is_file()
+                && let Err(e) = install_file(&staged, &installed, &tmp, None)
+            {
+                warnings.push(format!("{} was not installed ({e:#})", installed.display()));
+            }
             continue;
         }
-        let staged = staging.join(path_in_archive(target, name));
         let result = if staged.is_file() {
-            replace_file(
-                &staged,
-                &installed,
-                &exe_dir.join(format!(".{file_name}.new")),
-            )
+            std::fs::metadata(&installed)
+                .wrap_err("reading the installed file failed")
+                .and_then(|m| install_file(&staged, &installed, &tmp, Some(m.permissions())))
         } else {
             Err(eyre::eyre!("the release archive does not contain it"))
         };
         if let Err(e) = result {
             warnings.push(format!(
                 "{} was not updated ({e:#}); it is from the previous version, so delete it \
-                 to let `dora record`/`dora replay` install a matching one",
+                 to stop `dora record`/`dora replay` from using it",
                 installed.display()
             ));
         }
@@ -153,22 +167,54 @@ fn refresh_node_binaries(staging: &Path, exe_dir: &Path, target: &str) -> Vec<St
     warnings
 }
 
-/// Replace `dest` with a copy of `src`, through `tmp` in the same directory
-/// so the replacement is a rename and `dest` is never left half-written.
-/// The copy gets `dest`'s permissions: the installers mark the nodes
-/// executable themselves rather than rely on the archive's file modes.
-fn replace_file(src: &Path, dest: &Path, tmp: &Path) -> eyre::Result<()> {
-    let permissions = std::fs::metadata(dest)
-        .wrap_err("reading the installed file failed")?
-        .permissions();
+/// Whether `exe_dir` is where `install.sh` / `install.ps1` put `dora`.
+fn is_installer_dir(exe_dir: &Path) -> bool {
+    let installer_dir = super::coordinator::dora_dir().join("bin");
+    match (
+        dunce::canonicalize(exe_dir),
+        dunce::canonicalize(installer_dir),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Put a copy of `src` at `dest`, through `tmp` in the same directory so
+/// the swap is a rename and `dest` is never left half-written. The copy
+/// gets `permissions` (an installed file's, since the installers mark the
+/// nodes executable themselves rather than rely on the archive's modes),
+/// or else is made executable.
+fn install_file(
+    src: &Path,
+    dest: &Path,
+    tmp: &Path,
+    permissions: Option<std::fs::Permissions>,
+) -> eyre::Result<()> {
     let result = std::fs::copy(src, tmp)
         .wrap_err("copy failed")
-        .and_then(|_| std::fs::set_permissions(tmp, permissions).wrap_err("chmod failed"))
+        .and_then(|_| {
+            let permissions = match permissions {
+                Some(permissions) => permissions,
+                None => executable(std::fs::metadata(tmp)?.permissions()),
+            };
+            std::fs::set_permissions(tmp, permissions).wrap_err("chmod failed")
+        })
         .and_then(|()| std::fs::rename(tmp, dest).wrap_err("replace failed"));
     if result.is_err() {
         let _ = std::fs::remove_file(tmp);
     }
     result
+}
+
+#[cfg(unix)]
+fn executable(permissions: std::fs::Permissions) -> std::fs::Permissions {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::Permissions::from_mode(permissions.mode() | 0o755)
+}
+
+#[cfg(not(unix))]
+fn executable(permissions: std::fs::Permissions) -> std::fs::Permissions {
+    permissions
 }
 
 /// The updater `dora self update` runs: the CLI archive of the latest
@@ -279,6 +325,7 @@ impl Executable for SelfSubCommand {
                                         staging.path(),
                                         exe_dir,
                                         env!("TARGET"),
+                                        is_installer_dir(exe_dir),
                                     ) {
                                         eprintln!("warning: {warning}");
                                     }
@@ -590,7 +637,7 @@ mod tests {
             }
         }
 
-        let warnings = super::refresh_node_binaries(&staging, &exe_dir, target);
+        let warnings = super::refresh_node_binaries(&staging, &exe_dir, target, false);
         assert!(warnings.is_empty(), "{warnings:?}");
         for (name, contents) in [
             ("dora-record-node", "new record"),
@@ -609,8 +656,8 @@ mod tests {
         assert_eq!(std::fs::read_dir(&exe_dir).unwrap().count(), 2);
     }
 
-    /// A node the archive does not contain is reported, not silently kept;
-    /// a node that is not next to `dora` is not installed there.
+    /// A node the archive does not contain is reported, not silently kept,
+    /// and one missing from both is not invented.
     #[test]
     fn self_update_warns_about_a_node_it_cannot_refresh() {
         let target = "x86_64-unknown-linux-gnu";
@@ -624,7 +671,7 @@ mod tests {
         let record = exe_dir.join(node_file("dora-record-node"));
         std::fs::write(&record, b"old").unwrap();
 
-        let warnings = super::refresh_node_binaries(&staging, &exe_dir, target);
+        let warnings = super::refresh_node_binaries(&staging, &exe_dir, target, true);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(
             warnings[0].contains(&record.display().to_string())
@@ -633,5 +680,51 @@ mod tests {
         );
         assert_eq!(std::fs::read(&record).unwrap(), b"old");
         assert!(!exe_dir.join(node_file("dora-replay-node")).exists());
+    }
+
+    /// An installer directory from before the nodes were shipped holds only
+    /// `dora`: the update installs both nodes there, executable, so
+    /// `dora record`/`dora replay` work without a Rust toolchain. Any other
+    /// directory (e.g. `~/.cargo/bin`) gets nothing it did not have.
+    #[test]
+    fn self_update_installs_missing_nodes_only_where_asked() {
+        let target = "x86_64-unknown-linux-gnu";
+        let dir = tempfile::tempdir().unwrap();
+        let archive = cli_archive(
+            dir.path(),
+            target,
+            &[
+                ("dora", b"new dora"),
+                ("dora-record-node", b"new record"),
+                ("dora-replay-node", b"new replay"),
+            ],
+        );
+        let staging = dir.path().join("staging");
+        super::stage_node_binaries(&archive, &staging, target);
+
+        let other = dir.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let warnings = super::refresh_node_binaries(&staging, &other, target, false);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(std::fs::read_dir(&other).unwrap().count(), 0);
+
+        let installer = dir.path().join("installer");
+        std::fs::create_dir(&installer).unwrap();
+        let warnings = super::refresh_node_binaries(&staging, &installer, target, true);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        for (name, contents) in [
+            ("dora-record-node", "new record"),
+            ("dora-replay-node", "new replay"),
+        ] {
+            let installed = installer.join(node_file(name));
+            assert_eq!(std::fs::read_to_string(&installed).unwrap(), contents);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&installed).unwrap().permissions().mode();
+                assert_eq!(mode & 0o755, 0o755, "{name} must be executable");
+            }
+        }
+        assert_eq!(std::fs::read_dir(&installer).unwrap().count(), 2);
     }
 }
