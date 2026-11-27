@@ -1518,6 +1518,44 @@ mod cross_pool_write_tests {
         );
     }
 
+    /// #4336: a token over the receive side's limit used to be sent, then
+    /// rejected unread, so the origin reported "peer rejected the auth
+    /// token" although both daemons held the same secret. The send side
+    /// must refuse it up front, naming the limit, and write nothing.
+    #[tokio::test]
+    async fn an_over_long_token_is_a_send_side_configuration_error() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut received = Vec::new();
+            stream.read_to_end(&mut received).await.unwrap();
+            received
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let token = "x".repeat(MAX_AUTH_TOKEN_LEN + 1);
+        let err = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            auth_handshake_send(&mut client, &token),
+        )
+        .await
+        .expect("an over-long token must fail without waiting for the peer")
+        .expect_err("an over-long token must fail the handshake");
+        assert!(
+            err.contains(CROSS_DATA_AUTH_TOKEN_ENV) && err.contains("limit"),
+            "must name the env var and the limit: {err}"
+        );
+        assert!(!err.contains("rejected"), "not a peer rejection: {err}");
+        drop(client);
+        assert!(
+            server.await.unwrap().is_empty(),
+            "nothing may be written for a refused token"
+        );
+    }
+
     // The guard is held across the awaits on purpose: the point is to keep
     // the env var stable for the whole handshake, and an async mutex would
     // let a sibling test's `set_var` interleave at the first await.
