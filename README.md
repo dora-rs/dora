@@ -532,7 +532,7 @@ See [docs/patterns.md](docs/patterns.md) for the full guide.
 | [python-drain](examples/python-drain) | Python | Event draining patterns |
 | [multiple-daemons](examples/multiple-daemons) | Rust | Distributed multi-daemon setup |
 | [rust-dataflow-git](examples/rust-dataflow-git) | Rust | Git-based dataflow loading |
-| [rust-dataflow-url](examples/rust-dataflow-url) | Rust | URL-based dataflow loading |
+| [rust-dataflow-url](examples/rust-dataflow-url) | Rust | Build and run a local dataflow from Rust |
 
 ### Logging
 

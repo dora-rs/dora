@@ -1,6 +1,6 @@
 # Rust Dataflow (Programmatic Build + Run)
 
-Same three-node pipeline as [rust-dataflow](../rust-dataflow), but launched programmatically via `dora_cli::build()` and `dora_cli::run()` in `run.rs` instead of the CLI.
+The [Rust runner](run.rs) builds and runs the same three local nodes as [rust-dataflow](../rust-dataflow). The Cargo example retains its historical name, `rust-dataflow-url`.
 
 ## Architecture
 
@@ -19,23 +19,22 @@ timer (10ms) --> rust-node --> random --> rust-status-node --> status --> rust-s
 
 ## How It Works
 
-The `run.rs` harness calls dora CLI functions as a library:
+The runner changes into the example directory and calls `build` with
+`force_local: true` to build the binaries listed in [dataflow.yml](dataflow.yml).
+It then starts the pipeline with `RunCommand`:
 
 ```rust
-use dora_cli::{BuildConfig, build, run};
+use dora_cli::{Executable, RunCommand};
+use std::time::Duration;
 
-fn main() -> eyre::Result<()> {
-    build(BuildConfig {
-        dataflow: "dataflow.yml".to_string(),
-        force_local: true,
-        ..Default::default()
-    })?;
-    run("dataflow.yml".to_string(), false)?;
-    Ok(())
-}
+let mut run = RunCommand::new("dataflow.yml".to_string());
+run.stop_after = Some(Duration::from_secs(120));
+run.execute()?;
 ```
 
-This demonstrates embedding dora's build and run steps in a Rust program -- useful for testing, CI, or custom orchestration.
+The full runner also checks elapsed time after `execute()`. A node stopped
+at the deadline can report a clean exit. The elapsed-time check makes the run
+fail when it reaches the deadline.
 
 ## Run
 
@@ -43,18 +42,9 @@ This demonstrates embedding dora's build and run steps in a Rust program -- usef
 cargo run --example rust-dataflow-url
 ```
 
-Or using the CLI directly:
+To run the same descriptor directly, start in `examples/rust-dataflow-url`:
 
 ```bash
 dora build dataflow.yml
 dora run dataflow.yml
 ```
-
-## What This Demonstrates
-
-| Feature | Where |
-|---------|-------|
-| `dora_cli::build()` programmatic API | `run.rs` |
-| `dora_cli::run()` programmatic API | `run.rs` |
-| `build:` commands in YAML | YAML (all nodes) |
-| Same topology, programmatic launch | vs rust-dataflow |
