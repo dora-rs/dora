@@ -1014,12 +1014,20 @@ fn endpoint_array_json(endpoints: &[String]) -> String {
 /// receiving daemon merges the result into its own dial list. Validating only
 /// at the first hop would leave the property depending on which path ran last.
 ///
-/// Deliberately a charset check rather than a locator parse: zenoh's locator
-/// grammar covers protocols dora does not model (`quic`, `unixsock-stream`,
-/// metadata after `?`, config after `#`), and rejecting a valid endpoint would
-/// break a working deployment. What matters is that nothing here can terminate
-/// a JSON string or escape it — so quotes, backslashes and control characters
-/// are refused, along with anything long enough to be worth truncating.
+/// Two checks, and neither depends on the protocol. zenoh's locator grammar
+/// covers protocols dora does not model (`quic`, `unixsock-stream`, metadata
+/// after `?`, config after `#`), and rejecting a valid endpoint would break a
+/// working deployment.
+///
+/// - A charset check, so that nothing here can end a JSON string or escape
+///   from it. Quotes, backslashes and control characters are refused, and so
+///   is anything long enough to be worth truncating.
+/// - zenoh's own endpoint parse
+///   ([`check_zenoh_endpoint_syntax`](dora_message::zenoh::check_zenoh_endpoint_syntax)).
+///   zenoh runs it on every `connect/endpoints` entry, and one entry it
+///   rejects fails the whole array. A value such as `10.0.0.5:5456`, with no
+///   protocol, would otherwise cost the receiving daemon every connect
+///   endpoint, its operator's included.
 pub fn validate_zenoh_endpoint(endpoint: &str) -> Result<(), String> {
     const MAX_LEN: usize = 256;
     if endpoint.is_empty() {
@@ -1039,7 +1047,8 @@ pub fn validate_zenoh_endpoint(endpoint: &str) -> Result<(), String> {
             "zenoh endpoint contains the disallowed character {bad:?}"
         ));
     }
-    Ok(())
+    dora_message::zenoh::check_zenoh_endpoint_syntax(endpoint)
+        .map_err(|err| format!("`{endpoint}` is not a zenoh endpoint: {err}"))
 }
 
 // Keep the existing path while all endpoint classification shares the
@@ -1438,8 +1447,27 @@ mod endpoint_validation_tests {
     #[test]
     fn empty_and_oversized_endpoints_are_rejected() {
         assert!(validate_zenoh_endpoint("").is_err());
-        assert!(validate_zenoh_endpoint(&"a".repeat(257)).is_err());
-        assert!(validate_zenoh_endpoint(&"a".repeat(256)).is_ok());
+        let endpoint = |len: usize| format!("tcp/{}", "a".repeat(len - 4));
+        assert!(validate_zenoh_endpoint(&endpoint(257)).is_err());
+        assert!(validate_zenoh_endpoint(&endpoint(256)).is_ok());
+    }
+
+    /// zenoh parses every `connect/endpoints` entry, and one entry it rejects
+    /// fails the whole array. A value that passes the character check but is
+    /// not a locator must therefore be refused here, like a quote is.
+    #[test]
+    fn values_zenoh_cannot_parse_are_rejected() {
+        for bad in [
+            "10.0.0.5:5456",
+            "tcp",
+            "tcp/",
+            "/10.0.0.5:5456",
+            "tcp/10.0.0.5:5456?",
+            "tcp/10.0.0.5:5456#",
+        ] {
+            let err = validate_zenoh_endpoint(bad).expect_err(bad);
+            assert!(err.contains("not a zenoh endpoint"), "`{bad}`: {err}");
+        }
     }
 }
 
@@ -1801,6 +1829,35 @@ mod tests {
                 "unexpected error for `{bad}`: {err}"
             );
         }
+    }
+
+    /// A discovered endpoint comes from another daemon, through the
+    /// coordinator. One that zenoh cannot parse must be dropped on its own:
+    /// written into `connect/endpoints`, it fails the whole insert, and the
+    /// session loses the operator's endpoints along with it.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn a_malformed_discovered_endpoint_does_not_cost_the_operator_endpoints() {
+        let operator = ["tcp/10.0.0.7:5456".to_string()];
+        let discovered = ["10.0.0.5:5456".to_string(), "tcp/10.0.0.6:5456".to_string()];
+        let params = ZenohSessionParams {
+            connect_endpoints: &operator,
+            discovered_connect_endpoints: &discovered,
+            ..Default::default()
+        };
+        let built = build_zenoh_config(&params, None).expect("builds config");
+        let connect = built
+            .config
+            .get_json("connect/endpoints")
+            .expect("connect endpoints are set");
+        for endpoint in [&operator[0], &discovered[1]] {
+            assert!(
+                connect.contains(&format!("\"{endpoint}\"")),
+                "{endpoint} lost: {connect}"
+            );
+        }
+        assert!(!connect.contains("\"10.0.0.5:5456\""), "{connect}");
+        assert!(built.multicast_scouting_off);
     }
 
     #[cfg(feature = "zenoh")]
