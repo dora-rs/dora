@@ -188,6 +188,7 @@ enum DaemonCommunicationWrapper {
         /// Shared with the testing daemon so Drop can interrupt a scheduled
         /// `next_event` sleep (dora-rs/dora#2855).
         shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        manual_stop_at: Option<std::time::Instant>,
     },
 }
 

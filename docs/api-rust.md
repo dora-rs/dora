@@ -350,6 +350,13 @@ pub enum StopCause {
 }
 ```
 
+Use `events.manual_stop()` to cancel work while the node is waiting for
+responses. The node waits for manual Stop on a separate control connection,
+so queued inputs cannot delay cancellation. With an older daemon that does
+not support this request, the node observes Stop through the event queue.
+Normal input closure leaves the future pending so the node can finish
+outstanding work.
+
 ---
 
 ### Supporting Types

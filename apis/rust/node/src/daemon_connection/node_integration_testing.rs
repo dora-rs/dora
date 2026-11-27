@@ -141,6 +141,15 @@ impl IntegrationTestingEvents {
         })
     }
 
+    pub(crate) fn manual_stop_at(&self) -> Option<Instant> {
+        let (offset, _, _) = self
+            .events
+            .as_slice()
+            .iter()
+            .find(|(_, _, event)| matches!(event.event, IncomingEvent::Stop))?;
+        self.start_time.checked_add(*offset)
+    }
+
     pub fn request(&mut self, request: &Timestamped<DaemonRequest>) -> eyre::Result<DaemonReply> {
         let reply = match &request.inner {
             DaemonRequest::Register(_) => DaemonReply::Result(Ok(())),

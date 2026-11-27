@@ -365,14 +365,15 @@ fn run_zenoh_service_mode(
                 token,
                 MAX_PENDING_REQUESTS,
             ))?;
-            let (mut node, events) = DoraNode::init_from_env()?;
+            let (mut node, mut events) = DoraNode::init_from_env()?;
             let limit = service_client_in_flight_limit(&config.qos);
             // The driver gives up on unanswered calls; this only bounds a
             // query it no longer waits for.
             let backstop = SERVICE_RESPONSE_TIMEOUT
                 .saturating_mul(u32::try_from(limit + 1).unwrap_or(u32::MAX));
-            futures::executor::block_on(service_client::drive_service_calls(
-                service_client::requests(events),
+            let stop = events.manual_stop();
+            let driver = service_client::drive_service_calls(
+                service_client::requests(&mut events),
                 limit,
                 SERVICE_RESPONSE_TIMEOUT,
                 |data| {
@@ -410,7 +411,8 @@ fn run_zenoh_service_mode(
                     node.send_output("response".into(), parameters, StructArray::from(data))?;
                     Ok(())
                 },
-            ))?;
+            );
+            futures::executor::block_on(service_client::until_manual_stop(stop, driver))?;
         }
         Ros2Role::Server => {
             let server = Arc::new(futures::executor::block_on(NodeServiceServer::declare(
@@ -1734,15 +1736,16 @@ fn run_service_client(
     request_type_info: TypeInfo<'static>,
     response_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
-    let (mut node, dora_events) = DoraNode::init_from_env()?;
+    let (mut node, mut dora_events) = DoraNode::init_from_env()?;
     let calls =
         service_client::DdsServiceCalls::new(client, request_type_info, response_type_info)?;
 
     // A failed or unanswered call fails only this request, as on the Zenoh
     // transport: one slow or absent ROS2 server must not tear down the whole
     // bridge node.
-    futures::executor::block_on(service_client::drive_service_calls(
-        service_client::requests(dora_events),
+    let stop = dora_events.manual_stop();
+    let driver = service_client::drive_service_calls(
+        service_client::requests(&mut dora_events),
         limit,
         SERVICE_RESPONSE_TIMEOUT,
         |data| calls.call(data.to_data()),
@@ -1761,7 +1764,8 @@ fn run_service_client(
             }
             Ok(())
         },
-    ))
+    );
+    futures::executor::block_on(service_client::until_manual_stop(stop, driver))
 }
 
 fn run_service_server(

@@ -22471,6 +22471,14 @@ msgid ""
 "Deserializes the response into Arrow and sends it on the `response` output"
 msgstr ""
 
+#: src/advanced/ros2-bridge.md:326
+msgid ""
+"When the inputs close normally, the service client waits for requests "
+"already in flight, subject to the response timeout. When it receives a "
+"`Stop` event, it abandons outstanding calls and exits without waiting for "
+"their responses."
+msgstr ""
+
 #: src/advanced/ros2-bridge.md:209
 msgid "Service Server"
 msgstr ""

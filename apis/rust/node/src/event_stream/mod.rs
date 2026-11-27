@@ -49,6 +49,7 @@ mod event;
 pub mod extensions;
 /// Tracks input health (timeouts, liveness) for circuit-breaker recovery.
 pub mod input_tracker;
+mod manual_stop;
 /// Merged event streams combining internal and external event sources.
 pub mod merged;
 mod scheduler;
@@ -293,6 +294,8 @@ pub struct EventStream {
     /// Returning `None` here lets the caller exit and drops the
     /// `EventStream`, which signals subscriber shutdown.
     stop_received: bool,
+    manual_stop: tokio::sync::watch::Receiver<bool>,
+    independent_stop: Option<futures::future::Shared<futures::future::BoxFuture<'static, ()>>>,
     /// Testing-mode shutdown flag shared with the in-process daemon thread.
     /// Set in [`Drop`] before `EventStreamDropped` so a scheduled `next_event`
     /// sleep cannot deadlock the close handshake (dora-rs/dora#2855).
@@ -488,6 +491,7 @@ impl EventStream {
                     node_id: node_id.clone(),
                     file,
                     events_buffer: Vec::new(),
+                    observed_manual_stop: Default::default(),
                     poisoned: None,
                     non_finite_params_dropped: 0,
                 })
@@ -522,7 +526,7 @@ impl EventStream {
             }
         }
 
-        Self::init_on_channel(
+        let mut stream = Self::init_on_channel(
             dataflow_id,
             node_id,
             channel,
@@ -535,7 +539,39 @@ impl EventStream {
             zenoh_session,
             &input_config,
             testing_shutdown,
-        )
+        )?;
+        stream.independent_stop = match daemon_communication {
+            DaemonCommunicationWrapper::Standard(DaemonCommunication::Tcp { socket_addr }) => Some(
+                manual_stop::wait(
+                    *socket_addr,
+                    dataflow_id,
+                    node_id.clone(),
+                    stream.clock.clone(),
+                )
+                .boxed()
+                .shared(),
+            ),
+            DaemonCommunicationWrapper::Testing {
+                manual_stop_at: Some(at),
+                shutdown,
+                ..
+            } => {
+                let at = *at;
+                let shutdown = shutdown.clone();
+                Some(
+                    async move {
+                        Delay::new(at.saturating_duration_since(Instant::now())).await;
+                        if shutdown.load(Ordering::Relaxed) {
+                            std::future::pending().await
+                        }
+                    }
+                    .boxed()
+                    .shared(),
+                )
+            }
+            _ => None,
+        };
+        Ok(stream)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -926,8 +962,15 @@ impl EventStream {
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        let thread_handle =
-            thread::init(node_id.clone(), tx, channel, clock.clone(), stop_enqueued)?;
+        let (manual_stop_tx, manual_stop) = tokio::sync::watch::channel(false);
+        let thread_handle = thread::init(
+            node_id.clone(),
+            tx,
+            channel,
+            clock.clone(),
+            stop_enqueued,
+            manual_stop_tx,
+        )?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
@@ -948,8 +991,43 @@ impl EventStream {
             pending_passthrough: KeyedQueue::default(),
             failed_servers: BTreeMap::new(),
             stop_received: false,
+            manual_stop,
+            independent_stop: None,
             testing_shutdown,
         })
+    }
+
+    /// Wait for an explicit [`StopCause::Manual`] without consuming events.
+    /// The future can be used independently of this
+    /// stream, for example to cancel work while input admission is paused.
+    /// On a supporting daemon a separate control connection observes Stop
+    /// even when the ordinary event queue is full.
+    /// Closure of all inputs or loss of the daemon connection does not wake it.
+    pub fn manual_stop(&self) -> impl Future<Output = ()> + Send + 'static + use<> {
+        let mut stop = self.manual_stop.clone();
+        let independent = self.independent_stop.clone();
+        let recording = self.write_events_to.as_ref().map(|log| {
+            (
+                log.observed_manual_stop.clone(),
+                self.clock.clone(),
+                self.start_timestamp,
+            )
+        });
+        async move {
+            let in_band = async move {
+                if stop.wait_for(|stopped| *stopped).await.is_err() {
+                    std::future::pending().await
+                }
+            };
+            if let Some(independent) = independent {
+                select(std::pin::pin!(in_band), independent).await;
+            } else {
+                in_band.await;
+            }
+            if let Some((observed, clock, start)) = recording {
+                observed.get_or_init(|| control_event_json(&clock, &start, "Stop", None));
+            }
+        }
     }
 
     /// Synchronously waits for the next event.
@@ -1395,12 +1473,15 @@ impl EventStream {
         if let Some(write_events_to) = &mut self.write_events_to {
             let event_json = match event {
                 EventItem::NodeEvent { event, .. } => match event {
-                    NodeEvent::Stop => Some(control_event_json(
-                        &self.clock,
-                        &self.start_timestamp,
-                        "Stop",
-                        None,
-                    )),
+                    NodeEvent::Stop => Some(
+                        write_events_to
+                            .observed_manual_stop
+                            .get()
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                control_event_json(&self.clock, &self.start_timestamp, "Stop", None)
+                            }),
+                    ),
                     // Not representable in the replay format (`IncomingEvent`
                     // has no such variants): recording `InputRecovered` or
                     // `NodeRestarted` made the whole `clean` recording fail to
@@ -2537,6 +2618,9 @@ pub(crate) struct WriteEventsTo {
     node_id: NodeId,
     file: std::fs::File,
     events_buffer: Vec<serde_json::Value>,
+    /// The first Stop observed by the independent waiter, even if the node
+    /// exits without reading the corresponding in-band event.
+    observed_manual_stop: Arc<std::sync::OnceLock<serde_json::Value>>,
     /// `None` while the recording is complete. Becomes `Some(...)` on
     /// the first `record_event` failure; subsequent failures bump the
     /// counter inside. Surfaced in `write_out()` as a top-level
@@ -2609,10 +2693,16 @@ impl WriteEventsTo {
         let Self {
             node_id,
             file,
-            events_buffer,
+            mut events_buffer,
+            observed_manual_stop,
             poisoned,
             non_finite_params_dropped: _,
         } = self;
+        if let Some(stop) = observed_manual_stop.get()
+            && !events_buffer.iter().any(|event| event["type"] == "Stop")
+        {
+            events_buffer.push(stop.clone());
+        }
         let mut inputs_file = serde_json::Map::new();
         inputs_file.insert("id".into(), node_id.to_string().into());
         // Emit `recording_status` for clean recordings too, so consumers
@@ -2897,6 +2987,7 @@ mod tests {
             node_id: "test-node".parse().unwrap(),
             file,
             events_buffer: Vec::new(),
+            observed_manual_stop: Default::default(),
             poisoned: None,
             non_finite_params_dropped: 0,
         };
@@ -3272,6 +3363,10 @@ mod tests {
             time_offset_secs: 0.0,
             event: IncomingEvent::Stop,
         });
+        test_event_stream_exact(events)
+    }
+
+    fn test_event_stream_exact(events: Vec<TimedIncomingEvent>) -> (crate::DoraNode, EventStream) {
         let inputs = TestingInput::Input(IntegrationTestInput::new(
             "test-node".parse().unwrap(),
             events,
@@ -3282,6 +3377,81 @@ mod tests {
             skip_output_time_offsets: true,
         };
         crate::DoraNode::init_testing(inputs, outputs, options).unwrap()
+    }
+
+    #[test]
+    fn manual_stop_wakes_without_consuming_events() {
+        let (_node, mut events) = test_event_stream_with(Vec::new());
+        let stop = std::pin::pin!(events.manual_stop());
+        assert!(matches!(
+            futures::executor::block_on(select(stop, Delay::new(Duration::from_secs(5)))),
+            Either::Left(_)
+        ));
+        assert!(matches!(
+            events.recv(),
+            Some(Event::Stop(StopCause::Manual))
+        ));
+    }
+
+    #[test]
+    fn manual_stop_wakes_behind_ninety_unread_inputs() {
+        let inputs = (0..90)
+            .map(|_| TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Input {
+                    id: "request".into(),
+                    metadata: None,
+                    data: None,
+                },
+            })
+            .collect();
+        let (_node, mut events) = test_event_stream_with(inputs);
+        let stop = std::pin::pin!(events.manual_stop());
+        assert!(matches!(
+            futures::executor::block_on(select(stop, Delay::new(Duration::from_secs(5)))),
+            Either::Left(_)
+        ));
+        assert!(matches!(events.recv(), Some(Event::Input { .. })));
+    }
+
+    #[test]
+    fn manual_stop_ignores_input_closure_and_stream_end() {
+        let (_node, mut events) = test_event_stream_exact(vec![TimedIncomingEvent {
+            time_offset_secs: 0.0,
+            event: IncomingEvent::AllInputsClosed,
+        }]);
+        let stop = events.manual_stop();
+        assert!(matches!(
+            events.recv(),
+            Some(Event::Stop(StopCause::AllInputsClosed))
+        ));
+        drop(events);
+        assert!(stop.now_or_never().is_none());
+    }
+
+    #[test]
+    fn manual_stop_records_a_replayable_stop_once() {
+        for also_receive in [false, true] {
+            let (_node, mut events) = test_event_stream_with(Vec::new());
+            let (recording, path) = write_events_to_with_tempfile();
+            events.write_events_to = Some(recording);
+            futures::executor::block_on(events.manual_stop());
+            let observed_by = events
+                .clock
+                .new_timestamp()
+                .get_diff_duration(&events.start_timestamp);
+            if also_receive {
+                assert!(matches!(
+                    events.recv(),
+                    Some(Event::Stop(StopCause::Manual))
+                ));
+            }
+            drop(events);
+            let recording: IntegrationTestInput = serde_json::from_value(read_back(&path)).unwrap();
+            assert_eq!(recording.events.len(), 1);
+            assert!(matches!(recording.events[0].event, IncomingEvent::Stop));
+            assert!(recording.events[0].time_offset_secs <= observed_by.as_secs_f64());
+        }
     }
 
     /// `EventStream::init` must not register the control-event id in the
@@ -3331,6 +3501,7 @@ mod tests {
         let daemon_communication = DaemonCommunicationWrapper::Testing {
             channel,
             shutdown: Arc::new(AtomicBool::new(false)),
+            manual_stop_at: None,
         };
         let events = EventStream::init(
             DataflowId::new_v4(),

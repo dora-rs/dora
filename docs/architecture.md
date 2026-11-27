@@ -294,7 +294,9 @@ Nodes talk to their daemon over TCP; it is the only daemon-to-node transport. Th
 - Max message: 64 MiB (`MAX_MESSAGE_BYTES`). A frame body that stalls for more than 30 s (`TCP_READ_TIMEOUT`) closes the connection; idle connections between requests are not timed out
 - A dynamic node (started outside the daemon) first asks the daemon's dynamic-node listener for its `NodeConfig`: port 53291 by default (`DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT`), overridable with `DORA_DAEMON_LOCAL_LISTEN_PORT`. That listener answers only `NodeConfig` requests, with a JSON `DynamicNodeConfigReply`; the node's `NodeConfig` includes its `daemon_communication`, and the connection described above follows
 
-**Node → Daemon requests:** `Register`, `Subscribe`, `SendMessage`, `OutputSent`, `CloseOutputs`, `OutputsDone`, `NextEvent`, `EventStreamDropped`, `NodeConfig`, `ExtensionStore`, `ExtensionLoad`, `ExtensionDrop`, `ExtensionRequest`.
+**Node → Daemon requests:** `Register`, `Subscribe`, `SendMessage`, `OutputSent`, `CloseOutputs`, `OutputsDone`, `NextEvent`, `EventStreamDropped`, `NodeConfig`, `ExtensionStore`, `ExtensionLoad`, `ExtensionDrop`, `ExtensionRequest`, `WaitForManualStop`.
+
+`WaitForManualStop` uses a dedicated registered connection so a full event queue cannot block explicit shutdown.
 
 **Daemon → Node replies:** `Result`, `NextEvents`, `NodeConfig`, `ExtensionValue`, `ExtensionReply`, `Empty`.
 
