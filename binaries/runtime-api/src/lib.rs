@@ -14,8 +14,11 @@ use dora_core::{
     config::{DataId, OperatorId},
     descriptor::OperatorConfig,
 };
-use dora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
-use dora_node_api::{DoraNode, Event, StopCause};
+use dora_message::{
+    daemon_to_node::{NodeConfig, RuntimeConfig},
+    metadata::Metadata,
+};
+use dora_node_api::{DoraArray, DoraNode, Event, StopCause};
 use eyre::{Context, Result, bail};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
@@ -263,6 +266,11 @@ async fn run(
             since: Instant::now(),
             what: describe_runtime_event(&event),
         };
+        let Some(event) =
+            forward_input_traffic(event, &mut operator_inputs, &mut operator_channels).await
+        else {
+            continue;
+        };
         match event {
             RuntimeEvent::Operator {
                 id: operator_id,
@@ -332,6 +340,7 @@ async fn run(
                         &mut send,
                         &mut events,
                         &mut pending,
+                        &mut operator_inputs,
                         &mut operator_channels,
                     )
                     .await
@@ -358,41 +367,6 @@ async fn run(
             RuntimeEvent::Event(Event::Reload { operator_id: None }) => {
                 tracing::warn!("Reloading runtime nodes is not supported");
             }
-            RuntimeEvent::Event(Event::Input { id, metadata, data }) => {
-                let Some((operator_id, input_id)) = split_operator_input(&id) else {
-                    tracing::warn!("received non-operator input {id}");
-                    continue;
-                };
-                let Some(operator_channel) = operator_channels.get(&operator_id) else {
-                    tracing::warn!("received input {id} for unknown operator");
-                    continue;
-                };
-
-                if let Err(err) = operator_channel
-                    .send_async(Event::Input {
-                        id: input_id,
-                        metadata,
-                        data,
-                    })
-                    .await
-                    .wrap_err_with(|| {
-                        // `id` is the full `operator/input` DataId; use it (and the
-                        // still-owned `operator_id`) here so `input_id` can be moved
-                        // into the event above without a per-message clone.
-                        format!("failed to send input `{id}` to operator `{operator_id}`")
-                    })
-                {
-                    tracing::warn!("{err}");
-                }
-            }
-            RuntimeEvent::Event(Event::InputClosed { id }) => {
-                forward_input_state_change(id, false, &mut operator_inputs, &mut operator_channels)
-                    .await;
-            }
-            RuntimeEvent::Event(Event::InputRecovered { id }) => {
-                forward_input_state_change(id, true, &mut operator_inputs, &mut operator_channels)
-                    .await;
-            }
             RuntimeEvent::Event(Event::Error(err)) => eyre::bail!("received error event: {err}"),
             RuntimeEvent::Event(other) => {
                 tracing::warn!("received unknown event `{other:?}`");
@@ -403,6 +377,66 @@ async fn run(
     mem::drop(events);
 
     Ok(())
+}
+
+/// Forward a daemon `Input`, `InputClosed` or `InputRecovered` event to its
+/// operator, and hand any other event back to the caller.
+///
+/// This input traffic needs only the operator channels, never the node, so it
+/// is forwarded even while an output send is in flight (see
+/// [`await_send_watching_for_stop`]).
+async fn forward_input_traffic(
+    event: RuntimeEvent,
+    operator_inputs: &mut HashMap<OperatorId, OperatorInputs>,
+    operator_channels: &mut HashMap<OperatorId, flume::Sender<Event>>,
+) -> Option<RuntimeEvent> {
+    match event {
+        RuntimeEvent::Event(Event::Input { id, metadata, data }) => {
+            forward_input(id, metadata, data, operator_channels).await;
+        }
+        RuntimeEvent::Event(Event::InputClosed { id }) => {
+            forward_input_state_change(id, false, operator_inputs, operator_channels).await;
+        }
+        RuntimeEvent::Event(Event::InputRecovered { id }) => {
+            forward_input_state_change(id, true, operator_inputs, operator_channels).await;
+        }
+        other => return Some(other),
+    }
+    None
+}
+
+/// Forward the daemon input `id` (an `operator/input` id) to its operator.
+async fn forward_input(
+    id: DataId,
+    metadata: Metadata,
+    data: DoraArray,
+    operator_channels: &HashMap<OperatorId, flume::Sender<Event>>,
+) {
+    let Some((operator_id, input_id)) = split_operator_input(&id) else {
+        tracing::warn!("received non-operator input {id}");
+        return;
+    };
+    let Some(operator_channel) = operator_channels.get(&operator_id) else {
+        tracing::warn!("received input {id} for unknown operator");
+        return;
+    };
+
+    if let Err(err) = operator_channel
+        .send_async(Event::Input {
+            id: input_id,
+            metadata,
+            data,
+        })
+        .await
+        .wrap_err_with(|| {
+            // `id` is the full `operator/input` DataId; use it (and the
+            // still-owned `operator_id`) here so `input_id` can be moved
+            // into the event above without a per-message clone.
+            format!("failed to send input `{id}` to operator `{operator_id}`")
+        })
+    {
+        tracing::warn!("{err}");
+    }
 }
 
 /// An operator's declared inputs, each mapped to whether it is open.
@@ -497,7 +531,11 @@ async fn forward_stop(
 /// and could not let its operators start winding down — until the send
 /// returned. This keeps consuming the stream: `Stop` is forwarded to the
 /// operators immediately, everything else is buffered for the caller to handle,
-/// in order, once the send completes.
+/// in order, once the send completes. The exception is input traffic (see
+/// [`forward_input_traffic`]), which is forwarded as it arrives: it does not
+/// need the node, and buffering it would let `Stop` overtake it — forwarding
+/// `Stop` closes the operator channels, so a buffered input would then be
+/// dropped as one for an unknown operator.
 ///
 /// This does **not** rescue a send that never returns: the node still owes the
 /// daemon an exit and will be force-killed at the grace period. Bailing out of a
@@ -509,6 +547,7 @@ async fn await_send_watching_for_stop<S, T>(
     send: &mut tokio::task::JoinHandle<T>,
     events: &mut S,
     pending: &mut VecDeque<RuntimeEvent>,
+    operator_inputs: &mut HashMap<OperatorId, OperatorInputs>,
     operator_channels: &mut HashMap<OperatorId, flume::Sender<Event>>,
 ) -> Result<T, tokio::task::JoinError>
 where
@@ -535,7 +574,13 @@ where
                         forward_stop(operator_channels, &cause).await;
                         stop_seen = true;
                     }
-                    Some(other) => pending.push_back(other),
+                    Some(other) => {
+                        if let Some(deferred) =
+                            forward_input_traffic(other, operator_inputs, operator_channels).await
+                        {
+                            pending.push_back(deferred);
+                        }
+                    }
                     // The stream ended, so no `Stop` can arrive.
                     None => stop_seen = true,
                 }
@@ -698,10 +743,15 @@ mod stop_responsiveness_tests {
         let mut pending = VecDeque::new();
         let (mut channels, _rx) = operator_channel();
 
-        let joined =
-            await_send_watching_for_stop(&mut send, &mut events, &mut pending, &mut channels)
-                .await
-                .expect("joined");
+        let joined = await_send_watching_for_stop(
+            &mut send,
+            &mut events,
+            &mut pending,
+            &mut HashMap::new(),
+            &mut channels,
+        )
+        .await
+        .expect("joined");
 
         assert_eq!(joined, 42);
         assert!(pending.is_empty());
@@ -736,7 +786,13 @@ mod stop_responsiveness_tests {
 
         let joined = tokio::time::timeout(
             Duration::from_secs(5),
-            await_send_watching_for_stop(&mut send, &mut events, &mut pending, &mut channels),
+            await_send_watching_for_stop(
+                &mut send,
+                &mut events,
+                &mut pending,
+                &mut HashMap::new(),
+                &mut channels,
+            ),
         )
         .await
         .expect("must not hang")
@@ -751,6 +807,97 @@ mod stop_responsiveness_tests {
         assert!(
             channels.is_empty(),
             "forwarding Stop closes the operator channels"
+        );
+    }
+
+    fn input(id: &str) -> RuntimeEvent {
+        RuntimeEvent::Event(Event::Input {
+            id: DataId::from(id.to_owned()),
+            metadata: Metadata::new(dora_core::uhlc::HLC::default().new_timestamp()),
+            data: DoraArray::from(arrow::array::new_empty_array(
+                &arrow::datatypes::DataType::Null,
+            )),
+        })
+    }
+
+    fn describe(event: &Event) -> String {
+        match event {
+            Event::Input { id, .. } => format!("input {id}"),
+            Event::InputClosed { id } => format!("closed {id}"),
+            Event::Stop(_) => "stop".to_owned(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    /// Input traffic the daemon sent *before* `Stop` reaches its operator, in
+    /// order and ahead of `Stop`, while a send is in flight. Forwarding `Stop`
+    /// closes the operator channels, so an input left buffered in `pending`
+    /// would be dropped as an input "for unknown operator" once the send
+    /// completes. More inputs than the buffer cap also must not hold `Stop` up.
+    #[tokio::test]
+    async fn input_traffic_sent_before_stop_reaches_the_operator_first() {
+        let (unblock_tx, unblock_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut send = tokio::spawn(async move {
+            let _ = unblock_rx.await;
+        });
+        let mut events = stream::iter(vec![
+            input("op/a"),
+            RuntimeEvent::Event(Event::Reload { operator_id: None }),
+            input("op/a"),
+            input("op/a"),
+            input("op/a"),
+            input("op/a"),
+            RuntimeEvent::Event(Event::InputClosed {
+                id: DataId::from("op/b".to_owned()),
+            }),
+            RuntimeEvent::Event(Event::Stop(StopCause::Manual)),
+        ]);
+        let mut pending = VecDeque::new();
+        let (mut channels, rx) = operator_channel();
+        let mut inputs = HashMap::from([(
+            OperatorId::from("op".to_owned()),
+            BTreeMap::from([
+                (DataId::from("a".to_owned()), true),
+                (DataId::from("b".to_owned()), true),
+            ]),
+        )]);
+
+        let watch = rx.clone();
+        tokio::spawn(async move {
+            // forwarding `Stop` drops the operator's only sender
+            while !watch.is_disconnected() {
+                tokio::task::yield_now().await;
+            }
+            let _ = unblock_tx.send(());
+        });
+
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            await_send_watching_for_stop(
+                &mut send,
+                &mut events,
+                &mut pending,
+                &mut inputs,
+                &mut channels,
+            ),
+        )
+        .await
+        .expect("must not hang")
+        .expect("joined");
+
+        let received: Vec<_> = rx.drain().map(|event| describe(&event)).collect();
+        assert_eq!(
+            received,
+            [
+                "input a", "input a", "input a", "input a", "input a", "closed b", "stop"
+            ]
+        );
+        assert!(
+            matches!(
+                pending.make_contiguous(),
+                [RuntimeEvent::Event(Event::Reload { .. })]
+            ),
+            "other events stay buffered for the main loop"
         );
     }
 
@@ -775,9 +922,15 @@ mod stop_responsiveness_tests {
             let _ = unblock_tx.send(());
         });
 
-        await_send_watching_for_stop(&mut send, &mut events, &mut pending, &mut channels)
-            .await
-            .expect("joined");
+        await_send_watching_for_stop(
+            &mut send,
+            &mut events,
+            &mut pending,
+            &mut HashMap::new(),
+            &mut channels,
+        )
+        .await
+        .expect("joined");
 
         assert!(
             pending.len() <= 4,
