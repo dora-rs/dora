@@ -253,7 +253,7 @@ impl Daemon {
         match event {
             DoraEvent::Timer {
                 dataflow_id,
-                interval,
+                key,
                 metadata,
             } => {
                 let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
@@ -261,7 +261,7 @@ impl Daemon {
                     return Ok(());
                 };
 
-                let Some(subscribers) = dataflow.timers.get(&interval) else {
+                let Some(subscribers) = dataflow.timers.get(&key) else {
                     return Ok(());
                 };
 

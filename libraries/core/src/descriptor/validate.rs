@@ -430,7 +430,7 @@ pub fn check_operator_ids(node: &ResolvedNode) -> eyre::Result<()> {
 
 /// All `(input_id, input)` pairs declared on a resolved node: a custom node's
 /// own inputs, or the merged inputs of every operator of a runtime node.
-fn node_inputs(node: &ResolvedNode) -> Vec<(&DataId, &Input)> {
+pub(super) fn node_inputs(node: &ResolvedNode) -> Vec<(&DataId, &Input)> {
     match &node.kind {
         CoreNodeKind::Custom(custom) => custom.run_config.inputs.iter().collect(),
         CoreNodeKind::Runtime(runtime) => runtime
@@ -662,7 +662,7 @@ fn check_input(
                  the dataflow; it delivers nothing unless a node with that id is added later"
             );
         }
-        InputMapping::Timer { interval: _ } | InputMapping::Logs(_) => {}
+        InputMapping::Timer { .. } | InputMapping::Logs(_) => {}
         InputMapping::User(UserInputMapping { source, output }) => {
             // `nodes` is keyed by each node's own id (see
             // `resolve_aliases_and_set_defaults`), so look the source up
@@ -1545,9 +1545,7 @@ mod tests {
 
     fn dummy_input() -> Input {
         Input {
-            mapping: InputMapping::Timer {
-                interval: Duration::from_secs(1),
-            },
+            mapping: InputMapping::timer(Duration::from_secs(1), Duration::ZERO),
             queue_size: None,
             input_timeout: None,
             queue_policy: None,

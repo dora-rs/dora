@@ -440,6 +440,24 @@ fn smoke_rust_dataflow_url() {
     );
 }
 
+/// A phased timer input (`dora/timer/millis/100/phase/millis/5`) loads, gets
+/// its own timer task, and drives a node end to end.
+#[test]
+fn smoke_phased_timer() {
+    ensure_rust_nodes_built();
+    run_smoke_test(
+        "phased-timer",
+        "tests/dataflows/phased-timer.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_local_phased_timer() {
+    ensure_rust_nodes_built();
+    run_smoke_test_local("local-phased-timer", "tests/dataflows/phased-timer.yml", 5);
+}
+
 /// Regression test for a shared-library operator teardown SIGSEGV: the runtime
 /// used to unload the operator's `.so` as soon as its `on_event` loop returned,
 /// while the main loop (another thread) still held in-flight Arrow arrays whose

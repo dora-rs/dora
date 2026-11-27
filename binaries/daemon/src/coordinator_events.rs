@@ -749,10 +749,15 @@ impl Daemon {
                                     .or_default()
                                     .insert((node_id.clone(), input_id.clone()));
                             }
-                            InputMapping::Timer { interval } => {
+                            InputMapping::Timer {
+                                interval, phase, ..
+                            } => {
                                 dataflow
                                     .timers
-                                    .entry(*interval)
+                                    .entry(crate::running_dataflow::TimerKey {
+                                        interval: *interval,
+                                        phase: *phase,
+                                    })
                                     .or_default()
                                     .insert((node_id.clone(), input_id.clone()));
                             }
@@ -1098,15 +1103,10 @@ impl Daemon {
                             }
                         }
                     }
-                    for (interval, receivers) in &dataflow.timers {
+                    for (key, receivers) in &dataflow.timers {
                         for (receiver, input_id) in receivers {
                             if receiver == &node_id {
-                                current_edges.insert(
-                                    input_id.clone(),
-                                    InputMapping::Timer {
-                                        interval: *interval,
-                                    },
-                                );
+                                current_edges.insert(input_id.clone(), key.mapping());
                             }
                         }
                     }

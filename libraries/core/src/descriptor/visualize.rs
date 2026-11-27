@@ -1,5 +1,5 @@
 use dora_message::{
-    config::{Input, InputMapping, UserInputMapping, format_duration},
+    config::{Input, InputMapping, UserInputMapping},
     descriptor::{CoreNodeKind, OperatorDefinition},
     id::{DataId, NodeId},
 };
@@ -54,9 +54,12 @@ pub fn visualize_nodes_with_boundaries(
     if !dora_timers.is_empty() {
         writeln!(flowchart, "subgraph ___dora___ [dora]").unwrap();
         writeln!(flowchart, "  subgraph ___timer_timer___ [timer]").unwrap();
-        for interval in dora_timers {
-            let duration = format_duration(interval);
-            writeln!(flowchart, "    dora/timer/{duration}[\\{duration}/]").unwrap();
+        for (interval, phase) in dora_timers {
+            // Declared under the same id the edges use (the mapping's
+            // `Display`), so a phased timer is its own node.
+            let id = InputMapping::timer(interval, phase).to_string();
+            let label = id.strip_prefix("dora/timer/").unwrap_or(&id);
+            writeln!(flowchart, "    {id}[\\{label}/]").unwrap();
         }
         flowchart.push_str("  end\n");
         flowchart.push_str("end\n");
@@ -69,39 +72,22 @@ pub fn visualize_nodes_with_boundaries(
     flowchart
 }
 
-/// Collect the distinct timer intervals every node in the resolved map
-/// subscribes to (via `dora/timer/...` inputs), deduplicated and sorted.
-///
-/// Used to render the built-in timer nodes in a dataflow visualization.
-pub fn collect_dora_timers(nodes: &BTreeMap<NodeId, ResolvedNode>) -> BTreeSet<Duration> {
-    let mut dora_timers = BTreeSet::new();
-    for node in nodes.values() {
-        match &node.kind {
-            CoreNodeKind::Runtime(node) => {
-                for operator in &node.operators {
-                    collect_dora_nodes(operator.config.inputs.values(), &mut dora_timers);
-                }
-            }
-            CoreNodeKind::Custom(node) => {
-                collect_dora_nodes(node.run_config.inputs.values(), &mut dora_timers);
-            }
-        }
-    }
-    dora_timers
-}
-
-fn collect_dora_nodes(
-    values: std::collections::btree_map::Values<DataId, Input>,
-    dora_timers: &mut BTreeSet<Duration>,
-) {
-    for input in values {
-        match &input.mapping {
-            InputMapping::User(_) | InputMapping::Logs(_) => {}
-            InputMapping::Timer { interval } => {
-                dora_timers.insert(*interval);
-            }
-        }
-    }
+/// Collect the distinct `(interval, phase)` timers every node in the resolved
+/// map subscribes to (via `dora/timer/...` inputs), deduplicated and sorted.
+/// An unphased timer has a zero phase.
+pub fn collect_dora_timers(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+) -> BTreeSet<(Duration, Duration)> {
+    nodes
+        .values()
+        .flat_map(super::validate::node_inputs)
+        .filter_map(|(_, input)| match input.mapping {
+            InputMapping::Timer {
+                interval, phase, ..
+            } => Some((interval, phase)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Escape Mermaid-significant characters in free-form label text (e.g. a node

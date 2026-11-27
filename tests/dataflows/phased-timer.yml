@@ -1,0 +1,35 @@
+# The rust-dataflow example with a phased timer: the status node ticks 5 ms
+# after each tick of an unphased 100 ms timer. The smoke tests run it in both
+# modes to check that a phased timer input loads, spawns its timer task and
+# drives a node end to end.
+nodes:
+  - id: rust-node
+    build: cargo build -p rust-dataflow-example-node
+    path: ../../target/debug/rust-dataflow-example-node
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - random
+    output_types:
+      random: std/core/v1/UInt64
+
+  - id: rust-status-node
+    build: cargo build -p rust-dataflow-example-status-node
+    path: ../../target/debug/rust-dataflow-example-status-node
+    inputs:
+      tick: dora/timer/millis/100/phase/millis/5
+      random: rust-node/random
+    input_types:
+      random: std/core/v1/UInt64
+    outputs:
+      - status
+    output_types:
+      status: std/core/v1/String
+
+  - id: rust-sink
+    build: cargo build -p rust-dataflow-example-sink
+    path: ../../target/debug/rust-dataflow-example-sink
+    inputs:
+      message: rust-status-node/status
+    input_types:
+      message: std/core/v1/String
