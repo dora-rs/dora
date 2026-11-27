@@ -2,13 +2,17 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use clap::Args;
 use dora_recording::RecordingReader;
 use eyre::{Context, bail};
 
-use crate::command::{Executable, Run};
+use crate::{
+    command::{Executable, Run},
+    common::parse_duration,
+};
 
 /// Replay a recorded dataflow from a `.drec` file.
 ///
@@ -32,6 +36,9 @@ use crate::command::{Executable, Run};
 ///
 ///   Just generate the modified YAML:
 ///     dora replay recording.drec --output-yaml modified.yml
+///
+///   Start replaying 10 seconds into the recording:
+///     dora replay recording.drec --start-at 10s
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Replay {
@@ -50,6 +57,16 @@ pub struct Replay {
     /// Loop the recording
     #[clap(long)]
     r#loop: bool,
+
+    /// Start replay at or after this time offset into the recording.
+    ///
+    /// Examples:
+    ///   --start-at 10s
+    ///   --start-at 2s500ms
+    ///   --start-at 500ms
+    #[clap(long, value_name = "DURATION", verbatim_doc_comment)]
+    #[arg(value_parser = parse_duration)]
+    start_at: Option<Duration>,
 
     /// Just generate modified YAML, don't run
     #[clap(long, value_name = "PATH")]
@@ -143,6 +160,16 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         );
     }
 
+    let last_offset_nanos = reader.last_timestamp_offset_nanos();
+    if let Some(start_at) = args.start_at {
+        let start_nanos = u64::try_from(start_at.as_nanos()).unwrap_or(u64::MAX);
+        if start_nanos >= last_offset_nanos {
+            bail!(
+                "start offset `{start_at:?}` ({start_nanos} ns) is at or past the end of the recording ({last_offset_nanos} ns)"
+            );
+        }
+    }
+
     let explicit_replace = !args.replace.is_empty();
     // Determine which nodes to replace
     let nodes_to_replace: BTreeSet<String> = if args.replace.is_empty() {
@@ -206,6 +233,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         &recording_path,
         args.speed,
         args.r#loop,
+        args.start_at,
     );
     let sizing = raise_replayed_input_queue_sizes(nodes, &nodes_to_replace, &recorded_counts);
     for input in &sizing.lossy {
@@ -321,6 +349,7 @@ fn replace_recorded_nodes_with_replay(
     recording_path: &Path,
     speed: f64,
     r#loop: bool,
+    start_at: Option<Duration>,
 ) {
     for node in nodes.iter_mut() {
         let node_id = node
@@ -391,6 +420,13 @@ fn replace_recorded_nodes_with_replay(
             env.insert(
                 serde_yaml::Value::String("DORA_REPLAY_LOOP".to_string()),
                 serde_yaml::Value::String("true".to_string()),
+            );
+        }
+        if let Some(start) = start_at {
+            let start_nanos = u64::try_from(start.as_nanos()).unwrap_or(u64::MAX);
+            env.insert(
+                serde_yaml::Value::String("DORA_REPLAY_START_AT".to_string()),
+                serde_yaml::Value::String(start_nanos.to_string()),
             );
         }
     }
@@ -701,8 +737,36 @@ mod tests {
             &PathBuf::from("/tmp/recording.drec"),
             1.0,
             false,
+            None,
         );
         serde_yaml::to_string(&descriptor).unwrap()
+    }
+
+    #[test]
+    fn replace_with_replay_injects_start_at() {
+        let yaml = "nodes:\n  - id: cam\n    path: cam.py\n";
+        let mut descriptor: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        let nodes = descriptor
+            .get_mut("nodes")
+            .and_then(|v| v.as_sequence_mut())
+            .unwrap();
+        let mut nodes_to_replace = BTreeSet::new();
+        nodes_to_replace.insert("cam".to_string());
+        replace_recorded_nodes_with_replay(
+            nodes,
+            &nodes_to_replace,
+            &PathBuf::from("/tmp/dora-replay-node"),
+            &PathBuf::from("/tmp/recording.drec"),
+            1.0,
+            false,
+            Some(Duration::from_nanos(12345678)),
+        );
+        let cam_node = &nodes[0];
+        let env = cam_node.get("env").unwrap();
+        assert_eq!(
+            env.get("DORA_REPLAY_START_AT").unwrap().as_str().unwrap(),
+            "12345678"
+        );
     }
 
     #[test]
@@ -754,6 +818,31 @@ mod tests {
         // `inf` is accepted and normalized to as-fast-as-possible (0.0).
         let cli = Cli::try_parse_from(["dora", "rec.drec", "--speed=inf"]).unwrap();
         assert_eq!(cli.replay.speed, 0.0);
+    }
+
+    #[test]
+    fn start_at_value_parser_is_wired_onto_the_arg() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            replay: Replay,
+        }
+
+        // Accepts valid durations in various units.
+        let cli = Cli::try_parse_from(["dora", "rec.drec", "--start-at=10s"]).unwrap();
+        assert_eq!(cli.replay.start_at, Some(Duration::from_secs(10)));
+
+        let cli = Cli::try_parse_from(["dora", "rec.drec", "--start-at=500ms"]).unwrap();
+        assert_eq!(cli.replay.start_at, Some(Duration::from_millis(500)));
+
+        let cli = Cli::try_parse_from(["dora", "rec.drec", "--start-at=2s500ms"]).unwrap();
+        assert_eq!(cli.replay.start_at, Some(Duration::from_millis(2500)));
+
+        // Rejects invalid duration strings.
+        assert!(Cli::try_parse_from(["dora", "rec.drec", "--start-at=invalid"]).is_err());
+        assert!(Cli::try_parse_from(["dora", "rec.drec", "--start-at=-5s"]).is_err());
     }
 
     #[test]
