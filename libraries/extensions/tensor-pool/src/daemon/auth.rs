@@ -34,14 +34,32 @@ pub(crate) const CROSS_DATA_AUTH_MAGIC: [u8; 9] = *b"DORA_AUTH";
 pub(crate) const AUTH_OK: u8 = 1;
 pub(crate) const AUTH_FAIL: u8 = 0;
 
+/// Longest token, in bytes, the receive side reads. Enforced on the send
+/// side too, so an over-long [`CROSS_DATA_AUTH_TOKEN_ENV`] is reported as
+/// a configuration error instead of as a peer rejection (#4336).
+pub(crate) const MAX_AUTH_TOKEN_LEN: usize = 4096;
+
+fn token_too_long(len: usize) -> String {
+    format!(
+        "{CROSS_DATA_AUTH_TOKEN_ENV} is {len} bytes, over the \
+         {MAX_AUTH_TOKEN_LEN}-byte limit of the direct-TCP handshake; \
+         set a shorter token on every daemon"
+    )
+}
+
 /// Send-side handshake: runs once right after connecting, before any
 /// data frame. The peer closes the connection on rejection, which
-/// surfaces here as a read error or `AUTH_FAIL` byte.
+/// surfaces here as a read error or `AUTH_FAIL` byte. A token over
+/// [`MAX_AUTH_TOKEN_LEN`] is refused before anything is written, since
+/// the peer would reject it unread whatever it holds.
 pub(crate) async fn auth_handshake_send(
     stream: &mut tokio::net::TcpStream,
     token: &str,
 ) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
+    if token.len() > MAX_AUTH_TOKEN_LEN {
+        return Err(token_too_long(token.len()));
+    }
     stream
         .write_all(&CROSS_DATA_AUTH_MAGIC)
         .await
@@ -92,9 +110,11 @@ pub(crate) async fn auth_handshake_verify(
         .await
         .map_err(|e| format!("auth handshake read failed: {e}"))?;
     let len = u32::from_be_bytes(len_bytes) as usize;
-    if len > 4096 {
+    if len > MAX_AUTH_TOKEN_LEN {
         let _ = stream.write_all(&[AUTH_FAIL]).await;
-        return Err(format!("auth token too long ({len} bytes)"));
+        return Err(format!(
+            "peer auth token too long ({len} bytes, limit {MAX_AUTH_TOKEN_LEN})"
+        ));
     }
     let mut token = vec![0u8; len];
     stream
@@ -102,6 +122,12 @@ pub(crate) async fn auth_handshake_verify(
         .await
         .map_err(|e| format!("auth handshake read failed: {e}"))?;
     let expected = cross_data_auth_token().unwrap_or_default();
+    if expected.len() > MAX_AUTH_TOKEN_LEN {
+        // No peer can send a token this long, so name the real cause
+        // rather than reporting a mismatch.
+        let _ = stream.write_all(&[AUTH_FAIL]).await;
+        return Err(token_too_long(expected.len()));
+    }
     // Constant-time comparison (parity with the message-layer auth): the
     // handshake token is a shared deployment secret, so a timing side
     // channel on the comparison would leak it byte by byte.

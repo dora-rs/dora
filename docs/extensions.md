@@ -141,6 +141,13 @@ daemon's side of the seam is one file,
 [`binaries/daemon/src/pool_extension.rs`](../binaries/daemon/src/pool_extension.rs):
 the capability implementations and the lifecycle call sites, and nothing else.
 
+The direct-TCP data plane authenticates connections when
+`DORA_MEMORY_POOL_AUTH_TOKEN` is set to the same value on every participating
+daemon (unset means no handshake). The token is at most 4096 bytes; a longer
+one is refused as a configuration error and that daemon's writes fall back to
+the zenoh relay. The token covers the direct-TCP plane only, not the zenoh
+control plane, which must be secured separately over an untrusted link.
+
 That is the shape this seam exists to produce: an extension is a package that
 uses these operations, not a fork of the framework. The test for whether it is
 holding is mechanical — a default `cargo tree -p dora-daemon` contains no
