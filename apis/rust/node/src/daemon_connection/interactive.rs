@@ -107,15 +107,15 @@ impl InteractiveEvents {
         }
         let id: DataId = loop {
             let stdout_lock = stdout().lock();
-            let id = inquire::Text::new("Input ID")
-                .with_help_message("empty input ID to stop")
-                .prompt()?;
+            let answer = inquire::Text::new("Input ID")
+                .with_help_message("empty input ID, Esc or Ctrl-C to stop")
+                .prompt();
             std::mem::drop(stdout_lock);
-            if id.is_empty() {
-                println!("{}", "given input ID is empty -> stopping".blue());
+            let Some(id) = input_id_answer(answer)? else {
+                println!("{}", "no input ID given -> stopping".blue());
                 self.stopped = true;
                 return Ok(Some(NodeEvent::Stop));
-            }
+            };
             // `id` is typed at an interactive prompt, so parse it fallibly via
             // `parse_input_id` (see its docs): `DataId::from(String)` / `.into()`
             // would panic on an invalid id and crash the whole node. Re-prompt
@@ -134,12 +134,16 @@ impl InteractiveEvents {
                 .with_help_message(
                     "String/JSON, FILE:<path.arrow>, HEX:<hexbytes>, or empty for no data",
                 )
-                .prompt_skippable()?;
+                .prompt();
             std::mem::drop(stdout_lock);
-            // esc (`None`) and an empty answer both mean "no data". The receive
-            // side decodes a self-describing Arrow IPC stream, so encode the
-            // array into one here.
-            let typed_data = parse_data(data.as_deref().unwrap_or_default()).and_then(|d| {
+            let Some(data) = data_answer(data)? else {
+                println!("{}", "interrupted -> stopping".blue());
+                self.stopped = true;
+                return Ok(Some(NodeEvent::Stop));
+            };
+            // The receive side decodes a self-describing Arrow IPC stream, so
+            // encode the array into one here.
+            let typed_data = parse_data(&data).and_then(|d| {
                 d.map(|d| encode_arrow_ipc(&dora_arrow_convert::internal::from_array_data(d)))
                     .transpose()
             });
@@ -177,6 +181,39 @@ fn parse_data(data: &str) -> eyre::Result<Option<arrow::array::ArrayData>> {
         read_json_bytes_as_arrow(data.as_bytes())?
     };
     Ok(Some(array_data))
+}
+
+/// Interpret the answer to the `Input ID` prompt: `None` means "stop".
+///
+/// An empty id, Esc (`OperationCanceled`) and Ctrl-C (`OperationInterrupted`)
+/// all stop the node cleanly with `NodeEvent::Stop`. Passing the cancel errors
+/// up instead would fail the daemon request, which the event-stream thread
+/// reports as a fatal "daemon channel broken" error and ends the stream without
+/// a `Stop` event. Other prompt errors (e.g. no terminal) are still errors.
+fn input_id_answer(answer: Result<String, inquire::InquireError>) -> eyre::Result<Option<String>> {
+    match answer {
+        Ok(id) if id.is_empty() => Ok(None),
+        Ok(id) => Ok(Some(id)),
+        Err(
+            inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted,
+        ) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Interpret the answer to the `Data` prompt: `None` means "stop".
+///
+/// Esc (`OperationCanceled`) means "no data", like an empty answer. Ctrl-C
+/// (`OperationInterrupted`) stops the node with `NodeEvent::Stop`, as it does
+/// at the `Input ID` prompt (see [`input_id_answer`]); `prompt_skippable`
+/// would pass it up as an error, ending the stream as "daemon channel broken".
+fn data_answer(answer: Result<String, inquire::InquireError>) -> eyre::Result<Option<String>> {
+    match answer {
+        Ok(data) => Ok(Some(data)),
+        Err(inquire::InquireError::OperationCanceled) => Ok(Some(String::new())),
+        Err(inquire::InquireError::OperationInterrupted) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// Parse a `DataId` typed at the interactive `Input ID` prompt.
@@ -276,6 +313,45 @@ mod tests {
             &*parse_input_id("valid_id.0-1/sub").expect("valid id should parse"),
             "valid_id.0-1/sub"
         );
+    }
+
+    #[test]
+    fn esc_ctrl_c_and_empty_input_id_mean_stop() {
+        use inquire::InquireError;
+        assert!(input_id_answer(Ok(String::new())).unwrap().is_none());
+        assert!(
+            input_id_answer(Err(InquireError::OperationCanceled))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            input_id_answer(Err(InquireError::OperationInterrupted))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            input_id_answer(Ok("tick".into())).unwrap().as_deref(),
+            Some("tick")
+        );
+        assert!(input_id_answer(Err(InquireError::NotTTY)).is_err());
+    }
+
+    #[test]
+    fn esc_at_data_means_no_data_and_ctrl_c_means_stop() {
+        use inquire::InquireError;
+        assert_eq!(
+            data_answer(Err(InquireError::OperationCanceled))
+                .unwrap()
+                .as_deref(),
+            Some("")
+        );
+        assert!(
+            data_answer(Err(InquireError::OperationInterrupted))
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(data_answer(Ok("42".into())).unwrap().as_deref(), Some("42"));
+        assert!(data_answer(Err(InquireError::NotTTY)).is_err());
     }
 
     #[test]
