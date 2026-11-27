@@ -115,10 +115,11 @@ class HostHandler(Handler):
 oldBasicConfig = basicConfig
 
 def basicConfig(*pargs, **kwargs):
-	if "handlers" not in kwargs:
+	if kwargs.get("handlers") is None:
 		kwargs["handlers"] = [HostHandler()]
 	else:
-		kwargs["handlers"].append(HostHandler())
+		from itertools import chain
+		kwargs["handlers"] = chain(kwargs["handlers"], [HostHandler()])
 	if "level" not in kwargs:
 		kwargs["level"] = 0
 
