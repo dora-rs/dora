@@ -49,6 +49,17 @@ pub(crate) fn in_flight_limit(history: History) -> usize {
     }
 }
 
+/// Drop outstanding calls on manual Stop even when the request window is full.
+pub(crate) async fn until_manual_stop(
+    stop: impl Future<Output = ()>,
+    calls: impl Future<Output = eyre::Result<()>>,
+) -> eyre::Result<()> {
+    futures::select_biased! {
+        () = stop.fuse() => Ok(()),
+        result = calls.fuse() => result,
+    }
+}
+
 /// Call a service for each of `requests` and hand every outcome to
 /// `respond`, with the parameters of the request it answers: what the call
 /// returned, or `None` when the server stopped answering and the call was
@@ -746,6 +757,97 @@ mod tests {
         assert_eq!(h.started(), vec![2]);
         h.complete(2, 20);
         assert_eq!(h.started(), vec![4]);
+    }
+
+    #[test]
+    fn manual_stop_drops_calls_when_the_request_window_is_full() {
+        use futures::FutureExt;
+
+        let mut requests = [((), 1), ((), 2), ((), 3)].into_iter();
+        let mut replies = Vec::new();
+        let (stop, stopped) = oneshot::channel::<()>();
+        let calls = drive_service_calls(
+            stream::iter(requests.by_ref()),
+            2,
+            TIMEOUT,
+            |_| {
+                let (tx, rx) = oneshot::channel::<()>();
+                replies.push(tx);
+                rx
+            },
+            |_, _| panic!("an unanswered call must not emit a response on Stop"),
+        );
+        let mut driver = Box::pin(super::until_manual_stop(stopped.map(|_| ()), calls));
+        assert!(driver.as_mut().now_or_never().is_none());
+        stop.send(()).unwrap();
+        driver
+            .now_or_never()
+            .expect("Stop must end the driver")
+            .unwrap();
+
+        assert_eq!(replies.len(), 2);
+        assert!(replies.iter().all(oneshot::Sender::is_canceled));
+        assert_eq!(requests.next(), Some(((), 3)));
+    }
+
+    #[test]
+    fn event_stream_stop_cancels_a_pending_service_call() {
+        use dora_node_api::{
+            DoraNode, Event,
+            integration_testing::{
+                IntegrationTestInput, TestingInput, TestingOutput,
+                integration_testing_format::{IncomingEvent, TimedIncomingEvent},
+            },
+        };
+        use futures::{executor::block_on, future::select};
+
+        let request = |id: &str| IncomingEvent::Input {
+            id: id.into(),
+            metadata: None,
+            data: None,
+        };
+        let replay = [request("first"), request("queued"), IncomingEvent::Stop]
+            .into_iter()
+            .map(|event| TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event,
+            })
+            .collect();
+        let (_node, mut events) = DoraNode::init_testing(
+            TestingInput::Input(IntegrationTestInput::new("client".parse().unwrap(), replay)),
+            TestingOutput::ToWriter(Box::new(std::io::sink())),
+            Default::default(),
+        )
+        .unwrap();
+        let stop = events.manual_stop();
+        let (started, in_flight) = oneshot::channel::<()>();
+        let (answer, reply) = oneshot::channel::<()>();
+        let mut call = Some(async move {
+            started.send(()).unwrap();
+            reply.await
+        });
+        let calls = drive_service_calls(
+            super::requests(&mut events),
+            1,
+            TIMEOUT,
+            |_| call.take().expect("only the first request was admitted"),
+            |_, _| panic!("the unanswered request emitted a response"),
+        );
+        // Replay can deliver Stop immediately. Observe it only after the call is pending.
+        let driver = super::until_manual_stop(
+            async {
+                in_flight.await.unwrap();
+                stop.await
+            },
+            calls,
+        );
+        let guard = futures_timer::Delay::new(Duration::from_secs(5));
+        assert!(matches!(
+            block_on(select(Box::pin(driver), guard)),
+            futures::future::Either::Left((Ok(()), _))
+        ));
+        assert!(answer.is_canceled());
+        assert!(matches!(events.recv(), Some(Event::Input { id, .. }) if id.as_str() == "queued"));
     }
 
     #[test]

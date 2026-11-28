@@ -12,7 +12,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use super::arrival_bound::ZenohPayload;
 use crate::daemon_connection::DaemonChannel;
@@ -23,10 +23,19 @@ pub fn init(
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     stop_enqueued: Arc<AtomicBool>,
+    manual_stop: watch::Sender<bool>,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
-    let join_handle =
-        std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock, stop_enqueued));
+    let join_handle = std::thread::spawn(|| {
+        event_stream_loop(
+            node_id_cloned,
+            tx,
+            channel,
+            clock,
+            stop_enqueued,
+            manual_stop,
+        )
+    });
     Ok(EventStreamThreadHandle::new(node_id, join_handle))
 }
 
@@ -115,13 +124,14 @@ impl Drop for EventStreamThreadHandle {
     }
 }
 
-#[tracing::instrument(skip(tx, channel, clock, stop_enqueued))]
+#[tracing::instrument(skip(tx, channel, clock, stop_enqueued, manual_stop))]
 fn event_stream_loop(
     node_id: NodeId,
     tx: mpsc::Sender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     stop_enqueued: Arc<AtomicBool>,
+    manual_stop: watch::Sender<bool>,
 ) {
     let mut tx = Some(tx);
     let mut close_tx = false;
@@ -160,6 +170,14 @@ fn event_stream_loop(
                 break Err(err.wrap_err("daemon channel broken"));
             }
         };
+        // Signal before forwarding this batch: an earlier input's blocking_send
+        // may wait for the consumer to resume reading.
+        if events
+            .iter()
+            .any(|event| matches!(event.inner, NodeEvent::Stop))
+        {
+            manual_stop.send_replace(true);
+        }
         for Timestamped { inner, timestamp } in events {
             if let Err(err) = clock.update_with_timestamp(&timestamp) {
                 tracing::warn!("failed to update HLC: {err}");
