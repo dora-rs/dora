@@ -7,8 +7,9 @@
 //! - If the dataflow is distributed across multiple machines, each `build` command will be run the target machine of the corresponding node.
 //!     - i.e. the machine specified under the `deploy` key
 //!     - this requires a connection to the dora coordinator, so you need to specify the coordinator IP/port for this
-//!     - to run the build commands of all nodes _locally_, you can use `dora build --local`
-//! - If the build command does not specify any `deploy` keys, all build commands will be run locally (i.e. `dora build` behaves like `dora build --local`)
+//! - To run the build commands of all nodes _locally_ without a coordinator, you can use `dora build --local`
+//! - If no `deploy` keys are given and no node uses `git:`/`hub:`, `dora build` runs locally
+//! - If no `deploy` keys are given and at least one node uses `git:`/`hub:`, `dora build` builds through a running same-machine coordinator (with an unnamed daemon on the same machine) so `dora start` sees its build metadata, and falls back to a local build otherwise
 //!
 //! #### Git Source
 //!
@@ -498,6 +499,10 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
     let session = || connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);
+    let all_nodes_without_deploy = dataflow_descriptor
+        .nodes
+        .iter()
+        .all(|node| node.deploy.is_none());
 
     // `--hub-override` implies a local build (validated above). Force it even
     // when the override matched no node: the override-vs-distributed conflict
@@ -508,9 +513,45 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
     } else if force_local {
         log::info!("Building locally, as requested through `--force-local`");
         BuildKind::Local
-    } else if dataflow_descriptor.nodes.iter().all(|n| n.deploy.is_none()) {
-        log::info!("Building locally because dataflow does not contain any `deploy` sections");
+    } else if all_nodes_without_deploy && git_sources.is_empty() {
+        log::info!("Building locally because no node has `deploy` or `git`/`hub` sources");
         BuildKind::Local
+    } else if all_nodes_without_deploy {
+        match session() {
+            Ok(coordinator_session) => {
+                match crate::common::cli_and_daemon_on_same_machine(&coordinator_session) {
+                    Ok(true) => {
+                        // A same-machine coordinator + unnamed daemon is up -> build through it
+                        // so the daemon records build metadata (git clones, hub confinement,
+                        // uv envs) needed by a subsequent `dora start`.
+                        log::info!(
+                            "Found local dora coordinator and same-machine daemon -> building through coordinator"
+                        );
+                        BuildKind::ThroughCoordinator {
+                            coordinator_session,
+                        }
+                    }
+                    Ok(false) => {
+                        log::info!(
+                            "Coordinator has no unnamed daemon on this machine -> running local build"
+                        );
+                        BuildKind::Local
+                    }
+                    Err(err) => {
+                        log::warn!(
+                            "Failed to check whether coordinator daemon is on this machine ({err}) -> running local build"
+                        );
+                        BuildKind::Local
+                    }
+                }
+            }
+            Err(err) => {
+                log::warn!(
+                    "No usable dora coordinator instance found ({err}) -> running local build"
+                );
+                BuildKind::Local
+            }
+        }
     } else if coordinator_addr.is_some() || coordinator_port.is_some() {
         log::info!("Building through coordinator, using the given coordinator socket information");
         // explicit coordinator address or port set -> there should be a coordinator running
@@ -520,7 +561,6 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
     } else {
         match session() {
             Ok(coordinator_session) => {
-                // we found a local coordinator instance at default port -> use it for building
                 log::info!("Found local dora coordinator instance -> building through coordinator");
                 BuildKind::ThroughCoordinator {
                     coordinator_session,

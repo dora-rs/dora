@@ -262,6 +262,51 @@ pub struct BuildInfo {
     pub confined_nodes: std::collections::BTreeSet<NodeId>,
 }
 
+/// Reconstruct [`BuildInfo`] for already-built nodes (such as after a
+/// coordinator-routed `dora build`) without running git operations or `build:`
+/// commands.
+pub fn build_info_from_existing_clones(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+    git_sources: &BTreeMap<NodeId, GitSource>,
+    base_working_dir: &Path,
+) -> eyre::Result<BuildInfo> {
+    let mut info = BuildInfo {
+        node_working_dirs: BTreeMap::new(),
+        python_env_dirs: BTreeMap::new(),
+        confined_nodes: git_sources
+            .iter()
+            .filter(|(_, source)| source.hub.is_some())
+            .map(|(node_id, _)| node_id.clone())
+            .collect(),
+    };
+    let git_base_dir = base_working_dir.join("git");
+    for (node_id, node) in nodes {
+        let node_working_dir = if let Some(source) = git_sources.get(node_id) {
+            let repo_url =
+                url::Url::parse(&source.repo).context("failed to parse git repository URL")?;
+            let clone_dir =
+                GitManager::clone_dir_path(&git_base_dir, &repo_url, &source.commit_hash)?;
+            match &source.subdir {
+                Some(subdir) => {
+                    validate_subdir(subdir)?;
+                    confine_subdir(&clone_dir, subdir)?
+                }
+                None => clone_dir,
+            }
+        } else {
+            base_working_dir.to_path_buf()
+        };
+        if let Some(env_dir) = managed_python_env_dir(node, &node_working_dir)
+            && env_dir.is_dir()
+        {
+            info.python_env_dirs.insert(node_id.clone(), env_dir);
+        }
+        info.node_working_dirs
+            .insert(node_id.clone(), node_working_dir);
+    }
+    Ok(info)
+}
+
 /// Validate a git source `subdir`: a relative path confined to the clone
 /// (no absolute, no `..`, no leading `-`, printable characters only). The
 /// value can come from an untrusted hub index entry.

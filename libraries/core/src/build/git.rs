@@ -253,7 +253,7 @@ impl GitManager {
             .insert(dir)
     }
 
-    fn clone_dir_path(
+    pub fn clone_dir_path(
         base_dir: &Path,
         repo_url: &Url,
         commit_hash: &String,

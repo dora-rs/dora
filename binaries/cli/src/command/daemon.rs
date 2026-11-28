@@ -356,6 +356,23 @@ impl Executable for Daemon {
                                 .write_out_for_dataflow(&dataflow_path)
                                 .context("failed to persist invalidated dataflow session")?;
                         }
+                        let has_git_source = resolved_for_fingerprint
+                            .values()
+                            .any(|node| node.has_git_source());
+                        if dataflow_session.local_build.is_none()
+                            && dataflow_session.build_id.is_some()
+                            && has_git_source
+                        {
+                            let build_working_dir =
+                                crate::common::canonicalize_working_dir(None, &dataflow_path)?;
+                            dataflow_session.local_build = Some(
+                                dora_core::build::build_info_from_existing_clones(
+                                    &resolved_for_fingerprint,
+                                    &dataflow_session.git_sources,
+                                    &build_working_dir,
+                                )?,
+                            );
+                        }
                         drop(resolved_for_fingerprint);
 
                         let result = dora_daemon::Daemon::run_dataflow(&dataflow_path,

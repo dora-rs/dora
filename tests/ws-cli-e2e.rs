@@ -3254,4 +3254,171 @@ mod real_dataflow {
                 String::from_utf8_lossy(&out.stdout).contains("/sigterm-ignoring-node")
             })
     }
+
+    fn setup_git_smoke_dataflow(dir: &Path) -> std::path::PathBuf {
+        let src = dir.join("repo");
+        std::fs::create_dir_all(src.join("src")).unwrap();
+        std::fs::write(
+            src.join("Cargo.toml"),
+            "[package]\nname = \"git-smoke-node\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[workspace]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("src/main.rs"),
+            "fn main() { println!(\"git node ok\"); }\n",
+        )
+        .unwrap();
+
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .current_dir(&src)
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .args([
+                    "-c",
+                    "user.email=test@dora.rs",
+                    "-c",
+                    "user.name=test",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .status()
+                .expect("run git");
+            assert!(status.success(), "git {args:?} failed");
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        git(&["add", "."]);
+        git(&["commit", "--quiet", "-m", "init"]);
+
+        let git_path = src.display().to_string().replace('\\', "/");
+        let git_url = if git_path.starts_with('/') {
+            format!("file://{git_path}")
+        } else {
+            format!("file:///{git_path}")
+        };
+        let yaml = dir.join("dataflow.yml");
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  - id: git-node\n    git: {git_url}\n    branch: main\n    build: cargo build\n    path: target/debug/git-smoke-node\n"
+            ),
+        )
+        .unwrap();
+        yaml
+    }
+
+    #[test]
+    fn e2e_git_node_build_then_start() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
+
+        let dir = tempdir().expect("create tempdir");
+        let yaml = setup_git_smoke_dataflow(dir.path());
+
+        let build_out = Command::new(&dora)
+            .args(["build", yaml.to_str().unwrap()])
+            .output()
+            .expect("run dora build");
+        assert!(
+            build_out.status.success(),
+            "dora build failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&build_out.stdout),
+            String::from_utf8_lossy(&build_out.stderr)
+        );
+
+        let start_out = Command::new(&dora)
+            .args(["start", yaml.to_str().unwrap(), "--detach"])
+            .output()
+            .expect("run dora start");
+        assert!(
+            start_out.status.success(),
+            "dora start failed after `dora build`:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&start_out.stdout),
+            String::from_utf8_lossy(&start_out.stderr)
+        );
+    }
+
+    #[test]
+    fn e2e_git_node_build_then_daemon_run_dataflow() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
+
+        let dir = tempdir().expect("create tempdir");
+        let yaml = setup_git_smoke_dataflow(dir.path());
+
+        let build_out = Command::new(&dora)
+            .args(["build", yaml.to_str().unwrap()])
+            .output()
+            .expect("run dora build");
+        assert!(
+            build_out.status.success(),
+            "dora build failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&build_out.stdout),
+            String::from_utf8_lossy(&build_out.stderr)
+        );
+
+        let run_out = Command::new(&dora)
+            .args(["daemon", "--run-dataflow", yaml.to_str().unwrap()])
+            .output()
+            .expect("run dora daemon --run-dataflow");
+        assert!(
+            run_out.status.success(),
+            "dora daemon --run-dataflow failed after `dora build`:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&run_out.stdout),
+            String::from_utf8_lossy(&run_out.stderr)
+        );
+    }
+
+    #[test]
+    fn e2e_git_node_build_coordinator_without_daemon_falls_back_local() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+            listener.local_addr().unwrap().port()
+        };
+        let port_str = port.to_string();
+        let (coord_child, _stdout_path, _stderr_path) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["coordinator", "--port", &port_str, "--quiet"],
+            "coord-only",
+        );
+        let _coord_guard = KillOnDrop(Some(coord_child));
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+            assert!(
+                Instant::now() < deadline,
+                "isolated coordinator did not listen on port {port} in time"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+
+        let dir = tempdir().expect("create tempdir");
+        let yaml = setup_git_smoke_dataflow(dir.path());
+
+        let build_out = Command::new(&dora)
+            .args(["build", yaml.to_str().unwrap()])
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("DORA_COORDINATOR_PORT", &port_str)
+            .env_remove("DORA_COORDINATOR_ADDR")
+            .env_remove("DORA_COORDINATOR_INTERFACE")
+            .output()
+            .expect("run dora build");
+        assert!(
+            build_out.status.success(),
+            "dora build failed when coordinator had no unnamed daemon:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&build_out.stdout),
+            String::from_utf8_lossy(&build_out.stderr)
+        );
+    }
 }
