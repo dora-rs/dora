@@ -203,6 +203,15 @@ impl TryFrom<&DoraArray> for NaiveTime {
     }
 }
 
+/// Reads a length-1 `Timestamp` array of any unit.
+///
+/// A timezone on the Arrow type (`Timestamp(unit, Some(tz))`) is **ignored**:
+/// the value is returned as the UTC wall-clock time, not the local time in
+/// `tz`. A tz-aware timestamp is a UTC instant by the Arrow spec, so this is
+/// the instant itself, but the zone is lost. For example, `0` with tz
+/// `"+05:00"` reads back as `1970-01-01 00:00:00`, not `05:00:00`. Senders
+/// that need local wall time on the receiver should send a tz-less timestamp
+/// already in local time, or carry the zone in metadata.
 impl TryFrom<&DoraArray> for NaiveDateTime {
     type Error = eyre::Report;
     fn try_from(value: &DoraArray) -> Result<Self, Self::Error> {
@@ -351,6 +360,33 @@ mod tests {
         let err = String::try_from(&data).unwrap_err().to_string();
         assert!(err.contains("not a string array"), "{err}");
         assert!(err.contains("UInt8"), "{err}");
+    }
+
+    /// A tz-aware timestamp reads back as its UTC wall-clock time; the zone
+    /// is dropped, not applied (#4348). Pins the documented behaviour.
+    #[test]
+    fn test_naive_datetime_ignores_timezone() {
+        use arrow::array::ArrayRef;
+        use arrow::array::{
+            TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+            TimestampSecondArray,
+        };
+        use chrono::{DateTime, NaiveDateTime};
+        use std::sync::Arc;
+
+        let utc_midnight = DateTime::UNIX_EPOCH.naive_utc();
+        let arrays: Vec<ArrayRef> = vec![
+            Arc::new(TimestampSecondArray::from(vec![0]).with_timezone("+05:00")),
+            Arc::new(TimestampMillisecondArray::from(vec![0]).with_timezone("Europe/Berlin")),
+            Arc::new(TimestampMicrosecondArray::from(vec![0]).with_timezone("-03:00")),
+            Arc::new(TimestampNanosecondArray::from(vec![0]).with_timezone("UTC")),
+        ];
+        for array in arrays {
+            let data_type = array.data_type().clone();
+            let data: DoraArray = from_array_ref(array);
+            let value = NaiveDateTime::try_from(&data).unwrap();
+            assert_eq!(value, utc_midnight, "{data_type}");
+        }
     }
 
     /// The temporal and `bool` scalars reject a bad shape with the same three
