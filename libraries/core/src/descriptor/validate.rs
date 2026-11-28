@@ -2752,12 +2752,11 @@ nodes:
 
     #[test]
     fn validate_ros2_security_empty_rejected() {
-        let config = Ros2BridgeConfig {
-            topic: Some("/topic".into()),
-            message_type: Some("std_msgs/String".into()),
-            security: Some(PathBuf::from("")),
-            ..Default::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.topic = Some("/topic".into());
+        config.message_type = Some("std_msgs/String".into());
+        config.security = Some(PathBuf::from(""));
+
         let mut outputs = BTreeSet::new();
         outputs.insert(DataId::from("topic".to_owned()));
         let err = validate_ros2_config(
@@ -2772,16 +2771,15 @@ nodes:
 
     #[test]
     fn validate_ros2_security_on_zenoh_rejected() {
-        let config = Ros2BridgeConfig {
-            transport: Ros2TransportConfig::Zenoh {
-                compatibility: RmwZenohCompatibility::Humble,
-                config_uri: None,
-            },
-            topic: Some("/topic".into()),
-            message_type: Some("std_msgs/String".into()),
-            security: Some(PathBuf::from("/etc/ros/security")),
-            ..Default::default()
+        let mut config = Ros2BridgeConfig::default();
+        config.transport = Ros2TransportConfig::Zenoh {
+            compatibility: RmwZenohCompatibility::Humble,
+            config_uri: None,
         };
+        config.topic = Some("/topic".into());
+        config.message_type = Some("std_msgs/String".into());
+        config.security = Some(PathBuf::from("/etc/ros/security"));
+
         let mut outputs = BTreeSet::new();
         outputs.insert(DataId::from("topic".to_owned()));
         let err = validate_ros2_config(
