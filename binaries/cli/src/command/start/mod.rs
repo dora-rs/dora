@@ -273,7 +273,7 @@ fn prepare_descriptor(
              the target machines before `dora start`"
         );
     }
-    if local_build_misses_daemon_metadata(&dataflow_descriptor, &dataflow_session, dataflow) {
+    if local_build_misses_daemon_metadata(&dataflow_descriptor, &dataflow_session) {
         eyre::bail!(
             "this dataflow was built locally (e.g. with `--local`, `--hub-override`, or before \
              `dora up`), so the running daemon does not have its git/hub build metadata.\n\n  \
@@ -396,24 +396,13 @@ fn local_build_blocks_distributed_start(has_local_build: bool, has_deploy_nodes:
 /// Whether a local build's `BuildInfo` (`git:` clone directories, hub
 /// confinement, or `--hub-override` working dirs) is required by the daemon
 /// even for a single-machine (`deploy:`-free) `dora start`.
-fn local_build_misses_daemon_metadata(
-    descriptor: &Descriptor,
-    session: &DataflowSession,
-    dataflow_path: &Path,
-) -> bool {
+fn local_build_misses_daemon_metadata(descriptor: &Descriptor, session: &DataflowSession) -> bool {
     let Some(local_build) = &session.local_build else {
         return false;
     };
-    if descriptor.nodes.iter().any(|n| n.git.is_some()) || !local_build.confined_nodes.is_empty() {
-        return true;
-    }
-    let Ok(dataflow_dir) = crate::common::canonicalize_working_dir(None, dataflow_path) else {
-        return false;
-    };
-    local_build
-        .node_working_dirs
-        .values()
-        .any(|dir| dir != &dataflow_dir)
+    descriptor.nodes.iter().any(|n| n.git.is_some())
+        || !local_build.confined_nodes.is_empty()
+        || session.resolved_dataflow.is_some()
 }
 
 #[cfg(test)]
@@ -520,7 +509,7 @@ mod tests {
     }
 
     #[test]
-    fn local_build_metadata_check_catches_git_confined_and_override_dirs() {
+    fn local_build_metadata_check_catches_git_and_hub_without_blocking_working_dir() {
         let dir = tempfile::tempdir().unwrap();
         let dataflow = dir.path().join("dataflow.yml");
         std::fs::write(&dataflow, "nodes:\n  - id: a\n    path: ./a\n").unwrap();
@@ -538,7 +527,6 @@ mod tests {
         assert!(!local_build_misses_daemon_metadata(
             &plain_desc,
             &plain_session,
-            &dataflow
         ));
 
         let git_desc = Descriptor::parse(
@@ -548,24 +536,34 @@ mod tests {
         assert!(local_build_misses_daemon_metadata(
             &git_desc,
             &plain_session,
-            &dataflow
         ));
 
-        let override_session = DataflowSession {
+        // Plain path-only dataflows built with `dora run --working-dir` record
+        // that override in `node_working_dirs` and must not be blocked.
+        let working_dir_session = DataflowSession {
             local_build: Some(dora_core::build::BuildInfo {
                 node_working_dirs: BTreeMap::from([(
                     "a".parse().unwrap(),
-                    dir.path().join("external-checkout"),
+                    dir.path().join("custom-working-dir"),
                 )]),
                 python_env_dirs: BTreeMap::new(),
                 confined_nodes: Default::default(),
             }),
             ..Default::default()
         };
+        assert!(!local_build_misses_daemon_metadata(
+            &plain_desc,
+            &working_dir_session,
+        ));
+
+        // Desugared hub / `--hub-override` builds set `resolved_dataflow`.
+        let hub_override_session = DataflowSession {
+            resolved_dataflow: Some(plain_desc.clone()),
+            ..working_dir_session
+        };
         assert!(local_build_misses_daemon_metadata(
             &plain_desc,
-            &override_session,
-            &dataflow
+            &hub_override_session,
         ));
     }
 }

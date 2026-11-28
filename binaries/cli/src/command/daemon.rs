@@ -359,24 +359,21 @@ impl Executable for Daemon {
                         let has_git_source = resolved_for_fingerprint
                             .values()
                             .any(|node| node.has_git_source());
-                        drop(resolved_for_fingerprint);
                         if dataflow_session.local_build.is_none()
                             && dataflow_session.build_id.is_some()
                             && has_git_source
                         {
-                            let build_path = dataflow_path.clone();
-                            let build_session = dataflow_session.clone();
-                            let build_info = tokio::task::spawn_blocking(move || {
-                                super::build::rebuild_local_build_for_daemon_run(
-                                    expanded,
-                                    &build_path,
-                                    &build_session,
-                                )
-                            })
-                            .await
-                            .context("local build task panicked")??;
-                            dataflow_session.local_build = Some(build_info);
+                            let build_working_dir =
+                                crate::common::canonicalize_working_dir(None, &dataflow_path)?;
+                            dataflow_session.local_build = Some(
+                                dora_core::build::build_info_from_existing_clones(
+                                    &resolved_for_fingerprint,
+                                    &dataflow_session.git_sources,
+                                    &build_working_dir,
+                                )?,
+                            );
                         }
+                        drop(resolved_for_fingerprint);
 
                         let result = dora_daemon::Daemon::run_dataflow(&dataflow_path,
                             dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,

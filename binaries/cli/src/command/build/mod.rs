@@ -658,23 +658,6 @@ enum BuildKind {
     ThroughCoordinator { coordinator_session: WsSession },
 }
 
-pub(crate) fn rebuild_local_build_for_daemon_run(
-    dataflow_descriptor: Descriptor,
-    dataflow_path: &Path,
-    dataflow_session: &DataflowSession,
-) -> eyre::Result<dora_core::build::BuildInfo> {
-    let local_working_dir = canonicalize_working_dir(None, dataflow_path)?;
-    build_dataflow_locally(
-        dataflow_descriptor,
-        &dataflow_session.git_sources,
-        dataflow_session,
-        local_working_dir,
-        false,
-        false,
-        &BTreeMap::new(),
-    )
-}
-
 fn connect_to_coordinator_with_defaults(
     coordinator_addr: Option<std::net::IpAddr>,
     coordinator_port: Option<u16>,
