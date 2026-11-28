@@ -323,8 +323,9 @@ let number = metadata.parameters.get("request_number");
 
 The example requester in `examples/ros2-bridge/yaml-bridge-service/` does this.
 
-When the inputs close or the dataflow stops, the bridge waits for the
-requests already in flight before it exits.
+When the inputs close normally, the service client waits for requests already
+in flight, subject to the response timeout. When it receives a `Stop` event,
+it abandons outstanding calls and exits without waiting for their responses.
 
 ### Service Server
 

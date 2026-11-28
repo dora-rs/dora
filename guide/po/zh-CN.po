@@ -22778,6 +22778,14 @@ msgid ""
 "Deserializes the response into Arrow and sends it on the `response` output"
 msgstr "将响应反序列化为 Arrow 并在 `response` 输出上发送"
 
+#: src/advanced/ros2-bridge.md:326
+msgid ""
+"When the inputs close normally, the service client waits for requests "
+"already in flight, subject to the response timeout. When it receives a "
+"`Stop` event, it abandons outstanding calls and exits without waiting for "
+"their responses."
+msgstr "输入正常关闭时，服务客户端会等待已发出请求的响应，直到收到响应或请求超时。收到 `Stop` 事件时，客户端会放弃尚未完成的调用并退出，无需等待响应。"
+
 #: src/advanced/ros2-bridge.md:209
 msgid "Service Server"
 msgstr ""
