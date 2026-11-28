@@ -199,7 +199,6 @@ impl Daemon {
         event: DaemonNodeEvent,
         dataflow_id: DataflowId,
         node_id: NodeId,
-        generation: u64,
     ) -> eyre::Result<()> {
         let might_restart = || {
             let dataflow = self.running.get(&dataflow_id)?;
@@ -211,14 +210,6 @@ impl Daemon {
             })
         };
         match event {
-            DaemonNodeEvent::ManualStopReceiver { reply } => {
-                if let Some(dataflow) = self.running.get_mut(&dataflow_id)
-                    && (dataflow.running_nodes.contains_key(&node_id)
-                        || dataflow.runtime_params.contains_key(&node_id))
-                {
-                    let _ = reply.send(dataflow.manual_stop_receiver(&node_id, generation));
-                }
-            }
             DaemonNodeEvent::Subscribe {
                 event_sender,
                 pending_counter,
@@ -429,7 +420,7 @@ impl Daemon {
                     // consumer in the window before its process exit is observed
                     // does not trigger the "failed to re-subscribe" warning
                     // (dora-rs/dora#3556).
-                    dataflow.mark_event_stream_dropped(&node_id, generation);
+                    dataflow.mark_event_stream_dropped(&node_id);
                     Result::<_, eyre::Error>::Ok(())
                 };
 

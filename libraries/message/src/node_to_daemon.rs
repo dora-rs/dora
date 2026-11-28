@@ -83,8 +83,6 @@ pub enum DaemonRequest {
         #[serde(with = "crate::bulk_bytes::vec")]
         payload: Vec<u8>,
     },
-    /// Wait on a separate registered connection for this node's explicit stop.
-    WaitForManualStop,
 }
 
 impl DaemonRequest {
@@ -103,7 +101,6 @@ impl DaemonRequest {
             | DaemonRequest::OutputSent { .. }
             | DaemonRequest::CloseOutputs(_)
             | DaemonRequest::OutputsDone
-            | DaemonRequest::WaitForManualStop
             | DaemonRequest::NextEvent
             | DaemonRequest::EventStreamDropped
             | DaemonRequest::NodeConfig { .. } => 0,
@@ -126,7 +123,6 @@ impl DaemonRequest {
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)
             | DaemonRequest::OutputsDone
-            | DaemonRequest::WaitForManualStop
             | DaemonRequest::NextEvent
             | DaemonRequest::EventStreamDropped
             | DaemonRequest::ExtensionRequest { .. }
@@ -144,7 +140,6 @@ impl DaemonRequest {
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)
             | DaemonRequest::OutputsDone
-            | DaemonRequest::WaitForManualStop
             | DaemonRequest::NextEvent
             | DaemonRequest::SendMessage { .. }
             | DaemonRequest::OutputSent { .. }
@@ -312,7 +307,6 @@ mod reply_policy_tests {
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)
             | DaemonRequest::OutputsDone
-            | DaemonRequest::WaitForManualStop
             | DaemonRequest::NextEvent
             | DaemonRequest::EventStreamDropped
             | DaemonRequest::ExtensionStore { .. }
@@ -343,7 +337,6 @@ mod reply_policy_tests {
             DaemonRequest::CloseOutputs(Vec::new()),
             DaemonRequest::OutputsDone,
             DaemonRequest::NextEvent,
-            DaemonRequest::WaitForManualStop,
             DaemonRequest::EventStreamDropped,
             DaemonRequest::NodeConfig {
                 node_id: NodeId::from(text()),

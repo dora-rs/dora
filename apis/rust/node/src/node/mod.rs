@@ -1254,13 +1254,12 @@ impl DoraNode {
                     let (sender, mut receiver) =
                         tokio::sync::mpsc::channel(TESTING_DAEMON_CHANNEL_CAPACITY);
                     let shutdown = Arc::new(AtomicBool::new(false));
-                    let mut events =
-                        IntegrationTestingEvents::new(input, output, options, shutdown.clone())?;
                     let new_communication = DaemonCommunicationWrapper::Testing {
                         channel: sender,
                         shutdown: shutdown.clone(),
-                        manual_stop_at: events.manual_stop_at(),
                     };
+                    let mut events =
+                        IntegrationTestingEvents::new(input, output, options, shutdown.clone())?;
                     let shutdown_for_loop = shutdown.clone();
                     let handle = std::thread::Builder::new()
                         .name("dora-testing-daemon".into())

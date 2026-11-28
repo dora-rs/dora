@@ -392,9 +392,6 @@ impl Listener {
             };
 
             match message.wrap_err("failed to receive DaemonRequest") {
-                Ok(Some(message)) if matches!(message.inner, DaemonRequest::WaitForManualStop) => {
-                    return self.wait_for_manual_stop(&mut connection).await;
-                }
                 Ok(Some(message)) => {
                     if let Err(err) = self.handle_message(message, &mut connection).await {
                         tracing::warn!("{err:?}");
@@ -412,35 +409,6 @@ impl Listener {
             }
         }
         Ok(())
-    }
-
-    /// The dedicated wait connection has no further requests. Watching it
-    /// for EOF releases the listener when the process exits normally.
-    async fn wait_for_manual_stop<C: Connection>(
-        &mut self,
-        connection: &mut C,
-    ) -> eyre::Result<()> {
-        let (reply, receiver) = oneshot::channel();
-        self.forward_to_daemon(DaemonNodeEvent::ManualStopReceiver { reply })
-            .await?;
-        let stopped = async {
-            let mut stop = receiver
-                .await
-                .map_err(|_| "node is no longer running".to_owned())?;
-            stop.wait_for(|stopped| *stopped)
-                .await
-                .map(|_| ())
-                .map_err(|_| "node retired without a manual stop".to_owned())
-        };
-        let result = tokio::select! {
-            result = stopped => result,
-            message = connection.receive_message() => match message? {
-                None => return Ok(()),
-                Some(_) => Err("manual stop wait requires a dedicated connection".to_owned()),
-            }
-        };
-        self.send_reply(DaemonReply::Result(result), connection)
-            .await
     }
 
     async fn handle_events(&mut self) -> eyre::Result<()> {
@@ -1706,33 +1674,6 @@ mod tests {
 
     /// A connection that yields one request, then reports a disconnect.
     struct OneRequest(Option<Timestamped<DaemonRequest>>);
-
-    #[tokio::test]
-    async fn manual_stop_waiter_releases_registration_when_peer_disconnects() {
-        let (mut listener, _) = listener();
-        listener.subscribed_events = None;
-        let (daemon, mut events) = mpsc::channel(1);
-        listener.daemon_tx = daemon;
-        let request = Timestamped {
-            inner: DaemonRequest::WaitForManualStop,
-            timestamp: listener.clock.new_timestamp(),
-        };
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            listener.run_inner(OneRequest(Some(request))),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        let Event::Node {
-            event: DaemonNodeEvent::ManualStopReceiver { reply },
-            ..
-        } = events.recv().await.unwrap().inner
-        else {
-            panic!("expected independent stop waiter");
-        };
-        assert!(reply.is_closed());
-    }
 
     impl Connection for OneRequest {
         fn receive_message(

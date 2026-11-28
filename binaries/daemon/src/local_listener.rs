@@ -233,7 +233,6 @@ pub(crate) fn request_kind(request: &DaemonRequest) -> &'static str {
         DaemonRequest::CloseOutputs(_) => "CloseOutputs",
         DaemonRequest::OutputsDone => "OutputsDone",
         DaemonRequest::NextEvent => "NextEvent",
-        DaemonRequest::WaitForManualStop => "WaitForManualStop",
         DaemonRequest::EventStreamDropped => "EventStreamDropped",
         DaemonRequest::NodeConfig { .. } => "NodeConfig",
         DaemonRequest::ExtensionStore { .. } => "ExtensionStore",

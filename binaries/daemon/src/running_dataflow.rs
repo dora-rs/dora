@@ -41,7 +41,7 @@ use std::{
 use tokio::sync::{
     broadcast,
     mpsc::{self, Sender},
-    oneshot, watch,
+    oneshot,
 };
 use tracing::warn;
 
@@ -330,9 +330,6 @@ pub struct RunningDataflow {
     /// its liveness is measured from here, not from its last request.
     pub(crate) started_at_millis: u64,
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
-    /// Independent of the bounded data channel. A targeted stop is latched
-    /// for its incarnation even if its node has not started waiting yet.
-    manual_stops: HashMap<(NodeId, u64), watch::Sender<bool>>,
     /// One entry per locally assigned node, from spawn/add through removal.
     /// Delayed coordinator writes may update a slot, but cannot recreate it.
     /// Restarts and replacements retain its latest persisted runtime values.
@@ -520,7 +517,6 @@ impl RunningDataflow {
             dataflow_started: false,
             started_at_millis: 0,
             subscribe_channels: HashMap::new(),
-            manual_stops: HashMap::new(),
             runtime_params: BTreeMap::new(),
             pending_messages: HashMap::new(),
             drain_signals: HashMap::new(),
@@ -615,7 +611,6 @@ impl RunningDataflow {
     /// same id was still treated as dynamic — `dora node replace` refused it,
     /// and producers added afterwards skipped it as a required startup acker.
     pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
-        self.manual_stops.retain(|(id, _), _| id != node_id);
         self.dynamic_nodes.remove(node_id);
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
@@ -639,17 +634,7 @@ impl RunningDataflow {
     /// message. It has to be this registered signal: the node sends
     /// `EventStreamDropped` over its separate close connection, whose
     /// listener has a drain signal no held delivery waits on.
-    pub(crate) fn mark_event_stream_dropped(&mut self, node_id: &NodeId, generation: u64) {
-        // Close a normal wait; a stop already issued remains latched for a
-        // late waiter until this incarnation exits.
-        let key = (node_id.clone(), generation);
-        if self
-            .manual_stops
-            .get(&key)
-            .is_some_and(|stop| !*stop.borrow())
-        {
-            self.manual_stops.remove(&key);
-        }
+    pub(crate) fn mark_event_stream_dropped(&mut self, node_id: &NodeId) {
         self.subscribe_channels.remove(node_id);
         self.dropped_event_streams.insert(node_id.clone());
         if let Some(drained) = self.drain_signals.get(node_id) {
@@ -677,7 +662,6 @@ impl RunningDataflow {
     /// `handle_node_stop_inner` to keep the coordinator-facing `clean_stop` flag
     /// honest, and an escalated node never restarts.
     pub(crate) fn reset_incarnation_state(&mut self, node_id: &NodeId, generation: u64) {
-        self.manual_stops.remove(&(node_id.clone(), generation));
         self.grace_duration_kills
             .remove(&(node_id.clone(), generation));
         self.startup_timeout_kills
@@ -892,9 +876,6 @@ impl RunningDataflow {
             }
         }
 
-        for (_, stop) in self.manual_stops.drain() {
-            stop.send_replace(true);
-        }
         for (node_id, channel) in self.subscribe_channels.drain() {
             if send_with_timestamp(&channel, NodeEvent::Stop, clock).ok() == Some(true)
                 && let Some(counter) = self.pending_messages.get(&node_id)
@@ -1023,7 +1004,7 @@ impl RunningDataflow {
     /// subscribe channel is removed from `subscribe_channels`, or the
     /// `Stop` cannot reach it and only the kill escalation applies.
     pub(crate) fn stop_replaced_incarnation(
-        &mut self,
+        &self,
         node_id: &NodeId,
         generation: u64,
         process: Option<ProcessHandle>,
@@ -1110,23 +1091,9 @@ impl RunningDataflow {
         Ok(())
     }
 
-    pub(crate) fn manual_stop_receiver(
-        &mut self,
-        node_id: &NodeId,
-        generation: u64,
-    ) -> watch::Receiver<bool> {
-        if self.stop_sent {
-            return watch::channel(true).1;
-        }
-        self.manual_stops
-            .entry((node_id.clone(), generation))
-            .or_insert_with(|| watch::channel(false).0)
-            .subscribe()
-    }
-
     /// Send a Stop event to a node and schedule a grace-period kill.
     fn send_stop_and_schedule_kill(
-        &mut self,
+        &self,
         node_id: &NodeId,
         generation: u64,
         process: Option<ProcessHandle>,
@@ -1134,10 +1101,6 @@ impl RunningDataflow {
         grace_duration: Option<Duration>,
         default_grace: Duration,
     ) {
-        self.manual_stops
-            .entry((node_id.clone(), generation))
-            .or_insert_with(|| watch::channel(false).0)
-            .send_replace(true);
         if let Some(channel) = self.subscribe_channels.get(node_id)
             && send_with_timestamp(channel, NodeEvent::Stop, clock).ok() == Some(true)
             && let Some(counter) = self.pending_messages.get(node_id)

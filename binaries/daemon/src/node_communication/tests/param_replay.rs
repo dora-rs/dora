@@ -100,13 +100,13 @@ impl Subscriber {
                 dataflow_id,
                 node_id,
                 event,
-                generation,
+                ..
             } = self.events.recv().await.unwrap().inner
             else {
                 panic!("expected Subscribe")
             };
             self.daemon
-                .handle_node_event(event, dataflow_id, node_id, generation)
+                .handle_node_event(event, dataflow_id, node_id)
                 .await
                 .unwrap();
         };
@@ -172,10 +172,7 @@ async fn catch_up_after_first_failed_delivery_restores_latest_state() {
             .insert(id.clone(), old);
         fixture.set("y", 9).unwrap(); // fills the old subscriber's queue
         if disconnected {
-            let generation = fixture.listener.generation;
-            fixture
-                .dataflow()
-                .mark_event_stream_dropped(&id, generation);
+            fixture.dataflow().mark_event_stream_dropped(&id);
         }
         let set_x = |value: usize| StateCatchUpOperation::SetParam {
             node_id: id.clone(),
@@ -313,10 +310,7 @@ async fn remove_then_readd_does_not_replay_the_previous_nodes_parameters() {
     fixture.add_node().await;
     fixture.subscribe().await;
     fixture.set("new-owner", 4).unwrap();
-    let generation = fixture.listener.generation;
-    fixture
-        .dataflow()
-        .mark_event_stream_dropped(&id, generation);
+    fixture.dataflow().mark_event_stream_dropped(&id);
     let (mut successor, _) = listener();
     successor.daemon_tx = fixture.daemon.events_tx.clone();
     successor.subscribed_events = None;

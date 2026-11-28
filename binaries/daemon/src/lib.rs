@@ -1717,8 +1717,7 @@ impl Daemon {
                             "dropping node event from superseded incarnation"
                         );
                     } else {
-                        self.handle_node_event(event, dataflow, node_id, generation)
-                            .await?
+                        self.handle_node_event(event, dataflow, node_id).await?
                     }
                 }
                 Event::Dora(event) => self.handle_dora_event(event).await?,
