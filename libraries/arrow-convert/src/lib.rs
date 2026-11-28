@@ -88,7 +88,9 @@ pub trait IntoArrow {
 ///   `String`, `&str`, and the `chrono` date/time types) require the array to
 ///   hold **exactly one element and no nulls**; any other length is an error.
 ///   `String` and `&str` accept all three Arrow string encodings (`Utf8`,
-///   `LargeUtf8` and `Utf8View`).
+///   `LargeUtf8` and `Utf8View`). `NaiveDateTime` accepts a `Timestamp` of
+///   any unit and ignores its timezone: a tz-aware value reads back as its UTC
+///   wall-clock time.
 /// - **Slice / `Vec`** conversions (`&[T]` and `Vec<T>` for the primitive
 ///   types, plus `Vec<bool>` and `Vec<String>`) accept **any length** but
 ///   still reject **any null values**. `Vec<String>` accepts the same three
