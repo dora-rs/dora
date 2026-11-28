@@ -1,6 +1,6 @@
 //! Adapter for the existing `ros2-client`/RustDDS implementation.
 
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use super::{
     Durability, History, Liveliness, Reliability, Ros2Qos, TransportError,
@@ -52,6 +52,14 @@ impl Context {
     /// Open a DDS ROS2 context in the requested ROS domain, advertising only
     /// the addresses in [`INTERFACES_ENV`] when it is set.
     pub fn new(domain_id: u16) -> Result<Self, TransportError> {
+        Self::new_with_security(domain_id, None)
+    }
+
+    /// Open a DDS ROS2 context with optional DDS security configuration.
+    pub fn new_with_security(
+        domain_id: u16,
+        security_dir: Option<&Path>,
+    ) -> Result<Self, TransportError> {
         let interfaces = match std::env::var(INTERFACES_ENV) {
             Ok(value) => Some(value),
             Err(std::env::VarError::NotPresent) => None,
@@ -61,14 +69,23 @@ impl Context {
                 });
             }
         };
-        Self::with_interfaces(domain_id, interfaces.as_deref())
+        Self::with_interfaces_and_security(domain_id, interfaces.as_deref(), security_dir)
     }
 
     /// [`Context::new`] with the value of [`INTERFACES_ENV`] passed in: only
     /// those local addresses are advertised and used, or all when `None`.
+    #[allow(dead_code)]
     pub(crate) fn with_interfaces(
         domain_id: u16,
         value: Option<&str>,
+    ) -> Result<Self, TransportError> {
+        Self::with_interfaces_and_security(domain_id, value, None)
+    }
+
+    pub(crate) fn with_interfaces_and_security(
+        domain_id: u16,
+        value: Option<&str>,
+        security_dir: Option<&Path>,
     ) -> Result<Self, TransportError> {
         super::diagnostics::report_ros_distro();
         let requested =
@@ -86,6 +103,13 @@ impl Context {
         } else {
             interfaces::Unrestricted::new(&local)
         };
+
+        let builder = if let Some(sec_dir) = security_dir {
+            Self::apply_security(builder, sec_dir)?
+        } else {
+            builder
+        };
+
         fn context_error(error: impl std::fmt::Debug) -> TransportError {
             TransportError::DdsContext {
                 message: format!("{error:?}"),
@@ -100,6 +124,75 @@ impl Context {
             unrestricted,
         ));
         Ok(Self { inner, diagnostics })
+    }
+
+    /// Validate that a DDS security directory exists and contains the required
+    /// ROS 2 SROS2 credentials.
+    pub fn validate_security_dir(sec_dir: &Path) -> Result<(), TransportError> {
+        if !sec_dir.is_dir() {
+            return Err(TransportError::DdsContext {
+                message: format!(
+                    "DDS Security directory does not exist or is not a directory: {}",
+                    sec_dir.display()
+                ),
+            });
+        }
+
+        let required_files = [
+            "identity_ca.cert.pem",
+            "cert.pem",
+            "key.pem",
+            "permissions_ca.cert.pem",
+            "governance.p7s",
+            "permissions.p7s",
+        ];
+
+        let mut missing = Vec::new();
+        for file in required_files {
+            if !sec_dir.join(file).is_file() {
+                missing.push(file);
+            }
+        }
+
+        if !missing.is_empty() {
+            return Err(TransportError::DdsContext {
+                message: format!(
+                    "DDS Security credential directory `{}` is missing required file(s): {}",
+                    sec_dir.display(),
+                    missing.join(", ")
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "security")]
+    fn apply_security(
+        builder: rustdds::DomainParticipantBuilder,
+        sec_dir: &Path,
+    ) -> Result<rustdds::DomainParticipantBuilder, TransportError> {
+        Self::validate_security_dir(sec_dir)?;
+        let configs = rustdds::DomainParticipantSecurityConfigFiles::with_ros_default_names(
+            sec_dir,
+            String::new(),
+        );
+        Ok(builder.builtin_security(configs))
+    }
+
+    #[cfg(not(feature = "security"))]
+    fn apply_security(
+        _builder: rustdds::DomainParticipantBuilder,
+        sec_dir: &Path,
+    ) -> Result<rustdds::DomainParticipantBuilder, TransportError> {
+        Self::validate_security_dir(sec_dir)?;
+        Err(TransportError::DdsContext {
+            message: format!(
+                "DDS Security was requested with credentials at `{}`, but this build of \
+                 dora-ros2-bridge was compiled without the 'security' feature",
+                sec_dir.display()
+            ),
+        })
     }
 
     /// Create an existing DDS ROS2 node.
@@ -372,6 +465,183 @@ mod tests {
         assert!(
             ips.iter().all(|ip| *ip == IpAddr::V4(Ipv4Addr::LOCALHOST)),
             "{ips:?}"
+        );
+    }
+
+    #[test]
+    fn security_dir_must_exist() {
+        let nonexistent = Path::new("/nonexistent/security/dir");
+        let err = Context::validate_security_dir(nonexistent).unwrap_err();
+        let TransportError::DdsContext { message } = err else {
+            panic!("expected DdsContext error, got {err:?}");
+        };
+        assert!(message.contains("does not exist"), "{message}");
+    }
+
+    #[test]
+    fn security_dir_missing_files_are_reported() {
+        let temp =
+            std::env::temp_dir().join(format!("test_dds_sec_missing_{}", std::process::id()));
+        std::fs::create_dir_all(&temp).unwrap();
+        // create only one file
+        std::fs::write(temp.join("cert.pem"), b"dummy").unwrap();
+
+        let err = Context::validate_security_dir(&temp).unwrap_err();
+        let TransportError::DdsContext { message } = err else {
+            panic!("expected DdsContext error, got {err:?}");
+        };
+        assert!(message.contains("missing required file(s)"), "{message}");
+        assert!(message.contains("identity_ca.cert.pem"), "{message}");
+        assert!(message.contains("governance.p7s"), "{message}");
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn security_validation_passes_when_all_files_present() {
+        let temp = std::env::temp_dir().join(format!("test_dds_sec_valid_{}", std::process::id()));
+        std::fs::create_dir_all(&temp).unwrap();
+        for file in [
+            "identity_ca.cert.pem",
+            "cert.pem",
+            "key.pem",
+            "permissions_ca.cert.pem",
+            "governance.p7s",
+            "permissions.p7s",
+        ] {
+            std::fs::write(temp.join(file), b"dummy").unwrap();
+        }
+
+        assert!(Context::validate_security_dir(&temp).is_ok());
+
+        #[cfg(not(feature = "security"))]
+        {
+            let Err(err) = Context::new_with_security(DOMAIN_ID, Some(&temp)) else {
+                panic!("expected new_with_security to fail without the 'security' feature");
+            };
+            let TransportError::DdsContext { message } = err else {
+                panic!("expected DdsContext error, got {err:?}");
+            };
+            assert!(
+                message.contains("without the 'security' feature"),
+                "{message}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[cfg(feature = "security")]
+    fn setup_test_security_enclave() -> (std::path::PathBuf, impl Drop) {
+        struct Cleaner(std::path::PathBuf);
+        impl Drop for Cleaner {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let temp = std::env::temp_dir().join(format!(
+            "test_sros2_enclave_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+
+        // Generate a throwaway Identity CA, participant certificate, and key at test time
+        // so no private keys exist in the repository (avoids false-positive secret scanner alerts).
+        let (ca_pem, cert_pem, key_pem) = {
+            use rcgen::{
+                BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair,
+                PKCS_ECDSA_P256_SHA256,
+            };
+
+            let ca_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+            let mut ca_params = CertificateParams::default();
+            ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+            ca_params
+                .distinguished_name
+                .push(DnType::CommonName, "DoraTestIdCA");
+            ca_params
+                .distinguished_name
+                .push(DnType::OrganizationName, "Dora");
+            let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+
+            let part_key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).unwrap();
+            let mut part_params = CertificateParams::default();
+            part_params.is_ca = IsCa::NoCa;
+            part_params
+                .distinguished_name
+                .push(DnType::CommonName, "dora_test_node");
+            part_params
+                .distinguished_name
+                .push(DnType::OrganizationName, "Dora");
+            let issuer = Issuer::from_params(&ca_params, &ca_key);
+            let part_cert = part_params.signed_by(&part_key, &issuer).unwrap();
+
+            (ca_cert.pem(), part_cert.pem(), part_key.serialize_pem())
+        };
+
+        std::fs::write(temp.join("identity_ca.cert.pem"), ca_pem.as_bytes()).unwrap();
+        std::fs::write(temp.join("cert.pem"), cert_pem.as_bytes()).unwrap();
+        std::fs::write(temp.join("key.pem"), key_pem.as_bytes()).unwrap();
+        std::fs::write(
+            temp.join("permissions_ca.cert.pem"),
+            include_bytes!("../../fixtures/security/permissions_ca.cert.pem.template"),
+        )
+        .unwrap();
+        std::fs::write(
+            temp.join("governance.p7s"),
+            include_bytes!("../../fixtures/security/governance.p7s"),
+        )
+        .unwrap();
+        std::fs::write(
+            temp.join("permissions.p7s"),
+            include_bytes!("../../fixtures/security/permissions.p7s"),
+        )
+        .unwrap();
+
+        let cleaner = Cleaner(temp.clone());
+        (temp, cleaner)
+    }
+
+    #[test]
+    #[cfg(feature = "security")]
+    fn secure_context_new_with_security_succeeds() {
+        let (fixture_dir, _cleaner) = setup_test_security_enclave();
+
+        let ctx = Context::new_with_security(DOMAIN_ID, Some(&fixture_dir));
+        assert!(
+            ctx.is_ok(),
+            "Context::new_with_security failed: {:?}",
+            ctx.err()
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "security")]
+    fn secure_context_fails_on_non_existent_directory() {
+        let missing =
+            std::env::temp_dir().join(format!("non_existent_security_dir_{}", std::process::id()));
+        let err = Context::new_with_security(DOMAIN_ID, Some(&missing));
+        assert!(err.is_err(), "non-existent security directory must fail");
+    }
+
+    #[test]
+    #[cfg(feature = "security")]
+    fn secure_context_fails_on_mismatched_key() {
+        let (fixture_dir, _cleaner) = setup_test_security_enclave();
+
+        // Generate an unrelated throwaway key that does not match the participant certificate.
+        let other_key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256).unwrap();
+        std::fs::write(fixture_dir.join("key.pem"), other_key.serialize_pem()).unwrap();
+
+        let err = Context::new_with_security(DOMAIN_ID, Some(&fixture_dir));
+        assert!(
+            err.is_err(),
+            "Context::new_with_security must fail when private key does not match certificate"
         );
     }
 }

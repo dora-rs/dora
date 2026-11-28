@@ -52,6 +52,7 @@ pub mod typed;
 #[pyclass(from_py_object)]
 pub struct Ros2Transport {
     config: dora_message::descriptor::Ros2TransportConfig,
+    security: Option<PathBuf>,
 }
 
 #[pymethods]
@@ -60,6 +61,15 @@ impl Ros2Transport {
     pub fn dds() -> Self {
         Self {
             config: dora_message::descriptor::Ros2TransportConfig::Dds,
+            security: None,
+        }
+    }
+
+    #[staticmethod]
+    pub fn dds_secure(security: PathBuf) -> Self {
+        Self {
+            config: dora_message::descriptor::Ros2TransportConfig::Dds,
+            security: Some(security),
         }
     }
 
@@ -88,6 +98,7 @@ impl Ros2Transport {
                 compatibility,
                 config_uri,
             },
+            security: None,
         })
     }
 
@@ -253,10 +264,13 @@ impl Ros2Context {
 
         let domain_id = resolve_domain_id(domain_id, std::env::var("ROS_DOMAIN_ID"))?;
         let transport = transport.unwrap_or_else(Ros2Transport::dds);
-        let context = futures::executor::block_on(dora_ros2_bridge::transport::Context::open(
-            &transport.config,
-            domain_id,
-        ))?;
+        let security_dir = transport.security.as_deref();
+        let context =
+            futures::executor::block_on(dora_ros2_bridge::transport::Context::open_with_security(
+                &transport.config,
+                domain_id,
+                security_dir,
+            ))?;
         Ok(Self {
             context,
             transport,

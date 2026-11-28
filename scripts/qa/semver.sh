@@ -69,9 +69,21 @@ FAILED=0
 # "no semver update required" having run 0 of 254 checks. Forcing `minor`
 # runs the major-breaking lints on every run, which is the post-1.0 rule:
 # no breaking change without a deliberate 2.0.
+#
+# The output is kept so that a failing run can be checked against the accepted
+# failures in semver_accept.py: cargo-semver-checks can only switch a lint off
+# for a whole crate, and an exemption has to name the item it is for.
+SEMVER_OUTPUT=$(mktemp)
+trap 'rm -f "$SEMVER_OUTPUT"' EXIT
 if ! cargo semver-checks check-release "${CRATE_ARGS[@]}" \
-    --baseline-rev "$BASELINE" --release-type minor; then
-  FAILED=1
+    --baseline-rev "$BASELINE" --release-type minor 2>&1 | tee "$SEMVER_OUTPUT"; then
+  echo
+  echo "Failures against $BASELINE:"
+  if python3 scripts/qa/semver_accept.py "$BASELINE" "$PWD" < "$SEMVER_OUTPUT"; then
+    echo "Every failure is an accepted one (scripts/qa/semver_accept.py)."
+  else
+    FAILED=1
+  fi
 fi
 
 if [[ "$FAILED" == "1" ]]; then

@@ -1,5 +1,7 @@
 //! Backend-neutral building blocks for ROS2 transports.
 
+use std::path::Path;
+
 use dora_message::descriptor::Ros2TransportConfig;
 
 pub mod action;
@@ -26,9 +28,25 @@ pub enum Context {
 impl Context {
     /// Create a context for the requested transport.
     pub fn new(config: &Ros2TransportConfig, domain_id: u16) -> Result<Self, TransportError> {
+        Self::new_with_security(config, domain_id, None)
+    }
+
+    /// Create a context for the requested transport with optional DDS security.
+    pub fn new_with_security(
+        config: &Ros2TransportConfig,
+        domain_id: u16,
+        security_dir: Option<&Path>,
+    ) -> Result<Self, TransportError> {
         match config {
-            Ros2TransportConfig::Dds => dds::Context::new(domain_id).map(Self::Dds),
+            Ros2TransportConfig::Dds => {
+                dds::Context::new_with_security(domain_id, security_dir).map(Self::Dds)
+            }
             Ros2TransportConfig::Zenoh { .. } => {
+                if security_dir.is_some() {
+                    return Err(TransportError::DdsContext {
+                        message: "DDS Security is only supported on the DDS transport".into(),
+                    });
+                }
                 Err(TransportError::UnsupportedTransport { transport: "zenoh" })
             }
         }
@@ -39,9 +57,25 @@ impl Context {
         config: &Ros2TransportConfig,
         domain_id: u16,
     ) -> Result<Self, TransportError> {
+        Self::open_with_security(config, domain_id, None).await
+    }
+
+    #[cfg(feature = "rmw-zenoh")]
+    pub async fn open_with_security(
+        config: &Ros2TransportConfig,
+        domain_id: u16,
+        security_dir: Option<&Path>,
+    ) -> Result<Self, TransportError> {
         match config {
-            Ros2TransportConfig::Dds => dds::Context::new(domain_id).map(Self::Dds),
+            Ros2TransportConfig::Dds => {
+                dds::Context::new_with_security(domain_id, security_dir).map(Self::Dds)
+            }
             Ros2TransportConfig::Zenoh { config_uri, .. } => {
+                if security_dir.is_some() {
+                    return Err(TransportError::DdsContext {
+                        message: "DDS Security is only supported on the DDS transport".into(),
+                    });
+                }
                 zenoh::Context::open(zenoh::ContextOptions {
                     domain_id: usize::from(domain_id),
                     config_uri: config_uri

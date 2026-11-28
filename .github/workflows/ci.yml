@@ -339,6 +339,8 @@ jobs:
         run: >
           cargo test -p dora-tensor-pool --features daemon
           && cargo test -p dora-daemon --features tensor-pool
+      - name: Test (ros2-bridge security)
+        run: cargo test -p dora-ros2-bridge --features security
 
       # ===== Tier 0 CLI smoke gates =====
       # Fast per-platform checks against the 80% CLI coverage gap in #215.

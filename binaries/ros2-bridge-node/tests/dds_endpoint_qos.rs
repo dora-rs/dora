@@ -184,15 +184,14 @@ fn mirrored(endpoints: Vec<Expected>) -> Vec<Expected> {
 
 fn config(service: Option<&str>, action: Option<&str>, role: Ros2Role) -> Ros2BridgeConfig {
     let type_name = |name: Option<&str>| name.map(|_| "test_interfaces/Test".to_string());
-    Ros2BridgeConfig {
-        service: service.map(str::to_string),
-        service_type: type_name(service),
-        action: action.map(str::to_string),
-        action_type: type_name(action),
-        role: Some(role),
-        node_name: Some("qos_probe".to_string()),
-        ..Default::default()
-    }
+    let mut config = Ros2BridgeConfig::default();
+    config.service = service.map(str::to_string);
+    config.service_type = type_name(service);
+    config.action = action.map(str::to_string);
+    config.action_type = type_name(action);
+    config.role = Some(role);
+    config.node_name = Some("qos_probe".to_string());
+    config
 }
 
 /// Runs one role and asserts every expected endpoint is advertised with

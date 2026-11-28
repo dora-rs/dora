@@ -1878,6 +1878,13 @@ impl fmt::Display for EnvValue {
 /// Exactly one of `topic`, `topics`, `service`, or `action` must be set.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+// The `ros2:` key is outside the 1.x stability guarantee (docs/api-rust.md,
+// "Stability scope at 1.0"), so it has to be able to gain keys in a minor
+// release. A new field on an exhaustive struct breaks every struct literal,
+// which `cargo-semver-checks` reports as a major change. Start from
+// `Ros2BridgeConfig::default()` and assign the fields you need; they are all
+// still `pub`.
+#[non_exhaustive]
 pub struct Ros2BridgeConfig {
     /// Native transport used to communicate with the ROS2 graph.
     ///
@@ -1942,6 +1949,10 @@ pub struct Ros2BridgeConfig {
     /// ROS2 node name. Defaults to the dora node id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_name: Option<String>,
+
+    /// Optional DDS Security credential directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security: Option<PathBuf>,
 }
 
 impl Default for Ros2BridgeConfig {
@@ -1960,6 +1971,7 @@ impl Default for Ros2BridgeConfig {
             qos: Ros2QosConfig::default(),
             namespace: default_ros2_namespace(),
             node_name: None,
+            security: None,
         }
     }
 }
@@ -2008,6 +2020,8 @@ fn default_ros2_namespace() -> String {
 /// Configuration for a single ROS2 topic in multi-topic mode.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+// See the note on `Ros2BridgeConfig`. Construct with `Ros2TopicConfig::new`.
+#[non_exhaustive]
 pub struct Ros2TopicConfig {
     /// ROS2 topic name.
     pub topic: String,
@@ -2046,6 +2060,24 @@ pub fn derive_port_id(topic: &str) -> String {
 }
 
 impl Ros2TopicConfig {
+    /// A `subscribe` topic of type `message_type` with every option left at
+    /// its default (the state a YAML entry with only `topic` and
+    /// `message_type` deserializes to).
+    ///
+    /// `Ros2TopicConfig` is `#[non_exhaustive]`, so other crates cannot build
+    /// one with a struct literal. Start here and assign the options you need —
+    /// the fields are all still `pub`.
+    pub fn new(topic: String, message_type: String) -> Self {
+        Self {
+            topic,
+            message_type,
+            direction: Ros2Direction::default(),
+            output: None,
+            input: None,
+            qos: None,
+        }
+    }
+
     /// The dora output a `subscribe` topic feeds: the explicit `output:`
     /// mapping, or the topic-derived id when that is unset.
     ///
@@ -2124,6 +2156,8 @@ pub enum Ros2Direction {
 /// ROS2 Quality of Service configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+// See the note on `Ros2BridgeConfig`. Start from `Ros2QosConfig::default()`.
+#[non_exhaustive]
 pub struct Ros2QosConfig {
     /// Use reliable transport (default: false = best effort).
     #[serde(default)]
@@ -2424,6 +2458,19 @@ mod tests {
         let config: Ros2BridgeConfig =
             serde_yaml::from_str("topic: /chatter\nmessage_type: std_msgs/String\n").unwrap();
         assert!(matches!(config.transport, Ros2TransportConfig::Dds));
+        assert_eq!(config.security, None);
+    }
+
+    #[test]
+    fn ros2_bridge_parses_security_directory() {
+        let config: Ros2BridgeConfig = serde_yaml::from_str(
+            "topic: /chatter\nmessage_type: std_msgs/String\nsecurity: /etc/ros/security/enclave\n",
+        )
+        .unwrap();
+        assert_eq!(
+            config.security,
+            Some(std::path::PathBuf::from("/etc/ros/security/enclave"))
+        );
     }
 
     #[test]

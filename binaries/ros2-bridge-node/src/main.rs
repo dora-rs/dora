@@ -2828,8 +2828,11 @@ fn create_ros_node(
     ros2_client::NodeName,
 )> {
     let domain_id = parse_dds_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref())?;
-    let context =
-        dora_ros2_bridge::transport::dds::Context::new(domain_id).map_err(|e| eyre!("{e}"))?;
+    let context = dora_ros2_bridge::transport::dds::Context::new_with_security(
+        domain_id,
+        config.security.as_deref(),
+    )
+    .map_err(|e| eyre!("{e}"))?;
     // Reports QoS and RMW-mapping mismatches of the endpoints registered with it.
     let diagnostics = context.diagnostics().clone();
     let ros_context = context.into_inner();
@@ -3003,14 +3006,9 @@ fn resolve_topics(config: &Ros2BridgeConfig) -> eyre::Result<Vec<Ros2TopicConfig
                 .message_type
                 .clone()
                 .context("message_type required with single topic")?;
-            Ok(vec![Ros2TopicConfig {
-                topic: topic.clone(),
-                message_type,
-                direction: config.direction.clone(),
-                output: None,
-                input: None,
-                qos: None,
-            }])
+            let mut resolved = Ros2TopicConfig::new(topic.clone(), message_type);
+            resolved.direction = config.direction.clone();
+            Ok(vec![resolved])
         }
         (None, Some(topics)) => Ok(topics.clone()),
         _ => eyre::bail!("topic mode requires exactly one of `topic` or `topics` to be set"),
@@ -3029,11 +3027,10 @@ fn service_or_action_qos(config: &Ros2QosConfig) -> ros2_client::QosProfile {
 /// `config` as a service or action endpoint applies it: reliable, with a
 /// history of 10 unless configured.
 fn service_qos_config(config: &Ros2QosConfig) -> Ros2QosConfig {
-    Ros2QosConfig {
-        reliable: true,
-        keep_last: config.keep_last.or(Some(10)),
-        ..config.clone()
-    }
+    let mut qos = config.clone();
+    qos.reliable = true;
+    qos.keep_last = config.keep_last.or(Some(10));
+    qos
 }
 
 /// How many requests a YAML service client with `config` keeps in flight.
@@ -3052,13 +3049,11 @@ fn bridge_endpoint_qos(config: &Ros2BridgeConfig) -> ros2_client::QosProfile {
 /// durability, so the status publisher and subscription always use reliable,
 /// transient-local delivery regardless of the configured topic QoS.
 fn action_status_qos(config: &Ros2QosConfig) -> ros2_client::QosProfile {
-    Ros2QosConfig {
-        reliable: true,
-        keep_last: config.keep_last.or(Some(10)),
-        durability: Some("transient_local".to_string()),
-        ..config.clone()
-    }
-    .to_dds_qos()
+    let mut qos = config.clone();
+    qos.reliable = true;
+    qos.keep_last = config.keep_last.or(Some(10));
+    qos.durability = Some("transient_local".to_string());
+    qos.to_dds_qos()
 }
 
 trait ToNeutralQos {
@@ -4031,10 +4026,9 @@ mod domain_and_qos_tests {
 
     #[test]
     fn service_endpoint_qos_forces_reliable_even_when_config_is_best_effort() {
-        let config = Ros2QosConfig {
-            reliable: false,
-            ..Ros2QosConfig::default()
-        };
+        let mut config = Ros2QosConfig::default();
+        config.reliable = false;
+
         let qos = neutral(&service_or_action_qos(&config));
 
         assert!(matches!(qos.reliability, Reliability::Reliable { .. }));
@@ -4042,10 +4036,9 @@ mod domain_and_qos_tests {
 
     #[test]
     fn service_endpoint_qos_keeps_explicit_history_depth() {
-        let config = Ros2QosConfig {
-            keep_last: Some(20),
-            ..Ros2QosConfig::default()
-        };
+        let mut config = Ros2QosConfig::default();
+        config.keep_last = Some(20);
+
         let qos = neutral(&service_or_action_qos(&config));
 
         assert_eq!(qos.history, History::KeepLast { depth: 20 });
@@ -4053,10 +4046,9 @@ mod domain_and_qos_tests {
 
     #[test]
     fn service_endpoint_qos_keeps_keep_all() {
-        let config = Ros2QosConfig {
-            keep_all: true,
-            ..Ros2QosConfig::default()
-        };
+        let mut config = Ros2QosConfig::default();
+        config.keep_all = true;
+
         let qos = neutral(&service_or_action_qos(&config));
 
         assert_eq!(qos.history, History::KeepAll);
@@ -4064,13 +4056,12 @@ mod domain_and_qos_tests {
 
     #[test]
     fn service_endpoint_qos_preserves_durability_liveliness_and_blocking_time() {
-        let config = Ros2QosConfig {
-            durability: Some("transient_local".to_string()),
-            liveliness: Some("manual_by_topic".to_string()),
-            lease_duration: Some(3.0),
-            max_blocking_time: Some(0.25),
-            ..Ros2QosConfig::default()
-        };
+        let mut config = Ros2QosConfig::default();
+        config.durability = Some("transient_local".to_string());
+        config.liveliness = Some("manual_by_topic".to_string());
+        config.lease_duration = Some(3.0);
+        config.max_blocking_time = Some(0.25);
+
         let qos = neutral(&service_or_action_qos(&config));
 
         assert_eq!(qos.durability, Durability::TransientLocal);
@@ -4090,13 +4081,8 @@ mod domain_and_qos_tests {
 
     #[test]
     fn bridge_endpoint_qos_uses_the_configured_qos() {
-        let config = Ros2BridgeConfig {
-            qos: Ros2QosConfig {
-                keep_last: Some(20),
-                ..Ros2QosConfig::default()
-            },
-            ..Ros2BridgeConfig::default()
-        };
+        let mut config = Ros2BridgeConfig::default();
+        config.qos.keep_last = Some(20);
 
         let qos = neutral(&bridge_endpoint_qos(&config));
 
@@ -4117,11 +4103,10 @@ mod domain_and_qos_tests {
 
     #[test]
     fn action_status_qos_overrides_best_effort_volatile_config() {
-        let config = Ros2QosConfig {
-            reliable: false,
-            durability: Some("volatile".to_string()),
-            ..Ros2QosConfig::default()
-        };
+        let mut config = Ros2QosConfig::default();
+        config.reliable = false;
+        config.durability = Some("volatile".to_string());
+
         let qos = neutral(&action_status_qos(&config));
 
         assert!(matches!(qos.reliability, Reliability::Reliable { .. }));
@@ -4130,10 +4115,9 @@ mod domain_and_qos_tests {
 
     #[test]
     fn action_status_qos_keeps_explicit_history_depth() {
-        let config = Ros2QosConfig {
-            keep_last: Some(3),
-            ..Ros2QosConfig::default()
-        };
+        let mut config = Ros2QosConfig::default();
+        config.keep_last = Some(3);
+
         let qos = neutral(&action_status_qos(&config));
 
         assert_eq!(qos.history, History::KeepLast { depth: 3 });

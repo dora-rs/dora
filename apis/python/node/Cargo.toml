@@ -21,6 +21,7 @@ tensor-pool = ["dep:dora-tensor-pool-python"]
 tracing = ["dora-node-api/tracing"]
 metrics = ["dora-node-api/metrics"]
 async = ["pyo3/experimental-async"]
+security = ["dora-ros2-bridge-python/security"]
 # ROS distro for the bundled `dora-ros2-bridge-python` (the `Ros2Context`
 # bindings). Defaults are inherited from that crate (humble); pass e.g.
 # `--features ros2-jazzy` to a maturin build to target another distro.

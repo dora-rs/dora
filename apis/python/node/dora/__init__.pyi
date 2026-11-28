@@ -394,7 +394,10 @@ class Ros2Context:
     ```"""
 
     def __init__(
-        self, ros_paths: typing.List[str] = None, domain_id: typing.Optional[int] = None
+        self,
+        ros_paths: typing.List[str] = None,
+        transport: typing.Optional[typing.Any] = None,
+        domain_id: typing.Optional[int] = None,
     ) -> None:
         """ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
 
@@ -992,6 +995,29 @@ class Ros2Topic:
 
     def __str__(self) -> str:
         """Return str(self)."""
+
+class Ros2Transport:
+    """ROS2 Transport configuration.
+
+    warnings:
+    - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+    at any point without it being considered a breaking change."""
+
+    @staticmethod
+    def dds() -> Ros2Transport:
+        """Create a DDS transport configuration."""
+
+    @staticmethod
+    def dds_secure(security: str) -> Ros2Transport:
+        """Create a secure DDS transport configuration with DDS Security credentials directory."""
+
+    @staticmethod
+    def zenoh(compatibility: str, config_uri: typing.Optional[str] = None) -> Ros2Transport:
+        """Create a Zenoh transport configuration."""
+
+    @property
+    def kind(self) -> str:
+        """Transport kind: 'dds' or 'zenoh'."""
 
 def build(
     dataflow_path: str,
