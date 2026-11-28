@@ -1125,6 +1125,47 @@ fn test_running_node() -> RunningNode {
     }
 }
 
+#[tokio::test]
+async fn manual_stop_waiter_bypasses_full_subscriber_and_is_scoped_to_its_incarnation() {
+    let clock = Arc::new(HLC::default());
+    let mut daemon_logger = test_logger(clock.clone());
+    let mut logger = daemon_logger.for_dataflow(Uuid::nil());
+    let mut df = test_dataflow();
+    let id = NodeId::from("client".to_owned());
+    let peer = NodeId::from("peer".to_owned());
+    df.running_nodes.insert(id.clone(), test_running_node());
+    df.running_nodes.insert(peer.clone(), test_running_node());
+    let (tx, _rx) = mpsc::channel(1);
+    tx.try_send(Timestamped {
+        inner: NodeEvent::AllInputsClosed,
+        timestamp: clock.new_timestamp(),
+    })
+    .unwrap();
+    df.subscribe_channels.insert(id.clone(), tx);
+    let wait = df.manual_stop_receiver(&id, 7);
+    let mut closed = df.manual_stop_receiver(&peer, 7);
+    df.mark_event_stream_dropped(&peer, 7);
+    assert!(closed.wait_for(|stop| *stop).await.is_err());
+    let other = df.manual_stop_receiver(&peer, 7);
+    assert!(!*wait.borrow());
+    df.stop_single_node(&id, &clock, None).unwrap();
+    assert!(*wait.borrow());
+    df.mark_event_stream_dropped(&id, 7);
+    assert!(*df.manual_stop_receiver(&id, 7).borrow());
+    assert!(!*other.borrow());
+
+    df.reset_incarnation_state(&id, 7);
+    let successor = df.manual_stop_receiver(&id, 8);
+    assert!(!*successor.borrow());
+    let finish = df
+        .stop_all(&mut None, &clock, None, false, &mut logger)
+        .await
+        .unwrap();
+    assert!(matches!(finish, FinishDataflowWhen::WaitForNodes));
+    assert!(*other.borrow() && *successor.borrow());
+    assert!(*df.manual_stop_receiver(&peer, 8).borrow());
+}
+
 fn add_input(df: &mut RunningDataflow, consumer: &str, input: &str, source: &str) {
     df.running_nodes
         .get_mut(&NodeId::from(consumer.to_owned()))
@@ -2155,7 +2196,7 @@ fn restart_exit_reset_clears_dropped_event_stream_marker() {
             df.running_nodes.insert(node_a.clone(), test_running_node());
             let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
             df.subscribe_channels.insert(node_a.clone(), tx);
-            df.mark_event_stream_dropped(&node_a);
+            df.mark_event_stream_dropped(&node_a, 7);
             df.mappings.insert(
                 OutputId(sender.clone(), output.clone()),
                 BTreeSet::from([(node_a.clone(), input.clone())]),
@@ -3908,7 +3949,7 @@ fn finished_but_still_running_receiver_does_not_warn() {
             df.subscribe_channels.insert(finished.clone(), tx);
             let drained = Arc::new(crate::local_delivery::DrainSignal::default());
             df.drain_signals.insert(finished.clone(), drained.clone());
-            df.mark_event_stream_dropped(&finished);
+            df.mark_event_stream_dropped(&finished, 7);
             assert!(
                 !df.subscribe_channels.contains_key(&finished)
                     && df.dropped_event_streams.contains(&finished),

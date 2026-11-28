@@ -128,6 +128,9 @@ pub(crate) type ParamReplay = VecDeque<Timestamped<(String, Arc<[u8]>)>>;
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 pub enum DaemonNodeEvent {
+    ManualStopReceiver {
+        reply: oneshot::Sender<tokio::sync::watch::Receiver<bool>>,
+    },
     OutputsDone {
         reply_sender: oneshot::Sender<DaemonReply>,
     },

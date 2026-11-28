@@ -100,13 +100,13 @@ impl Subscriber {
                 dataflow_id,
                 node_id,
                 event,
-                ..
+                generation,
             } = self.events.recv().await.unwrap().inner
             else {
                 panic!("expected Subscribe")
             };
             self.daemon
-                .handle_node_event(event, dataflow_id, node_id)
+                .handle_node_event(event, dataflow_id, node_id, generation)
                 .await
                 .unwrap();
         };
@@ -172,7 +172,10 @@ async fn catch_up_after_first_failed_delivery_restores_latest_state() {
             .insert(id.clone(), old);
         fixture.set("y", 9).unwrap(); // fills the old subscriber's queue
         if disconnected {
-            fixture.dataflow().mark_event_stream_dropped(&id);
+            let generation = fixture.listener.generation;
+            fixture
+                .dataflow()
+                .mark_event_stream_dropped(&id, generation);
         }
         let set_x = |value: usize| StateCatchUpOperation::SetParam {
             node_id: id.clone(),
@@ -228,6 +231,82 @@ async fn replay_larger_than_subscription_channel_precedes_newer_writes() {
     for (key, value) in expected {
         assert_eq!(observed.get(&key), Some(&value), "wrong value for {key}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn registered_tcp_manual_stop_wakes_with_a_full_subscription() {
+    use crate::socket_stream_utils::{
+        socket_stream_receive_with_header_timeout, socket_stream_send,
+    };
+    use dora_message::node_to_daemon::NodeRegisterRequest;
+    use tokio::net::TcpStream;
+
+    let mut fixture = Subscriber::new().await;
+    fixture.subscribe().await;
+    let id = fixture.listener.node_id.clone();
+    let clock = fixture.listener.clock.clone();
+    let df = fixture.dataflow();
+    let Some(DaemonCommunication::Tcp { socket_addr }) =
+        df.running_nodes[&id].node_config.daemon_communication
+    else {
+        panic!("expected a per-node TCP listener");
+    };
+    let ordinary = df.subscribe_channels[&id].clone();
+    for _ in 0..ordinary.capacity() {
+        ordinary.try_send(input(&clock, 0)).unwrap();
+    }
+    assert_eq!(ordinary.capacity(), 0);
+
+    let register = NodeRegisterRequest::new(df.id, id.clone());
+    let client = async {
+        let mut control = TcpStream::connect(socket_addr).await.unwrap();
+        for request in [
+            DaemonRequest::Register(register),
+            DaemonRequest::WaitForManualStop,
+        ] {
+            let frame = dora_message::encode(&Timestamped {
+                inner: request,
+                timestamp: clock.new_timestamp(),
+            })
+            .unwrap();
+            socket_stream_send(&mut control, &frame).await.unwrap();
+            let frame = socket_stream_receive_with_header_timeout(&mut control, None)
+                .await
+                .unwrap();
+            let reply: DaemonReply = dora_message::decode(&frame).unwrap();
+            assert!(matches!(reply, DaemonReply::Result(Ok(()))), "{reply:?}");
+        }
+    };
+    let stop = async {
+        let Event::Node {
+            dataflow_id,
+            node_id,
+            generation,
+            event,
+        } = fixture.events.recv().await.unwrap().inner
+        else {
+            panic!("expected a node event");
+        };
+        assert!(matches!(event, DaemonNodeEvent::ManualStopReceiver { .. }));
+        assert_eq!(generation, fixture.dataflow().running_nodes[&id].generation);
+        fixture
+            .daemon
+            .handle_node_event(event, dataflow_id, node_id, generation)
+            .await
+            .unwrap();
+        fixture
+            .dataflow()
+            .stop_single_node(&id, &clock, None)
+            .unwrap();
+    };
+    tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(client, stop) })
+        .await
+        .expect("stop must arrive while the ordinary subscription is full");
+    assert_eq!(
+        ordinary.capacity(),
+        0,
+        "the ordinary FIFO was never drained"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -310,7 +389,10 @@ async fn remove_then_readd_does_not_replay_the_previous_nodes_parameters() {
     fixture.add_node().await;
     fixture.subscribe().await;
     fixture.set("new-owner", 4).unwrap();
-    fixture.dataflow().mark_event_stream_dropped(&id);
+    let generation = fixture.listener.generation;
+    fixture
+        .dataflow()
+        .mark_event_stream_dropped(&id, generation);
     let (mut successor, _) = listener();
     successor.daemon_tx = fixture.daemon.events_tx.clone();
     successor.subscribed_events = None;

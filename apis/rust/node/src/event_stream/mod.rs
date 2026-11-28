@@ -49,6 +49,7 @@ mod event;
 pub mod extensions;
 /// Tracks input health (timeouts, liveness) for circuit-breaker recovery.
 pub mod input_tracker;
+mod manual_stop;
 /// Merged event streams combining internal and external event sources.
 pub mod merged;
 mod scheduler;
@@ -294,6 +295,7 @@ pub struct EventStream {
     /// `EventStream`, which signals subscriber shutdown.
     stop_received: bool,
     manual_stop: tokio::sync::watch::Receiver<bool>,
+    independent_stop: Option<futures::future::Shared<futures::future::BoxFuture<'static, ()>>>,
     /// Testing-mode shutdown flag shared with the in-process daemon thread.
     /// Set in [`Drop`] before `EventStreamDropped` so a scheduled `next_event`
     /// sleep cannot deadlock the close handshake (dora-rs/dora#2855).
@@ -524,7 +526,7 @@ impl EventStream {
             }
         }
 
-        Self::init_on_channel(
+        let mut stream = Self::init_on_channel(
             dataflow_id,
             node_id,
             channel,
@@ -537,7 +539,39 @@ impl EventStream {
             zenoh_session,
             &input_config,
             testing_shutdown,
-        )
+        )?;
+        stream.independent_stop = match daemon_communication {
+            DaemonCommunicationWrapper::Standard(DaemonCommunication::Tcp { socket_addr }) => Some(
+                manual_stop::wait(
+                    *socket_addr,
+                    dataflow_id,
+                    node_id.clone(),
+                    stream.clock.clone(),
+                )
+                .boxed()
+                .shared(),
+            ),
+            DaemonCommunicationWrapper::Testing {
+                manual_stop_at: Some(at),
+                shutdown,
+                ..
+            } => {
+                let at = *at;
+                let shutdown = shutdown.clone();
+                Some(
+                    async move {
+                        Delay::new(at.saturating_duration_since(Instant::now())).await;
+                        if shutdown.load(Ordering::Relaxed) {
+                            std::future::pending().await
+                        }
+                    }
+                    .boxed()
+                    .shared(),
+                )
+            }
+            _ => None,
+        };
+        Ok(stream)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -958,6 +992,7 @@ impl EventStream {
             failed_servers: BTreeMap::new(),
             stop_received: false,
             manual_stop,
+            independent_stop: None,
             testing_shutdown,
         })
     }
@@ -965,10 +1000,13 @@ impl EventStream {
     /// Wait for an explicit [`StopCause::Manual`] without consuming events.
     /// The future can be used independently of this
     /// stream, for example to cancel work while input admission is paused.
+    /// On a supporting daemon a separate control connection observes Stop
+    /// even when the ordinary event queue is full.
     /// Closure of all inputs or loss of the daemon connection does not wake it.
     #[doc(hidden)]
     pub fn manual_stop(&self) -> impl Future<Output = ()> + Send + 'static + use<> {
         let mut stop = self.manual_stop.clone();
+        let independent = self.independent_stop.clone();
         let recording = self.write_events_to.as_ref().map(|log| {
             (
                 log.observed_manual_stop.clone(),
@@ -977,8 +1015,15 @@ impl EventStream {
             )
         });
         async move {
-            if stop.wait_for(|stopped| *stopped).await.is_err() {
-                return std::future::pending().await;
+            let in_band = async move {
+                if stop.wait_for(|stopped| *stopped).await.is_err() {
+                    std::future::pending().await
+                }
+            };
+            if let Some(independent) = independent {
+                select(std::pin::pin!(in_band), independent).await;
+            } else {
+                in_band.await;
             }
             if let Some((observed, clock, start)) = recording {
                 observed.get_or_init(|| control_event_json(&clock, &start, "Stop", None));
@@ -3338,6 +3383,8 @@ mod tests {
     #[test]
     fn in_band_manual_stop_wakes_without_consuming_events() {
         let (_node, mut events) = test_event_stream_with(Vec::new());
+        // Exercise the daemon event reader even when replay knows the stop time.
+        events.independent_stop = None;
         let stop = std::pin::pin!(events.manual_stop());
         assert!(matches!(
             futures::executor::block_on(select(stop, Delay::new(Duration::from_secs(5)))),
@@ -3347,6 +3394,27 @@ mod tests {
             events.recv(),
             Some(Event::Stop(StopCause::Manual))
         ));
+    }
+
+    #[test]
+    fn manual_stop_wakes_behind_ninety_unread_inputs() {
+        let inputs = (0..90)
+            .map(|_| TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Input {
+                    id: "request".into(),
+                    metadata: None,
+                    data: None,
+                },
+            })
+            .collect();
+        let (_node, mut events) = test_event_stream_with(inputs);
+        let stop = std::pin::pin!(events.manual_stop());
+        assert!(matches!(
+            futures::executor::block_on(select(stop, Delay::new(Duration::from_secs(5)))),
+            Either::Left(_)
+        ));
+        assert!(matches!(events.recv(), Some(Event::Input { .. })));
     }
 
     #[test]
@@ -3436,6 +3504,7 @@ mod tests {
         let daemon_communication = DaemonCommunicationWrapper::Testing {
             channel,
             shutdown: Arc::new(AtomicBool::new(false)),
+            manual_stop_at: None,
         };
         let events = EventStream::init(
             DataflowId::new_v4(),
