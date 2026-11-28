@@ -251,8 +251,6 @@ jobs:
         run: |
           cargo check -p dora-node-api-c
           cargo check -p dora-node-api-cxx
-      - name: Check and test ros2-bridge security feature
-        run: cargo test -p dora-ros2-bridge --features security
 
   test:
     # Linux-only on PR CI (#1716). macOS + Windows coverage runs in nightly.

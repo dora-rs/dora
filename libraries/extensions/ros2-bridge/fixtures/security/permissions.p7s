@@ -1,0 +1,71 @@
+MIME-Version: 1.0
+Content-Type: multipart/signed; protocol="application/x-pkcs7-signature"; micalg="sha-256"; boundary="----D2AE45305AE35018163FDCF797021941"
+
+This is an S/MIME signed message
+
+------D2AE45305AE35018163FDCF797021941
+Content-Type: text/plain
+
+<?xml version="1.0" encoding="UTF-8"?>
+<dds xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.omg.org/spec/DDS-SECURITY/20170901/omg_shared_ca_permissions.xsd">
+    <permissions>
+        <grant name="DoraTestGrant">
+            <subject_name>CN=dora_test_node,O=Dora</subject_name>
+            <validity>
+                <not_before>2023-01-01T00:00:00</not_before>
+                <not_after>9999-01-01T00:00:00</not_after>
+            </validity>
+            <allow_rule>
+                <domains>
+                    <id_range>
+                        <min>0</min>
+                        <max>232</max>
+                    </id_range>
+                </domains>
+                <publish>
+                    <topics>
+                        <topic>*</topic>
+                    </topics>
+                </publish>
+                <subscribe>
+                    <topics>
+                        <topic>*</topic>
+                    </topics>
+                </subscribe>
+                <relay>
+                    <topics>
+                        <topic>*</topic>
+                    </topics>
+                </relay>
+            </allow_rule>
+            <default>DENY</default>
+        </grant>
+    </permissions>
+</dds>
+------D2AE45305AE35018163FDCF797021941
+Content-Type: application/x-pkcs7-signature; name="smime.p7s"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="smime.p7s"
+
+MIIDeQYJKoZIhvcNAQcCoIIDajCCA2YCAQExDzANBglghkgBZQMEAgEFADALBgkq
+hkiG9w0BBwGgggGpMIIBpTCCAUugAwIBAgIUdBioEUzUYnDcdy0KHwQyjPeHWHAw
+CgYIKoZIzj0EAwIwKDEXMBUGA1UEAwwORG9yYVRlc3RQZXJtQ0ExDTALBgNVBAoM
+BERvcmEwHhcNMjYxMTI4MDY1MzUxWhcNMzYxMTI1MDY1MzUxWjAoMRcwFQYDVQQD
+DA5Eb3JhVGVzdFBlcm1DQTENMAsGA1UECgwERG9yYTBZMBMGByqGSM49AgEGCCqG
+SM49AwEHA0IABGDSi42zLDW51N2xWxwjUCYq+wLds2bgUJN5cDCLryPNwYaTUp1I
++OS8gqb2OtI+7iu61gsyIMbgebZSWzdj5UajUzBRMB0GA1UdDgQWBBRGxJKMSRu2
+W1pyID/NiyjU9FZaDjAfBgNVHSMEGDAWgBRGxJKMSRu2W1pyID/NiyjU9FZaDjAP
+BgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIE/HoMHwI6/Z+40znI78
+7E9jbOOD6aJ2Ow/GZtkQmGNgAiEAlGS22DAUfNjw1mJIPQhs/3x130BGPsQdeLlI
+j43xI1wxggGUMIIBkAIBATBAMCgxFzAVBgNVBAMMDkRvcmFUZXN0UGVybUNBMQ0w
+CwYDVQQKDAREb3JhAhR0GKgRTNRicNx3LQofBDKM94dYcDANBglghkgBZQMEAgEF
+AKCB5DAYBgkqhkiG9w0BCQMxCwYJKoZIhvcNAQcBMBwGCSqGSIb3DQEJBTEPFw0y
+NjExMjgwNjUzNTJaMC8GCSqGSIb3DQEJBDEiBCBTEHX+S7OqYkO4S2iz8tARdDtz
+krmmmlA8y7ndLOPz4jB5BgkqhkiG9w0BCQ8xbDBqMAsGCWCGSAFlAwQBKjALBglg
+hkgBZQMEARYwCwYJYIZIAWUDBAECMAoGCCqGSIb3DQMHMA4GCCqGSIb3DQMCAgIA
+gDANBggqhkiG9w0DAgIBQDAHBgUrDgMCBzANBggqhkiG9w0DAgIBKDAKBggqhkjO
+PQQDAgRHMEUCIAxmQYy3cCfZ7rn4J7uP5f2cIUJMXW2WuJ7RBaeteVtMAiEAp8ox
+HBeWJog1QbVC/dkj4Yv0iWLEfZXrRmxh8zBOMZM=
+
+------D2AE45305AE35018163FDCF797021941--
+

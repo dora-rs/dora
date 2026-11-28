@@ -28,7 +28,7 @@ _ROS2_EXEMPT = (
     "#[non_exhaustive] lets it gain keys in a minor release"
 )
 ACCEPTED_SEMVER: dict[str, list[tuple[str, str, str, str]]] = {
-    "v1.1.0": [
+    baseline: [
         (
             "struct_marked_non_exhaustive",
             f"struct {name}",
@@ -36,7 +36,8 @@ ACCEPTED_SEMVER: dict[str, list[tuple[str, str, str, str]]] = {
             _ROS2_EXEMPT,
         )
         for name in ["Ros2BridgeConfig", "Ros2TopicConfig", "Ros2QosConfig"]
-    ],
+    ]
+    for baseline in ["v1.1.0", "v1.2.0-rc.1"]
 }
 
 _FAILURE = re.compile(r"^--- failure (\w+):")

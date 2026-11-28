@@ -3021,7 +3021,6 @@ fn resolve_topics(config: &Ros2BridgeConfig) -> eyre::Result<Vec<Ros2TopicConfig
 /// require reliable delivery, so `reliable` is always forced on and a
 /// best-effort configuration is ignored.
 fn service_or_action_qos(config: &Ros2QosConfig) -> ros2_client::QosProfile {
-fn service_or_action_qos(config: &Ros2QosConfig) -> ros2_client::QosProfile {
     service_qos_config(config).to_dds_qos()
 }
 
@@ -3037,7 +3036,6 @@ fn service_qos_config(config: &Ros2QosConfig) -> Ros2QosConfig {
 /// How many requests a YAML service client with `config` keeps in flight.
 fn service_client_in_flight_limit(config: &Ros2QosConfig) -> usize {
     service_client::in_flight_limit(service_qos_config(config).to_neutral_qos().history)
-}
 }
 
 /// QoS for the service and action endpoints of a bridge config.
