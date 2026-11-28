@@ -70,6 +70,7 @@ use mavlink::{
 };
 use serde::Deserialize;
 use std::{
+    collections::VecDeque,
     pin::pin,
     sync::{
         Arc,
@@ -80,6 +81,14 @@ use std::{
 use url::Url;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Maximum number of outbound MAVLink commands buffered while waiting for a
+/// UDP server-mode (`udpin:`) peer to send its first packet.
+///
+/// Bounded to match the inbound `flume::bounded(64)` queue so a disconnected
+/// peer under continuous `*_cmd` inputs cannot grow process memory without
+/// bound. When full, the oldest queued command is evicted so newer commands
+/// remain deliverable in FIFO order.
+const MAX_PENDING_OUTBOUND: usize = 64;
 
 /// What woke the main loop in [`wait_for_event_or_frame`].
 enum Wake<T> {
@@ -473,16 +482,149 @@ fn decode_input<T: MavlinkArrow>(data: &ArrayRef, input: &str) -> Result<T> {
     T::from_record_batch(&batch).with_context(|| format!("decoding {input} from incoming Arrow"))
 }
 
-/// Forward one incoming dora `Event::Input` as a MAVLink frame on
-/// `conn`. Unknown input ids are silently ignored — the bridge does
-/// not abort the whole node on misrouted inputs.
-fn handle_input(
-    conn: &(dyn MavConnection<MavMessage> + Send + Sync),
-    header: &MavHeader,
-    id: &DataId,
-    data: &ArrayRef,
-) -> Result<()> {
-    let outgoing = match id.as_str() {
+/// A decoded outbound MAVLink command awaiting peer binding in UDP server mode.
+struct QueuedCommand {
+    id: DataId,
+    msg: MavMessage,
+}
+
+/// Bounded FIFO buffer for outbound MAVLink commands that `conn.send` could
+/// not transmit yet because a UDP server-mode (`udpin:`) connection has no
+/// peer address until its first inbound packet arrives.
+struct OutboundQueue {
+    pending: VecDeque<QueuedCommand>,
+    capacity: usize,
+    last_overflow_warn: Option<Instant>,
+    dropped_since_warn: usize,
+}
+
+impl OutboundQueue {
+    fn new(capacity: usize) -> Self {
+        Self {
+            pending: VecDeque::with_capacity(capacity),
+            capacity,
+            last_overflow_warn: None,
+            dropped_since_warn: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    fn enqueue(&mut self, id: DataId, msg: MavMessage) {
+        if self.capacity == 0 {
+            tracing::warn!("command '{id}' dropped: outbound queue capacity is zero");
+            return;
+        }
+        if self.pending.len() >= self.capacity
+            && let Some(evicted) = self.pending.pop_front()
+        {
+            self.dropped_since_warn += 1;
+            let now = Instant::now();
+            let should_warn = self
+                .last_overflow_warn
+                .is_none_or(|prev| now.duration_since(prev) >= RECV_WARN_INTERVAL);
+            if should_warn {
+                tracing::warn!(
+                    capacity = self.capacity,
+                    dropped_count = self.dropped_since_warn,
+                    oldest_dropped = %evicted.id,
+                    "outbound command queue full while waiting for MAVLink peer; dropping oldest command(s)"
+                );
+                self.last_overflow_warn = Some(now);
+                self.dropped_since_warn = 0;
+            }
+        }
+        self.pending.push_back(QueuedCommand { id, msg });
+    }
+
+    /// Attempt to send buffered commands in FIFO order.
+    ///
+    /// Stops immediately if `conn.send` still returns `Ok(0)` so the head
+    /// item stays at the front and ordering is preserved. Hard send errors drop
+    /// only the failing item (matching `handle_input`'s non-fatal writer error
+    /// policy) so later commands are not permanently wedged.
+    fn drain(
+        &mut self,
+        conn: &(dyn MavConnection<MavMessage> + Send + Sync),
+        header: &MavHeader,
+    ) -> usize {
+        let mut sent_count = 0;
+        while let Some(front) = self.pending.front() {
+            match conn.send(header, &front.msg) {
+                Ok(0) => break,
+                Ok(_) => {
+                    if let Some(cmd) = self.pending.pop_front() {
+                        tracing::debug!(id = %cmd.id, "flushed queued MAVLink command");
+                    }
+                    sent_count += 1;
+                }
+                Err(e) => {
+                    if let Some(cmd) = self.pending.pop_front() {
+                        tracing::error!(
+                            "writer error on queued input '{}': mavlink send: {e}",
+                            cmd.id
+                        );
+                    }
+                }
+            }
+        }
+        if sent_count > 0 {
+            tracing::info!(
+                sent = sent_count,
+                remaining = self.pending.len(),
+                "flushed queued MAVLink command(s)"
+            );
+        }
+        sent_count
+    }
+
+    /// Transmit `msg` immediately when ready and no older commands are queued;
+    /// otherwise drain older queued commands first or append `msg` to preserve
+    /// strict FIFO ordering.
+    fn send_or_queue(
+        &mut self,
+        conn: &(dyn MavConnection<MavMessage> + Send + Sync),
+        header: &MavHeader,
+        id: &DataId,
+        msg: MavMessage,
+    ) -> Result<()> {
+        if !self.pending.is_empty() {
+            self.drain(conn, header);
+        }
+        if !self.pending.is_empty() {
+            tracing::debug!(
+                id = %id,
+                pending = self.pending.len() + 1,
+                "queued command behind pending commands: no MAVLink peer connected yet"
+            );
+            self.enqueue(id.clone(), msg);
+            return Ok(());
+        }
+        let sent = conn
+            .send(header, &msg)
+            .map_err(|e| eyre!("mavlink send: {e}"))?;
+        if sent == 0 {
+            // UDP server mode (`udpin:`) reports a successful 0-byte send until
+            // a client has connected. Queue boundedly and drain in FIFO order
+            // once `run_reader` receives the peer's first packet.
+            tracing::warn!("command '{id}' queued: no MAVLink peer connected yet");
+            self.enqueue(id.clone(), msg);
+        }
+        Ok(())
+    }
+}
+
+/// Decode one supported `*_cmd` Arrow input into a [`MavMessage`]. Returns
+/// `Ok(None)` for unknown input ids so misrouted inputs are ignored rather
+/// than aborting the bridge node.
+fn decode_command(id: &DataId, data: &ArrayRef) -> Result<Option<MavMessage>> {
+    let msg = match id.as_str() {
         "heartbeat_cmd" => {
             let d: HEARTBEAT_DATA = decode_input(data, id.as_str())?;
             MavMessage::HEARTBEAT(d)
@@ -510,19 +652,25 @@ fn handle_input(
             let d: SET_POSITION_TARGET_LOCAL_NED_DATA = decode_input(data, id.as_str())?;
             MavMessage::SET_POSITION_TARGET_LOCAL_NED(d)
         }
-        _ => return Ok(()), // unknown input id, ignore
+        _ => return Ok(None),
     };
-    let sent = conn
-        .send(header, &outgoing)
-        .map_err(|e| eyre!("mavlink send: {e}"))?;
-    if sent == 0 {
-        // UDP server mode (`udpin:`) reports a successful 0-byte send until a
-        // client has connected, so the command was silently dropped rather
-        // than transmitted. Surface it instead of logging a false success
-        // (dora-rs/dora#2027).
-        tracing::warn!("command '{id}' not transmitted: no MAVLink peer connected yet");
-    }
-    Ok(())
+    Ok(Some(msg))
+}
+
+/// Forward one incoming dora `Event::Input` as a MAVLink frame on `conn`,
+/// or buffer it in `outbound_queue` if `conn.send` returns `Ok(0)` before
+/// a UDP server-mode peer connects. Unknown input ids are silently ignored.
+fn handle_input(
+    conn: &(dyn MavConnection<MavMessage> + Send + Sync),
+    header: &MavHeader,
+    id: &DataId,
+    data: &ArrayRef,
+    outbound_queue: &mut OutboundQueue,
+) -> Result<()> {
+    let Some(outgoing) = decode_command(id, data)? else {
+        return Ok(()); // unknown input id, ignore
+    };
+    outbound_queue.send_or_queue(conn, header, id, outgoing)
 }
 
 /// Try to send the `REQUEST_DATA_STREAM` setup message. Returns `true` once it
@@ -644,6 +792,9 @@ fn main() -> Result<()> {
     // A frame whose arrival woke the wait below; forwarded first on the next
     // iteration, ahead of anything queued behind it.
     let mut woken_frame = None;
+    // Bounded FIFO queue for outbound commands received before a UDP server
+    // peer sends its first packet.
+    let mut outbound_queue = OutboundQueue::new(MAX_PENDING_OUTBOUND);
     'run: loop {
         for (id, arr) in frames_for_pass(woken_frame.take(), &rx) {
             if let Err(e) = node.send_output(id, MetadataParameters::default(), arr) {
@@ -675,6 +826,13 @@ fn main() -> Result<()> {
             data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header);
         }
 
+        // Drain any outbound commands queued before a UDP peer connected. Once
+        // `run_reader` receives the peer's first packet, `writer.dest` is bound
+        // and queued commands go out in FIFO order.
+        if !outbound_queue.is_empty() {
+            outbound_queue.drain(conn.as_ref(), &header);
+        }
+
         let event = match wait_for_event_or_frame(events.recv_async_timeout(POLL_INTERVAL), &rx) {
             Wake::Frame(frame) => {
                 woken_frame = Some(frame);
@@ -692,7 +850,9 @@ fn main() -> Result<()> {
         match event {
             Event::Input { id, data, .. } => {
                 let array_ref: ArrayRef = data.into();
-                if let Err(e) = handle_input(conn.as_ref(), &header, &id, &array_ref) {
+                if let Err(e) =
+                    handle_input(conn.as_ref(), &header, &id, &array_ref, &mut outbound_queue)
+                {
                     // Writer errors mean the dora node's command did NOT reach the
                     // autopilot. Surface at error level so users debugging missions see
                     // it in default log filters rather than treating it as routine noise.
@@ -702,6 +862,19 @@ fn main() -> Result<()> {
             Event::Stop(_) => break,
             _ => {}
         }
+    }
+
+    // Best-effort final drain BEFORE signaling shutdown / sending the UDP
+    // self-loopback wake packet (which overwrites `writer.dest` with the
+    // ephemeral wake socket). Anything still pending has no connected peer.
+    if !outbound_queue.is_empty() {
+        outbound_queue.drain(conn.as_ref(), &header);
+    }
+    if !outbound_queue.is_empty() {
+        tracing::warn!(
+            dropped = outbound_queue.len(),
+            "shutting down with unsent queued MAVLink command(s); no peer connected"
+        );
     }
 
     // Final drain: forward any telemetry the reader already decoded into `rx`
@@ -1328,5 +1501,479 @@ mod tests {
             wait_for_event_or_frame(std::future::pending(), &rx),
             Wake::ReaderGone
         ));
+    }
+
+    fn encode_command_long_input(param1: f32) -> ArrayRef {
+        let cmd = COMMAND_LONG_DATA {
+            param1,
+            param2: 0.0,
+            param3: 0.0,
+            param4: 0.0,
+            param5: 0.0,
+            param6: 0.0,
+            param7: 0.0,
+            command: mavlink::dialects::common::MavCmd::MAV_CMD_NAV_TAKEOFF,
+            target_system: 1,
+            target_component: 1,
+            confirmation: 0,
+        };
+        let batch = MavlinkArrow::to_record_batch(&cmd).expect("to_record_batch");
+        Arc::new(StructArray::from(batch))
+    }
+
+    #[test]
+    fn udp_server_queues_outbound_commands_until_peer_connects() {
+        use mavlink::dialects::common::{
+            HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType,
+        };
+
+        let port = pick_free_udp_port();
+        let url = Url::parse(&format!("udp://127.0.0.1:{port}")).unwrap();
+        let conn_box = transport::connect(&url).expect("transport::connect");
+        let conn: Arc<dyn MavConnection<MavMessage> + Send + Sync> = Arc::from(conn_box);
+
+        let (tx, rx) = flume::bounded::<(DataId, ArrayRef)>(64);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let reader_handle = std::thread::spawn({
+            let conn = Arc::clone(&conn);
+            let shutdown = Arc::clone(&shutdown);
+            move || run_reader(conn, tx, shutdown, true)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+
+        let header = MavHeader {
+            system_id: 255,
+            component_id: 1,
+            sequence: 0,
+        };
+        let cmd_id = DataId::from("command_long_cmd".to_string());
+        let mut outbound_queue = OutboundQueue::new(MAX_PENDING_OUTBOUND);
+        handle_input(
+            conn.as_ref(),
+            &header,
+            &cmd_id,
+            &encode_command_long_input(11.0),
+            &mut outbound_queue,
+        )
+        .expect("handle_input 1");
+        handle_input(
+            conn.as_ref(),
+            &header,
+            &cmd_id,
+            &encode_command_long_input(22.0),
+            &mut outbound_queue,
+        )
+        .expect("handle_input 2");
+        assert_eq!(outbound_queue.len(), 2);
+        // Draining while still disconnected keeps queued items intact in FIFO order.
+        assert_eq!(outbound_queue.drain(conn.as_ref(), &header), 0);
+        assert_eq!(outbound_queue.len(), 2);
+
+        // Now simulate a real UDP peer binding and sending its first HEARTBEAT.
+        let peer = UdpSocket::bind("127.0.0.1:0").expect("bind peer");
+        peer.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set_read_timeout");
+        let hb = MavMessage::HEARTBEAT(HEARTBEAT_DATA {
+            custom_mode: 0,
+            mavtype: MavType::MAV_TYPE_QUADROTOR,
+            autopilot: MavAutopilot::MAV_AUTOPILOT_ARDUPILOTMEGA,
+            base_mode: MavModeFlag::empty(),
+            system_status: MavState::MAV_STATE_STANDBY,
+            mavlink_version: 3,
+        });
+        let mut hb_buf = Vec::new();
+        mavlink::write_versioned_msg(
+            &mut hb_buf,
+            MavlinkVersion::V2,
+            MavHeader {
+                system_id: 1,
+                component_id: 1,
+                sequence: 0,
+            },
+            &hb,
+        )
+        .expect("encode peer heartbeat");
+        peer.send_to(&hb_buf, format!("127.0.0.1:{port}"))
+            .expect("peer send_to");
+
+        let (tele_id, _) = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("reader should forward peer heartbeat");
+        assert_eq!(tele_id.as_str(), "heartbeat");
+
+        assert_eq!(outbound_queue.drain(conn.as_ref(), &header), 2);
+        assert!(outbound_queue.is_empty());
+
+        let mut received_param1s = Vec::new();
+        for _ in 0..2 {
+            let mut buf = [0u8; 512];
+            let (n, _) = peer
+                .recv_from(&mut buf)
+                .expect("peer must receive queued outbound command");
+            let mut reader = mavlink::peek_reader::PeekReader::new(&buf[..n]);
+            let (_h, msg): (MavHeader, MavMessage) =
+                mavlink::read_v2_msg(&mut reader).expect("decode outbound mavlink");
+            if let MavMessage::COMMAND_LONG(c) = msg {
+                received_param1s.push(c.param1);
+            }
+        }
+        assert_eq!(received_param1s, vec![11.0, 22.0]);
+
+        shutdown.store(true, Ordering::Relaxed);
+        wake_udp_recv(&url, conn.protocol_version(), 255, 1).expect("wake_udp_recv");
+        reader_handle
+            .join()
+            .expect("reader join")
+            .expect("reader ok");
+    }
+
+    /// If a new `Event::Input` arrives after the UDP peer connects but before
+    /// the top-of-loop `drain` runs, older queued commands must still be sent
+    /// ahead of the newly arrived command.
+    #[test]
+    fn udp_server_preserves_fifo_when_new_input_arrives_before_drain() {
+        use mavlink::dialects::common::{
+            HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType,
+        };
+
+        let port = pick_free_udp_port();
+        let url = Url::parse(&format!("udp://127.0.0.1:{port}")).unwrap();
+        let conn: Arc<dyn MavConnection<MavMessage> + Send + Sync> =
+            Arc::from(transport::connect(&url).expect("transport::connect"));
+
+        let (tx, rx) = flume::bounded::<(DataId, ArrayRef)>(64);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let reader_handle = std::thread::spawn({
+            let conn = Arc::clone(&conn);
+            let shutdown = Arc::clone(&shutdown);
+            move || run_reader(conn, tx, shutdown, true)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+
+        let header = MavHeader {
+            system_id: 255,
+            component_id: 1,
+            sequence: 0,
+        };
+        let cmd_id = DataId::from("command_long_cmd".to_string());
+        let mut outbound_queue = OutboundQueue::new(MAX_PENDING_OUTBOUND);
+        handle_input(
+            conn.as_ref(),
+            &header,
+            &cmd_id,
+            &encode_command_long_input(10.0),
+            &mut outbound_queue,
+        )
+        .expect("queue 1");
+        handle_input(
+            conn.as_ref(),
+            &header,
+            &cmd_id,
+            &encode_command_long_input(20.0),
+            &mut outbound_queue,
+        )
+        .expect("queue 2");
+
+        let peer = UdpSocket::bind("127.0.0.1:0").expect("bind peer");
+        peer.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set_read_timeout");
+        let hb = MavMessage::HEARTBEAT(HEARTBEAT_DATA {
+            custom_mode: 0,
+            mavtype: MavType::MAV_TYPE_QUADROTOR,
+            autopilot: MavAutopilot::MAV_AUTOPILOT_ARDUPILOTMEGA,
+            base_mode: MavModeFlag::empty(),
+            system_status: MavState::MAV_STATE_STANDBY,
+            mavlink_version: 3,
+        });
+        let mut hb_buf = Vec::new();
+        mavlink::write_versioned_msg(&mut hb_buf, MavlinkVersion::V2, header, &hb)
+            .expect("encode heartbeat");
+        peer.send_to(&hb_buf, format!("127.0.0.1:{port}"))
+            .expect("peer send_to");
+        let _ = rx.recv_timeout(Duration::from_secs(2)).expect("peer bound");
+
+        // Arrive straight into `handle_input` before any explicit `drain()`.
+        handle_input(
+            conn.as_ref(),
+            &header,
+            &cmd_id,
+            &encode_command_long_input(30.0),
+            &mut outbound_queue,
+        )
+        .expect("handle_input 3");
+        assert!(outbound_queue.is_empty());
+
+        let mut received_param1s = Vec::new();
+        for _ in 0..3 {
+            let mut buf = [0u8; 512];
+            let (n, _) = peer.recv_from(&mut buf).expect("peer recv_from");
+            let mut reader = mavlink::peek_reader::PeekReader::new(&buf[..n]);
+            let (_h, msg): (MavHeader, MavMessage) =
+                mavlink::read_v2_msg(&mut reader).expect("decode outbound");
+            if let MavMessage::COMMAND_LONG(c) = msg {
+                received_param1s.push(c.param1);
+            }
+        }
+        assert_eq!(received_param1s, vec![10.0, 20.0, 30.0]);
+
+        shutdown.store(true, Ordering::Relaxed);
+        wake_udp_recv(&url, conn.protocol_version(), 255, 1).expect("wake_udp_recv");
+        reader_handle
+            .join()
+            .expect("reader join")
+            .expect("reader ok");
+    }
+
+    #[test]
+    fn outbound_queue_evicts_oldest_when_full_and_preserves_fifo() {
+        use mavlink::dialects::common::{
+            HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType,
+        };
+
+        let port = pick_free_udp_port();
+        let url = Url::parse(&format!("udp://127.0.0.1:{port}")).unwrap();
+        let conn: Arc<dyn MavConnection<MavMessage> + Send + Sync> =
+            Arc::from(transport::connect(&url).expect("transport::connect"));
+
+        let (tx, rx) = flume::bounded::<(DataId, ArrayRef)>(64);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let reader_handle = std::thread::spawn({
+            let conn = Arc::clone(&conn);
+            let shutdown = Arc::clone(&shutdown);
+            move || run_reader(conn, tx, shutdown, true)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+
+        let header = MavHeader {
+            system_id: 255,
+            component_id: 1,
+            sequence: 0,
+        };
+        let cmd_id = DataId::from("command_long_cmd".to_string());
+        let mut outbound_queue = OutboundQueue::new(3);
+        for p in [1.0, 2.0, 3.0, 4.0, 5.0] {
+            handle_input(
+                conn.as_ref(),
+                &header,
+                &cmd_id,
+                &encode_command_long_input(p),
+                &mut outbound_queue,
+            )
+            .expect("queue cmd");
+        }
+        assert_eq!(outbound_queue.len(), 3);
+
+        let peer = UdpSocket::bind("127.0.0.1:0").expect("bind peer");
+        peer.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set_read_timeout");
+        let hb = MavMessage::HEARTBEAT(HEARTBEAT_DATA {
+            custom_mode: 0,
+            mavtype: MavType::MAV_TYPE_QUADROTOR,
+            autopilot: MavAutopilot::MAV_AUTOPILOT_ARDUPILOTMEGA,
+            base_mode: MavModeFlag::empty(),
+            system_status: MavState::MAV_STATE_STANDBY,
+            mavlink_version: 3,
+        });
+        let mut hb_buf = Vec::new();
+        mavlink::write_versioned_msg(&mut hb_buf, MavlinkVersion::V2, header, &hb)
+            .expect("encode heartbeat");
+        peer.send_to(&hb_buf, format!("127.0.0.1:{port}"))
+            .expect("peer send_to");
+        let _ = rx.recv_timeout(Duration::from_secs(2)).expect("peer bound");
+
+        assert_eq!(outbound_queue.drain(conn.as_ref(), &header), 3);
+        assert!(outbound_queue.is_empty());
+
+        let mut received_param1s = Vec::new();
+        for _ in 0..3 {
+            let mut buf = [0u8; 512];
+            let (n, _) = peer.recv_from(&mut buf).expect("peer recv_from");
+            let mut reader = mavlink::peek_reader::PeekReader::new(&buf[..n]);
+            let (_h, msg): (MavHeader, MavMessage) =
+                mavlink::read_v2_msg(&mut reader).expect("decode outbound");
+            if let MavMessage::COMMAND_LONG(c) = msg {
+                received_param1s.push(c.param1);
+            }
+        }
+        assert_eq!(received_param1s, vec![3.0, 4.0, 5.0]);
+
+        shutdown.store(true, Ordering::Relaxed);
+        wake_udp_recv(&url, conn.protocol_version(), 255, 1).expect("wake_udp_recv");
+        reader_handle
+            .join()
+            .expect("reader join")
+            .expect("reader ok");
+    }
+
+    #[test]
+    fn outbound_queue_drain_handles_partial_and_error_outcomes() {
+        use mavlink::error::MessageWriteError;
+        use std::sync::Mutex;
+
+        struct StubConn {
+            outcomes: Mutex<VecDeque<std::result::Result<usize, MessageWriteError>>>,
+            sent: Mutex<Vec<f32>>,
+        }
+
+        impl MavConnection<MavMessage> for StubConn {
+            fn recv(&self) -> std::result::Result<(MavHeader, MavMessage), MessageReadError> {
+                Err(MessageReadError::Io(std::io::Error::other("unused")))
+            }
+
+            fn recv_raw(
+                &self,
+            ) -> std::result::Result<mavlink::MAVLinkMessageRaw, MessageReadError> {
+                Err(MessageReadError::Io(std::io::Error::other("unused")))
+            }
+
+            fn try_recv(&self) -> std::result::Result<(MavHeader, MavMessage), MessageReadError> {
+                Err(MessageReadError::Io(std::io::Error::other("unused")))
+            }
+
+            fn send(
+                &self,
+                _header: &MavHeader,
+                data: &MavMessage,
+            ) -> std::result::Result<usize, MessageWriteError> {
+                let outcome = self
+                    .outcomes
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("unexpected send");
+                if let Ok(n) = outcome
+                    && n > 0
+                    && let MavMessage::COMMAND_LONG(cmd) = data
+                {
+                    self.sent.lock().unwrap().push(cmd.param1);
+                }
+                outcome
+            }
+
+            fn set_protocol_version(&mut self, _version: MavlinkVersion) {}
+            fn protocol_version(&self) -> MavlinkVersion {
+                MavlinkVersion::V2
+            }
+            fn set_allow_recv_any_version(&mut self, _allow: bool) {}
+            fn allow_recv_any_version(&self) -> bool {
+                false
+            }
+        }
+
+        let conn = StubConn {
+            outcomes: Mutex::new(VecDeque::from([
+                Ok(0), // cmd 1 still disconnected -> drain stops immediately
+                Err(MessageWriteError::Io(std::io::Error::other("bad frame"))), // cmd 1 dropped
+                Ok(42), // cmd 2 succeeds
+                Ok(0), // cmd 3 disconnected again -> remains queued
+            ])),
+            sent: Mutex::new(Vec::new()),
+        };
+        let header = MavHeader {
+            system_id: 1,
+            component_id: 1,
+            sequence: 0,
+        };
+        let cmd_id = DataId::from("command_long_cmd".to_string());
+        let mut queue = OutboundQueue::new(4);
+        for p in [1.0, 2.0, 3.0] {
+            let msg = decode_command(&cmd_id, &encode_command_long_input(p))
+                .unwrap()
+                .unwrap();
+            queue.enqueue(cmd_id.clone(), msg);
+        }
+
+        // First drain hits Ok(0) on head and keeps all 3 items intact.
+        assert_eq!(queue.drain(&conn, &header), 0);
+        assert_eq!(queue.len(), 3);
+
+        // Second drain pops errored cmd 1, sends cmd 2, and stops on Ok(0) for cmd 3.
+        assert_eq!(queue.drain(&conn, &header), 1);
+        assert_eq!(*conn.sent.lock().unwrap(), vec![2.0]);
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn outbound_queue_zero_capacity_drops_without_panic() {
+        let mut queue = OutboundQueue::new(0);
+        let cmd_id = DataId::from("command_long_cmd".to_string());
+        let msg = decode_command(&cmd_id, &encode_command_long_input(1.0))
+            .unwrap()
+            .unwrap();
+        queue.enqueue(cmd_id, msg);
+        assert!(queue.is_empty());
+    }
+
+    /// Even when the peer's first packet is an unhandled message type (skipped
+    /// by `run_reader` without sending on `tx`), `conn.recv()` still binds the
+    /// reply destination so the next `drain` pass transmits queued commands.
+    #[test]
+    fn udp_server_drains_after_unhandled_peer_packet() {
+        use mavlink::dialects::common::TIMESYNC_DATA;
+
+        let port = pick_free_udp_port();
+        let url = Url::parse(&format!("udp://127.0.0.1:{port}")).unwrap();
+        let conn: Arc<dyn MavConnection<MavMessage> + Send + Sync> =
+            Arc::from(transport::connect(&url).expect("transport::connect"));
+
+        let (tx, _rx_keep_alive) = flume::bounded::<(DataId, ArrayRef)>(64);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let reader_handle = std::thread::spawn({
+            let conn = Arc::clone(&conn);
+            let shutdown = Arc::clone(&shutdown);
+            move || run_reader(conn, tx, shutdown, true)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+
+        let header = MavHeader {
+            system_id: 255,
+            component_id: 1,
+            sequence: 0,
+        };
+        let cmd_id = DataId::from("command_long_cmd".to_string());
+        let mut outbound_queue = OutboundQueue::new(MAX_PENDING_OUTBOUND);
+        handle_input(
+            conn.as_ref(),
+            &header,
+            &cmd_id,
+            &encode_command_long_input(77.0),
+            &mut outbound_queue,
+        )
+        .expect("queue command");
+
+        let peer = UdpSocket::bind("127.0.0.1:0").expect("bind peer");
+        peer.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set_read_timeout");
+        let timesync = MavMessage::TIMESYNC(TIMESYNC_DATA { tc1: 0, ts1: 1 });
+        let mut timesync_buf = Vec::new();
+        mavlink::write_versioned_msg(&mut timesync_buf, MavlinkVersion::V2, header, &timesync)
+            .expect("encode timesync");
+        peer.send_to(&timesync_buf, format!("127.0.0.1:{port}"))
+            .expect("peer send_to");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !outbound_queue.is_empty() && Instant::now() < deadline {
+            if outbound_queue.drain(conn.as_ref(), &header) == 0 {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        assert!(outbound_queue.is_empty(), "queued command should drain");
+
+        let mut buf = [0u8; 512];
+        let (n, _) = peer.recv_from(&mut buf).expect("peer recv command");
+        let mut reader = mavlink::peek_reader::PeekReader::new(&buf[..n]);
+        let (_h, msg): (MavHeader, MavMessage) =
+            mavlink::read_v2_msg(&mut reader).expect("decode outbound mavlink");
+        match msg {
+            MavMessage::COMMAND_LONG(c) => assert_eq!(c.param1, 77.0),
+            other => panic!("expected COMMAND_LONG, got {other:?}"),
+        }
+
+        shutdown.store(true, Ordering::Relaxed);
+        wake_udp_recv(&url, conn.protocol_version(), 255, 1).expect("wake_udp_recv");
+        reader_handle
+            .join()
+            .expect("reader join")
+            .expect("reader ok");
     }
 }
